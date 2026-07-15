@@ -5,8 +5,11 @@ import { registerIpc } from './ipc'
 function createWindow(): void {
   const win = new BrowserWindow({
     width: 1280,
-    height: 800,
+    height: 820,
     title: 'gurt',
+    backgroundColor: '#1f1f1f',
+    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
+    trafficLightPosition: { x: 14, y: 13 },
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
       contextIsolation: true,

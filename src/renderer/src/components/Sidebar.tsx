@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { AgentsFile, EnvRef, Tree } from '../../../shared/types'
+import type { AgentsFile, SessionInfo, SessionState, Tree } from '../../../shared/types'
 import { AGENT_DEFS } from '../../../shared/agents'
 import type { Selection } from '../App'
 import { Modal } from './Modal'
@@ -9,31 +9,39 @@ type AddForm =
   | { type: 'workspace' }
   | { type: 'repos'; ws: string }
   | { type: 'task'; ws: string }
-  | { type: 'env'; ws: string; task: string }
+  | { type: 'session'; ws: string; task: string }
   | null
 
-const STATUS_ICON: Record<string, string> = {
-  stopped: '○',
+const SESSION_MARK: Record<SessionState, string> = {
+  draft: '✎',
+  queued: '⏳',
   starting: '◐',
-  running: '●',
-  error: '✕'
+  started: '●'
 }
 
 export function Sidebar({
   tree,
   selection,
-  onSelectEnv,
+  onSelectTask,
   onSelectSession,
   onOpenAgents
 }: {
   tree: Tree | null
   selection: Selection
-  onSelectEnv: (ref: EnvRef) => void
+  onSelectTask: (ws: string, task: string) => void
   onSelectSession: (id: string) => void
   onOpenAgents: () => void
 }) {
   const [form, setForm] = useState<AddForm>(null)
   const [error, setError] = useState('')
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+
+  const toggle = (key: string) =>
+    setCollapsed((prev) => {
+      const next = new Set(prev)
+      next.has(key) ? next.delete(key) : next.add(key)
+      return next
+    })
 
   const act = async (fn: () => Promise<unknown>) => {
     setError('')
@@ -63,106 +71,70 @@ export function Sidebar({
               <button className="icon-btn" title="repos" onClick={() => setForm({ type: 'repos', ws: ws.name })}>repos</button>
               <button className="icon-btn" title="new task" onClick={() => setForm({ type: 'task', ws: ws.name })}>⊕ task</button>
             </div>
-            {ws.tasks.map((task) => (
-              <div key={task.name} className="task">
-                <div className="node task-node">
-                  <span className="node-label">{task.name}</span>
-                  <span className="spacer" />
-                  <button
-                    className="icon-btn"
-                    title="add environment"
-                    onClick={() => setForm({ type: 'env', ws: ws.name, task: task.name })}
-                  >
-                    +
-                  </button>
-                  <button
-                    className="icon-btn"
-                    title="delete task"
-                    onClick={() => {
-                      if (window.confirm(`Delete task "${task.name}" with all its environments, clones and sessions?`))
-                        window.gurt.removeTask(ws.name, task.name).catch((e) => alert(String(e)))
-                    }}
-                  >
-                    🗑
-                  </button>
-                </div>
-                {task.envs.map((env) => {
-                  const ref: EnvRef = { workspace: ws.name, task: task.name, repo: env.repo }
-                  const selected =
-                    selection?.type === 'env' &&
-                    selection.ref.workspace === ws.name &&
-                    selection.ref.task === task.name &&
-                    selection.ref.repo === env.repo
-                  return (
-                    <div key={env.repo} className="env">
-                      <div className={`node env-node ${selected ? 'selected' : ''}`}>
-                        <span className={`status status-${env.status}`}>{STATUS_ICON[env.status]}</span>
-                        <span className="node-label clickable" onClick={() => onSelectEnv(ref)}>
-                          {env.repo}
-                        </span>
-                        <span className="agent-badge">{env.agent ?? 'claude-code'}</span>
-                        <span className="spacer" />
-                        {(env.status === 'stopped' || env.status === 'error') && (
-                          <>
-                            <button
-                              className="icon-btn"
-                              title="start environment"
-                              onClick={() => {
-                                onSelectEnv(ref)
-                                window.gurt.startEnv(ref).catch(() => {})
-                              }}
-                            >
-                              ▶
-                            </button>
-                            <button
-                              className="icon-btn"
-                              title="delete environment"
-                              onClick={() => {
-                                if (window.confirm(`Delete env "${env.repo}" with its container, clone and sessions? Uncommitted work will be lost.`))
-                                  window.gurt.removeEnv(ref).catch((e) => alert(String(e)))
-                              }}
-                            >
-                              🗑
-                            </button>
-                          </>
-                        )}
-                        {env.status === 'running' && (
-                          <>
-                            <button
-                              className="icon-btn"
-                              title="new session"
-                              onClick={() =>
-                                window.gurt.createSession(ref).then((s) => onSelectSession(s.id)).catch((e) => alert(String(e)))
-                              }
-                            >
-                              +
-                            </button>
-                            <button
-                              className="icon-btn"
-                              title="stop environment"
-                              onClick={() => window.gurt.stopEnv(ref).catch((e) => alert(String(e)))}
-                            >
-                              ■
-                            </button>
-                          </>
-                        )}
-                      </div>
-                      {env.sessions.map((s) => (
-                        <div
-                          key={s.id}
-                          className={`node session-node clickable ${
-                            selection?.type === 'session' && selection.id === s.id ? 'selected' : ''
-                          }`}
-                          onClick={() => onSelectSession(s.id)}
-                        >
+            {ws.tasks.map((task) => {
+              const taskSelected =
+                selection?.type === 'task' &&
+                selection.ws === ws.name &&
+                selection.task === task.name
+              const tkey = `${ws.name}/${task.name}`
+              const isCollapsed = collapsed.has(tkey)
+              return (
+                <div key={task.name} className="task">
+                  <div className={`node task-node ${taskSelected ? 'selected' : ''}`}>
+                    <span
+                      className="clickable"
+                      style={{ color: 'var(--text-dim3)', fontSize: 10, width: 10 }}
+                      onClick={() => toggle(tkey)}
+                    >
+                      {isCollapsed ? '▸' : '▾'}
+                    </span>
+                    <span
+                      className="node-label clickable"
+                      onClick={() => onSelectTask(ws.name, task.name)}
+                    >
+                      {task.name}
+                    </span>
+                    <span className="spacer" />
+                    <button
+                      className="icon-btn"
+                      title="new session"
+                      onClick={() => setForm({ type: 'session', ws: ws.name, task: task.name })}
+                    >
+                      +
+                    </button>
+                    <button
+                      className="icon-btn"
+                      title="delete task"
+                      onClick={() => {
+                        if (window.confirm(`Delete task "${task.name}" with all its environments, clones and sessions?`))
+                          window.gurt.removeTask(ws.name, task.name).catch((e) => alert(String(e)))
+                      }}
+                    >
+                      🗑
+                    </button>
+                  </div>
+                  {!isCollapsed &&
+                    task.sessions.map((s) => (
+                      <div
+                        key={s.id}
+                        className={`node session-node ${
+                          selection?.type === 'session' && selection.id === s.id ? 'selected' : ''
+                        }`}
+                      >
+                        <span className={`session-mark mark-${s.state}`}>{SESSION_MARK[s.state]}</span>
+                        <span className="node-label clickable" onClick={() => onSelectSession(s.id)}>
                           {s.title}
-                        </div>
-                      ))}
-                    </div>
-                  )
-                })}
-              </div>
-            ))}
+                        </span>
+                        <span className="chip">{s.envRepo}</span>
+                        <span className="chip">{s.agent}</span>
+                      </div>
+                    ))}
+                  {!isCollapsed && task.sessions.length === 0 && (
+                    <div className="hint task-hint">no sessions — “+” to add one</div>
+                  )}
+                </div>
+              )
+            })}
           </div>
         ))}
         {tree && tree.workspaces.length === 0 && (
@@ -189,16 +161,16 @@ export function Sidebar({
       {form?.type === 'repos' && tree && (
         <ReposModal tree={tree} ws={form.ws} onClose={() => setForm(null)} />
       )}
-      {form?.type === 'env' && tree && (
-        <EnvModal
+      {form?.type === 'session' && tree && (
+        <NewSessionModal
           tree={tree}
           ws={form.ws}
           task={form.task}
-          error={error}
           onClose={() => setForm(null)}
-          onSubmit={(repo, agent) =>
-            act(() => window.gurt.addEnv({ workspace: form.ws, task: form.task, repo }, agent))
-          }
+          onCreated={(s) => {
+            setForm(null)
+            onSelectSession(s.id)
+          }}
         />
       )}
     </aside>
@@ -234,23 +206,24 @@ function NameModal({
   )
 }
 
-function EnvModal({
+function NewSessionModal({
   tree,
   ws,
   task,
-  error,
   onClose,
-  onSubmit
+  onCreated
 }: {
   tree: Tree
   ws: string
   task: string
-  error: string
   onClose: () => void
-  onSubmit: (repo: string, agent: string) => void
+  onCreated: (s: SessionInfo) => void
 }) {
   const [agents, setAgents] = useState<AgentsFile | null>(null)
   const [agent, setAgent] = useState('')
+  const [repo, setRepo] = useState('')
+  const [prompt, setPrompt] = useState('')
+  const [error, setError] = useState('')
 
   useEffect(() => {
     window.gurt.getAgents().then((a) => {
@@ -262,13 +235,49 @@ function EnvModal({
 
   const wsData = tree.workspaces.find((w) => w.name === ws)
   const taskData = wsData?.tasks.find((t) => t.name === task)
-  const used = new Set(taskData?.envs.map((e) => e.repo) ?? [])
-  const available = (wsData?.repos ?? []).filter((r) => !used.has(r.name))
+  const repos = wsData?.repos ?? []
   const enabledAgents = AGENT_DEFS.filter((d) => agents?.[d.id]?.enabled)
 
+  useEffect(() => {
+    if (!repo && repos.length) setRepo(repos[0].name)
+  }, [repo, repos])
+
+  const create = async (action: 'run' | 'queue' | 'draft') => {
+    setError('')
+    if (action === 'run') {
+      const busy = (taskData?.sessions ?? []).some(
+        (s) => s.envRepo === repo && (s.state === 'starting' || s.state === 'started')
+      )
+      if (
+        busy &&
+        !window.confirm(
+          `Another session is already working on "${repo}". Running now means two agents share one working tree. Continue?`
+        )
+      )
+        return
+    }
+    try {
+      const s = await window.gurt.createSession({ workspace: ws, task, repo }, agent, prompt, action)
+      onCreated(s)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  const ready = !!repo && !!agent && !!prompt.trim()
+
   return (
-    <Modal title={`Add environment to ${task}`} onClose={onClose}>
+    <Modal title={`New session in ${task}`} onClose={onClose}>
       <div className="form">
+        <label>
+          repo
+          <select value={repo} onChange={(e) => setRepo(e.target.value)}>
+            {repos.map((r) => (
+              <option key={r.name} value={r.name}>{r.name}</option>
+            ))}
+          </select>
+        </label>
+        {repos.length === 0 && <div className="hint">no repos — add one via the workspace “repos”</div>}
         <label>
           agent
           <select value={agent} onChange={(e) => setAgent(e.target.value)}>
@@ -278,15 +287,21 @@ function EnvModal({
           </select>
         </label>
         {enabledAgents.length === 0 && <div className="hint">no agents enabled — check ⚙ Agents</div>}
-        {available.length === 0 && (
-          <div className="hint">every registered repo already has an environment in this task</div>
-        )}
-        {available.map((r) => (
-          <button key={r.name} disabled={!agent} onClick={() => onSubmit(r.name, agent)}>
-            {r.name} <span className="dim">({r.url})</span>
-          </button>
-        ))}
+        <label>
+          start prompt
+          <textarea
+            rows={5}
+            placeholder="what should the agent do first?"
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+          />
+        </label>
         {error && <div className="error">{error}</div>}
+        <div className="row-buttons">
+          <button disabled={!ready} onClick={() => create('run')}>Run now</button>
+          <button disabled={!ready} onClick={() => create('queue')}>Add to queue</button>
+          <button disabled={!ready} onClick={() => create('draft')}>Save draft</button>
+        </div>
       </div>
     </Modal>
   )

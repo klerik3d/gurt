@@ -116,15 +116,16 @@ export interface UpResult {
 
 export async function devcontainerUp(
   ref: EnvRef,
-  agent: AgentDef,
   configArgs: string[],
   workspaceFolder: string,
   log: LogSink
 ): Promise<UpResult> {
+  // The container is agent-agnostic: only the node feature is injected. Agent
+  // adapters are installed lazily via `exec` on first connection.
   const args = [
     'up',
     '--workspace-folder', workspaceFolder,
-    '--additional-features', JSON.stringify({ ...BASE_FEATURES, ...agent.features }),
+    '--additional-features', JSON.stringify(BASE_FEATURES),
     ...idLabelArgs(ref),
     ...configArgs
   ]

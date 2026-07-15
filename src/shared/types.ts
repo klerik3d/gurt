@@ -25,14 +25,18 @@ export interface WorkspaceFile {
   repos: RepoConfig[]
 }
 
+export type EnvStatus = 'stopped' | 'starting' | 'running' | 'error'
+
+/**
+ * An environment is pure infrastructure: a clone + devcontainer per (task, repo).
+ * It is agent-agnostic — different agents' adapters coexist in the one container.
+ */
 export interface EnvState {
   repo: string
-  /** Agent bound to this environment (agent id). */
-  agent?: string
   containerId?: string
   /** Workspace folder path inside the container, needed to spawn sessions. */
   remoteWorkspaceFolder?: string
-  status: 'stopped' | 'starting' | 'running' | 'error'
+  status: EnvStatus
   error?: string
 }
 
@@ -41,6 +45,14 @@ export interface TaskFile {
   envs: EnvState[]
 }
 
+/**
+ * draft   — has a start prompt, never runs until the user runs/enqueues it.
+ * queued  — waiting in the global FIFO queue.
+ * starting— being launched (runtime-only; a crash mid-start restores as draft).
+ * started — a live chat session.
+ */
+export type SessionState = 'draft' | 'queued' | 'starting' | 'started'
+
 export interface SessionInfo {
   id: string
   envRepo: string
@@ -48,6 +60,11 @@ export interface SessionInfo {
   workspace: string
   title: string
   agent?: string
+  state: SessionState
+  /** First prompt, sent automatically when the session starts. */
+  startPrompt: string
+  /** ISO timestamp, present while queued — defines global FIFO order. */
+  queuedAt?: string
 }
 
 /** Full tree snapshot pushed to the renderer. */
@@ -57,7 +74,10 @@ export interface Tree {
     repos: RepoConfig[]
     tasks: {
       name: string
-      envs: (EnvState & { sessions: SessionInfo[] })[]
+      /** Infrastructure environments (shown in the task pane, not the tree). */
+      envs: EnvState[]
+      /** Sessions of this task, primary tree nodes. */
+      sessions: SessionInfo[]
     }[]
   }[]
 }
@@ -132,12 +152,19 @@ export interface SessionSnapshot {
   modes?: SessionModes
   plan?: PlanEntry[]
   commands?: CommandInfo[]
+  /** Last failure that put the session back to draft. */
+  startError?: string
+  /** 1-based position in the global queue, present while queued. */
+  queuePosition?: number
 }
 
-/** One record in <workspace>/<task>/sessions.json. */
+/**
+ * One record in <workspace>/<task>/sessions.json. `acpSessionId` is present only
+ * once the session has started; `starting` is never persisted (restores as draft).
+ */
 export interface PersistedSession {
   info: SessionInfo
-  acpSessionId: string
+  acpSessionId?: string
   entries: ChatEntry[]
 }
 
