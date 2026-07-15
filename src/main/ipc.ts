@@ -1,6 +1,16 @@
 import { BrowserWindow, ipcMain } from 'electron'
-import type { AgentsFile, EnvRef, EnvState, EnvStatus, RepoConfig, Tree } from '../shared/types'
+import type {
+  AgentsFile,
+  EnvRef,
+  EnvState,
+  EnvStatus,
+  McpSelection,
+  RepoConfig,
+  Tree
+} from '../shared/types'
 import { agentDef } from '../shared/agents'
+import { MCP_DEFS } from '../shared/mcp'
+import { resolveMcpServers, stopMcpServers } from './mcp/manager'
 import * as store from './store'
 import { cloneDir } from './store'
 import {
@@ -168,6 +178,8 @@ const sessions = new SessionManager({
   },
   resolveEnv,
   installAdapter,
+  resolveMcpServers,
+  stopMcpServers,
   envStatus,
   persist: (ws, task, records) => {
     store.writeSessions(ws, task, records).catch((e) => console.error('persist failed:', e))
@@ -217,7 +229,13 @@ async function deleteEnv(ref: EnvRef): Promise<void> {
   const log = logFor(ref)
   sessions.closeEnv(ref)
   if (env?.containerId) await dockerRemove(env.containerId, log)
-  await removeClone(ref)
+  // Drop the env record even if the clone can't be fully removed, so a filesystem
+  // hiccup never leaves a ghost env in the tree pointing at a half-deleted clone.
+  try {
+    await removeClone(ref)
+  } catch (e) {
+    log(`clone removal failed: ${e instanceof Error ? e.message : String(e)}`)
+  }
   await store.removeEnv(ref.workspace, ref.task, ref.repo)
   broadcast('tree-changed')
   sessions.schedule()
@@ -250,6 +268,7 @@ export function registerIpc(): void {
     ipcMain.handle(channel, (_e, ...args) => fn(...args))
 
   handle('tree:get', () => tree())
+  handle('mcp:list', () => MCP_DEFS)
   handle('agents:get', () => store.getAgents())
   handle('agents:set', (agents: AgentsFile) => store.setAgents(agents))
   handle('workspace:create', async (name: string) => {
@@ -280,8 +299,10 @@ export function registerIpc(): void {
   handle('env:stop', (ref: EnvRef) => stopEnv(ref))
   handle('env:remove', (ref: EnvRef) => deleteEnv(ref))
 
-  handle('session:create', (ref: EnvRef, agent: string, prompt: string, action: CreateAction) =>
-    sessions.createSession(ref, agent, prompt, action)
+  handle(
+    'session:create',
+    (ref: EnvRef, agent: string, prompt: string, action: CreateAction, mcp: McpSelection[]) =>
+      sessions.createSession(ref, agent, prompt, action, mcp)
   )
   handle('session:run', (id: string) => sessions.run(id))
   handle('session:enqueue', (id: string) => sessions.enqueue(id))

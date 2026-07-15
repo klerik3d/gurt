@@ -1,5 +1,7 @@
 import { promises as fs } from 'node:fs'
 import { existsSync } from 'node:fs'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import os from 'node:os'
 import path from 'node:path'
 import type {
@@ -13,6 +15,28 @@ import type {
 } from '../shared/types'
 import { AGENT_DEFS } from '../shared/agents'
 
+const pexecFile = promisify(execFile)
+
+/**
+ * Recursively remove a directory tree. Node's `fs.rm` walks entries then
+ * `rmdir`s each parent; on the deep trees a cloned repo's `node_modules`
+ * produces — the container's `npm install` writes into the bind-mounted clone —
+ * that races on macOS and throws `ENOTEMPTY` even with `maxRetries`. On POSIX we
+ * hand off to `rm -rf`, which does not have this problem. `fs.rm` remains the
+ * win32 path and the fallback if spawning `rm` fails.
+ */
+export async function rmTree(dir: string): Promise<void> {
+  if (process.platform !== 'win32') {
+    try {
+      await pexecFile('/bin/rm', ['-rf', '--', dir])
+      return
+    } catch {
+      // fall through to fs.rm
+    }
+  }
+  await fs.rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+}
+
 export const gurtRoot = process.env.GURT_ROOT || path.join(os.homedir(), '.gurt')
 
 export const wsDir = (ws: string) => path.join(gurtRoot, ws)
@@ -22,6 +46,14 @@ export const cloneDir = (ws: string, task: string, repo: string) =>
 /** Host-side dir for user-provided inline devcontainer configs. */
 export const overrideConfigPath = (ws: string, repo: string) =>
   path.join(gurtRoot, ws, '.devcontainers', `${repo}.json`)
+
+/** Names become path segments on disk, so reject anything that isn't a single, safe segment. */
+function validateName(kind: string, name: string): void {
+  const n = name.trim()
+  if (!n) throw new Error(`${kind} name must not be empty`)
+  if (n === '.' || n === '..' || /[/\\]/.test(n))
+    throw new Error(`${kind} name must not contain "/", "\\", "." or ".."`)
+}
 
 async function readJson<T>(file: string, fallback: T): Promise<T> {
   try {
@@ -58,6 +90,7 @@ export async function setAgents(agents: AgentsFile): Promise<void> {
 }
 
 export async function createWorkspace(name: string): Promise<void> {
+  validateName('workspace', name)
   const file = path.join(wsDir(name), 'workspace.json')
   if (existsSync(file)) throw new Error(`workspace "${name}" already exists`)
   await writeJson(file, { repos: [] } satisfies WorkspaceFile)
@@ -72,6 +105,7 @@ async function saveWorkspace(ws: string, data: WorkspaceFile): Promise<void> {
 }
 
 export async function addRepo(ws: string, repo: RepoConfig): Promise<void> {
+  validateName('repo', repo.name)
   const data = await getWorkspace(ws)
   if (data.repos.some((r) => r.name === repo.name))
     throw new Error(`repo "${repo.name}" already exists in "${ws}"`)
@@ -108,6 +142,7 @@ export async function removeRepo(ws: string, repo: string): Promise<void> {
 }
 
 export async function createTask(ws: string, task: string): Promise<void> {
+  validateName('task', task)
   const file = path.join(taskDir(ws, task), 'task.json')
   if (existsSync(file)) throw new Error(`task "${task}" already exists in "${ws}"`)
   await writeJson(file, { envs: [] } satisfies TaskFile)
@@ -131,7 +166,7 @@ export async function saveTask(ws: string, task: string, data: TaskFile): Promis
 }
 
 export async function removeTaskDir(ws: string, task: string): Promise<void> {
-  await fs.rm(taskDir(ws, task), { recursive: true, force: true })
+  await rmTree(taskDir(ws, task))
 }
 
 /** Ensure a (stopped) env record exists for the repo; idempotent. */
