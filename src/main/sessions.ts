@@ -149,7 +149,9 @@ export class SessionManager {
     agentId: string,
     startPrompt: string,
     action: CreateAction,
-    mcp: McpSelection[] = []
+    mcp: McpSelection[] = [],
+    autoAllow = true,
+    model?: string
   ): SessionInfo {
     const n = this.listForTask(ref.workspace, ref.task).length + 1
     const info: SessionInfo = {
@@ -159,6 +161,7 @@ export class SessionManager {
       workspace: ref.workspace,
       title: `session ${n}`,
       agent: agentId,
+      model,
       state: 'draft',
       mcp,
       startPrompt
@@ -294,7 +297,7 @@ export class SessionManager {
       const mcpServers = await this.events.resolveMcpServers(s.ref, s.info.mcp)
       const result = await conn.peer.request<{ sessionId: string; modes?: SessionModes }>(
         'session/new',
-        { cwd: ctx.remoteWorkspaceFolder, mcpServers }
+        { cwd: ctx.remoteWorkspaceFolder, mcpServers, ...this.modelMeta(s) }
       )
       s.acpSessionId = result.sessionId
       s.modes = result.modes ?? s.modes
@@ -428,7 +431,8 @@ export class SessionManager {
         const result = await conn.peer.request<{ modes?: SessionModes }>('session/load', {
           sessionId: s.acpSessionId,
           cwd: ctx.remoteWorkspaceFolder,
-          mcpServers
+          mcpServers,
+          ...this.modelMeta(s)
         })
         s.modes = result?.modes ?? s.modes
         s.attached = true
@@ -556,6 +560,12 @@ export class SessionManager {
     this.events.onSessionChanged(s.info.id)
     this.schedulePersist(s.ref)
     return full
+  }
+
+  /** Claude Agent SDK model override, forwarded via the Claude ACP adapter's `_meta`. */
+  private modelMeta(s: Session): { _meta?: { claudeCode: { options: { model: string } } } } {
+    if (!s.info.model) return {}
+    return { _meta: { claudeCode: { options: { model: s.info.model } } } }
   }
 
   /** Flatten ACP tool-call content blocks into a plain-text preview. */
