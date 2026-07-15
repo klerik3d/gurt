@@ -30,6 +30,7 @@ const api = {
   sessionAutoAllow: (id: string, v: boolean) => ipcRenderer.invoke('session:auto-allow', id, v),
   sessionPermission: (id: string, entryId: number, optionId: string) =>
     ipcRenderer.invoke('session:permission', id, entryId, optionId),
+  sessionActivity: (id: string) => ipcRenderer.invoke('session:activity', id),
 
   onTreeChanged: (cb: () => void) => {
     const listener = () => cb()

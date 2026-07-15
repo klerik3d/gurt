@@ -40,6 +40,8 @@ export interface GurtApi {
   sessionSetMode(id: string, modeId: string): Promise<void>
   sessionAutoAllow(id: string, v: boolean): Promise<void>
   sessionPermission(id: string, entryId: number, optionId: string): Promise<void>
+  /** Ping that the user is active in this session (e.g. typing) — postpones env auto-stop. */
+  sessionActivity(id: string): Promise<void>
   onTreeChanged(cb: () => void): () => void
   onSessionChanged(cb: (snapshot: SessionSnapshot) => void): () => void
   onProvisionLog(cb: (event: { key: string; line: string }) => void): () => void
