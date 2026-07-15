@@ -5,6 +5,7 @@ import type {
   EnvState,
   EnvStatus,
   McpSelection,
+  PromptContext,
   RepoConfig,
   Tree
 } from '../shared/types'
@@ -310,10 +311,11 @@ export function registerIpc(): void {
   handle('session:edit-prompt', (id: string, text: string) => sessions.editPrompt(id, text))
   handle('session:delete', (id: string) => sessions.deleteSession(id))
   handle('session:snapshot', (id: string) => sessions.snapshot(id))
-  handle('session:prompt', (id: string, text: string) => sessions.prompt(id, text))
+  handle('session:prompt', (id: string, text: string, context?: PromptContext[]) =>
+    sessions.prompt(id, text, context)
+  )
   handle('session:cancel', (id: string) => sessions.cancel(id))
   handle('session:set-mode', (id: string, modeId: string) => sessions.setMode(id, modeId))
-  handle('session:auto-allow', (id: string, v: boolean) => sessions.setAutoAllow(id, v))
   handle('session:permission', (id: string, entryId: number, optionId: string) =>
     sessions.respondPermission(id, entryId, optionId)
   )

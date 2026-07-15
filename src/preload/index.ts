@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { AgentsFile, EnvRef, McpSelection, RepoConfig } from '../shared/types'
+import type { AgentsFile, EnvRef, McpSelection, PromptContext, RepoConfig } from '../shared/types'
 
 const api = {
   getTree: () => ipcRenderer.invoke('tree:get'),
@@ -31,10 +31,10 @@ const api = {
     ipcRenderer.invoke('session:edit-prompt', id, text),
   sessionDelete: (id: string) => ipcRenderer.invoke('session:delete', id),
   sessionSnapshot: (id: string) => ipcRenderer.invoke('session:snapshot', id),
-  sessionPrompt: (id: string, text: string) => ipcRenderer.invoke('session:prompt', id, text),
+  sessionPrompt: (id: string, text: string, context?: PromptContext[]) =>
+    ipcRenderer.invoke('session:prompt', id, text, context),
   sessionCancel: (id: string) => ipcRenderer.invoke('session:cancel', id),
   sessionSetMode: (id: string, modeId: string) => ipcRenderer.invoke('session:set-mode', id, modeId),
-  sessionAutoAllow: (id: string, v: boolean) => ipcRenderer.invoke('session:auto-allow', id, v),
   sessionPermission: (id: string, entryId: number, optionId: string) =>
     ipcRenderer.invoke('session:permission', id, entryId, optionId),
   sessionActivity: (id: string) => ipcRenderer.invoke('session:activity', id),
