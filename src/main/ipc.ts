@@ -7,6 +7,7 @@ import {
   devcontainerUp,
   discoverDevcontainer,
   dockerRemove,
+  dockerRunning,
   dockerStop,
   ensureClone,
   installAcpAdapter,
@@ -46,7 +47,17 @@ function ensureEnvRunning(ref: EnvRef): Promise<EnvState> {
   const p = (async () => {
     await store.ensureEnv(ref.workspace, ref.task, ref.repo)
     let env = await findEnv(ref)
-    if (env?.status === 'running' && env.remoteWorkspaceFolder) return env
+    // The persisted `running` status can be stale — e.g. a Docker daemon
+    // restart stops the container without gurt noticing. Only trust it if the
+    // container is actually up; otherwise fall through to `up`, which restarts
+    // the stopped container.
+    if (
+      env?.status === 'running' &&
+      env.remoteWorkspaceFolder &&
+      env.containerId &&
+      (await dockerRunning(env.containerId))
+    )
+      return env
 
     const ws = await store.getWorkspace(ref.workspace)
     const repo = ws.repos.find((r) => r.name === ref.repo)

@@ -247,6 +247,18 @@ export function spawnAcpAdapter(
   })
 }
 
+/** True only if the container exists and is actually running (survives a Docker
+ *  daemon restart, after which a previously-`running` env is left `Exited`). */
+export function dockerRunning(containerId: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const child = spawn('docker', ['inspect', '-f', '{{.State.Running}}', containerId])
+    let out = ''
+    child.stdout.on('data', (d: Buffer) => (out += d.toString()))
+    child.on('error', () => resolve(false))
+    child.on('close', () => resolve(out.trim() === 'true'))
+  })
+}
+
 export async function dockerStop(containerId: string, log: LogSink): Promise<void> {
   await run('docker', ['stop', containerId], log)
 }
