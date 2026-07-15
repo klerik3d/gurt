@@ -26,6 +26,7 @@
   --red: #f14c4c;
   --terracotta: #c96442;
   --terracotta-hover: #d47355;
+  --teal: #4ec9b0;
   --ui: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   --mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
 }
@@ -470,12 +471,6 @@ select {
   max-width: 150px;
 }
 
-.auto-allow {
-  font-size: 12px;
-  color: var(--text-dim);
-  white-space: nowrap;
-}
-
 /* ---- transcript: timeline rail ---- */
 
 .chat-log {
@@ -831,11 +826,57 @@ select {
   opacity: 0.8;
 }
 
+/* attached context chips, above the composer box */
+.composer-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.ctx-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg-hover);
+  border: 1px solid var(--border-2);
+  border-radius: 7px;
+  padding: 3px 6px 3px 9px;
+}
+.ctx-chip .ctx-ic {
+  display: flex;
+  color: var(--teal);
+}
+.ctx-chip .ctx-name {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.ctx-chip .ctx-x {
+  color: var(--text-dim2);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 1px;
+}
+.ctx-chip .ctx-x:hover {
+  color: var(--red);
+}
+
+/* textarea + mic row */
+.composer-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 14px 15px 8px;
+}
+
 .composer-input {
+  flex: 1;
   border: none;
   background: transparent;
   border-radius: 0;
-  padding: 14px 15px 6px;
+  padding: 0;
   font-family: var(--ui);
   font-size: 14px;
   line-height: 1.55;
@@ -851,6 +892,28 @@ select {
 .composer-input:focus {
   outline: none;
   border: none;
+}
+
+.mic-btn {
+  margin-top: 2px;
+  flex: none;
+  background: none;
+  border: none;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  color: var(--text-dim2);
+  cursor: pointer;
+}
+.mic-btn:hover:not(:disabled) {
+  color: var(--text);
+}
+.mic-btn.on {
+  color: var(--terracotta);
+}
+.mic-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 /* ---- composer popup menus (slash commands / mode) ---- */
@@ -870,10 +933,73 @@ select {
 .slash-menu {
   left: 0;
   width: 340px;
+  overflow: hidden;
+}
+.add-menu {
+  left: 0;
+  width: 280px;
+  overflow: hidden;
 }
 .mode-menu {
   right: 44px;
   width: 220px;
+}
+
+/* transparent inputs inside popups (slash filter, add-context path) */
+.cmp-input {
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text-bright);
+  font-family: var(--ui);
+  font-size: 13px;
+  line-height: 1.55;
+  width: 100%;
+  padding: 0;
+}
+.cmp-input::placeholder {
+  color: var(--text-dim3);
+}
+
+.slash-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 9px 6px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+}
+.slash-search {
+  display: flex;
+  color: var(--text-dim3);
+}
+.slash-list {
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.ctx-item .ctx-ic {
+  display: flex;
+  color: var(--teal);
+}
+.add-path-input {
+  padding: 6px 9px 2px;
+}
+.add-path-hint {
+  padding: 2px 9px 5px;
+  font-size: 11px;
+  color: var(--text-dim3);
+}
+
+/* mode rows with coloured icons */
+.mode-row .mode-ic {
+  display: flex;
+}
+.mode-row .mode-name {
+  flex: 1;
+}
+.mode-row .mode-check {
+  color: var(--accent);
 }
 .cmp-menu-head {
   font-size: 10px;
@@ -963,20 +1089,6 @@ select {
   font-size: 15px;
 }
 
-.tbar-sep {
-  width: 1px;
-  height: 20px;
-  background: var(--border-2);
-}
-
-.tbar-note {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 13px;
-  color: var(--text-dim2);
-}
-
 .mode-pill {
   display: flex;
   align-items: center;
@@ -996,6 +1108,9 @@ select {
 .mode-pill.active {
   background: var(--bg-hover);
   border-color: #4d4d4d;
+}
+.mode-pill .mode-ic {
+  display: flex;
 }
 .mode-pill .caret {
   color: var(--text-dim3);
