@@ -6,7 +6,7 @@ import path from 'node:path'
 import { createRequire } from 'node:module'
 import type { EnvRef, RepoConfig } from '../shared/types'
 import type { AgentDef } from '../shared/agents'
-import { cloneDir, overrideConfigPath, taskDir } from './store'
+import { cloneDir, overrideConfigPath, rmTree, taskDir } from './store'
 
 const require = createRequire(import.meta.url)
 
@@ -103,7 +103,7 @@ export async function ensureClone(ref: EnvRef, repo: RepoConfig, log: LogSink): 
 }
 
 export async function removeClone(ref: EnvRef): Promise<void> {
-  await fs.rm(cloneDir(ref.workspace, ref.task, ref.repo), { recursive: true, force: true })
+  await rmTree(cloneDir(ref.workspace, ref.task, ref.repo))
 }
 
 /** True if the clone at `dir` has uncommitted changes (staged, unstaged, or untracked). */

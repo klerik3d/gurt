@@ -1,8 +1,9 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { AgentsFile, EnvRef, RepoConfig } from '../shared/types'
+import type { AgentsFile, EnvRef, McpSelection, RepoConfig } from '../shared/types'
 
 const api = {
   getTree: () => ipcRenderer.invoke('tree:get'),
+  getMcpDefs: () => ipcRenderer.invoke('mcp:list'),
   getAgents: () => ipcRenderer.invoke('agents:get'),
   setAgents: (agents: AgentsFile) => ipcRenderer.invoke('agents:set', agents),
   createWorkspace: (name: string) => ipcRenderer.invoke('workspace:create', name),
@@ -16,8 +17,13 @@ const api = {
   startEnv: (ref: EnvRef) => ipcRenderer.invoke('env:start', ref),
   stopEnv: (ref: EnvRef) => ipcRenderer.invoke('env:stop', ref),
   removeEnv: (ref: EnvRef) => ipcRenderer.invoke('env:remove', ref),
-  createSession: (ref: EnvRef, agent: string, prompt: string, action: string) =>
-    ipcRenderer.invoke('session:create', ref, agent, prompt, action),
+  createSession: (
+    ref: EnvRef,
+    agent: string,
+    prompt: string,
+    action: string,
+    mcp: McpSelection[]
+  ) => ipcRenderer.invoke('session:create', ref, agent, prompt, action, mcp),
   sessionRun: (id: string) => ipcRenderer.invoke('session:run', id),
   sessionEnqueue: (id: string) => ipcRenderer.invoke('session:enqueue', id),
   sessionCancelQueue: (id: string) => ipcRenderer.invoke('session:cancel-queue', id),
