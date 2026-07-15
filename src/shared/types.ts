@@ -1,5 +1,22 @@
 // Domain model shared between main and renderer.
 
+/** How much of an MCP server's toolset the agent may use. */
+export type McpMode = 'read-only' | 'full'
+
+/** An MCP server the user picked for a session, with its granted access level. */
+export interface McpSelection {
+  id: string
+  mode: McpMode
+}
+
+/** ACP http-transport MCP server descriptor, passed in session/new & session/load. */
+export interface AcpHttpMcpServer {
+  type: 'http'
+  name: string
+  url: string
+  headers: { name: string; value: string }[]
+}
+
 export interface AgentConfig {
   enabled: boolean
   secret: string
@@ -61,6 +78,8 @@ export interface SessionInfo {
   title: string
   agent?: string
   state: SessionState
+  /** MCP servers to attach when this session starts (empty/undefined = none). */
+  mcp?: McpSelection[]
   /** First prompt, sent automatically when the session starts. */
   startPrompt: string
   /** ISO timestamp, present while queued — defines global FIFO order. */

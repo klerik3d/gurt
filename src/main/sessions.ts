@@ -1,9 +1,11 @@
 import { randomUUID } from 'node:crypto'
 import type {
+  AcpHttpMcpServer,
   ChatEntry,
   ChatEntryBase,
   EnvRef,
   EnvStatus,
+  McpSelection,
   PermissionOption,
   PersistedSession,
   SessionInfo,
@@ -65,6 +67,10 @@ export interface SessionEvents {
   resolveEnv: (ref: EnvRef, agentId: string) => Promise<EnvContext>
   /** Install the agent's adapter packages in the container (idempotent). */
   installAdapter: (ref: EnvRef, ctx: EnvContext) => Promise<void>
+  /** Ensure the host MCP servers for this selection are up; return ACP descriptors. */
+  resolveMcpServers: (ref: EnvRef, selection: McpSelection[] | undefined) => Promise<AcpHttpMcpServer[]>
+  /** Tear down the env's host MCP servers (env stop/delete). */
+  stopMcpServers: (ref: EnvRef) => void
   /** Current infra status of the env (for the scheduler's free-repo predicate). */
   envStatus: (ref: EnvRef) => Promise<EnvStatus>
   persist: (ws: string, task: string, records: PersistedSession[]) => void
@@ -141,7 +147,8 @@ export class SessionManager {
     ref: EnvRef,
     agentId: string,
     startPrompt: string,
-    action: CreateAction
+    action: CreateAction,
+    mcp: McpSelection[] = []
   ): SessionInfo {
     const n = this.listForTask(ref.workspace, ref.task).length + 1
     const info: SessionInfo = {
@@ -152,6 +159,7 @@ export class SessionManager {
       title: `session ${n}`,
       agent: agentId,
       state: 'draft',
+      mcp,
       startPrompt
     }
     this.sessions.set(info.id, {
@@ -282,9 +290,10 @@ export class SessionManager {
     try {
       const ctx = await this.events.resolveEnv(s.ref, s.info.agent!)
       const conn = await this.connection(s.ref, s.info.agent!, ctx)
+      const mcpServers = await this.events.resolveMcpServers(s.ref, s.info.mcp)
       const result = await conn.peer.request<{ sessionId: string; modes?: SessionModes }>(
         'session/new',
-        { cwd: ctx.remoteWorkspaceFolder, mcpServers: [] }
+        { cwd: ctx.remoteWorkspaceFolder, mcpServers }
       )
       s.acpSessionId = result.sessionId
       s.modes = result.modes ?? s.modes
@@ -312,6 +321,7 @@ export class SessionManager {
   closeEnv(ref: EnvRef): void {
     for (const conn of this.connections.values())
       if (envKey(conn.ref) === envKey(ref)) conn.kill()
+    this.events.stopMcpServers(ref)
   }
 
   /** Forget sessions of a whole task without persisting (task dir is removed). */
@@ -321,7 +331,10 @@ export class SessionManager {
       this.sessions.delete(id)
     }
     for (const conn of this.connections.values())
-      if (conn.ref.workspace === ws && conn.ref.task === task) conn.kill()
+      if (conn.ref.workspace === ws && conn.ref.task === task) {
+        conn.kill()
+        this.events.stopMcpServers(conn.ref)
+      }
     this.events.onSessionsChanged()
   }
 
@@ -409,10 +422,11 @@ export class SessionManager {
       s.loading = true
       this.push(s, { kind: 'system', text: 'resuming session...' })
       try {
+        const mcpServers = await this.events.resolveMcpServers(s.ref, s.info.mcp)
         const result = await conn.peer.request<{ modes?: SessionModes }>('session/load', {
           sessionId: s.acpSessionId,
           cwd: ctx.remoteWorkspaceFolder,
-          mcpServers: []
+          mcpServers
         })
         s.modes = result?.modes ?? s.modes
         s.attached = true

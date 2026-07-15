@@ -1,16 +1,19 @@
 import type {
   AgentsFile,
   EnvRef,
+  McpSelection,
   RepoConfig,
   SessionInfo,
   SessionSnapshot,
   Tree
 } from '../shared/types'
+import type { McpDef } from '../shared/mcp'
 
 export type CreateAction = 'run' | 'queue' | 'draft'
 
 export interface GurtApi {
   getTree(): Promise<Tree>
+  getMcpDefs(): Promise<McpDef[]>
   getAgents(): Promise<AgentsFile>
   setAgents(agents: AgentsFile): Promise<void>
   createWorkspace(name: string): Promise<void>
@@ -28,7 +31,8 @@ export interface GurtApi {
     ref: EnvRef,
     agent: string,
     prompt: string,
-    action: CreateAction
+    action: CreateAction,
+    mcp: McpSelection[]
   ): Promise<SessionInfo>
   sessionRun(id: string): Promise<void>
   sessionEnqueue(id: string): Promise<void>

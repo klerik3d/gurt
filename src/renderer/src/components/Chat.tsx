@@ -55,8 +55,14 @@ export function Chat({ snapshot, sessionId }: { snapshot?: SessionSnapshot; sess
 
       <div className="chat-log">
         {entries.map((e, i) => (
-          <EntryRow key={e.id} entry={e} sessionId={sessionId} last={i === entries.length - 1} />
+          <EntryRow
+            key={e.id}
+            entry={e}
+            sessionId={sessionId}
+            last={i === entries.length - 1 && !busy}
+          />
         ))}
+        {busy && <ThinkingRow />}
         <div ref={bottomRef} />
       </div>
 
@@ -147,6 +153,28 @@ function EntryRow({
       </div>
       <div className="entry-body">
         <EntryBody entry={entry} sessionId={sessionId} />
+      </div>
+    </div>
+  )
+}
+
+/** Live placeholder shown at the tail of the log while the agent is working,
+ *  so there's visible feedback before its first output arrives. */
+function ThinkingRow() {
+  return (
+    <div className="entry-row">
+      <div className="rail">
+        <span className="rail-node rn-agent thinking-node">G</span>
+      </div>
+      <div className="entry-body">
+        <div className="entry-label">
+          Thinking
+          <span className="thinking-dots">
+            <span>.</span>
+            <span>.</span>
+            <span>.</span>
+          </span>
+        </div>
       </div>
     </div>
   )

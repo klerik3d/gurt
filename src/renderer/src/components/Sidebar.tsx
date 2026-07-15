@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import type { AgentsFile, SessionInfo, SessionState, Tree } from '../../../shared/types'
+import type { AgentsFile, McpMode, McpSelection, SessionInfo, SessionState, Tree } from '../../../shared/types'
+import type { McpDef } from '../../../shared/mcp'
 import { AGENT_DEFS } from '../../../shared/agents'
 import type { Selection } from '../App'
 import { Modal } from './Modal'
@@ -131,6 +132,16 @@ export function Sidebar({
                         </span>
                         <span className="chip">{s.envRepo}</span>
                         <span className="chip">{s.agent}</span>
+                        {s.mcp?.map((m) => (
+                          <span
+                            key={m.id}
+                            className="chip chip-mcp"
+                            title={`MCP ${m.id} · ${m.mode}`}
+                          >
+                            {m.id}
+                            {m.mode === 'read-only' ? ' ᴿᴼ' : ''}
+                          </span>
+                        ))}
                       </div>
                     ))}
                   {!isCollapsed && task.sessions.length === 0 && (
@@ -227,6 +238,9 @@ function NewSessionModal({
   const [agent, setAgent] = useState('')
   const [repo, setRepo] = useState('')
   const [prompt, setPrompt] = useState('')
+  const [mcpDefs, setMcpDefs] = useState<McpDef[]>([])
+  /** MCP id -> granted mode; absent = not attached. */
+  const [mcp, setMcp] = useState<Record<string, McpMode>>({})
   const [error, setError] = useState('')
 
   useEffect(() => {
@@ -235,7 +249,19 @@ function NewSessionModal({
       const first = AGENT_DEFS.find((d) => a[d.id]?.enabled)
       if (first) setAgent(first.id)
     })
+    window.gurt.getMcpDefs().then(setMcpDefs)
   }, [])
+
+  const toggleMcp = (id: string, on: boolean) =>
+    setMcp((prev) => {
+      const next = { ...prev }
+      if (on) next[id] = prev[id] ?? 'read-only'
+      else delete next[id]
+      return next
+    })
+
+  const mcpSelection = (): McpSelection[] =>
+    Object.entries(mcp).map(([id, mode]) => ({ id, mode }))
 
   const wsData = tree.workspaces.find((w) => w.name === ws)
   const taskData = wsData?.tasks.find((t) => t.name === task)
@@ -261,7 +287,13 @@ function NewSessionModal({
         return
     }
     try {
-      const s = await window.gurt.createSession({ workspace: ws, task, repo }, agent, prompt, action)
+      const s = await window.gurt.createSession(
+        { workspace: ws, task, repo },
+        agent,
+        prompt,
+        action,
+        mcpSelection()
+      )
       onCreated(s)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -291,6 +323,37 @@ function NewSessionModal({
           </select>
         </label>
         {enabledAgents.length === 0 && <div className="hint">no agents enabled — check ⚙ Agents</div>}
+        {mcpDefs.length > 0 && (
+          <div className="mcp-picker">
+            <div className="mcp-picker-title">MCP servers</div>
+            {mcpDefs.map((def) => {
+              const mode = mcp[def.id]
+              return (
+                <div key={def.id} className="mcp-row">
+                  <label className="row" title={def.description}>
+                    <input
+                      type="checkbox"
+                      checked={mode != null}
+                      onChange={(e) => toggleMcp(def.id, e.target.checked)}
+                    />
+                    {def.label}
+                  </label>
+                  {mode != null && (
+                    <select
+                      value={mode}
+                      onChange={(e) =>
+                        setMcp((prev) => ({ ...prev, [def.id]: e.target.value as McpMode }))
+                      }
+                    >
+                      <option value="read-only">read-only</option>
+                      <option value="full">full</option>
+                    </select>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        )}
         <label>
           start prompt
           <textarea

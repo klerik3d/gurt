@@ -532,6 +532,43 @@ select {
   background: var(--accent);
   color: var(--bg-app);
 }
+
+/* ---- "thinking" live indicator ---- */
+.thinking-node {
+  animation: thinking-pulse 1.3s ease-in-out infinite;
+}
+@keyframes thinking-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 55%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 0%, transparent);
+  }
+}
+.thinking-dots {
+  display: inline-flex;
+  margin-left: 2px;
+}
+.thinking-dots span {
+  animation: thinking-blink 1.4s infinite both;
+}
+.thinking-dots span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.thinking-dots span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+@keyframes thinking-blink {
+  0%,
+  80%,
+  100% {
+    opacity: 0.2;
+  }
+  40% {
+    opacity: 1;
+  }
+}
 .rn-ok {
   background: #0e2a17;
   border: 2px solid var(--green);
@@ -948,6 +985,38 @@ select {
   flex-direction: column;
   gap: 8px;
   padding-left: 22px;
+}
+
+/* ---- MCP picker (new session modal) ---- */
+.mcp-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+.mcp-picker-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim2);
+  font-weight: 700;
+}
+.mcp-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.mcp-row .row {
+  flex: 1;
+}
+.mcp-row select {
+  width: auto;
+}
+.chip-mcp {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 /* ---- task pane ---- */
