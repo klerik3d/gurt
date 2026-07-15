@@ -162,12 +162,22 @@ export interface CommandInfo {
   description?: string
 }
 
+/**
+ * A piece of context the user attaches to a prompt in the composer. Sent to the
+ * agent as an ACP `resource_link` content block alongside the message text.
+ * `path` is a repo-relative (or absolute) path for file/folder context, or a
+ * `git:` pseudo-uri (e.g. `git:diff`) for git context.
+ */
+export interface PromptContext {
+  name: string
+  path: string
+}
+
 export interface SessionSnapshot {
   info: SessionInfo
   entries: ChatEntry[]
   /** Agent is processing a prompt right now. */
   busy: boolean
-  autoAllow: boolean
   modes?: SessionModes
   plan?: PlanEntry[]
   commands?: CommandInfo[]
