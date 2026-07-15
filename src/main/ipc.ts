@@ -112,6 +112,42 @@ async function installAdapter(ref: EnvRef, ctx: EnvContext): Promise<void> {
   await installAcpAdapter(ref, ctx.agent, ctx.configArgs, ctx.hostWorkspaceFolder, logFor(ref))
 }
 
+/** Container is stopped after a session sits idle this long with no new activity. */
+const ENV_IDLE_STOP_MS = 30_000
+const idleTimers = new Map<string, NodeJS.Timeout>()
+
+function cancelIdleStop(ref: EnvRef): void {
+  const key = envKey(ref)
+  const timer = idleTimers.get(key)
+  if (!timer) return
+  clearTimeout(timer)
+  idleTimers.delete(key)
+}
+
+function scheduleIdleStop(ref: EnvRef): void {
+  const key = envKey(ref)
+  cancelIdleStop(ref)
+  idleTimers.set(
+    key,
+    setTimeout(() => {
+      idleTimers.delete(key)
+      autoStopIfIdle(ref).catch((e) => console.error('auto-stop failed:', e))
+    }, ENV_IDLE_STOP_MS)
+  )
+}
+
+/**
+ * Re-verify the env is still idle *and* running before stopping. Guards against a
+ * session resuming in the window after the timer fired, and against clobbering a
+ * non-running status (e.g. `error` from a failed start) with `stopped`.
+ */
+async function autoStopIfIdle(ref: EnvRef): Promise<void> {
+  if (!sessions.isEnvIdle(ref)) return
+  if ((await envStatus(ref)) !== 'running') return
+  if (!sessions.isEnvIdle(ref)) return
+  await stopEnv(ref)
+}
+
 const sessions = new SessionManager({
   onSessionsChanged: () => broadcast('tree-changed'),
   onSessionChanged: (id) => {
@@ -123,7 +159,9 @@ const sessions = new SessionManager({
   envStatus,
   persist: (ws, task, records) => {
     store.writeSessions(ws, task, records).catch((e) => console.error('persist failed:', e))
-  }
+  },
+  onEnvIdle: scheduleIdleStop,
+  onEnvActive: cancelIdleStop
 })
 
 async function restoreSessions(): Promise<void> {
@@ -148,6 +186,7 @@ async function startEnv(ref: EnvRef): Promise<void> {
 }
 
 async function stopEnv(ref: EnvRef): Promise<void> {
+  cancelIdleStop(ref)
   const env = await findEnv(ref)
   const log = logFor(ref)
   sessions.closeEnv(ref)
@@ -161,6 +200,7 @@ async function stopEnv(ref: EnvRef): Promise<void> {
 
 /** Delete the env infrastructure. Sessions are kept (they re-provision on run). */
 async function deleteEnv(ref: EnvRef): Promise<void> {
+  cancelIdleStop(ref)
   const env = await findEnv(ref)
   const log = logFor(ref)
   sessions.closeEnv(ref)
@@ -174,7 +214,9 @@ async function deleteEnv(ref: EnvRef): Promise<void> {
 async function deleteTask(ws: string, task: string): Promise<void> {
   const data = await store.getTask(ws, task)
   for (const env of data.envs) {
-    sessions.closeEnv({ workspace: ws, task, repo: env.repo })
+    const ref = { workspace: ws, task, repo: env.repo }
+    cancelIdleStop(ref)
+    sessions.closeEnv(ref)
     if (env.containerId) await dockerRemove(env.containerId, () => {})
   }
   sessions.dropTaskSessions(ws, task)
@@ -232,6 +274,7 @@ export function registerIpc(): void {
   handle('session:permission', (id: string, entryId: number, optionId: string) =>
     sessions.respondPermission(id, entryId, optionId)
   )
+  handle('session:activity', (id: string) => sessions.activity(id))
 
   restoreSessions().catch((e) => console.error('session restore failed:', e))
 }

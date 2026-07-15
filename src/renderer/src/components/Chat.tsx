@@ -1,10 +1,22 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ChatEntry, PlanEntry, SessionSnapshot } from '../../../shared/types'
 
+/** Don't ping the main process on every keystroke — once per this interval is enough
+ *  to keep postponing the env's idle auto-stop while the user is composing. */
+const ACTIVITY_PING_INTERVAL_MS = 5_000
+
 export function Chat({ snapshot, sessionId }: { snapshot?: SessionSnapshot; sessionId: string }) {
   const [text, setText] = useState('')
   const [planOpen, setPlanOpen] = useState(true)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const lastActivityPingRef = useRef(0)
+
+  const pingActivity = () => {
+    const now = performance.now()
+    if (now - lastActivityPingRef.current < ACTIVITY_PING_INTERVAL_MS) return
+    lastActivityPingRef.current = now
+    window.gurt.sessionActivity(sessionId).catch(console.error)
+  }
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -59,7 +71,10 @@ export function Chat({ snapshot, sessionId }: { snapshot?: SessionSnapshot; sess
             placeholder={busy ? 'agent is working…' : 'Esc to focus or unfocus gurt'}
             value={text}
             disabled={busy}
-            onChange={(e) => setText(e.target.value)}
+            onChange={(e) => {
+              setText(e.target.value)
+              pingActivity()
+            }}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault()
