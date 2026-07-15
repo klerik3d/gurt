@@ -7,6 +7,7 @@ const api = {
   setAgents: (agents: AgentsFile) => ipcRenderer.invoke('agents:set', agents),
   createWorkspace: (name: string) => ipcRenderer.invoke('workspace:create', name),
   addRepo: (ws: string, repo: RepoConfig) => ipcRenderer.invoke('repo:add', ws, repo),
+  discoverDevcontainer: (url: string) => ipcRenderer.invoke('repo:discover-devcontainer', url),
   updateRepo: (ws: string, repo: RepoConfig) => ipcRenderer.invoke('repo:update', ws, repo),
   removeRepo: (ws: string, name: string) => ipcRenderer.invoke('repo:remove', ws, name),
   createTask: (ws: string, name: string) => ipcRenderer.invoke('task:create', ws, name),
