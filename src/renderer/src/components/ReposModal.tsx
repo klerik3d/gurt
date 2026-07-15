@@ -68,7 +68,28 @@ function RepoForm({
   const [name, setName] = useState(initial?.name ?? '')
   const [url, setUrl] = useState(initial?.url ?? '')
   const [devcontainer, setDevcontainer] = useState(initial?.devcontainer ?? '')
+  const [discovering, setDiscovering] = useState(false)
+  const [discoverMsg, setDiscoverMsg] = useState('')
   const valid = name.trim() && url.trim()
+
+  const discover = async () => {
+    setDiscoverMsg('')
+    setDiscovering(true)
+    try {
+      const found = await window.gurt.discoverDevcontainer(url.trim())
+      if (found) {
+        setDevcontainer(found.content)
+        setDiscoverMsg(`loaded ${found.path}`)
+      } else {
+        setDiscoverMsg('no devcontainer.json found in repo')
+      }
+    } catch (e) {
+      setDiscoverMsg(e instanceof Error ? e.message : String(e))
+    } finally {
+      setDiscovering(false)
+    }
+  }
+
   return (
     <div className="form repo-form">
       <input
@@ -82,6 +103,12 @@ function RepoForm({
       <label>
         devcontainer.json (optional — leave empty to use the repo’s own; build paths must be
         ${'{localWorkspaceFolder}'}-based)
+        <div className="row-buttons">
+          <button type="button" disabled={!url.trim() || discovering} onClick={discover}>
+            {discovering ? 'detecting…' : 'Auto-detect from repo'}
+          </button>
+          {discoverMsg && <span className="dim">{discoverMsg}</span>}
+        </div>
         <textarea
           rows={8}
           placeholder='{ "image": "mcr.microsoft.com/devcontainers/base:ubuntu" }'
