@@ -2,6 +2,7 @@ import type {
   AgentsFile,
   EnvRef,
   McpSelection,
+  PromptContext,
   RepoConfig,
   SessionInfo,
   SessionSnapshot,
@@ -42,10 +43,9 @@ export interface GurtApi {
   sessionEditPrompt(id: string, text: string): Promise<void>
   sessionDelete(id: string): Promise<void>
   sessionSnapshot(id: string): Promise<SessionSnapshot | undefined>
-  sessionPrompt(id: string, text: string): Promise<void>
+  sessionPrompt(id: string, text: string, context?: PromptContext[]): Promise<void>
   sessionCancel(id: string): Promise<void>
   sessionSetMode(id: string, modeId: string): Promise<void>
-  sessionAutoAllow(id: string, v: boolean): Promise<void>
   sessionPermission(id: string, entryId: number, optionId: string): Promise<void>
   /** Ping that the user is active in this session (e.g. typing) — postpones env auto-stop. */
   sessionActivity(id: string): Promise<void>
