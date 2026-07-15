@@ -12,6 +12,7 @@ const api = {
   removeRepo: (ws: string, name: string) => ipcRenderer.invoke('repo:remove', ws, name),
   createTask: (ws: string, name: string) => ipcRenderer.invoke('task:create', ws, name),
   removeTask: (ws: string, name: string) => ipcRenderer.invoke('task:remove', ws, name),
+  taskDirtyRepos: (ws: string, name: string) => ipcRenderer.invoke('task:dirty-repos', ws, name),
   startEnv: (ref: EnvRef) => ipcRenderer.invoke('env:start', ref),
   stopEnv: (ref: EnvRef) => ipcRenderer.invoke('env:stop', ref),
   removeEnv: (ref: EnvRef) => ipcRenderer.invoke('env:remove', ref),

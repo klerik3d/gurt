@@ -11,6 +11,7 @@ import {
   dockerStop,
   ensureClone,
   installAcpAdapter,
+  isDirty,
   overrideConfigArgs,
   removeClone
 } from './provision'
@@ -222,6 +223,15 @@ async function deleteEnv(ref: EnvRef): Promise<void> {
   sessions.schedule()
 }
 
+/** Repos in this task whose clone has uncommitted changes. */
+async function taskDirtyRepos(ws: string, task: string): Promise<string[]> {
+  const data = await store.getTask(ws, task)
+  const dirty: string[] = []
+  for (const env of data.envs)
+    if (await isDirty(cloneDir(ws, task, env.repo))) dirty.push(env.repo)
+  return dirty
+}
+
 async function deleteTask(ws: string, task: string): Promise<void> {
   const data = await store.getTask(ws, task)
   for (const env of data.envs) {
@@ -264,6 +274,7 @@ export function registerIpc(): void {
     broadcast('tree-changed')
   })
   handle('task:remove', (ws: string, name: string) => deleteTask(ws, name))
+  handle('task:dirty-repos', (ws: string, name: string) => taskDirtyRepos(ws, name))
 
   handle('env:start', (ref: EnvRef) => startEnv(ref))
   handle('env:stop', (ref: EnvRef) => stopEnv(ref))

@@ -20,6 +20,7 @@ export interface GurtApi {
   removeRepo(ws: string, name: string): Promise<void>
   createTask(ws: string, name: string): Promise<void>
   removeTask(ws: string, name: string): Promise<void>
+  taskDirtyRepos(ws: string, name: string): Promise<string[]>
   startEnv(ref: EnvRef): Promise<void>
   stopEnv(ref: EnvRef): Promise<void>
   removeEnv(ref: EnvRef): Promise<void>
