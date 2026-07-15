@@ -3,6 +3,8 @@ import type {
   ChatEntry,
   CommandInfo,
   PlanEntry,
+  PromptContext,
+  SessionMode,
   SessionModes,
   SessionSnapshot
 } from '../../../shared/types'
@@ -21,7 +23,7 @@ export function Chat({ snapshot, sessionId }: { snapshot?: SessionSnapshot; sess
 
   if (!snapshot) return <div className="placeholder">loading session…</div>
 
-  const { info, entries, modes, plan, commands, busy, autoAllow } = snapshot
+  const { info, entries, modes, plan, commands, busy } = snapshot
 
   return (
     <div className="chat">
@@ -63,7 +65,6 @@ export function Chat({ snapshot, sessionId }: { snapshot?: SessionSnapshot; sess
       <Composer
         sessionId={sessionId}
         busy={busy}
-        autoAllow={autoAllow}
         modes={modes}
         commands={commands ?? []}
       />
@@ -73,26 +74,140 @@ export function Chat({ snapshot, sessionId }: { snapshot?: SessionSnapshot; sess
 
 const MAX_TA_HEIGHT = 220
 
+// ---- inline icon set (feather-style strokes, matching the Composer design) ----
+
+type IconName =
+  | 'file'
+  | 'folder'
+  | 'git'
+  | 'search'
+  | 'mic'
+  | 'plus'
+  | 'send'
+  | 'auto'
+  | 'plan'
+  | 'ask'
+
+const ICON_PATHS: Record<IconName, JSX.Element> = {
+  file: (
+    <>
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <polyline points="14 2 14 8 20 8" />
+    </>
+  ),
+  folder: <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />,
+  git: (
+    <>
+      <circle cx="18" cy="18" r="3" />
+      <circle cx="6" cy="6" r="3" />
+      <path d="M6 21V9a9 9 0 0 0 9 9" />
+    </>
+  ),
+  search: (
+    <>
+      <circle cx="11" cy="11" r="8" />
+      <line x1="21" y1="21" x2="16.65" y2="16.65" />
+    </>
+  ),
+  mic: (
+    <>
+      <rect x="9" y="2" width="6" height="12" rx="3" />
+      <path d="M5 10a7 7 0 0 0 14 0" />
+      <line x1="12" y1="19" x2="12" y2="22" />
+    </>
+  ),
+  plus: (
+    <>
+      <line x1="12" y1="5" x2="12" y2="19" />
+      <line x1="5" y1="12" x2="19" y2="12" />
+    </>
+  ),
+  send: (
+    <>
+      <line x1="12" y1="19" x2="12" y2="5" />
+      <polyline points="5 12 12 5 19 12" />
+    </>
+  ),
+  auto: <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />,
+  plan: (
+    <>
+      <path d="M9 11l3 3L22 4" />
+      <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
+    </>
+  ),
+  ask: (
+    <>
+      <circle cx="12" cy="12" r="10" />
+      <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
+      <line x1="12" y1="17" x2="12.01" y2="17" />
+    </>
+  )
+}
+
+function Icon({ name, size = 15 }: { name: IconName; size?: number }): JSX.Element {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      {ICON_PATHS[name]}
+    </svg>
+  )
+}
+
+/** Pick an icon + accent colour for a session mode by matching its id/name. The
+ *  ACP mode set is agent-defined, so this is a best-effort mapping with a default. */
+function modeVisual(m: SessionMode): { icon: IconName; color: string } {
+  const k = `${m.id} ${m.name}`.toLowerCase()
+  if (k.includes('plan')) return { icon: 'plan', color: 'var(--accent)' }
+  if (k.includes('ask') || k.includes('default') || k.includes('manual') || k.includes('confirm'))
+    return { icon: 'ask', color: 'var(--yellow)' }
+  return { icon: 'auto', color: 'var(--green)' }
+}
+
+/** Trailing-slash-tolerant basename, also handling `git:` pseudo-paths. */
+const basename = (p: string): string => {
+  if (p.startsWith('git:')) return p
+  const cleaned = p.replace(/\/+$/, '')
+  return cleaned.split('/').pop() || cleaned || p
+}
+
+const chipIcon = (path: string): IconName =>
+  path.startsWith('git:') ? 'git' : path.endsWith('/') ? 'folder' : 'file'
+
 function Composer({
   sessionId,
   busy,
-  autoAllow,
   modes,
   commands
 }: {
   sessionId: string
   busy: boolean
-  autoAllow: boolean
   modes?: SessionModes
   commands: CommandInfo[]
 }) {
   const [text, setText] = useState('')
   const [focused, setFocused] = useState(false)
+  const [chips, setChips] = useState<PromptContext[]>([])
   const [slashOpen, setSlashOpen] = useState(false)
+  const [addOpen, setAddOpen] = useState(false)
   const [modeOpen, setModeOpen] = useState(false)
+  const [cmdQuery, setCmdQuery] = useState('')
   const [cmdIdx, setCmdIdx] = useState(0)
+  /** null → the add-context item list; 'file'/'folder' → an inline path input. */
+  const [addKind, setAddKind] = useState<'file' | 'folder' | null>(null)
+  const [addPath, setAddPath] = useState('')
+  const [micOn, setMicOn] = useState(false)
   const taRef = useRef<HTMLTextAreaElement>(null)
+  const cmdRef = useRef<HTMLInputElement>(null)
   const rootRef = useRef<HTMLDivElement>(null)
+  const recogRef = useRef<{ stop: () => void } | null>(null)
   const lastActivityPingRef = useRef(0)
 
   const pingActivity = () => {
@@ -112,208 +227,412 @@ function Composer({
   // Re-fit whenever the value changes (send clears it, pickCommand extends it).
   useEffect(autoGrow, [text])
 
-  // Close the mode menu on an outside click.
+  // Close every popup on an outside click.
   useEffect(() => {
-    if (!modeOpen) return
+    if (!slashOpen && !addOpen && !modeOpen) return
     const onDown = (e: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setModeOpen(false)
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) closeMenus()
     }
     document.addEventListener('mousedown', onDown)
     return () => document.removeEventListener('mousedown', onDown)
-  }, [modeOpen])
+  }, [slashOpen, addOpen, modeOpen])
 
-  /** The `/token` currently being typed, or null when the slash menu shouldn't show.
-   *  Active only while the text is a single `/word` with no whitespace yet. */
-  const slashToken =
-    text.startsWith('/') && !/\s/.test(text) ? text.slice(1).toLowerCase() : null
-  const filteredCmds =
-    slashToken === null
-      ? []
-      : commands.filter(
-          (c) =>
-            c.name.toLowerCase().includes(slashToken) ||
-            (c.description ?? '').toLowerCase().includes(slashToken)
-        )
-  const showSlash = slashOpen && slashToken !== null && commands.length > 0
+  // Stop any live dictation when the composer unmounts (session switch).
+  useEffect(() => () => recogRef.current?.stop(), [])
+
+  const filteredCmds = (() => {
+    const q = cmdQuery.trim().toLowerCase().replace(/^\//, '')
+    if (!q) return commands
+    return commands.filter(
+      (c) => c.name.toLowerCase().includes(q) || (c.description ?? '').toLowerCase().includes(q)
+    )
+  })()
+  const showSlash = slashOpen && commands.length > 0
 
   // Keep the highlighted command in range as the filtered list shrinks.
   useEffect(() => {
     if (cmdIdx >= filteredCmds.length) setCmdIdx(0)
   }, [filteredCmds.length, cmdIdx])
 
+  const closeMenus = () => {
+    setSlashOpen(false)
+    setAddOpen(false)
+    setModeOpen(false)
+    setAddKind(null)
+    setAddPath('')
+  }
+
+  const openSlash = (open: boolean) => {
+    setAddOpen(false)
+    setModeOpen(false)
+    setSlashOpen(open)
+    setCmdQuery('')
+    setCmdIdx(0)
+    if (open) setTimeout(() => cmdRef.current?.focus(), 0)
+  }
+
+  const openAdd = (open: boolean) => {
+    setSlashOpen(false)
+    setModeOpen(false)
+    setAddKind(null)
+    setAddPath('')
+    setAddOpen(open)
+  }
+
   const send = () => {
     const t = text.trim()
     if (!t || busy) return
+    const context = chips.length ? chips : undefined
     setText('')
-    setSlashOpen(false)
-    window.gurt.sessionPrompt(sessionId, t).catch(console.error)
+    setChips([])
+    closeMenus()
+    window.gurt.sessionPrompt(sessionId, t, context).catch(console.error)
   }
 
   const pickCommand = (name: string) => {
     setText(`/${name} `)
     setSlashOpen(false)
+    setCmdQuery('')
     setCmdIdx(0)
-    taRef.current?.focus()
+    setTimeout(() => taRef.current?.focus(), 0)
   }
 
-  const openSlashFromButton = () => {
-    if (busy) return
-    setModeOpen(false)
-    if (showSlash) {
+  const addChip = (ctx: PromptContext) => {
+    setChips((c) => [...c, ctx])
+    openAdd(false)
+    setTimeout(() => taRef.current?.focus(), 0)
+  }
+
+  const commitAddPath = () => {
+    const raw = addPath.trim()
+    if (!raw) return
+    const path = addKind === 'folder' && !raw.endsWith('/') ? `${raw}/` : raw
+    addChip({ name: basename(path), path })
+  }
+
+  const removeChip = (i: number) => setChips((c) => c.filter((_, j) => j !== i))
+
+  const onCmdKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      setCmdIdx((i) => Math.min(i + 1, filteredCmds.length - 1))
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      setCmdIdx((i) => Math.max(i - 1, 0))
+    } else if (e.key === 'Enter') {
+      e.preventDefault()
+      const c = filteredCmds[cmdIdx]
+      if (c) pickCommand(c.name)
+    } else if (e.key === 'Escape') {
+      e.preventDefault()
       setSlashOpen(false)
-      return
+      taRef.current?.focus()
     }
-    setText((t) => (t.trim() === '' ? '/' : t))
-    setSlashOpen(true)
-    setCmdIdx(0)
-    taRef.current?.focus()
   }
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (showSlash) {
-      if (e.key === 'ArrowDown') {
-        e.preventDefault()
-        setCmdIdx((i) => Math.min(i + 1, filteredCmds.length - 1))
-        return
-      }
-      if (e.key === 'ArrowUp') {
-        e.preventDefault()
-        setCmdIdx((i) => Math.max(i - 1, 0))
-        return
-      }
-      if (e.key === 'Enter' || e.key === 'Tab') {
-        const c = filteredCmds[cmdIdx]
-        if (c) {
-          e.preventDefault()
-          pickCommand(c.name)
-          return
-        }
-      }
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        setSlashOpen(false)
-        return
-      }
-    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       send()
+      return
+    }
+    if (e.key === 'Escape') closeMenus()
+  }
+
+  const toggleMic = () => {
+    const SR =
+      (window as unknown as { SpeechRecognition?: new () => SpeechRecognitionLike }).SpeechRecognition ??
+      (window as unknown as { webkitSpeechRecognition?: new () => SpeechRecognitionLike })
+        .webkitSpeechRecognition
+    if (!SR) return // speech recognition unavailable on this platform — no-op
+    if (recogRef.current) {
+      recogRef.current.stop()
+      return
+    }
+    const r = new SR()
+    r.interimResults = false
+    r.continuous = true
+    r.onresult = (e: SpeechResultEvent) => {
+      let add = ''
+      for (let i = e.resultIndex; i < e.results.length; i++)
+        if (e.results[i].isFinal) add += e.results[i][0].transcript
+      add = add.trim()
+      if (add) setText((t) => (t && !t.endsWith(' ') ? `${t} ${add}` : `${t}${add}`))
+    }
+    r.onend = () => {
+      recogRef.current = null
+      setMicOn(false)
+    }
+    r.onerror = () => {
+      recogRef.current = null
+      setMicOn(false)
+    }
+    try {
+      r.start()
+      recogRef.current = r
+      setMicOn(true)
+    } catch {
+      recogRef.current = null
+      setMicOn(false)
     }
   }
 
   const canSend = !busy && text.trim().length > 0
   const curMode = modes?.availableModes.find((m) => m.id === modes.currentModeId)
+  const curVisual = curMode ? modeVisual(curMode) : null
+  const hasModes = !!modes && modes.availableModes.length > 0
 
   return (
     <div className="composer-wrap">
+      {chips.length > 0 && (
+        <div className="composer-chips">
+          {chips.map((c, i) => (
+            <span className="ctx-chip" key={`${c.path}-${i}`}>
+              <span className="ctx-ic">
+                <Icon name={chipIcon(c.path)} size={12} />
+              </span>
+              <span className="ctx-name">{c.name}</span>
+              <span className="ctx-x" title="Remove" onClick={() => removeChip(i)}>
+                ×
+              </span>
+            </span>
+          ))}
+        </div>
+      )}
+
       <div
         ref={rootRef}
         className={`composer ${busy ? 'disabled' : ''} ${focused && !busy ? 'focused' : ''}`}
       >
         {showSlash && (
           <div className="cmp-menu slash-menu">
-            {filteredCmds.length === 0 ? (
-              <div className="cmp-menu-empty">No matching commands</div>
-            ) : (
-              filteredCmds.map((c, i) => (
+            <div className="slash-filter-row">
+              <span className="slash-search">
+                <Icon name="search" size={13} />
+              </span>
+              <input
+                ref={cmdRef}
+                className="cmp-input slash-filter"
+                placeholder="Filter commands…"
+                value={cmdQuery}
+                onChange={(e) => {
+                  setCmdQuery(e.target.value)
+                  setCmdIdx(0)
+                }}
+                onKeyDown={onCmdKey}
+              />
+            </div>
+            <div className="slash-list">
+              {filteredCmds.length === 0 ? (
+                <div className="cmp-menu-empty">No matching commands</div>
+              ) : (
+                filteredCmds.map((c, i) => (
+                  <div
+                    key={c.name}
+                    className={`cmp-menu-item ${i === cmdIdx ? 'active' : ''}`}
+                    onMouseEnter={() => setCmdIdx(i)}
+                    onMouseDown={(e) => {
+                      e.preventDefault()
+                      pickCommand(c.name)
+                    }}
+                  >
+                    <span className="cmd-name">/{c.name}</span>
+                    {c.description && <span className="cmd-desc">{c.description}</span>}
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        )}
+
+        {addOpen && (
+          <div className="cmp-menu add-menu">
+            {addKind === null ? (
+              <>
+                <div className="cmp-menu-head">ADD CONTEXT</div>
                 <div
-                  key={c.name}
-                  className={`cmp-menu-item ${i === cmdIdx ? 'active' : ''}`}
-                  onMouseEnter={() => setCmdIdx(i)}
+                  className="cmp-menu-item ctx-item"
                   onMouseDown={(e) => {
                     e.preventDefault()
-                    pickCommand(c.name)
+                    setAddKind('file')
                   }}
                 >
-                  <span className="cmd-name">/{c.name}</span>
-                  {c.description && <span className="cmd-desc">{c.description}</span>}
+                  <span className="ctx-ic">
+                    <Icon name="file" />
+                  </span>
+                  <span>File…</span>
                 </div>
-              ))
+                <div
+                  className="cmp-menu-item ctx-item"
+                  onMouseDown={(e) => {
+                    e.preventDefault()
+                    setAddKind('folder')
+                  }}
+                >
+                  <span className="ctx-ic">
+                    <Icon name="folder" />
+                  </span>
+                  <span>Folder…</span>
+                </div>
+                <div
+                  className="cmp-menu-item ctx-item"
+                  onMouseDown={(e) => {
+                    e.preventDefault()
+                    addChip({ name: 'git diff', path: 'git:diff' })
+                  }}
+                >
+                  <span className="ctx-ic">
+                    <Icon name="git" />
+                  </span>
+                  <span>Git diff</span>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="cmp-menu-head">
+                  {addKind === 'file' ? 'ADD FILE' : 'ADD FOLDER'}
+                </div>
+                <input
+                  autoFocus
+                  className="cmp-input add-path-input"
+                  placeholder="path relative to repo root…"
+                  value={addPath}
+                  onChange={(e) => setAddPath(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault()
+                      commitAddPath()
+                    } else if (e.key === 'Escape') {
+                      e.preventDefault()
+                      setAddKind(null)
+                      setAddPath('')
+                    }
+                  }}
+                />
+                <div className="add-path-hint">Enter to add · Esc to cancel</div>
+              </>
             )}
           </div>
         )}
 
-        {modeOpen && modes && modes.availableModes.length > 0 && (
+        {modeOpen && hasModes && (
           <div className="cmp-menu mode-menu">
             <div className="cmp-menu-head">MODE</div>
-            {modes.availableModes.map((m) => (
-              <div
-                key={m.id}
-                className="cmp-menu-item"
-                onMouseDown={(e) => {
-                  e.preventDefault()
-                  setModeOpen(false)
-                  window.gurt.sessionSetMode(sessionId, m.id).catch((er) => alert(String(er)))
-                }}
-              >
-                <span className="mode-mark">{m.id === modes.currentModeId ? '✓' : ''}</span>
-                <span>{m.name}</span>
-              </div>
-            ))}
+            {modes!.availableModes.map((m) => {
+              const v = modeVisual(m)
+              return (
+                <div
+                  key={m.id}
+                  className="cmp-menu-item mode-row"
+                  onMouseDown={(e) => {
+                    e.preventDefault()
+                    setModeOpen(false)
+                    window.gurt.sessionSetMode(sessionId, m.id).catch((er) => alert(String(er)))
+                  }}
+                >
+                  <span className="mode-ic" style={{ color: v.color }}>
+                    <Icon name={v.icon} size={14} />
+                  </span>
+                  <span className="mode-name">{m.name}</span>
+                  {m.id === modes!.currentModeId && <span className="mode-check">✓</span>}
+                </div>
+              )
+            })}
           </div>
         )}
 
-        <textarea
-          ref={taRef}
-          rows={1}
-          className="composer-input"
-          placeholder={busy ? 'agent is working…' : 'Ask gurt, or type / for commands…'}
-          value={text}
-          disabled={busy}
-          onFocus={() => setFocused(true)}
-          onBlur={() => setFocused(false)}
-          onChange={(e) => {
-            const v = e.target.value
-            setText(v)
-            // Re-arm the menu whenever a fresh slash token is being typed.
-            if (v.startsWith('/') && !/\s/.test(v)) setSlashOpen(true)
-            else if (!v.startsWith('/')) setSlashOpen(false)
-            pingActivity()
-          }}
-          onKeyDown={onKeyDown}
-        />
+        <div className="composer-row">
+          <textarea
+            ref={taRef}
+            rows={1}
+            className="composer-input"
+            placeholder={busy ? 'agent is working…' : 'Ask gurt to change your code, or type / for commands…'}
+            value={text}
+            disabled={busy}
+            onFocus={() => setFocused(true)}
+            onBlur={() => setFocused(false)}
+            onChange={(e) => {
+              const v = e.target.value
+              setText(v)
+              if (v.trim() === '/' && !slashOpen) openSlash(true)
+              else if (!v.startsWith('/')) setSlashOpen(false)
+              pingActivity()
+            }}
+            onKeyDown={onKeyDown}
+          />
+          <button
+            className={`mic-btn ${micOn ? 'on' : ''}`}
+            title={micOn ? 'Stop dictation' : 'Dictate'}
+            disabled={busy}
+            onClick={toggleMic}
+          >
+            <Icon name="mic" size={17} />
+          </button>
+        </div>
 
         <div className="composer-toolbar">
+          <button
+            className={`tbtn ${addOpen ? 'active' : ''}`}
+            title="Add context"
+            disabled={busy}
+            onClick={() => openAdd(!addOpen)}
+          >
+            <Icon name="plus" />
+          </button>
           <button
             className={`tbtn tbtn-slash ${showSlash ? 'active' : ''}`}
             title="Commands"
             disabled={busy}
-            onClick={openSlashFromButton}
+            onClick={() => openSlash(!slashOpen)}
           >
             /
           </button>
-          <button
-            className={`tbtn ${autoAllow ? 'active' : ''}`}
-            title={autoAllow ? 'auto-allow on' : 'auto-allow off'}
-            onClick={() => window.gurt.sessionAutoAllow(sessionId, !autoAllow)}
-          >
-            {autoAllow ? '🔓' : '🔒'}
-          </button>
           <span className="spacer" />
           {text.length > 0 && <span className="char-count">{text.length} chars</span>}
-          {modes && modes.availableModes.length > 0 && (
+          {hasModes && (
             <button
               className={`mode-pill ${modeOpen ? 'active' : ''}`}
               onClick={() => {
                 setSlashOpen(false)
+                setAddOpen(false)
                 setModeOpen((o) => !o)
               }}
             >
-              <span style={{ color: 'var(--green)' }}>⚡</span>
+              {curVisual && (
+                <span className="mode-ic" style={{ color: curVisual.color }}>
+                  <Icon name={curVisual.icon} size={14} />
+                </span>
+              )}
               {curMode?.name ?? 'Mode'}
               <span className="caret">▾</span>
             </button>
           )}
-          <button className="send-btn" disabled={!canSend} onClick={send} title="send">
-            ↑
+          <button className="send-btn" disabled={!canSend} onClick={send} title="Send">
+            <Icon name="send" size={17} />
           </button>
         </div>
       </div>
       <div className="composer-hint">
-        Enter to send · Shift+Enter for newline · <span className="k">/</span> for commands
+        Enter to send · Shift+Enter for newline · <span className="k">/</span> for commands ·{' '}
+        <span className="k">+</span> for context
       </div>
     </div>
   )
+}
+
+// Minimal typings for the Web Speech API (not in the DOM lib we target).
+interface SpeechResultEvent {
+  resultIndex: number
+  results: ArrayLike<ArrayLike<{ transcript: string }> & { isFinal: boolean }>
+}
+interface SpeechRecognitionLike {
+  interimResults: boolean
+  continuous: boolean
+  onresult: (e: SpeechResultEvent) => void
+  onend: () => void
+  onerror: () => void
+  start: () => void
+  stop: () => void
 }
 
 function EntryRow({

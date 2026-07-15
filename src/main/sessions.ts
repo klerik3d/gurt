@@ -8,6 +8,7 @@ import type {
   McpSelection,
   PermissionOption,
   PersistedSession,
+  PromptContext,
   SessionInfo,
   SessionModes,
   SessionSnapshot
@@ -34,8 +35,10 @@ interface Session {
   acpSessionId?: string
   entries: ChatEntry[]
   nextEntryId: number
+  /** Container workspace folder (agent cwd), set when the env is resolved this run.
+   *  Used to turn repo-relative context paths into absolute `file://` resource links. */
+  remoteCwd?: string
   busy: boolean
-  autoAllow: boolean
   modes?: SessionModes
   plan?: SessionSnapshot['plan']
   commands?: SessionSnapshot['commands']
@@ -102,7 +105,6 @@ export class SessionManager {
         entries: r.entries,
         nextEntryId: Math.max(0, ...r.entries.map((e) => e.id)) + 1,
         busy: false,
-        autoAllow: false,
         attached: false,
         loading: false,
         pendingPermissions: new Map()
@@ -131,7 +133,6 @@ export class SessionManager {
         info: s.info,
         entries: s.entries,
         busy: s.busy,
-        autoAllow: s.autoAllow,
         modes: s.modes,
         plan: s.plan,
         commands: s.commands,
@@ -168,7 +169,6 @@ export class SessionManager {
       entries: [],
       nextEntryId: 1,
       busy: false,
-      autoAllow: false,
       attached: false,
       loading: false,
       pendingPermissions: new Map()
@@ -289,6 +289,7 @@ export class SessionManager {
     this.events.onSessionChanged(sessionId)
     try {
       const ctx = await this.events.resolveEnv(s.ref, s.info.agent!)
+      s.remoteCwd = ctx.remoteWorkspaceFolder
       const conn = await this.connection(s.ref, s.info.agent!, ctx)
       const mcpServers = await this.events.resolveMcpServers(s.ref, s.info.mcp)
       const result = await conn.peer.request<{ sessionId: string; modes?: SessionModes }>(
@@ -416,6 +417,7 @@ export class SessionManager {
     const existing = this.connections.get(connKey(s.ref, agentId))
     if (existing && s.attached) return existing
     const ctx = await this.events.resolveEnv(s.ref, agentId)
+    s.remoteCwd = ctx.remoteWorkspaceFolder
     const conn = await this.connection(s.ref, agentId, ctx)
     if (!s.attached) {
       if (!s.acpSessionId) throw new Error('session was never started')
@@ -444,7 +446,21 @@ export class SessionManager {
     return conn
   }
 
-  private async runPrompt(s: Session, text: string): Promise<void> {
+  /** Build the ACP prompt content blocks: the message text plus a `resource_link`
+   *  for every attached context item. Context paths are resolved against the
+   *  container workspace folder so the agent gets an absolute `file://` uri. */
+  private promptBlocks(s: Session, text: string, context?: PromptContext[]): unknown[] {
+    const blocks: unknown[] = [{ type: 'text', text }]
+    for (const c of context ?? []) {
+      const uri = c.path.startsWith('git:')
+        ? c.path
+        : `file://${c.path.startsWith('/') ? c.path : `${s.remoteCwd ?? '.'}/${c.path}`}`
+      blocks.push({ type: 'resource_link', uri, name: c.name })
+    }
+    return blocks
+  }
+
+  private async runPrompt(s: Session, text: string, context?: PromptContext[]): Promise<void> {
     this.events.onEnvActive(s.ref)
     this.push(s, { kind: 'user', text })
     s.busy = true
@@ -453,7 +469,7 @@ export class SessionManager {
       const conn = await this.attach(s)
       const result = await conn.peer.request<{ stopReason?: string }>('session/prompt', {
         sessionId: s.acpSessionId,
-        prompt: [{ type: 'text', text }]
+        prompt: this.promptBlocks(s, text, context)
       })
       const reason = result?.stopReason
       if (reason && reason !== 'end_turn')
@@ -490,11 +506,11 @@ export class SessionManager {
     this.events.onEnvActive(s.ref)
   }
 
-  async prompt(sessionId: string, text: string): Promise<void> {
+  async prompt(sessionId: string, text: string, context?: PromptContext[]): Promise<void> {
     const s = this.sessions.get(sessionId)
     if (!s) throw new Error('unknown session')
     if (s.info.state !== 'started') throw new Error('session is not started')
-    await this.runPrompt(s, text)
+    await this.runPrompt(s, text, context)
   }
 
   cancel(sessionId: string): void {
@@ -514,13 +530,6 @@ export class SessionManager {
     if (!conn) throw new Error('agent is not running — send a prompt first')
     await conn.peer.request('session/set_mode', { sessionId: s.acpSessionId, modeId })
     if (s.modes) s.modes.currentModeId = modeId
-    this.events.onSessionChanged(sessionId)
-  }
-
-  setAutoAllow(sessionId: string, value: boolean): void {
-    const s = this.sessions.get(sessionId)
-    if (!s) return
-    s.autoAllow = value
     this.events.onSessionChanged(sessionId)
   }
 
@@ -628,7 +637,8 @@ export class SessionManager {
     }
   }
 
-  /** Permission requests: interactive by default, auto-allow per session. */
+  /** Permission requests are always interactive — use session modes (e.g. a
+   *  bypass/accept-edits mode) to reduce how often the agent asks. */
   private onPermission(params: any): unknown {
     const s = this.bySessionId(params?.sessionId)
     const options: PermissionOption[] = (params?.options ?? []).map((o: any) => ({
@@ -638,12 +648,6 @@ export class SessionManager {
     }))
     const title = params?.toolCall?.title ?? 'permission request'
     if (!s) return { outcome: { outcome: 'cancelled' } }
-
-    if (s.autoAllow) {
-      const allow = options.find((o) => o.kind?.startsWith('allow')) ?? options[0]
-      this.push(s, { kind: 'permission', title, options, chosen: allow?.optionId ?? 'auto' })
-      return { outcome: { outcome: 'selected', optionId: allow?.optionId ?? '' } }
-    }
 
     const entry = this.push(s, { kind: 'permission', title, options })
     return new Promise((resolve) => {
