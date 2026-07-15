@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process'
 import { promises as fs } from 'node:fs'
 import { existsSync } from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { createRequire } from 'node:module'
 import type { EnvRef, RepoConfig } from '../shared/types'
@@ -46,10 +47,23 @@ function runNodeCli(args: string[], log: LogSink): Promise<RunResult> {
   })
 }
 
-function run(cmd: string, args: string[], log: LogSink, cwd?: string): Promise<void> {
+interface RunOpts {
+  cwd?: string
+  env?: NodeJS.ProcessEnv
+  /** Kill the child and reject if it hasn't exited within this many ms. */
+  timeoutMs?: number
+}
+
+function run(cmd: string, args: string[], log: LogSink, opts: RunOpts = {}): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { cwd })
+    const child = spawn(cmd, args, { cwd: opts.cwd, env: opts.env })
     const lines: string[] = []
+    const timer = opts.timeoutMs
+      ? setTimeout(() => {
+          child.kill('SIGKILL')
+          reject(new Error(`${cmd} ${args[0]} timed out after ${opts.timeoutMs}ms`))
+        }, opts.timeoutMs)
+      : undefined
     const onData = (d: Buffer) => {
       for (const line of d.toString().split('\n'))
         if (line.trim()) {
@@ -59,8 +73,12 @@ function run(cmd: string, args: string[], log: LogSink, cwd?: string): Promise<v
     }
     child.stdout.on('data', onData)
     child.stderr.on('data', onData)
-    child.on('error', reject)
+    child.on('error', (e) => {
+      if (timer) clearTimeout(timer)
+      reject(e)
+    })
     child.on('close', (code) => {
+      if (timer) clearTimeout(timer)
       if (code === 0) resolve()
       else reject(new Error(`${cmd} ${args[0]} failed (${code}): ${lines.slice(-3).join(' | ')}`))
     })
@@ -72,7 +90,7 @@ export async function ensureClone(ref: EnvRef, repo: RepoConfig, log: LogSink): 
   if (!existsSync(dir)) {
     await fs.mkdir(taskDir(ref.workspace, ref.task), { recursive: true })
     log(`cloning ${repo.url} ...`)
-    await run('git', ['clone', repo.url, dir], log)
+    await run('git', ['clone', '--', repo.url, dir], log)
   }
   const branch = `gurt/${ref.task}`
   try {
@@ -86,6 +104,46 @@ export async function ensureClone(ref: EnvRef, repo: RepoConfig, log: LogSink): 
 
 export async function removeClone(ref: EnvRef): Promise<void> {
   await fs.rm(cloneDir(ref.workspace, ref.task, ref.repo), { recursive: true, force: true })
+}
+
+/** Upper bound on the discovery clone before it's killed. */
+const DISCOVER_TIMEOUT_MS = 60_000
+
+export interface DiscoveredDevcontainer {
+  path: string
+  content: string
+}
+
+/** Repo-relative paths checked, in order, plus any `.devcontainer/<name>/` variant. */
+async function devcontainerCandidates(dir: string): Promise<string[]> {
+  const candidates = ['.devcontainer/devcontainer.json', '.devcontainer.json']
+  const devcontainerDir = path.join(dir, '.devcontainer')
+  for (const entry of await fs.readdir(devcontainerDir, { withFileTypes: true }).catch(() => []))
+    if (entry.isDirectory())
+      candidates.push(path.join('.devcontainer', entry.name, 'devcontainer.json'))
+  return candidates
+}
+
+/** Shallow-clones the repo to a scratch dir and looks for its devcontainer.json. */
+export async function discoverDevcontainer(url: string): Promise<DiscoveredDevcontainer | null> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gurt-discover-'))
+  try {
+    // GIT_TERMINAL_PROMPT=0 → private/unreachable URLs fail fast instead of
+    // blocking on a credential prompt with no terminal. `--` guards against a
+    // URL beginning with `-` being parsed as a git option. The timeout is a
+    // backstop for a clone that stalls on a slow/hanging network.
+    await run('git', ['clone', '--depth', '1', '--no-tags', '--', url, dir], () => {}, {
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+      timeoutMs: DISCOVER_TIMEOUT_MS
+    })
+    for (const rel of await devcontainerCandidates(dir)) {
+      const content = await fs.readFile(path.join(dir, rel), 'utf8').catch(() => null)
+      if (content != null) return { path: rel, content }
+    }
+    return null
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true })
+  }
 }
 
 /**

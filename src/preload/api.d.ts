@@ -15,6 +15,7 @@ export interface GurtApi {
   setAgents(agents: AgentsFile): Promise<void>
   createWorkspace(name: string): Promise<void>
   addRepo(ws: string, repo: RepoConfig): Promise<void>
+  discoverDevcontainer(url: string): Promise<{ path: string; content: string } | null>
   updateRepo(ws: string, repo: RepoConfig): Promise<void>
   removeRepo(ws: string, name: string): Promise<void>
   createTask(ws: string, name: string): Promise<void>
