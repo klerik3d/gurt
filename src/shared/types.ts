@@ -77,6 +77,8 @@ export interface SessionInfo {
   workspace: string
   title: string
   agent?: string
+  /** Model id for agents that support model selection (see `AgentDef.models`). */
+  model?: string
   state: SessionState
   /** MCP servers to attach when this session starts (empty/undefined = none). */
   mcp?: McpSelection[]

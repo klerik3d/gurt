@@ -32,7 +32,9 @@ export interface GurtApi {
     agent: string,
     prompt: string,
     action: CreateAction,
-    mcp: McpSelection[]
+    mcp: McpSelection[],
+    autoAllow: boolean,
+    model?: string
   ): Promise<SessionInfo>
   sessionRun(id: string): Promise<void>
   sessionEnqueue(id: string): Promise<void>

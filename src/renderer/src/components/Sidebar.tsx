@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { AgentsFile, McpMode, McpSelection, SessionInfo, SessionState, Tree } from '../../../shared/types'
 import type { McpDef } from '../../../shared/mcp'
-import { AGENT_DEFS } from '../../../shared/agents'
+import { AGENT_DEFS, agentDef } from '../../../shared/agents'
 import type { Selection } from '../App'
 import { Modal } from './Modal'
 import { ReposModal } from './ReposModal'
@@ -132,6 +132,7 @@ export function Sidebar({
                         </span>
                         <span className="chip">{s.envRepo}</span>
                         <span className="chip">{s.agent}</span>
+                        {s.model && <span className="chip">{s.model}</span>}
                         {s.mcp?.map((m) => (
                           <span
                             key={m.id}
@@ -241,6 +242,9 @@ function NewSessionModal({
   const [mcpDefs, setMcpDefs] = useState<McpDef[]>([])
   /** MCP id -> granted mode; absent = not attached. */
   const [mcp, setMcp] = useState<Record<string, McpMode>>({})
+  /** Permission mode: auto-allow tool calls, or ask for each one. */
+  const [autoAllow, setAutoAllow] = useState(true)
+  const [model, setModel] = useState('')
   const [error, setError] = useState('')
 
   useEffect(() => {
@@ -251,6 +255,12 @@ function NewSessionModal({
     })
     window.gurt.getMcpDefs().then(setMcpDefs)
   }, [])
+
+  const models = agentDef(agent)?.models
+  useEffect(() => {
+    setModel(agentDef(agent)?.defaultModel ?? models?.[0] ?? '')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agent])
 
   const toggleMcp = (id: string, on: boolean) =>
     setMcp((prev) => {
@@ -292,7 +302,9 @@ function NewSessionModal({
         agent,
         prompt,
         action,
-        mcpSelection()
+        mcpSelection(),
+        autoAllow,
+        models ? model : undefined
       )
       onCreated(s)
     } catch (e) {
@@ -323,6 +335,26 @@ function NewSessionModal({
           </select>
         </label>
         {enabledAgents.length === 0 && <div className="hint">no agents enabled — check ⚙ Agents</div>}
+        {models && models.length > 0 && (
+          <label>
+            model
+            <select value={model} onChange={(e) => setModel(e.target.value)}>
+              {models.map((m) => (
+                <option key={m} value={m}>{m}</option>
+              ))}
+            </select>
+          </label>
+        )}
+        <label>
+          mode
+          <select
+            value={autoAllow ? 'auto' : 'manual'}
+            onChange={(e) => setAutoAllow(e.target.value === 'auto')}
+          >
+            <option value="auto">auto — allow tool calls automatically</option>
+            <option value="manual">manual — confirm each tool call</option>
+          </select>
+        </label>
         {mcpDefs.length > 0 && (
           <div className="mcp-picker">
             <div className="mcp-picker-title">MCP servers</div>
