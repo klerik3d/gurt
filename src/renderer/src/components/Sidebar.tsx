@@ -105,8 +105,12 @@ export function Sidebar({
                     <button
                       className="icon-btn"
                       title="delete task"
-                      onClick={() => {
-                        if (window.confirm(`Delete task "${task.name}" with all its environments, clones and sessions?`))
+                      onClick={async () => {
+                        const dirty = await window.gurt.taskDirtyRepos(ws.name, task.name).catch(() => [])
+                        const warning = dirty.length
+                          ? `Task "${task.name}" has uncommitted changes in: ${dirty.join(', ')}. Delete anyway and permanently lose them, along with all environments and sessions?`
+                          : `Delete task "${task.name}" with all its environments, clones and sessions?`
+                        if (window.confirm(warning))
                           window.gurt.removeTask(ws.name, task.name).catch((e) => alert(String(e)))
                       }}
                     >

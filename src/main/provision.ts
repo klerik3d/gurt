@@ -106,6 +106,17 @@ export async function removeClone(ref: EnvRef): Promise<void> {
   await fs.rm(cloneDir(ref.workspace, ref.task, ref.repo), { recursive: true, force: true })
 }
 
+/** True if the clone at `dir` has uncommitted changes (staged, unstaged, or untracked). */
+export function isDirty(dir: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const child = spawn('git', ['-C', dir, 'status', '--porcelain'])
+    let out = ''
+    child.stdout.on('data', (d: Buffer) => (out += d.toString()))
+    child.on('error', () => resolve(false))
+    child.on('close', () => resolve(out.trim().length > 0))
+  })
+}
+
 /** Upper bound on the discovery clone before it's killed. */
 const DISCOVER_TIMEOUT_MS = 60_000
 
