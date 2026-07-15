@@ -68,6 +68,10 @@ export interface SessionEvents {
   /** Current infra status of the env (for the scheduler's free-repo predicate). */
   envStatus: (ref: EnvRef) => Promise<EnvStatus>
   persist: (ws: string, task: string, records: PersistedSession[]) => void
+  /** No session on this env is busy or starting — safe to schedule an idle auto-stop. */
+  onEnvIdle: (ref: EnvRef) => void
+  /** A session on this env started work (or the user is typing) — cancel any pending auto-stop. */
+  onEnvActive: (ref: EnvRef) => void
 }
 
 export type CreateAction = 'run' | 'queue' | 'draft'
@@ -269,6 +273,7 @@ export class SessionManager {
   private async startSession(sessionId: string): Promise<void> {
     const s = this.sessions.get(sessionId)
     if (!s || s.info.state === 'starting' || s.info.state === 'started') return
+    this.events.onEnvActive(s.ref)
     s.info.state = 'starting'
     s.info.queuedAt = undefined
     s.startError = undefined
@@ -375,6 +380,8 @@ export class SessionManager {
           this.push(s, { kind: 'system', text: 'agent process exited' })
         }
       }
+      // A crashed adapter leaves its sessions idle — reconsider the auto-stop.
+      this.checkEnvIdle(ref)
     })
 
     peer.onNotification('session/update', (params) => this.onSessionUpdate(params))
@@ -424,6 +431,7 @@ export class SessionManager {
   }
 
   private async runPrompt(s: Session, text: string): Promise<void> {
+    this.events.onEnvActive(s.ref)
     this.push(s, { kind: 'user', text })
     s.busy = true
     this.events.onSessionChanged(s.info.id)
@@ -442,7 +450,30 @@ export class SessionManager {
       s.busy = false
       this.events.onSessionChanged(s.info.id)
       this.schedulePersist(s.ref)
+      this.checkEnvIdle(s.ref)
     }
+  }
+
+  /** No session sharing this env is busy or mid-start. */
+  isEnvIdle(ref: EnvRef): boolean {
+    const key = envKey(ref)
+    for (const s of this.sessions.values()) {
+      if (envKey(s.ref) !== key) continue
+      if (s.busy || s.info.state === 'starting') return false
+    }
+    return true
+  }
+
+  /** Schedule an idle auto-stop once every session sharing this env has finished its turn. */
+  private checkEnvIdle(ref: EnvRef): void {
+    if (this.isEnvIdle(ref)) this.events.onEnvIdle(ref)
+  }
+
+  /** Ping from the UI (e.g. typing in the composer) — postpones a pending auto-stop. */
+  activity(sessionId: string): void {
+    const s = this.sessions.get(sessionId)
+    if (!s) return
+    this.events.onEnvActive(s.ref)
   }
 
   async prompt(sessionId: string, text: string): Promise<void> {
