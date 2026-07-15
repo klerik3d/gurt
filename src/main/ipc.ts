@@ -5,6 +5,7 @@ import * as store from './store'
 import { cloneDir } from './store'
 import {
   devcontainerUp,
+  discoverDevcontainer,
   dockerRemove,
   dockerStop,
   ensureClone,
@@ -196,6 +197,7 @@ export function registerIpc(): void {
     await store.addRepo(ws, repo)
     broadcast('tree-changed')
   })
+  handle('repo:discover-devcontainer', (url: string) => discoverDevcontainer(url))
   handle('repo:update', async (ws: string, repo: RepoConfig) => {
     await store.updateRepo(ws, repo)
     broadcast('tree-changed')
