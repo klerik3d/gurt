@@ -3,9 +3,11 @@
 export interface AgentDef {
   id: string
   label: string
-  /** Devcontainer features injected at env start (agent runtime). */
-  features: Record<string, object>
-  /** npm packages installed globally in the container after up. */
+  /**
+   * npm packages installed globally in the container the first time this agent
+   * connects to an env. The container itself is agent-agnostic (node feature
+   * only) — no per-agent devcontainer features.
+   */
   adapterPackages: string[]
   /** ACP adapter launch inside the container. */
   bin: string
@@ -18,7 +20,8 @@ export const AGENT_DEFS: AgentDef[] = [
   {
     id: 'claude-code',
     label: 'claude code',
-    features: { 'ghcr.io/anthropics/devcontainer-features/claude-code:1.0': {} },
+    // @agentclientprotocol/claude-agent-acp bundles the Claude Agent SDK — the
+    // claude-code devcontainer feature is not needed.
     adapterPackages: ['@agentclientprotocol/claude-agent-acp'],
     bin: 'claude-agent-acp',
     binArgs: [],
@@ -27,7 +30,6 @@ export const AGENT_DEFS: AgentDef[] = [
   {
     id: 'codex',
     label: 'codex',
-    features: {},
     // the adapter package bundles a compatible @openai/codex
     adapterPackages: ['@agentclientprotocol/codex-acp'],
     bin: 'codex-acp',
@@ -37,7 +39,6 @@ export const AGENT_DEFS: AgentDef[] = [
   {
     id: 'opencode',
     label: 'opencode',
-    features: {},
     adapterPackages: ['opencode-ai'],
     bin: 'opencode',
     binArgs: ['acp'],

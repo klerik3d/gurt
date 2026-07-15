@@ -134,11 +134,11 @@ export async function removeTaskDir(ws: string, task: string): Promise<void> {
   await fs.rm(taskDir(ws, task), { recursive: true, force: true })
 }
 
-export async function addEnv(ws: string, task: string, repo: string, agent: string): Promise<void> {
+/** Ensure a (stopped) env record exists for the repo; idempotent. */
+export async function ensureEnv(ws: string, task: string, repo: string): Promise<void> {
   const data = await getTask(ws, task)
-  if (data.envs.some((e) => e.repo === repo))
-    throw new Error(`env for repo "${repo}" already exists in task "${task}"`)
-  data.envs.push({ repo, agent, status: 'stopped' } satisfies EnvState)
+  if (data.envs.some((e) => e.repo === repo)) return
+  data.envs.push({ repo, status: 'stopped' } satisfies EnvState)
   await saveTask(ws, task, data)
 }
 
@@ -164,7 +164,18 @@ export async function updateEnv(
 const sessionsFile = (ws: string, task: string) => path.join(taskDir(ws, task), 'sessions.json')
 
 export async function readSessions(ws: string, task: string): Promise<PersistedSession[]> {
-  return readJson<PersistedSession[]>(sessionsFile(ws, task), [])
+  const records = await readJson<PersistedSession[]>(sessionsFile(ws, task), [])
+  // Migration: pre-queue records have no state — treat them as started.
+  for (const r of records) {
+    if (!r.info.state) r.info.state = 'started'
+    if (r.info.startPrompt == null) r.info.startPrompt = ''
+    // `starting` is runtime-only; a crash mid-start restores as draft.
+    if (r.info.state === 'starting') {
+      r.info.state = 'draft'
+      r.info.queuedAt = undefined
+    }
+  }
+  return records
 }
 
 export async function writeSessions(
@@ -187,9 +198,17 @@ export async function buildTree(): Promise<Tree> {
     const tasks: Tree['workspaces'][number]['tasks'] = []
     for (const task of await listTasks(ws)) {
       const taskData = await getTask(ws, task)
+      // `agent` on legacy env records is ignored (envs are agent-agnostic now).
       tasks.push({
         name: task,
-        envs: taskData.envs.map((e) => ({ ...e, sessions: [] }))
+        envs: taskData.envs.map((e) => ({
+          repo: e.repo,
+          containerId: e.containerId,
+          remoteWorkspaceFolder: e.remoteWorkspaceFolder,
+          status: e.status,
+          error: e.error
+        })),
+        sessions: []
       })
     }
     tree.workspaces.push({ name: ws, repos: wsData.repos, tasks })

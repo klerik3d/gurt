@@ -3,6 +3,7 @@ import type {
   ChatEntry,
   ChatEntryBase,
   EnvRef,
+  EnvStatus,
   PermissionOption,
   PersistedSession,
   SessionInfo,
@@ -15,17 +16,20 @@ import { JsonRpcPeer } from './jsonrpc'
 
 const envKey = (ref: EnvRef) => `${ref.workspace}/${ref.task}/${ref.repo}`
 const taskKey = (ref: EnvRef) => `${ref.workspace}/${ref.task}`
+/** One ACP connection (adapter process) per (env, agent). */
+const connKey = (ref: EnvRef, agent: string) => `${envKey(ref)}::${agent}`
 
 interface Connection {
   peer: JsonRpcPeer
   ref: EnvRef
+  agent: string
   kill: () => void
 }
 
 interface Session {
   info: SessionInfo
   ref: EnvRef
-  acpSessionId: string
+  acpSessionId?: string
   entries: ChatEntry[]
   nextEntryId: number
   busy: boolean
@@ -37,6 +41,8 @@ interface Session {
   attached: boolean
   /** session/load in progress — drop replayed updates, we keep our own history. */
   loading: boolean
+  /** Last failure that put the session back to draft. */
+  startError?: string
   /** entry id -> resolver of a pending permission request. */
   pendingPermissions: Map<number, (outcome: unknown) => void>
 }
@@ -54,14 +60,24 @@ export interface EnvContext {
 export interface SessionEvents {
   onSessionsChanged: () => void
   onSessionChanged: (sessionId: string) => void
-  resolveEnv: (ref: EnvRef) => Promise<EnvContext>
+  /** Ensure the container is up (clone + up, reusing a stopped container) and
+   *  return the agent's launch context. Streams to provision-log; throws on failure. */
+  resolveEnv: (ref: EnvRef, agentId: string) => Promise<EnvContext>
+  /** Install the agent's adapter packages in the container (idempotent). */
+  installAdapter: (ref: EnvRef, ctx: EnvContext) => Promise<void>
+  /** Current infra status of the env (for the scheduler's free-repo predicate). */
+  envStatus: (ref: EnvRef) => Promise<EnvStatus>
   persist: (ws: string, task: string, records: PersistedSession[]) => void
 }
+
+export type CreateAction = 'run' | 'queue' | 'draft'
 
 export class SessionManager {
   private connections = new Map<string, Connection>()
   private sessions = new Map<string, Session>()
   private persistTimers = new Map<string, NodeJS.Timeout>()
+  /** (env, agent) pairs whose adapter is installed this app run. */
+  private installedAdapters = new Set<string>()
 
   constructor(private events: SessionEvents) {}
 
@@ -84,10 +100,18 @@ export class SessionManager {
     }
   }
 
-  listForEnv(ref: EnvRef): SessionInfo[] {
+  listForTask(ws: string, task: string): SessionInfo[] {
     return [...this.sessions.values()]
-      .filter((s) => envKey(s.ref) === envKey(ref))
+      .filter((s) => s.ref.workspace === ws && s.ref.task === task)
       .map((s) => s.info)
+  }
+
+  private queuePosition(sessionId: string): number | undefined {
+    const queued = [...this.sessions.values()]
+      .filter((s) => s.info.state === 'queued')
+      .sort((a, b) => (a.info.queuedAt ?? '').localeCompare(b.info.queuedAt ?? ''))
+    const i = queued.findIndex((s) => s.info.id === sessionId)
+    return i < 0 ? undefined : i + 1
   }
 
   snapshot(sessionId: string): SessionSnapshot | undefined {
@@ -100,31 +124,199 @@ export class SessionManager {
         autoAllow: s.autoAllow,
         modes: s.modes,
         plan: s.plan,
-        commands: s.commands
+        commands: s.commands,
+        startError: s.startError,
+        queuePosition: this.queuePosition(sessionId)
       }
     )
   }
 
-  /** Kill the adapter process of an environment (env stop/delete). */
-  closeEnv(ref: EnvRef): void {
-    this.connections.get(envKey(ref))?.kill()
+  // --- lifecycle: create / run / enqueue / cancel / edit / delete ---------
+
+  createSession(
+    ref: EnvRef,
+    agentId: string,
+    startPrompt: string,
+    action: CreateAction
+  ): SessionInfo {
+    const n = this.listForTask(ref.workspace, ref.task).length + 1
+    const info: SessionInfo = {
+      id: randomUUID(),
+      envRepo: ref.repo,
+      task: ref.task,
+      workspace: ref.workspace,
+      title: `session ${n}`,
+      agent: agentId,
+      state: 'draft',
+      startPrompt
+    }
+    this.sessions.set(info.id, {
+      info,
+      ref,
+      entries: [],
+      nextEntryId: 1,
+      busy: false,
+      autoAllow: false,
+      attached: false,
+      loading: false,
+      pendingPermissions: new Map()
+    })
+    this.events.onSessionsChanged()
+    this.schedulePersist(ref)
+    if (action === 'queue') this.enqueue(info.id)
+    else if (action === 'run') void this.startSession(info.id)
+    return info
   }
 
-  /** Forget sessions of an environment and persist the removal (env delete). */
-  dropEnvSessions(ref: EnvRef): void {
-    this.closeEnv(ref)
-    for (const [id, s] of this.sessions) if (envKey(s.ref) === envKey(ref)) this.sessions.delete(id)
-    this.schedulePersist(ref)
+  /** Run now — bypass the queue and start immediately. */
+  run(sessionId: string): void {
+    const s = this.sessions.get(sessionId)
+    if (!s || s.info.state === 'starting' || s.info.state === 'started') return
+    void this.startSession(sessionId)
+  }
+
+  enqueue(sessionId: string): void {
+    const s = this.sessions.get(sessionId)
+    if (!s || s.info.state === 'starting' || s.info.state === 'started') return
+    s.info.state = 'queued'
+    s.info.queuedAt = new Date().toISOString()
+    s.startError = undefined
     this.events.onSessionsChanged()
+    this.schedulePersist(s.ref)
+    this.schedule()
+  }
+
+  /** Cancel a queued session — back to draft. */
+  cancelQueue(sessionId: string): void {
+    const s = this.sessions.get(sessionId)
+    if (!s || s.info.state !== 'queued') return
+    s.info.state = 'draft'
+    s.info.queuedAt = undefined
+    this.events.onSessionsChanged()
+    this.schedulePersist(s.ref)
+  }
+
+  editPrompt(sessionId: string, text: string): void {
+    const s = this.sessions.get(sessionId)
+    if (!s || s.info.state !== 'draft') return
+    s.info.startPrompt = text
+    this.events.onSessionChanged(sessionId)
+    this.schedulePersist(s.ref)
+  }
+
+  deleteSession(sessionId: string): void {
+    const s = this.sessions.get(sessionId)
+    if (!s) return
+    // Adapter connections are shared per (env, agent); leave them for other
+    // sessions. Just resolve any pending permission and drop the record.
+    for (const resolve of s.pendingPermissions.values())
+      resolve({ outcome: { outcome: 'cancelled' } })
+    this.sessions.delete(sessionId)
+    this.schedulePersist(s.ref)
+    this.events.onSessionsChanged()
+  }
+
+  // --- scheduler ----------------------------------------------------------
+
+  /**
+   * Walk the global FIFO queue and start every item whose start condition
+   * currently holds. Items for independent repos may start in one pass; a repo
+   * occupied by a just-started item keeps its later items queued.
+   */
+  schedule(): void {
+    void this.scheduleAsync()
+  }
+
+  private async scheduleAsync(): Promise<void> {
+    const queued = [...this.sessions.values()]
+      .filter((s) => s.info.state === 'queued')
+      .sort((a, b) => (a.info.queuedAt ?? '').localeCompare(b.info.queuedAt ?? ''))
+    const claimed = new Set<string>()
+    for (const s of queued) {
+      const key = envKey(s.ref)
+      if (claimed.has(key)) continue
+      if (!(await this.startConditionHolds(s))) continue
+      claimed.add(key)
+      void this.startSession(s.info.id)
+    }
+  }
+
+  /**
+   * Composable start-condition predicate. The only condition implemented now:
+   * the target (task, repo) is free — no session is starting there and the
+   * container is down. Future predicates (concurrency limits, priorities,
+   * time windows) slot into this array.
+   */
+  private async startConditionHolds(s: Session): Promise<boolean> {
+    const predicates: Array<(s: Session) => boolean | Promise<boolean>> = [
+      (s) => this.repoIsFree(s.ref, s.info.id)
+    ]
+    for (const p of predicates) if (!(await p(s))) return false
+    return true
+  }
+
+  private async repoIsFree(ref: EnvRef, exceptSessionId: string): Promise<boolean> {
+    const key = envKey(ref)
+    for (const o of this.sessions.values()) {
+      if (o.info.id === exceptSessionId) continue
+      if (envKey(o.ref) === key && o.info.state === 'starting') return false
+    }
+    const status = await this.events.envStatus(ref)
+    return status !== 'starting' && status !== 'running'
+  }
+
+  /** Provision (if needed), open the ACP session, and send the start prompt. */
+  private async startSession(sessionId: string): Promise<void> {
+    const s = this.sessions.get(sessionId)
+    if (!s || s.info.state === 'starting' || s.info.state === 'started') return
+    s.info.state = 'starting'
+    s.info.queuedAt = undefined
+    s.startError = undefined
+    this.events.onSessionsChanged()
+    this.events.onSessionChanged(sessionId)
+    try {
+      const ctx = await this.events.resolveEnv(s.ref, s.info.agent!)
+      const conn = await this.connection(s.ref, s.info.agent!, ctx)
+      const result = await conn.peer.request<{ sessionId: string; modes?: SessionModes }>(
+        'session/new',
+        { cwd: ctx.remoteWorkspaceFolder, mcpServers: [] }
+      )
+      s.acpSessionId = result.sessionId
+      s.modes = result.modes ?? s.modes
+      s.attached = true
+      s.info.state = 'started'
+      this.events.onSessionsChanged()
+      this.schedulePersist(s.ref)
+      await this.runPrompt(s, s.info.startPrompt)
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e)
+      s.info.state = 'draft'
+      s.info.queuedAt = undefined
+      s.startError = message
+      this.push(s, { kind: 'system', text: `start failed: ${message}` })
+      this.events.onSessionsChanged()
+      this.schedulePersist(s.ref)
+      // A failed start must not block the queue — let the next item try.
+      this.schedule()
+    }
+  }
+
+  // --- connections --------------------------------------------------------
+
+  /** Kill the adapter processes of an environment (all agents) — env stop/delete. */
+  closeEnv(ref: EnvRef): void {
+    for (const conn of this.connections.values())
+      if (envKey(conn.ref) === envKey(ref)) conn.kill()
   }
 
   /** Forget sessions of a whole task without persisting (task dir is removed). */
   dropTaskSessions(ws: string, task: string): void {
     for (const [id, s] of this.sessions) {
       if (s.ref.workspace !== ws || s.ref.task !== task) continue
-      this.closeEnv(s.ref)
       this.sessions.delete(id)
     }
+    for (const conn of this.connections.values())
+      if (conn.ref.workspace === ws && conn.ref.task === task) conn.kill()
     this.events.onSessionsChanged()
   }
 
@@ -134,19 +326,31 @@ export class SessionManager {
     this.persistTimers.set(
       key,
       setTimeout(() => {
-        const records = [...this.sessions.values()]
+        const records: PersistedSession[] = [...this.sessions.values()]
           .filter((s) => taskKey(s.ref) === key)
-          .map((s) => ({ info: s.info, acpSessionId: s.acpSessionId, entries: s.entries }))
+          .map((s) => {
+            const info = { ...s.info }
+            // `starting` is runtime-only; persist it as draft (crash-safe).
+            if (info.state === 'starting') {
+              info.state = 'draft'
+              info.queuedAt = undefined
+            }
+            return { info, acpSessionId: s.acpSessionId, entries: s.entries }
+          })
         this.events.persist(ref.workspace, ref.task, records)
       }, 300)
     )
   }
 
-  /** One ACP connection (one adapter process) per environment. */
-  private async connection(ref: EnvRef, ctx: EnvContext): Promise<Connection> {
-    const key = envKey(ref)
+  private async connection(ref: EnvRef, agentId: string, ctx: EnvContext): Promise<Connection> {
+    const key = connKey(ref, agentId)
     const existing = this.connections.get(key)
     if (existing) return existing
+
+    if (!this.installedAdapters.has(key)) {
+      await this.events.installAdapter(ref, ctx)
+      this.installedAdapters.add(key)
+    }
 
     const child = spawnAcpAdapter(
       ref,
@@ -161,7 +365,7 @@ export class SessionManager {
     child.on('close', () => {
       this.connections.delete(key)
       for (const s of this.sessions.values()) {
-        if (envKey(s.ref) !== key) continue
+        if (connKey(s.ref, s.info.agent ?? '') !== key) continue
         s.attached = false
         for (const resolve of s.pendingPermissions.values())
           resolve({ outcome: { outcome: 'cancelled' } })
@@ -181,49 +385,20 @@ export class SessionManager {
       clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false }
     })
 
-    const conn: Connection = { peer, ref, kill: () => child.kill() }
+    const conn: Connection = { peer, ref, agent: agentId, kill: () => child.kill() }
     this.connections.set(key, conn)
     return conn
   }
 
-  async create(ref: EnvRef): Promise<SessionInfo> {
-    const ctx = await this.events.resolveEnv(ref)
-    const conn = await this.connection(ref, ctx)
-    const result = await conn.peer.request<{ sessionId: string; modes?: SessionModes }>(
-      'session/new',
-      { cwd: ctx.remoteWorkspaceFolder, mcpServers: [] }
-    )
-    const info: SessionInfo = {
-      id: randomUUID(),
-      envRepo: ref.repo,
-      task: ref.task,
-      workspace: ref.workspace,
-      title: `session ${this.listForEnv(ref).length + 1}`,
-      agent: ctx.agent.id
-    }
-    this.sessions.set(info.id, {
-      info,
-      ref,
-      acpSessionId: result.sessionId,
-      entries: [],
-      nextEntryId: 1,
-      busy: false,
-      autoAllow: false,
-      modes: result.modes ?? undefined,
-      attached: true,
-      loading: false,
-      pendingPermissions: new Map()
-    })
-    this.events.onSessionsChanged()
-    this.schedulePersist(ref)
-    return info
-  }
-
-  /** Reconnect a restored session: spawn the adapter if needed and session/load. */
+  /** Reconnect a session: spawn the adapter if needed and session/load. */
   private async attach(s: Session): Promise<Connection> {
-    const ctx = await this.events.resolveEnv(s.ref)
-    const conn = await this.connection(s.ref, ctx)
+    const agentId = s.info.agent ?? 'claude-code'
+    const existing = this.connections.get(connKey(s.ref, agentId))
+    if (existing && s.attached) return existing
+    const ctx = await this.events.resolveEnv(s.ref, agentId)
+    const conn = await this.connection(s.ref, agentId, ctx)
     if (!s.attached) {
+      if (!s.acpSessionId) throw new Error('session was never started')
       s.loading = true
       this.push(s, { kind: 'system', text: 'resuming session...' })
       try {
@@ -248,12 +423,10 @@ export class SessionManager {
     return conn
   }
 
-  async prompt(sessionId: string, text: string): Promise<void> {
-    const s = this.sessions.get(sessionId)
-    if (!s) throw new Error('unknown session')
+  private async runPrompt(s: Session, text: string): Promise<void> {
     this.push(s, { kind: 'user', text })
     s.busy = true
-    this.events.onSessionChanged(sessionId)
+    this.events.onSessionChanged(s.info.id)
     try {
       const conn = await this.attach(s)
       const result = await conn.peer.request<{ stopReason?: string }>('session/prompt', {
@@ -267,16 +440,23 @@ export class SessionManager {
       this.push(s, { kind: 'system', text: `error: ${e instanceof Error ? e.message : e}` })
     } finally {
       s.busy = false
-      this.events.onSessionChanged(sessionId)
+      this.events.onSessionChanged(s.info.id)
       this.schedulePersist(s.ref)
     }
+  }
+
+  async prompt(sessionId: string, text: string): Promise<void> {
+    const s = this.sessions.get(sessionId)
+    if (!s) throw new Error('unknown session')
+    if (s.info.state !== 'started') throw new Error('session is not started')
+    await this.runPrompt(s, text)
   }
 
   cancel(sessionId: string): void {
     const s = this.sessions.get(sessionId)
     if (!s) return
-    const conn = this.connections.get(envKey(s.ref))
-    conn?.peer.notify('session/cancel', { sessionId: s.acpSessionId })
+    const conn = this.connections.get(connKey(s.ref, s.info.agent ?? ''))
+    if (s.acpSessionId) conn?.peer.notify('session/cancel', { sessionId: s.acpSessionId })
     for (const resolve of s.pendingPermissions.values())
       resolve({ outcome: { outcome: 'cancelled' } })
     s.pendingPermissions.clear()
@@ -285,7 +465,7 @@ export class SessionManager {
   async setMode(sessionId: string, modeId: string): Promise<void> {
     const s = this.sessions.get(sessionId)
     if (!s) throw new Error('unknown session')
-    const conn = this.connections.get(envKey(s.ref))
+    const conn = this.connections.get(connKey(s.ref, s.info.agent ?? ''))
     if (!conn) throw new Error('agent is not running — send a prompt first')
     await conn.peer.request('session/set_mode', { sessionId: s.acpSessionId, modeId })
     if (s.modes) s.modes.currentModeId = modeId

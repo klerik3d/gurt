@@ -7,6 +7,8 @@ import type {
   Tree
 } from '../shared/types'
 
+export type CreateAction = 'run' | 'queue' | 'draft'
+
 export interface GurtApi {
   getTree(): Promise<Tree>
   getAgents(): Promise<AgentsFile>
@@ -17,11 +19,20 @@ export interface GurtApi {
   removeRepo(ws: string, name: string): Promise<void>
   createTask(ws: string, name: string): Promise<void>
   removeTask(ws: string, name: string): Promise<void>
-  addEnv(ref: EnvRef, agent: string): Promise<void>
   startEnv(ref: EnvRef): Promise<void>
   stopEnv(ref: EnvRef): Promise<void>
   removeEnv(ref: EnvRef): Promise<void>
-  createSession(ref: EnvRef): Promise<SessionInfo>
+  createSession(
+    ref: EnvRef,
+    agent: string,
+    prompt: string,
+    action: CreateAction
+  ): Promise<SessionInfo>
+  sessionRun(id: string): Promise<void>
+  sessionEnqueue(id: string): Promise<void>
+  sessionCancelQueue(id: string): Promise<void>
+  sessionEditPrompt(id: string, text: string): Promise<void>
+  sessionDelete(id: string): Promise<void>
   sessionSnapshot(id: string): Promise<SessionSnapshot | undefined>
   sessionPrompt(id: string, text: string): Promise<void>
   sessionCancel(id: string): Promise<void>

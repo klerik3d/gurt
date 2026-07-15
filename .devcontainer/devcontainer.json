@@ -1,0 +1,54 @@
+{
+  // Dev container for working on gurt itself (build / typecheck / smoke tests).
+  //
+  // gurt is an Electron app that, at runtime, provisions *child* dev containers
+  // via the bundled @devcontainers/cli. That nested provisioning needs a Docker
+  // daemon, so this container ships Docker-in-Docker: the inner daemon shares
+  // this container's filesystem, so gurt's clones under GURT_ROOT can be
+  // bind-mounted into the child containers it starts.
+  //
+  // The GUI runs headless: postStartCommand launches an Xvfb virtual display on
+  // :99, and DISPLAY=:99 is exported, so `npm run dev` and the smoke scripts
+  // start Electron with no extra wrapping.
+  //
+  // Alternative to docker-in-docker: swap in
+  // "ghcr.io/devcontainers/features/docker-outside-of-docker:1" to reuse the
+  // host daemon instead (lighter, but child-container bind mounts then resolve
+  // against host paths, not this container's — keep GURT_ROOT host-shared).
+  "name": "gurt",
+  "build": { "dockerfile": "Dockerfile" },
+
+  "features": {
+    // moby:false → install upstream Docker CE. The default (moby:true) pulls
+    // moby-cli, which has no package on the base image's Debian trixie and fails
+    // the build.
+    "ghcr.io/devcontainers/features/docker-in-docker:2": { "moby": false }
+  },
+
+  "containerEnv": {
+    // Default gurt root (~/.gurt). Kept inside the container so the in-container
+    // Docker daemon can bind-mount the clones it creates here.
+    "GURT_ROOT": "/home/node/.gurt",
+    "DISPLAY": ":99"
+  },
+
+  // Install deps after the container is created.
+  "postCreateCommand": "npm install",
+
+  // Start a headless X server for Electron on every container start.
+  "postStartCommand": "bash -lc 'pgrep Xvfb >/dev/null || (Xvfb :99 -screen 0 1280x800x24 >/tmp/xvfb.log 2>&1 & disown)'",
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode"
+      ],
+      "settings": {
+        "editor.formatOnSave": true
+      }
+    }
+  },
+
+  "remoteUser": "node"
+}
