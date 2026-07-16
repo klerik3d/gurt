@@ -211,23 +211,40 @@ body {
   color: var(--accent);
 }
 
-/* session state marks in the tree */
+/* session status marks in the tree — draft → queued → starting → running/waiting/idle */
 .session-mark {
   font-size: 10px;
   width: 12px;
   text-align: center;
 }
-.mark-started {
-  color: var(--green);
-}
-.mark-starting {
-  color: var(--yellow);
+.mark-draft {
+  color: var(--text-dim3);
 }
 .mark-queued {
   color: var(--accent);
 }
-.mark-draft {
-  color: var(--text-dim3);
+.mark-starting {
+  color: var(--yellow);
+}
+.mark-running {
+  color: var(--green);
+  animation: mark-pulse 1.3s ease-in-out infinite;
+}
+.mark-waiting {
+  color: var(--terracotta);
+  animation: mark-pulse 1.3s ease-in-out infinite;
+}
+.mark-idle {
+  color: var(--text-dim);
+}
+@keyframes mark-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
 }
 
 .status {
