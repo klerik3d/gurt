@@ -6,7 +6,6 @@ import { spawn } from 'node:child_process'
 import { promises as fs } from 'node:fs'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
-import { shell } from 'electron'
 import type { ChangedFile, RepoChanges, ThreadCommit } from '../shared/types'
 import { run } from './provision'
 import { cloneDir, taskDir } from './store'
@@ -267,12 +266,12 @@ export async function push(ws: string, task: string, repo: string): Promise<void
   })
 }
 
-/** PoC delivery: open the browser at the forge's compare URL for gurt/<task>. */
-export async function openPr(ws: string, task: string, repo: string): Promise<void> {
+/** PoC delivery: the forge's compare URL for gurt/<task> (the IPC layer opens it). */
+export async function prUrl(ws: string, task: string, repo: string): Promise<string> {
   const dir = cloneDir(ws, task, repo)
   const url = await compareUrl(dir, task, await hostGitEnvForRepo(ws, repo))
   if (!url) throw new Error('origin is not a known forge remote')
-  await shell.openExternal(url)
+  return url
 }
 
 /** PoC escape hatch: open the clone with host VS Code. */
