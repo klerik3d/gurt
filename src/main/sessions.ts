@@ -17,6 +17,7 @@ import type {
   SessionSnapshot
 } from '../shared/types'
 import type { AgentDef } from '../shared/agents'
+import type { CreateAction } from '../shared/api'
 import { connKey, envKey, taskKey } from '../shared/keys'
 import { spawnAcpAdapter } from './provision'
 import { JsonRpcPeer } from './jsonrpc'
@@ -138,7 +139,7 @@ export interface SessionEvents {
   onEnvActive: (ref: EnvRef) => void
 }
 
-export type CreateAction = 'run' | 'queue' | 'draft'
+export type { CreateAction }
 
 export class SessionManager {
   private connections = new Map<string, Connection>()
