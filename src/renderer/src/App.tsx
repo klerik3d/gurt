@@ -94,6 +94,13 @@ export default function App() {
 
   const positions = queuePositions(tree)
 
+  // The tree only refetches on `tree-changed`, which doesn't fire on busy /
+  // permission transitions. Overlay the freshest runtime flags from snapshots
+  // (pushed on every session change) so the sidebar's run/wait/idle marks stay live.
+  const activity: Record<string, { busy?: boolean; awaitingInput?: boolean }> = {}
+  for (const [id, snap] of Object.entries(snapshots))
+    activity[id] = { busy: snap.info.busy, awaitingInput: snap.info.awaitingInput }
+
   const activeSnap = selection?.type === 'session' ? snapshots[selection.id] : undefined
   const activeInfo = activeSnap?.info
   const activeEnv =
@@ -123,6 +130,7 @@ export default function App() {
           tree={tree}
           selection={selection}
           changes={changes}
+          activity={activity}
           onSelectTask={(ws, task) => setSelection({ type: 'task', ws, task })}
           onSelectSession={selectSession}
           onOpenAgents={() => setAgentsOpen(true)}

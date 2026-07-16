@@ -99,6 +99,31 @@ export interface SessionInfo {
   startPrompt: string
   /** ISO timestamp, present while queued — defines global FIFO order. */
   queuedAt?: string
+  /** Runtime overlay (never persisted): the agent is processing a prompt right now. */
+  busy?: boolean
+  /** Runtime overlay (never persisted): a permission request awaits the user's decision. */
+  awaitingInput?: boolean
+}
+
+/**
+ * Fine-grained status shown in the session tree — the persisted {@link SessionState}
+ * split by the live runtime overlay so a `started` session reads as one of:
+ *   running — the agent is working, waiting — it needs the user, idle — turn done.
+ */
+export type SessionStatus =
+  | 'draft'
+  | 'queued'
+  | 'starting'
+  | 'running'
+  | 'waiting'
+  | 'idle'
+
+/** Collapse (persisted state + runtime overlay) into the status the tree renders. */
+export function sessionStatus(s: SessionInfo): SessionStatus {
+  if (s.state !== 'started') return s.state // draft | queued | starting
+  if (s.awaitingInput) return 'waiting'
+  if (s.busy) return 'running'
+  return 'idle'
 }
 
 /** Full tree snapshot pushed to the renderer. */

@@ -169,7 +169,16 @@ export class SessionManager {
   listForTask(ws: string, task: string): SessionInfo[] {
     return [...this.sessions.values()]
       .filter((s) => s.ref.workspace === ws && s.ref.task === task)
-      .map((s) => s.info)
+      .map((s) => this.infoWithRuntime(s))
+  }
+
+  /** `info` plus the non-persisted runtime overlay the tree renders as status. */
+  private infoWithRuntime(s: Session): SessionInfo {
+    return {
+      ...s.info,
+      busy: s.busy || undefined,
+      awaitingInput: s.pendingPermissions.size > 0 || undefined
+    }
   }
 
   private queuePosition(sessionId: string): number | undefined {
@@ -184,7 +193,7 @@ export class SessionManager {
     const s = this.sessions.get(sessionId)
     return (
       s && {
-        info: s.info,
+        info: this.infoWithRuntime(s),
         entries: s.entries,
         busy: s.busy,
         modes: s.modes,
