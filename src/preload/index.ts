@@ -17,9 +17,12 @@ const api = {
   startEnv: (ref: EnvRef) => ipcRenderer.invoke('env:start', ref),
   stopEnv: (ref: EnvRef) => ipcRenderer.invoke('env:stop', ref),
   removeEnv: (ref: EnvRef) => ipcRenderer.invoke('env:remove', ref),
-  getTaskChanges: (ws: string, task: string) => ipcRenderer.invoke('changes:get', ws, task),
+  getTaskChanges: (ws: string, task: string, opts?: { fetch?: boolean }) =>
+    ipcRenderer.invoke('changes:get', ws, task, opts ?? {}),
   getFileDiff: (ws: string, task: string, repo: string, file: string) =>
     ipcRenderer.invoke('changes:diff', ws, task, repo, file),
+  getCommitDiff: (ws: string, task: string, repo: string, sha: string) =>
+    ipcRenderer.invoke('changes:commit-diff', ws, task, repo, sha),
   changesCommit: (ws: string, task: string, repo: string, message: string) =>
     ipcRenderer.invoke('changes:commit', ws, task, repo, message),
   changesPush: (ws: string, task: string, repo: string) =>

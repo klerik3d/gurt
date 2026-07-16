@@ -301,9 +301,14 @@ export function registerIpc(): void {
   handle('env:stop', (ref: EnvRef) => stopEnv(ref))
   handle('env:remove', (ref: EnvRef) => deleteEnv(ref))
 
-  handle('changes:get', (ws: string, task: string) => changes.getTaskChanges(ws, task))
+  handle('changes:get', (ws: string, task: string, opts: { fetch?: boolean }) =>
+    changes.getTaskChanges(ws, task, opts)
+  )
   handle('changes:diff', (ws: string, task: string, repo: string, file: string) =>
     changes.getFileDiff(ws, task, repo, file)
+  )
+  handle('changes:commit-diff', (ws: string, task: string, repo: string, sha: string) =>
+    changes.getCommitDiff(ws, task, repo, sha)
   )
   handle('changes:commit', (ws: string, task: string, repo: string, message: string) =>
     changes.commit(ws, task, repo, message)

@@ -208,7 +208,8 @@ export interface EnvRef {
   repo: string
 }
 
-// Changes panel: the product of a (task, repo) clone — see docs/requirements-changes-panel.md.
+// Changes panel: the delivery thread of a (task, repo) clone —
+// see docs/requirements-changes-thread.md.
 
 export interface ChangedFile {
   /** Path relative to the repo root. */
@@ -217,18 +218,43 @@ export interface ChangedFile {
   status: string
 }
 
+/** One commit of the thread — a commit in `<default>..HEAD`. */
+export interface ThreadCommit {
+  /** Full SHA; the UI shows the short prefix. */
+  sha: string
+  subject: string
+  /** Reachable from `origin/gurt/<task>`. */
+  pushed: boolean
+}
+
 /** Git state of one clone, computed on the host (works with containers stopped). */
 export interface RepoChanges {
   repo: string
   /** Uncommitted changes exist (staged, unstaged, or untracked). */
   dirty: boolean
-  /** Local commits not on the remote (upstream if set, else origin/HEAD). */
-  ahead: number
   files: ChangedFile[]
   insertions: number
   deletions: number
-  /** Origin is a GitHub-style remote — the Create PR button is shown at all. */
-  prAvailable: boolean
-  /** The remote gurt/<task> branch exists and matches HEAD — Create PR enabled. */
-  prReady: boolean
+  /** Short name of the default branch: `origin/HEAD`, fallback `main`. */
+  defaultBranch: string
+  /** Commits in `<default>..HEAD`, newest first. */
+  commits: ThreadCommit[]
+  /** The thread has landed: no commits left, or `refs/gurt/integrated` == HEAD. */
+  integrated: boolean
+  /** Forge compare URL — present only when the origin matches a forge and a commit is pushed. */
+  prUrl?: string
 }
+
+/**
+ * There is work to commit or push.
+ *
+ * An integrated thread is dead history: its commits are excluded, because once the
+ * remote branch is pruned they all read as `local` again and would otherwise keep the
+ * repo actionable forever. Uncommitted work always counts, integrated or not.
+ */
+export const isActionable = (r: RepoChanges): boolean =>
+  r.dirty || (!r.integrated && r.commits.some((c) => !c.pushed))
+
+/** Pushed and waiting for the remote to merge it — nothing left to do here. */
+export const isDelivered = (r: RepoChanges): boolean =>
+  !isActionable(r) && !r.integrated && r.commits.some((c) => c.pushed)
