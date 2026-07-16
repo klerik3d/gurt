@@ -109,11 +109,12 @@ function ensureEnvRunning(ref: EnvRef): Promise<EnvState> {
 
 /** Ensure env is up, then build the validated launch context for an agent. */
 async function resolveEnv(ref: EnvRef, agentId: string): Promise<EnvContext> {
-  const def = agentDef(agentId)
-  if (!def) throw new Error(`unknown agent "${agentId}"`)
   const agents = await store.getAgents()
   const cfg = agents[agentId]
-  if (!cfg?.enabled) throw new Error(`agent "${def.label}" is disabled — enable it in Agents`)
+  if (!cfg) throw new Error(`unknown agent "${agentId}"`)
+  const def = agentDef(cfg.kind)
+  if (!def) throw new Error(`agent "${cfg.label}" has unknown kind "${cfg.kind}"`)
+  if (!cfg.enabled) throw new Error(`agent "${cfg.label}" is disabled — enable it in Agents`)
   const repo = (await store.getWorkspace(ref.workspace)).repos.find((r) => r.name === ref.repo)
   if (!repo) throw new Error(`repo "${ref.repo}" is not registered in "${ref.workspace}"`)
 
@@ -127,7 +128,8 @@ async function resolveEnv(ref: EnvRef, agentId: string): Promise<EnvContext> {
     hostWorkspaceFolder: cloneDir(ref.workspace, ref.task, ref.repo),
     configArgs: await overrideConfigArgs(ref, repo),
     secret: cfg.secret,
-    secretEnv: cfg.secretEnv || def.secretEnv
+    secretEnv: cfg.secretEnv || def.secretEnv,
+    env: cfg.env
   }
 }
 
