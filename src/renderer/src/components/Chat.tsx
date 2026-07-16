@@ -3,7 +3,10 @@ import type {
   ChatEntry,
   CommandInfo,
   PlanEntry,
+  PromptCapabilities,
   PromptContext,
+  PromptImage,
+  SessionConfigOption,
   SessionMode,
   SessionModes,
   SessionSnapshot
@@ -23,7 +26,7 @@ export function Chat({ snapshot, sessionId }: { snapshot?: SessionSnapshot; sess
 
   if (!snapshot) return <div className="placeholder">loading session…</div>
 
-  const { info, entries, modes, plan, commands, busy } = snapshot
+  const { info, entries, modes, plan, commands, configOptions, promptCapabilities, busy } = snapshot
 
   return (
     <div className="chat">
@@ -67,6 +70,8 @@ export function Chat({ snapshot, sessionId }: { snapshot?: SessionSnapshot; sess
         busy={busy}
         modes={modes}
         commands={commands ?? []}
+        configOptions={configOptions ?? []}
+        promptCaps={promptCapabilities}
       />
     </div>
   )
@@ -87,6 +92,10 @@ type IconName =
   | 'auto'
   | 'plan'
   | 'ask'
+  | 'image'
+  | 'cpu'
+  | 'gauge'
+  | 'toggle'
 
 const ICON_PATHS: Record<IconName, JSX.Element> = {
   file: (
@@ -141,6 +150,32 @@ const ICON_PATHS: Record<IconName, JSX.Element> = {
       <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
       <line x1="12" y1="17" x2="12.01" y2="17" />
     </>
+  ),
+  image: (
+    <>
+      <rect x="3" y="3" width="18" height="18" rx="2" />
+      <circle cx="9" cy="9" r="2" />
+      <path d="M21 15l-5-5L5 21" />
+    </>
+  ),
+  cpu: (
+    <>
+      <rect x="9" y="9" width="6" height="6" rx="1" />
+      <rect x="4" y="4" width="16" height="16" rx="2" />
+      <path d="M9 1v3M15 1v3M9 20v3M15 20v3M1 9h3M1 15h3M20 9h3M20 15h3" />
+    </>
+  ),
+  gauge: (
+    <>
+      <path d="M12 14l4-4" />
+      <path d="M3.5 18a9 9 0 1 1 17 0" />
+    </>
+  ),
+  toggle: (
+    <>
+      <rect x="1" y="6" width="22" height="12" rx="6" />
+      <circle cx="16" cy="12" r="3" />
+    </>
   )
 }
 
@@ -181,23 +216,46 @@ const basename = (p: string): string => {
 const chipIcon = (path: string): IconName =>
   path.startsWith('git:') ? 'git' : path.endsWith('/') ? 'folder' : 'file'
 
+function configIcon(category?: string): IconName {
+  if (category === 'model') return 'cpu'
+  if (category === 'thought_level') return 'gauge'
+  return 'toggle'
+}
+
+/** Read a File as bare base64 (no `data:...;base64,` prefix), for an ACP image block. */
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader()
+    r.onload = () => resolve(String(r.result).replace(/^data:[^,]*,/, ''))
+    r.onerror = () => reject(r.error)
+    r.readAsDataURL(file)
+  })
+}
+
 function Composer({
   sessionId,
   busy,
   modes,
-  commands
+  commands,
+  configOptions,
+  promptCaps
 }: {
   sessionId: string
   busy: boolean
   modes?: SessionModes
   commands: CommandInfo[]
+  configOptions: SessionConfigOption[]
+  promptCaps?: PromptCapabilities
 }) {
   const [text, setText] = useState('')
   const [focused, setFocused] = useState(false)
   const [chips, setChips] = useState<PromptContext[]>([])
+  const [images, setImages] = useState<PromptImage[]>([])
   const [slashOpen, setSlashOpen] = useState(false)
   const [addOpen, setAddOpen] = useState(false)
   const [modeOpen, setModeOpen] = useState(false)
+  /** id of the config-option select whose dropdown is open, or null. */
+  const [openConfigId, setOpenConfigId] = useState<string | null>(null)
   const [cmdQuery, setCmdQuery] = useState('')
   const [cmdIdx, setCmdIdx] = useState(0)
   /** null → the add-context item list; 'file'/'folder' → an inline path input. */
@@ -207,6 +265,7 @@ function Composer({
   const taRef = useRef<HTMLTextAreaElement>(null)
   const cmdRef = useRef<HTMLInputElement>(null)
   const rootRef = useRef<HTMLDivElement>(null)
+  const imgRef = useRef<HTMLInputElement>(null)
   const recogRef = useRef<{ stop: () => void } | null>(null)
   const lastActivityPingRef = useRef(0)
 
@@ -229,13 +288,13 @@ function Composer({
 
   // Close every popup on an outside click.
   useEffect(() => {
-    if (!slashOpen && !addOpen && !modeOpen) return
+    if (!slashOpen && !addOpen && !modeOpen && openConfigId === null) return
     const onDown = (e: MouseEvent) => {
       if (rootRef.current && !rootRef.current.contains(e.target as Node)) closeMenus()
     }
     document.addEventListener('mousedown', onDown)
     return () => document.removeEventListener('mousedown', onDown)
-  }, [slashOpen, addOpen, modeOpen])
+  }, [slashOpen, addOpen, modeOpen, openConfigId])
 
   // Stop any live dictation when the composer unmounts (session switch).
   useEffect(() => () => recogRef.current?.stop(), [])
@@ -258,6 +317,7 @@ function Composer({
     setSlashOpen(false)
     setAddOpen(false)
     setModeOpen(false)
+    setOpenConfigId(null)
     setAddKind(null)
     setAddPath('')
   }
@@ -265,6 +325,7 @@ function Composer({
   const openSlash = (open: boolean) => {
     setAddOpen(false)
     setModeOpen(false)
+    setOpenConfigId(null)
     setSlashOpen(open)
     setCmdQuery('')
     setCmdIdx(0)
@@ -274,6 +335,7 @@ function Composer({
   const openAdd = (open: boolean) => {
     setSlashOpen(false)
     setModeOpen(false)
+    setOpenConfigId(null)
     setAddKind(null)
     setAddPath('')
     setAddOpen(open)
@@ -281,12 +343,37 @@ function Composer({
 
   const send = () => {
     const t = text.trim()
-    if (!t || busy) return
+    if ((!t && images.length === 0) || busy) return
     const context = chips.length ? chips : undefined
+    const imgs = images.length ? images : undefined
     setText('')
     setChips([])
+    setImages([])
     closeMenus()
-    window.gurt.sessionPrompt(sessionId, t, context).catch(console.error)
+    window.gurt.sessionPrompt(sessionId, t, context, imgs).catch(console.error)
+  }
+
+  const pickImages = async (files: FileList | null) => {
+    openAdd(false)
+    if (!files?.length) return
+    const added: PromptImage[] = []
+    for (const f of Array.from(files)) {
+      if (!f.type.startsWith('image/')) continue
+      try {
+        added.push({ name: f.name, mimeType: f.type, data: await fileToBase64(f) })
+      } catch (e) {
+        console.error(e)
+      }
+    }
+    if (added.length) setImages((imgs) => [...imgs, ...added])
+    setTimeout(() => taRef.current?.focus(), 0)
+  }
+
+  const removeImage = (i: number) => setImages((imgs) => imgs.filter((_, j) => j !== i))
+
+  const changeConfig = (opt: SessionConfigOption, value: string | boolean) => {
+    setOpenConfigId(null)
+    window.gurt.sessionSetConfigOption(sessionId, opt.id, value).catch((e) => alert(String(e)))
   }
 
   const pickCommand = (name: string) => {
@@ -377,14 +464,18 @@ function Composer({
     }
   }
 
-  const canSend = !busy && text.trim().length > 0
+  const canSend = !busy && (text.trim().length > 0 || images.length > 0)
   const curMode = modes?.availableModes.find((m) => m.id === modes.currentModeId)
   const curVisual = curMode ? modeVisual(curMode) : null
   const hasModes = !!modes && modes.availableModes.length > 0
+  // The agent may surface Mode as a config option too; we already render it as the
+  // dedicated mode pill, so drop it here to avoid a duplicate control.
+  const cfgOptions = configOptions.filter((o) => o.category !== 'mode')
+  const openConfig = cfgOptions.find((o) => o.id === openConfigId && o.type === 'select')
 
   return (
     <div className="composer-wrap">
-      {chips.length > 0 && (
+      {(chips.length > 0 || images.length > 0) && (
         <div className="composer-chips">
           {chips.map((c, i) => (
             <span className="ctx-chip" key={`${c.path}-${i}`}>
@@ -393,6 +484,17 @@ function Composer({
               </span>
               <span className="ctx-name">{c.name}</span>
               <span className="ctx-x" title="Remove" onClick={() => removeChip(i)}>
+                ×
+              </span>
+            </span>
+          ))}
+          {images.map((img, i) => (
+            <span className="ctx-chip" key={`img-${img.name}-${i}`}>
+              <span className="ctx-ic">
+                <Icon name="image" size={12} />
+              </span>
+              <span className="ctx-name">{img.name}</span>
+              <span className="ctx-x" title="Remove" onClick={() => removeImage(i)}>
                 ×
               </span>
             </span>
@@ -486,6 +588,20 @@ function Composer({
                   </span>
                   <span>Git diff</span>
                 </div>
+                {promptCaps?.image && (
+                  <div
+                    className="cmp-menu-item ctx-item"
+                    onMouseDown={(e) => {
+                      e.preventDefault()
+                      imgRef.current?.click()
+                    }}
+                  >
+                    <span className="ctx-ic">
+                      <Icon name="image" />
+                    </span>
+                    <span>Image…</span>
+                  </div>
+                )}
               </>
             ) : (
               <>
@@ -540,6 +656,40 @@ function Composer({
             })}
           </div>
         )}
+
+        {openConfig && (
+          <div className="cmp-menu mode-menu">
+            <div className="cmp-menu-head">{openConfig.name.toUpperCase()}</div>
+            <div className="slash-list">
+              {(openConfig.options ?? []).map((o) => (
+                <div
+                  key={o.value}
+                  className="cmp-menu-item mode-row"
+                  title={o.description ?? undefined}
+                  onMouseDown={(e) => {
+                    e.preventDefault()
+                    changeConfig(openConfig, o.value)
+                  }}
+                >
+                  <span className="mode-name">{o.name}</span>
+                  {o.value === openConfig.currentValue && <span className="mode-check">✓</span>}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <input
+          ref={imgRef}
+          type="file"
+          accept="image/*"
+          multiple
+          style={{ display: 'none' }}
+          onChange={(e) => {
+            void pickImages(e.target.files)
+            e.target.value = ''
+          }}
+        />
 
         <div className="composer-row">
           <textarea
@@ -607,6 +757,46 @@ function Composer({
               <span className="caret">▾</span>
             </button>
           )}
+          {cfgOptions.map((opt) => {
+            if (opt.type === 'boolean') {
+              const on = opt.currentValue === true
+              return (
+                <button
+                  key={opt.id}
+                  className={`mode-pill ${on ? 'active' : ''}`}
+                  title={opt.description ?? opt.name}
+                  disabled={busy}
+                  onClick={() => changeConfig(opt, !on)}
+                >
+                  <span className="mode-ic" style={{ color: on ? 'var(--green)' : 'var(--text-dim3)' }}>
+                    <Icon name="toggle" size={14} />
+                  </span>
+                  {opt.name}
+                </button>
+              )
+            }
+            const cur = opt.options?.find((o) => o.value === opt.currentValue)
+            return (
+              <button
+                key={opt.id}
+                className={`mode-pill ${openConfigId === opt.id ? 'active' : ''}`}
+                title={opt.description ?? opt.name}
+                disabled={busy}
+                onClick={() => {
+                  setSlashOpen(false)
+                  setAddOpen(false)
+                  setModeOpen(false)
+                  setOpenConfigId((id) => (id === opt.id ? null : opt.id))
+                }}
+              >
+                <span className="mode-ic" style={{ color: 'var(--accent)' }}>
+                  <Icon name={configIcon(opt.category)} size={14} />
+                </span>
+                {cur?.name ?? opt.name}
+                <span className="caret">▾</span>
+              </button>
+            )
+          })}
           <button className="send-btn" disabled={!canSend} onClick={send} title="Send">
             <Icon name="send" size={17} />
           </button>
