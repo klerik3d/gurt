@@ -248,7 +248,8 @@ export function spawnAcpAdapter(
   configArgs: string[],
   workspaceFolder: string,
   secret: string,
-  secretEnv: string
+  secretEnv: string,
+  extraEnv?: Record<string, string>
 ) {
   const args = [
     devcontainerCliPath(),
@@ -258,6 +259,8 @@ export function spawnAcpAdapter(
     ...configArgs
   ]
   if (secret) args.push('--remote-env', `${secretEnv}=${secret}`)
+  for (const [k, v] of Object.entries(extraEnv ?? {}))
+    args.push('--remote-env', `${k}=${v}`)
   args.push(agent.bin, ...agent.binArgs)
   return spawn(process.execPath, args, {
     env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },

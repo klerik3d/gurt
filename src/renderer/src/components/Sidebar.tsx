@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import type { AgentsFile, McpMode, McpSelection, RepoChanges, SessionInfo, SessionState, Tree } from '../../../shared/types'
 import { isActionable, isDelivered } from '../../../shared/types'
 import type { McpDef } from '../../../shared/mcp'
-import { AGENT_DEFS, agentDef } from '../../../shared/agents'
+import { agentDef } from '../../../shared/agents'
 import type { Selection } from '../App'
 import { Modal } from './Modal'
 import { ReposModal } from './ReposModal'
@@ -272,15 +272,17 @@ function NewSessionModal({
   useEffect(() => {
     window.gurt.getAgents().then((a) => {
       setAgents(a)
-      const first = AGENT_DEFS.find((d) => a[d.id]?.enabled)
-      if (first) setAgent(first.id)
+      const first = Object.keys(a).find((id) => a[id].enabled)
+      if (first) setAgent(first)
     })
     window.gurt.getMcpDefs().then(setMcpDefs)
   }, [])
 
-  const models = agentDef(agent)?.models
+  const instance = agents?.[agent]
+  const kindDef = instance ? agentDef(instance.kind) : undefined
+  const models = kindDef?.models
   useEffect(() => {
-    setModel(agentDef(agent)?.defaultModel ?? models?.[0] ?? '')
+    setModel(instance?.model ?? kindDef?.defaultModel ?? models?.[0] ?? '')
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agent])
 
@@ -298,7 +300,11 @@ function NewSessionModal({
   const wsData = tree.workspaces.find((w) => w.name === ws)
   const taskData = wsData?.tasks.find((t) => t.name === task)
   const repos = wsData?.repos ?? []
-  const enabledAgents = AGENT_DEFS.filter((d) => agents?.[d.id]?.enabled)
+  const enabledAgents = agents
+    ? Object.entries(agents)
+        .filter(([, a]) => a.enabled)
+        .map(([id, a]) => ({ id, label: a.label }))
+    : []
 
   useEffect(() => {
     if (!repo && repos.length) setRepo(repos[0].name)
@@ -351,8 +357,8 @@ function NewSessionModal({
         <label>
           agent
           <select value={agent} onChange={(e) => setAgent(e.target.value)}>
-            {enabledAgents.map((d) => (
-              <option key={d.id} value={d.id}>{d.label}</option>
+            {enabledAgents.map((a) => (
+              <option key={a.id} value={a.id}>{a.label}</option>
             ))}
           </select>
         </label>

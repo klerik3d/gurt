@@ -60,6 +60,8 @@ export interface EnvContext {
   configArgs: string[]
   secret: string
   secretEnv: string
+  /** Extra env vars for the adapter (e.g. a local model's base URL). */
+  env?: Record<string, string>
 }
 
 export interface SessionEvents {
@@ -382,7 +384,8 @@ export class SessionManager {
       ctx.configArgs,
       ctx.hostWorkspaceFolder,
       ctx.secret,
-      ctx.secretEnv
+      ctx.secretEnv,
+      ctx.env
     )
     child.stderr.on('data', (d: Buffer) => console.error(`[acp ${key}]`, d.toString().trim()))
     const peer = new JsonRpcPeer(child, (err) => console.error(`[acp ${key}]`, err))

@@ -17,15 +17,29 @@ export interface AcpHttpMcpServer {
   headers: { name: string; value: string }[]
 }
 
-export interface AgentConfig {
+/**
+ * A user-defined agent profile: a named instance of a built-in agent *kind*
+ * (see `AgentDef`) carrying its own credentials and config. Several instances of
+ * one kind can coexist — e.g. two `claude-code` profiles with different tokens
+ * ("work" / "home"), or an `opencode` pointed at a local model via `env`.
+ */
+export interface AgentInstance {
+  /** Which built-in adapter to launch — references `AgentDef.id`. */
+  kind: string
+  /** User-facing name shown in pickers and chips. */
+  label: string
   enabled: boolean
   secret: string
-  /** Env var name receiving the secret; defaults to the agent definition's. */
+  /** Env var name receiving the secret; defaults to the kind's default. */
   secretEnv?: string
+  /** Extra env vars injected into the adapter (base URL, provider, ...). */
+  env?: Record<string, string>
+  /** Default model for kinds that support a model picker (see `AgentDef.models`). */
+  model?: string
 }
 
-/** agents.json — registry of available agents, keyed by agent id. */
-export type AgentsFile = Record<string, AgentConfig>
+/** agents.json — registry of agent instances, keyed by a stable instance id. */
+export type AgentsFile = Record<string, AgentInstance>
 
 export interface RepoConfig {
   name: string
