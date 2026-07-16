@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react'
 import type { AgentsFile, McpMode, McpSelection, RepoChanges, SessionInfo, SessionState, Tree } from '../../../shared/types'
 import { isActionable, isDelivered } from '../../../shared/types'
 import type { McpDef } from '../../../shared/mcp'
-import { agentDef } from '../../../shared/agents'
 import type { Selection } from '../App'
 import { Modal } from './Modal'
 import { ReposModal } from './ReposModal'
@@ -137,7 +136,6 @@ export function Sidebar({
                         </span>
                         <span className="chip">{s.envRepo}</span>
                         <span className="chip">{s.agent}</span>
-                        {s.model && <span className="chip">{s.model}</span>}
                         {s.mcp?.map((m) => (
                           <span
                             key={m.id}
@@ -266,7 +264,6 @@ function NewSessionModal({
   const [mcp, setMcp] = useState<Record<string, McpMode>>({})
   /** Permission mode: auto-allow tool calls, or ask for each one. */
   const [autoAllow, setAutoAllow] = useState(true)
-  const [model, setModel] = useState('')
   const [error, setError] = useState('')
 
   useEffect(() => {
@@ -277,14 +274,6 @@ function NewSessionModal({
     })
     window.gurt.getMcpDefs().then(setMcpDefs)
   }, [])
-
-  const instance = agents?.[agent]
-  const kindDef = instance ? agentDef(instance.kind) : undefined
-  const models = kindDef?.models
-  useEffect(() => {
-    setModel(instance?.model ?? kindDef?.defaultModel ?? models?.[0] ?? '')
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agent])
 
   const toggleMcp = (id: string, on: boolean) =>
     setMcp((prev) => {
@@ -331,8 +320,7 @@ function NewSessionModal({
         prompt,
         action,
         mcpSelection(),
-        autoAllow,
-        models ? model : undefined
+        autoAllow
       )
       onCreated(s)
     } catch (e) {
@@ -363,16 +351,6 @@ function NewSessionModal({
           </select>
         </label>
         {enabledAgents.length === 0 && <div className="hint">no agents enabled — check ⚙ Agents</div>}
-        {models && models.length > 0 && (
-          <label>
-            model
-            <select value={model} onChange={(e) => setModel(e.target.value)}>
-              {models.map((m) => (
-                <option key={m} value={m}>{m}</option>
-              ))}
-            </select>
-          </label>
-        )}
         <label>
           mode
           <select

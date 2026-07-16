@@ -8,7 +8,10 @@ import type {
   McpSelection,
   PermissionOption,
   PersistedSession,
+  PromptCapabilities,
   PromptContext,
+  PromptImage,
+  SessionConfigOption,
   SessionInfo,
   SessionModes,
   SessionSnapshot
@@ -22,10 +25,57 @@ const taskKey = (ref: EnvRef) => `${ref.workspace}/${ref.task}`
 /** One ACP connection (adapter process) per (env, agent). */
 const connKey = (ref: EnvRef, agent: string) => `${envKey(ref)}::${agent}`
 
+/**
+ * Normalize ACP `SessionConfigOption[]` into our flat shape. `select` options may be
+ * either a flat list or grouped under headers — we inline groups (prefixing each label
+ * with its group name) so the renderer sees one flat option list. Malformed entries are
+ * skipped. Returns undefined when the agent reports no config options at all.
+ */
+function normalizeConfigOptions(raw: unknown[] | undefined): SessionConfigOption[] | undefined {
+  if (!Array.isArray(raw)) return undefined
+  const out: SessionConfigOption[] = []
+  for (const o of raw as any[]) {
+    if (!o || typeof o.id !== 'string' || typeof o.name !== 'string') continue
+    if (o.type === 'boolean') {
+      out.push({
+        id: o.id,
+        name: o.name,
+        description: o.description ?? undefined,
+        category: o.category ?? undefined,
+        type: 'boolean',
+        currentValue: !!o.currentValue
+      })
+    } else if (o.type === 'select') {
+      const flat: SessionConfigOption['options'] = []
+      for (const item of (o.options ?? []) as any[]) {
+        if (Array.isArray(item?.options)) {
+          for (const v of item.options as any[])
+            if (v && typeof v.value === 'string')
+              flat.push({ value: v.value, name: `${item.name} · ${v.name ?? v.value}`, description: v.description ?? undefined })
+        } else if (item && typeof item.value === 'string') {
+          flat.push({ value: item.value, name: item.name ?? item.value, description: item.description ?? undefined })
+        }
+      }
+      out.push({
+        id: o.id,
+        name: o.name,
+        description: o.description ?? undefined,
+        category: o.category ?? undefined,
+        type: 'select',
+        currentValue: typeof o.currentValue === 'string' ? o.currentValue : '',
+        options: flat
+      })
+    }
+  }
+  return out
+}
+
 interface Connection {
   peer: JsonRpcPeer
   ref: EnvRef
   agent: string
+  /** Prompt content the agent accepts, from the `initialize` response (agent-level). */
+  promptCapabilities?: PromptCapabilities
   kill: () => void
 }
 
@@ -42,6 +92,8 @@ interface Session {
   modes?: SessionModes
   plan?: SessionSnapshot['plan']
   commands?: SessionSnapshot['commands']
+  /** Live agent-reported config selectors (model/effort/…), from session/new & updates. */
+  configOptions?: SessionConfigOption[]
   /** The live connection knows this ACP session (created or loaded this run). */
   attached: boolean
   /** session/load in progress — drop replayed updates, we keep our own history. */
@@ -138,6 +190,9 @@ export class SessionManager {
         modes: s.modes,
         plan: s.plan,
         commands: s.commands,
+        configOptions: s.configOptions,
+        promptCapabilities: this.connections.get(connKey(s.ref, s.info.agent ?? ''))
+          ?.promptCapabilities,
         startError: s.startError,
         queuePosition: this.queuePosition(sessionId)
       }
@@ -152,8 +207,7 @@ export class SessionManager {
     startPrompt: string,
     action: CreateAction,
     mcp: McpSelection[] = [],
-    autoAllow = true,
-    model?: string
+    autoAllow = true
   ): SessionInfo {
     const n = this.listForTask(ref.workspace, ref.task).length + 1
     const info: SessionInfo = {
@@ -163,7 +217,6 @@ export class SessionManager {
       workspace: ref.workspace,
       title: `session ${n}`,
       agent: agentId,
-      model,
       autoAllow,
       state: 'draft',
       mcp,
@@ -298,12 +351,14 @@ export class SessionManager {
       s.remoteCwd = ctx.remoteWorkspaceFolder
       const conn = await this.connection(s.ref, s.info.agent!, ctx)
       const mcpServers = await this.events.resolveMcpServers(s.ref, s.info.mcp)
-      const result = await conn.peer.request<{ sessionId: string; modes?: SessionModes }>(
-        'session/new',
-        { cwd: ctx.remoteWorkspaceFolder, mcpServers, ...this.modelMeta(s) }
-      )
+      const result = await conn.peer.request<{
+        sessionId: string
+        modes?: SessionModes
+        configOptions?: unknown[]
+      }>('session/new', { cwd: ctx.remoteWorkspaceFolder, mcpServers })
       s.acpSessionId = result.sessionId
       s.modes = result.modes ?? s.modes
+      s.configOptions = normalizeConfigOptions(result.configOptions)
       s.attached = true
       s.info.state = 'started'
       await this.applyAutoAllow(s, conn)
@@ -409,12 +464,26 @@ export class SessionManager {
     peer.onNotification('session/update', (params) => this.onSessionUpdate(params))
     peer.onRequest('session/request_permission', (params) => this.onPermission(params))
 
-    await peer.request('initialize', {
+    const init = await peer.request<{
+      agentCapabilities?: { promptCapabilities?: PromptCapabilities }
+    }>('initialize', {
       protocolVersion: 1,
-      clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false }
+      clientCapabilities: {
+        fs: { readTextFile: false, writeTextFile: false },
+        terminal: false,
+        // Opt in to boolean config options so agents may expose native toggles
+        // (e.g. Claude's "Fast mode") instead of degrading them to a select.
+        session: { configOptions: { boolean: {} } }
+      }
     })
 
-    const conn: Connection = { peer, ref, agent: agentId, kill: () => child.kill() }
+    const conn: Connection = {
+      peer,
+      ref,
+      agent: agentId,
+      promptCapabilities: init?.agentCapabilities?.promptCapabilities,
+      kill: () => child.kill()
+    }
     this.connections.set(key, conn)
     return conn
   }
@@ -433,13 +502,16 @@ export class SessionManager {
       this.push(s, { kind: 'system', text: 'resuming session...' })
       try {
         const mcpServers = await this.events.resolveMcpServers(s.ref, s.info.mcp)
-        const result = await conn.peer.request<{ modes?: SessionModes }>('session/load', {
+        const result = await conn.peer.request<{
+          modes?: SessionModes
+          configOptions?: unknown[]
+        }>('session/load', {
           sessionId: s.acpSessionId,
           cwd: ctx.remoteWorkspaceFolder,
-          mcpServers,
-          ...this.modelMeta(s)
+          mcpServers
         })
         s.modes = result?.modes ?? s.modes
+        s.configOptions = normalizeConfigOptions(result?.configOptions) ?? s.configOptions
         s.attached = true
         await this.applyAutoAllow(s, conn)
         this.push(s, { kind: 'system', text: 'session resumed' })
@@ -456,10 +528,16 @@ export class SessionManager {
     return conn
   }
 
-  /** Build the ACP prompt content blocks: the message text plus a `resource_link`
-   *  for every attached context item. Context paths are resolved against the
-   *  container workspace folder so the agent gets an absolute `file://` uri. */
-  private promptBlocks(s: Session, text: string, context?: PromptContext[]): unknown[] {
+  /** Build the ACP prompt content blocks: the message text, a `resource_link` for
+   *  every attached context item, and an `image` block per attached image (only sent
+   *  when the agent advertised `promptCapabilities.image`). Context paths are resolved
+   *  against the container workspace folder so the agent gets an absolute `file://` uri. */
+  private promptBlocks(
+    s: Session,
+    text: string,
+    context?: PromptContext[],
+    images?: PromptImage[]
+  ): unknown[] {
     const blocks: unknown[] = [{ type: 'text', text }]
     for (const c of context ?? []) {
       const uri = c.path.startsWith('git:')
@@ -467,10 +545,17 @@ export class SessionManager {
         : `file://${c.path.startsWith('/') ? c.path : `${s.remoteCwd ?? '.'}/${c.path}`}`
       blocks.push({ type: 'resource_link', uri, name: c.name })
     }
+    for (const img of images ?? [])
+      blocks.push({ type: 'image', mimeType: img.mimeType, data: img.data })
     return blocks
   }
 
-  private async runPrompt(s: Session, text: string, context?: PromptContext[]): Promise<void> {
+  private async runPrompt(
+    s: Session,
+    text: string,
+    context?: PromptContext[],
+    images?: PromptImage[]
+  ): Promise<void> {
     this.events.onEnvActive(s.ref)
     this.push(s, { kind: 'user', text })
     s.busy = true
@@ -479,7 +564,7 @@ export class SessionManager {
       const conn = await this.attach(s)
       const result = await conn.peer.request<{ stopReason?: string }>('session/prompt', {
         sessionId: s.acpSessionId,
-        prompt: this.promptBlocks(s, text, context)
+        prompt: this.promptBlocks(s, text, context, images)
       })
       const reason = result?.stopReason
       if (reason && reason !== 'end_turn')
@@ -516,11 +601,16 @@ export class SessionManager {
     this.events.onEnvActive(s.ref)
   }
 
-  async prompt(sessionId: string, text: string, context?: PromptContext[]): Promise<void> {
+  async prompt(
+    sessionId: string,
+    text: string,
+    context?: PromptContext[],
+    images?: PromptImage[]
+  ): Promise<void> {
     const s = this.sessions.get(sessionId)
     if (!s) throw new Error('unknown session')
     if (s.info.state !== 'started') throw new Error('session is not started')
-    await this.runPrompt(s, text, context)
+    await this.runPrompt(s, text, context, images)
   }
 
   cancel(sessionId: string): void {
@@ -574,10 +664,27 @@ export class SessionManager {
     return full
   }
 
-  /** Claude Agent SDK model override, forwarded via the Claude ACP adapter's `_meta`. */
-  private modelMeta(s: Session): { _meta?: { claudeCode: { options: { model: string } } } } {
-    if (!s.info.model) return {}
-    return { _meta: { claudeCode: { options: { model: s.info.model } } } }
+  /** Change a live agent-reported config option (model, effort, fast-mode, …) via
+   *  ACP `session/set_config_option`. The agent echoes back the full option set with
+   *  the new current values, which we adopt (some options change others, e.g. picking
+   *  a model swaps the available effort levels). */
+  async setConfigOption(sessionId: string, configId: string, value: string | boolean): Promise<void> {
+    const s = this.sessions.get(sessionId)
+    if (!s) throw new Error('unknown session')
+    const conn = this.connections.get(connKey(s.ref, s.info.agent ?? ''))
+    if (!conn) throw new Error('agent is not running — send a prompt first')
+    const params =
+      typeof value === 'boolean'
+        ? { sessionId: s.acpSessionId, configId, type: 'boolean', value }
+        : { sessionId: s.acpSessionId, configId, value }
+    const res = await conn.peer.request<{ configOptions?: unknown[] }>(
+      'session/set_config_option',
+      params
+    )
+    const next = normalizeConfigOptions(res?.configOptions)
+    if (next) s.configOptions = next
+    this.events.onSessionChanged(sessionId)
+    this.schedulePersist(s.ref)
   }
 
   /** Pick the ACP mode that matches the session's auto-allow preference. Modes are
@@ -690,6 +797,10 @@ export class SessionManager {
       case 'current_mode_update':
         if (s.modes) s.modes.currentModeId = u.currentModeId
         else s.modes = { currentModeId: u.currentModeId, availableModes: [] }
+        this.events.onSessionChanged(s.info.id)
+        break
+      case 'config_option_update':
+        s.configOptions = normalizeConfigOptions(u.configOptions) ?? s.configOptions
         this.events.onSessionChanged(s.info.id)
         break
       default:
