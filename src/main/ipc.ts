@@ -27,6 +27,7 @@ import {
   removeClone
 } from './provision'
 import { SessionManager, type CreateAction, type EnvContext } from './sessions'
+import * as changes from './changes'
 
 function broadcast(channel: string, ...args: unknown[]): void {
   for (const win of BrowserWindow.getAllWindows()) win.webContents.send(channel, ...args)
@@ -299,6 +300,26 @@ export function registerIpc(): void {
   handle('env:start', (ref: EnvRef) => startEnv(ref))
   handle('env:stop', (ref: EnvRef) => stopEnv(ref))
   handle('env:remove', (ref: EnvRef) => deleteEnv(ref))
+
+  handle('changes:get', (ws: string, task: string, opts: { fetch?: boolean }) =>
+    changes.getTaskChanges(ws, task, opts)
+  )
+  handle('changes:diff', (ws: string, task: string, repo: string, file: string) =>
+    changes.getFileDiff(ws, task, repo, file)
+  )
+  handle('changes:commit-diff', (ws: string, task: string, repo: string, sha: string) =>
+    changes.getCommitDiff(ws, task, repo, sha)
+  )
+  handle('changes:commit', (ws: string, task: string, repo: string, message: string) =>
+    changes.commit(ws, task, repo, message)
+  )
+  handle('changes:push', (ws: string, task: string, repo: string) => changes.push(ws, task, repo))
+  handle('changes:open-pr', (ws: string, task: string, repo: string) =>
+    changes.openPr(ws, task, repo)
+  )
+  handle('changes:open-vscode', (ws: string, task: string, repo: string) =>
+    changes.openInVscode(ws, task, repo)
+  )
 
   handle(
     'session:create',
