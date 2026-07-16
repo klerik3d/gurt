@@ -79,6 +79,9 @@ export interface SessionInfo {
   agent?: string
   /** Model id for agents that support model selection (see `AgentDef.models`). */
   model?: string
+  /** Auto-allow tool calls (map to a bypass/accept mode) vs. confirm each one.
+   *  Chosen at session start; kept in sync when the mode is changed later. */
+  autoAllow?: boolean
   state: SessionState
   /** MCP servers to attach when this session starts (empty/undefined = none). */
   mcp?: McpSelection[]
