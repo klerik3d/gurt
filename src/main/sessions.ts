@@ -114,14 +114,19 @@ export interface EnvContext {
   secretEnv: string
   /** Extra env vars for the adapter (e.g. a local model's base URL). */
   env?: Record<string, string>
+  /** Git-access injection (§6): broker URL + GIT_CONFIG_*; present only when the
+   *  starting session enabled git access. Fixes git access for the shared
+   *  (env, agent) adapter at its first spawn. */
+  gitBrokerEnv?: Record<string, string>
 }
 
 export interface SessionEvents {
   onSessionsChanged: () => void
   onSessionChanged: (sessionId: string) => void
   /** Ensure the container is up (clone + up, reusing a stopped container) and
-   *  return the agent's launch context. Streams to provision-log; throws on failure. */
-  resolveEnv: (ref: EnvRef, agentId: string) => Promise<EnvContext>
+   *  return the agent's launch context. When `gitAccess`, also starts the git
+   *  broker, installs shims, and includes the injection env. Throws on failure. */
+  resolveEnv: (ref: EnvRef, agentId: string, gitAccess: boolean) => Promise<EnvContext>
   /** Install the agent's adapter packages in the container (idempotent). */
   installAdapter: (ref: EnvRef, ctx: EnvContext) => Promise<void>
   /** Ensure the host MCP servers for this selection are up; return ACP descriptors. */
@@ -216,7 +221,8 @@ export class SessionManager {
     startPrompt: string,
     action: CreateAction,
     mcp: McpSelection[] = [],
-    autoAllow = true
+    autoAllow = true,
+    gitAccess = false
   ): SessionInfo {
     const n = this.listForTask(ref.workspace, ref.task).length + 1
     const info: SessionInfo = {
@@ -229,6 +235,7 @@ export class SessionManager {
       autoAllow,
       state: 'draft',
       mcp,
+      gitAccess,
       startPrompt
     }
     this.sessions.set(info.id, {
@@ -356,7 +363,7 @@ export class SessionManager {
     this.events.onSessionsChanged()
     this.events.onSessionChanged(sessionId)
     try {
-      const ctx = await this.events.resolveEnv(s.ref, s.info.agent!)
+      const ctx = await this.events.resolveEnv(s.ref, s.info.agent!, s.info.gitAccess ?? false)
       s.remoteCwd = ctx.remoteWorkspaceFolder
       const conn = await this.connection(s.ref, s.info.agent!, ctx)
       const mcpServers = await this.events.resolveMcpServers(s.ref, s.info.mcp)
@@ -449,7 +456,8 @@ export class SessionManager {
       ctx.hostWorkspaceFolder,
       ctx.secret,
       ctx.secretEnv,
-      ctx.env
+      ctx.env,
+      ctx.gitBrokerEnv
     )
     child.stderr.on('data', (d: Buffer) => console.error(`[acp ${key}]`, d.toString().trim()))
     const peer = new JsonRpcPeer(child, (err) => console.error(`[acp ${key}]`, err))
@@ -502,7 +510,7 @@ export class SessionManager {
     const agentId = s.info.agent ?? 'claude-code'
     const existing = this.connections.get(connKey(s.ref, agentId))
     if (existing && s.attached) return existing
-    const ctx = await this.events.resolveEnv(s.ref, agentId)
+    const ctx = await this.events.resolveEnv(s.ref, agentId, s.info.gitAccess ?? false)
     s.remoteCwd = ctx.remoteWorkspaceFolder
     const conn = await this.connection(s.ref, agentId, ctx)
     if (!s.attached) {

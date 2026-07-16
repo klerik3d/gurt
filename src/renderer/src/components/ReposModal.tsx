@@ -1,11 +1,31 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { RepoConfig, Tree } from '../../../shared/types'
+import type { CredentialEntry } from '../../../shared/credentials'
+import { credentialKindLabel, resolveForRepo } from '../../../shared/credentials'
+import { canonicalRepoId } from '../../../shared/repoId'
 import { Modal } from './Modal'
+
+/** Human summary of which credential answers for `repo`, on its own host (§9). */
+function describeResolution(credentials: CredentialEntry[], repo: RepoConfig): string {
+  const host = canonicalRepoId(repo.url)?.host
+  if (!host) return 'cannot parse a host from the url'
+  const r = resolveForRepo(credentials, repo)
+  if (!r) return 'cannot parse a host from the url'
+  if (r.error) return `⚠ ${r.error}`
+  if (!r.entry) return `host credentials (ambient) — ${host}`
+  const via = r.source === 'link' ? 'linked' : 'auto →'
+  return `${via} ${r.entry.label} · ${credentialKindLabel(r.entry.kind)} (${host})`
+}
 
 export function ReposModal({ tree, ws, onClose }: { tree: Tree; ws: string; onClose: () => void }) {
   const [editing, setEditing] = useState<RepoConfig | null>(null)
   const [adding, setAdding] = useState(false)
   const [error, setError] = useState('')
+  const [credentials, setCredentials] = useState<CredentialEntry[]>([])
+
+  useEffect(() => {
+    window.gurt.getCredentials().then((f) => setCredentials(f.credentials)).catch(() => {})
+  }, [])
 
   const repos = tree.workspaces.find((w) => w.name === ws)?.repos ?? []
 
@@ -44,6 +64,7 @@ export function ReposModal({ tree, ws, onClose }: { tree: Tree; ws: string; onCl
           <RepoForm
             key={editing?.name ?? '__new'}
             initial={editing ?? undefined}
+            credentials={credentials}
             onCancel={() => { setEditing(null); setAdding(false) }}
             onSubmit={(repo) =>
               act(() => (editing ? window.gurt.updateRepo(ws, repo) : window.gurt.addRepo(ws, repo)))
@@ -58,19 +79,29 @@ export function ReposModal({ tree, ws, onClose }: { tree: Tree; ws: string; onCl
 
 function RepoForm({
   initial,
+  credentials,
   onCancel,
   onSubmit
 }: {
   initial?: RepoConfig
+  credentials: CredentialEntry[]
   onCancel: () => void
   onSubmit: (repo: RepoConfig) => void
 }) {
   const [name, setName] = useState(initial?.name ?? '')
   const [url, setUrl] = useState(initial?.url ?? '')
   const [devcontainer, setDevcontainer] = useState(initial?.devcontainer ?? '')
+  const [credentialId, setCredentialId] = useState(initial?.credentialId ?? '')
   const [discovering, setDiscovering] = useState(false)
   const [discoverMsg, setDiscoverMsg] = useState('')
   const valid = name.trim() && url.trim()
+
+  const draft: RepoConfig = {
+    name: name.trim(),
+    url: url.trim(),
+    devcontainer,
+    credentialId: credentialId || undefined
+  }
 
   const discover = async () => {
     setDiscoverMsg('')
@@ -101,6 +132,18 @@ function RepoForm({
       />
       <input placeholder="git url (https or ssh)" value={url} onChange={(e) => setUrl(e.target.value)} />
       <label>
+        credential
+        <select value={credentialId} onChange={(e) => setCredentialId(e.target.value)}>
+          <option value="">auto (match by host)</option>
+          {credentials.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.label} · {credentialKindLabel(c.kind)}
+            </option>
+          ))}
+        </select>
+        {url.trim() && <span className="dim">{describeResolution(credentials, draft)}</span>}
+      </label>
+      <label>
         devcontainer.json (optional — leave empty to use the repo’s own; build paths must be
         ${'{localWorkspaceFolder}'}-based)
         <div className="row-buttons">
@@ -117,7 +160,7 @@ function RepoForm({
         />
       </label>
       <div className="row-buttons">
-        <button disabled={!valid} onClick={() => onSubmit({ name: name.trim(), url: url.trim(), devcontainer })}>
+        <button disabled={!valid} onClick={() => onSubmit(draft)}>
           {initial ? 'Save' : 'Add'}
         </button>
         <button onClick={onCancel}>Cancel</button>

@@ -82,6 +82,34 @@ Not implemented (declared unsupported in the ACP handshake): client fs
 read/write and client-side terminals — agents fall back to their own tools
 inside the container.
 
+## Native git access
+
+Optional per-session (`git access` toggle in the composer; default on when a
+credential resolves for the repo). When on, the agent gets **native** git in the
+container — `git push`, `gh`, submodule fetches — instead of delegating remote
+ops to the github MCP. See [docs/requirements-git-access.md](docs/requirements-git-access.md)
+for the full design. Phase 1 (this slice) covers the HTTPS path:
+
+- **Credentials** (🔑 in the sidebar) live in `~/.gurt/credentials.json`, generic
+  `kind` + opaque `data`. Phase 1 implements `git-token` (PAT / fine-grained /
+  GitLab / Gitea) and `git-host` (ambient). A repo links one by id (or
+  auto-matches by host); the link is never a secret.
+- The contract is **git's own extension points**, never a forge API: an in-container
+  credential-helper shim forwards to a host **broker** (one per env, like the MCP
+  servers) that answers from the store; `url.<base>.insteadOf` rewrites make the
+  transport follow the *credential* (a token repo pushes over https even if cloned
+  over ssh). All injected via `GIT_CONFIG_*` env into the agent process only —
+  nothing is written into the clone or the container's global config, and secrets
+  never leave the broker's per-request responses.
+- Forge-specific behavior (the `gh` wrapper, GitHub App minting later) lives behind
+  interchangeable **forge providers**; the github provider also injects the
+  github-cli devcontainer feature at env-up. Host-side git (clone, the Changes
+  panel's fetch/push) uses the same resolution, so it works with no ambient auth.
+
+SSH keys (phase 2) and GitHub App tokens + agent-secret migration (phase 3) reuse
+the same broker/shim/provider seams; their credential kinds appear in the modal but
+are not wired to the runtime yet.
+
 ## Run
 
 ```bash
@@ -113,7 +141,11 @@ SCRATCH=/tmp/gurt-smoke node scripts/smoke4.mjs   # CRUD + stop/delete + codex h
 SCRATCH=/tmp/gurt-smoke node scripts/smoke5.mjs   # codex-in-gurt handshake
 SCRATCH=/tmp/gurt-smoke node scripts/smoke6.mjs   # session queue: draft/serialization/restart
 SCRATCH=/tmp/gurt-smoke node scripts/smoke7.mjs   # Changes panel delivery thread, no docker (local bare repos)
+SCRATCH=/tmp/gurt-smoke node scripts/smoke8.mjs   # native git access: credentials CRUD + resolution + composer toggle, no docker
 ```
+
+The git contract's pure logic (repo identity, credential resolution, rewrite
+matrix, forge provider) has a docker-free unit test: `node scripts/git-logic.test.mjs`.
 
 All drive the built app with Playwright through the real UI and screenshot
 into `$SCRATCH/shots`. Without agent secrets the chat shows an auth error —

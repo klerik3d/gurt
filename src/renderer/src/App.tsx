@@ -5,6 +5,7 @@ import { Sidebar } from './components/Sidebar'
 import { SessionPane } from './components/SessionPane'
 import { TaskPane } from './components/TaskPane'
 import { AgentsModal } from './components/AgentsModal'
+import { CredentialsModal } from './components/CredentialsModal'
 
 export type Selection =
   | { type: 'session'; id: string }
@@ -41,6 +42,7 @@ export default function App() {
   /** Per-task git changes snapshot, keyed `ws/task` — read by TaskPane and the sidebar badge. */
   const [changes, setChanges] = useState<Record<string, RepoChanges[]>>({})
   const [agentsOpen, setAgentsOpen] = useState(false)
+  const [credentialsOpen, setCredentialsOpen] = useState(false)
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     const saved = Number(localStorage.getItem(SIDEBAR_WIDTH_KEY))
     return saved ? clampSidebar(saved) : SIDEBAR_DEFAULT
@@ -169,6 +171,7 @@ export default function App() {
           onSelectTask={(ws, task) => setSelection({ type: 'task', ws, task })}
           onSelectSession={selectSession}
           onOpenAgents={() => setAgentsOpen(true)}
+          onOpenCredentials={() => setCredentialsOpen(true)}
         />
         <div
           className="sidebar-resizer"
@@ -228,6 +231,7 @@ export default function App() {
         )}
       </div>
       {agentsOpen && <AgentsModal onClose={() => setAgentsOpen(false)} />}
+      {credentialsOpen && <CredentialsModal onClose={() => setCredentialsOpen(false)} />}
     </div>
   )
 }
