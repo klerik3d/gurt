@@ -12,7 +12,12 @@ import type {
 } from '../shared/types'
 import { agentDef } from '../shared/agents'
 import { MCP_DEFS } from '../shared/mcp'
+import { canonicalRepoId } from '../shared/repoId'
+import { resolveCredential, type CredentialsFile } from '../shared/credentials'
 import { resolveMcpServers, stopMcpServers } from './mcp/manager'
+import { getCredentials, setCredentials, credentialUsedBy, listCredentials } from './credentials'
+import { resolveGitBroker, stopGitBroker } from './git/broker'
+import { containerGitEnv } from './git/config'
 import * as store from './store'
 import { cloneDir } from './store'
 import {
@@ -23,6 +28,7 @@ import {
   dockerStop,
   ensureClone,
   installAcpAdapter,
+  installGitShims,
   isDirty,
   overrideConfigArgs,
   removeClone
@@ -86,7 +92,7 @@ function ensureEnvRunning(ref: EnvRef): Promise<EnvState> {
     try {
       const dir = await ensureClone(ref, repo, log)
       const configArgs = await overrideConfigArgs(ref, repo)
-      const up = await devcontainerUp(ref, configArgs, dir, log)
+      const up = await devcontainerUp(ref, configArgs, dir, log, canonicalRepoId(repo.url)?.host)
       await store.updateEnv(ref.workspace, ref.task, ref.repo, {
         status: 'running',
         containerId: up.containerId,
@@ -109,8 +115,34 @@ function ensureEnvRunning(ref: EnvRef): Promise<EnvState> {
   return p
 }
 
+/** Envs whose git shims are installed this app run — cleared on stop/delete. */
+const gitShimsInstalled = new Set<string>()
+
+/**
+ * Provision (if needed) the git-access injection for a starting session: ensure
+ * the per-env broker is up, the shims are installed, and return the container
+ * injection env (§6). Secrets never appear here — only the broker URL+token.
+ */
+async function resolveGitAccess(
+  ref: EnvRef,
+  repo: RepoConfig,
+  configArgs: string[],
+  hostWorkspaceFolder: string
+): Promise<Record<string, string>> {
+  const host = canonicalRepoId(repo.url)?.host ?? null
+  const broker = await resolveGitBroker(ref)
+  const resolved = host
+    ? resolveCredential(await listCredentials(), repo, host)
+    : undefined
+  if (!gitShimsInstalled.has(envKey(ref))) {
+    await installGitShims(ref, configArgs, hostWorkspaceFolder, host, logFor(ref))
+    gitShimsInstalled.add(envKey(ref))
+  }
+  return containerGitEnv(broker.url, host, resolved?.kind ?? 'git-host')
+}
+
 /** Ensure env is up, then build the validated launch context for an agent. */
-async function resolveEnv(ref: EnvRef, agentId: string): Promise<EnvContext> {
+async function resolveEnv(ref: EnvRef, agentId: string, gitAccess: boolean): Promise<EnvContext> {
   const agents = await store.getAgents()
   const cfg = agents[agentId]
   if (!cfg) throw new Error(`unknown agent "${agentId}"`)
@@ -124,14 +156,21 @@ async function resolveEnv(ref: EnvRef, agentId: string): Promise<EnvContext> {
   if (env.status !== 'running' || !env.remoteWorkspaceFolder)
     throw new Error('environment is not running')
 
+  const configArgs = await overrideConfigArgs(ref, repo)
+  const hostWorkspaceFolder = cloneDir(ref.workspace, ref.task, ref.repo)
+  const gitBrokerEnv = gitAccess
+    ? await resolveGitAccess(ref, repo, configArgs, hostWorkspaceFolder)
+    : undefined
+
   return {
     agent: def,
     remoteWorkspaceFolder: env.remoteWorkspaceFolder,
-    hostWorkspaceFolder: cloneDir(ref.workspace, ref.task, ref.repo),
-    configArgs: await overrideConfigArgs(ref, repo),
+    hostWorkspaceFolder,
+    configArgs,
     secret: cfg.secret,
     secretEnv: cfg.secretEnv || def.secretEnv,
-    env: cfg.env
+    env: cfg.env,
+    gitBrokerEnv
   }
 }
 
@@ -219,6 +258,8 @@ async function stopEnv(ref: EnvRef): Promise<void> {
   const env = await findEnv(ref)
   const log = logFor(ref)
   sessions.closeEnv(ref)
+  stopGitBroker(ref)
+  gitShimsInstalled.delete(envKey(ref))
   if (env?.containerId) await dockerStop(env.containerId, log)
   await store.updateEnv(ref.workspace, ref.task, ref.repo, { status: 'stopped' })
   log('environment stopped')
@@ -233,6 +274,8 @@ async function deleteEnv(ref: EnvRef): Promise<void> {
   const env = await findEnv(ref)
   const log = logFor(ref)
   sessions.closeEnv(ref)
+  stopGitBroker(ref)
+  gitShimsInstalled.delete(envKey(ref))
   if (env?.containerId) await dockerRemove(env.containerId, log)
   // Drop the env record even if the clone can't be fully removed, so a filesystem
   // hiccup never leaves a ghost env in the tree pointing at a half-deleted clone.
@@ -261,6 +304,8 @@ async function deleteTask(ws: string, task: string): Promise<void> {
     const ref = { workspace: ws, task, repo: env.repo }
     cancelIdleStop(ref)
     sessions.closeEnv(ref)
+    stopGitBroker(ref)
+    gitShimsInstalled.delete(envKey(ref))
     if (env.containerId) await dockerRemove(env.containerId, () => {})
   }
   sessions.dropTaskSessions(ws, task)
@@ -276,6 +321,9 @@ export function registerIpc(): void {
   handle('mcp:list', () => MCP_DEFS)
   handle('agents:get', () => store.getAgents())
   handle('agents:set', (agents: AgentsFile) => store.setAgents(agents))
+  handle('credentials:get', () => getCredentials())
+  handle('credentials:set', (data: CredentialsFile) => setCredentials(data))
+  handle('credentials:used-by', (id: string) => credentialUsedBy(id))
   handle('workspace:create', async (name: string) => {
     await store.createWorkspace(name)
     broadcast('tree-changed')
@@ -332,8 +380,9 @@ export function registerIpc(): void {
       prompt: string,
       action: CreateAction,
       mcp: McpSelection[],
-      autoAllow: boolean
-    ) => sessions.createSession(ref, agent, prompt, action, mcp, autoAllow)
+      autoAllow: boolean,
+      gitAccess: boolean
+    ) => sessions.createSession(ref, agent, prompt, action, mcp, autoAllow, gitAccess)
   )
   handle('session:run', (id: string) => sessions.run(id))
   handle('session:enqueue', (id: string) => sessions.enqueue(id))

@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import type { AgentsFile, McpMode, McpSelection, RepoChanges, SessionInfo, SessionStatus, Tree } from '../../../shared/types'
 import { isActionable, isDelivered, sessionStatus } from '../../../shared/types'
+import type { CredentialEntry } from '../../../shared/credentials'
+import { hasManagedCredential, resolveForRepo } from '../../../shared/credentials'
 import type { McpDef } from '../../../shared/mcp'
 import type { Selection } from '../App'
 import { agentName, useAgents } from '../useAgents'
@@ -32,7 +34,8 @@ export function Sidebar({
   activity,
   onSelectTask,
   onSelectSession,
-  onOpenAgents
+  onOpenAgents,
+  onOpenCredentials
 }: {
   /** Current sidebar width in px (user-draggable). */
   width: number
@@ -45,6 +48,7 @@ export function Sidebar({
   onSelectTask: (ws: string, task: string) => void
   onSelectSession: (id: string) => void
   onOpenAgents: () => void
+  onOpenCredentials: () => void
 }) {
   const [form, setForm] = useState<AddForm>(null)
   const [error, setError] = useState('')
@@ -73,6 +77,7 @@ export function Sidebar({
       <div className="sidebar-header">
         <span className="logo">gurt</span>
         <span className="spacer" />
+        <button className="icon-btn" title="credentials" onClick={onOpenCredentials}>🔑</button>
         <button className="icon-btn" title="agents" onClick={onOpenAgents}>⚙</button>
         <button className="icon-btn" title="new workspace" onClick={() => setForm({ type: 'workspace' })}>+</button>
       </div>
@@ -160,6 +165,11 @@ export function Sidebar({
                             {m.mode === 'read-only' ? ' ᴿᴼ' : ''}
                           </span>
                         ))}
+                        {s.gitAccess && (
+                          <span className="chip chip-git" title="native git access">
+                            git
+                          </span>
+                        )}
                       </div>
                       )
                     })}
@@ -279,6 +289,10 @@ function NewSessionModal({
   const [mcp, setMcp] = useState<Record<string, McpMode>>({})
   /** Permission mode: auto-allow tool calls, or ask for each one. */
   const [autoAllow, setAutoAllow] = useState(true)
+  /** Native git access injection; default follows whether a credential resolves. */
+  const [gitAccess, setGitAccess] = useState(false)
+  const [gitTouched, setGitTouched] = useState(false)
+  const [credentials, setCredentials] = useState<CredentialEntry[]>([])
   const [error, setError] = useState('')
 
   useEffect(() => {
@@ -288,6 +302,7 @@ function NewSessionModal({
       if (first) setAgent(first)
     })
     window.gurt.getMcpDefs().then(setMcpDefs)
+    window.gurt.getCredentials().then((f) => setCredentials(f.credentials)).catch(() => {})
   }, [])
 
   const toggleMcp = (id: string, on: boolean) =>
@@ -314,6 +329,18 @@ function NewSessionModal({
     if (!repo && repos.length) setRepo(repos[0].name)
   }, [repo, repos])
 
+  const repoCfg = repos.find((r) => r.name === repo)
+  const gitResolution = repoCfg ? resolveForRepo(credentials, repoCfg) : null
+
+  // Default git access on when a managed credential resolves for the repo, until
+  // the user touches the toggle (then their choice sticks across repo changes).
+  useEffect(() => {
+    if (gitTouched) return
+    setGitAccess(hasManagedCredential(gitResolution))
+    // gitResolution recomputes from repo/credentials; those are the real deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [repo, credentials, gitTouched])
+
   const create = async (action: 'run' | 'queue' | 'draft') => {
     setError('')
     if (action === 'run') {
@@ -335,7 +362,8 @@ function NewSessionModal({
         prompt,
         action,
         mcpSelection(),
-        autoAllow
+        autoAllow,
+        gitAccess
       )
       onCreated(s)
     } catch (e) {
@@ -375,6 +403,26 @@ function NewSessionModal({
             <option value="auto">auto — allow tool calls automatically</option>
             <option value="manual">manual — confirm each tool call</option>
           </select>
+        </label>
+        <label>
+          git access
+          <select
+            value={gitAccess ? 'on' : 'off'}
+            onChange={(e) => {
+              setGitTouched(true)
+              setGitAccess(e.target.value === 'on')
+            }}
+          >
+            <option value="on">on — native git + gh in the container</option>
+            <option value="off">off — delegate remote git to the github MCP</option>
+          </select>
+          {gitResolution && (
+            <span className="dim">
+              {hasManagedCredential(gitResolution)
+                ? `credential: ${gitResolution.entry?.label}`
+                : 'no managed credential resolves — will use ambient/host auth'}
+            </span>
+          )}
         </label>
         {mcpDefs.length > 0 && (
           <div className="mcp-picker">

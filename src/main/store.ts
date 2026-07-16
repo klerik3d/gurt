@@ -128,6 +128,16 @@ export async function getWorkspace(ws: string): Promise<WorkspaceFile> {
   return readJson<WorkspaceFile>(path.join(wsDir(ws), 'workspace.json'), { repos: [] })
 }
 
+/** Names of every workspace on disk (a dir under gurtRoot with a workspace.json). */
+export async function listWorkspaces(): Promise<string[]> {
+  const out: string[] = []
+  for (const entry of await fs.readdir(gurtRoot, { withFileTypes: true }).catch(() => [])) {
+    if (entry.isDirectory() && existsSync(path.join(wsDir(entry.name), 'workspace.json')))
+      out.push(entry.name)
+  }
+  return out
+}
+
 async function saveWorkspace(ws: string, data: WorkspaceFile): Promise<void> {
   await writeJson(path.join(wsDir(ws), 'workspace.json'), data)
 }

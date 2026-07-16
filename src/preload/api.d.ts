@@ -10,6 +10,7 @@ import type {
   SessionSnapshot,
   Tree
 } from '../shared/types'
+import type { CredentialsFile } from '../shared/credentials'
 import type { McpDef } from '../shared/mcp'
 
 export type CreateAction = 'run' | 'queue' | 'draft'
@@ -19,6 +20,11 @@ export interface GurtApi {
   getMcpDefs(): Promise<McpDef[]>
   getAgents(): Promise<AgentsFile>
   setAgents(agents: AgentsFile): Promise<void>
+  getCredentials(): Promise<CredentialsFile>
+  /** Replace the whole credential set; rejects if a still-linked entry was dropped. */
+  setCredentials(data: CredentialsFile): Promise<void>
+  /** Repos (as `ws/repo`) linking to a credential id — for delete-blocking. */
+  credentialUsedBy(id: string): Promise<string[]>
   createWorkspace(name: string): Promise<void>
   addRepo(ws: string, repo: RepoConfig): Promise<void>
   discoverDevcontainer(url: string): Promise<{ path: string; content: string } | null>
@@ -46,7 +52,8 @@ export interface GurtApi {
     prompt: string,
     action: CreateAction,
     mcp: McpSelection[],
-    autoAllow: boolean
+    autoAllow: boolean,
+    gitAccess: boolean
   ): Promise<SessionInfo>
   sessionRun(id: string): Promise<void>
   sessionEnqueue(id: string): Promise<void>
