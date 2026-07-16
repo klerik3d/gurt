@@ -3,6 +3,7 @@ import type { AgentsFile, McpMode, McpSelection, RepoChanges, SessionInfo, Sessi
 import { isActionable, isDelivered } from '../../../shared/types'
 import type { McpDef } from '../../../shared/mcp'
 import type { Selection } from '../App'
+import { agentName, useAgents } from '../useAgents'
 import { Modal } from './Modal'
 import { ReposModal } from './ReposModal'
 
@@ -21,6 +22,7 @@ const SESSION_MARK: Record<SessionState, string> = {
 }
 
 export function Sidebar({
+  width,
   tree,
   selection,
   changes,
@@ -28,6 +30,8 @@ export function Sidebar({
   onSelectSession,
   onOpenAgents
 }: {
+  /** Current sidebar width in px (user-draggable). */
+  width: number
   tree: Tree | null
   selection: Selection
   /** Per-task git changes keyed `ws/task` — drives the actionable badge. */
@@ -39,6 +43,7 @@ export function Sidebar({
   const [form, setForm] = useState<AddForm>(null)
   const [error, setError] = useState('')
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  const agents = useAgents()
 
   const toggle = (key: string) =>
     setCollapsed((prev) => {
@@ -58,7 +63,7 @@ export function Sidebar({
   }
 
   return (
-    <aside className="sidebar">
+    <aside className="sidebar" style={{ width }}>
       <div className="sidebar-header">
         <span className="logo">gurt</span>
         <span className="spacer" />
@@ -135,7 +140,7 @@ export function Sidebar({
                           {s.title}
                         </span>
                         <span className="chip">{s.envRepo}</span>
-                        <span className="chip">{s.agent}</span>
+                        <span className="chip">{agentName(agents, s.agent)}</span>
                         {s.mcp?.map((m) => (
                           <span
                             key={m.id}

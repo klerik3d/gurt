@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import type { MouseEvent as ReactMouseEvent } from 'react'
 import type { EnvRef, RepoChanges, SessionInfo, SessionSnapshot, Tree } from '../../shared/types'
 import { Sidebar } from './components/Sidebar'
 import { SessionPane } from './components/SessionPane'
@@ -11,6 +12,14 @@ export type Selection =
   | null
 
 export const envKey = (ref: EnvRef) => `${ref.workspace}/${ref.task}/${ref.repo}`
+
+// Draggable sidebar width, persisted across launches.
+const SIDEBAR_MIN = 180
+const SIDEBAR_MAX = 600
+const SIDEBAR_DEFAULT = 262
+const SIDEBAR_WIDTH_KEY = 'gurt.sidebarWidth'
+
+const clampSidebar = (w: number) => Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, w))
 
 /** Global FIFO positions (1-based) of every queued session, keyed by id. */
 export function queuePositions(tree: Tree | null): Record<string, number> {
@@ -32,6 +41,10 @@ export default function App() {
   /** Per-task git changes snapshot, keyed `ws/task` — read by TaskPane and the sidebar badge. */
   const [changes, setChanges] = useState<Record<string, RepoChanges[]>>({})
   const [agentsOpen, setAgentsOpen] = useState(false)
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    const saved = Number(localStorage.getItem(SIDEBAR_WIDTH_KEY))
+    return saved ? clampSidebar(saved) : SIDEBAR_DEFAULT
+  })
   const selectionRef = useRef(selection)
   selectionRef.current = selection
   /** Session busy flags, to detect the end of an agent turn (busy → idle). */
@@ -82,6 +95,27 @@ export default function App() {
           refreshChanges(ws.name, task.name)
   }, [tree, refreshChanges])
 
+  // Drag the divider between sidebar and main; the sidebar's left edge is at
+  // x=0, so the pointer's clientX is the new width (clamped).
+  const startSidebarResize = useCallback((e: ReactMouseEvent) => {
+    e.preventDefault()
+    const onMove = (ev: MouseEvent) => setSidebarWidth(clampSidebar(ev.clientX))
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }, [])
+
+  useEffect(() => {
+    localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth))
+  }, [sidebarWidth])
+
   const selectSession = useCallback((id: string) => {
     setSelection({ type: 'session', id })
     window.gurt
@@ -120,12 +154,18 @@ export default function App() {
       </div>
       <div className="workbench">
         <Sidebar
+          width={sidebarWidth}
           tree={tree}
           selection={selection}
           changes={changes}
           onSelectTask={(ws, task) => setSelection({ type: 'task', ws, task })}
           onSelectSession={selectSession}
           onOpenAgents={() => setAgentsOpen(true)}
+        />
+        <div
+          className="sidebar-resizer"
+          onMouseDown={startSidebarResize}
+          title="drag to resize"
         />
         <main className="main">
         {selection?.type === 'session' && (
