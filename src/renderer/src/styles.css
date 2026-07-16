@@ -118,12 +118,26 @@ body {
 /* ---- sidebar ---- */
 
 .sidebar {
-  width: 262px;
-  min-width: 262px;
+  /* width is set inline (user-draggable); flex-none keeps it from shrinking. */
+  flex: none;
   background: var(--bg-panel);
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
+}
+
+/* Thin drag strip between the sidebar and main; sits over the border. */
+.sidebar-resizer {
+  flex: none;
+  width: 5px;
+  margin-left: -3px;
+  cursor: col-resize;
+  z-index: 5;
+}
+
+.sidebar-resizer:hover {
+  background: var(--accent);
+  opacity: 0.4;
 }
 
 .sidebar-header {

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { AgentInstance, AgentsFile } from '../../../shared/types'
 import { AGENT_DEFS, agentDef } from '../../../shared/agents'
+import { refreshAgents } from '../useAgents'
 import { Modal } from './Modal'
 
 /** Temp-keyed rows are new instances whose id is minted from the label on save. */
@@ -84,6 +85,7 @@ export function AgentsModal({ onClose }: { onClose: () => void }) {
     }
     try {
       await window.gurt.setAgents(out)
+      refreshAgents()
       onClose()
     } catch (e) {
       setError(String(e))

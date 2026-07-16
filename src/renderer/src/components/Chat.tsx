@@ -11,6 +11,7 @@ import type {
   SessionModes,
   SessionSnapshot
 } from '../../../shared/types'
+import { agentName, useAgents } from '../useAgents'
 
 /** Don't ping the main process on every keystroke — once per this interval is enough
  *  to keep postponing the env's idle auto-stop while the user is composing. */
@@ -19,6 +20,7 @@ const ACTIVITY_PING_INTERVAL_MS = 5_000
 export function Chat({ snapshot, sessionId }: { snapshot?: SessionSnapshot; sessionId: string }) {
   const [planOpen, setPlanOpen] = useState(true)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const agents = useAgents()
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -38,7 +40,7 @@ export function Chat({ snapshot, sessionId }: { snapshot?: SessionSnapshot; sess
           <span className="sep">/</span>
           <span className="leaf">{info.envRepo}</span>
         </span>
-        {info.agent && <span className="chip">{info.agent}</span>}
+        {info.agent && <span className="chip">{agentName(agents, info.agent)}</span>}
         <span className="spacer" />
         {busy && (
           <>
