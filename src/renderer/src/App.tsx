@@ -43,11 +43,12 @@ export default function App() {
     window.gurt.getTree().then(setTree).catch(console.error)
   }, [])
 
-  const refreshChanges = useCallback((ws: string, task: string) => {
+  /** `fetch` reaches the network — only the panel's own triggers pass it. */
+  const refreshChanges = useCallback((ws: string, task: string, fetch = false) => {
     const key = `${ws}/${task}`
     changesRequested.current.add(key)
     window.gurt
-      .getTaskChanges(ws, task)
+      .getTaskChanges(ws, task, { fetch })
       .then((c) => setChanges((prev) => ({ ...prev, [key]: c })))
       .catch(console.error)
   }, [])
@@ -57,7 +58,7 @@ export default function App() {
     const offTree = window.gurt.onTreeChanged(refreshTree)
     const offSession = window.gurt.onSessionChanged((snap) => {
       setSnapshots((prev) => ({ ...prev, [snap.info.id]: snap }))
-      // End of an agent turn — recompute the task's git state.
+      // End of an agent turn — recompute the task's git state, but never fetch.
       if (busyRef.current[snap.info.id] && !snap.busy)
         refreshChanges(snap.info.workspace, snap.info.task)
       busyRef.current[snap.info.id] = snap.busy
@@ -154,7 +155,7 @@ export default function App() {
             logs={logs}
             positions={positions}
             changes={changes[`${selection.ws}/${selection.task}`]}
-            onRefreshChanges={() => refreshChanges(selection.ws, selection.task)}
+            onRefreshChanges={() => refreshChanges(selection.ws, selection.task, true)}
             onSelectSession={selectSession}
           />
         )}

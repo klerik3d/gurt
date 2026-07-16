@@ -112,7 +112,7 @@ SCRATCH=/tmp/gurt-smoke node scripts/smoke3.mjs   # session persistence across r
 SCRATCH=/tmp/gurt-smoke node scripts/smoke4.mjs   # CRUD + stop/delete + codex handshake
 SCRATCH=/tmp/gurt-smoke node scripts/smoke5.mjs   # codex-in-gurt handshake
 SCRATCH=/tmp/gurt-smoke node scripts/smoke6.mjs   # session queue: draft/serialization/restart
-SCRATCH=/tmp/gurt-smoke node scripts/smoke7.mjs   # task Changes panel, no docker (local bare repos)
+SCRATCH=/tmp/gurt-smoke node scripts/smoke7.mjs   # Changes panel delivery thread, no docker (local bare repos)
 ```
 
 All drive the built app with Playwright through the real UI and screenshot

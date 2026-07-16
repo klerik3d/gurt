@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { AgentsFile, McpMode, McpSelection, RepoChanges, SessionInfo, SessionState, Tree } from '../../../shared/types'
+import { isActionable, isDelivered } from '../../../shared/types'
 import type { McpDef } from '../../../shared/mcp'
 import { AGENT_DEFS, agentDef } from '../../../shared/agents'
 import type { Selection } from '../App'
@@ -98,11 +99,7 @@ export function Sidebar({
                     >
                       {task.name}
                     </span>
-                    {(changes[tkey] ?? []).some((r) => r.dirty || r.ahead > 0) && (
-                      <span className="task-badge" title="uncommitted or unpushed changes">
-                        ●
-                      </span>
-                    )}
+                    <TaskBadge repos={changes[tkey] ?? []} />
                     <span className="spacer" />
                     <button
                       className="icon-btn"
@@ -199,6 +196,23 @@ export function Sidebar({
       )}
     </aside>
   )
+}
+
+/** Delivery state of the task's clones: work to do, work awaiting merge, or nothing. */
+function TaskBadge({ repos }: { repos: RepoChanges[] }) {
+  if (repos.some(isActionable))
+    return (
+      <span className="task-badge" title="uncommitted or unpushed changes">
+        ●
+      </span>
+    )
+  if (repos.some(isDelivered))
+    return (
+      <span className="task-badge badge-delivered" title="delivered — awaiting merge">
+        ○
+      </span>
+    )
+  return null
 }
 
 function NameModal({
