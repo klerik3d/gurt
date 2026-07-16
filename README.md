@@ -2,7 +2,7 @@
 
 Electron PoC: a local-first manager for dev environments and coding agents.
 Concept background lives in [CONCEPT.md](CONCEPT.md) (the Go stack described
-there is archived in `archive/`, the model mostly still applies).
+there is archived in `archive/`; the model mostly still applies).
 
 ## Model
 
