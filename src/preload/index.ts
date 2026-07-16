@@ -7,12 +7,16 @@ import type {
   PromptImage,
   RepoConfig
 } from '../shared/types'
+import type { CredentialsFile } from '../shared/credentials'
 
 const api = {
   getTree: () => ipcRenderer.invoke('tree:get'),
   getMcpDefs: () => ipcRenderer.invoke('mcp:list'),
   getAgents: () => ipcRenderer.invoke('agents:get'),
   setAgents: (agents: AgentsFile) => ipcRenderer.invoke('agents:set', agents),
+  getCredentials: () => ipcRenderer.invoke('credentials:get'),
+  setCredentials: (data: CredentialsFile) => ipcRenderer.invoke('credentials:set', data),
+  credentialUsedBy: (id: string) => ipcRenderer.invoke('credentials:used-by', id),
   createWorkspace: (name: string) => ipcRenderer.invoke('workspace:create', name),
   addRepo: (ws: string, repo: RepoConfig) => ipcRenderer.invoke('repo:add', ws, repo),
   discoverDevcontainer: (url: string) => ipcRenderer.invoke('repo:discover-devcontainer', url),
@@ -44,8 +48,9 @@ const api = {
     prompt: string,
     action: string,
     mcp: McpSelection[],
-    autoAllow: boolean
-  ) => ipcRenderer.invoke('session:create', ref, agent, prompt, action, mcp, autoAllow),
+    autoAllow: boolean,
+    gitAccess: boolean
+  ) => ipcRenderer.invoke('session:create', ref, agent, prompt, action, mcp, autoAllow, gitAccess),
   sessionRun: (id: string) => ipcRenderer.invoke('session:run', id),
   sessionEnqueue: (id: string) => ipcRenderer.invoke('session:enqueue', id),
   sessionCancelQueue: (id: string) => ipcRenderer.invoke('session:cancel-queue', id),

@@ -47,6 +47,12 @@ export interface RepoConfig {
    * repo's own .devcontainer configuration is used as-is.
    */
   devcontainer: string
+  /**
+   * Link into credentials.json (a `CredentialEntry.id`), never a secret. Absent
+   * = auto-resolve by host. The stored `url` is only the initial clone source;
+   * auth and matching operate on the canonical repo identity (see `repoId.ts`).
+   */
+  credentialId?: string
 }
 
 /** <workspace>/workspace.json */
@@ -95,6 +101,13 @@ export interface SessionInfo {
   state: SessionState
   /** MCP servers to attach when this session starts (empty/undefined = none). */
   mcp?: McpSelection[]
+  /**
+   * Inject native git access (credential helper + transport rewrite, and the gh
+   * wrapper) into the agent process when it starts. Off = status quo: no
+   * injection, the github MCP remains the delegated remote path. Fixed at the
+   * first start of the (env, agent) adapter this session shares (§6).
+   */
+  gitAccess?: boolean
   /** First prompt, sent automatically when the session starts. */
   startPrompt: string
   /** ISO timestamp, present while queued — defines global FIFO order. */

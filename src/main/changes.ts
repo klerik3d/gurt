@@ -10,6 +10,8 @@ import { shell } from 'electron'
 import type { ChangedFile, RepoChanges, ThreadCommit } from '../shared/types'
 import { run } from './provision'
 import { cloneDir, taskDir } from './store'
+import { hostGitEnvForRepo } from './git/env'
+import { canonicalRepoId } from '../shared/repoId'
 
 /** Bounds a fetch against an unreachable origin; failure is non-fatal anyway. */
 const FETCH_TIMEOUT_MS = 30_000
@@ -18,27 +20,32 @@ interface GitOpts {
   /** Exit codes to treat as success (default [0]). */
   okCodes?: number[]
   timeoutMs?: number
+  /** Host git env from `hostGitEnv` (§8); defaults to non-interactive ambient. */
+  env?: NodeJS.ProcessEnv
 }
 
 /** Non-interactive host git in the clone dir; resolves stdout. */
 function git(dir: string, args: string[], opts: GitOpts = {}): Promise<string> {
+  const { env, ...rest } = opts
   return run('git', ['-C', dir, ...args], () => {}, {
-    env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
-    ...opts
+    env: env ?? { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+    ...rest
   })
 }
 
 const branchFor = (task: string) => `gurt/${task}`
 
 /** SHA of `ref`, or '' when it does not exist. */
-async function revParse(dir: string, ref: string): Promise<string> {
-  return (await git(dir, ['rev-parse', '--verify', '--quiet', ref], { okCodes: [0, 1] })).trim()
+async function revParse(dir: string, ref: string, env?: NodeJS.ProcessEnv): Promise<string> {
+  return (
+    await git(dir, ['rev-parse', '--verify', '--quiet', ref], { okCodes: [0, 1], env })
+  ).trim()
 }
 
 /** Short name of the default branch: `origin/HEAD`, fallback `main`. */
-async function defaultBranch(dir: string): Promise<string> {
+async function defaultBranch(dir: string, env?: NodeJS.ProcessEnv): Promise<string> {
   const ref = (
-    await git(dir, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']).catch(() => '')
+    await git(dir, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], { env }).catch(() => '')
   ).trim()
   return ref.replace(/^origin\//, '') || 'main'
 }
@@ -67,25 +74,11 @@ interface Origin {
 
 /** host + owner/repo parsed from the origin URL (scheme or scp-like), or null. */
 function parseOrigin(url: string): Origin | null {
-  let host: string
-  let p: string
-  if (/^[a-z][\w+.-]*:\/\//i.test(url)) {
-    try {
-      const u = new URL(url)
-      host = u.hostname
-      p = u.pathname
-    } catch {
-      return null
-    }
-  } else {
-    const m = url.match(/^(?:[^@/]+@)?([\w.-]+):(.+)$/)
-    if (!m) return null
-    host = m[1]
-    p = m[2]
-  }
-  const segs = p.replace(/^\/+/, '').replace(/\.git$/, '').split('/')
+  const id = canonicalRepoId(url)
+  if (!id) return null
+  const segs = id.path.split('/')
   if (segs.length < 2 || !segs[0] || !segs[1]) return null
-  return { host, owner: segs[0], repo: segs[1] }
+  return { host: id.host, owner: segs[0], repo: segs[1] }
 }
 
 /** Origin host → PR compare URL. PoC scope: one entry; an unknown host gets no button. */
@@ -102,13 +95,13 @@ const FORGES: {
 ]
 
 /** Compare URL for the task branch, or null when the origin matches no forge. */
-async function compareUrl(dir: string, task: string): Promise<string | null> {
-  const origin = (await git(dir, ['remote', 'get-url', 'origin']).catch(() => '')).trim()
+async function compareUrl(dir: string, task: string, env?: NodeJS.ProcessEnv): Promise<string | null> {
+  const origin = (await git(dir, ['remote', 'get-url', 'origin'], { env }).catch(() => '')).trim()
   const parsed = parseOrigin(origin)
   if (!parsed) return null
   const forge = FORGES.find((f) => f.match(parsed.host))
   if (!forge) return null
-  return forge.compareUrl(parsed, await defaultBranch(dir), branchFor(task))
+  return forge.compareUrl(parsed, await defaultBranch(dir, env), branchFor(task))
 }
 
 /**
@@ -120,30 +113,34 @@ async function compareUrl(dir: string, task: string): Promise<string | null> {
  *
  * Failure is non-fatal — the caller renders last-known refs, with no error UI.
  */
-async function fetchPrune(dir: string, task: string): Promise<void> {
+async function fetchPrune(dir: string, task: string, env?: NodeJS.ProcessEnv): Promise<void> {
   const remoteRef = `refs/remotes/origin/${branchFor(task)}`
-  const before = await revParse(dir, remoteRef)
+  const before = await revParse(dir, remoteRef, env)
   try {
-    await git(dir, ['fetch', '--prune', 'origin'], { timeoutMs: FETCH_TIMEOUT_MS })
+    await git(dir, ['fetch', '--prune', 'origin'], { timeoutMs: FETCH_TIMEOUT_MS, env })
   } catch (e) {
     console.error(`changes: fetch failed in ${dir}:`, e)
     return
   }
   // Pruned while it pointed at HEAD → the thread landed on the remote.
-  if (!before || (await revParse(dir, remoteRef))) return
-  if (before === (await revParse(dir, 'HEAD')))
-    await git(dir, ['update-ref', 'refs/gurt/integrated', before])
+  if (!before || (await revParse(dir, remoteRef, env))) return
+  if (before === (await revParse(dir, 'HEAD', env)))
+    await git(dir, ['update-ref', 'refs/gurt/integrated', before], { env })
 }
 
 /** Commits in `<base>..HEAD`, newest first, each pushed or local. */
-async function threadCommits(dir: string, task: string, base: string): Promise<ThreadCommit[]> {
-  const log = await git(dir, ['log', '--format=%H%x00%s', `${base}..HEAD`])
+async function threadCommits(
+  dir: string,
+  task: string,
+  base: string,
+  env?: NodeJS.ProcessEnv
+): Promise<ThreadCommit[]> {
+  const log = await git(dir, ['log', '--format=%H%x00%s', `${base}..HEAD`], { env })
   const pushed = new Set(
     (
-      await git(dir, [
-        'rev-list',
-        `${base}..refs/remotes/origin/${branchFor(task)}`
-      ]).catch(() => '')
+      await git(dir, ['rev-list', `${base}..refs/remotes/origin/${branchFor(task)}`], {
+        env
+      }).catch(() => '')
     )
       .split('\n')
       .filter(Boolean)
@@ -164,9 +161,10 @@ async function repoChanges(
   fetch: boolean
 ): Promise<RepoChanges> {
   const dir = cloneDir(ws, task, repo)
-  if (fetch) await fetchPrune(dir, task)
+  const env = await hostGitEnvForRepo(ws, repo)
+  if (fetch) await fetchPrune(dir, task, env)
 
-  const porcelain = await git(dir, ['status', '--porcelain'])
+  const porcelain = await git(dir, ['status', '--porcelain'], { env })
   const files = porcelain
     .split('\n')
     .filter((l) => l.trim())
@@ -176,17 +174,18 @@ async function repoChanges(
   // Untracked files count toward the file count only.
   let insertions = 0
   let deletions = 0
-  const shortstat = await git(dir, ['diff', 'HEAD', '--shortstat']).catch(() => '')
+  const shortstat = await git(dir, ['diff', 'HEAD', '--shortstat'], { env }).catch(() => '')
   const ins = shortstat.match(/(\d+) insertion/)
   const del = shortstat.match(/(\d+) deletion/)
   if (ins) insertions = parseInt(ins[1], 10)
   if (del) deletions = parseInt(del[1], 10)
 
-  const def = await defaultBranch(dir)
-  const commits = await threadCommits(dir, task, `origin/${def}`)
-  const marker = await revParse(dir, 'refs/gurt/integrated')
-  const integrated = commits.length === 0 || (!!marker && marker === (await revParse(dir, 'HEAD')))
-  const url = commits.some((c) => c.pushed) ? await compareUrl(dir, task) : null
+  const def = await defaultBranch(dir, env)
+  const commits = await threadCommits(dir, task, `origin/${def}`, env)
+  const marker = await revParse(dir, 'refs/gurt/integrated', env)
+  const integrated =
+    commits.length === 0 || (!!marker && marker === (await revParse(dir, 'HEAD', env)))
+  const url = commits.some((c) => c.pushed) ? await compareUrl(dir, task, env) : null
 
   return {
     repo,
@@ -236,33 +235,42 @@ export async function getFileDiff(
   file: string
 ): Promise<string> {
   const dir = cloneDir(ws, task, repo)
-  const status = await git(dir, ['status', '--porcelain', '--', file])
+  const env = await hostGitEnvForRepo(ws, repo)
+  const status = await git(dir, ['status', '--porcelain', '--', file], { env })
   if (status.startsWith('??')) {
     // `git diff --no-index` exits 1 when the files differ — that's the success case.
-    return git(dir, ['diff', '--no-index', '--', '/dev/null', file], { okCodes: [0, 1] })
+    return git(dir, ['diff', '--no-index', '--', '/dev/null', file], { okCodes: [0, 1], env })
   }
-  return git(dir, ['diff', 'HEAD', '--', file])
+  return git(dir, ['diff', 'HEAD', '--', file], { env })
 }
 
 /** Read-only `git show` of one commit of the thread. */
-export function getCommitDiff(ws: string, task: string, repo: string, sha: string): Promise<string> {
-  return git(cloneDir(ws, task, repo), ['show', sha])
+export async function getCommitDiff(
+  ws: string,
+  task: string,
+  repo: string,
+  sha: string
+): Promise<string> {
+  return git(cloneDir(ws, task, repo), ['show', sha], { env: await hostGitEnvForRepo(ws, repo) })
 }
 
 export async function commit(ws: string, task: string, repo: string, message: string): Promise<void> {
   const dir = cloneDir(ws, task, repo)
-  await git(dir, ['add', '-A'])
-  await git(dir, ['commit', '-m', message])
+  const env = await hostGitEnvForRepo(ws, repo)
+  await git(dir, ['add', '-A'], { env })
+  await git(dir, ['commit', '-m', message], { env })
 }
 
 export async function push(ws: string, task: string, repo: string): Promise<void> {
-  await git(cloneDir(ws, task, repo), ['push', '-u', 'origin', branchFor(task)])
+  await git(cloneDir(ws, task, repo), ['push', '-u', 'origin', branchFor(task)], {
+    env: await hostGitEnvForRepo(ws, repo)
+  })
 }
 
 /** PoC delivery: open the browser at the forge's compare URL for gurt/<task>. */
 export async function openPr(ws: string, task: string, repo: string): Promise<void> {
   const dir = cloneDir(ws, task, repo)
-  const url = await compareUrl(dir, task)
+  const url = await compareUrl(dir, task, await hostGitEnvForRepo(ws, repo))
   if (!url) throw new Error('origin is not a known forge remote')
   await shell.openExternal(url)
 }
