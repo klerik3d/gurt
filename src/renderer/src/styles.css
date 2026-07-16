@@ -1319,6 +1319,18 @@ select {
   font-weight: 600;
   color: var(--text-bright);
 }
+/* the two blocks of a repo's thread: Uncommitted, and the branch */
+.changes-block {
+  padding: 4px 0 2px;
+}
+.changes-block + .changes-block {
+  margin-top: 10px;
+}
+.block-head {
+  font-size: 12px;
+  color: var(--text-dim);
+  padding-bottom: 3px;
+}
 .file-row {
   display: flex;
   gap: 8px;
@@ -1342,6 +1354,37 @@ select {
 }
 .st-R {
   color: var(--accent);
+}
+.commit-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 12px;
+  padding: 2px 0;
+  /* keeps the state a column beside the subject instead of at the pane's edge */
+  max-width: 640px;
+}
+.commit-sha {
+  font-family: var(--mono);
+  color: var(--accent);
+  flex: none;
+}
+.commit-subject {
+  color: var(--text-bright);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.commit-state {
+  margin-left: auto;
+  flex: none;
+  font-size: 11px;
+}
+.commit-state.pushed {
+  color: var(--green);
+}
+.commit-state.local {
+  color: var(--text-dim);
 }
 .changes-counts {
   font-size: 12px;
@@ -1367,11 +1410,14 @@ select {
   padding-top: 6px;
 }
 
-/* sidebar task badge: uncommitted or unpushed changes */
+/* sidebar task badge: filled — actionable; hollow — delivered, awaiting merge */
 .task-badge {
   color: var(--accent);
   font-size: 8px;
   flex: none;
+}
+.task-badge.badge-delivered {
+  color: var(--text-dim);
 }
 
 /* read-only unified diff modal */

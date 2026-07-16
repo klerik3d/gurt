@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { EnvRef, RepoChanges, Tree } from '../../../shared/types'
+import { isActionable, isDelivered } from '../../../shared/types'
 import { envKey } from '../App'
 import { Modal } from './Modal'
 
@@ -131,7 +132,7 @@ export function TaskPane({
   )
 }
 
-// ---- Changes panel — the task's product (docs/requirements-changes-panel.md) ----
+// ---- Changes panel — the task's delivery thread (docs/requirements-changes-thread.md) ----
 
 function ChangesSection({
   ws,
@@ -145,14 +146,17 @@ function ChangesSection({
   onRefresh: () => void
 }) {
   const [diffFile, setDiffFile] = useState<{ repo: string; path: string } | null>(null)
+  const [diffCommit, setDiffCommit] = useState<{ repo: string; sha: string } | null>(null)
   const [commitRepo, setCommitRepo] = useState<string | null>(null)
   /** repo -> last action error, rendered inline in its group. */
   const [errors, setErrors] = useState<Record<string, string>>({})
   /** repo with an action in flight — its buttons are disabled. */
   const [busyRepo, setBusyRepo] = useState<string | null>(null)
 
-  const actionable = (changes ?? []).filter((r) => r.dirty || r.ahead > 0)
-  const flat = actionable.length === 1
+  // A repo renders while it has work to do or work awaiting merge; an integrated
+  // thread is gone from the panel until a new commit reopens it.
+  const rendered = (changes ?? []).filter((r) => isActionable(r) || isDelivered(r))
+  const flat = rendered.length === 1
 
   const act = async (repo: string, fn: () => Promise<void>) => {
     setBusyRepo(repo)
@@ -178,15 +182,15 @@ function ChangesSection({
         <button className="icon-btn" title="refresh changes" onClick={onRefresh}>↻</button>
         {flat && (
           <button
-            disabled={busyRepo === actionable[0].repo}
-            onClick={() => openVscode(actionable[0].repo)}
+            disabled={busyRepo === rendered[0].repo}
+            onClick={() => openVscode(rendered[0].repo)}
           >
             Open in VS Code
           </button>
         )}
       </div>
-      {actionable.length === 0 && <div className="hint no-changes">No changes</div>}
-      {actionable.map((r) => (
+      {rendered.length === 0 && <div className="hint no-changes">No changes</div>}
+      {rendered.map((r) => (
         <div key={r.repo} className="changes-group">
           {!flat && (
             <div className="changes-group-head">
@@ -197,53 +201,86 @@ function ChangesSection({
               </button>
             </div>
           )}
-          {r.files.map((f) => (
-            <div key={f.path} className="file-row">
-              <span className={`file-status st-${f.status}`}>{f.status}</span>
-              <span
-                className="file-path clickable"
-                onClick={() => setDiffFile({ repo: r.repo, path: f.path })}
-              >
-                {f.path}
-              </span>
+          {r.dirty && (
+            <div className="changes-block">
+              <div className="block-head">Uncommitted</div>
+              {r.files.map((f) => (
+                <div key={f.path} className="file-row">
+                  <span className={`file-status st-${f.status}`}>{f.status}</span>
+                  <span
+                    className="file-path clickable"
+                    onClick={() => setDiffFile({ repo: r.repo, path: f.path })}
+                  >
+                    {f.path}
+                  </span>
+                </div>
+              ))}
+              <div className="changes-counts">
+                {r.files.length} file{r.files.length === 1 ? '' : 's'} ·{' '}
+                <span className="ins">+{r.insertions}</span>{' '}
+                <span className="del">−{r.deletions}</span>
+              </div>
+              <div className="changes-actions">
+                <button disabled={busyRepo === r.repo} onClick={() => setCommitRepo(r.repo)}>
+                  Commit
+                </button>
+              </div>
             </div>
-          ))}
-          <div className="changes-counts">
-            {r.files.length} file{r.files.length === 1 ? '' : 's'} · <span className="ins">+{r.insertions}</span>{' '}
-            <span className="del">−{r.deletions}</span>
-            {!r.dirty && r.ahead > 0 && (
-              <span className="dim"> — {r.ahead} commit{r.ahead === 1 ? '' : 's'} to push</span>
-            )}
-          </div>
-          <div className="changes-actions">
-            <button disabled={!r.dirty || busyRepo === r.repo} onClick={() => setCommitRepo(r.repo)}>
-              Commit
-            </button>
-            <button
-              disabled={r.ahead === 0 || busyRepo === r.repo}
-              onClick={() => act(r.repo, () => window.gurt.changesPush(ws, task, r.repo))}
-            >
-              Push
-            </button>
-            {r.prAvailable && (
-              <button
-                disabled={!r.prReady || busyRepo === r.repo}
-                onClick={() => act(r.repo, () => window.gurt.changesOpenPr(ws, task, r.repo))}
-              >
-                Create PR
-              </button>
-            )}
-          </div>
+          )}
+          {!r.integrated && r.commits.length > 0 && (
+            <div className="changes-block">
+              <div className="block-head">
+                On gurt/{task} · {r.commits.length} commit{r.commits.length === 1 ? '' : 's'} not in{' '}
+                {r.defaultBranch}
+              </div>
+              {r.commits.map((c) => (
+                <div
+                  key={c.sha}
+                  className="commit-row clickable"
+                  onClick={() => setDiffCommit({ repo: r.repo, sha: c.sha })}
+                >
+                  <span className="commit-sha">{c.sha.slice(0, 7)}</span>
+                  <span className="commit-subject">{c.subject}</span>
+                  <span className={`commit-state ${c.pushed ? 'pushed' : 'local'}`}>
+                    {c.pushed ? 'pushed' : 'local'}
+                  </span>
+                </div>
+              ))}
+              <div className="changes-actions">
+                <button
+                  disabled={!r.commits.some((c) => !c.pushed) || busyRepo === r.repo}
+                  onClick={() => act(r.repo, () => window.gurt.changesPush(ws, task, r.repo))}
+                >
+                  Push
+                </button>
+                {r.prUrl && (
+                  <button
+                    disabled={busyRepo === r.repo}
+                    onClick={() => act(r.repo, () => window.gurt.changesOpenPr(ws, task, r.repo))}
+                  >
+                    Create PR
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
           {errors[r.repo] && <div className="error changes-error">{errors[r.repo]}</div>}
         </div>
       ))}
       {diffFile && (
         <DiffModal
-          ws={ws}
-          task={task}
-          repo={diffFile.repo}
-          path={diffFile.path}
+          key={`${diffFile.repo}/${diffFile.path}`}
+          title={`${diffFile.repo}: ${diffFile.path}`}
+          load={() => window.gurt.getFileDiff(ws, task, diffFile.repo, diffFile.path)}
           onClose={() => setDiffFile(null)}
+        />
+      )}
+      {diffCommit && (
+        <DiffModal
+          key={`${diffCommit.repo}/${diffCommit.sha}`}
+          title={`${diffCommit.repo}: ${diffCommit.sha.slice(0, 7)}`}
+          load={() => window.gurt.getCommitDiff(ws, task, diffCommit.repo, diffCommit.sha)}
+          onClose={() => setDiffCommit(null)}
         />
       )}
       {commitRepo && (
@@ -261,35 +298,40 @@ function ChangesSection({
   )
 }
 
-/** Read-only unified diff of one file. */
+/** Read-only unified diff — one file (`git diff`) or one commit (`git show`). */
 function DiffModal({
-  ws,
-  task,
-  repo,
-  path,
+  title,
+  load,
   onClose
 }: {
-  ws: string
-  task: string
-  repo: string
-  path: string
+  title: string
+  load: () => Promise<string>
   onClose: () => void
 }) {
   const [diff, setDiff] = useState<string | null>(null)
   const [error, setError] = useState('')
 
+  // Mounted with a key per file/commit, so loading once on mount is the whole story.
   useEffect(() => {
-    window.gurt
-      .getFileDiff(ws, task, repo, path)
-      .then(setDiff)
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
-  }, [ws, task, repo, path])
+    let live = true
+    load()
+      .then((d) => {
+        if (live) setDiff(d)
+      })
+      .catch((e) => {
+        if (live) setError(e instanceof Error ? e.message : String(e))
+      })
+    return () => {
+      live = false
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const lineClass = (line: string) =>
     line.startsWith('+') ? 'add' : line.startsWith('-') ? 'del' : line.startsWith('@@') ? 'hunk' : ''
 
   return (
-    <Modal title={`${repo}: ${path}`} wide onClose={onClose}>
+    <Modal title={title} wide onClose={onClose}>
       <div className="diff-view">
         {error && <div className="error">{error}</div>}
         {diff === null && !error && <div className="hint">loading diff…</div>}
