@@ -83,8 +83,7 @@ export async function getAgents(): Promise<AgentsFile> {
         enabled: !!a.enabled,
         secret: a.secret ?? '',
         secretEnv: a.secretEnv || undefined,
-        env: a.env && typeof a.env === 'object' ? a.env : undefined,
-        model: a.model || undefined
+        env: a.env && typeof a.env === 'object' ? a.env : undefined
       }
     } else {
       // Legacy format: one config per built-in kind, keyed by the kind id. Lift

@@ -14,10 +14,6 @@ export interface AgentDef {
   binArgs: string[]
   /** Default env var that receives the stored secret. */
   secretEnv: string
-  /** Model ids the user can pick between at session start; undefined = no picker. */
-  models?: string[]
-  /** Preselected entry from `models`. */
-  defaultModel?: string
 }
 
 export const AGENT_DEFS: AgentDef[] = [
@@ -29,9 +25,7 @@ export const AGENT_DEFS: AgentDef[] = [
     adapterPackages: ['@agentclientprotocol/claude-agent-acp'],
     bin: 'claude-agent-acp',
     binArgs: [],
-    secretEnv: 'CLAUDE_CODE_OAUTH_TOKEN',
-    models: ['opus', 'sonnet', 'haiku'],
-    defaultModel: 'opus'
+    secretEnv: 'CLAUDE_CODE_OAUTH_TOKEN'
   },
   {
     id: 'codex',
