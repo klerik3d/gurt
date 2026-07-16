@@ -19,15 +19,13 @@ import {
   overrideConfigArgs,
   removeClone
 } from './provision'
+import type { Bus } from './bus'
 import type { EnvContext, SessionManager } from './sessions'
 
 export interface EnvManagerDeps {
   /** SessionManager, resolved lazily — mutual dependency, wired in kernel.ts. */
   sessions(): SessionManager
-  /** Provision-log stream, keyed by `envKey(ref)`. */
-  log(key: string, line: string): void
-  /** Tree-shape / env-status changed. */
-  changed(): void
+  bus: Bus
 }
 
 /** Everything env-lifecycle: clone + devcontainer per (task, repo), idle auto-stop. */
@@ -43,7 +41,14 @@ export class EnvManager {
   constructor(private deps: EnvManagerDeps) {}
 
   private logFor(ref: EnvRef): (line: string) => void {
-    return (line) => this.deps.log(envKey(ref), line)
+    return (line) => this.deps.bus.emit('provision.log', { key: envKey(ref), line })
+  }
+
+  /** Persist the env status and announce it (`env.status` + the tree re-render). */
+  private async setStatus(ref: EnvRef, patch: Partial<EnvState> & { status: EnvStatus }): Promise<void> {
+    await store.updateEnv(ref.workspace, ref.task, ref.repo, patch)
+    this.deps.bus.emit('env.status', { ref, status: patch.status })
+    this.deps.bus.emit('tree.changed', undefined)
   }
 
   async find(ref: EnvRef): Promise<EnvState | undefined> {
@@ -83,16 +88,12 @@ export class EnvManager {
       if (!repo) throw new Error(`repo "${ref.repo}" is not registered in "${ref.workspace}"`)
       const log = this.logFor(ref)
 
-      await store.updateEnv(ref.workspace, ref.task, ref.repo, {
-        status: 'starting',
-        error: undefined
-      })
-      this.deps.changed()
+      await this.setStatus(ref, { status: 'starting', error: undefined })
       try {
         const dir = await ensureClone(ref, repo, log)
         const configArgs = await overrideConfigArgs(ref, repo)
         const up = await devcontainerUp(ref, configArgs, dir, log, canonicalRepoId(repo.url)?.host)
-        await store.updateEnv(ref.workspace, ref.task, ref.repo, {
+        await this.setStatus(ref, {
           status: 'running',
           containerId: up.containerId,
           remoteWorkspaceFolder: up.remoteWorkspaceFolder
@@ -102,11 +103,9 @@ export class EnvManager {
         return env!
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e)
-        await store.updateEnv(ref.workspace, ref.task, ref.repo, { status: 'error', error: message })
+        await this.setStatus(ref, { status: 'error', error: message })
         log(`error: ${message}`)
         throw e
-      } finally {
-        this.deps.changed()
       }
     })()
     this.ensureInFlight.set(key, p)
@@ -187,9 +186,8 @@ export class EnvManager {
     stopGitBroker(ref)
     this.gitShimsInstalled.delete(envKey(ref))
     if (env?.containerId) await dockerStop(env.containerId, log)
-    await store.updateEnv(ref.workspace, ref.task, ref.repo, { status: 'stopped' })
+    await this.setStatus(ref, { status: 'stopped' })
     log('environment stopped')
-    this.deps.changed()
     // A freed repo may release queued sessions.
     this.deps.sessions().schedule()
   }
@@ -211,7 +209,7 @@ export class EnvManager {
       log(`clone removal failed: ${e instanceof Error ? e.message : String(e)}`)
     }
     await store.removeEnv(ref.workspace, ref.task, ref.repo)
-    this.deps.changed()
+    this.deps.bus.emit('tree.changed', undefined)
     this.deps.sessions().schedule()
   }
 
