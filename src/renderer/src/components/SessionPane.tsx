@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { SessionSnapshot } from '../../../shared/types'
+import { agentName, useAgents } from '../useAgents'
 import { Chat } from './Chat'
 
 export function SessionPane({
@@ -31,13 +32,14 @@ export function SessionPane({
 
 function Header({ snapshot }: { snapshot: SessionSnapshot }) {
   const { info } = snapshot
+  const agents = useAgents()
   return (
     <div className="chat-header">
       <span>
         {info.workspace} / {info.task} / {info.envRepo} — {info.title}
       </span>
       <span className={`chip mark-${info.state}`}>{info.state}</span>
-      {info.agent && <span className="chip">{info.agent}</span>}
+      {info.agent && <span className="chip">{agentName(agents, info.agent)}</span>}
     </div>
   )
 }
