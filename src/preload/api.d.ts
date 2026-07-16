@@ -6,6 +6,7 @@ declare global {
     gurt: GurtApi & {
       onTreeChanged(cb: () => void): () => void
       onSessionChanged(cb: (snapshot: GurtEvents['session-changed']) => void): () => void
+      onSessionTurn(cb: (event: GurtEvents['session-turn']) => void): () => void
       onProvisionLog(cb: (event: GurtEvents['provision-log']) => void): () => void
     }
   }

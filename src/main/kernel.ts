@@ -1,22 +1,18 @@
 // Composition root of the electron-free core: wires EnvManager and
-// SessionManager together and exposes the operations that span both.
-// Importable without an Electron app (headless runs, orchestrator, tests).
-import type { SessionSnapshot, Tree } from '../shared/types'
+// SessionManager over the domain bus and exposes the operations that span
+// both. Importable without an Electron app (headless runs, orchestrator,
+// tests).
+import type { Tree } from '../shared/types'
 import { resolveMcpServers, stopMcpServers } from './mcp/manager'
 import { isDirty } from './provision'
 import * as store from './store'
 import { cloneDir } from './store'
+import { createBus, type Bus } from './bus'
 import { EnvManager } from './envs'
 import { SessionManager } from './sessions'
 
-/** Temporary seam; replaced by the event bus in requirements-event-bus.md. */
-export interface KernelEvents {
-  treeChanged(): void
-  sessionChanged(snap: SessionSnapshot): void
-  provisionLog(e: { key: string; line: string }): void
-}
-
 export interface Kernel {
+  bus: Bus
   envs: EnvManager
   sessions: SessionManager
   /** store.buildTree + session overlay. */
@@ -26,34 +22,40 @@ export interface Kernel {
   taskDirtyRepos(ws: string, task: string): Promise<string[]>
 }
 
-export function createKernel(events: KernelEvents): Kernel {
+export function createKernel(): Kernel {
+  const bus = createBus()
+
   // EnvManager and SessionManager depend on each other; the lazy getter breaks
   // the construction-order knot.
   let sessions: SessionManager
 
-  const envs = new EnvManager({
-    sessions: () => sessions,
-    log: (key, line) => events.provisionLog({ key, line }),
-    changed: () => events.treeChanged()
-  })
+  const envs = new EnvManager({ sessions: () => sessions, bus })
 
-  sessions = new SessionManager({
-    onSessionsChanged: () => events.treeChanged(),
-    onSessionChanged: (id) => {
-      const snap = sessions.snapshot(id)
-      if (snap) events.sessionChanged(snap)
+  sessions = new SessionManager(
+    {
+      resolveEnv: (ref, agentId, gitAccess) => envs.resolveEnv(ref, agentId, gitAccess),
+      installAdapter: (ref, ctx) => envs.installAdapter(ref, ctx),
+      resolveMcpServers,
+      stopMcpServers,
+      envStatus: (ref) => envs.status(ref),
+      persist: (ws, task, records) => {
+        store.writeSessions(ws, task, records).catch((e) => console.error('persist failed:', e))
+      }
     },
-    resolveEnv: (ref, agentId, gitAccess) => envs.resolveEnv(ref, agentId, gitAccess),
-    installAdapter: (ref, ctx) => envs.installAdapter(ref, ctx),
-    resolveMcpServers,
-    stopMcpServers,
-    envStatus: (ref) => envs.status(ref),
-    persist: (ws, task, records) => {
-      store.writeSessions(ws, task, records).catch((e) => console.error('persist failed:', e))
-    },
-    onEnvIdle: (ref) => envs.noteIdle(ref),
-    onEnvActive: (ref) => envs.noteActive(ref)
+    bus
+  )
+
+  // Idle auto-stop policy: an env whose sessions all finished their turns is
+  // stopped after a grace period; any activity cancels the pending stop.
+  // `noteIdle` re-verifies idleness *and* the running status before stopping.
+  bus.on('session.turn', ({ ref, phase }) => {
+    if (phase === 'started') envs.noteActive(ref)
+    else if (sessions.isEnvIdle(ref)) envs.noteIdle(ref)
   })
+  bus.on('session.awaiting', ({ ref, awaiting }) => {
+    if (!awaiting && sessions.isEnvIdle(ref)) envs.noteIdle(ref)
+  })
+  bus.on('env.activity', ({ ref }) => envs.noteActive(ref))
 
   async function restoreSessions(): Promise<void> {
     const t = await store.buildTree()
@@ -65,6 +67,7 @@ export function createKernel(events: KernelEvents): Kernel {
   restoreSessions().catch((e) => console.error('session restore failed:', e))
 
   return {
+    bus,
     envs,
     sessions,
 
@@ -79,7 +82,7 @@ export function createKernel(events: KernelEvents): Kernel {
       await envs.teardownTask(ws, task)
       sessions.dropTaskSessions(ws, task)
       await store.removeTaskDir(ws, task)
-      events.treeChanged()
+      bus.emit('tree.changed', undefined)
     },
 
     async taskDirtyRepos(ws: string, task: string): Promise<string[]> {

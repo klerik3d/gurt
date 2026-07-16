@@ -13,6 +13,7 @@ const subscribe =
 const api: Record<string, unknown> = {
   onTreeChanged: subscribe('tree-changed'),
   onSessionChanged: subscribe('session-changed'),
+  onSessionTurn: subscribe('session-turn'),
   onProvisionLog: subscribe('provision-log')
 }
 for (const m of API_METHODS) api[m] = (...args: unknown[]) => ipcRenderer.invoke(`api:${m}`, ...args)

@@ -19,6 +19,7 @@ import type {
 import type { AgentDef } from '../shared/agents'
 import type { CreateAction } from '../shared/api'
 import { connKey, envKey, taskKey } from '../shared/keys'
+import type { Bus } from './bus'
 import { spawnAcpAdapter } from './provision'
 import { JsonRpcPeer } from './jsonrpc'
 
@@ -117,9 +118,9 @@ export interface EnvContext {
   gitBrokerEnv?: Record<string, string>
 }
 
+/** Capabilities the session manager needs from the env/mcp/store layers.
+ *  Notifications ride the domain bus instead. */
 export interface SessionEvents {
-  onSessionsChanged: () => void
-  onSessionChanged: (sessionId: string) => void
   /** Ensure the container is up (clone + up, reusing a stopped container) and
    *  return the agent's launch context. When `gitAccess`, also starts the git
    *  broker, installs shims, and includes the injection env. Throws on failure. */
@@ -133,10 +134,6 @@ export interface SessionEvents {
   /** Current infra status of the env (for the scheduler's free-repo predicate). */
   envStatus: (ref: EnvRef) => Promise<EnvStatus>
   persist: (ws: string, task: string, records: PersistedSession[]) => void
-  /** No session on this env is busy or starting — safe to schedule an idle auto-stop. */
-  onEnvIdle: (ref: EnvRef) => void
-  /** A session on this env started work (or the user is typing) — cancel any pending auto-stop. */
-  onEnvActive: (ref: EnvRef) => void
 }
 
 export type { CreateAction }
@@ -148,7 +145,14 @@ export class SessionManager {
   /** (env, agent) pairs whose adapter is installed this app run. */
   private installedAdapters = new Set<string>()
 
-  constructor(private events: SessionEvents) {}
+  constructor(
+    private events: SessionEvents,
+    private bus: Bus
+  ) {}
+
+  private emitState(s: Session): void {
+    this.bus.emit('session.state', { sessionId: s.info.id, ref: s.ref, state: s.info.state })
+  }
 
   /** Load sessions persisted by a previous run; they reattach lazily on prompt. */
   restore(records: PersistedSession[]): void {
@@ -245,7 +249,8 @@ export class SessionManager {
       loading: false,
       pendingPermissions: new Map()
     })
-    this.events.onSessionsChanged()
+    this.bus.emit('tree.changed', undefined)
+    this.emitState(this.sessions.get(info.id)!)
     this.schedulePersist(ref)
     if (action === 'queue') this.enqueue(info.id)
     else if (action === 'run') void this.startSession(info.id)
@@ -265,7 +270,8 @@ export class SessionManager {
     s.info.state = 'queued'
     s.info.queuedAt = new Date().toISOString()
     s.startError = undefined
-    this.events.onSessionsChanged()
+    this.bus.emit('tree.changed', undefined)
+    this.emitState(s)
     this.schedulePersist(s.ref)
     this.schedule()
   }
@@ -276,7 +282,8 @@ export class SessionManager {
     if (!s || s.info.state !== 'queued') return
     s.info.state = 'draft'
     s.info.queuedAt = undefined
-    this.events.onSessionsChanged()
+    this.bus.emit('tree.changed', undefined)
+    this.emitState(s)
     this.schedulePersist(s.ref)
   }
 
@@ -284,7 +291,7 @@ export class SessionManager {
     const s = this.sessions.get(sessionId)
     if (!s || s.info.state !== 'draft') return
     s.info.startPrompt = text
-    this.events.onSessionChanged(sessionId)
+    this.bus.emit('session.changed', { sessionId })
     this.schedulePersist(s.ref)
   }
 
@@ -297,7 +304,7 @@ export class SessionManager {
       resolve({ outcome: { outcome: 'cancelled' } })
     this.sessions.delete(sessionId)
     this.schedulePersist(s.ref)
-    this.events.onSessionsChanged()
+    this.bus.emit('tree.changed', undefined)
   }
 
   // --- scheduler ----------------------------------------------------------
@@ -353,12 +360,13 @@ export class SessionManager {
   private async startSession(sessionId: string): Promise<void> {
     const s = this.sessions.get(sessionId)
     if (!s || s.info.state === 'starting' || s.info.state === 'started') return
-    this.events.onEnvActive(s.ref)
+    this.bus.emit('env.activity', { ref: s.ref })
     s.info.state = 'starting'
     s.info.queuedAt = undefined
     s.startError = undefined
-    this.events.onSessionsChanged()
-    this.events.onSessionChanged(sessionId)
+    this.bus.emit('tree.changed', undefined)
+    this.emitState(s)
+    this.bus.emit('session.changed', { sessionId })
     try {
       const ctx = await this.events.resolveEnv(s.ref, s.info.agent!, s.info.gitAccess ?? false)
       s.remoteCwd = ctx.remoteWorkspaceFolder
@@ -375,7 +383,8 @@ export class SessionManager {
       s.attached = true
       s.info.state = 'started'
       await this.applyAutoAllow(s, conn)
-      this.events.onSessionsChanged()
+      this.bus.emit('tree.changed', undefined)
+      this.emitState(s)
       this.schedulePersist(s.ref)
       await this.runPrompt(s, s.info.startPrompt)
     } catch (e) {
@@ -384,7 +393,8 @@ export class SessionManager {
       s.info.queuedAt = undefined
       s.startError = message
       this.push(s, { kind: 'system', text: `start failed: ${message}` })
-      this.events.onSessionsChanged()
+      this.bus.emit('tree.changed', undefined)
+      this.emitState(s)
       this.schedulePersist(s.ref)
       // A failed start must not block the queue — let the next item try.
       this.schedule()
@@ -411,7 +421,7 @@ export class SessionManager {
         conn.kill()
         this.events.stopMcpServers(conn.ref)
       }
-    this.events.onSessionsChanged()
+    this.bus.emit('tree.changed', undefined)
   }
 
   private schedulePersist(ref: EnvRef): void {
@@ -463,16 +473,19 @@ export class SessionManager {
       for (const s of this.sessions.values()) {
         if (connKey(s.ref, s.info.agent ?? '') !== key) continue
         s.attached = false
+        const wasAwaiting = s.pendingPermissions.size > 0
         for (const resolve of s.pendingPermissions.values())
           resolve({ outcome: { outcome: 'cancelled' } })
         s.pendingPermissions.clear()
+        if (wasAwaiting)
+          this.bus.emit('session.awaiting', { sessionId: s.info.id, ref: s.ref, awaiting: false })
         if (s.busy) {
           s.busy = false
           this.push(s, { kind: 'system', text: 'agent process exited' })
         }
+        // The in-flight `session/prompt` of a busy session rejects with the peer,
+        // so its runPrompt still emits the `session.turn` ended the idle policy needs.
       }
-      // A crashed adapter leaves its sessions idle — reconsider the auto-stop.
-      this.checkEnvIdle(ref)
     })
 
     peer.onNotification('session/update', (params) => this.onSessionUpdate(params))
@@ -570,10 +583,11 @@ export class SessionManager {
     context?: PromptContext[],
     images?: PromptImage[]
   ): Promise<void> {
-    this.events.onEnvActive(s.ref)
+    this.bus.emit('env.activity', { ref: s.ref })
     this.push(s, { kind: 'user', text })
     s.busy = true
-    this.events.onSessionChanged(s.info.id)
+    this.bus.emit('session.changed', { sessionId: s.info.id })
+    this.bus.emit('session.turn', { sessionId: s.info.id, ref: s.ref, phase: 'started' })
     try {
       const conn = await this.attach(s)
       const result = await conn.peer.request<{ stopReason?: string }>('session/prompt', {
@@ -587,9 +601,9 @@ export class SessionManager {
       this.push(s, { kind: 'system', text: `error: ${e instanceof Error ? e.message : e}` })
     } finally {
       s.busy = false
-      this.events.onSessionChanged(s.info.id)
+      this.bus.emit('session.changed', { sessionId: s.info.id })
       this.schedulePersist(s.ref)
-      this.checkEnvIdle(s.ref)
+      this.bus.emit('session.turn', { sessionId: s.info.id, ref: s.ref, phase: 'ended' })
     }
   }
 
@@ -603,16 +617,11 @@ export class SessionManager {
     return true
   }
 
-  /** Schedule an idle auto-stop once every session sharing this env has finished its turn. */
-  private checkEnvIdle(ref: EnvRef): void {
-    if (this.isEnvIdle(ref)) this.events.onEnvIdle(ref)
-  }
-
   /** Ping from the UI (e.g. typing in the composer) — postpones a pending auto-stop. */
   activity(sessionId: string): void {
     const s = this.sessions.get(sessionId)
     if (!s) return
-    this.events.onEnvActive(s.ref)
+    this.bus.emit('env.activity', { ref: s.ref })
   }
 
   async prompt(
@@ -632,9 +641,12 @@ export class SessionManager {
     if (!s) return
     const conn = this.connections.get(connKey(s.ref, s.info.agent ?? ''))
     if (s.acpSessionId) conn?.peer.notify('session/cancel', { sessionId: s.acpSessionId })
+    const wasAwaiting = s.pendingPermissions.size > 0
     for (const resolve of s.pendingPermissions.values())
       resolve({ outcome: { outcome: 'cancelled' } })
     s.pendingPermissions.clear()
+    if (wasAwaiting)
+      this.bus.emit('session.awaiting', { sessionId: s.info.id, ref: s.ref, awaiting: false })
   }
 
   async setMode(sessionId: string, modeId: string): Promise<void> {
@@ -649,7 +661,7 @@ export class SessionManager {
     const k = `${mode?.id ?? modeId} ${mode?.name ?? ''}`.toLowerCase()
     if (/bypass|yolo|accept|auto/.test(k)) s.info.autoAllow = true
     else if (/default|manual|ask|confirm/.test(k)) s.info.autoAllow = false
-    this.events.onSessionChanged(sessionId)
+    this.bus.emit('session.changed', { sessionId })
     this.schedulePersist(s.ref)
   }
 
@@ -662,7 +674,9 @@ export class SessionManager {
     const entry = s.entries.find((e) => e.id === entryId)
     if (entry && entry.kind === 'permission') entry.chosen = optionId
     resolve({ outcome: { outcome: 'selected', optionId } })
-    this.events.onSessionChanged(sessionId)
+    if (s.pendingPermissions.size === 0)
+      this.bus.emit('session.awaiting', { sessionId, ref: s.ref, awaiting: false })
+    this.bus.emit('session.changed', { sessionId })
     this.schedulePersist(s.ref)
   }
 
@@ -673,7 +687,7 @@ export class SessionManager {
   private push(s: Session, entry: ChatEntryBase): ChatEntry {
     const full = { ...entry, id: s.nextEntryId++ }
     s.entries.push(full)
-    this.events.onSessionChanged(s.info.id)
+    this.bus.emit('session.changed', { sessionId: s.info.id })
     this.schedulePersist(s.ref)
     return full
   }
@@ -697,7 +711,7 @@ export class SessionManager {
     )
     const next = normalizeConfigOptions(res?.configOptions)
     if (next) s.configOptions = next
-    this.events.onSessionChanged(sessionId)
+    this.bus.emit('session.changed', { sessionId })
     this.schedulePersist(s.ref)
   }
 
@@ -766,7 +780,7 @@ export class SessionManager {
         const last = s.entries[s.entries.length - 1]
         if (last && last.kind === kind) {
           last.text += text
-          this.events.onSessionChanged(s.info.id)
+          this.bus.emit('session.changed', { sessionId: s.info.id })
         } else {
           this.push(s, { kind, text })
         }
@@ -789,7 +803,7 @@ export class SessionManager {
           if (u.title) entry.title = u.title
           const detail = this.toolDetail(u.content)
           if (detail) entry.detail = detail
-          this.events.onSessionChanged(s.info.id)
+          this.bus.emit('session.changed', { sessionId: s.info.id })
         }
         break
       }
@@ -799,23 +813,23 @@ export class SessionManager {
           priority: e.priority,
           status: e.status
         }))
-        this.events.onSessionChanged(s.info.id)
+        this.bus.emit('session.changed', { sessionId: s.info.id })
         break
       case 'available_commands_update':
         s.commands = (u.availableCommands ?? []).map((c: any) => ({
           name: c.name,
           description: c.description
         }))
-        this.events.onSessionChanged(s.info.id)
+        this.bus.emit('session.changed', { sessionId: s.info.id })
         break
       case 'current_mode_update':
         if (s.modes) s.modes.currentModeId = u.currentModeId
         else s.modes = { currentModeId: u.currentModeId, availableModes: [] }
-        this.events.onSessionChanged(s.info.id)
+        this.bus.emit('session.changed', { sessionId: s.info.id })
         break
       case 'config_option_update':
         s.configOptions = normalizeConfigOptions(u.configOptions) ?? s.configOptions
-        this.events.onSessionChanged(s.info.id)
+        this.bus.emit('session.changed', { sessionId: s.info.id })
         break
       default:
         break // user_message_chunk — we add our own copy of the prompt
@@ -837,6 +851,8 @@ export class SessionManager {
     const entry = this.push(s, { kind: 'permission', title, options })
     return new Promise((resolve) => {
       s.pendingPermissions.set(entry.id, resolve)
+      if (s.pendingPermissions.size === 1)
+        this.bus.emit('session.awaiting', { sessionId: s.info.id, ref: s.ref, awaiting: true })
     })
   }
 }

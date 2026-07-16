@@ -15,6 +15,7 @@ import type {
   Tree
 } from './types'
 import type { CredentialsFile } from './credentials'
+import type { DomainEvents } from './events'
 import type { McpDef } from './mcp'
 
 export type CreateAction = 'run' | 'queue' | 'draft'
@@ -131,5 +132,6 @@ export const API_METHODS = Object.keys(METHODS) as readonly (keyof GurtApi)[]
 export interface GurtEvents {
   'tree-changed': void
   'session-changed': SessionSnapshot
+  'session-turn': DomainEvents['session.turn']
   'provision-log': { key: string; line: string }
 }

@@ -15,11 +15,15 @@ function broadcast(channel: string, ...args: unknown[]): void {
 }
 
 export function registerIpc(): void {
-  const kernel = createKernel({
-    treeChanged: () => broadcast('tree-changed'),
-    sessionChanged: (snap) => broadcast('session-changed', snap),
-    provisionLog: (e) => broadcast('provision-log', e)
+  const kernel = createKernel()
+
+  kernel.bus.on('tree.changed', () => broadcast('tree-changed'))
+  kernel.bus.on('session.changed', ({ sessionId }) => {
+    const snap = kernel.sessions.snapshot(sessionId)
+    if (snap) broadcast('session-changed', snap)
   })
+  kernel.bus.on('session.turn', (e) => broadcast('session-turn', e))
+  kernel.bus.on('provision.log', (e) => broadcast('provision-log', e))
 
   const impl: GurtApi = {
     getTree: () => kernel.tree(),
