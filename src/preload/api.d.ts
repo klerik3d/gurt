@@ -34,7 +34,7 @@ export interface GurtApi {
     prompt: string,
     action: CreateAction,
     mcp: McpSelection[],
-    autoAllow: boolean,
+    startMode?: string,
     model?: string
   ): Promise<SessionInfo>
   sessionRun(id: string): Promise<void>

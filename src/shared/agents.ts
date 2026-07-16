@@ -18,6 +18,15 @@ export interface AgentDef {
   models?: string[]
   /** Preselected entry from `models`. */
   defaultModel?: string
+  /**
+   * ACP permission modes offered in the new-session form, by their real adapter
+   * mode id (see the adapter's `availableModes`). Some modes are conditional at
+   * runtime (e.g. `auto` needs model support, `bypassPermissions` a non-root
+   * sandbox) — the chosen id is applied only if the live session advertises it.
+   */
+  modes?: { id: string; label: string }[]
+  /** Preselected entry from `modes`. */
+  defaultMode?: string
 }
 
 export const AGENT_DEFS: AgentDef[] = [
@@ -31,7 +40,18 @@ export const AGENT_DEFS: AgentDef[] = [
     binArgs: [],
     secretEnv: 'CLAUDE_CODE_OAUTH_TOKEN',
     models: ['opus', 'sonnet', 'haiku'],
-    defaultModel: 'opus'
+    defaultModel: 'opus',
+    // Real adapter mode ids. `auto` (model-classifier) is the default; it needs
+    // model support, so it falls back to `default`/Manual when unavailable.
+    // `bypassPermissions`/`dontAsk` are intentionally omitted here — reach them
+    // from the composer's mode switcher, not the start form.
+    modes: [
+      { id: 'auto', label: 'auto — model decides each permission' },
+      { id: 'default', label: 'manual — confirm dangerous operations' },
+      { id: 'acceptEdits', label: 'accept edits — auto-accept file edits' },
+      { id: 'plan', label: 'plan — no tool execution' }
+    ],
+    defaultMode: 'auto'
   },
   {
     id: 'codex',

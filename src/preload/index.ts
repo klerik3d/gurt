@@ -23,9 +23,9 @@ const api = {
     prompt: string,
     action: string,
     mcp: McpSelection[],
-    autoAllow: boolean,
+    startMode?: string,
     model?: string
-  ) => ipcRenderer.invoke('session:create', ref, agent, prompt, action, mcp, autoAllow, model),
+  ) => ipcRenderer.invoke('session:create', ref, agent, prompt, action, mcp, startMode, model),
   sessionRun: (id: string) => ipcRenderer.invoke('session:run', id),
   sessionEnqueue: (id: string) => ipcRenderer.invoke('session:enqueue', id),
   sessionCancelQueue: (id: string) => ipcRenderer.invoke('session:cancel-queue', id),

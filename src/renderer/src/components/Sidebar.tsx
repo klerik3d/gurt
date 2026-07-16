@@ -242,8 +242,8 @@ function NewSessionModal({
   const [mcpDefs, setMcpDefs] = useState<McpDef[]>([])
   /** MCP id -> granted mode; absent = not attached. */
   const [mcp, setMcp] = useState<Record<string, McpMode>>({})
-  /** Permission mode: auto-allow tool calls, or ask for each one. */
-  const [autoAllow, setAutoAllow] = useState(true)
+  /** Selected ACP permission mode id (see `AgentDef.modes`). */
+  const [startMode, setStartMode] = useState('')
   const [model, setModel] = useState('')
   const [error, setError] = useState('')
 
@@ -257,8 +257,11 @@ function NewSessionModal({
   }, [])
 
   const models = agentDef(agent)?.models
+  const modes = agentDef(agent)?.modes
   useEffect(() => {
-    setModel(agentDef(agent)?.defaultModel ?? models?.[0] ?? '')
+    const def = agentDef(agent)
+    setModel(def?.defaultModel ?? def?.models?.[0] ?? '')
+    setStartMode(def?.defaultMode ?? def?.modes?.[0]?.id ?? '')
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agent])
 
@@ -303,7 +306,7 @@ function NewSessionModal({
         prompt,
         action,
         mcpSelection(),
-        autoAllow,
+        modes ? startMode : undefined,
         models ? model : undefined
       )
       onCreated(s)
@@ -345,16 +348,16 @@ function NewSessionModal({
             </select>
           </label>
         )}
-        <label>
-          mode
-          <select
-            value={autoAllow ? 'auto' : 'manual'}
-            onChange={(e) => setAutoAllow(e.target.value === 'auto')}
-          >
-            <option value="auto">auto — allow tool calls automatically</option>
-            <option value="manual">manual — confirm each tool call</option>
-          </select>
-        </label>
+        {modes && modes.length > 0 && (
+          <label>
+            mode
+            <select value={startMode} onChange={(e) => setStartMode(e.target.value)}>
+              {modes.map((m) => (
+                <option key={m.id} value={m.id}>{m.label}</option>
+              ))}
+            </select>
+          </label>
+        )}
         {mcpDefs.length > 0 && (
           <div className="mcp-picker">
             <div className="mcp-picker-title">MCP servers</div>

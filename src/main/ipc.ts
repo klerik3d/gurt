@@ -308,9 +308,9 @@ export function registerIpc(): void {
       prompt: string,
       action: CreateAction,
       mcp: McpSelection[],
-      autoAllow: boolean,
+      startMode?: string,
       model?: string
-    ) => sessions.createSession(ref, agent, prompt, action, mcp, autoAllow, model)
+    ) => sessions.createSession(ref, agent, prompt, action, mcp, startMode, model)
   )
   handle('session:run', (id: string) => sessions.run(id))
   handle('session:enqueue', (id: string) => sessions.enqueue(id))
