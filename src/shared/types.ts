@@ -207,3 +207,28 @@ export interface EnvRef {
   task: string
   repo: string
 }
+
+// Changes panel: the product of a (task, repo) clone — see docs/requirements-changes-panel.md.
+
+export interface ChangedFile {
+  /** Path relative to the repo root. */
+  path: string
+  /** Status letter: M/A/D/R (untracked shown as A). */
+  status: string
+}
+
+/** Git state of one clone, computed on the host (works with containers stopped). */
+export interface RepoChanges {
+  repo: string
+  /** Uncommitted changes exist (staged, unstaged, or untracked). */
+  dirty: boolean
+  /** Local commits not on the remote (upstream if set, else origin/HEAD). */
+  ahead: number
+  files: ChangedFile[]
+  insertions: number
+  deletions: number
+  /** Origin is a GitHub-style remote — the Create PR button is shown at all. */
+  prAvailable: boolean
+  /** The remote gurt/<task> branch exists and matches HEAD — Create PR enabled. */
+  prReady: boolean
+}

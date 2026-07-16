@@ -17,6 +17,17 @@ const api = {
   startEnv: (ref: EnvRef) => ipcRenderer.invoke('env:start', ref),
   stopEnv: (ref: EnvRef) => ipcRenderer.invoke('env:stop', ref),
   removeEnv: (ref: EnvRef) => ipcRenderer.invoke('env:remove', ref),
+  getTaskChanges: (ws: string, task: string) => ipcRenderer.invoke('changes:get', ws, task),
+  getFileDiff: (ws: string, task: string, repo: string, file: string) =>
+    ipcRenderer.invoke('changes:diff', ws, task, repo, file),
+  changesCommit: (ws: string, task: string, repo: string, message: string) =>
+    ipcRenderer.invoke('changes:commit', ws, task, repo, message),
+  changesPush: (ws: string, task: string, repo: string) =>
+    ipcRenderer.invoke('changes:push', ws, task, repo),
+  changesOpenPr: (ws: string, task: string, repo: string) =>
+    ipcRenderer.invoke('changes:open-pr', ws, task, repo),
+  changesOpenVscode: (ws: string, task: string, repo: string) =>
+    ipcRenderer.invoke('changes:open-vscode', ws, task, repo),
   createSession: (
     ref: EnvRef,
     agent: string,

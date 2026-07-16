@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { AgentsFile, McpMode, McpSelection, SessionInfo, SessionState, Tree } from '../../../shared/types'
+import type { AgentsFile, McpMode, McpSelection, RepoChanges, SessionInfo, SessionState, Tree } from '../../../shared/types'
 import type { McpDef } from '../../../shared/mcp'
 import { AGENT_DEFS, agentDef } from '../../../shared/agents'
 import type { Selection } from '../App'
@@ -23,12 +23,15 @@ const SESSION_MARK: Record<SessionState, string> = {
 export function Sidebar({
   tree,
   selection,
+  changes,
   onSelectTask,
   onSelectSession,
   onOpenAgents
 }: {
   tree: Tree | null
   selection: Selection
+  /** Per-task git changes keyed `ws/task` — drives the actionable badge. */
+  changes: Record<string, RepoChanges[]>
   onSelectTask: (ws: string, task: string) => void
   onSelectSession: (id: string) => void
   onOpenAgents: () => void
@@ -95,6 +98,11 @@ export function Sidebar({
                     >
                       {task.name}
                     </span>
+                    {(changes[tkey] ?? []).some((r) => r.dirty || r.ahead > 0) && (
+                      <span className="task-badge" title="uncommitted or unpushed changes">
+                        ●
+                      </span>
+                    )}
                     <span className="spacer" />
                     <button
                       className="icon-btn"
