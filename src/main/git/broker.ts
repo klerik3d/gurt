@@ -12,11 +12,10 @@ import type { EnvRef, RepoConfig } from '../../shared/types'
 import { resolveCredential } from '../../shared/credentials'
 import { DEFAULT_TOKEN_USER } from '../../shared/credentials'
 import { canonicalRepoId } from '../../shared/repoId'
+import { envKey } from '../../shared/keys'
 import { getWorkspace } from '../store'
 import { listCredentials } from '../credentials'
 import { providerForHost } from './providers'
-
-const envKey = (ref: EnvRef): string => `${ref.workspace}/${ref.task}/${ref.repo}`
 
 interface Running {
   http: Server

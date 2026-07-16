@@ -3,11 +3,9 @@ import type { AddressInfo } from 'node:net'
 import type { Server } from 'node:http'
 import type { AcpHttpMcpServer, EnvRef, McpMode, McpSelection } from '../../shared/types'
 import { mcpDef } from '../../shared/mcp'
+import { envKey, mcpServerKey } from '../../shared/keys'
 import { cloneDir } from '../store'
 import { buildGithubHttpServer } from './githubServer'
-
-const envKey = (ref: EnvRef) => `${ref.workspace}/${ref.task}/${ref.repo}`
-const serverKey = (ref: EnvRef, id: string) => `${envKey(ref)}::${id}`
 
 interface Running {
   mode: McpMode
@@ -56,7 +54,7 @@ export async function resolveMcpServers(
   const out: AcpHttpMcpServer[] = []
   for (const sel of selection ?? []) {
     if (!mcpDef(sel.id)) continue
-    const key = serverKey(ref, sel.id)
+    const key = mcpServerKey(ref, sel.id)
     let rec = running.get(key)
     if (rec && rec.mode !== sel.mode) {
       rec.http.close()
