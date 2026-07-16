@@ -34,8 +34,6 @@ export interface AgentInstance {
   secretEnv?: string
   /** Extra env vars injected into the adapter (base URL, provider, ...). */
   env?: Record<string, string>
-  /** Default model for kinds that support a model picker (see `AgentDef.models`). */
-  model?: string
 }
 
 /** agents.json — registry of agent instances, keyed by a stable instance id. */
@@ -91,8 +89,6 @@ export interface SessionInfo {
   workspace: string
   title: string
   agent?: string
-  /** Model id for agents that support model selection (see `AgentDef.models`). */
-  model?: string
   /** Auto-allow tool calls (map to a bypass/accept mode) vs. confirm each one.
    *  Chosen at session start; kept in sync when the mode is changed later. */
   autoAllow?: boolean
@@ -182,6 +178,51 @@ export interface CommandInfo {
 }
 
 /**
+ * ACP prompt capabilities (from `initialize` → `agentCapabilities.promptCapabilities`).
+ * Baseline text + resource-link is always supported; these are the opt-in extras. The
+ * composer gates the matching affordances (e.g. image attach) on them.
+ */
+export interface PromptCapabilities {
+  image?: boolean
+  audio?: boolean
+  embeddedContext?: boolean
+}
+
+/** One selectable value of a `select` config option. */
+export interface ConfigSelectOption {
+  value: string
+  name: string
+  description?: string
+}
+
+/**
+ * A live, agent-reported session configuration selector (ACP `SessionConfigOption`),
+ * reported by `session/new` / `session/load` and updated via `config_option_update`.
+ * Changed through `session/set_config_option`. `category` is a UX hint:
+ * `'model' | 'model_config' | 'thought_level' | 'mode'` or an agent-specific string.
+ */
+export interface SessionConfigOption {
+  id: string
+  name: string
+  description?: string
+  category?: string
+  type: 'select' | 'boolean'
+  /** select → the selected option's value id; boolean → the toggle state. */
+  currentValue: string | boolean
+  /** Present for `type: 'select'` — flattened (any option groups are inlined). */
+  options?: ConfigSelectOption[]
+}
+
+/** An image the user attached to a prompt — sent as an ACP `image` content block. */
+export interface PromptImage {
+  name: string
+  /** e.g. `image/png`. */
+  mimeType: string
+  /** Base64-encoded bytes (no data-uri prefix). */
+  data: string
+}
+
+/**
  * A piece of context the user attaches to a prompt in the composer. Sent to the
  * agent as an ACP `resource_link` content block alongside the message text.
  * `path` is a repo-relative (or absolute) path for file/folder context, or a
@@ -200,6 +241,10 @@ export interface SessionSnapshot {
   modes?: SessionModes
   plan?: PlanEntry[]
   commands?: CommandInfo[]
+  /** Live agent-reported config selectors (model, effort, …). */
+  configOptions?: SessionConfigOption[]
+  /** What content the agent accepts in prompts, for gating composer affordances. */
+  promptCapabilities?: PromptCapabilities
   /** Last failure that put the session back to draft. */
   startError?: string
   /** 1-based position in the global queue, present while queued. */

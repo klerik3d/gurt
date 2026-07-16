@@ -6,6 +6,7 @@ import type {
   EnvStatus,
   McpSelection,
   PromptContext,
+  PromptImage,
   RepoConfig,
   Tree
 } from '../shared/types'
@@ -331,9 +332,8 @@ export function registerIpc(): void {
       prompt: string,
       action: CreateAction,
       mcp: McpSelection[],
-      autoAllow: boolean,
-      model?: string
-    ) => sessions.createSession(ref, agent, prompt, action, mcp, autoAllow, model)
+      autoAllow: boolean
+    ) => sessions.createSession(ref, agent, prompt, action, mcp, autoAllow)
   )
   handle('session:run', (id: string) => sessions.run(id))
   handle('session:enqueue', (id: string) => sessions.enqueue(id))
@@ -341,11 +341,16 @@ export function registerIpc(): void {
   handle('session:edit-prompt', (id: string, text: string) => sessions.editPrompt(id, text))
   handle('session:delete', (id: string) => sessions.deleteSession(id))
   handle('session:snapshot', (id: string) => sessions.snapshot(id))
-  handle('session:prompt', (id: string, text: string, context?: PromptContext[]) =>
-    sessions.prompt(id, text, context)
+  handle(
+    'session:prompt',
+    (id: string, text: string, context?: PromptContext[], images?: PromptImage[]) =>
+      sessions.prompt(id, text, context, images)
   )
   handle('session:cancel', (id: string) => sessions.cancel(id))
   handle('session:set-mode', (id: string, modeId: string) => sessions.setMode(id, modeId))
+  handle('session:set-config-option', (id: string, configId: string, value: string | boolean) =>
+    sessions.setConfigOption(id, configId, value)
+  )
   handle('session:permission', (id: string, entryId: number, optionId: string) =>
     sessions.respondPermission(id, entryId, optionId)
   )

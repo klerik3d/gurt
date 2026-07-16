@@ -1,5 +1,12 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { AgentsFile, EnvRef, McpSelection, PromptContext, RepoConfig } from '../shared/types'
+import type {
+  AgentsFile,
+  EnvRef,
+  McpSelection,
+  PromptContext,
+  PromptImage,
+  RepoConfig
+} from '../shared/types'
 
 const api = {
   getTree: () => ipcRenderer.invoke('tree:get'),
@@ -37,9 +44,8 @@ const api = {
     prompt: string,
     action: string,
     mcp: McpSelection[],
-    autoAllow: boolean,
-    model?: string
-  ) => ipcRenderer.invoke('session:create', ref, agent, prompt, action, mcp, autoAllow, model),
+    autoAllow: boolean
+  ) => ipcRenderer.invoke('session:create', ref, agent, prompt, action, mcp, autoAllow),
   sessionRun: (id: string) => ipcRenderer.invoke('session:run', id),
   sessionEnqueue: (id: string) => ipcRenderer.invoke('session:enqueue', id),
   sessionCancelQueue: (id: string) => ipcRenderer.invoke('session:cancel-queue', id),
@@ -47,10 +53,12 @@ const api = {
     ipcRenderer.invoke('session:edit-prompt', id, text),
   sessionDelete: (id: string) => ipcRenderer.invoke('session:delete', id),
   sessionSnapshot: (id: string) => ipcRenderer.invoke('session:snapshot', id),
-  sessionPrompt: (id: string, text: string, context?: PromptContext[]) =>
-    ipcRenderer.invoke('session:prompt', id, text, context),
+  sessionPrompt: (id: string, text: string, context?: PromptContext[], images?: PromptImage[]) =>
+    ipcRenderer.invoke('session:prompt', id, text, context, images),
   sessionCancel: (id: string) => ipcRenderer.invoke('session:cancel', id),
   sessionSetMode: (id: string, modeId: string) => ipcRenderer.invoke('session:set-mode', id, modeId),
+  sessionSetConfigOption: (id: string, configId: string, value: string | boolean) =>
+    ipcRenderer.invoke('session:set-config-option', id, configId, value),
   sessionPermission: (id: string, entryId: number, optionId: string) =>
     ipcRenderer.invoke('session:permission', id, entryId, optionId),
   sessionActivity: (id: string) => ipcRenderer.invoke('session:activity', id),

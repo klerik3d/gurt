@@ -3,6 +3,7 @@ import type {
   EnvRef,
   McpSelection,
   PromptContext,
+  PromptImage,
   RepoChanges,
   RepoConfig,
   SessionInfo,
@@ -45,8 +46,7 @@ export interface GurtApi {
     prompt: string,
     action: CreateAction,
     mcp: McpSelection[],
-    autoAllow: boolean,
-    model?: string
+    autoAllow: boolean
   ): Promise<SessionInfo>
   sessionRun(id: string): Promise<void>
   sessionEnqueue(id: string): Promise<void>
@@ -54,9 +54,16 @@ export interface GurtApi {
   sessionEditPrompt(id: string, text: string): Promise<void>
   sessionDelete(id: string): Promise<void>
   sessionSnapshot(id: string): Promise<SessionSnapshot | undefined>
-  sessionPrompt(id: string, text: string, context?: PromptContext[]): Promise<void>
+  sessionPrompt(
+    id: string,
+    text: string,
+    context?: PromptContext[],
+    images?: PromptImage[]
+  ): Promise<void>
   sessionCancel(id: string): Promise<void>
   sessionSetMode(id: string, modeId: string): Promise<void>
+  /** Change a live agent-reported config option (model, effort, fast-mode, …). */
+  sessionSetConfigOption(id: string, configId: string, value: string | boolean): Promise<void>
   sessionPermission(id: string, entryId: number, optionId: string): Promise<void>
   /** Ping that the user is active in this session (e.g. typing) — postpones env auto-stop. */
   sessionActivity(id: string): Promise<void>
