@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { EnvRef, RepoChanges, Tree } from '../../../shared/types'
 import { isActionable, isDelivered } from '../../../shared/types'
 import { envKey } from '../App'
+import { agentName, useAgents } from '../useAgents'
 import { Modal } from './Modal'
 
 const STATUS_ICON: Record<string, string> = {
@@ -32,6 +33,7 @@ export function TaskPane({
   onSelectSession: (id: string) => void
 }) {
   const [openLog, setOpenLog] = useState<string | null>(null)
+  const agents = useAgents()
 
   // Opening the task pane is a refresh trigger.
   useEffect(() => {
@@ -120,7 +122,7 @@ export function TaskPane({
               {s.title}
             </span>
             <span className="chip">{s.envRepo}</span>
-            <span className="chip">{s.agent}</span>
+            <span className="chip">{agentName(agents, s.agent)}</span>
             <span className="spacer" />
             <button onClick={() => window.gurt.sessionCancelQueue(s.id).catch((e) => alert(String(e)))}>
               Cancel
