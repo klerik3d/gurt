@@ -162,6 +162,7 @@ export class SessionManager {
       title: `session ${n}`,
       agent: agentId,
       model,
+      autoAllow,
       state: 'draft',
       mcp,
       startPrompt
@@ -303,6 +304,7 @@ export class SessionManager {
       s.modes = result.modes ?? s.modes
       s.attached = true
       s.info.state = 'started'
+      await this.applyAutoAllow(s, conn)
       this.events.onSessionsChanged()
       this.schedulePersist(s.ref)
       await this.runPrompt(s, s.info.startPrompt)
@@ -436,6 +438,7 @@ export class SessionManager {
         })
         s.modes = result?.modes ?? s.modes
         s.attached = true
+        await this.applyAutoAllow(s, conn)
         this.push(s, { kind: 'system', text: 'session resumed' })
       } catch (e) {
         this.push(s, {
@@ -534,7 +537,13 @@ export class SessionManager {
     if (!conn) throw new Error('agent is not running — send a prompt first')
     await conn.peer.request('session/set_mode', { sessionId: s.acpSessionId, modeId })
     if (s.modes) s.modes.currentModeId = modeId
+    // Keep the persisted preference in step so a later reattach restores this choice.
+    const mode = s.modes?.availableModes.find((m) => m.id === modeId)
+    const k = `${mode?.id ?? modeId} ${mode?.name ?? ''}`.toLowerCase()
+    if (/bypass|yolo|accept|auto/.test(k)) s.info.autoAllow = true
+    else if (/default|manual|ask|confirm/.test(k)) s.info.autoAllow = false
     this.events.onSessionChanged(sessionId)
+    this.schedulePersist(s.ref)
   }
 
   respondPermission(sessionId: string, entryId: number, optionId: string): void {
@@ -566,6 +575,42 @@ export class SessionManager {
   private modelMeta(s: Session): { _meta?: { claudeCode: { options: { model: string } } } } {
     if (!s.info.model) return {}
     return { _meta: { claudeCode: { options: { model: s.info.model } } } }
+  }
+
+  /** Pick the ACP mode that matches the session's auto-allow preference. Modes are
+   *  agent-defined, so this is a best-effort match over id/name (mirrors the
+   *  renderer's `modeVisual`). Returns undefined if the current mode already fits
+   *  or no matching mode is exposed. */
+  private desiredModeId(autoAllow: boolean, modes: SessionModes | undefined): string | undefined {
+    const list = modes?.availableModes
+    if (!list?.length) return undefined
+    const has = (m: { id: string; name: string }, ...needles: string[]) => {
+      const k = `${m.id} ${m.name}`.toLowerCase()
+      return needles.some((n) => k.includes(n))
+    }
+    const pick = (pred: (m: { id: string; name: string }) => boolean) => list.find(pred)?.id
+    const target = autoAllow
+      ? pick((m) => has(m, 'bypass', 'yolo')) ?? pick((m) => has(m, 'accept', 'auto'))
+      : pick((m) => m.id === 'default') ?? pick((m) => has(m, 'default', 'manual', 'ask', 'confirm'))
+    if (!target || target === modes!.currentModeId) return undefined
+    return target
+  }
+
+  /** Switch the freshly (re)opened ACP session into the mode implied by the
+   *  session-start auto/manual choice. Best-effort: unknown mode sets are left alone. */
+  private async applyAutoAllow(s: Session, conn: Connection): Promise<void> {
+    if (!s.acpSessionId) return
+    const target = this.desiredModeId(s.info.autoAllow ?? true, s.modes)
+    if (!target) return
+    try {
+      await conn.peer.request('session/set_mode', { sessionId: s.acpSessionId, modeId: target })
+      if (s.modes) s.modes.currentModeId = target
+    } catch (e) {
+      this.push(s, {
+        kind: 'system',
+        text: `could not set mode: ${e instanceof Error ? e.message : e}`
+      })
+    }
   }
 
   /** Flatten ACP tool-call content blocks into a plain-text preview. */
