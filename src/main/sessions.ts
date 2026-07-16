@@ -590,7 +590,9 @@ export class SessionManager {
     }
     const pick = (pred: (m: { id: string; name: string }) => boolean) => list.find(pred)?.id
     const target = autoAllow
-      ? pick((m) => has(m, 'bypass', 'yolo')) ?? pick((m) => has(m, 'accept', 'auto'))
+      ? // "auto" = auto-accept edits, still confirm the risky stuff. Fall back to
+        // a full bypass only for agents that expose no accept/auto mode.
+        pick((m) => has(m, 'accept', 'auto')) ?? pick((m) => has(m, 'bypass', 'yolo'))
       : pick((m) => m.id === 'default') ?? pick((m) => has(m, 'default', 'manual', 'ask', 'confirm'))
     if (!target || target === modes!.currentModeId) return undefined
     return target
