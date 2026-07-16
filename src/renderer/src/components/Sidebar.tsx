@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import type { AgentsFile, McpMode, McpSelection, RepoChanges, SessionInfo, SessionState, Tree } from '../../../shared/types'
-import { isActionable, isDelivered } from '../../../shared/types'
+import type { AgentsFile, McpMode, McpSelection, RepoChanges, SessionInfo, SessionStatus, Tree } from '../../../shared/types'
+import { isActionable, isDelivered, sessionStatus } from '../../../shared/types'
 import type { McpDef } from '../../../shared/mcp'
 import { agentDef } from '../../../shared/agents'
 import type { Selection } from '../App'
@@ -14,17 +14,21 @@ type AddForm =
   | { type: 'session'; ws: string; task: string }
   | null
 
-const SESSION_MARK: Record<SessionState, string> = {
-  draft: '✎',
-  queued: '⏳',
-  starting: '◐',
-  started: '●'
+/** Glyph + human label per fine-grained session status; color comes from `mark-<status>`. */
+const STATUS_MARK: Record<SessionStatus, { glyph: string; label: string }> = {
+  draft: { glyph: '✎', label: 'draft' },
+  queued: { glyph: '⏳', label: 'queued' },
+  starting: { glyph: '◐', label: 'starting' },
+  running: { glyph: '●', label: 'running' },
+  waiting: { glyph: '◆', label: 'awaiting your input' },
+  idle: { glyph: '○', label: 'idle — turn ended' }
 }
 
 export function Sidebar({
   tree,
   selection,
   changes,
+  activity,
   onSelectTask,
   onSelectSession,
   onOpenAgents
@@ -33,6 +37,8 @@ export function Sidebar({
   selection: Selection
   /** Per-task git changes keyed `ws/task` — drives the actionable badge. */
   changes: Record<string, RepoChanges[]>
+  /** Live runtime overlay per session id — splits `started` into running/waiting/idle. */
+  activity: Record<string, { busy?: boolean; awaitingInput?: boolean }>
   onSelectTask: (ws: string, task: string) => void
   onSelectSession: (id: string) => void
   onOpenAgents: () => void
@@ -124,14 +130,17 @@ export function Sidebar({
                     </button>
                   </div>
                   {!isCollapsed &&
-                    task.sessions.map((s) => (
+                    task.sessions.map((s) => {
+                      const status = sessionStatus({ ...s, ...activity[s.id] })
+                      const mark = STATUS_MARK[status]
+                      return (
                       <div
                         key={s.id}
                         className={`node session-node ${
                           selection?.type === 'session' && selection.id === s.id ? 'selected' : ''
                         }`}
                       >
-                        <span className={`session-mark mark-${s.state}`}>{SESSION_MARK[s.state]}</span>
+                        <span className={`session-mark mark-${status}`} title={mark.label}>{mark.glyph}</span>
                         <span className="node-label clickable" onClick={() => onSelectSession(s.id)}>
                           {s.title}
                         </span>
@@ -149,7 +158,8 @@ export function Sidebar({
                           </span>
                         ))}
                       </div>
-                    ))}
+                      )
+                    })}
                   {!isCollapsed && task.sessions.length === 0 && (
                     <div className="hint task-hint">no sessions — “+” to add one</div>
                   )}
