@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { EnvRef, SessionInfo, SessionSnapshot, Tree } from '../../shared/types'
+import type { EnvRef, RepoChanges, SessionInfo, SessionSnapshot, Tree } from '../../shared/types'
 import { Sidebar } from './components/Sidebar'
 import { SessionPane } from './components/SessionPane'
 import { TaskPane } from './components/TaskPane'
@@ -29,12 +29,27 @@ export default function App() {
   const [selection, setSelection] = useState<Selection>(null)
   const [snapshots, setSnapshots] = useState<Record<string, SessionSnapshot>>({})
   const [logs, setLogs] = useState<Record<string, string[]>>({})
+  /** Per-task git changes snapshot, keyed `ws/task` — read by TaskPane and the sidebar badge. */
+  const [changes, setChanges] = useState<Record<string, RepoChanges[]>>({})
   const [agentsOpen, setAgentsOpen] = useState(false)
   const selectionRef = useRef(selection)
   selectionRef.current = selection
+  /** Session busy flags, to detect the end of an agent turn (busy → idle). */
+  const busyRef = useRef<Record<string, boolean>>({})
+  /** Tasks whose changes were already requested at least once (app-start lazy load). */
+  const changesRequested = useRef<Set<string>>(new Set())
 
   const refreshTree = useCallback(() => {
     window.gurt.getTree().then(setTree).catch(console.error)
+  }, [])
+
+  const refreshChanges = useCallback((ws: string, task: string) => {
+    const key = `${ws}/${task}`
+    changesRequested.current.add(key)
+    window.gurt
+      .getTaskChanges(ws, task)
+      .then((c) => setChanges((prev) => ({ ...prev, [key]: c })))
+      .catch(console.error)
   }, [])
 
   useEffect(() => {
@@ -42,6 +57,10 @@ export default function App() {
     const offTree = window.gurt.onTreeChanged(refreshTree)
     const offSession = window.gurt.onSessionChanged((snap) => {
       setSnapshots((prev) => ({ ...prev, [snap.info.id]: snap }))
+      // End of an agent turn — recompute the task's git state.
+      if (busyRef.current[snap.info.id] && !snap.busy)
+        refreshChanges(snap.info.workspace, snap.info.task)
+      busyRef.current[snap.info.id] = snap.busy
     })
     const offLog = window.gurt.onProvisionLog(({ key, line }) => {
       setLogs((prev) => ({ ...prev, [key]: [...(prev[key] ?? []).slice(-500), line] }))
@@ -51,7 +70,16 @@ export default function App() {
       offSession()
       offLog()
     }
-  }, [refreshTree])
+  }, [refreshTree, refreshChanges])
+
+  // Lazy app-start load: fetch changes once for every task the tree shows,
+  // so sidebar badges appear without opening each task pane.
+  useEffect(() => {
+    for (const ws of tree?.workspaces ?? [])
+      for (const task of ws.tasks)
+        if (!changesRequested.current.has(`${ws.name}/${task.name}`))
+          refreshChanges(ws.name, task.name)
+  }, [tree, refreshChanges])
 
   const selectSession = useCallback((id: string) => {
     setSelection({ type: 'session', id })
@@ -93,6 +121,7 @@ export default function App() {
         <Sidebar
           tree={tree}
           selection={selection}
+          changes={changes}
           onSelectTask={(ws, task) => setSelection({ type: 'task', ws, task })}
           onSelectSession={selectSession}
           onOpenAgents={() => setAgentsOpen(true)}
@@ -124,6 +153,8 @@ export default function App() {
             task={selection.task}
             logs={logs}
             positions={positions}
+            changes={changes[`${selection.ws}/${selection.task}`]}
+            onRefreshChanges={() => refreshChanges(selection.ws, selection.task)}
             onSelectSession={selectSession}
           />
         )}

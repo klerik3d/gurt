@@ -52,12 +52,16 @@ interface RunOpts {
   env?: NodeJS.ProcessEnv
   /** Kill the child and reject if it hasn't exited within this many ms. */
   timeoutMs?: number
+  /** Exit codes to treat as success (default [0]) — e.g. `git diff` exits 1 on differences. */
+  okCodes?: number[]
 }
 
-function run(cmd: string, args: string[], log: LogSink, opts: RunOpts = {}): Promise<void> {
+/** Resolves with the child's stdout; exported for host-git modules (changes.ts). */
+export function run(cmd: string, args: string[], log: LogSink, opts: RunOpts = {}): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, { cwd: opts.cwd, env: opts.env })
     const lines: string[] = []
+    let stdout = ''
     const timer = opts.timeoutMs
       ? setTimeout(() => {
           child.kill('SIGKILL')
@@ -71,7 +75,10 @@ function run(cmd: string, args: string[], log: LogSink, opts: RunOpts = {}): Pro
           log(line)
         }
     }
-    child.stdout.on('data', onData)
+    child.stdout.on('data', (d: Buffer) => {
+      stdout += d.toString()
+      onData(d)
+    })
     child.stderr.on('data', onData)
     child.on('error', (e) => {
       if (timer) clearTimeout(timer)
@@ -79,7 +86,7 @@ function run(cmd: string, args: string[], log: LogSink, opts: RunOpts = {}): Pro
     })
     child.on('close', (code) => {
       if (timer) clearTimeout(timer)
-      if (code === 0) resolve()
+      if ((opts.okCodes ?? [0]).includes(code ?? -1)) resolve(stdout)
       else reject(new Error(`${cmd} ${args[0]} failed (${code}): ${lines.slice(-3).join(' | ')}`))
     })
   })
