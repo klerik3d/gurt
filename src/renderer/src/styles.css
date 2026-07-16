@@ -1280,6 +1280,10 @@ button.link:hover {
   border-color: var(--accent);
   color: var(--accent);
 }
+.chip-git {
+  border-color: var(--ok, #3fb950);
+  color: var(--ok, #3fb950);
+}
 
 /* ---- task pane ---- */
 

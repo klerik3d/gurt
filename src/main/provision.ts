@@ -7,6 +7,11 @@ import { createRequire } from 'node:module'
 import type { EnvRef, RepoConfig } from '../shared/types'
 import type { AgentDef } from '../shared/agents'
 import { cloneDir, overrideConfigPath, rmTree, taskDir } from './store'
+import { listCredentials } from './credentials'
+import { hostGitEnv } from './git/env'
+import { forgeFeatures, forgeWrappers } from './git/providers'
+import { BASE_SHIMS, shimInstallScript } from './git/shims'
+import { LAUNCH_BIN } from './git/config'
 
 const require = createRequire(import.meta.url)
 
@@ -94,17 +99,20 @@ export function run(cmd: string, args: string[], log: LogSink, opts: RunOpts = {
 
 export async function ensureClone(ref: EnvRef, repo: RepoConfig, log: LogSink): Promise<string> {
   const dir = cloneDir(ref.workspace, ref.task, ref.repo)
+  // Same git-native contract as the container: a gurt-managed token clones over
+  // https even from an ssh URL, and no operation blocks on a credential prompt.
+  const env = await hostGitEnv(repo, await listCredentials())
   if (!existsSync(dir)) {
     await fs.mkdir(taskDir(ref.workspace, ref.task), { recursive: true })
     log(`cloning ${repo.url} ...`)
-    await run('git', ['clone', '--', repo.url, dir], log)
+    await run('git', ['clone', '--', repo.url, dir], log, { env })
   }
   const branch = `gurt/${ref.task}`
   try {
-    await run('git', ['-C', dir, 'rev-parse', '--verify', branch], () => {})
-    await run('git', ['-C', dir, 'checkout', branch], log)
+    await run('git', ['-C', dir, 'rev-parse', '--verify', branch], () => {}, { env })
+    await run('git', ['-C', dir, 'checkout', branch], log, { env })
   } catch {
-    await run('git', ['-C', dir, 'checkout', '-b', branch], log)
+    await run('git', ['-C', dir, 'checkout', '-b', branch], log, { env })
   }
   return dir
 }
@@ -194,14 +202,18 @@ export async function devcontainerUp(
   ref: EnvRef,
   configArgs: string[],
   workspaceFolder: string,
-  log: LogSink
+  log: LogSink,
+  repoHost?: string | null
 ): Promise<UpResult> {
-  // The container is agent-agnostic: only the node feature is injected. Agent
-  // adapters are installed lazily via `exec` on first connection.
+  // The container is agent-agnostic: only the node feature is injected, plus any
+  // forge-CLI features for the repo's host (computed from the host alone, so the
+  // image-level feature set is stable across ups — an installed-but-unused CLI
+  // is harmless). Agent adapters are installed lazily via `exec` on connect.
+  const features = { ...BASE_FEATURES, ...forgeFeatures(repoHost ?? null) }
   const args = [
     'up',
     '--workspace-folder', workspaceFolder,
-    '--additional-features', JSON.stringify(BASE_FEATURES),
+    '--additional-features', JSON.stringify(features),
     ...idLabelArgs(ref),
     ...configArgs
   ]
@@ -241,6 +253,33 @@ export async function installAcpAdapter(
   if (code !== 0) throw new Error(`ACP adapter install failed (exit ${code})`)
 }
 
+/**
+ * Write the git shims into the container (§5), lazily, like the adapter install:
+ * the launcher + credential helper always, plus any forge-CLI wrappers for the
+ * repo's host. Idempotent — content is overwritten each call.
+ */
+export async function installGitShims(
+  ref: EnvRef,
+  configArgs: string[],
+  workspaceFolder: string,
+  repoHost: string | null,
+  log: LogSink
+): Promise<void> {
+  const names = [...BASE_SHIMS, ...forgeWrappers(repoHost)]
+  log(`installing git shims (${names.join(', ')}) in container ...`)
+  const { code } = await runNodeCli(
+    [
+      'exec',
+      '--workspace-folder', workspaceFolder,
+      ...idLabelArgs(ref),
+      ...configArgs,
+      'sh', '-c', shimInstallScript(names)
+    ],
+    log
+  )
+  if (code !== 0) throw new Error(`git shim install failed (exit ${code})`)
+}
+
 /** Spawns the ACP adapter inside the environment; caller owns the process. */
 export function spawnAcpAdapter(
   ref: EnvRef,
@@ -249,7 +288,8 @@ export function spawnAcpAdapter(
   workspaceFolder: string,
   secret: string,
   secretEnv: string,
-  extraEnv?: Record<string, string>
+  extraEnv?: Record<string, string>,
+  gitEnv?: Record<string, string>
 ) {
   const args = [
     devcontainerCliPath(),
@@ -261,6 +301,11 @@ export function spawnAcpAdapter(
   if (secret) args.push('--remote-env', `${secretEnv}=${secret}`)
   for (const [k, v] of Object.entries(extraEnv ?? {}))
     args.push('--remote-env', `${k}=${v}`)
+  // Git access (§6): broker URL + GIT_CONFIG_* injected as env (never secrets),
+  // and the agent command run through the launcher so the shims shadow container
+  // binaries for the agent's process tree only.
+  for (const [k, v] of Object.entries(gitEnv ?? {})) args.push('--remote-env', `${k}=${v}`)
+  if (gitEnv) args.push(LAUNCH_BIN)
   args.push(agent.bin, ...agent.binArgs)
   return spawn(process.execPath, args, {
     env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
