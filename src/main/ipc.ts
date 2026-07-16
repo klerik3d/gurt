@@ -13,6 +13,7 @@ import type {
 import { agentDef } from '../shared/agents'
 import { MCP_DEFS } from '../shared/mcp'
 import { canonicalRepoId } from '../shared/repoId'
+import { envKey } from '../shared/keys'
 import { resolveCredential, type CredentialsFile } from '../shared/credentials'
 import { resolveMcpServers, stopMcpServers } from './mcp/manager'
 import { getCredentials, setCredentials, credentialUsedBy, listCredentials } from './credentials'
@@ -40,7 +41,6 @@ function broadcast(channel: string, ...args: unknown[]): void {
   for (const win of BrowserWindow.getAllWindows()) win.webContents.send(channel, ...args)
 }
 
-const envKey = (ref: EnvRef) => `${ref.workspace}/${ref.task}/${ref.repo}`
 const logFor = (ref: EnvRef) => (line: string) =>
   broadcast('provision-log', { key: envKey(ref), line })
 

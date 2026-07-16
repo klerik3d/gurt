@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
-import type { EnvRef, RepoChanges, SessionInfo, SessionSnapshot, Tree } from '../../shared/types'
+import type { RepoChanges, SessionInfo, SessionSnapshot, Tree } from '../../shared/types'
+import { envKey } from '../../shared/keys'
 import { Sidebar } from './components/Sidebar'
 import { SessionPane } from './components/SessionPane'
 import { TaskPane } from './components/TaskPane'
@@ -12,7 +13,7 @@ export type Selection =
   | { type: 'task'; ws: string; task: string }
   | null
 
-export const envKey = (ref: EnvRef) => `${ref.workspace}/${ref.task}/${ref.repo}`
+export { envKey }
 
 // Draggable sidebar width, persisted across launches.
 const SIDEBAR_MIN = 180

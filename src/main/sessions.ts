@@ -17,13 +17,9 @@ import type {
   SessionSnapshot
 } from '../shared/types'
 import type { AgentDef } from '../shared/agents'
+import { connKey, envKey, taskKey } from '../shared/keys'
 import { spawnAcpAdapter } from './provision'
 import { JsonRpcPeer } from './jsonrpc'
-
-const envKey = (ref: EnvRef) => `${ref.workspace}/${ref.task}/${ref.repo}`
-const taskKey = (ref: EnvRef) => `${ref.workspace}/${ref.task}`
-/** One ACP connection (adapter process) per (env, agent). */
-const connKey = (ref: EnvRef, agent: string) => `${envKey(ref)}::${agent}`
 
 /**
  * Normalize ACP `SessionConfigOption[]` into our flat shape. `select` options may be
@@ -418,13 +414,13 @@ export class SessionManager {
   }
 
   private schedulePersist(ref: EnvRef): void {
-    const key = taskKey(ref)
+    const key = taskKey(ref.workspace, ref.task)
     clearTimeout(this.persistTimers.get(key))
     this.persistTimers.set(
       key,
       setTimeout(() => {
         const records: PersistedSession[] = [...this.sessions.values()]
-          .filter((s) => taskKey(s.ref) === key)
+          .filter((s) => taskKey(s.ref.workspace, s.ref.task) === key)
           .map((s) => {
             const info = { ...s.info }
             // `starting` is runtime-only; persist it as draft (crash-safe).
