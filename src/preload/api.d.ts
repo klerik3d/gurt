@@ -3,6 +3,7 @@ import type {
   EnvRef,
   McpSelection,
   PromptContext,
+  RepoChanges,
   RepoConfig,
   SessionInfo,
   SessionSnapshot,
@@ -28,6 +29,16 @@ export interface GurtApi {
   startEnv(ref: EnvRef): Promise<void>
   stopEnv(ref: EnvRef): Promise<void>
   removeEnv(ref: EnvRef): Promise<void>
+  /** Git state of every clone of the task, computed on the host; `fetch` reaches the network. */
+  getTaskChanges(ws: string, task: string, opts?: { fetch?: boolean }): Promise<RepoChanges[]>
+  /** Read-only unified diff of one file (untracked shown as whole-file added). */
+  getFileDiff(ws: string, task: string, repo: string, file: string): Promise<string>
+  /** Read-only `git show` of one commit of the thread. */
+  getCommitDiff(ws: string, task: string, repo: string, sha: string): Promise<string>
+  changesCommit(ws: string, task: string, repo: string, message: string): Promise<void>
+  changesPush(ws: string, task: string, repo: string): Promise<void>
+  changesOpenPr(ws: string, task: string, repo: string): Promise<void>
+  changesOpenVscode(ws: string, task: string, repo: string): Promise<void>
   createSession(
     ref: EnvRef,
     agent: string,

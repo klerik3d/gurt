@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import type { AgentsFile, McpMode, McpSelection, SessionInfo, SessionState, Tree } from '../../../shared/types'
+import type { AgentsFile, McpMode, McpSelection, RepoChanges, SessionInfo, SessionState, Tree } from '../../../shared/types'
+import { isActionable, isDelivered } from '../../../shared/types'
 import type { McpDef } from '../../../shared/mcp'
 import { AGENT_DEFS, agentDef } from '../../../shared/agents'
 import type { Selection } from '../App'
@@ -23,12 +24,15 @@ const SESSION_MARK: Record<SessionState, string> = {
 export function Sidebar({
   tree,
   selection,
+  changes,
   onSelectTask,
   onSelectSession,
   onOpenAgents
 }: {
   tree: Tree | null
   selection: Selection
+  /** Per-task git changes keyed `ws/task` — drives the actionable badge. */
+  changes: Record<string, RepoChanges[]>
   onSelectTask: (ws: string, task: string) => void
   onSelectSession: (id: string) => void
   onOpenAgents: () => void
@@ -95,6 +99,7 @@ export function Sidebar({
                     >
                       {task.name}
                     </span>
+                    <TaskBadge repos={changes[tkey] ?? []} />
                     <span className="spacer" />
                     <button
                       className="icon-btn"
@@ -191,6 +196,23 @@ export function Sidebar({
       )}
     </aside>
   )
+}
+
+/** Delivery state of the task's clones: work to do, work awaiting merge, or nothing. */
+function TaskBadge({ repos }: { repos: RepoChanges[] }) {
+  if (repos.some(isActionable))
+    return (
+      <span className="task-badge" title="uncommitted or unpushed changes">
+        ●
+      </span>
+    )
+  if (repos.some(isDelivered))
+    return (
+      <span className="task-badge badge-delivered" title="delivered — awaiting merge">
+        ○
+      </span>
+    )
+  return null
 }
 
 function NameModal({
