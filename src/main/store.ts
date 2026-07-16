@@ -13,7 +13,7 @@ import type {
   Tree,
   WorkspaceFile
 } from '../shared/types'
-import { AGENT_DEFS } from '../shared/agents'
+import { AGENT_DEFS, agentDef } from '../shared/agents'
 
 const pexecFile = promisify(execFile)
 
@@ -73,14 +73,43 @@ const agentsFile = () => path.join(gurtRoot, 'agents.json')
 export async function getAgents(): Promise<AgentsFile> {
   const raw = await readJson<Record<string, any>>(agentsFile(), {})
   const agents: AgentsFile = {}
-  for (const def of AGENT_DEFS) {
-    const a = raw[def.id] ?? {}
-    agents[def.id] = {
-      enabled: a.enabled ?? def.id === 'claude-code',
-      // migrate the pre-registry claude-only field name
-      secret: a.secret ?? a.oauthToken ?? '',
-      secretEnv: a.secretEnv || def.secretEnv
+  for (const [id, a] of Object.entries(raw)) {
+    if (!a || typeof a !== 'object') continue
+    if (typeof a.kind === 'string') {
+      // Current format: an instance carrying its own kind.
+      agents[id] = {
+        kind: a.kind,
+        label: a.label || agentDef(a.kind)?.label || a.kind,
+        enabled: !!a.enabled,
+        secret: a.secret ?? '',
+        secretEnv: a.secretEnv || undefined,
+        env: a.env && typeof a.env === 'object' ? a.env : undefined,
+        model: a.model || undefined
+      }
+    } else {
+      // Legacy format: one config per built-in kind, keyed by the kind id. Lift
+      // each into an instance of that kind (the kind id doubles as instance id).
+      const def = agentDef(id)
+      if (!def) continue
+      agents[id] = {
+        kind: id,
+        label: def.label,
+        enabled: a.enabled ?? id === 'claude-code',
+        // migrate the pre-registry claude-only field name
+        secret: a.secret ?? a.oauthToken ?? '',
+        secretEnv: a.secretEnv || undefined
+      }
     }
+  }
+  // Fresh install: seed the built-in kinds as starter instances.
+  if (Object.keys(agents).length === 0) {
+    for (const def of AGENT_DEFS)
+      agents[def.id] = {
+        kind: def.id,
+        label: def.label,
+        enabled: def.id === 'claude-code',
+        secret: ''
+      }
   }
   return agents
 }
