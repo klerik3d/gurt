@@ -70,10 +70,10 @@ be reworked later.
    go-devcontainer, lossless):
    - base = repo's devcontainer file or a gurt template (`--override`-style,
      the clone stays untouched);
-   - - injected gurt features: `vsc`, `claude` (registry features where they
+   - injected gurt features: `vsc`, `claude` (registry features where they
      exist, otherwise gurt-shipped local features);
-   - - `containerEnv` from the selected env type;
-   - - gurt labels: `gurt.workspace`, `gurt.task`, `gurt.repo`, `gurt.envtype`.
+   - `containerEnv` from the selected env type;
+   - gurt labels: `gurt.workspace`, `gurt.task`, `gurt.repo`, `gurt.envtype`.
 4. Build image and run container via the library's `runner` (see
    `docs/go-devcontainer-requirements.md` §6), which also runs lifecycle
    commands.
@@ -103,7 +103,7 @@ connection token.
 - Chat: the daemon runs `claude` inside the container with
   `--input-format stream-json --output-format stream-json` over docker exec;
   the board talks to the daemon over WebSocket. The UI renders messages,
-  agent **status** (idle / working / awaiting permission) and **activity**
+  agent **status** (idle / working / awaiting permission), and **activity**
   (tool calls) — closer to the VS Code / Claude app chat than to a terminal.
 - **Permissions**: allow/deny buttons in the chat for permission requests,
   plus switching permission modes (plan / edit / auto) via the control
