@@ -6,6 +6,7 @@ import { hasManagedCredential, resolveForRepo } from '../../../shared/credential
 import type { McpDef } from '../../../shared/mcp'
 import type { Selection } from '../App'
 import { agentName, useAgents } from '../useAgents'
+import { alertDialog, confirmDialog } from '../dialog'
 import { Modal } from './Modal'
 import { ReposModal } from './ReposModal'
 
@@ -131,8 +132,8 @@ export function Sidebar({
                         const warning = dirty.length
                           ? `Task "${task.name}" has uncommitted changes in: ${dirty.join(', ')}. Delete anyway and permanently lose them, along with all environments and sessions?`
                           : `Delete task "${task.name}" with all its environments, clones and sessions?`
-                        if (window.confirm(warning))
-                          window.gurt.removeTask(ws.name, task.name).catch((e) => alert(String(e)))
+                        if (await confirmDialog(warning, { title: 'Delete task', confirmText: 'Delete', danger: true }))
+                          window.gurt.removeTask(ws.name, task.name).catch((e) => alertDialog(String(e)))
                       }}
                     >
                       🗑
@@ -267,42 +268,51 @@ function NameModal({
   )
 }
 
-function NewSessionModal({
+export function NewSessionModal({
   tree,
   ws,
   task,
+  edit,
   onClose,
   onCreated
 }: {
   tree: Tree
   ws: string
   task: string
+  /** When present, edit this existing draft's settings instead of creating one. */
+  edit?: SessionInfo
   onClose: () => void
   onCreated: (s: SessionInfo) => void
 }) {
+  const editing = !!edit
   const [agents, setAgents] = useState<AgentsFile | null>(null)
-  const [agent, setAgent] = useState('')
-  const [repo, setRepo] = useState('')
-  const [prompt, setPrompt] = useState('')
+  const [agent, setAgent] = useState(edit?.agent ?? '')
+  const [repo, setRepo] = useState(edit?.envRepo ?? '')
+  const [prompt, setPrompt] = useState(edit?.startPrompt ?? '')
   const [mcpDefs, setMcpDefs] = useState<McpDef[]>([])
   /** MCP id -> granted mode; absent = not attached. */
-  const [mcp, setMcp] = useState<Record<string, McpMode>>({})
+  const [mcp, setMcp] = useState<Record<string, McpMode>>(
+    Object.fromEntries((edit?.mcp ?? []).map((m) => [m.id, m.mode]))
+  )
   /** Permission mode: auto-allow tool calls, or ask for each one. */
-  const [autoAllow, setAutoAllow] = useState(true)
-  /** Native git access injection; default follows whether a credential resolves. */
-  const [gitAccess, setGitAccess] = useState(false)
-  const [gitTouched, setGitTouched] = useState(false)
+  const [autoAllow, setAutoAllow] = useState(edit?.autoAllow ?? true)
+  /** Native git access injection — off by default; the user opts in per session. */
+  const [gitAccess, setGitAccess] = useState(edit?.gitAccess ?? false)
   const [credentials, setCredentials] = useState<CredentialEntry[]>([])
   const [error, setError] = useState('')
 
   useEffect(() => {
     window.gurt.getAgents().then((a) => {
       setAgents(a)
-      const first = Object.keys(a)[0]
-      if (first) setAgent(first)
+      // Create mode picks the first agent; edit mode keeps the draft's.
+      if (!editing) {
+        const first = Object.keys(a)[0]
+        if (first) setAgent(first)
+      }
     })
     window.gurt.getMcpDefs().then(setMcpDefs)
     window.gurt.getCredentials().then((f) => setCredentials(f.credentials)).catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const toggleMcp = (id: string, on: boolean) =>
@@ -330,14 +340,22 @@ function NewSessionModal({
   const repoCfg = repos.find((r) => r.name === repo)
   const gitResolution = repoCfg ? resolveForRepo(credentials, repoCfg) : null
 
-  // Default git access on when a managed credential resolves for the repo, until
-  // the user touches the toggle (then their choice sticks across repo changes).
-  useEffect(() => {
-    if (gitTouched) return
-    setGitAccess(hasManagedCredential(gitResolution))
-    // gitResolution recomputes from repo/credentials; those are the real deps.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [repo, credentials, gitTouched])
+  const saveEdit = async () => {
+    setError('')
+    try {
+      await window.gurt.sessionEditDraft(edit!.id, {
+        agent,
+        envRepo: repo,
+        autoAllow,
+        gitAccess,
+        mcp: mcpSelection(),
+        startPrompt: prompt
+      })
+      onClose()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
 
   const create = async (action: 'run' | 'queue' | 'draft') => {
     setError('')
@@ -347,9 +365,10 @@ function NewSessionModal({
       )
       if (
         busy &&
-        !window.confirm(
-          `Another session is already working on "${repo}". Running now means two agents share one working tree. Continue?`
-        )
+        !(await confirmDialog(
+          `Another session is already working on "${repo}". Running now means two agents share one working tree. Continue?`,
+          { title: 'Shared working tree', confirmText: 'Run anyway' }
+        ))
       )
         return
     }
@@ -372,7 +391,7 @@ function NewSessionModal({
   const ready = !!repo && !!agent && !!prompt.trim()
 
   return (
-    <Modal title={`New session in ${task}`} onClose={onClose}>
+    <Modal title={editing ? `Edit session in ${task}` : `New session in ${task}`} onClose={onClose}>
       <div className="form">
         <label>
           repo
@@ -406,10 +425,7 @@ function NewSessionModal({
           git access
           <select
             value={gitAccess ? 'on' : 'off'}
-            onChange={(e) => {
-              setGitTouched(true)
-              setGitAccess(e.target.value === 'on')
-            }}
+            onChange={(e) => setGitAccess(e.target.value === 'on')}
           >
             <option value="on">on — native git + gh in the container</option>
             <option value="off">off — delegate remote git to the github MCP</option>
@@ -468,9 +484,18 @@ function NewSessionModal({
         </label>
         {error && <div className="error">{error}</div>}
         <div className="row-buttons">
-          <button disabled={!ready} onClick={() => create('run')}>Run now</button>
-          <button disabled={!ready} onClick={() => create('queue')}>Add to queue</button>
-          <button disabled={!ready} onClick={() => create('draft')}>Save draft</button>
+          {editing ? (
+            <>
+              <button disabled={!ready} onClick={saveEdit}>Save</button>
+              <button onClick={onClose}>Cancel</button>
+            </>
+          ) : (
+            <>
+              <button disabled={!ready} onClick={() => create('run')}>Run now</button>
+              <button disabled={!ready} onClick={() => create('queue')}>Add to queue</button>
+              <button disabled={!ready} onClick={() => create('draft')}>Save draft</button>
+            </>
+          )}
         </div>
       </div>
     </Modal>
