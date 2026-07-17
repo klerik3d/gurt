@@ -28,7 +28,7 @@ async function startServer(ref: EnvRef, id: string, mode: McpMode): Promise<Runn
   const dir = cloneDir(ref.workspace, ref.task, ref.repo)
   const token = randomUUID()
   // Only github is implemented; the registry is the extension point for more.
-  const http = buildGithubHttpServer(dir, mode, token)
+  const http = buildGithubHttpServer(ref, dir, mode, token)
   const port = await listen(http)
   return {
     mode,

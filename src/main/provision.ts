@@ -8,7 +8,7 @@ import type { EnvRef, RepoConfig } from '../shared/types'
 import type { AgentDef } from '../shared/agents'
 import { cloneDir, overrideConfigPath, rmTree, taskDir } from './store'
 import { listCredentials } from './credentials'
-import { hostGitEnv } from './git/env'
+import { hostGitAccess } from './git/env'
 import { forgeFeatures, forgeWrappers } from './git/providers'
 import { BASE_SHIMS, shimInstallScript } from './git/shims'
 import { LAUNCH_BIN } from './git/config'
@@ -101,18 +101,18 @@ export async function ensureClone(ref: EnvRef, repo: RepoConfig, log: LogSink): 
   const dir = cloneDir(ref.workspace, ref.task, ref.repo)
   // Same git-native contract as the container: a gurt-managed token clones over
   // https even from an ssh URL, and no operation blocks on a credential prompt.
-  const env = await hostGitEnv(repo, await listCredentials())
+  const { env, gitArgs } = await hostGitAccess(repo, await listCredentials())
   if (!existsSync(dir)) {
     await fs.mkdir(taskDir(ref.workspace, ref.task), { recursive: true })
     log(`cloning ${repo.url} ...`)
-    await run('git', ['clone', '--', repo.url, dir], log, { env })
+    await run('git', [...gitArgs, 'clone', '--', repo.url, dir], log, { env })
   }
   const branch = `gurt/${ref.task}`
   try {
-    await run('git', ['-C', dir, 'rev-parse', '--verify', branch], () => {}, { env })
-    await run('git', ['-C', dir, 'checkout', branch], log, { env })
+    await run('git', ['-C', dir, ...gitArgs, 'rev-parse', '--verify', branch], () => {}, { env })
+    await run('git', ['-C', dir, ...gitArgs, 'checkout', branch], log, { env })
   } catch {
-    await run('git', ['-C', dir, 'checkout', '-b', branch], log, { env })
+    await run('git', ['-C', dir, ...gitArgs, 'checkout', '-b', branch], log, { env })
   }
   return dir
 }
@@ -154,12 +154,19 @@ async function devcontainerCandidates(dir: string): Promise<string[]> {
 export async function discoverDevcontainer(url: string): Promise<DiscoveredDevcontainer | null> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gurt-discover-'))
   try {
+    // Same credential policy as everything else: resolve by the URL's host
+    // (auto-match — there is no RepoConfig yet), never fall back to ambient.
+    // Anonymous https clones of public repos still work under the blocked env.
     // GIT_TERMINAL_PROMPT=0 → private/unreachable URLs fail fast instead of
     // blocking on a credential prompt with no terminal. `--` guards against a
     // URL beginning with `-` being parsed as a git option. The timeout is a
     // backstop for a clone that stalls on a slow/hanging network.
-    await run('git', ['clone', '--depth', '1', '--no-tags', '--', url, dir], () => {}, {
-      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+    const { env, gitArgs } = await hostGitAccess(
+      { name: '', url, devcontainer: '' },
+      await listCredentials()
+    )
+    await run('git', [...gitArgs, 'clone', '--depth', '1', '--no-tags', '--', url, dir], () => {}, {
+      env,
       timeoutMs: DISCOVER_TIMEOUT_MS
     })
     for (const rel of await devcontainerCandidates(dir)) {
@@ -257,27 +264,24 @@ export async function installAcpAdapter(
  * Write the git shims into the container (§5), lazily, like the adapter install:
  * the launcher + credential helper always, plus any forge-CLI wrappers for the
  * repo's host. Idempotent — content is overwritten each call.
+ *
+ * Runs as root via `docker exec` (not `devcontainer exec`): /opt is root-owned
+ * while the remoteUser is usually non-root, so a user-level `mkdir -p
+ * /opt/gurt/bin` fails with EACCES. Shims hold no secrets; root-owned 755 also
+ * keeps the agent from rewriting them.
  */
 export async function installGitShims(
-  ref: EnvRef,
-  configArgs: string[],
-  workspaceFolder: string,
+  containerId: string,
   repoHost: string | null,
   log: LogSink
 ): Promise<void> {
   const names = [...BASE_SHIMS, ...forgeWrappers(repoHost)]
   log(`installing git shims (${names.join(', ')}) in container ...`)
-  const { code } = await runNodeCli(
-    [
-      'exec',
-      '--workspace-folder', workspaceFolder,
-      ...idLabelArgs(ref),
-      ...configArgs,
-      'sh', '-c', shimInstallScript(names)
-    ],
-    log
-  )
-  if (code !== 0) throw new Error(`git shim install failed (exit ${code})`)
+  try {
+    await run('docker', ['exec', '-u', 'root', containerId, 'sh', '-c', shimInstallScript(names)], log)
+  } catch (e) {
+    throw new Error(`git shim install failed: ${e instanceof Error ? e.message : String(e)}`)
+  }
 }
 
 /** Spawns the ACP adapter inside the environment; caller owns the process. */
