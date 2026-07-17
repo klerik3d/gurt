@@ -12,10 +12,20 @@ import type {
   SessionSnapshot
 } from '../../../shared/types'
 import { agentName, useAgents } from '../useAgents'
+import { alertDialog } from '../dialog'
 
 /** Don't ping the main process on every keystroke — once per this interval is enough
  *  to keep postponing the env's idle auto-stop while the user is composing. */
 const ACTIVITY_PING_INTERVAL_MS = 5_000
+
+/**
+ * Blanket permission-bypass modes (Claude's "bypassPermissions", Codex's "yolo").
+ * They disable every guardrail, so they're hidden from the mode picker — gurt's
+ * "auto" already maps to the safer accept-edits mode. Kept out of the UI, not the
+ * protocol: the agent may still report one as current.
+ */
+const BLANKET_MODE_RE = /bypass|yolo/i
+const isBlanketMode = (m: SessionMode): boolean => BLANKET_MODE_RE.test(`${m.id} ${m.name}`)
 
 export function Chat({ snapshot, sessionId }: { snapshot?: SessionSnapshot; sessionId: string }) {
   const [planOpen, setPlanOpen] = useState(true)
@@ -28,9 +38,28 @@ export function Chat({ snapshot, sessionId }: { snapshot?: SessionSnapshot; sess
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [entries.length, entries[entries.length - 1]?.id])
 
+  // Esc stops the current turn while the agent is working (replaces the Stop
+  // button). Ignore Esc raised from a text field so it can close its own popup,
+  // and while any modal/dialog is open — there Esc means "dismiss it", and both
+  // listeners live on window, so this one must stand down explicitly.
+  const busy = snapshot?.busy ?? false
+  useEffect(() => {
+    if (!busy) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      const t = e.target as HTMLElement | null
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return
+      if (document.querySelector('.modal-backdrop, .cmp-menu')) return
+      e.preventDefault()
+      window.gurt.sessionCancel(sessionId).catch(console.error)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [busy, sessionId])
+
   if (!snapshot) return <div className="placeholder">loading session…</div>
 
-  const { info, modes, plan, commands, configOptions, promptCapabilities, busy } = snapshot
+  const { info, modes, plan, commands, configOptions, promptCapabilities } = snapshot
 
   return (
     <div className="chat">
@@ -45,10 +74,9 @@ export function Chat({ snapshot, sessionId }: { snapshot?: SessionSnapshot; sess
         {info.agent && <span className="chip">{agentName(agents, info.agent)}</span>}
         <span className="spacer" />
         {busy && (
-          <>
-            <span className="busy">working…</span>
-            <button onClick={() => window.gurt.sessionCancel(sessionId)}>Stop</button>
-          </>
+          <span className="busy" title="press Esc to stop">
+            working… <span className="busy-hint">Esc to stop</span>
+          </span>
         )}
       </div>
 
@@ -266,6 +294,8 @@ function Composer({
   const [addKind, setAddKind] = useState<'file' | 'folder' | null>(null)
   const [addPath, setAddPath] = useState('')
   const [micOn, setMicOn] = useState(false)
+  /** Last dictation failure, shown inline so the mic never fails silently (#audio). */
+  const [micError, setMicError] = useState<string | null>(null)
   const taRef = useRef<HTMLTextAreaElement>(null)
   const cmdRef = useRef<HTMLInputElement>(null)
   const rootRef = useRef<HTMLDivElement>(null)
@@ -290,14 +320,23 @@ function Composer({
   // Re-fit whenever the value changes (send clears it, pickCommand extends it).
   useEffect(autoGrow, [text])
 
-  // Close every popup on an outside click.
+  // Close every popup on an outside click or Esc. The textarea/slash input
+  // handle their own Esc; this document listener covers the rest (e.g. focus
+  // left on the pill button that opened the menu).
   useEffect(() => {
     if (!slashOpen && !addOpen && !modeOpen && openConfigId === null) return
     const onDown = (e: MouseEvent) => {
       if (rootRef.current && !rootRef.current.contains(e.target as Node)) closeMenus()
     }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeMenus()
+    }
     document.addEventListener('mousedown', onDown)
-    return () => document.removeEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
   }, [slashOpen, addOpen, modeOpen, openConfigId])
 
   // Stop any live dictation when the composer unmounts (session switch).
@@ -357,27 +396,44 @@ function Composer({
     window.gurt.sessionPrompt(sessionId, t, context, imgs).catch(console.error)
   }
 
-  const pickImages = async (files: FileList | null) => {
-    openAdd(false)
-    if (!files?.length) return
+  /** Read image files into attachment chips (shared by the picker and paste). */
+  const addImageFiles = async (files: File[]) => {
     const added: PromptImage[] = []
-    for (const f of Array.from(files)) {
+    for (const f of files) {
       if (!f.type.startsWith('image/')) continue
       try {
-        added.push({ name: f.name, mimeType: f.type, data: await fileToBase64(f) })
+        added.push({ name: f.name || 'pasted image', mimeType: f.type, data: await fileToBase64(f) })
       } catch (e) {
         console.error(e)
       }
     }
     if (added.length) setImages((imgs) => [...imgs, ...added])
+  }
+
+  const pickImages = async (files: FileList | null) => {
+    openAdd(false)
+    if (files?.length) await addImageFiles(Array.from(files))
     setTimeout(() => taRef.current?.focus(), 0)
+  }
+
+  /** Paste an image straight into the composer (gated on the agent accepting images). */
+  const onPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    if (!promptCaps?.image) return
+    const files = Array.from(e.clipboardData?.items ?? [])
+      .filter((it) => it.kind === 'file' && it.type.startsWith('image/'))
+      .map((it) => it.getAsFile())
+      .filter((f): f is File => f != null)
+    if (files.length) {
+      e.preventDefault()
+      void addImageFiles(files)
+    }
   }
 
   const removeImage = (i: number) => setImages((imgs) => imgs.filter((_, j) => j !== i))
 
   const changeConfig = (opt: SessionConfigOption, value: string | boolean) => {
     setOpenConfigId(null)
-    window.gurt.sessionSetConfigOption(sessionId, opt.id, value).catch((e) => alert(String(e)))
+    window.gurt.sessionSetConfigOption(sessionId, opt.id, value).catch((e) => alertDialog(String(e)))
   }
 
   const pickCommand = (name: string) => {
@@ -435,11 +491,15 @@ function Composer({
       (window as unknown as { SpeechRecognition?: new () => SpeechRecognitionLike }).SpeechRecognition ??
       (window as unknown as { webkitSpeechRecognition?: new () => SpeechRecognitionLike })
         .webkitSpeechRecognition
-    if (!SR) return // speech recognition unavailable on this platform — no-op
+    if (!SR) {
+      setMicError('dictation is not available in this build')
+      return
+    }
     if (recogRef.current) {
       recogRef.current.stop()
       return
     }
+    setMicError(null)
     const r = new SR()
     r.interimResults = false
     r.continuous = true
@@ -454,17 +514,19 @@ function Composer({
       recogRef.current = null
       setMicOn(false)
     }
-    r.onerror = () => {
+    r.onerror = (e: SpeechErrorEvent) => {
       recogRef.current = null
       setMicOn(false)
+      setMicError(speechErrorMessage(e?.error))
     }
     try {
       r.start()
       recogRef.current = r
       setMicOn(true)
-    } catch {
+    } catch (e) {
       recogRef.current = null
       setMicOn(false)
+      setMicError(e instanceof Error ? e.message : 'could not start dictation')
     }
   }
 
@@ -638,7 +700,7 @@ function Composer({
         {modeOpen && hasModes && (
           <div className="cmp-menu mode-menu">
             <div className="cmp-menu-head">MODE</div>
-            {modes!.availableModes.map((m) => {
+            {modes!.availableModes.filter((m) => !isBlanketMode(m)).map((m) => {
               const v = modeVisual(m)
               return (
                 <div
@@ -647,7 +709,7 @@ function Composer({
                   onMouseDown={(e) => {
                     e.preventDefault()
                     setModeOpen(false)
-                    window.gurt.sessionSetMode(sessionId, m.id).catch((er) => alert(String(er)))
+                    window.gurt.sessionSetMode(sessionId, m.id).catch((er) => alertDialog(String(er)))
                   }}
                 >
                   <span className="mode-ic" style={{ color: v.color }}>
@@ -713,6 +775,7 @@ function Composer({
               pingActivity()
             }}
             onKeyDown={onKeyDown}
+            onPaste={onPaste}
           />
           <button
             className={`mic-btn ${micOn ? 'on' : ''}`}
@@ -806,6 +869,11 @@ function Composer({
           </button>
         </div>
       </div>
+      {micError && (
+        <div className="composer-mic-error" onClick={() => setMicError(null)} title="dismiss">
+          {micError}
+        </div>
+      )}
       <div className="composer-hint">
         Enter to send · Shift+Enter for newline · <span className="k">/</span> for commands ·{' '}
         <span className="k">+</span> for context
@@ -819,14 +887,36 @@ interface SpeechResultEvent {
   resultIndex: number
   results: ArrayLike<ArrayLike<{ transcript: string }> & { isFinal: boolean }>
 }
+interface SpeechErrorEvent {
+  error?: string
+}
 interface SpeechRecognitionLike {
   interimResults: boolean
   continuous: boolean
   onresult: (e: SpeechResultEvent) => void
   onend: () => void
-  onerror: () => void
+  onerror: (e: SpeechErrorEvent) => void
   start: () => void
   stop: () => void
+}
+
+/** Turn a Web Speech API error code into a legible, actionable message. */
+function speechErrorMessage(code?: string): string {
+  switch (code) {
+    case 'not-allowed':
+    case 'service-not-allowed':
+      return 'microphone blocked — allow mic access for gurt in your system settings'
+    case 'no-speech':
+      return 'no speech detected — try again'
+    case 'audio-capture':
+      return 'no microphone found'
+    case 'network':
+      // In Electron this usually means the build ships no speech backend
+      // (missing service API key), not that the machine is offline.
+      return 'could not reach the speech service — dictation may not be supported in this build'
+    default:
+      return `dictation error: ${code ?? 'unknown'}`
+  }
 }
 
 function EntryRow({

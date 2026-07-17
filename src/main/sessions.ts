@@ -382,6 +382,39 @@ export class SessionManager {
     this.schedulePersist(s.ref)
   }
 
+  /**
+   * Edit a draft's settings before it starts. A draft has no env or connection
+   * yet, so re-pointing its repo/agent is safe — the (env, agent) adapter is
+   * resolved only at start. Only supplied keys change; unknown ids and
+   * non-draft sessions are ignored.
+   */
+  editDraft(
+    sessionId: string,
+    patch: {
+      agent?: string
+      envRepo?: string
+      autoAllow?: boolean
+      gitAccess?: boolean
+      mcp?: McpSelection[]
+      startPrompt?: string
+    }
+  ): void {
+    const s = this.sessions.get(sessionId)
+    if (!s || s.info.state !== 'draft') return
+    if (patch.agent !== undefined) s.info.agent = patch.agent
+    if (patch.autoAllow !== undefined) s.info.autoAllow = patch.autoAllow
+    if (patch.gitAccess !== undefined) s.info.gitAccess = patch.gitAccess
+    if (patch.mcp !== undefined) s.info.mcp = patch.mcp
+    if (patch.startPrompt !== undefined) s.info.startPrompt = patch.startPrompt
+    if (patch.envRepo !== undefined && patch.envRepo !== s.info.envRepo) {
+      s.info.envRepo = patch.envRepo
+      s.ref = { ...s.ref, repo: patch.envRepo }
+    }
+    this.bus.emit('tree.changed', undefined)
+    this.bus.emit('session.changed', { sessionId })
+    this.schedulePersist(s.ref)
+  }
+
   deleteSession(sessionId: string): void {
     const s = this.sessions.get(sessionId)
     if (!s) return
