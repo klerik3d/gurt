@@ -2,7 +2,7 @@ import type { EnvRef, EnvState, EnvStatus, RepoConfig } from '../shared/types'
 import { agentDef } from '../shared/agents'
 import { canonicalRepoId } from '../shared/repoId'
 import { envKey } from '../shared/keys'
-import { resolveCredential } from '../shared/credentials'
+import { resolveCredential, credentialIdentity } from '../shared/credentials'
 import { listCredentials } from './credentials'
 import { resolveGitBroker, stopGitBroker } from './git/broker'
 import { containerGitEnv } from './git/config'
@@ -133,7 +133,11 @@ export class EnvManager {
       await installGitShims(containerId, host, this.logFor(ref))
       this.gitShimsInstalled.add(envKey(ref))
     }
-    return containerGitEnv(broker.url, host, resolved?.kind ?? 'git-host')
+    // Identity only from a clean resolution — an errored one (e.g. unverified
+    // entry, §3.2) injects nothing, and the broker refuses it per request too.
+    const identity =
+      resolved?.entry && !resolved.error ? credentialIdentity(resolved.entry) : null
+    return containerGitEnv(broker.url, host, resolved?.kind ?? 'git-host', identity)
   }
 
   /** Ensure env is up, then build the validated launch context for an agent. */

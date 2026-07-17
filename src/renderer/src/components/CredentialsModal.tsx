@@ -113,6 +113,11 @@ export function CredentialsModal({ onClose }: { onClose: () => void }) {
                       />
                     </label>
                   ))}
+                  {c.kind === 'git-token' && c.data.gitEmail && (
+                    <div className="hint">
+                      verified identity: {c.data.gitName} &lt;{c.data.gitEmail}&gt;
+                    </div>
+                  )}
                   <label>
                     hosts (comma-separated; empty = link-only)
                     <input
