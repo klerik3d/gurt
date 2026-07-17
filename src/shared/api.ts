@@ -21,6 +21,17 @@ import type { McpDef } from './mcp'
 
 export type CreateAction = 'run' | 'queue' | 'draft'
 
+/** Editable settings of a draft session (all optional — only supplied keys change). */
+export interface SessionDraftPatch {
+  agent?: string
+  /** Target repo of the (task, repo) env — re-points the not-yet-started session. */
+  envRepo?: string
+  autoAllow?: boolean
+  gitAccess?: boolean
+  mcp?: McpSelection[]
+  startPrompt?: string
+}
+
 export interface GurtApi {
   getTree(): Promise<Tree>
   getMcpDefs(): Promise<McpDef[]>
@@ -68,6 +79,8 @@ export interface GurtApi {
   sessionEnqueue(id: string): Promise<void>
   sessionCancelQueue(id: string): Promise<void>
   sessionEditPrompt(id: string, text: string): Promise<void>
+  /** Change a draft's settings (agent, repo, mode, git, MCP, prompt) before it starts. */
+  sessionEditDraft(id: string, patch: SessionDraftPatch): Promise<void>
   sessionDelete(id: string): Promise<void>
   sessionSnapshot(id: string): Promise<SessionSnapshot | undefined>
   sessionPrompt(
@@ -119,6 +132,7 @@ const METHODS = {
   sessionEnqueue: true,
   sessionCancelQueue: true,
   sessionEditPrompt: true,
+  sessionEditDraft: true,
   sessionDelete: true,
   sessionSnapshot: true,
   sessionPrompt: true,

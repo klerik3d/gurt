@@ -3,6 +3,7 @@
 // both. Importable without an Electron app (headless runs, orchestrator,
 // tests).
 import type { Tree } from '../shared/types'
+import type { SessionDraftPatch } from '../shared/api'
 import { resolveMcpServers, stopMcpServers } from './mcp/manager'
 import { ensureGurtServer, stopGurtServer, stopGurtServersForEnv } from './mcp/gurtServer'
 import { isDirty } from './provision'
@@ -22,6 +23,8 @@ export interface Kernel {
   deleteTask(ws: string, task: string): Promise<void>
   /** Repos in this task whose clone has uncommitted changes. */
   taskDirtyRepos(ws: string, task: string): Promise<string[]>
+  /** sessions.editDraft behind a repo check — the UI constrains the choice, IPC must too. */
+  editDraft(sessionId: string, patch: SessionDraftPatch): Promise<void>
   /** Forge compare URL for the task branch; when the latest proposal carries a PR,
    *  its title/body ride along as url-encoded query params (the compare page picks
    *  them up). */
@@ -127,6 +130,15 @@ export function createKernel(): Kernel {
       for (const env of data.envs)
         if (await isDirty(cloneDir(ws, task, env.repo))) dirty.push(env.repo)
       return dirty
+    },
+
+    async editDraft(sessionId: string, patch: SessionDraftPatch): Promise<void> {
+      if (patch.envRepo !== undefined) {
+        const info = sessions.snapshot(sessionId)?.info
+        if (info && !(await store.getWorkspace(info.workspace)).repos.some((r) => r.name === patch.envRepo))
+          throw new Error(`repo "${patch.envRepo}" is not registered in "${info.workspace}"`)
+      }
+      sessions.editDraft(sessionId, patch)
     },
 
     async prUrl(ws: string, task: string, repo: string): Promise<string> {

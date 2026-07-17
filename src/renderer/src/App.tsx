@@ -8,6 +8,7 @@ import { SessionPane } from './components/SessionPane'
 import { TaskPane } from './components/TaskPane'
 import { AgentsModal } from './components/AgentsModal'
 import { CredentialsModal } from './components/CredentialsModal'
+import { DialogHost } from './dialog'
 
 export type Selection =
   | { type: 'session'; id: string }
@@ -197,6 +198,7 @@ export default function App() {
         <main className="main">
         {selection?.type === 'session' && (
           <SessionPane
+            tree={tree}
             snapshot={snapshots[selection.id]}
             sessionId={selection.id}
             queuePosition={positions[selection.id]}
@@ -248,6 +250,7 @@ export default function App() {
       </div>
       {agentsOpen && <AgentsModal onClose={() => setAgentsOpen(false)} />}
       {credentialsOpen && <CredentialsModal onClose={() => setCredentialsOpen(false)} />}
+      <DialogHost />
     </div>
   )
 }
