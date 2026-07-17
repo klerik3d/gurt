@@ -12,6 +12,7 @@ import type {
   RepoConfig,
   SessionInfo,
   SessionSnapshot,
+  StoredProposal,
   Tree
 } from './types'
 import type { CredentialsFile } from './credentials'
@@ -49,6 +50,8 @@ export interface GurtApi {
   getCommitDiff(ws: string, task: string, repo: string, sha: string): Promise<string>
   changesCommit(ws: string, task: string, repo: string, message: string): Promise<void>
   changesPush(ws: string, task: string, repo: string): Promise<void>
+  /** Newest change proposal for this env, if any — the Commit modal prefills from it. */
+  latestProposal(ws: string, task: string, repo: string): Promise<StoredProposal | undefined>
   /** Open the browser at the forge's compare URL (impl: `prUrl` + `shell.openExternal`). */
   changesOpenPr(ws: string, task: string, repo: string): Promise<void>
   changesOpenVscode(ws: string, task: string, repo: string): Promise<void>
@@ -108,6 +111,7 @@ const METHODS = {
   getCommitDiff: true,
   changesCommit: true,
   changesPush: true,
+  latestProposal: true,
   changesOpenPr: true,
   changesOpenVscode: true,
   createSession: true,

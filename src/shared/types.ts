@@ -17,6 +17,24 @@ export interface AcpHttpMcpServer {
   headers: { name: string; value: string }[]
 }
 
+/** Terminal turn report, submitted via the `gurt` MCP server's `complete` tool. */
+export interface ChangeProposal {
+  version: 1
+  /** changes — working tree holds work to ship; no_changes — nothing to ship
+   *  (answer, analysis, no-op); blocked — cannot finish, see reason. */
+  outcome: 'changes' | 'no_changes' | 'blocked'
+  /** Only with outcome=changes (required then). */
+  commit?: { subject: string; body?: string }
+  /** Only with outcome=changes (optional). */
+  pr?: { title: string; body?: string }
+  /** Only with outcome=blocked (required then). */
+  reason?: string
+  notes?: string
+}
+
+/** Stored proposal: the artifact + host receipt time (ISO). */
+export type StoredProposal = ChangeProposal & { at: string }
+
 /**
  * A user-defined agent profile: a named instance of a built-in agent *kind*
  * (see `AgentDef`) carrying its own credentials and config. Several instances of
@@ -116,6 +134,9 @@ export interface SessionInfo {
   busy?: boolean
   /** Runtime overlay (never persisted): a permission request awaits the user's decision. */
   awaitingInput?: boolean
+  /** Runtime overlay (never persisted): the turn ended without a `complete` call and the
+   *  automatic nudge did not heal it — a protocol violation surfaced in the snapshot. */
+  incomplete?: boolean
 }
 
 /**
@@ -342,6 +363,8 @@ export interface SessionSnapshot {
   startError?: string
   /** 1-based position in the global queue, present while queued. */
   queuePosition?: number
+  /** Latest change proposal from a `complete` call (outcome=changes), if any. */
+  proposal?: StoredProposal
 }
 
 /**
@@ -352,6 +375,8 @@ export interface SessionSnapshot {
 export interface PersistedSession {
   info: SessionInfo
   acpSessionId?: string
+  /** Latest change proposal (outcome=changes) submitted via `complete`; last one wins. */
+  proposal?: StoredProposal
   /** Legacy pre-log format; migrated to the JSONL log on restore. */
   entries?: ChatEntry[]
 }

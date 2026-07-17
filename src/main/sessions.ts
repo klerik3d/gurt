@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type {
   AcpHttpMcpServer,
+  ChangeProposal,
   ChatEntry,
   ChatEntryBase,
   EnvRef,
@@ -15,7 +16,8 @@ import type {
   SessionInfo,
   SessionLogRecord,
   SessionModes,
-  SessionSnapshot
+  SessionSnapshot,
+  StoredProposal
 } from '../shared/types'
 import { applyLog } from '../shared/types'
 import type { AgentDef } from '../shared/agents'
@@ -98,6 +100,10 @@ interface Session {
    *  Used to turn repo-relative context paths into absolute `file://` resource links. */
   remoteCwd?: string
   busy: boolean
+  /** The current turn has seen its `complete` call; reset at each prompt start. */
+  turnComplete: boolean
+  /** Latest change proposal (outcome=changes) from a `complete` call; last wins. */
+  proposal?: StoredProposal
   modes?: SessionModes
   plan?: SessionSnapshot['plan']
   commands?: SessionSnapshot['commands']
@@ -142,6 +148,15 @@ export interface SessionEvents {
   resolveMcpServers: (ref: EnvRef, selection: McpSelection[] | undefined) => Promise<AcpHttpMcpServer[]>
   /** Tear down the env's host MCP servers (env stop/delete). */
   stopMcpServers: (ref: EnvRef) => void
+  /** Ensure the per-session `gurt` server (the turn contract) is up; return its
+   *  ACP descriptor. Attached to every session unconditionally. */
+  resolveGurtServer: (
+    ref: EnvRef,
+    sessionId: string,
+    onComplete: (p: ChangeProposal) => void
+  ) => Promise<AcpHttpMcpServer>
+  /** Tear down one session's `gurt` server (session deleted). */
+  stopGurtServer: (sessionId: string) => void
   /** Current infra status of the env (for the scheduler's free-repo predicate). */
   envStatus: (ref: EnvRef) => Promise<EnvStatus>
   persist: (ws: string, task: string, records: PersistedSession[]) => void
@@ -156,6 +171,7 @@ export interface SessionEvents {
 export interface RestoredSession {
   info: SessionInfo
   acpSessionId?: string
+  proposal?: StoredProposal
   log: SessionLogRecord[]
 }
 
@@ -167,6 +183,33 @@ type NewLogRecord = SessionLogRecord extends infer R
   : never
 
 export type { CreateAction }
+
+/** The one automatic follow-up sent when a turn ends without `complete`. */
+export const NUDGE_PROMPT =
+  'You ended your turn without calling the `complete` tool. Call `complete` ' +
+  'now with the correct outcome (changes / no_changes / blocked) and do ' +
+  'nothing else.'
+
+export type PostTurnAction = 'none' | 'nudge' | 'incomplete'
+
+/**
+ * Decide what to do once a turn ends, from whether `complete` was seen. Pure and
+ * unit-tested (scripts/turn-contract.test.mjs): only a clean `end_turn` that
+ * skipped `complete` triggers healing — one nudge for a regular turn, an
+ * `incomplete` mark for the nudge turn itself. A thrown prompt, a cancel, or any
+ * non-`end_turn` stop never nudges.
+ */
+export function postTurnDecision(o: {
+  stopReason?: string
+  turnComplete: boolean
+  threw: boolean
+  isNudge: boolean
+}): PostTurnAction {
+  if (o.threw) return 'none'
+  if (o.stopReason !== 'end_turn') return 'none'
+  if (o.turnComplete) return 'none'
+  return o.isNudge ? 'incomplete' : 'nudge'
+}
 
 export class SessionManager {
   private connections = new Map<string, Connection>()
@@ -194,6 +237,7 @@ export class SessionManager {
         info: r.info,
         ref: { workspace: r.info.workspace, task: r.info.task, repo: r.info.envRepo },
         acpSessionId: r.acpSessionId,
+        proposal: r.proposal,
         records: r.log,
         lastSeq,
         flushedSeq: lastSeq,
@@ -201,6 +245,7 @@ export class SessionManager {
         entries,
         nextEntryId: Math.max(0, ...entries.map((e) => e.id)) + 1,
         busy: false,
+        turnComplete: false,
         attached: false,
         loading: false,
         pendingPermissions: new Map()
@@ -245,7 +290,8 @@ export class SessionManager {
         promptCapabilities: this.connections.get(connKey(s.ref, s.info.agent ?? ''))
           ?.promptCapabilities,
         startError: s.startError,
-        queuePosition: this.queuePosition(sessionId)
+        queuePosition: this.queuePosition(sessionId),
+        proposal: s.proposal
       }
     )
   }
@@ -285,6 +331,7 @@ export class SessionManager {
       entries: [],
       nextEntryId: 1,
       busy: false,
+      turnComplete: false,
       attached: false,
       loading: false,
       pendingPermissions: new Map()
@@ -344,6 +391,7 @@ export class SessionManager {
       resolve({ outcome: { outcome: 'cancelled' } })
     this.sessions.delete(sessionId)
     this.events.deleteLog(s.ref.workspace, s.ref.task, sessionId)
+    this.events.stopGurtServer(sessionId)
     this.schedulePersist(s.ref)
     this.bus.emit('tree.changed', undefined)
   }
@@ -412,7 +460,10 @@ export class SessionManager {
       const ctx = await this.events.resolveEnv(s.ref, s.info.agent!, s.info.gitAccess ?? false)
       s.remoteCwd = ctx.remoteWorkspaceFolder
       const conn = await this.connection(s.ref, s.info.agent!, ctx)
-      const mcpServers = await this.events.resolveMcpServers(s.ref, s.info.mcp)
+      const mcpServers = [
+        ...(await this.events.resolveMcpServers(s.ref, s.info.mcp)),
+        await this.events.resolveGurtServer(s.ref, s.info.id, (p) => this.onComplete(s.info.id, p))
+      ]
       const result = await conn.peer.request<{
         sessionId: string
         modes?: SessionModes
@@ -481,7 +532,9 @@ export class SessionManager {
             info.state = 'draft'
             info.queuedAt = undefined
           }
-          return { info, acpSessionId: s.acpSessionId }
+          // `incomplete` is a runtime overlay — never persisted.
+          delete info.incomplete
+          return { info, acpSessionId: s.acpSessionId, proposal: s.proposal }
         })
         this.events.persist(ref.workspace, ref.task, records)
         // Flush each session's unflushed log tail (the JSONL is append-only).
@@ -600,7 +653,10 @@ export class SessionManager {
       s.loading = true
       this.push(s, { kind: 'system', text: 'resuming session...' })
       try {
-        const mcpServers = await this.events.resolveMcpServers(s.ref, s.info.mcp)
+        const mcpServers = [
+          ...(await this.events.resolveMcpServers(s.ref, s.info.mcp)),
+          await this.events.resolveGurtServer(s.ref, s.info.id, (p) => this.onComplete(s.info.id, p))
+        ]
         const result = await conn.peer.request<{
           modes?: SessionModes
           configOptions?: unknown[]
@@ -649,14 +705,25 @@ export class SessionManager {
     return blocks
   }
 
-  private async runPrompt(
+  /**
+   * Run one prompt turn end-to-end: push its timeline entry (a `user` message or,
+   * for the nudge, a `system` line), reset the turn-complete flag, run
+   * `session/prompt`, and surface a non-`end_turn` stop or a thrown error. Returns
+   * the raw turn outcome the enforcement decision consumes.
+   */
+  private async sendTurn(
     s: Session,
     text: string,
+    entryKind: 'user' | 'system',
     context?: PromptContext[],
     images?: PromptImage[]
-  ): Promise<void> {
+  ): Promise<{ stopReason?: string; threw: boolean }> {
     this.bus.emit('env.activity', { ref: s.ref })
-    this.push(s, { kind: 'user', text })
+    this.push(s, { kind: entryKind, text })
+    // Prompt start: the turn is incomplete until `complete` fires; clear any
+    // prior violation overlay.
+    s.turnComplete = false
+    s.info.incomplete = undefined
     s.busy = true
     this.bus.emit('session.changed', { sessionId: s.info.id })
     this.bus.emit('session.turn', { sessionId: s.info.id, ref: s.ref, phase: 'started' })
@@ -669,14 +736,80 @@ export class SessionManager {
       const reason = result?.stopReason
       if (reason && reason !== 'end_turn')
         this.push(s, { kind: 'system', text: `stopped: ${reason}` })
+      return { stopReason: reason, threw: false }
     } catch (e) {
       this.push(s, { kind: 'system', text: `error: ${e instanceof Error ? e.message : e}` })
+      return { threw: true }
     } finally {
       s.busy = false
       this.bus.emit('session.changed', { sessionId: s.info.id })
       this.schedulePersist(s.ref)
       this.bus.emit('session.turn', { sessionId: s.info.id, ref: s.ref, phase: 'ended' })
     }
+  }
+
+  /**
+   * Send a user prompt, then enforce the turn contract. A turn that ends cleanly
+   * without a `complete` call is a protocol violation: because the ACP session is
+   * still alive, one automatic follow-up (`NUDGE_PROMPT`) costs seconds and usually
+   * heals it. A nudge turn that still skips `complete` marks the session
+   * `incomplete` and gives up — no second nudge.
+   */
+  private async runPrompt(
+    s: Session,
+    text: string,
+    context?: PromptContext[],
+    images?: PromptImage[]
+  ): Promise<void> {
+    const first = await this.sendTurn(s, text, 'user', context, images)
+    if (postTurnDecision({ ...first, turnComplete: s.turnComplete, isNudge: false }) !== 'nudge')
+      return
+    const second = await this.sendTurn(s, NUDGE_PROMPT, 'system')
+    if (
+      postTurnDecision({ ...second, turnComplete: s.turnComplete, isNudge: true }) === 'incomplete'
+    ) {
+      this.push(s, { kind: 'system', text: 'turn ended without complete' })
+      s.info.incomplete = true
+      this.bus.emit('session.changed', { sessionId: s.info.id })
+      this.schedulePersist(s.ref)
+    }
+  }
+
+  /**
+   * A `complete` call landed for this session (via the per-session `gurt` MCP
+   * server). Records the turn as complete, stores a proposal when there is work to
+   * ship, adds a system timeline line, and — for outcome=changes — emits
+   * `session.proposal`, the seam the committer stage consumes. Fires even outside a
+   * busy turn (a benign late POST): the proposal/events still update.
+   */
+  private onComplete(sessionId: string, p: ChangeProposal): void {
+    const s = this.sessions.get(sessionId)
+    if (!s) return
+    s.turnComplete = true
+    let text: string
+    if (p.outcome === 'changes') {
+      s.proposal = { ...p, at: new Date().toISOString() }
+      text = `complete: changes — ${p.commit?.subject ?? ''}`
+    } else if (p.outcome === 'blocked') {
+      text = `complete: blocked — ${p.reason ?? ''}`
+    } else {
+      text = 'complete: no_changes'
+    }
+    // push emits session.log + session.changed + schedulePersist.
+    this.push(s, { kind: 'system', text })
+    if (p.outcome === 'changes' && s.proposal)
+      this.bus.emit('session.proposal', { sessionId, ref: s.ref, proposal: s.proposal })
+  }
+
+  /** Newest stored proposal among this env's sessions (all outcome=changes). */
+  latestProposal(ws: string, task: string, repo: string): StoredProposal | undefined {
+    let best: StoredProposal | undefined
+    for (const s of this.sessions.values()) {
+      if (s.ref.workspace !== ws || s.ref.task !== task || s.ref.repo !== repo) continue
+      if (!s.proposal) continue
+      if (!best || s.proposal.at > best.at) best = s.proposal
+    }
+    return best
   }
 
   /** No session sharing this env is busy or mid-start. */
@@ -705,6 +838,11 @@ export class SessionManager {
     const s = this.sessions.get(sessionId)
     if (!s) throw new Error('unknown session')
     if (s.info.state !== 'started') throw new Error('session is not started')
+    // One turn at a time: overlapping prompts would share `turnComplete`, so a
+    // `complete` for one turn could silently satisfy the other (and both could
+    // nudge). The composer already disables send while busy — this makes the
+    // invariant hold for any caller.
+    if (s.busy) throw new Error('session is busy')
     await this.runPrompt(s, text, context, images)
   }
 
