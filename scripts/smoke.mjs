@@ -62,8 +62,18 @@ await page.click('.modal .form button')
 await page.waitForSelector('.task-node', { timeout: 5000 })
 console.log('task created OK')
 
-// draft a session — claude-code is enabled by default, so no agent secret is
-// needed and nothing docker-bound runs (writes sessions.json).
+// the agent registry starts empty — add one (claude-code kind, no credential
+// linked, which is fine for a draft that never runs docker).
+await clickIcon('agents')
+await page.waitForSelector('.modal', { timeout: 5000 })
+await page.getByRole('button', { name: '+ add agent' }).click()
+await page.fill('.modal .agent-label', 'claude')
+await page.getByRole('button', { name: 'Save' }).click()
+await page.waitForSelector('.modal', { state: 'detached', timeout: 5000 })
+console.log('agent added OK')
+
+// draft a session — the agent we just added is selectable, so no docker-bound
+// work runs (writes sessions.json).
 await clickIcon('new session')
 await page.waitForSelector('.modal textarea')
 await page.fill('.modal textarea', 'say hello')
@@ -79,9 +89,9 @@ await page.getByText('no environments yet').waitFor({ timeout: 5000 })
 await page.screenshot({ path: path.join(SHOT_DIR, '02-task-pane.png') })
 console.log('task pane OK')
 
-// agents modal
+// agents modal — the agent we added round-tripped through agents.json
 await clickIcon('agents')
-await page.waitForSelector('.modal input[type="password"]', { timeout: 5000 })
+await page.waitForSelector('.agent-block', { timeout: 5000 })
 await page.screenshot({ path: path.join(SHOT_DIR, '03-agents.png') })
 console.log('agents modal OK')
 
