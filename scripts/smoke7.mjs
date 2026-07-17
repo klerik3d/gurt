@@ -128,7 +128,7 @@ async function clickGroupButton(page, repo, text) {
 /** Commit through the modal, accepting the prefilled message. */
 async function commitVia(page, repo) {
   check((await clickGroupButton(page, repo, 'Commit')) === null, `${repo}: Commit clickable`)
-  await page.waitForSelector('.modal input')
+  await page.waitForSelector('.modal .commit-message')
   await page.evaluate(() =>
     [...document.querySelectorAll('.modal .row-buttons button')]
       .find((b) => b.textContent.trim() === 'Commit')
@@ -296,8 +296,8 @@ await modalGone(page)
 
 // 3) commit → the change MOVES into the branch block as `local`; nothing vanishes
 check((await clickGroupButton(page, 'alpha', 'Commit')) === null, 'Commit clickable')
-await page.waitForSelector('.modal input')
-const prefill = await page.evaluate(() => document.querySelector('.modal input').value)
+await page.waitForSelector('.modal .commit-message')
+const prefill = await page.evaluate(() => document.querySelector('.modal .commit-message').value)
 check(prefill === 'gurt: t1', `commit message prefilled: "${prefill}"`)
 await page.evaluate(() =>
   [...document.querySelectorAll('.modal .row-buttons button')]
