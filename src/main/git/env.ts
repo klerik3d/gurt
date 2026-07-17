@@ -20,11 +20,17 @@
 // must spread `gitArgs` into its argv and run under `env`.
 import type { RepoConfig } from '../../shared/types'
 import type { CredentialEntry, CredResolution } from '../../shared/credentials'
-import { resolveCredential } from '../../shared/credentials'
+import { resolveCredential, credentialIdentity } from '../../shared/credentials'
 import { canonicalRepoId } from '../../shared/repoId'
 import { getWorkspace } from '../store'
 import { listCredentials } from '../credentials'
-import { rewriteRules, gitConfigArgs, BLOCKED_SSH_COMMAND, type ConfigPair } from './config'
+import {
+  rewriteRules,
+  gitConfigArgs,
+  identityPairs,
+  BLOCKED_SSH_COMMAND,
+  type ConfigPair
+} from './config'
 import { ensureHostCredHelper } from './shims'
 
 export type HostGitMode = 'managed' | 'ambient' | 'blocked'
@@ -84,10 +90,13 @@ export async function hostGitAccess(
     // resolve its own credential, not fall through to host keys.
     const helper = await ensureHostCredHelper()
     const helperCmd = `!ELECTRON_RUN_AS_NODE=1 "${process.execPath}" "${helper}"`
+    // Identity is guaranteed by resolution (§3.2: unverified entries error out
+    // above) — commits are authored by the token owner, never ambient identity.
     const pairs: ConfigPair[] = [
       ['credential.helper', ''],
       ['credential.helper', helperCmd],
-      ...rewriteRules(host, 'git-token')
+      ...rewriteRules(host, 'git-token'),
+      ...identityPairs(credentialIdentity(res.entry))
     ]
     return {
       mode: 'managed',

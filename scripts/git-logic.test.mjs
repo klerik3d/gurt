@@ -47,8 +47,10 @@ try {
   assert.equal(m.canonicalRepoId('file:///tmp/x.git'), null)
 
   // --- credential resolution (§3.1) ---
-  const tok = { id: 't1', label: 'gh', kind: 'git-token', hosts: ['github.com'], data: { secret: 'SEC' } }
-  const gl = { id: 'g1', label: 'gl', kind: 'git-token', hosts: ['gitlab.com'], data: { secret: 'XEC' } }
+  // Verified entries: save-time verification (§3.2) stamps gitName/gitEmail.
+  const identity = { gitName: 'Me', gitEmail: '42+me@users.noreply.github.com' }
+  const tok = { id: 't1', label: 'gh', kind: 'git-token', hosts: ['github.com'], data: { secret: 'SEC', ...identity } }
+  const gl = { id: 'g1', label: 'gl', kind: 'git-token', hosts: ['gitlab.com'], data: { secret: 'XEC', ...identity } }
   const creds = [tok, gl]
 
   let r = m.resolveCredential(creds, repo('https://github.com/me/app'), 'github.com')
@@ -76,6 +78,15 @@ try {
   assert.equal(m.hasManagedCredential(m.resolveForRepo(creds, repo('https://github.com/me/app'))), true)
   assert.equal(m.hasManagedCredential(m.resolveForRepo([], repo('https://github.com/me/app'))), false)
 
+  // --- unverified entries are blocked, never served (§3.2) ---
+  const unverified = { ...tok, data: { secret: 'SEC' } }
+  r = m.resolveCredential([unverified], repo('https://github.com/me/app'), 'github.com')
+  assert.equal(r.entry.id, 't1')
+  assert.ok(r.error && r.error.includes('re-save'))
+  assert.equal(m.hasManagedCredential(r), false)
+  assert.deepEqual(m.credentialIdentity(tok), { name: 'Me', email: '42+me@users.noreply.github.com' })
+  assert.equal(m.credentialIdentity(unverified), null)
+
   // --- rewrite matrix (§6.1) ---
   assert.deepEqual(m.rewriteRules('github.com', 'git-token'), [
     ['url.https://github.com/.insteadOf', 'git@github.com:'],
@@ -98,6 +109,16 @@ try {
   assert.equal(env.GIT_CONFIG_KEY_2, 'url.https://github.com/.insteadOf')
   // git-host injects only the (204-ing) helper, no rewrites.
   assert.equal(m.containerGitEnv('http://h/git/x', 'github.com', 'git-host').GIT_CONFIG_COUNT, '2')
+  // Commit identity rides in as config pairs (§3.2); absent → nothing injected.
+  const envId = m.containerGitEnv('http://h/git/x', 'github.com', 'git-token', {
+    name: 'Me',
+    email: '42+me@users.noreply.github.com'
+  })
+  assert.equal(envId.GIT_CONFIG_COUNT, '6')
+  assert.equal(envId.GIT_CONFIG_KEY_4, 'user.name')
+  assert.equal(envId.GIT_CONFIG_VALUE_4, 'Me')
+  assert.equal(envId.GIT_CONFIG_KEY_5, 'user.email')
+  assert.equal(envId.GIT_CONFIG_VALUE_5, '42+me@users.noreply.github.com')
 
   // --- github forge provider (§7) ---
   const p = m.providerForHost('github.com')
@@ -113,6 +134,32 @@ try {
   assert.ok('ghcr.io/devcontainers/features/github-cli:1' in m.forgeFeatures('github.com'))
   assert.deepEqual(m.forgeWrappers('github.com'), ['gh'])
   assert.deepEqual(m.forgeFeatures('gitlab.com'), {})
+
+  // --- identity lookup (§3.2), fetch mocked ---
+  const realFetch = globalThis.fetch
+  try {
+    let seen
+    globalThis.fetch = async (url, opts) => {
+      seen = { url, auth: opts.headers.Authorization }
+      return { ok: true, status: 200, json: async () => ({ login: 'me', id: 42, name: null, email: null }) }
+    }
+    const idn = await p.identity(tok, 'github.com')
+    assert.equal(seen.url, 'https://api.github.com/user')
+    assert.equal(seen.auth, 'Bearer SEC')
+    // No public name/email → login + the id-qualified noreply form.
+    assert.deepEqual(idn, { name: 'me', email: '42+me@users.noreply.github.com' })
+    await p.identity(tok, 'ghe.corp.com')
+    assert.equal(seen.url, 'https://ghe.corp.com/api/v3/user')
+
+    globalThis.fetch = async () => ({ ok: false, status: 401, json: async () => ({}) })
+    await assert.rejects(() => p.identity(tok, 'github.com'), /rejected the token \(HTTP 401\)/)
+    await assert.rejects(
+      () => p.identity({ ...tok, kind: 'git-host', data: {} }, 'github.com'),
+      /cannot verify/
+    )
+  } finally {
+    globalThis.fetch = realFetch
+  }
 
   console.log('git-logic.test: PASS')
 } catch (e) {
