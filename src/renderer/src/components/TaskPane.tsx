@@ -3,6 +3,7 @@ import type { EnvRef, RepoChanges, Tree } from '../../../shared/types'
 import { isActionable, isDelivered } from '../../../shared/types'
 import { envKey } from '../App'
 import { agentName, useAgents } from '../useAgents'
+import { alertDialog, confirmDialog } from '../dialog'
 import { Modal } from './Modal'
 
 const STATUS_ICON: Record<string, string> = {
@@ -79,14 +80,14 @@ export function TaskPane({
                       <button onClick={() => window.gurt.startEnv(ref).catch(() => {})}>Start</button>
                     )}
                     {(env.status === 'running' || env.status === 'starting') && (
-                      <button onClick={() => window.gurt.stopEnv(ref).catch((e) => alert(String(e)))}>
+                      <button onClick={() => window.gurt.stopEnv(ref).catch((e) => alertDialog(String(e)))}>
                         Stop
                       </button>
                     )}
                     <button
-                      onClick={() => {
-                        if (window.confirm(`Delete env "${env.repo}" (container + clone)? Its sessions are kept and re-provision on next run. Uncommitted work is lost.`))
-                          window.gurt.removeEnv(ref).catch((e) => alert(String(e)))
+                      onClick={async () => {
+                        if (await confirmDialog(`Delete env "${env.repo}" (container + clone)? Its sessions are kept and re-provision on next run. Uncommitted work is lost.`, { title: 'Delete environment', confirmText: 'Delete', danger: true }))
+                          window.gurt.removeEnv(ref).catch((e) => alertDialog(String(e)))
                       }}
                     >
                       Delete
@@ -124,7 +125,7 @@ export function TaskPane({
             <span className="chip">{s.envRepo}</span>
             <span className="chip">{agentName(agents, s.agent)}</span>
             <span className="spacer" />
-            <button onClick={() => window.gurt.sessionCancelQueue(s.id).catch((e) => alert(String(e)))}>
+            <button onClick={() => window.gurt.sessionCancelQueue(s.id).catch((e) => alertDialog(String(e)))}>
               Cancel
             </button>
           </div>
