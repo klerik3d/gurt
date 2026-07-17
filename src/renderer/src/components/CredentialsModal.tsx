@@ -48,7 +48,7 @@ export function CredentialsModal({ onClose }: { onClose: () => void }) {
     // Block deleting an entry a repo still links to (§9).
     const used = await window.gurt.credentialUsedBy(id).catch(() => [])
     if (used.length) {
-      setError(`linked by ${used.join(', ')} — unlink it in repo settings first`)
+      setError(`linked by ${used.join(', ')} — unlink it (repo settings / ⚙ Agents) first`)
       return
     }
     setEntries((prev) => prev && prev.filter((c) => c.id !== id))
@@ -57,9 +57,10 @@ export function CredentialsModal({ onClose }: { onClose: () => void }) {
   const save = async () => {
     if (!entries) return
     setError('')
+    // Non-git kinds never host-match; drop hosts a kind switch may have left behind.
     const out = entries
       .filter((c) => c.label.trim())
-      .map((c) => ({ ...c, hosts: textToHosts(hostsText[c.id] ?? '') }))
+      .map((c) => ({ ...c, hosts: isGitKind(c.kind) ? textToHosts(hostsText[c.id] ?? '') : [] }))
     try {
       await window.gurt.setCredentials({ credentials: out })
       onClose()
