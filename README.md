@@ -142,10 +142,19 @@ SCRATCH=/tmp/gurt-smoke node scripts/smoke5.mjs   # codex-in-gurt handshake
 SCRATCH=/tmp/gurt-smoke node scripts/smoke6.mjs   # session queue: draft/serialization/restart
 SCRATCH=/tmp/gurt-smoke node scripts/smoke7.mjs   # Changes panel delivery thread, no docker (local bare repos)
 SCRATCH=/tmp/gurt-smoke node scripts/smoke8.mjs   # native git access: credentials CRUD + resolution + composer toggle, no docker
+# turn contract end-to-end (docker + a working claude secret; SKIPs without one):
+SCRATCH=/tmp/gurt-smoke GURT_SMOKE_CLAUDE_TOKEN=… node scripts/smoke9.mjs
 ```
 
-The git contract's pure logic (repo identity, credential resolution, rewrite
-matrix, forge provider) has a docker-free unit test: `node scripts/git-logic.test.mjs`.
+Docker-free unit tests (pure node, bundled on the fly with esbuild):
+
+```bash
+node scripts/git-logic.test.mjs        # git contract: repo identity, credential resolution, rewrites, forge
+node scripts/session-log.test.mjs      # append-only session log + legacy migration
+node scripts/gurt-mcp.test.mjs         # turn contract: the `gurt` MCP server + `complete` tool validation
+node scripts/turn-contract.test.mjs    # turn contract: the post-turn nudge/incomplete decision matrix
+node scripts/proposal-store.test.mjs   # turn contract: proposal restore, latestProposal, Kernel.prUrl params
+```
 
 All drive the built app with Playwright through the real UI and screenshot
 into `$SCRATCH/shots`. Without agent secrets the chat shows an auth error —

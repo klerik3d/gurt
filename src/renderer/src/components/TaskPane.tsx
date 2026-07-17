@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { EnvRef, RepoChanges, Tree } from '../../../shared/types'
 import { isActionable, isDelivered } from '../../../shared/types'
 import { envKey } from '../App'
@@ -287,6 +287,7 @@ function ChangesSection({
       )}
       {commitRepo && (
         <CommitModal
+          ws={ws}
           task={task}
           repo={commitRepo}
           onClose={() => setCommitRepo(null)}
@@ -350,29 +351,64 @@ function DiffModal({
   )
 }
 
-/** Small commit dialog with the message prefilled `gurt: <task>`. */
+/** Small commit dialog. The message prefills from the session's latest change
+ *  proposal (subject + body) when one exists, else falls back to `gurt: <task>`. */
 function CommitModal({
+  ws,
   task,
   repo,
   onClose,
   onCommit
 }: {
+  ws: string
   task: string
   repo: string
   onClose: () => void
   onCommit: (message: string) => void
 }) {
   const [message, setMessage] = useState(`gurt: ${task}`)
+  /** The user may start editing before the proposal loads — don't clobber that.
+   *  A ref, not state: the load callback below must see the *current* value, not
+   *  the one captured when the effect mounted. */
+  const touched = useRef(false)
+
+  useEffect(() => {
+    let live = true
+    window.gurt
+      .latestProposal(ws, task, repo)
+      .then((p) => {
+        if (!live || touched.current || !p?.commit) return
+        setMessage(p.commit.body ? `${p.commit.subject}\n\n${p.commit.body}` : p.commit.subject)
+      })
+      .catch(() => {})
+    return () => {
+      live = false
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const edit = (v: string) => {
+    touched.current = true
+    setMessage(v)
+  }
   return (
     <Modal title={`Commit in ${repo}`} onClose={onClose}>
       <div className="form">
         <label>
           message
-          <input
+          <textarea
+            className="commit-message"
             autoFocus
+            rows={message.includes('\n') ? 6 : 2}
             value={message}
-            onChange={(e) => setMessage(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && message.trim() && onCommit(message.trim())}
+            onChange={(e) => edit(e.target.value)}
+            // Enter inserts a newline (bodies are multi-line); ⌘/Ctrl+Enter commits.
+            onKeyDown={(e) =>
+              e.key === 'Enter' &&
+              (e.metaKey || e.ctrlKey) &&
+              message.trim() &&
+              onCommit(message.trim())
+            }
           />
         </label>
         <div className="row-buttons">

@@ -61,7 +61,7 @@ function serverInstructions(mode: McpMode): string {
     'Do NOT run git or gh in the shell for remote operations: this container has ' +
     'no credentials for origin, so shell `git pull`/`git push`/`gh pr create` will ' +
     'fail. These tools run on the host with the real auth. Shell git is still fine ' +
-    'for purely local work (status, diff, add, commit, branch).' +
+    'for purely local work (status, diff, log, branch).' +
     writeNote
   )
 }

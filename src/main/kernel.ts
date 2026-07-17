@@ -4,9 +4,11 @@
 // tests).
 import type { Tree } from '../shared/types'
 import { resolveMcpServers, stopMcpServers } from './mcp/manager'
+import { ensureGurtServer, stopGurtServer, stopGurtServersForEnv } from './mcp/gurtServer'
 import { isDirty } from './provision'
 import * as store from './store'
 import { cloneDir } from './store'
+import * as changes from './changes'
 import { createBus, type Bus } from './bus'
 import { EnvManager } from './envs'
 import { SessionManager, type RestoredSession } from './sessions'
@@ -20,6 +22,10 @@ export interface Kernel {
   deleteTask(ws: string, task: string): Promise<void>
   /** Repos in this task whose clone has uncommitted changes. */
   taskDirtyRepos(ws: string, task: string): Promise<string[]>
+  /** Forge compare URL for the task branch; when the latest proposal carries a PR,
+   *  its title/body ride along as url-encoded query params (the compare page picks
+   *  them up). */
+  prUrl(ws: string, task: string, repo: string): Promise<string>
 }
 
 export function createKernel(): Kernel {
@@ -36,7 +42,12 @@ export function createKernel(): Kernel {
       resolveEnv: (ref, agentId, gitAccess) => envs.resolveEnv(ref, agentId, gitAccess),
       installAdapter: (ref, ctx) => envs.installAdapter(ref, ctx),
       resolveMcpServers,
-      stopMcpServers,
+      stopMcpServers: (ref) => {
+        stopMcpServers(ref)
+        stopGurtServersForEnv(ref)
+      },
+      resolveGurtServer: ensureGurtServer,
+      stopGurtServer,
       envStatus: (ref) => envs.status(ref),
       persist: (ws, task, records) => {
         store.writeSessions(ws, task, records).catch((e) => console.error('persist failed:', e))
@@ -82,7 +93,7 @@ export function createKernel(): Kernel {
             log = r.entries.map((entry, i) => ({ seq: i + 1, type: 'entry' as const, entry }))
             await store.appendSessionLog(ws.name, task.name, r.info.id, log)
           }
-          restored.push({ info: r.info, acpSessionId: r.acpSessionId, log })
+          restored.push({ info: r.info, acpSessionId: r.acpSessionId, proposal: r.proposal, log })
         }
         sessions.restore(restored)
       }
@@ -116,6 +127,17 @@ export function createKernel(): Kernel {
       for (const env of data.envs)
         if (await isDirty(cloneDir(ws, task, env.repo))) dirty.push(env.repo)
       return dirty
+    },
+
+    async prUrl(ws: string, task: string, repo: string): Promise<string> {
+      const url = await changes.prUrl(ws, task, repo)
+      const pr = sessions.latestProposal(ws, task, repo)?.pr
+      if (!pr) return url
+      // encodeURIComponent (spaces → %20) rather than URLSearchParams (+), so the
+      // params are unambiguous on GitHub's compare page.
+      const parts = [`title=${encodeURIComponent(pr.title)}`]
+      if (pr.body) parts.push(`body=${encodeURIComponent(pr.body)}`)
+      return `${url}${url.includes('?') ? '&' : '?'}${parts.join('&')}`
     }
   }
 }
