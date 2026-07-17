@@ -22,13 +22,15 @@ export function Chat({ snapshot, sessionId }: { snapshot?: SessionSnapshot; sess
   const bottomRef = useRef<HTMLDivElement>(null)
   const agents = useAgents()
 
+  const entries = snapshot?.entries ?? []
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [snapshot?.entries.length, snapshot?.entries[snapshot.entries.length - 1]?.id])
+  }, [entries.length, entries[entries.length - 1]?.id])
 
   if (!snapshot) return <div className="placeholder">loading session…</div>
 
-  const { info, entries, modes, plan, commands, configOptions, promptCapabilities, busy } = snapshot
+  const { info, modes, plan, commands, configOptions, promptCapabilities, busy } = snapshot
 
   return (
     <div className="chat">

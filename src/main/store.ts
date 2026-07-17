@@ -9,6 +9,7 @@ import type {
   EnvState,
   PersistedSession,
   RepoConfig,
+  SessionLogRecord,
   TaskFile,
   Tree,
   WorkspaceFile
@@ -47,12 +48,23 @@ export const cloneDir = (ws: string, task: string, repo: string) =>
 export const overrideConfigPath = (ws: string, repo: string) =>
   path.join(gurtRoot, ws, '.devcontainers', `${repo}.json`)
 
+/** Path segments gurt itself owns inside the parent dir of each kind — a repo
+ *  named `sessions` would collide with the task's session-log dir, etc.
+ *  Compared case-insensitively (macOS default FS is case-insensitive). */
+const RESERVED_NAMES: Record<string, string[]> = {
+  workspace: ['agents.json', 'credentials.json'],
+  task: ['workspace.json', '.devcontainers'],
+  repo: ['task.json', 'sessions.json', 'sessions']
+}
+
 /** Names become path segments on disk, so reject anything that isn't a single, safe segment. */
 function validateName(kind: string, name: string): void {
   const n = name.trim()
   if (!n) throw new Error(`${kind} name must not be empty`)
   if (n === '.' || n === '..' || /[/\\]/.test(n))
     throw new Error(`${kind} name must not contain "/", "\\", "." or ".."`)
+  if (RESERVED_NAMES[kind]?.includes(n.toLowerCase()))
+    throw new Error(`"${n}" is reserved — pick another ${kind} name`)
 }
 
 async function readJson<T>(file: string, fallback: T): Promise<T> {
@@ -257,6 +269,69 @@ export async function writeSessions(
   records: PersistedSession[]
 ): Promise<void> {
   await writeJson(sessionsFile(ws, task), records)
+}
+
+// --- per-session append-only log: <ws>/<task>/sessions/<sessionId>.jsonl ----
+
+const sessionLogFile = (ws: string, task: string, sessionId: string) =>
+  path.join(taskDir(ws, task), 'sessions', `${sessionId}.jsonl`)
+
+/** Per-file append chain, so overlapping flushes never interleave lines. */
+const appendChains = new Map<string, Promise<void>>()
+
+/** Append records as JSONL lines. The file is only ever appended to, never rewritten. */
+export function appendSessionLog(
+  ws: string,
+  task: string,
+  sessionId: string,
+  records: SessionLogRecord[]
+): Promise<void> {
+  const file = sessionLogFile(ws, task, sessionId)
+  const prev = appendChains.get(file) ?? Promise.resolve()
+  const next = prev.then(async () => {
+    await fs.mkdir(path.dirname(file), { recursive: true })
+    await fs.appendFile(file, records.map((r) => JSON.stringify(r) + '\n').join(''))
+  })
+  // Keep the chain alive past a failed link; the caller sees the rejection.
+  appendChains.set(
+    file,
+    next.catch(() => {})
+  )
+  return next
+}
+
+/** Read a session's log; a missing file is an empty log, torn lines are skipped. */
+export async function readSessionLog(
+  ws: string,
+  task: string,
+  sessionId: string
+): Promise<SessionLogRecord[]> {
+  const raw = await fs.readFile(sessionLogFile(ws, task, sessionId), 'utf8').catch(() => '')
+  const out: SessionLogRecord[] = []
+  let lastSeq = 0
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue
+    try {
+      const rec = JSON.parse(line) as SessionLogRecord
+      // seq is strictly increasing; a batch retried after a partial write can
+      // re-append records already on disk — skip anything non-advancing.
+      if (typeof rec.seq !== 'number' || rec.seq <= lastSeq) continue
+      lastSeq = rec.seq
+      out.push(rec)
+    } catch {
+      // a torn trailing line from a crash mid-append — drop it
+    }
+  }
+  return out
+}
+
+export async function deleteSessionLog(ws: string, task: string, sessionId: string): Promise<void> {
+  const file = sessionLogFile(ws, task, sessionId)
+  // Let an in-flight append settle first so it can't recreate the file after
+  // the rm. The stored chain never rejects.
+  await appendChains.get(file)
+  appendChains.delete(file)
+  await fs.rm(file, { force: true })
 }
 
 /** Tree without sessions; the session manager overlays those. */
