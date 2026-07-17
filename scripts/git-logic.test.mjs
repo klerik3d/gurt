@@ -87,6 +87,28 @@ try {
   assert.deepEqual(m.credentialIdentity(tok), { name: 'Me', email: '42+me@users.noreply.github.com' })
   assert.equal(m.credentialIdentity(unverified), null)
 
+  // --- agent-token is never a git credential ---
+  const agentTok = { id: 'a1', label: 'claude token', kind: 'agent-token', hosts: ['github.com'], data: { secret: 'ATOK' } }
+  // Hosts on an agent-token (e.g. left behind by a kind switch) never auto-match.
+  r = m.resolveCredential([agentTok], repo('https://github.com/me/app'), 'github.com')
+  assert.equal(r.entry, undefined)
+  assert.equal(r.source, 'implicit')
+  // An explicit repo link to one is a config error, not a served credential.
+  r = m.resolveCredential([agentTok], repo('https://github.com/me/app', 'a1'), 'github.com')
+  assert.ok(r.error && r.error.includes('not a git credential'))
+  assert.equal(r.entry, undefined)
+  assert.equal(m.hasManagedCredential(r), false)
+
+  // --- agent secret resolution ---
+  assert.deepEqual(m.resolveAgentSecret([agentTok], undefined), { secret: '' })
+  assert.equal(m.resolveAgentSecret([agentTok], 'a1').secret, 'ATOK')
+  assert.ok(m.resolveAgentSecret([], 'a1').error.includes('no longer exists'))
+  // A link pointing at a git kind must not inject the git PAT as the agent secret.
+  const wrongKind = m.resolveAgentSecret([tok], 't1')
+  assert.equal(wrongKind.secret, '')
+  assert.ok(wrongKind.error.includes('not an agent token'))
+  assert.deepEqual(m.agentCredentials([tok, agentTok]), [agentTok])
+
   // --- rewrite matrix (§6.1) ---
   assert.deepEqual(m.rewriteRules('github.com', 'git-token'), [
     ['url.https://github.com/.insteadOf', 'git@github.com:'],
@@ -96,6 +118,7 @@ try {
     ['url.ssh://git@github.com/.insteadOf', 'https://github.com/']
   ])
   assert.deepEqual(m.rewriteRules('github.com', 'git-host'), [])
+  assert.deepEqual(m.rewriteRules('github.com', 'agent-token'), [])
 
   // --- container injection env (§6) ---
   const env = m.containerGitEnv('http://host.docker.internal:5000/git/abc', 'github.com', 'git-token')

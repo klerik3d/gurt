@@ -21,6 +21,17 @@ const { _electron } = require('playwright-core')
 const env = { ...process.env, GURT_ROOT }
 delete env.ELECTRON_RUN_AS_NODE
 
+// Seed the claude-code and codex agents (no credentials — auth errors expected).
+// The registry starts empty, so both must be added before they are selectable.
+fs.mkdirSync(GURT_ROOT, { recursive: true })
+fs.writeFileSync(
+  path.join(GURT_ROOT, 'agents.json'),
+  JSON.stringify({
+    'claude-code': { kind: 'claude-code', label: 'claude code' },
+    codex: { kind: 'codex', label: 'codex' }
+  })
+)
+
 const app = await _electron.launch({
   executablePath: path.join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron'),
   args: [APP_DIR],
@@ -160,21 +171,7 @@ await page.screenshot({ path: path.join(SHOT_DIR, '08-repos.png') })
 await page.click('.modal-header .icon-btn')
 await modalGone()
 
-// enable codex in agents
-await clickTitle('agents')
-await page.waitForSelector('.modal')
-await page.evaluate(() => {
-  // Match by the label input's value — every block's kind <select> contains a
-  // "codex" option, so textContent matching would hit the wrong block.
-  const block = [...document.querySelectorAll('.agent-block')].find(
-    (b) => b.querySelector('.agent-label')?.value === 'codex'
-  )
-  const cb = block?.querySelector('input[type="checkbox"]')
-  if (cb && !cb.checked) cb.click()
-})
-await clickText('.modal', 'Save')
-await modalGone()
-console.log('codex enabled')
+// codex is seeded and selectable (agents are added, not toggled available).
 
 // task
 await clickTitle('new task')
