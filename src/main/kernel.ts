@@ -41,11 +41,8 @@ export function createKernel(): Kernel {
       persist: (ws, task, records) => {
         store.writeSessions(ws, task, records).catch((e) => console.error('persist failed:', e))
       },
-      appendLog: (ws, task, sessionId, records) => {
-        store
-          .appendSessionLog(ws, task, sessionId, records)
-          .catch((e) => console.error('session-log append failed:', e))
-      },
+      appendLog: (ws, task, sessionId, records) =>
+        store.appendSessionLog(ws, task, sessionId, records),
       deleteLog: (ws, task, sessionId) => {
         store
           .deleteSessionLog(ws, task, sessionId)
@@ -64,6 +61,11 @@ export function createKernel(): Kernel {
   })
   bus.on('session.awaiting', ({ ref, awaiting }) => {
     if (!awaiting && sessions.isEnvIdle(ref)) envs.noteIdle(ref)
+  })
+  // A dead adapter leaves its non-busy sessions with no turn end to emit — the
+  // env would otherwise keep running forever if a pending stop had been cancelled.
+  bus.on('env.adapterExited', ({ ref }) => {
+    if (sessions.isEnvIdle(ref)) envs.noteIdle(ref)
   })
   bus.on('env.activity', ({ ref }) => envs.noteActive(ref))
 

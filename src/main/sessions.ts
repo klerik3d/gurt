@@ -87,8 +87,10 @@ interface Session {
   records: SessionLogRecord[]
   /** seq of the last appended record (monotonic from 1 per session). */
   lastSeq: number
-  /** seq of the last record flushed to the JSONL; a flush appends the rest. */
+  /** seq of the last record confirmed on disk; a flush appends the rest. */
   flushedSeq: number
+  /** A log flush is awaiting its appendLog — don't start a second one. */
+  flushInFlight: boolean
   /** Folded timeline, updated incrementally via `applyLog` on every append. */
   entries: ChatEntry[]
   nextEntryId: number
@@ -143,8 +145,9 @@ export interface SessionEvents {
   /** Current infra status of the env (for the scheduler's free-repo predicate). */
   envStatus: (ref: EnvRef) => Promise<EnvStatus>
   persist: (ws: string, task: string, records: PersistedSession[]) => void
-  /** Append records to the session's JSONL log (append-only, ordered). */
-  appendLog: (ws: string, task: string, sessionId: string, records: SessionLogRecord[]) => void
+  /** Append records to the session's JSONL log (append-only, ordered).
+   *  Resolves once the records are on disk — the flush cursor waits for it. */
+  appendLog: (ws: string, task: string, sessionId: string, records: SessionLogRecord[]) => Promise<void>
   /** Remove the session's JSONL log (session deleted). */
   deleteLog: (ws: string, task: string, sessionId: string) => void
 }
@@ -194,6 +197,7 @@ export class SessionManager {
         records: r.log,
         lastSeq,
         flushedSeq: lastSeq,
+        flushInFlight: false,
         entries,
         nextEntryId: Math.max(0, ...entries.map((e) => e.id)) + 1,
         busy: false,
@@ -277,6 +281,7 @@ export class SessionManager {
       records: [],
       lastSeq: 0,
       flushedSeq: 0,
+      flushInFlight: false,
       entries: [],
       nextEntryId: 1,
       busy: false,
@@ -480,14 +485,34 @@ export class SessionManager {
         })
         this.events.persist(ref.workspace, ref.task, records)
         // Flush each session's unflushed log tail (the JSONL is append-only).
-        for (const s of sessions) {
-          if (s.lastSeq <= s.flushedSeq) continue
-          const tail = s.records.filter((r) => r.seq > s.flushedSeq)
-          s.flushedSeq = s.lastSeq
-          this.events.appendLog(s.ref.workspace, s.ref.task, s.info.id, tail)
-        }
+        for (const s of sessions) this.flushLog(s)
       }, 300)
     )
+  }
+
+  /** Append the unflushed log tail; `flushedSeq` advances only once the write is
+   *  confirmed, so a failed append is retried by the next flush instead of being
+   *  silently dropped. One flush per session at a time keeps the tail ordered. */
+  private flushLog(s: Session): void {
+    if (s.flushInFlight || s.lastSeq <= s.flushedSeq) return
+    const upTo = s.lastSeq
+    const tail = s.records.filter((r) => r.seq > s.flushedSeq)
+    s.flushInFlight = true
+    this.events
+      .appendLog(s.ref.workspace, s.ref.task, s.info.id, tail)
+      .then(
+        () => {
+          s.flushedSeq = upTo
+        },
+        (e) => console.error('session-log append failed:', e)
+      )
+      .then(() => {
+        s.flushInFlight = false
+        // Records that landed mid-flight (or joined a failed batch) flush now; a
+        // failed batch alone waits for the next persist tick. Never resurrect a
+        // deleted session's file.
+        if (this.sessions.get(s.info.id) === s && s.lastSeq > upTo) this.flushLog(s)
+      })
   }
 
   private async connection(ref: EnvRef, agentId: string, ctx: EnvContext): Promise<Connection> {
@@ -530,6 +555,9 @@ export class SessionManager {
         // The in-flight `session/prompt` of a busy session rejects with the peer,
         // so its runPrompt still emits the `session.turn` ended the idle policy needs.
       }
+      // Covers the sessions that were NOT busy: the auto-stop policy re-evaluates
+      // the env on adapter death even when no turn end will ever fire.
+      this.bus.emit('env.adapterExited', { ref, agent: agentId })
     })
 
     peer.onNotification('session/update', (params) => this.onSessionUpdate(params))
@@ -735,7 +763,9 @@ export class SessionManager {
     s.records.push(rec)
     s.entries = applyLog(s.entries, [rec])
     this.bus.emit('session.log', { sessionId: s.info.id, records: [rec] })
-    this.bus.emit('session.changed', { sessionId: s.info.id })
+    // A streaming text delta changes nothing outside the timeline, and the
+    // timeline rides session.log — skip the per-chunk snapshot broadcast.
+    if (rec.type !== 'append') this.bus.emit('session.changed', { sessionId: s.info.id })
     this.schedulePersist(s.ref)
   }
 
