@@ -13,9 +13,11 @@ import type {
   PromptImage,
   SessionConfigOption,
   SessionInfo,
+  SessionLogRecord,
   SessionModes,
   SessionSnapshot
 } from '../shared/types'
+import { applyLog } from '../shared/types'
 import type { AgentDef } from '../shared/agents'
 import type { CreateAction } from '../shared/api'
 import { connKey, envKey, taskKey } from '../shared/keys'
@@ -81,6 +83,13 @@ interface Session {
   info: SessionInfo
   ref: EnvRef
   acpSessionId?: string
+  /** The append-only log; the timeline below is its fold. */
+  records: SessionLogRecord[]
+  /** seq of the last appended record (monotonic from 1 per session). */
+  lastSeq: number
+  /** seq of the last record flushed to the JSONL; a flush appends the rest. */
+  flushedSeq: number
+  /** Folded timeline, updated incrementally via `applyLog` on every append. */
   entries: ChatEntry[]
   nextEntryId: number
   /** Container workspace folder (agent cwd), set when the env is resolved this run.
@@ -134,7 +143,25 @@ export interface SessionEvents {
   /** Current infra status of the env (for the scheduler's free-repo predicate). */
   envStatus: (ref: EnvRef) => Promise<EnvStatus>
   persist: (ws: string, task: string, records: PersistedSession[]) => void
+  /** Append records to the session's JSONL log (append-only, ordered). */
+  appendLog: (ws: string, task: string, sessionId: string, records: SessionLogRecord[]) => void
+  /** Remove the session's JSONL log (session deleted). */
+  deleteLog: (ws: string, task: string, sessionId: string) => void
 }
+
+/** A persisted session plus its read (or just-migrated) JSONL log. */
+export interface RestoredSession {
+  info: SessionInfo
+  acpSessionId?: string
+  log: SessionLogRecord[]
+}
+
+/** A log record before `append()` stamps its seq (distributive over the union). */
+type NewLogRecord = SessionLogRecord extends infer R
+  ? R extends SessionLogRecord
+    ? Omit<R, 'seq'>
+    : never
+  : never
 
 export type { CreateAction }
 
@@ -155,15 +182,20 @@ export class SessionManager {
   }
 
   /** Load sessions persisted by a previous run; they reattach lazily on prompt. */
-  restore(records: PersistedSession[]): void {
+  restore(records: RestoredSession[]): void {
     for (const r of records) {
       if (this.sessions.has(r.info.id)) continue
+      const entries = applyLog([], r.log)
+      const lastSeq = r.log.length ? r.log[r.log.length - 1].seq : 0
       this.sessions.set(r.info.id, {
         info: r.info,
         ref: { workspace: r.info.workspace, task: r.info.task, repo: r.info.envRepo },
         acpSessionId: r.acpSessionId,
-        entries: r.entries,
-        nextEntryId: Math.max(0, ...r.entries.map((e) => e.id)) + 1,
+        records: r.log,
+        lastSeq,
+        flushedSeq: lastSeq,
+        entries,
+        nextEntryId: Math.max(0, ...entries.map((e) => e.id)) + 1,
         busy: false,
         attached: false,
         loading: false,
@@ -242,6 +274,9 @@ export class SessionManager {
     this.sessions.set(info.id, {
       info,
       ref,
+      records: [],
+      lastSeq: 0,
+      flushedSeq: 0,
       entries: [],
       nextEntryId: 1,
       busy: false,
@@ -303,6 +338,7 @@ export class SessionManager {
     for (const resolve of s.pendingPermissions.values())
       resolve({ outcome: { outcome: 'cancelled' } })
     this.sessions.delete(sessionId)
+    this.events.deleteLog(s.ref.workspace, s.ref.task, sessionId)
     this.schedulePersist(s.ref)
     this.bus.emit('tree.changed', undefined)
   }
@@ -430,18 +466,26 @@ export class SessionManager {
     this.persistTimers.set(
       key,
       setTimeout(() => {
-        const records: PersistedSession[] = [...this.sessions.values()]
-          .filter((s) => taskKey(s.ref.workspace, s.ref.task) === key)
-          .map((s) => {
-            const info = { ...s.info }
-            // `starting` is runtime-only; persist it as draft (crash-safe).
-            if (info.state === 'starting') {
-              info.state = 'draft'
-              info.queuedAt = undefined
-            }
-            return { info, acpSessionId: s.acpSessionId, entries: s.entries }
-          })
+        const sessions = [...this.sessions.values()].filter(
+          (s) => taskKey(s.ref.workspace, s.ref.task) === key
+        )
+        const records: PersistedSession[] = sessions.map((s) => {
+          const info = { ...s.info }
+          // `starting` is runtime-only; persist it as draft (crash-safe).
+          if (info.state === 'starting') {
+            info.state = 'draft'
+            info.queuedAt = undefined
+          }
+          return { info, acpSessionId: s.acpSessionId }
+        })
         this.events.persist(ref.workspace, ref.task, records)
+        // Flush each session's unflushed log tail (the JSONL is append-only).
+        for (const s of sessions) {
+          if (s.lastSeq <= s.flushedSeq) continue
+          const tail = s.records.filter((r) => r.seq > s.flushedSeq)
+          s.flushedSeq = s.lastSeq
+          this.events.appendLog(s.ref.workspace, s.ref.task, s.info.id, tail)
+        }
       }, 300)
     )
   }
@@ -672,7 +716,8 @@ export class SessionManager {
     if (!resolve) return
     s.pendingPermissions.delete(entryId)
     const entry = s.entries.find((e) => e.id === entryId)
-    if (entry && entry.kind === 'permission') entry.chosen = optionId
+    if (entry && entry.kind === 'permission')
+      this.append(s, { type: 'patch', id: entryId, patch: { chosen: optionId } })
     resolve({ outcome: { outcome: 'selected', optionId } })
     if (s.pendingPermissions.size === 0)
       this.bus.emit('session.awaiting', { sessionId, ref: s.ref, awaiting: false })
@@ -684,11 +729,19 @@ export class SessionManager {
     return [...this.sessions.values()].find((s) => s.acpSessionId === acpSessionId)
   }
 
-  private push(s: Session, entry: ChatEntryBase): ChatEntry {
-    const full = { ...entry, id: s.nextEntryId++ }
-    s.entries.push(full)
+  /** The ONE writer of the session log: assigns seq, applies, announces, persists. */
+  private append(s: Session, record: NewLogRecord): void {
+    const rec = { ...record, seq: ++s.lastSeq } as SessionLogRecord
+    s.records.push(rec)
+    s.entries = applyLog(s.entries, [rec])
+    this.bus.emit('session.log', { sessionId: s.info.id, records: [rec] })
     this.bus.emit('session.changed', { sessionId: s.info.id })
     this.schedulePersist(s.ref)
+  }
+
+  private push(s: Session, entry: ChatEntryBase): ChatEntry {
+    const full = { ...entry, id: s.nextEntryId++ }
+    this.append(s, { type: 'entry', entry: full })
     return full
   }
 
@@ -779,8 +832,7 @@ export class SessionManager {
         if (!text) return
         const last = s.entries[s.entries.length - 1]
         if (last && last.kind === kind) {
-          last.text += text
-          this.bus.emit('session.changed', { sessionId: s.info.id })
+          this.append(s, { type: 'append', id: last.id, text })
         } else {
           this.push(s, { kind, text })
         }
@@ -799,11 +851,16 @@ export class SessionManager {
       case 'tool_call_update': {
         const entry = s.entries.find((e) => e.kind === 'tool' && e.toolCallId === u.toolCallId)
         if (entry && entry.kind === 'tool') {
-          if (u.status) entry.status = u.status
-          if (u.title) entry.title = u.title
           const detail = this.toolDetail(u.content)
-          if (detail) entry.detail = detail
-          this.bus.emit('session.changed', { sessionId: s.info.id })
+          this.append(s, {
+            type: 'patch',
+            id: entry.id,
+            patch: {
+              ...(u.status ? { status: u.status } : {}),
+              ...(u.title ? { title: u.title } : {}),
+              ...(detail ? { detail } : {})
+            }
+          })
         }
         break
       }

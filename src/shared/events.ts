@@ -1,6 +1,6 @@
 // Domain event map — the substrate the future inter-agent communication layer
 // rides on. Shared so events forwarded to the renderer stay typed there too.
-import type { EnvRef, EnvStatus, SessionState } from './types'
+import type { EnvRef, EnvStatus, SessionLogRecord, SessionState } from './types'
 
 export interface DomainEvents {
   /** Tree-shape change: ws/task/repo CRUD, env status, session list/state. */
@@ -13,5 +13,7 @@ export interface DomainEvents {
   'session.awaiting': { sessionId: string; ref: EnvRef; awaiting: boolean }
   /** Coarse "snapshot changed" — the UI's re-render trigger. */
   'session.changed': { sessionId: string }
+  /** Appended session-log records (timeline deltas), in seq order. */
+  'session.log': { sessionId: string; records: SessionLogRecord[] }
   'provision.log': { key: string; line: string }
 }

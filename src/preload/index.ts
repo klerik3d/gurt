@@ -13,6 +13,7 @@ const subscribe =
 const api: Record<string, unknown> = {
   onTreeChanged: subscribe('tree-changed'),
   onSessionChanged: subscribe('session-changed'),
+  onSessionLog: subscribe('session-log'),
   onSessionTurn: subscribe('session-turn'),
   onProvisionLog: subscribe('provision-log')
 }

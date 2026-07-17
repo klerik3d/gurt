@@ -131,7 +131,9 @@ export const API_METHODS = Object.keys(METHODS) as readonly (keyof GurtApi)[]
 /** Push channels main broadcasts to the renderer, with their payloads. */
 export interface GurtEvents {
   'tree-changed': void
+  /** Snapshot without `entries` — timeline deltas ride `session-log`. */
   'session-changed': SessionSnapshot
+  'session-log': DomainEvents['session.log']
   'session-turn': DomainEvents['session.turn']
   'provision-log': { key: string; line: string }
 }

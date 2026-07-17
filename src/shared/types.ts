@@ -194,6 +194,59 @@ export interface ChatPermission {
 export type ChatEntryBase = ChatText | ChatToolCall | ChatSystem | ChatPermission
 export type ChatEntry = ChatEntryBase & { id: number }
 
+// Append-only session log. The chat timeline is a fold over these records;
+// the same fold runs in main (derive state) and in the renderer (apply deltas).
+
+export type SessionLogRecord =
+  /** New timeline entry; `entry.id` is unique and ascending per session. */
+  | { seq: number; type: 'entry'; entry: ChatEntry }
+  /** Streaming text delta appended to a ChatText entry. */
+  | { seq: number; type: 'append'; id: number; text: string }
+  /** In-place update of a tool call / permission entry. */
+  | {
+      seq: number
+      type: 'patch'
+      id: number
+      patch: { status?: string; title?: string; detail?: string; chosen?: string }
+    }
+
+/**
+ * Pure fold used by BOTH main (derive entries) and renderer (apply deltas).
+ * Returns a new array; the input is not mutated. Unknown `id`s and unknown
+ * record types are ignored (forward compatibility); a re-delivered `entry`
+ * record replaces the entry with the same id instead of duplicating it.
+ */
+export function applyLog(entries: ChatEntry[], records: SessionLogRecord[]): ChatEntry[] {
+  const out = entries.slice()
+  const index = new Map<number, number>()
+  out.forEach((e, i) => index.set(e.id, i))
+  for (const r of records) {
+    if (r.type === 'entry') {
+      const i = index.get(r.entry.id)
+      if (i == null) {
+        index.set(r.entry.id, out.length)
+        out.push(r.entry)
+      } else {
+        out[i] = r.entry
+      }
+    } else if (r.type === 'append') {
+      const i = index.get(r.id)
+      if (i == null) continue
+      const e = out[i]
+      if ('text' in e) out[i] = { ...e, text: e.text + r.text }
+    } else if (r.type === 'patch') {
+      const i = index.get(r.id)
+      if (i == null) continue
+      const defined = Object.fromEntries(
+        Object.entries(r.patch).filter(([, v]) => v !== undefined)
+      )
+      out[i] = { ...out[i], ...defined } as ChatEntry
+    }
+    // other record types: ignored
+  }
+  return out
+}
+
 export interface SessionMode {
   id: string
   name: string
@@ -273,7 +326,9 @@ export interface PromptContext {
 
 export interface SessionSnapshot {
   info: SessionInfo
-  entries: ChatEntry[]
+  /** Full folded timeline — present from `session:snapshot` only; the per-change
+   *  `session-changed` broadcast omits it (deltas ride the `session-log` event). */
+  entries?: ChatEntry[]
   /** Agent is processing a prompt right now. */
   busy: boolean
   modes?: SessionModes
@@ -292,11 +347,13 @@ export interface SessionSnapshot {
 /**
  * One record in <workspace>/<task>/sessions.json. `acpSessionId` is present only
  * once the session has started; `starting` is never persisted (restores as draft).
+ * The timeline lives in the per-session JSONL log, not here.
  */
 export interface PersistedSession {
   info: SessionInfo
   acpSessionId?: string
-  entries: ChatEntry[]
+  /** Legacy pre-log format; migrated to the JSONL log on restore. */
+  entries?: ChatEntry[]
 }
 
 export interface EnvRef {

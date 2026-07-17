@@ -9,6 +9,7 @@ import type {
   EnvState,
   PersistedSession,
   RepoConfig,
+  SessionLogRecord,
   TaskFile,
   Tree,
   WorkspaceFile
@@ -257,6 +258,60 @@ export async function writeSessions(
   records: PersistedSession[]
 ): Promise<void> {
   await writeJson(sessionsFile(ws, task), records)
+}
+
+// --- per-session append-only log: <ws>/<task>/sessions/<sessionId>.jsonl ----
+
+const sessionLogFile = (ws: string, task: string, sessionId: string) =>
+  path.join(taskDir(ws, task), 'sessions', `${sessionId}.jsonl`)
+
+/** Per-file append chain, so overlapping flushes never interleave lines. */
+const appendChains = new Map<string, Promise<void>>()
+
+/** Append records as JSONL lines. The file is only ever appended to, never rewritten. */
+export function appendSessionLog(
+  ws: string,
+  task: string,
+  sessionId: string,
+  records: SessionLogRecord[]
+): Promise<void> {
+  const file = sessionLogFile(ws, task, sessionId)
+  const prev = appendChains.get(file) ?? Promise.resolve()
+  const next = prev.then(async () => {
+    await fs.mkdir(path.dirname(file), { recursive: true })
+    await fs.appendFile(file, records.map((r) => JSON.stringify(r) + '\n').join(''))
+  })
+  // Keep the chain alive past a failed link; the caller sees the rejection.
+  appendChains.set(
+    file,
+    next.catch(() => {})
+  )
+  return next
+}
+
+/** Read a session's log; a missing file is an empty log, torn lines are skipped. */
+export async function readSessionLog(
+  ws: string,
+  task: string,
+  sessionId: string
+): Promise<SessionLogRecord[]> {
+  const raw = await fs.readFile(sessionLogFile(ws, task, sessionId), 'utf8').catch(() => '')
+  const out: SessionLogRecord[] = []
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue
+    try {
+      out.push(JSON.parse(line) as SessionLogRecord)
+    } catch {
+      // a torn trailing line from a crash mid-append — drop it
+    }
+  }
+  return out
+}
+
+export async function deleteSessionLog(ws: string, task: string, sessionId: string): Promise<void> {
+  const file = sessionLogFile(ws, task, sessionId)
+  appendChains.delete(file)
+  await fs.rm(file, { force: true })
 }
 
 /** Tree without sessions; the session manager overlays those. */

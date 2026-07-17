@@ -140,6 +140,19 @@ if (!restored.includes('hello from run A')) {
 }
 await page.screenshot({ path: path.join(SHOT_DIR, '06-restored.png') })
 
+// requirements-session-log acceptance: per-change session-changed broadcasts
+// carry no history; the timeline arrives as session-log deltas.
+await page.evaluate(() => {
+  window.__scWithEntries = 0
+  window.__slRecords = 0
+  window.gurt.onSessionChanged((s) => {
+    if (s.entries !== undefined) window.__scWithEntries++
+  })
+  window.gurt.onSessionLog(({ records }) => {
+    window.__slRecords += records.length
+  })
+})
+
 await page.fill('.composer-input', 'hello from run B')
 await page.click('.send-btn')
 await page.waitForFunction(
@@ -150,6 +163,17 @@ await new Promise((r) => setTimeout(r, 20000))
 console.log('--- run B chat after prompt ---')
 console.log(await page.evaluate(() => document.querySelector('.chat-log')?.innerText))
 await page.screenshot({ path: path.join(SHOT_DIR, '07-resumed.png') })
+
+const [scWithEntries, slRecords] = await page.evaluate(() => [
+  window.__scWithEntries,
+  window.__slRecords
+])
+console.log('session-changed payloads with entries:', scWithEntries, scWithEntries === 0 ? 'OK' : 'FAIL')
+console.log('session-log records received:', slRecords, slRecords > 0 ? 'OK' : 'FAIL')
+if (scWithEntries > 0 || slRecords === 0) {
+  await app.close()
+  process.exit(1)
+}
 
 await app.close()
 console.log('PHASE3 DONE')
