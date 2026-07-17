@@ -94,12 +94,20 @@ console.log('provisioning codex env...')
 
 await page.waitForFunction(
   () => {
+    if (document.querySelector('.env-error')) return true
     const m = document.querySelector('.session-node .session-mark')
     const st = m && [...m.classList].find((c) => c.startsWith('mark-'))?.slice(5)
     return st && ['running', 'waiting', 'idle'].includes(st)
   },
+  undefined,
   { timeout: 600000, polling: 2000 }
 )
+const startErr = await page.evaluate(() => document.querySelector('.env-error')?.innerText)
+if (startErr) {
+  console.log('SESSION START FAILED:', startErr)
+  await app.close()
+  process.exit(1)
+}
 console.log('codex session started (ACP handshake OK)')
 
 // open the chat; the header chip must name codex (right session opened)
