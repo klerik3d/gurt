@@ -69,7 +69,8 @@ async function handleCredential(ref: EnvRef, req: IncomingMessage, res: ServerRe
     return
   }
   const resolved = resolveCredential(await listCredentials(), repo, fields.host)
-  if (resolved.entry?.kind === 'git-token' && resolved.entry.data.secret) {
+  // An errored resolution (e.g. unverified entry, §3.2) serves nothing.
+  if (!resolved.error && resolved.entry?.kind === 'git-token' && resolved.entry.data.secret) {
     const user = resolved.entry.data.username || DEFAULT_TOKEN_USER
     const payload = `username=${user}\npassword=${resolved.entry.data.secret}\n`
     res.writeHead(200, { 'content-type': 'text/plain' }).end(payload)
@@ -93,7 +94,8 @@ async function handleForgeEnv(ref: EnvRef, res: ServerResponse): Promise<void> {
     return
   }
   const resolved = resolveCredential(await listCredentials(), repo, host)
-  const env = resolved.entry ? await provider.forgeEnv(resolved.entry, host) : null
+  const env =
+    resolved.entry && !resolved.error ? await provider.forgeEnv(resolved.entry, host) : null
   if (!env) {
     res.writeHead(204).end()
     return

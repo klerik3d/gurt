@@ -27,6 +27,27 @@ export interface CredentialsFile {
 /** Default HTTP-basic username for token credentials (GitHub App / PAT convention). */
 export const DEFAULT_TOKEN_USER = 'x-access-token'
 
+/** Commit identity of a credential's owner, stamped by save-time verification (§3.2). */
+export interface GitIdentity {
+  name: string
+  email: string
+}
+
+/** The stamped identity of an entry, or null when it was never verified. */
+export const credentialIdentity = (entry: CredentialEntry): GitIdentity | null =>
+  entry.data.gitName && entry.data.gitEmail
+    ? { name: entry.data.gitName, email: entry.data.gitEmail }
+    : null
+
+/**
+ * §3.2: a git-token entry without stamped identity predates save-time
+ * verification and must not be used — resolution errors instead of serving it.
+ */
+const unverifiedError = (entry: CredentialEntry): string | undefined =>
+  entry.kind === 'git-token' && !credentialIdentity(entry)
+    ? `credential "${entry.label || entry.id}" has no verified identity — re-save it in Credentials`
+    : undefined
+
 /** One editable field of a credential kind, for the credentials modal. */
 export interface CredentialField {
   key: string
@@ -127,11 +148,11 @@ export function resolveCredential(
     const entry = credentials.find((c) => c.id === repo.credentialId)
     if (!entry)
       return { kind: 'git-host', source: 'implicit', error: 'linked credential no longer exists' }
-    return { entry, kind: entry.kind, source: 'link' }
+    return { entry, kind: entry.kind, source: 'link', error: unverifiedError(entry) }
   }
   // Step 2: auto-match by host.
   const match = credentials.find((c) => c.hosts.includes(host))
-  if (match) return { entry: match, kind: match.kind, source: 'match' }
+  if (match) return { entry: match, kind: match.kind, source: 'match', error: unverifiedError(match) }
   // Step 3: implicit ambient host credentials.
   return { kind: 'git-host', source: 'implicit' }
 }
