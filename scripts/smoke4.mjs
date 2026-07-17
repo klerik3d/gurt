@@ -57,9 +57,12 @@ const sessionMark = (title) =>
     return mark && [...mark.classList].find((c) => c.startsWith('mark-'))?.slice(5)
   }, title)
 
-const waitMark = (title, states, timeout = 600000) =>
-  page.waitForFunction(
+// Resolves when the session mark reaches one of `states`; fails fast when the
+// selected session pane shows a start error instead of ever starting.
+const waitMark = async (title, states, timeout = 600000) => {
+  await page.waitForFunction(
     ([t, ss]) => {
+      if (document.querySelector('.env-error')) return true
       const node = [...document.querySelectorAll('.session-node')].find(
         (n) => n.querySelector('.node-label')?.textContent.trim() === t
       )
@@ -70,6 +73,9 @@ const waitMark = (title, states, timeout = 600000) =>
     [title, states],
     { timeout, polling: 1000 }
   )
+  const err = await page.evaluate(() => document.querySelector('.env-error')?.innerText)
+  if (err) throw new Error(`session start failed: ${err}`)
+}
 
 // task-pane env row helpers, matched by repo name (`hello —` never matches `hello2 —`)
 const envAction = (repo, action) =>
