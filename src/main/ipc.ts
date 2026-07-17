@@ -80,6 +80,7 @@ export function registerIpc(): void {
     sessionEnqueue: async (id) => kernel.sessions.enqueue(id),
     sessionCancelQueue: async (id) => kernel.sessions.cancelQueue(id),
     sessionEditPrompt: async (id, text) => kernel.sessions.editPrompt(id, text),
+    sessionEditDraft: async (id, patch) => kernel.sessions.editDraft(id, patch),
     sessionDelete: async (id) => kernel.sessions.deleteSession(id),
     sessionSnapshot: async (id) => kernel.sessions.snapshot(id),
     sessionPrompt: (id, text, context, images) => kernel.sessions.prompt(id, text, context, images),

@@ -435,6 +435,45 @@ select {
   gap: 8px;
 }
 
+/* ---- native (in-app) dialog: alert / confirm ---- */
+
+.dialog {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  width: 380px;
+  max-width: 90vw;
+  padding: 18px;
+  box-shadow: 0 30px 80px -20px rgba(0, 0, 0, 0.8);
+}
+
+.dialog-title {
+  font-weight: 600;
+  color: var(--text-bright);
+  margin-bottom: 8px;
+}
+
+.dialog-message {
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.dialog-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.dialog-ok.danger {
+  background: var(--red);
+  border-color: var(--red);
+  color: #fff;
+}
+
 /* ---- main / panes ---- */
 
 .main {
@@ -487,6 +526,15 @@ select {
 
 .busy {
   color: var(--yellow);
+}
+
+.busy-hint {
+  color: var(--text-dim3);
+  font-size: 11px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 0 5px;
+  margin-left: 4px;
 }
 
 .agent-badge {
@@ -1179,6 +1227,23 @@ select {
 }
 .composer-hint .k {
   font-family: var(--mono);
+}
+
+.composer-mic-error {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--red);
+  text-align: center;
+  cursor: pointer;
+}
+
+/* draft settings summary + edit affordance */
+.draft-settings {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
 }
 
 /* ---- status bar ---- */
