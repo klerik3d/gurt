@@ -38,7 +38,7 @@ keys, keychain helpers, `gh` login) is an explicit credential kind
 are **blocked** with a clear error — they must not silently reach the
 host's ambient auth.
 
-Three mechanisms, all injected per agent process (not per container):
+Four mechanisms, all injected per agent process (not per container):
 
 1. **HTTPS auth** — the git credential-helper protocol. A shim helper in
    the container forwards `fill` requests to the host broker over
@@ -52,6 +52,12 @@ Three mechanisms, all injected per agent process (not per container):
    follows the *credential*, not the stored clone URL. A repo cloned over
    ssh pushes over https with a token credential, and vice versa, with no
    remote rewriting and no re-clone.
+4. **Commit identity** — `user.name`/`user.email` of the *token owner*,
+   looked up from the forge once at credential save (§3.2) and injected
+   next to the rest of the config. The credential policy extends to
+   authorship: ambient host identity (`~/.gitconfig`) never authors a
+   managed commit, on host or in container; ambient identity is only ever
+   the explicit `git-host` kind.
 
 All three are delivered via `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/
 `GIT_CONFIG_VALUE_n` and `SSH_AUTH_SOCK`/`GIT_SSH_COMMAND` environment
@@ -99,7 +105,7 @@ but do not make the schema git-only.
 
 | kind | data | notes |
 |---|---|---|
-| `git-token` | `secret`, `username` (default `x-access-token`) | PAT, fine-grained PAT, GitLab project/deploy token, Gitea token — anything usable as HTTP basic auth. |
+| `git-token` | `secret`, `username` (default `x-access-token`), `gitName` + `gitEmail` (stamped by §3.2, never user-edited) | PAT, fine-grained PAT, GitLab project/deploy token, Gitea token — anything usable as HTTP basic auth. |
 | `git-ssh-key` | `keyPath` (host path) **or** `hostAgent: "1"` | dedicated key file, or bridge to the host's own `SSH_AUTH_SOCK`. |
 | `git-app` | `provider` (`github-app`), `appId`, `installationId`, `privateKeyPath` | broker mints short-lived installation tokens per request. Providers are plugins behind the broker; adding GitLab OAuth etc. must not touch the contract. Phase 3. |
 | `git-host` | — | explicit opt-in to host ambient credentials — the only way ambient is ever used. |
@@ -130,6 +136,31 @@ Resolution order for a request to host `H`, repo `R`:
 The broker resolves **per request**, not per env: a fetch for a submodule
 on another host auto-matches by that host (step 2), independently of the
 env repo's link.
+
+### 3.2 Save-time verification & commit identity
+
+Unverified credentials are never stored. On save (`setCredentials`), every
+`git-token` entry that is new, has a changed `secret`, or lacks
+`gitName`/`gitEmail` is verified against its forge:
+
+1. Lookup host: the first `hosts` entry a forge provider `matches()`
+   (entries are canonicalized via `canonicalRepoId`; bare hosts pass
+   through). No provider matches → the save is **rejected**: a `git-token`
+   entry must name a verifiable forge host (e.g. `github.com`).
+2. `provider.identity(cred, host)` (§7) — github:
+   `GET https://api.github.com/user` (GHE: `https://<host>/api/v3/user`)
+   with `Authorization: Bearer <secret>`. Result:
+   `name = name ?? login`,
+   `email = email ?? <id>+<login>@users.noreply.github.com`.
+3. Lookup failure (bad token, no scope, network) → the save is **rejected**
+   with the provider's error. Success → the identity is stamped into
+   `data.gitName`/`data.gitEmail`.
+
+Resolution (§3.1) treats a `git-token` entry without stamped identity as a
+configuration error (`error` set: "re-save it in Credentials"); consumers
+block per the credential policy. Entries saved before this section exist
+are therefore blocked until re-saved — never silently used. The broker
+serves neither `/credential` nor `/forge-env` from an errored resolution.
 
 ## 4. Host broker
 
@@ -212,6 +243,9 @@ GIT_CONFIG_KEY_1=credential.helper      GIT_CONFIG_VALUE_1=/usr/local/bin/gurt-g
 # rewrite rules per §6.1, e.g. for a token credential on github.com:
 GIT_CONFIG_KEY_2=url.https://github.com/.insteadOf   GIT_CONFIG_VALUE_2=git@github.com:
 GIT_CONFIG_KEY_3=url.https://github.com/.insteadOf   GIT_CONFIG_VALUE_3=ssh://git@github.com/
+# commit identity per §3.2 (managed kinds only; git-host injects none):
+GIT_CONFIG_KEY_4=user.name    GIT_CONFIG_VALUE_4=<gitName>
+GIT_CONFIG_KEY_5=user.email   GIT_CONFIG_VALUE_5=<gitEmail>
 # ssh credentials additionally:
 SSH_AUTH_SOCK=/tmp/gurt-ssh-agent.sock
 GIT_SSH_COMMAND=ssh -o StrictHostKeyChecking=accept-new
@@ -248,6 +282,10 @@ export interface ForgeProvider {
   // env map for the forge CLI, or null when the credential cannot serve
   // the forge API (git-ssh-key, git-host → null)
   forgeEnv(cred: CredentialEntry, host: string): Promise<Record<string, string> | null>
+  // verify the credential against the forge API and return the token
+  // owner's commit identity (§3.2); throws with a readable message when
+  // the forge rejects the token or the kind cannot be verified
+  identity(cred: CredentialEntry, host: string): Promise<GitIdentity>
   wrappers: string[]             // shim names to install, e.g. ['gh']
   // devcontainer features guaranteeing the wrapped CLIs exist, merged
   // into --additional-features at env-up (next to BASE_FEATURES' node)
@@ -305,9 +343,11 @@ the host. Three modes:
 - **managed** — a `git-token` entry resolves: helper reset + gurt host
   helper (secret read from `credentials.json`, answered **only for the
   resolved host** — a submodule fetch to another host gets nothing),
-  §6.1 rewrite rules, ambient ssh blocked via a failing
-  `GIT_SSH_COMMAND`, `GIT_TERMINAL_PROMPT=0`. Forge CLIs additionally get
-  the provider's `forgeEnv` (e.g. `GH_TOKEN`).
+  §6.1 rewrite rules, `user.name`/`user.email` from the entry's stamped
+  identity (§3.2 — ambient identity never authors a managed commit),
+  ambient ssh blocked via a failing `GIT_SSH_COMMAND`,
+  `GIT_TERMINAL_PROMPT=0`. Forge CLIs additionally get the provider's
+  `forgeEnv` (e.g. `GH_TOKEN`).
 - **ambient** — an explicit `git-host` entry resolves: inherit the host
   env as-is, `GIT_TERMINAL_PROMPT=0`.
 - **blocked** — nothing resolves, resolution error, or unimplemented
@@ -333,7 +373,10 @@ unless a `git-host` entry explicitly says so.
 
 - **Credentials modal** (pattern: `AgentsModal.tsx`): list entries; add/edit
   with kind selector, label, hosts, kind fields (secret inputs
-  `type="password"`); delete blocked while any repo links to the entry.
+  `type="password"`); delete blocked while any repo links to the entry;
+  saved `git-token` entries show the verified identity
+  (`gitName <gitEmail>`); a rejected verification (§3.2) surfaces as the
+  save error.
 - **ReposModal**: credential select per repo: `auto (match by host)` /
   explicit entries / `host credentials`. Shows the resolved outcome for
   the repo's host (e.g. "auto → gh-fine-grained (github.com)").

@@ -4,7 +4,7 @@
 // (git >= 2.31, scoped to the agent process tree), the host on `-c` argv
 // entries (works on any git — hosts can run pre-2.31 gits that silently
 // ignore the env vars, which would leak to ambient auth) (§2, §6, §8).
-import type { CredentialKind } from '../../shared/credentials'
+import type { CredentialKind, GitIdentity } from '../../shared/credentials'
 
 /** Dedicated dir for container shims; on PATH via gurt-launch for the agent only. */
 export const SHIM_DIR = '/opt/gurt/bin'
@@ -72,6 +72,10 @@ export function gitConfigArgs(pairs: ConfigPair[]): string[] {
   return pairs.flatMap(([k, v]) => ['-c', `${k}=${v}`])
 }
 
+/** §3.2 commit identity as config pairs — managed kinds only, ambient injects none. */
+export const identityPairs = (identity: GitIdentity | null | undefined): ConfigPair[] =>
+  identity ? [['user.name', identity.name], ['user.email', identity.email]] : []
+
 /**
  * The env injected into the in-container agent process (§6). Secrets are never
  * here — only the broker URL+token; the shim fetches the actual credential from
@@ -80,13 +84,15 @@ export function gitConfigArgs(pairs: ConfigPair[]): string[] {
 export function containerGitEnv(
   brokerUrl: string,
   host: string | null,
-  kind: CredentialKind
+  kind: CredentialKind,
+  identity?: GitIdentity | null
 ): Record<string, string> {
   const pairs: ConfigPair[] = [
     ['credential.helper', ''],
     ['credential.helper', CRED_HELPER_BIN]
   ]
   if (host) pairs.push(...rewriteRules(host, kind))
+  pairs.push(...identityPairs(identity))
   return {
     GURT_GIT_BROKER: brokerUrl,
     GIT_TERMINAL_PROMPT: '0',
