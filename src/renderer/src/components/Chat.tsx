@@ -49,7 +49,7 @@ export function Chat({ snapshot, sessionId }: { snapshot?: SessionSnapshot; sess
       if (e.key !== 'Escape') return
       const t = e.target as HTMLElement | null
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return
-      if (document.querySelector('.modal-backdrop')) return
+      if (document.querySelector('.modal-backdrop, .cmp-menu')) return
       e.preventDefault()
       window.gurt.sessionCancel(sessionId).catch(console.error)
     }
@@ -320,14 +320,23 @@ function Composer({
   // Re-fit whenever the value changes (send clears it, pickCommand extends it).
   useEffect(autoGrow, [text])
 
-  // Close every popup on an outside click.
+  // Close every popup on an outside click or Esc. The textarea/slash input
+  // handle their own Esc; this document listener covers the rest (e.g. focus
+  // left on the pill button that opened the menu).
   useEffect(() => {
     if (!slashOpen && !addOpen && !modeOpen && openConfigId === null) return
     const onDown = (e: MouseEvent) => {
       if (rootRef.current && !rootRef.current.contains(e.target as Node)) closeMenus()
     }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeMenus()
+    }
     document.addEventListener('mousedown', onDown)
-    return () => document.removeEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
   }, [slashOpen, addOpen, modeOpen, openConfigId])
 
   // Stop any live dictation when the composer unmounts (session switch).
@@ -902,7 +911,9 @@ function speechErrorMessage(code?: string): string {
     case 'audio-capture':
       return 'no microphone found'
     case 'network':
-      return 'dictation needs a network connection and is unavailable offline'
+      // In Electron this usually means the build ships no speech backend
+      // (missing service API key), not that the machine is offline.
+      return 'could not reach the speech service — dictation may not be supported in this build'
     default:
       return `dictation error: ${code ?? 'unknown'}`
   }
