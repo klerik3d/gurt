@@ -993,7 +993,7 @@ function PlanPanel({
         >
           <polyline points="6 9 12 15 18 9" />
         </svg>
-        <span>TODO</span>
+        <span>Plan</span>
         <span style={{ color: 'var(--text-dim3)', fontWeight: 400 }}>
           {done} / {plan.length}
         </span>
