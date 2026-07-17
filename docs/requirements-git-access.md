@@ -30,6 +30,14 @@ lives behind a host-side broker as interchangeable **forge providers**
 contract, they never replace it, and removing one must not break the git
 paths.
 
+**Credential policy (applies to every git/forge touchpoint in the app —
+container, host git, MCP tools, discovery clones):** gurt talks to git
+and forges only through gurt-managed credentials. Ambient host auth (ssh
+keys, keychain helpers, `gh` login) is an explicit credential kind
+(`git-host`), never a fallback: when nothing resolves, remote operations
+are **blocked** with a clear error — they must not silently reach the
+host's ambient auth.
+
 Three mechanisms, all injected per agent process (not per container):
 
 1. **HTTPS auth** — the git credential-helper protocol. A shim helper in
@@ -94,7 +102,7 @@ but do not make the schema git-only.
 | `git-token` | `secret`, `username` (default `x-access-token`) | PAT, fine-grained PAT, GitLab project/deploy token, Gitea token — anything usable as HTTP basic auth. |
 | `git-ssh-key` | `keyPath` (host path) **or** `hostAgent: "1"` | dedicated key file, or bridge to the host's own `SSH_AUTH_SOCK`. |
 | `git-app` | `provider` (`github-app`), `appId`, `installationId`, `privateKeyPath` | broker mints short-lived installation tokens per request. Providers are plugins behind the broker; adding GitLab OAuth etc. must not touch the contract. Phase 3. |
-| `git-host` | — | explicit "use host ambient credentials" (current behavior). |
+| `git-host` | — | explicit opt-in to host ambient credentials — the only way ambient is ever used. |
 
 ### 3.1 Linking, not storing
 
@@ -115,7 +123,9 @@ Resolution order for a request to host `H`, repo `R`:
    serve `H` — e.g. token entry asked over ssh with no rewrite — this is a
    configuration error surfaced in UI, not a silent fallback).
 2. else first entry whose `hosts` contains `H` (auto-match).
-3. else implicit `git-host` (ambient).
+3. else **nothing** — remote access to `H` is blocked with a clear error.
+   Ambient behavior requires an explicit `git-host` entry resolving via
+   step 1 or 2; it is never the implicit outcome.
 
 The broker resolves **per request**, not per env: a fetch for a submodule
 on another host auto-matches by that host (step 2), independently of the
@@ -160,9 +170,12 @@ then the raw ssh-agent protocol is piped. Host side connects the pipe to:
 ## 5. Container shims
 
 All shims live in a dedicated dir `/opt/gurt/bin`, written into the
-container at env-up via `devcontainer exec` (same lazy pattern as
-`installAcpAdapter`); all are small node scripts (node is guaranteed by
-`BASE_FEATURES`):
+container lazily at first git-access session (same lazy pattern as
+`installAcpAdapter`), via `docker exec -u root` — `/opt` is root-owned
+while the devcontainer remoteUser is usually non-root, so a user-level
+install fails with EACCES. Shims hold no secrets; root-owned `755` also
+keeps the agent from rewriting them. All are small node scripts (node is
+guaranteed by `BASE_FEATURES`):
 
 - `gurt-launch` — prepends `/opt/gurt/bin` to `PATH` and `exec`s its
   argv. The agent adapter is started through it (§6), so shims shadow
@@ -281,16 +294,40 @@ invocation — never in static container env, files, or `devcontainer
 exec` argv. Git subprocesses spawned by gh keep using the credential
 helper path as usual.
 
-## 8. Host-side git uses the same resolution
+## 8. Host-side git and forge use the same resolution
 
-`ensureClone` (`provision.ts`) and every git call in `changes.ts` must run
-with an env built by a single shared `gitEnv(repo)` helper implementing
-the same contract on the host: same `GIT_CONFIG_*` rewrite rules, helper
-pointed at the broker over `127.0.0.1` (or an equivalent local askpass),
-`GIT_TERMINAL_PROMPT=0` everywhere (including `ensureClone`, which today
-can block on a prompt). `git-host` kind → empty env, current behavior.
+`ensureClone`, `discoverDevcontainer` (`provision.ts`), every git call in
+`changes.ts`, and the github MCP tools (`mcp/githubServer.ts` — `git
+pull/push`, `gh pr create`) run with an env built by a single shared
+`hostGitAccess(repo)` helper implementing the credential policy (§2) on
+the host. Three modes:
+
+- **managed** — a `git-token` entry resolves: helper reset + gurt host
+  helper (secret read from `credentials.json`, answered **only for the
+  resolved host** — a submodule fetch to another host gets nothing),
+  §6.1 rewrite rules, ambient ssh blocked via a failing
+  `GIT_SSH_COMMAND`, `GIT_TERMINAL_PROMPT=0`. Forge CLIs additionally get
+  the provider's `forgeEnv` (e.g. `GH_TOKEN`).
+- **ambient** — an explicit `git-host` entry resolves: inherit the host
+  env as-is, `GIT_TERMINAL_PROMPT=0`.
+- **blocked** — nothing resolves, resolution error, or unimplemented
+  kind: helper reset, ambient ssh blocked, `GIT_TERMINAL_PROMPT=0`.
+  Local git works; network auth fails cleanly; MCP forge tools return a
+  configuration error without running.
+
+Host delivery is `-c key=value` argv entries (`gitArgs`, spread before the
+git subcommand), **not** `GIT_CONFIG_*` env: host gits can predate 2.31
+(e.g. 2.19 from a standalone installer) and silently ignore the env vars —
+which would silently fall back to ambient auth. The env carries only the
+non-config parts (`GURT_CRED_ID`/`GURT_CRED_HOST`, `GIT_SSH_COMMAND`,
+`GIT_TERMINAL_PROMPT`). The container keeps the `GIT_CONFIG_*` env
+mechanism (§6): its git comes from devcontainer features (≥ 2.31), and an
+older container git fails cleanly — there is no ambient inside to leak to.
+
 This makes clone/fetch/push work for a repo whose only credential is a
-gurt-managed token, on a host with no ambient git auth at all.
+gurt-managed token, on a host with no ambient git auth at all — and
+guarantees the reverse: a host full of ambient auth leaks none of it
+unless a `git-host` entry explicitly says so.
 
 ## 9. UI
 
@@ -323,6 +360,7 @@ Encrypted storage (`safeStorage`), read-only enforcement at the git level
 (the credential protocol cannot distinguish fetch from push; scoping is a
 credential-capability concern — fine-grained/read-only tokens, `git-app`
 minted scopes), forge providers beyond github (`glab` etc. — the seam
-exists, nothing is implemented), removing/changing the github MCP
-service, env for non-agent processes in the container (VS Code terminals
-do not inherit the injection — by design).
+exists, nothing is implemented), removing the github MCP service (its
+tools do follow the §8 resolution, but the service itself stays), env for
+non-agent processes in the container (VS Code terminals do not inherit
+the injection — by design).

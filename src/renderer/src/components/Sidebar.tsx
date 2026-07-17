@@ -420,7 +420,11 @@ function NewSessionModal({
             <span className="dim">
               {hasManagedCredential(gitResolution)
                 ? `credential: ${gitResolution.entry?.label}`
-                : 'no managed credential resolves — will use ambient/host auth'}
+                : gitResolution.error
+                  ? `credential error: ${gitResolution.error}`
+                  : gitResolution.entry?.kind === 'git-host'
+                    ? `host credentials (explicit): ${gitResolution.entry.label}`
+                    : 'no credential — remote git/forge is blocked until one is configured'}
             </span>
           )}
         </label>
