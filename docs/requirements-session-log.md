@@ -53,7 +53,13 @@ ignored (forward compatibility). `seq` is monotonic from 1 per session.
 - Per-session JSONL: `<ws>/<task>/sessions/<sessionId>.jsonl`, one record
   per line, **append-only** (`fs.appendFile`), reusing the existing 300ms
   debounce. Track `flushedSeq` per session; a flush appends records with
-  `seq > flushedSeq` only. The file is never rewritten.
+  `seq > flushedSeq` only, and `flushedSeq` advances only after the write
+  is confirmed (a failed append is retried by the next flush). The file is
+  never rewritten. Reading skips records whose `seq` does not advance
+  (duplicates from a retried partial batch).
+- Names colliding with gurt-owned path segments are rejected at creation
+  (repo: `sessions`, `sessions.json`, `task.json`; task: `workspace.json`,
+  `.devcontainers`; workspace: `agents.json`, `credentials.json`).
 - `sessions.json` keeps `{ info, acpSessionId }` per session and **loses**
   `entries`.
 - Restore: read `sessions.json`, then fold each session's JSONL.

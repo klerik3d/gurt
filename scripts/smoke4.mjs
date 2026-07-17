@@ -213,25 +213,55 @@ await envAction('hello', 'Stop')
 await waitEnvStatus('hello', 'stopped')
 console.log('claude env stopped')
 
-// codex session on hello2 (handshake check; auth may fail — that's data too)
+// codex session on hello2. Keyless codex refuses session/new with
+// 'Authentication required' (every codex-acp version does) — reaching that
+// error still proves the pipe end-to-end: install, spawn, initialize,
+// session/new round-trip, error surfaced in the UI.
 await newSession('hello2', 'codex', 'ping')
 console.log('codex session starting...')
-await waitMark('session 2', ['running', 'waiting', 'idle'])
-console.log('codex session started (ACP handshake OK); mark =', await sessionMark('session 2'))
+await page.waitForFunction(
+  () => {
+    if (document.querySelector('.env-error')) return true
+    const node = [...document.querySelectorAll('.session-node')].find(
+      (n) => n.querySelector('.node-label')?.textContent.trim() === 'session 2'
+    )
+    const mark = node?.querySelector('.session-mark')
+    const st = mark && [...mark.classList].find((c) => c.startsWith('mark-'))?.slice(5)
+    return st && ['running', 'waiting', 'idle'].includes(st)
+  },
+  undefined,
+  { timeout: 600000, polling: 1000 }
+)
+const codexErr = await page.evaluate(() => document.querySelector('.env-error')?.innerText)
+if (codexErr && !codexErr.includes('Authentication required'))
+  throw new Error(`codex session failed unexpectedly: ${codexErr}`)
+console.log(
+  codexErr
+    ? 'codex refused without a key at session/new (ACP pipe proven)'
+    : `codex session started (ACP handshake OK); mark = ${await sessionMark('session 2')}`
+)
 await page.evaluate(() => {
   const node = [...document.querySelectorAll('.session-node')].find(
     (n) => n.querySelector('.node-label')?.textContent.trim() === 'session 2'
   )
   node?.querySelector('.node-label')?.click()
 })
-await page.waitForSelector('.chat-log', { timeout: 15000 })
-try {
-  await page.waitForSelector('.entry-text, .perm-card', { timeout: 90000 })
-  await new Promise((r) => setTimeout(r, 1500))
-  console.log('--- codex chat ---')
-  console.log(await page.evaluate(() => document.querySelector('.chat-log')?.innerText))
-} catch (e) {
-  console.log('codex chat step failed:', e.message.slice(0, 200))
+if (codexErr) {
+  // A never-started session renders the draft pane, not a timeline — the
+  // error banner is the assertion.
+  await page.waitForSelector('.session-pane .env-error', { timeout: 15000 })
+  console.log('--- codex draft pane ---')
+  console.log(await page.evaluate(() => document.querySelector('.env-error')?.innerText))
+} else {
+  await page.waitForSelector('.chat-log', { timeout: 15000 })
+  try {
+    await page.waitForSelector('.entry-text, .perm-card', { timeout: 90000 })
+    await new Promise((r) => setTimeout(r, 1500))
+    console.log('--- codex chat ---')
+    console.log(await page.evaluate(() => document.querySelector('.chat-log')?.innerText))
+  } catch (e) {
+    console.log('codex chat step failed:', e.message.slice(0, 200))
+  }
 }
 await page.screenshot({ path: path.join(SHOT_DIR, '10-codex.png') })
 

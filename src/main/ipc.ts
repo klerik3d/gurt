@@ -36,26 +36,28 @@ export function registerIpc(): void {
     getCredentials: () => getCredentials(),
     setCredentials: (data) => setCredentials(data),
     credentialUsedBy: (id) => credentialUsedBy(id),
+    // Store CRUD announces over the bus, not straight to the windows, so
+    // headless bus subscribers (orchestrator, extensions) see these too.
     createWorkspace: async (name) => {
       await store.createWorkspace(name)
-      broadcast('tree-changed')
+      kernel.bus.emit('tree.changed', undefined)
     },
     addRepo: async (ws, repo) => {
       await store.addRepo(ws, repo)
-      broadcast('tree-changed')
+      kernel.bus.emit('tree.changed', undefined)
     },
     discoverDevcontainer: (url) => discoverDevcontainer(url),
     updateRepo: async (ws, repo) => {
       await store.updateRepo(ws, repo)
-      broadcast('tree-changed')
+      kernel.bus.emit('tree.changed', undefined)
     },
     removeRepo: async (ws, name) => {
       await store.removeRepo(ws, name)
-      broadcast('tree-changed')
+      kernel.bus.emit('tree.changed', undefined)
     },
     createTask: async (ws, name) => {
       await store.createTask(ws, name)
-      broadcast('tree-changed')
+      kernel.bus.emit('tree.changed', undefined)
     },
     removeTask: (ws, name) => kernel.deleteTask(ws, name),
     taskDirtyRepos: (ws, name) => kernel.taskDirtyRepos(ws, name),
