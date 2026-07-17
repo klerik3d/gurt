@@ -97,9 +97,9 @@ export interface CredentialsFile { credentials: CredentialEntry[] }
 ```
 
 The store is deliberately generic (`kind` + opaque `data`): agent secrets
-in `agents.json` migrate to entries here later (`agent-*` kinds) and
-`AgentInstance` will link by id the same way repos do. Out of scope now,
-but do not make the schema git-only.
+live here too as the `agent-token` kind, linked from `AgentInstance.credentialId`
+the same way repos link theirs (implemented — see §10 phase 3). Do not make the
+schema git-only.
 
 `data` per kind:
 
@@ -109,6 +109,7 @@ but do not make the schema git-only.
 | `git-ssh-key` | `keyPath` (host path) **or** `hostAgent: "1"` | dedicated key file, or bridge to the host's own `SSH_AUTH_SOCK`. |
 | `git-app` | `provider` (`github-app`), `appId`, `installationId`, `privateKeyPath` | broker mints short-lived installation tokens per request. Providers are plugins behind the broker; adding GitLab OAuth etc. must not touch the contract. Phase 3. |
 | `git-host` | — | explicit opt-in to host ambient credentials — the only way ambient is ever used. |
+| `agent-token` | `secret` | OAuth token / API key for a coding agent; linked from an agent (no host matching, no forge verification). |
 
 ### 3.1 Linking, not storing
 
@@ -392,10 +393,12 @@ unless a `git-host` entry explicitly says so.
    toggle).
 2. **SSH path**: `git-ssh-key`, dedicated per-env ssh-agent, TCP bridge +
    proxy shim.
-3. **App auth + agents**: `git-app` (github-app minting behind the same
-   provider seam — credential helper and gh wrapper pick it up without
-   changes), migrate `agents.json` secrets into the credential store with
-   `AgentInstance.credentialId` links.
+3. **App auth**: `git-app` (github-app minting behind the same provider seam
+   — credential helper and gh wrapper pick it up without changes).
+
+Agent secrets already moved into the store ahead of this roadmap: an
+`agent-token` kind holds the secret and `AgentInstance.credentialId` links it,
+with inline `agents.json` secrets migrated on first launch.
 
 ## 11. Out of scope
 

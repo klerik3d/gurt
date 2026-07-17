@@ -61,12 +61,21 @@ function makeBareRepo(name) {
   return bare
 }
 
-// Seed the agent secret before launch so claude-code can actually run a turn.
+// Seed the agent + its token before launch so claude-code can run a turn. The
+// secret lives in the credential store; the agent maps to it by id.
 fs.mkdirSync(GURT_ROOT, { recursive: true })
+fs.writeFileSync(
+  path.join(GURT_ROOT, 'credentials.json'),
+  JSON.stringify({
+    credentials: [
+      { id: 'claude-tok', label: 'claude token', kind: 'agent-token', hosts: [], data: { secret: TOKEN } }
+    ]
+  })
+)
 fs.writeFileSync(
   path.join(GURT_ROOT, 'agents.json'),
   JSON.stringify({
-    'claude-code': { kind: 'claude-code', label: 'claude code', enabled: true, secret: TOKEN }
+    'claude-code': { kind: 'claude-code', label: 'claude code', credentialId: 'claude-tok' }
   })
 )
 

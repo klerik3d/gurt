@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { CredentialEntry, CredentialKind } from '../../../shared/credentials'
-import { CREDENTIAL_KINDS } from '../../../shared/credentials'
+import { CREDENTIAL_KINDS, isGitKind } from '../../../shared/credentials'
 import { Modal } from './Modal'
 
 const kindDef = (kind: CredentialKind) => CREDENTIAL_KINDS.find((k) => k.kind === kind)!
@@ -48,7 +48,7 @@ export function CredentialsModal({ onClose }: { onClose: () => void }) {
     // Block deleting an entry a repo still links to (§9).
     const used = await window.gurt.credentialUsedBy(id).catch(() => [])
     if (used.length) {
-      setError(`linked by ${used.join(', ')} — unlink it in repo settings first`)
+      setError(`linked by ${used.join(', ')} — unlink it (repo settings / ⚙ Agents) first`)
       return
     }
     setEntries((prev) => prev && prev.filter((c) => c.id !== id))
@@ -57,9 +57,10 @@ export function CredentialsModal({ onClose }: { onClose: () => void }) {
   const save = async () => {
     if (!entries) return
     setError('')
+    // Non-git kinds never host-match; drop hosts a kind switch may have left behind.
     const out = entries
       .filter((c) => c.label.trim())
-      .map((c) => ({ ...c, hosts: textToHosts(hostsText[c.id] ?? '') }))
+      .map((c) => ({ ...c, hosts: isGitKind(c.kind) ? textToHosts(hostsText[c.id] ?? '') : [] }))
     try {
       await window.gurt.setCredentials({ credentials: out })
       onClose()
@@ -118,16 +119,18 @@ export function CredentialsModal({ onClose }: { onClose: () => void }) {
                       verified identity: {c.data.gitName} &lt;{c.data.gitEmail}&gt;
                     </div>
                   )}
-                  <label>
-                    hosts (comma-separated; empty = link-only)
-                    <input
-                      placeholder="github.com"
-                      value={hostsText[c.id] ?? ''}
-                      onChange={(e) =>
-                        setHostsText((prev) => ({ ...prev, [c.id]: e.target.value }))
-                      }
-                    />
-                  </label>
+                  {isGitKind(c.kind) && (
+                    <label>
+                      hosts (comma-separated; empty = link-only)
+                      <input
+                        placeholder="github.com"
+                        value={hostsText[c.id] ?? ''}
+                        onChange={(e) =>
+                          setHostsText((prev) => ({ ...prev, [c.id]: e.target.value }))
+                        }
+                      />
+                    </label>
+                  )}
                 </div>
               </div>
             )

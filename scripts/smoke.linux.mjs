@@ -1,4 +1,5 @@
 import { createRequire } from 'node:module'
+import assert from 'node:assert'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -33,34 +34,59 @@ await page.waitForSelector('.sidebar', { timeout: 15000 })
 await page.screenshot({ path: path.join(SHOT_DIR, '01-initial.png') })
 console.log('initial render OK')
 
-// Open the Agents modal (⚙) — the surface this change rewrote.
+// The agent registry now starts empty (no seeded kinds). Confirm the modal
+// opens with no rows.
 await page.click('button[title="agents"]')
-await page.waitForSelector('.agent-block', { timeout: 5000 })
-await page.screenshot({ path: path.join(SHOT_DIR, '02-agents-initial.png') })
-const kinds = await page.$$eval('.agent-block select', (sels) =>
-  sels.map((s) => Array.from(s.options).map((o) => o.value))
-)
-console.log('agent rows:', kinds.length, 'kind options per row:', kinds[0])
+await page.waitForSelector('.modal', { timeout: 5000 })
+await page.waitForSelector('.agent-block', { state: 'attached', timeout: 500 }).catch(() => {})
+assert.equal(await page.locator('.agent-block').count(), 0, 'agent registry starts empty')
+await page.screenshot({ path: path.join(SHOT_DIR, '02-agents-empty.png') })
+await page.click('.modal .modal-header .icon-btn') // close
+await page.waitForSelector('.modal', { state: 'detached', timeout: 5000 })
 
-// Add a second claude instance ("claude code work") to prove multi-instance.
-await page.click('button.link:has-text("add agent")')
-const newRow = page.locator('.agent-block').last()
-await newRow.locator('.agent-label').fill('claude code work')
-await newRow.locator('.agent-fields input[type="password"]').fill('tok-work')
-await page.screenshot({ path: path.join(SHOT_DIR, '03-agents-added.png') })
-
-// Save, then reopen to confirm it round-tripped through agents.json.
+// The agent secret lives in the credential store now. Add an `agent-token`
+// credential (🔑) it will link to.
+await page.click('button[title="credentials"]')
+await page.waitForSelector('.modal', { timeout: 5000 })
+await page.click('text=+ add credential')
+const credRow = page.locator('.agent-block').last()
+await credRow.locator('.agent-label').fill('claude token')
+await credRow.locator('select').selectOption('agent-token')
+await credRow.locator('input[type="password"]').fill('tok-work')
 await page.click('button:has-text("Save")')
-await page.waitForSelector('.agent-block', { state: 'detached', timeout: 5000 }).catch(() => {})
+await page.waitForSelector('.modal', { state: 'detached', timeout: 5000 })
+console.log('agent-token credential saved OK')
+
+// Add an agent and link it to that credential (mapping, not storing the secret).
+await page.click('button[title="agents"]')
+await page.waitForSelector('.modal', { timeout: 5000 })
+await page.click('button.link:has-text("add agent")')
+const row = page.locator('.agent-block').last()
+await row.locator('.agent-label').fill('claude code work')
+await row.locator('.agent-fields select').selectOption({ label: 'claude token' })
+await page.screenshot({ path: path.join(SHOT_DIR, '03-agents-added.png') })
+await page.click('button:has-text("Save")')
+await page.waitForSelector('.modal', { state: 'detached', timeout: 5000 })
+
+// Reopen to confirm it round-tripped through agents.json.
 await page.click('button[title="agents"]')
 await page.waitForSelector('.agent-block', { timeout: 5000 })
 const labels = await page.$$eval('.agent-block .agent-label', (els) => els.map((e) => e.value))
 console.log('labels after save+reopen:', JSON.stringify(labels))
 await page.screenshot({ path: path.join(SHOT_DIR, '04-agents-persisted.png') })
 
-const raw = fs.readFileSync(path.join(GURT_ROOT, 'agents.json'), 'utf8')
+const agents = JSON.parse(fs.readFileSync(path.join(GURT_ROOT, 'agents.json'), 'utf8'))
+const creds = JSON.parse(fs.readFileSync(path.join(GURT_ROOT, 'credentials.json'), 'utf8'))
 console.log('--- agents.json on disk ---')
-console.log(raw)
+console.log(JSON.stringify(agents, null, 2))
+
+const inst = Object.values(agents).find((a) => a.label === 'claude code work')
+assert.ok(inst, 'the linked agent persisted')
+assert.ok(!('secret' in inst), 'agent carries no inline secret')
+const token = creds.credentials.find((c) => c.kind === 'agent-token')
+assert.ok(token && token.data.secret === 'tok-work', 'the secret lives in the credential store')
+assert.equal(inst.credentialId, token.id, 'agent maps to the credential by id')
+console.log('agent maps to credential OK:', inst.credentialId)
 
 await app.close()
 console.log('DONE')

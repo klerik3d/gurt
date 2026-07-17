@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { RepoConfig, Tree } from '../../../shared/types'
 import type { CredentialEntry } from '../../../shared/credentials'
-import { credentialKindLabel, resolveForRepo } from '../../../shared/credentials'
+import { credentialKindLabel, isGitKind, resolveForRepo } from '../../../shared/credentials'
 import { canonicalRepoId } from '../../../shared/repoId'
 import { Modal } from './Modal'
 
@@ -135,7 +135,7 @@ function RepoForm({
         credential
         <select value={credentialId} onChange={(e) => setCredentialId(e.target.value)}>
           <option value="">auto (match by host)</option>
-          {credentials.map((c) => (
+          {credentials.filter((c) => isGitKind(c.kind)).map((c) => (
             <option key={c.id} value={c.id}>
               {c.label} · {credentialKindLabel(c.kind)}
             </option>

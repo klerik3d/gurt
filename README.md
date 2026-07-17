@@ -10,8 +10,10 @@ there is archived in `archive/`; the model mostly still applies).
 - **repo** — registered per workspace: git URL + optional inline
   devcontainer.json (used via `--override-config` when the repo has none);
   add/edit/delete via the workspace "repos" modal
-- **agent** — claude code / codex / opencode: on/off + secret (env var name is
-  configurable per agent); ⚙ in the sidebar
+- **agent** — an instance of a built-in kind (claude code / codex / opencode).
+  The registry starts empty; add instances as needed via ⚙ in the sidebar. Each
+  maps to its secret by linking an `agent-token` credential (never storing it
+  inline, like a repo's credential link); env var name + extra env are per-agent
 - **task** — unit of work, `~/.gurt/<ws>/<task>/`, holds repo clones; deletable
 - **env** — infrastructure only: a clone on branch `gurt/<task>` + a devcontainer
   per (task, repo). Agent-agnostic — several agents' adapters coexist in the one
@@ -93,7 +95,9 @@ for the full design. Phase 1 (this slice) covers the HTTPS path:
 - **Credentials** (🔑 in the sidebar) live in `~/.gurt/credentials.json`, generic
   `kind` + opaque `data`. Phase 1 implements `git-token` (PAT / fine-grained /
   GitLab / Gitea) and `git-host` (ambient). A repo links one by id (or
-  auto-matches by host); the link is never a secret.
+  auto-matches by host); the link is never a secret. Agent secrets are the same
+  store's `agent-token` kind — an agent links one by id (no host matching); old
+  inline `agents.json` secrets migrate into it on first launch.
 - The contract is **git's own extension points**, never a forge API: an in-container
   credential-helper shim forwards to a host **broker** (one per env, like the MCP
   servers) that answers from the store; `url.<base>.insteadOf` rewrites make the

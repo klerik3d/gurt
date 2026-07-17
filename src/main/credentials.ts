@@ -4,11 +4,14 @@
 // (safeStorage) is a later, isolated change. Secrets never leave this file
 // except through the git broker's per-request responses (§3, §4).
 import { promises as fs } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import path from 'node:path'
+import type { AgentInstance, AgentsFile } from '../shared/types'
 import type { CredentialEntry, CredentialsFile } from '../shared/credentials'
 import { credentialIdentity } from '../shared/credentials'
 import { canonicalRepoId } from '../shared/repoId'
-import { gurtRoot, getWorkspace, listWorkspaces } from './store'
+import { gurtRoot, getWorkspace, listWorkspaces, getAgents, setAgents } from './store'
+import { agentDef } from '../shared/agents'
 import { providerForHost, type ForgeProvider } from './git/providers'
 
 const credentialsFile = (): string => path.join(gurtRoot, 'credentials.json')
@@ -31,7 +34,11 @@ export async function getCredentials(): Promise<CredentialsFile> {
   return read()
 }
 
-/** Repos (as `ws/repo`) that link to `credentialId`, across every workspace. */
+/**
+ * Everything that links to `credentialId`: repos (as `ws/repo`) across every
+ * workspace, and agents (as `agent "<label>"`). Both link kinds block deletion
+ * the same way (§9).
+ */
 export async function credentialUsedBy(credentialId: string): Promise<string[]> {
   const used: string[] = []
   for (const ws of await listWorkspaces()) {
@@ -39,6 +46,8 @@ export async function credentialUsedBy(credentialId: string): Promise<string[]> 
     for (const repo of data.repos)
       if (repo.credentialId === credentialId) used.push(`${ws}/${repo.name}`)
   }
+  for (const a of Object.values(await getAgents()))
+    if (a.credentialId === credentialId) used.push(`agent "${a.label}"`)
   return used
 }
 
@@ -89,7 +98,7 @@ export async function setCredentials(data: CredentialsFile): Promise<void> {
     const users = await credentialUsedBy(entry.id)
     if (users.length)
       throw new Error(
-        `credential "${entry.label || entry.id}" is linked by ${users.join(', ')} — unlink it in repo settings first`
+        `credential "${entry.label || entry.id}" is linked by ${users.join(', ')} — unlink it (repo settings / ⚙ Agents) first`
       )
   }
   await verifyTokens(data.credentials, before.credentials)
@@ -99,4 +108,67 @@ export async function setCredentials(data: CredentialsFile): Promise<void> {
 /** Convenience for the broker/host paths: the raw entry list. */
 export async function listCredentials(): Promise<CredentialEntry[]> {
   return (await read()).credentials
+}
+
+/**
+ * One-time on-disk migration: agent secrets used to live inline in agents.json
+ * (`secret`/`oauthToken` + an `enabled` flag). They now live in the credential
+ * store as `agent-token` entries, linked by id like a repo's credential. Run at
+ * startup, before anything reads agents. Idempotent — once secrets are lifted
+ * and the legacy fields are gone, it detects nothing to do and writes nothing.
+ */
+export async function migrateAgentSecrets(): Promise<void> {
+  const agentsPath = path.join(gurtRoot, 'agents.json')
+  let raw: Record<string, any>
+  try {
+    raw = JSON.parse(await fs.readFile(agentsPath, 'utf8'))
+  } catch {
+    return // no agents.json yet — nothing to migrate
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return
+
+  const legacy = Object.entries(raw).filter(
+    ([, a]) =>
+      a && typeof a === 'object' && ('secret' in a || 'oauthToken' in a || 'enabled' in a)
+  )
+  if (legacy.length === 0) return // already in the new shape
+
+  const store = await read()
+  const nextAgents: AgentsFile = {}
+  for (const [id, a] of Object.entries(raw)) {
+    if (!a || typeof a !== 'object') continue
+    const kind = typeof a.kind === 'string' ? a.kind : agentDef(id) ? id : undefined
+    if (!kind) continue
+    const inst: AgentInstance = {
+      kind,
+      label: a.label || agentDef(kind)?.label || kind,
+      credentialId: typeof a.credentialId === 'string' ? a.credentialId : undefined,
+      secretEnv: a.secretEnv || undefined,
+      env: a.env && typeof a.env === 'object' ? a.env : undefined
+    }
+    // A non-empty inline secret becomes a linked agent-token credential. Reuse
+    // an existing entry with the same secret so a crash between the two writes
+    // below heals on the next run instead of duplicating entries.
+    const secret: string = a.secret ?? a.oauthToken ?? ''
+    if (secret && !inst.credentialId) {
+      let entry = store.credentials.find(
+        (c) => c.kind === 'agent-token' && c.data.secret === secret
+      )
+      if (!entry) {
+        entry = {
+          id: randomUUID(),
+          label: `${inst.label} token`,
+          kind: 'agent-token',
+          hosts: [],
+          data: { secret }
+        }
+        store.credentials.push(entry)
+      }
+      inst.credentialId = entry.id
+    }
+    nextAgents[id] = inst
+  }
+
+  await write(store)
+  await setAgents(nextAgents)
 }

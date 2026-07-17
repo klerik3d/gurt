@@ -2,7 +2,7 @@ import type { EnvRef, EnvState, EnvStatus, RepoConfig } from '../shared/types'
 import { agentDef } from '../shared/agents'
 import { canonicalRepoId } from '../shared/repoId'
 import { envKey } from '../shared/keys'
-import { resolveCredential, credentialIdentity } from '../shared/credentials'
+import { resolveCredential, resolveAgentSecret, credentialIdentity } from '../shared/credentials'
 import { listCredentials } from './credentials'
 import { resolveGitBroker, stopGitBroker } from './git/broker'
 import { containerGitEnv } from './git/config'
@@ -147,7 +147,9 @@ export class EnvManager {
     if (!cfg) throw new Error(`unknown agent "${agentId}"`)
     const def = agentDef(cfg.kind)
     if (!def) throw new Error(`agent "${cfg.label}" has unknown kind "${cfg.kind}"`)
-    if (!cfg.enabled) throw new Error(`agent "${cfg.label}" is disabled — enable it in Agents`)
+    // The secret lives in credentials.json now; the agent only links it (§6).
+    const { secret, error: credError } = resolveAgentSecret(await listCredentials(), cfg.credentialId)
+    if (credError) throw new Error(`agent "${cfg.label}": ${credError}`)
     const repo = (await store.getWorkspace(ref.workspace)).repos.find((r) => r.name === ref.repo)
     if (!repo) throw new Error(`repo "${ref.repo}" is not registered in "${ref.workspace}"`)
 
@@ -166,7 +168,7 @@ export class EnvManager {
       remoteWorkspaceFolder: env.remoteWorkspaceFolder,
       hostWorkspaceFolder,
       configArgs,
-      secret: cfg.secret,
+      secret,
       secretEnv: cfg.secretEnv || def.secretEnv,
       env: cfg.env,
       gitBrokerEnv
