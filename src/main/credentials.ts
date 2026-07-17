@@ -10,7 +10,7 @@ import type { AgentInstance, AgentsFile } from '../shared/types'
 import type { CredentialEntry, CredentialsFile } from '../shared/credentials'
 import { credentialIdentity } from '../shared/credentials'
 import { canonicalRepoId } from '../shared/repoId'
-import { gurtRoot, getWorkspace, listWorkspaces, setAgents } from './store'
+import { gurtRoot, getWorkspace, listWorkspaces, getAgents, setAgents } from './store'
 import { agentDef } from '../shared/agents'
 import { providerForHost, type ForgeProvider } from './git/providers'
 
@@ -34,7 +34,11 @@ export async function getCredentials(): Promise<CredentialsFile> {
   return read()
 }
 
-/** Repos (as `ws/repo`) that link to `credentialId`, across every workspace. */
+/**
+ * Everything that links to `credentialId`: repos (as `ws/repo`) across every
+ * workspace, and agents (as `agent "<label>"`). Both link kinds block deletion
+ * the same way (§9).
+ */
 export async function credentialUsedBy(credentialId: string): Promise<string[]> {
   const used: string[] = []
   for (const ws of await listWorkspaces()) {
@@ -42,6 +46,8 @@ export async function credentialUsedBy(credentialId: string): Promise<string[]> 
     for (const repo of data.repos)
       if (repo.credentialId === credentialId) used.push(`${ws}/${repo.name}`)
   }
+  for (const a of Object.values(await getAgents()))
+    if (a.credentialId === credentialId) used.push(`agent "${a.label}"`)
   return used
 }
 
@@ -92,7 +98,7 @@ export async function setCredentials(data: CredentialsFile): Promise<void> {
     const users = await credentialUsedBy(entry.id)
     if (users.length)
       throw new Error(
-        `credential "${entry.label || entry.id}" is linked by ${users.join(', ')} — unlink it in repo settings first`
+        `credential "${entry.label || entry.id}" is linked by ${users.join(', ')} — unlink it (repo settings / ⚙ Agents) first`
       )
   }
   await verifyTokens(data.credentials, before.credentials)
@@ -140,17 +146,24 @@ export async function migrateAgentSecrets(): Promise<void> {
       secretEnv: a.secretEnv || undefined,
       env: a.env && typeof a.env === 'object' ? a.env : undefined
     }
-    // A non-empty inline secret becomes a linked agent-token credential.
+    // A non-empty inline secret becomes a linked agent-token credential. Reuse
+    // an existing entry with the same secret so a crash between the two writes
+    // below heals on the next run instead of duplicating entries.
     const secret: string = a.secret ?? a.oauthToken ?? ''
     if (secret && !inst.credentialId) {
-      const entry: CredentialEntry = {
-        id: randomUUID(),
-        label: `${inst.label} token`,
-        kind: 'agent-token',
-        hosts: [],
-        data: { secret }
+      let entry = store.credentials.find(
+        (c) => c.kind === 'agent-token' && c.data.secret === secret
+      )
+      if (!entry) {
+        entry = {
+          id: randomUUID(),
+          label: `${inst.label} token`,
+          kind: 'agent-token',
+          hosts: [],
+          data: { secret }
+        }
+        store.credentials.push(entry)
       }
-      store.credentials.push(entry)
       inst.credentialId = entry.id
     }
     nextAgents[id] = inst

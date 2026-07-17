@@ -141,6 +141,8 @@ export function resolveAgentSecret(
   if (!credentialId) return { secret: '' }
   const entry = credentials.find((c) => c.id === credentialId)
   if (!entry) return { secret: '', error: 'linked credential no longer exists' }
+  if (entry.kind !== 'agent-token')
+    return { secret: '', error: `linked credential "${entry.label}" is not an agent token` }
   return { secret: entry.data.secret ?? '' }
 }
 
@@ -181,10 +183,17 @@ export function resolveCredential(
     const entry = credentials.find((c) => c.id === repo.credentialId)
     if (!entry)
       return { kind: 'git-host', source: 'implicit', error: 'linked credential no longer exists' }
+    if (!isGitKind(entry.kind))
+      return {
+        kind: 'git-host',
+        source: 'implicit',
+        error: `linked credential "${entry.label}" is not a git credential`
+      }
     return { entry, kind: entry.kind, source: 'link', error: unverifiedError(entry) }
   }
-  // Step 2: auto-match by host.
-  const match = credentials.find((c) => c.hosts.includes(host))
+  // Step 2: auto-match by host — git kinds only; an agent-token is never a
+  // git transport, whatever its hosts say.
+  const match = credentials.find((c) => isGitKind(c.kind) && c.hosts.includes(host))
   if (match) return { entry: match, kind: match.kind, source: 'match', error: unverifiedError(match) }
   // Step 3: implicit ambient host credentials.
   return { kind: 'git-host', source: 'implicit' }
