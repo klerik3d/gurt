@@ -20,8 +20,11 @@ export function registerIpc(): void {
   kernel.bus.on('tree.changed', () => broadcast('tree-changed'))
   kernel.bus.on('session.changed', ({ sessionId }) => {
     const snap = kernel.sessions.snapshot(sessionId)
-    if (snap) broadcast('session-changed', snap)
+    // The per-change broadcast never carries history — timeline deltas ride
+    // the session-log channel; the full fold comes from session:snapshot.
+    if (snap) broadcast('session-changed', { ...snap, entries: undefined })
   })
+  kernel.bus.on('session.log', (e) => broadcast('session-log', e))
   kernel.bus.on('session.turn', (e) => broadcast('session-turn', e))
   kernel.bus.on('provision.log', (e) => broadcast('provision-log', e))
 

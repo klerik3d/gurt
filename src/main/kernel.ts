@@ -9,7 +9,7 @@ import * as store from './store'
 import { cloneDir } from './store'
 import { createBus, type Bus } from './bus'
 import { EnvManager } from './envs'
-import { SessionManager } from './sessions'
+import { SessionManager, type RestoredSession } from './sessions'
 
 export interface Kernel {
   bus: Bus
@@ -40,6 +40,16 @@ export function createKernel(): Kernel {
       envStatus: (ref) => envs.status(ref),
       persist: (ws, task, records) => {
         store.writeSessions(ws, task, records).catch((e) => console.error('persist failed:', e))
+      },
+      appendLog: (ws, task, sessionId, records) => {
+        store
+          .appendSessionLog(ws, task, sessionId, records)
+          .catch((e) => console.error('session-log append failed:', e))
+      },
+      deleteLog: (ws, task, sessionId) => {
+        store
+          .deleteSessionLog(ws, task, sessionId)
+          .catch((e) => console.error('session-log delete failed:', e))
       }
     },
     bus
@@ -60,7 +70,20 @@ export function createKernel(): Kernel {
   async function restoreSessions(): Promise<void> {
     const t = await store.buildTree()
     for (const ws of t.workspaces)
-      for (const task of ws.tasks) sessions.restore(await store.readSessions(ws.name, task.name))
+      for (const task of ws.tasks) {
+        const restored: RestoredSession[] = []
+        for (const r of await store.readSessions(ws.name, task.name)) {
+          let log = await store.readSessionLog(ws.name, task.name, r.info.id)
+          if (!log.length && r.entries?.length) {
+            // Legacy record carrying entries and no JSONL yet: synthesize the log
+            // once. sessions.json drops the entries on its next regular persist.
+            log = r.entries.map((entry, i) => ({ seq: i + 1, type: 'entry' as const, entry }))
+            await store.appendSessionLog(ws.name, task.name, r.info.id, log)
+          }
+          restored.push({ info: r.info, acpSessionId: r.acpSessionId, log })
+        }
+        sessions.restore(restored)
+      }
     // Resume the queue once, after everything is restored.
     sessions.schedule()
   }
