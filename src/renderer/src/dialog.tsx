@@ -75,6 +75,10 @@ export function DialogHost(): JSX.Element | null {
         e.preventDefault()
         close(false)
       } else if (e.key === 'Enter') {
+        // Enter confirms only from the default action; a user who tabbed to
+        // another button (Cancel) gets that button's own activation instead.
+        const a = document.activeElement
+        if (a instanceof HTMLButtonElement && a !== okRef.current) return
         e.preventDefault()
         close(true)
       }

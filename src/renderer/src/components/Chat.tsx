@@ -39,7 +39,9 @@ export function Chat({ snapshot, sessionId }: { snapshot?: SessionSnapshot; sess
   }, [entries.length, entries[entries.length - 1]?.id])
 
   // Esc stops the current turn while the agent is working (replaces the Stop
-  // button). Ignore Esc raised from a text field so it can close its own popup.
+  // button). Ignore Esc raised from a text field so it can close its own popup,
+  // and while any modal/dialog is open — there Esc means "dismiss it", and both
+  // listeners live on window, so this one must stand down explicitly.
   const busy = snapshot?.busy ?? false
   useEffect(() => {
     if (!busy) return
@@ -47,6 +49,7 @@ export function Chat({ snapshot, sessionId }: { snapshot?: SessionSnapshot; sess
       if (e.key !== 'Escape') return
       const t = e.target as HTMLElement | null
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return
+      if (document.querySelector('.modal-backdrop')) return
       e.preventDefault()
       window.gurt.sessionCancel(sessionId).catch(console.error)
     }
