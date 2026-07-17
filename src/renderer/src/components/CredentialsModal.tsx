@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { CredentialEntry, CredentialKind } from '../../../shared/credentials'
-import { CREDENTIAL_KINDS } from '../../../shared/credentials'
+import { CREDENTIAL_KINDS, isGitKind } from '../../../shared/credentials'
 import { Modal } from './Modal'
 
 const kindDef = (kind: CredentialKind) => CREDENTIAL_KINDS.find((k) => k.kind === kind)!
@@ -118,16 +118,18 @@ export function CredentialsModal({ onClose }: { onClose: () => void }) {
                       verified identity: {c.data.gitName} &lt;{c.data.gitEmail}&gt;
                     </div>
                   )}
-                  <label>
-                    hosts (comma-separated; empty = link-only)
-                    <input
-                      placeholder="github.com"
-                      value={hostsText[c.id] ?? ''}
-                      onChange={(e) =>
-                        setHostsText((prev) => ({ ...prev, [c.id]: e.target.value }))
-                      }
-                    />
-                  </label>
+                  {isGitKind(c.kind) && (
+                    <label>
+                      hosts (comma-separated; empty = link-only)
+                      <input
+                        placeholder="github.com"
+                        value={hostsText[c.id] ?? ''}
+                        onChange={(e) =>
+                          setHostsText((prev) => ({ ...prev, [c.id]: e.target.value }))
+                        }
+                      />
+                    </label>
+                  )}
                 </div>
               </div>
             )

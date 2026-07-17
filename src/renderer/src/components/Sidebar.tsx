@@ -298,7 +298,7 @@ function NewSessionModal({
   useEffect(() => {
     window.gurt.getAgents().then((a) => {
       setAgents(a)
-      const first = Object.keys(a).find((id) => a[id].enabled)
+      const first = Object.keys(a)[0]
       if (first) setAgent(first)
     })
     window.gurt.getMcpDefs().then(setMcpDefs)
@@ -319,10 +319,8 @@ function NewSessionModal({
   const wsData = tree.workspaces.find((w) => w.name === ws)
   const taskData = wsData?.tasks.find((t) => t.name === task)
   const repos = wsData?.repos ?? []
-  const enabledAgents = agents
-    ? Object.entries(agents)
-        .filter(([, a]) => a.enabled)
-        .map(([id, a]) => ({ id, label: a.label }))
+  const agentList = agents
+    ? Object.entries(agents).map(([id, a]) => ({ id, label: a.label }))
     : []
 
   useEffect(() => {
@@ -388,12 +386,12 @@ function NewSessionModal({
         <label>
           agent
           <select value={agent} onChange={(e) => setAgent(e.target.value)}>
-            {enabledAgents.map((a) => (
+            {agentList.map((a) => (
               <option key={a.id} value={a.id}>{a.label}</option>
             ))}
           </select>
         </label>
-        {enabledAgents.length === 0 && <div className="hint">no agents enabled — check ⚙ Agents</div>}
+        {agentList.length === 0 && <div className="hint">no agents yet — add one via ⚙ Agents</div>}
         <label>
           mode
           <select

@@ -37,17 +37,22 @@ export type StoredProposal = ChangeProposal & { at: string }
 
 /**
  * A user-defined agent profile: a named instance of a built-in agent *kind*
- * (see `AgentDef`) carrying its own credentials and config. Several instances of
- * one kind can coexist — e.g. two `claude-code` profiles with different tokens
- * ("work" / "home"), or an `opencode` pointed at a local model via `env`.
+ * (see `AgentDef`) carrying its config and a link to its secret. Several
+ * instances of one kind can coexist — e.g. two `claude-code` profiles linked to
+ * different tokens ("work" / "home"), or an `opencode` pointed at a local model
+ * via `env`. The registry starts empty; the user adds instances as needed.
  */
 export interface AgentInstance {
   /** Which built-in adapter to launch — references `AgentDef.id`. */
   kind: string
   /** User-facing name shown in pickers and chips. */
   label: string
-  enabled: boolean
-  secret: string
+  /**
+   * Link into credentials.json (a `CredentialEntry.id` of an `agent-token`),
+   * never a secret — mirrors how a repo links its credential. Absent = the
+   * adapter runs with no injected secret (it reports its own auth error).
+   */
+  credentialId?: string
   /** Env var name receiving the secret; defaults to the kind's default. */
   secretEnv?: string
   /** Extra env vars injected into the adapter (base URL, provider, ...). */

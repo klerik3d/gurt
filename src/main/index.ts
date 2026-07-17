@@ -1,6 +1,7 @@
 import { app, BrowserWindow } from 'electron'
 import path from 'node:path'
 import { registerIpc } from './ipc'
+import { migrateAgentSecrets } from './credentials'
 
 function createWindow(): void {
   const win = new BrowserWindow({
@@ -24,7 +25,10 @@ function createWindow(): void {
   }
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  // Lift any inline agent secrets into the credential store before the IPC
+  // surface (and thus getAgents) serves the renderer.
+  await migrateAgentSecrets().catch((e) => console.error('agent-secret migration failed:', e))
   registerIpc()
   createWindow()
   app.on('activate', () => {

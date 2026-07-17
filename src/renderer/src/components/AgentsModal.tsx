@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { AgentInstance, AgentsFile } from '../../../shared/types'
+import type { CredentialEntry } from '../../../shared/credentials'
+import { agentCredentials } from '../../../shared/credentials'
 import { AGENT_DEFS, agentDef } from '../../../shared/agents'
 import { refreshAgents } from '../useAgents'
 import { Modal } from './Modal'
@@ -35,6 +37,7 @@ function textToEnv(text: string): Record<string, string> | undefined {
 
 export function AgentsModal({ onClose }: { onClose: () => void }) {
   const [agents, setAgents] = useState<AgentsFile | null>(null)
+  const [credentials, setCredentials] = useState<CredentialEntry[]>([])
   /** Raw `KEY=VALUE` text per row, so partial lines don't flicker while typing. */
   const [envText, setEnvText] = useState<Record<string, string>>({})
   const [error, setError] = useState('')
@@ -47,7 +50,10 @@ export function AgentsModal({ onClose }: { onClose: () => void }) {
         setEnvText(Object.fromEntries(Object.entries(a).map(([id, i]) => [id, envToText(i.env)])))
       })
       .catch((e) => setError(String(e)))
+    window.gurt.getCredentials().then((f) => setCredentials(f.credentials)).catch(() => {})
   }, [])
+
+  const tokens = agentCredentials(credentials)
 
   const patch = (id: string, p: Partial<AgentInstance>) =>
     setAgents((prev) => prev && { ...prev, [id]: { ...prev[id], ...p } })
@@ -62,7 +68,7 @@ export function AgentsModal({ onClose }: { onClose: () => void }) {
 
   const add = () => {
     const key = `__new__:${crypto.randomUUID()}`
-    const inst: AgentInstance = { kind: 'claude-code', label: '', enabled: true, secret: '' }
+    const inst: AgentInstance = { kind: 'claude-code', label: '' }
     setAgents((prev) => ({ ...(prev ?? {}), [key]: inst }))
     setEnvText((prev) => ({ ...prev, [key]: '' }))
   }
@@ -75,7 +81,7 @@ export function AgentsModal({ onClose }: { onClose: () => void }) {
     for (const [id, a] of Object.entries(agents)) {
       const inst: AgentInstance = { ...a, env: textToEnv(envText[id] ?? '') }
       if (isTemp(id)) {
-        if (!inst.label.trim() && !inst.secret) continue
+        if (!inst.label.trim()) continue
         const finalId = uniqueId(inst.label, inst.kind, taken)
         taken.add(finalId)
         out[finalId] = inst
@@ -102,11 +108,6 @@ export function AgentsModal({ onClose }: { onClose: () => void }) {
               <div key={id} className="agent-block">
                 <div className="row">
                   <input
-                    type="checkbox"
-                    checked={cfg.enabled}
-                    onChange={(e) => patch(id, { enabled: e.target.checked })}
-                  />
-                  <input
                     className="agent-label"
                     placeholder="name (e.g. claude code work)"
                     value={cfg.label}
@@ -119,41 +120,48 @@ export function AgentsModal({ onClose }: { onClose: () => void }) {
                   </select>
                   <button className="link" onClick={() => remove(id)}>remove</button>
                 </div>
-                {cfg.enabled && (
-                  <div className="agent-fields">
-                    <label>
-                      secret env var
-                      <input
-                        value={cfg.secretEnv ?? def?.secretEnv ?? ''}
-                        placeholder={def?.secretEnv}
-                        onChange={(e) => patch(id, { secretEnv: e.target.value })}
-                      />
-                    </label>
-                    <label>
-                      secret
-                      <input
-                        type="password"
-                        placeholder="token / api key"
-                        value={cfg.secret}
-                        onChange={(e) => patch(id, { secret: e.target.value })}
-                      />
-                    </label>
-                    <label>
-                      extra env (KEY=VALUE per line)
-                      <textarea
-                        rows={2}
-                        placeholder="ANTHROPIC_BASE_URL=http://host.docker.internal:1234"
-                        value={envText[id] ?? ''}
-                        onChange={(e) =>
-                          setEnvText((prev) => ({ ...prev, [id]: e.target.value }))
-                        }
-                      />
-                    </label>
-                  </div>
-                )}
+                <div className="agent-fields">
+                  <label>
+                    credential
+                    <select
+                      value={cfg.credentialId ?? ''}
+                      onChange={(e) => patch(id, { credentialId: e.target.value || undefined })}
+                    >
+                      <option value="">none — adapter reports its own auth error</option>
+                      {tokens.map((c) => (
+                        <option key={c.id} value={c.id}>{c.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  {tokens.length === 0 && (
+                    <div className="hint">no agent tokens yet — add one in 🔑 Credentials</div>
+                  )}
+                  <label>
+                    secret env var
+                    <input
+                      value={cfg.secretEnv ?? def?.secretEnv ?? ''}
+                      placeholder={def?.secretEnv}
+                      onChange={(e) => patch(id, { secretEnv: e.target.value })}
+                    />
+                  </label>
+                  <label>
+                    extra env (KEY=VALUE per line)
+                    <textarea
+                      rows={2}
+                      placeholder="ANTHROPIC_BASE_URL=http://host.docker.internal:1234"
+                      value={envText[id] ?? ''}
+                      onChange={(e) =>
+                        setEnvText((prev) => ({ ...prev, [id]: e.target.value }))
+                      }
+                    />
+                  </label>
+                </div>
               </div>
             )
           })}
+          {Object.keys(agents).length === 0 && (
+            <div className="hint">no agents yet — add one and link its token</div>
+          )}
           <button className="link" onClick={add}>+ add agent</button>
           {error && <div className="error">{error}</div>}
           <button onClick={save}>Save</button>

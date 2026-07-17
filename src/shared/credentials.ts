@@ -7,7 +7,7 @@
 import type { RepoConfig } from './types'
 import { canonicalRepoId } from './repoId'
 
-export type CredentialKind = 'git-token' | 'git-ssh-key' | 'git-app' | 'git-host'
+export type CredentialKind = 'git-token' | 'git-ssh-key' | 'git-app' | 'git-host' | 'agent-token'
 
 export interface CredentialEntry {
   /** uuid, stable — configs link by this. */
@@ -108,8 +108,41 @@ export const CREDENTIAL_KINDS: CredentialKindDef[] = [
       { key: 'privateKeyPath', label: 'private key path' }
     ],
     implemented: false
+  },
+  {
+    kind: 'agent-token',
+    label: 'agent token',
+    hint:
+      'OAuth token / API key for a coding agent (Claude, OpenAI, …). ' +
+      'Linked from an agent in ⚙ Agents; not a git host, so it needs no hosts.',
+    fields: [
+      { key: 'secret', label: 'token / api key', secret: true, placeholder: 'sk-… / oauth token' }
+    ],
+    implemented: true
   }
 ]
+
+/** Whether a kind matches a git host (auto-match, forge verification, hosts field). */
+export const isGitKind = (kind: CredentialKind): boolean => kind !== 'agent-token'
+
+/** Agent-token entries — the pool the Agents editor links against. */
+export const agentCredentials = (credentials: CredentialEntry[]): CredentialEntry[] =>
+  credentials.filter((c) => c.kind === 'agent-token')
+
+/**
+ * Resolve the secret an agent injects, from its linked credential id (§6, like
+ * a repo's credential link). No link ⇒ empty (the adapter starts and reports its
+ * own auth error); a dangling link is a config error the caller surfaces.
+ */
+export function resolveAgentSecret(
+  credentials: CredentialEntry[],
+  credentialId: string | undefined
+): { secret: string; error?: string } {
+  if (!credentialId) return { secret: '' }
+  const entry = credentials.find((c) => c.id === credentialId)
+  if (!entry) return { secret: '', error: 'linked credential no longer exists' }
+  return { secret: entry.data.secret ?? '' }
+}
 
 export const credentialKindLabel = (kind: CredentialKind): string =>
   CREDENTIAL_KINDS.find((k) => k.kind === kind)?.label ?? kind

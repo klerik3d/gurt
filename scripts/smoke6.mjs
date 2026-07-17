@@ -22,6 +22,13 @@ const { _electron } = require('playwright-core')
 const env = { ...process.env, GURT_ROOT }
 delete env.ELECTRON_RUN_AS_NODE
 
+// Seed a claude-code agent (no credential — the registry starts empty otherwise).
+fs.mkdirSync(GURT_ROOT, { recursive: true })
+fs.writeFileSync(
+  path.join(GURT_ROOT, 'agents.json'),
+  JSON.stringify({ 'claude-code': { kind: 'claude-code', label: 'claude code' } })
+)
+
 const EXE = path.join(
   APP_DIR,
   'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron'
