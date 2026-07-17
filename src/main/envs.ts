@@ -121,8 +121,7 @@ export class EnvManager {
   private async resolveGitAccess(
     ref: EnvRef,
     repo: RepoConfig,
-    configArgs: string[],
-    hostWorkspaceFolder: string
+    containerId: string | undefined
   ): Promise<Record<string, string>> {
     const host = canonicalRepoId(repo.url)?.host ?? null
     const broker = await resolveGitBroker(ref)
@@ -130,7 +129,8 @@ export class EnvManager {
       ? resolveCredential(await listCredentials(), repo, host)
       : undefined
     if (!this.gitShimsInstalled.has(envKey(ref))) {
-      await installGitShims(ref, configArgs, hostWorkspaceFolder, host, this.logFor(ref))
+      if (!containerId) throw new Error('environment has no container id — cannot install git shims')
+      await installGitShims(containerId, host, this.logFor(ref))
       this.gitShimsInstalled.add(envKey(ref))
     }
     return containerGitEnv(broker.url, host, resolved?.kind ?? 'git-host')
@@ -154,7 +154,7 @@ export class EnvManager {
     const configArgs = await overrideConfigArgs(ref, repo)
     const hostWorkspaceFolder = cloneDir(ref.workspace, ref.task, ref.repo)
     const gitBrokerEnv = gitAccess
-      ? await this.resolveGitAccess(ref, repo, configArgs, hostWorkspaceFolder)
+      ? await this.resolveGitAccess(ref, repo, env.containerId)
       : undefined
 
     return {

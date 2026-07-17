@@ -60,7 +60,9 @@ export const CREDENTIAL_KINDS: CredentialKindDef[] = [
   {
     kind: 'git-host',
     label: 'host credentials',
-    hint: "Use the host's ambient git auth (ssh keys / gh login) — current behavior.",
+    hint:
+      "Explicit opt-in to the host's ambient git auth (ssh keys / gh login). " +
+      'Never applied unless a repo resolves to this entry.',
     fields: [],
     implemented: true
   },
@@ -93,8 +95,9 @@ export const credentialKindLabel = (kind: CredentialKind): string =>
 
 /**
  * Outcome of resolving a credential for a request to `host` on behalf of `repo`.
- * `entry` absent ⇒ implicit `git-host` (ambient). `error` set ⇒ a configuration
- * problem to surface in the UI, never a silent fallback (§3.1).
+ * `entry` absent ⇒ nothing resolved: consumers must block remote access, not
+ * fall back to ambient — ambient is only the explicit `git-host` kind (§3.1).
+ * `error` set ⇒ a configuration problem to surface in the UI.
  */
 export interface CredResolution {
   entry?: CredentialEntry
@@ -107,7 +110,8 @@ export interface CredResolution {
  * Resolve which credential answers a request to `host` for `repo` (§3.1):
  *   1. repo.credentialId (only for the repo's own host) → that entry,
  *   2. else the first entry whose `hosts` contains `host` (auto-match),
- *   3. else implicit `git-host`.
+ *   3. else nothing (`entry` absent) — consumers block remote access; ambient
+ *      is never a fallback.
  *
  * Per-request, not per-env: a submodule fetch on another host auto-matches by
  * that host (step 2), independent of the env repo's link.

@@ -102,18 +102,19 @@ export const BASE_SHIMS = ['gurt-launch', 'gurt-git-credential']
 
 /**
  * A single `sh -c` payload that writes the requested shims into SHIM_DIR and
- * marks them executable. Content rides in base64 so no quoting escapes the
- * command line. Run via `devcontainer exec ... -- sh -c <payload>`.
+ * marks them world-executable. Content rides in base64 so no quoting escapes
+ * the command line. Run as root via `docker exec -u root ... sh -c <payload>`
+ * (see provision.installGitShims) — explicit modes, since root's umask varies.
  */
 export function shimInstallScript(names: string[]): string {
-  const parts = [`mkdir -p ${SHIM_DIR}`]
+  const parts = [`mkdir -p ${SHIM_DIR}`, `chmod 755 ${SHIM_DIR}`]
   for (const name of names) {
     const src = CONTAINER_SHIMS[name]
     if (!src) continue
     const b64 = Buffer.from(src, 'utf8').toString('base64')
     const target = `${SHIM_DIR}/${name}`
     parts.push(`printf %s '${b64}' | base64 -d > ${target}`)
-    parts.push(`chmod +x ${target}`)
+    parts.push(`chmod 755 ${target}`)
   }
   return parts.join(' && ')
 }
@@ -123,8 +124,11 @@ export function shimInstallScript(names: string[]): string {
 /**
  * Host git credential helper (§8). Returns the pre-resolved credential's token
  * for https; the entry id arrives in GURT_CRED_ID and the secret is read from
- * credentials.json — never through env or argv. Runs under Electron-in-node, so
- * it is a CommonJS `.cjs` regardless of any ambient package.json.
+ * credentials.json — never through env or argv. Answers only for the host the
+ * credential was resolved for (GURT_CRED_HOST): a fetch that wanders to another
+ * host (submodule, redirect) must not receive this token, and must not fall
+ * through to ambient auth either. Runs under Electron-in-node, so it is a
+ * CommonJS `.cjs` regardless of any ambient package.json.
  */
 export const HOST_CRED_HELPER = `'use strict'
 const fs = require('fs')
@@ -135,7 +139,14 @@ let input = ''
 process.stdin.on('data', (d) => (input += d))
 process.stdin.on('end', () => {
   const id = process.env.GURT_CRED_ID
-  if (!id) process.exit(0)
+  const credHost = process.env.GURT_CRED_HOST
+  if (!id || !credHost) process.exit(0)
+  const fields = {}
+  for (const line of input.split('\\n')) {
+    const i = line.indexOf('=')
+    if (i > 0) fields[line.slice(0, i).trim()] = line.slice(i + 1).trim()
+  }
+  if (fields.host !== credHost) process.exit(0)
   const root = process.env.GURT_ROOT || path.join(os.homedir(), '.gurt')
   let file
   try { file = JSON.parse(fs.readFileSync(path.join(root, 'credentials.json'), 'utf8')) } catch (e) { process.exit(0) }
