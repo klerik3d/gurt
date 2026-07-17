@@ -1,5 +1,7 @@
-// Phase 4: iteration-2 features. CRUD (repos/envs/tasks), env stop/delete,
-// per-env agent, codex adapter handshake. Requires docker.
+// Phase 4: iteration-2 features. CRUD (repos/tasks), env stop/delete via the
+// task pane, per-session agent, codex adapter handshake. Requires docker.
+// Session-centric: envs are born when a session runs; claude session on "hello",
+// codex session on "hello2" (auth errors expected — no secrets configured).
 import { createRequire } from 'node:module'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -44,6 +46,71 @@ const clickText = (scope, text) =>
     [scope, text]
   )
 const modalGone = () => page.waitForSelector('.modal', { state: 'detached' })
+
+// session mark (fine-grained status) of the session titled `title`
+const sessionMark = (title) =>
+  page.evaluate((t) => {
+    const node = [...document.querySelectorAll('.session-node')].find(
+      (n) => n.querySelector('.node-label')?.textContent.trim() === t
+    )
+    const mark = node?.querySelector('.session-mark')
+    return mark && [...mark.classList].find((c) => c.startsWith('mark-'))?.slice(5)
+  }, title)
+
+// Resolves when the session mark reaches one of `states`; fails fast when the
+// selected session pane shows a start error instead of ever starting.
+const waitMark = async (title, states, timeout = 600000) => {
+  await page.waitForFunction(
+    ([t, ss]) => {
+      if (document.querySelector('.env-error')) return true
+      const node = [...document.querySelectorAll('.session-node')].find(
+        (n) => n.querySelector('.node-label')?.textContent.trim() === t
+      )
+      const mark = node?.querySelector('.session-mark')
+      const st = mark && [...mark.classList].find((c) => c.startsWith('mark-'))?.slice(5)
+      return st && ss.includes(st)
+    },
+    [title, states],
+    { timeout, polling: 1000 }
+  )
+  const err = await page.evaluate(() => document.querySelector('.env-error')?.innerText)
+  if (err) throw new Error(`session start failed: ${err}`)
+}
+
+// task-pane env row helpers, matched by repo name (`hello —` never matches `hello2 —`)
+const envAction = (repo, action) =>
+  page.evaluate(
+    ([r, a]) => {
+      const row = [...document.querySelectorAll('.env-table tr')].find((tr) =>
+        tr.querySelector('.env-cell')?.textContent.includes(`${r} —`)
+      )
+      ;[...(row?.querySelectorAll('.env-actions button') ?? [])]
+        .find((b) => b.textContent.trim() === a)
+        ?.click()
+    },
+    [repo, action]
+  )
+const waitEnvStatus = (repo, status, timeout = 120000) =>
+  page.waitForFunction(
+    ([r, s]) => {
+      const row = [...document.querySelectorAll('.env-table tr')].find((tr) =>
+        tr.querySelector('.env-cell')?.textContent.includes(`${r} —`)
+      )
+      return !!row?.querySelector(`.status-${s}`)
+    },
+    [repo, status],
+    { timeout, polling: 1000 }
+  )
+
+async function newSession(repo, agent, prompt) {
+  await clickTitle('new session')
+  await page.waitForSelector('.modal textarea')
+  await page.selectOption('.modal label:has-text("repo") select', repo)
+  await page.selectOption('.modal label:has-text("agent") select', agent)
+  await page.fill('.modal textarea', prompt)
+  await clickText('.modal .row-buttons', 'Run now')
+  await modalGone()
+}
 
 await page.waitForSelector('.sidebar', { timeout: 15000 })
 
@@ -97,7 +164,11 @@ await modalGone()
 await clickTitle('agents')
 await page.waitForSelector('.modal')
 await page.evaluate(() => {
-  const block = [...document.querySelectorAll('.agent-block')].find((b) => b.textContent.includes('codex'))
+  // Match by the label input's value — every block's kind <select> contains a
+  // "codex" option, so textContent matching would hit the wrong block.
+  const block = [...document.querySelectorAll('.agent-block')].find(
+    (b) => b.querySelector('.agent-label')?.value === 'codex'
+  )
   const cb = block?.querySelector('input[type="checkbox"]')
   if (cb && !cb.checked) cb.click()
 })
@@ -105,130 +176,111 @@ await clickText('.modal', 'Save')
 await modalGone()
 console.log('codex enabled')
 
-// task + envs
+// task
 await clickTitle('new task')
 await page.waitForSelector('.modal input')
 await page.fill('.modal input', 'try2')
 await page.click('.modal .form > button')
 await modalGone()
-await clickTitle('add environment')
-await page.waitForSelector('.modal select')
-await page.selectOption('.modal select', 'claude-code')
-await page.evaluate(() => [...document.querySelectorAll('.modal .form button')].find((b) => b.textContent.includes('hello ')).click())
-await modalGone()
-await clickTitle('add environment')
-await page.waitForSelector('.modal select')
-await page.selectOption('.modal select', 'codex')
-await page.evaluate(() => [...document.querySelectorAll('.modal .form button')].find((b) => b.textContent.includes('hello2')).click())
-await modalGone()
-const badges = await page.evaluate(() => [...document.querySelectorAll('.env-node')].map((n) => n.textContent.trim()))
-console.log('envs:', JSON.stringify(badges))
 
-// start claude env
-await page.evaluate(() => {
-  const node = [...document.querySelectorAll('.env-node')].find((n) => n.querySelector('.node-label').textContent.trim() === 'hello')
-  node.querySelector('.node-label').click()
-  node.querySelector('button[title="start environment"]').click()
-})
-console.log('claude env starting...')
-await page.waitForFunction(
-  () => {
-    const node = [...document.querySelectorAll('.env-node')].find((n) => n.querySelector('.node-label').textContent.trim() === 'hello')
-    return node?.querySelector('.status-running') || node?.querySelector('.status-error')
-  },
-  { timeout: 600000, polling: 2000 }
-)
-let st = await page.evaluate(() => [...document.querySelectorAll('.env-node')].map((n) => n.querySelector('.status').className))
-console.log('claude env status:', JSON.stringify(st))
+// claude session on hello — births and provisions the env
+await newSession('hello', 'claude-code', 'ping')
+console.log('claude session starting...')
+await waitMark('session 1', ['running', 'waiting', 'idle'])
+console.log('claude session started; mark =', await sessionMark('session 1'))
 
-// session + prompt (auth error expected)
+// chat: prompt + auth-error reply
 await page.evaluate(() => {
-  ;[...document.querySelectorAll('.env-pane button')].find((b) => b.textContent.trim() === 'New session')?.click()
+  const node = [...document.querySelectorAll('.session-node')].find(
+    (n) => n.querySelector('.node-label')?.textContent.trim() === 'session 1'
+  )
+  node?.querySelector('.node-label')?.click()
 })
-await page.waitForSelector('.chat-input', { timeout: 60000 })
-await page.fill('.chat-input textarea', 'ping')
-await page.click('.chat-input button')
-await page.waitForSelector('.entry-system, .entry-agent', { timeout: 120000 })
+await page.waitForSelector('.chat-log', { timeout: 15000 })
+await page.waitForSelector('.entry-text', { timeout: 120000 })
 await new Promise((r) => setTimeout(r, 1500))
 console.log('--- claude chat ---')
 console.log(await page.evaluate(() => document.querySelector('.chat-log')?.innerText))
 await page.screenshot({ path: path.join(SHOT_DIR, '09-chat2.png') })
 
-// stop claude env
+// stop claude env from the task pane
 await page.evaluate(() => {
-  const node = [...document.querySelectorAll('.env-node')].find((n) => n.querySelector('.node-label').textContent.trim() === 'hello')
-  node.querySelector('.node-label').click()
+  const node = [...document.querySelectorAll('.task-node')].find((n) => n.textContent.includes('try2'))
+  node?.querySelector('.node-label')?.click()
 })
-await page.waitForSelector('.env-pane')
-await clickText('.env-pane', 'Stop')
-await page.waitForFunction(
-  () => {
-    const node = [...document.querySelectorAll('.env-node')].find((n) => n.querySelector('.node-label').textContent.trim() === 'hello')
-    return node?.querySelector('.status-stopped')
-  },
-  { timeout: 120000, polling: 1000 }
-)
+await page.waitForSelector('.task-pane')
+await envAction('hello', 'Stop')
+await waitEnvStatus('hello', 'stopped')
 console.log('claude env stopped')
 
-// start codex env, create session (handshake check; auth may fail — that's data too)
-await page.evaluate(() => {
-  const node = [...document.querySelectorAll('.env-node')].find((n) => n.querySelector('.node-label').textContent.trim() === 'hello2')
-  node.querySelector('.node-label').click()
-  node.querySelector('button[title="start environment"]').click()
-})
-console.log('codex env starting...')
+// codex session on hello2. Keyless codex refuses session/new with
+// 'Authentication required' (every codex-acp version does) — reaching that
+// error still proves the pipe end-to-end: install, spawn, initialize,
+// session/new round-trip, error surfaced in the UI.
+await newSession('hello2', 'codex', 'ping')
+console.log('codex session starting...')
 await page.waitForFunction(
   () => {
-    const node = [...document.querySelectorAll('.env-node')].find((n) => n.querySelector('.node-label').textContent.trim() === 'hello2')
-    return node?.querySelector('.status-running') || node?.querySelector('.status-error')
+    if (document.querySelector('.env-error')) return true
+    const node = [...document.querySelectorAll('.session-node')].find(
+      (n) => n.querySelector('.node-label')?.textContent.trim() === 'session 2'
+    )
+    const mark = node?.querySelector('.session-mark')
+    const st = mark && [...mark.classList].find((c) => c.startsWith('mark-'))?.slice(5)
+    return st && ['running', 'waiting', 'idle'].includes(st)
   },
-  { timeout: 600000, polling: 2000 }
+  undefined,
+  { timeout: 600000, polling: 1000 }
 )
-st = await page.evaluate(() => {
-  const node = [...document.querySelectorAll('.env-node')].find((n) => n.querySelector('.node-label').textContent.trim() === 'hello2')
-  return node.querySelector('.status').className
+const codexErr = await page.evaluate(() => document.querySelector('.env-error')?.innerText)
+if (codexErr && !codexErr.includes('Authentication required'))
+  throw new Error(`codex session failed unexpectedly: ${codexErr}`)
+console.log(
+  codexErr
+    ? 'codex refused without a key at session/new (ACP pipe proven)'
+    : `codex session started (ACP handshake OK); mark = ${await sessionMark('session 2')}`
+)
+await page.evaluate(() => {
+  const node = [...document.querySelectorAll('.session-node')].find(
+    (n) => n.querySelector('.node-label')?.textContent.trim() === 'session 2'
+  )
+  node?.querySelector('.node-label')?.click()
 })
-console.log('codex env status:', st)
-if (st.includes('running')) {
-  await page.evaluate(() => {
-    ;[...document.querySelectorAll('.env-pane button')].find((b) => b.textContent.trim() === 'New session')?.click()
-  })
+if (codexErr) {
+  // A never-started session renders the draft pane, not a timeline — the
+  // error banner is the assertion.
+  await page.waitForSelector('.session-pane .env-error', { timeout: 15000 })
+  console.log('--- codex draft pane ---')
+  console.log(await page.evaluate(() => document.querySelector('.env-error')?.innerText))
+} else {
+  await page.waitForSelector('.chat-log', { timeout: 15000 })
   try {
-    await page.waitForSelector('.chat-input', { timeout: 60000 })
-    console.log('codex session created (ACP handshake OK)')
-    await page.fill('.chat-input textarea', 'ping')
-    await page.click('.chat-input button')
-    await page.waitForSelector('.entry-system, .entry-agent, .entry-permission', { timeout: 90000 })
+    await page.waitForSelector('.entry-text, .perm-card', { timeout: 90000 })
     await new Promise((r) => setTimeout(r, 1500))
     console.log('--- codex chat ---')
     console.log(await page.evaluate(() => document.querySelector('.chat-log')?.innerText))
   } catch (e) {
-    console.log('codex session failed:', e.message.slice(0, 200))
+    console.log('codex chat step failed:', e.message.slice(0, 200))
   }
-  await page.screenshot({ path: path.join(SHOT_DIR, '10-codex.png') })
 }
+await page.screenshot({ path: path.join(SHOT_DIR, '10-codex.png') })
 
-// delete codex env (confirm auto-accepted), then delete task
+// stop + delete codex env (confirm auto-accepted); clone dir must be gone
 await page.evaluate(() => {
-  const node = [...document.querySelectorAll('.env-node')].find((n) => n.querySelector('.node-label').textContent.trim() === 'hello2')
-  node.querySelector('.node-label').click()
+  const node = [...document.querySelectorAll('.task-node')].find((n) => n.textContent.includes('try2'))
+  node?.querySelector('.node-label')?.click()
 })
-await page.waitForSelector('.env-pane')
-await clickText('.env-pane', 'Stop').catch(() => {})
+await page.waitForSelector('.task-pane')
+await envAction('hello2', 'Stop')
+await waitEnvStatus('hello2', 'stopped')
+await envAction('hello2', 'Delete')
 await page.waitForFunction(
-  () => {
-    const node = [...document.querySelectorAll('.env-node')].find((n) => n.querySelector('.node-label')?.textContent.trim() === 'hello2')
-    return node?.querySelector('.status-stopped')
-  },
-  { timeout: 120000, polling: 1000 }
-)
-await clickText('.env-pane', 'Delete')
-await page.waitForFunction(
-  () => ![...document.querySelectorAll('.env-node')].some((n) => n.querySelector('.node-label')?.textContent.trim() === 'hello2'),
+  () => ![...document.querySelectorAll('.env-cell')].some((c) => c.textContent.includes('hello2 —')),
   { timeout: 60000 }
 )
 console.log('codex env deleted; clone exists:', fs.existsSync(path.join(GURT_ROOT, 'personal', 'try2', 'hello2')))
 
+// delete the task (confirm auto-accepted)
 await page.evaluate(() => {
   const node = [...document.querySelectorAll('.task-node')].find((n) => n.textContent.includes('try2'))
   node.querySelector('button[title="delete task"]').click()

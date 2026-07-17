@@ -1,6 +1,7 @@
 // Phase 3: session persistence across app restart. Requires docker.
-// Run A: provision env, create session, prompt (auth error is fine), quit.
-// Run B: relaunch, expect session in tree with history, prompt -> session/load.
+// Run A: session on "hello" runs (env provisioned, prompt fails auth), quit.
+// Run B: relaunch, expect the session in the tree with restored history,
+// prompt again -> session/load resume path.
 import { createRequire } from 'node:module'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -8,8 +9,10 @@ import path from 'node:path'
 
 const APP_DIR = '/Users/klerik3d/workspace/personal/gurt'
 const SHOT_DIR = path.join(process.env.SCRATCH ?? '/tmp', 'shots')
-const GURT_ROOT = path.join(os.homedir(), '.gurt-smoke')
-fs.rmSync(GURT_ROOT, { recursive: true, force: true })
+// unique per run: Docker Desktop's virtiofs caches deleted paths, so reusing
+// a recently-removed directory name breaks bind mounts ("source does not exist")
+const GURT_ROOT = path.join(os.homedir(), `.gurt-smoke-${Date.now()}`)
+console.log('GURT_ROOT:', GURT_ROOT)
 fs.mkdirSync(SHOT_DIR, { recursive: true })
 
 const require = createRequire(path.join(APP_DIR, 'package.json'))
@@ -33,7 +36,7 @@ async function launch() {
   const page = await app.firstWindow()
   page.on('dialog', (dg) => {
     console.log('[dialog]', dg.message())
-    dg.dismiss().catch(() => {})
+    dg.accept().catch(() => {})
   })
   await page.waitForSelector('.sidebar', { timeout: 15000 })
   return { app, page }
@@ -42,49 +45,73 @@ async function launch() {
 // ---- run A ----
 let { app, page } = await launch()
 
+const clickTitle = (t) =>
+  page.evaluate((x) => document.querySelector(`button[title="${x}"]`)?.click(), t)
+const clickText = (scope, text) =>
+  page.evaluate(
+    ([sc, tx]) => {
+      ;[...document.querySelectorAll(`${sc} button`)]
+        .find((b) => b.textContent.trim() === tx)
+        ?.click()
+    },
+    [scope, text]
+  )
+const modalGone = () => page.waitForSelector('.modal', { state: 'detached' })
+
 async function modalName(title, value) {
-  await page.evaluate((t) => document.querySelector(`button[title="${t}"]`).click(), title)
+  await clickTitle(title)
   await page.waitForSelector('.modal input')
   await page.fill('.modal input', value)
   await page.click('.modal .form > button')
-  await page.waitForSelector('.modal', { state: 'detached' })
+  await modalGone()
+}
+
+// Resolves when the session mark reaches one of `states`; fails fast when the
+// start fails (the session pane shows .env-error instead of ever starting).
+const waitMark = async (states, timeout = 600000) => {
+  await page.waitForFunction(
+    (ss) => {
+      if (document.querySelector('.env-error')) return true
+      const m = document.querySelector('.session-node .session-mark')
+      const st = m && [...m.classList].find((c) => c.startsWith('mark-'))?.slice(5)
+      return st && ss.includes(st)
+    },
+    states,
+    { timeout, polling: 1000 }
+  )
+  const err = await page.evaluate(() => document.querySelector('.env-error')?.innerText)
+  if (err) throw new Error(`session start failed: ${err}`)
 }
 
 await modalName('new workspace', 'personal')
 await page.waitForSelector('.ws-node')
-await page.evaluate(() => document.querySelector('button[title="add repo"]').click())
-await page.waitForSelector('.modal input[placeholder="name"]')
-await page.fill('.modal input[placeholder="name"]', 'hello')
-await page.fill('.modal input[placeholder*="git url"]', 'https://github.com/octocat/Hello-World.git')
-await page.fill('.modal textarea', '{ "image": "mcr.microsoft.com/devcontainers/base:ubuntu" }')
-await page.click('.modal .form > button')
-await page.waitForSelector('.modal', { state: 'detached' })
+await clickTitle('repos')
+await page.waitForSelector('.modal')
+await clickText('.modal', 'Add repo')
+await page.waitForSelector('.modal .repo-form input')
+await page.fill('.modal .repo-form input[placeholder="name"]', 'hello')
+await page.fill('.modal .repo-form input[placeholder*="git url"]', 'https://github.com/octocat/Hello-World.git')
+await page.fill('.modal .repo-form textarea', '{ "image": "mcr.microsoft.com/devcontainers/base:ubuntu" }')
+await clickText('.repo-form', 'Add')
+await page.waitForSelector('.repo-row')
+await page.click('.modal-header .icon-btn')
+await modalGone()
 await modalName('new task', 'try-electron')
 await page.waitForSelector('.task-node')
-await page.evaluate(() => document.querySelector('button[title="add environment"]').click())
-await page.waitForSelector('.modal .form button')
-await page.click('.modal .form button')
-await page.waitForSelector('.modal', { state: 'detached' })
-await page.evaluate(() => document.querySelector('.env-node .node-label').click())
-await page.waitForSelector('.env-pane')
-await page.evaluate(() => {
-  ;[...document.querySelectorAll('.env-pane button')]
-    .find((b) => b.textContent.trim() === 'Start')
-    ?.click()
-})
-console.log('provisioning...')
-await page.waitForSelector('.status-running', { timeout: 600000 })
-console.log('env running')
 
-await page.evaluate(() => {
-  ;[...document.querySelectorAll('.env-pane button')]
-    .find((b) => b.textContent.trim() === 'New session')
-    ?.click()
-})
-await page.waitForSelector('.chat-input', { timeout: 60000 })
-await page.fill('.chat-input textarea', 'hello from run A')
-await page.click('.chat-input button')
-await page.waitForSelector('.entry-agent, .entry-system', { timeout: 120000 })
+await clickTitle('new session')
+await page.waitForSelector('.modal textarea')
+await page.fill('.modal textarea', 'hello from run A')
+await clickText('.modal .row-buttons', 'Run now')
+await modalGone()
+console.log('provisioning...')
+await waitMark(['running', 'waiting', 'idle'])
+console.log('session started')
+
+// open the chat and wait for the turn to finish (auth error entry is fine)
+await page.evaluate(() => document.querySelector('.session-node .node-label')?.click())
+await page.waitForSelector('.chat-log', { timeout: 15000 })
+await page.waitForSelector('.entry-text', { timeout: 120000 })
 await new Promise((r) => setTimeout(r, 2000))
 console.log('--- run A chat ---')
 console.log(await page.evaluate(() => document.querySelector('.chat-log')?.innerText))
@@ -100,23 +127,53 @@ console.log(fs.readFileSync(persisted, 'utf8'))
 ;({ app, page } = await launch())
 await page.waitForSelector('.session-node', { timeout: 10000 })
 console.log('session visible in tree after restart')
-await page.evaluate(() => document.querySelector('.session-node').click())
+await page.evaluate(() => document.querySelector('.session-node .node-label')?.click())
 await page.waitForSelector('.chat-log')
 await new Promise((r) => setTimeout(r, 500))
+const restored = await page.evaluate(() => document.querySelector('.chat-log')?.innerText)
 console.log('--- restored chat ---')
-console.log(await page.evaluate(() => document.querySelector('.chat-log')?.innerText))
+console.log(restored)
+if (!restored.includes('hello from run A')) {
+  console.log('FAIL: history not restored')
+  await app.close()
+  process.exit(1)
+}
 await page.screenshot({ path: path.join(SHOT_DIR, '06-restored.png') })
 
-await page.fill('.chat-input textarea', 'hello from run B')
-await page.click('.chat-input button')
+// requirements-session-log acceptance: per-change session-changed broadcasts
+// carry no history; the timeline arrives as session-log deltas.
+await page.evaluate(() => {
+  window.__scWithEntries = 0
+  window.__slRecords = 0
+  window.gurt.onSessionChanged((s) => {
+    if (s.entries !== undefined) window.__scWithEntries++
+  })
+  window.gurt.onSessionLog(({ records }) => {
+    window.__slRecords += records.length
+  })
+})
+
+await page.fill('.composer-input', 'hello from run B')
+await page.click('.send-btn')
 await page.waitForFunction(
   () => document.querySelector('.chat-log')?.innerText.includes('resum'),
-  { timeout: 60000 }
+  { timeout: 120000 }
 )
 await new Promise((r) => setTimeout(r, 20000))
 console.log('--- run B chat after prompt ---')
 console.log(await page.evaluate(() => document.querySelector('.chat-log')?.innerText))
 await page.screenshot({ path: path.join(SHOT_DIR, '07-resumed.png') })
+
+const [scWithEntries, slRecords] = await page.evaluate(() => [
+  window.__scWithEntries,
+  window.__slRecords
+])
+console.log('session-changed payloads with entries:', scWithEntries, scWithEntries === 0 ? 'OK' : 'FAIL')
+console.log('session-log records received:', slRecords, slRecords > 0 ? 'OK' : 'FAIL')
+if (scWithEntries > 0 || slRecords === 0) {
+  await app.close()
+  process.exit(1)
+}
 
 await app.close()
 console.log('PHASE3 DONE')

@@ -29,6 +29,8 @@ export interface DomainEvents {
   'env.status': { ref: EnvRef; status: EnvStatus }
   /** User or agent activity on an env — postpones idle auto-stop. */
   'env.activity': { ref: EnvRef }
+  /** The ACP adapter process of (env, agent) exited — its sessions detached. */
+  'env.adapterExited': { ref: EnvRef; agent: string }
   'session.state': { sessionId: string; ref: EnvRef; state: SessionState }
   'session.turn': { sessionId: string; ref: EnvRef; phase: 'started' | 'ended' }
   'session.awaiting': { sessionId: string; ref: EnvRef; awaiting: boolean }
@@ -70,7 +72,8 @@ and `console.error`-ed; it never breaks the emitter or other handlers.
   `activity()` pings. `noteActive`/`noteIdle` stay methods (called by the
   policy below), not events.
 - **Idle auto-stop policy** becomes a plain subscriber in `kernel.ts`:
-  on `session.turn` phase=ended or `session.awaiting` awaiting=false → if
+  on `session.turn` phase=ended, `session.awaiting` awaiting=false or
+  `env.adapterExited` (the old close-handler `checkEnvIdle`) → if
   `sessions.isEnvIdle(ref)` then `envs.noteIdle(ref)`; on `env.activity`
   or `session.turn` phase=started → `envs.noteActive(ref)`. Behavior must
   match today (30s, re-verified before stop).

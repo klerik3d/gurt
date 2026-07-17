@@ -1,5 +1,5 @@
-// Phase 5: focused codex-in-gurt test. Provision one codex env, create a
-// session, verify the chat header says codex, prompt, expect auth error.
+// Phase 5: focused codex-in-gurt test. Run one codex session (env provisioned on
+// start), verify the chat header names codex, prompt, expect an auth error.
 import { createRequire } from 'node:module'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -30,70 +30,97 @@ page.on('dialog', (d) => {
   d.accept().catch(() => {})
 })
 
+const clickTitle = (t) => page.evaluate((x) => document.querySelector(`button[title="${x}"]`)?.click(), t)
+const clickText = (scope, text) =>
+  page.evaluate(
+    ([sc, tx]) => {
+      ;[...document.querySelectorAll(`${sc} button`)]
+        .find((b) => b.textContent.trim() === tx)
+        ?.click()
+    },
+    [scope, text]
+  )
+const modalGone = () => page.waitForSelector('.modal', { state: 'detached' })
+
 await page.waitForSelector('.sidebar', { timeout: 15000 })
 
 // ws
-await page.evaluate(() => document.querySelector('button[title="new workspace"]').click())
+await clickTitle('new workspace')
 await page.waitForSelector('.modal input')
 await page.fill('.modal input', 'p')
 await page.click('.modal .form > button')
-await page.waitForSelector('.modal', { state: 'detached' })
+await modalGone()
 // repo
-await page.evaluate(() => document.querySelector('button[title="repos"]').click())
+await clickTitle('repos')
 await page.waitForSelector('.modal')
-await page.evaluate(() => [...document.querySelectorAll('.modal button')].find((b) => b.textContent.trim() === 'Add repo').click())
+await clickText('.modal', 'Add repo')
 await page.waitForSelector('.modal .repo-form input')
 await page.fill('.modal .repo-form input[placeholder="name"]', 'hello')
 await page.fill('.modal .repo-form input[placeholder*="git url"]', 'https://github.com/octocat/Hello-World.git')
 await page.fill('.modal .repo-form textarea', '{ "image": "mcr.microsoft.com/devcontainers/base:ubuntu" }')
-await page.evaluate(() => [...document.querySelectorAll('.repo-form button')].find((b) => b.textContent.trim() === 'Add').click())
+await clickText('.repo-form', 'Add')
 await page.waitForSelector('.repo-row')
 await page.click('.modal-header .icon-btn')
-await page.waitForSelector('.modal', { state: 'detached' })
+await modalGone()
 // enable codex
-await page.evaluate(() => document.querySelector('button[title="agents"]').click())
+await clickTitle('agents')
 await page.waitForSelector('.modal .agent-block')
 await page.evaluate(() => {
-  const block = [...document.querySelectorAll('.agent-block')].find((b) => b.textContent.includes('codex'))
+  // Match by the label input's value — every block's kind <select> contains a
+  // "codex" option, so textContent matching would hit the wrong block.
+  const block = [...document.querySelectorAll('.agent-block')].find(
+    (b) => b.querySelector('.agent-label')?.value === 'codex'
+  )
   const cb = block.querySelector('input[type="checkbox"]')
   if (!cb.checked) cb.click()
 })
-await page.evaluate(() => [...document.querySelectorAll('.modal button')].find((b) => b.textContent.trim() === 'Save').click())
-await page.waitForSelector('.modal', { state: 'detached' })
-// task + env(codex)
-await page.evaluate(() => document.querySelector('button[title="new task"]').click())
+await clickText('.modal', 'Save')
+await modalGone()
+// task
+await clickTitle('new task')
 await page.waitForSelector('.modal input')
 await page.fill('.modal input', 't')
 await page.click('.modal .form > button')
-await page.waitForSelector('.modal', { state: 'detached' })
-await page.evaluate(() => document.querySelector('button[title="add environment"]').click())
-await page.waitForSelector('.modal select')
-await page.selectOption('.modal select', 'codex')
-await page.evaluate(() => [...document.querySelectorAll('.modal .form button')].find((b) => b.textContent.includes('hello')).click())
-await page.waitForSelector('.modal', { state: 'detached' })
-await page.waitForSelector('.env-node')
+await modalGone()
 
-// start
-await page.evaluate(() => {
-  const node = document.querySelector('.env-node')
-  node.querySelector('.node-label').click()
-  node.querySelector('button[title="start environment"]').click()
-})
+// codex session — births and provisions the env
+await clickTitle('new session')
+await page.waitForSelector('.modal textarea')
+await page.selectOption('.modal label:has-text("agent") select', 'codex')
+await page.fill('.modal textarea', 'ping')
+await clickText('.modal .row-buttons', 'Run now')
+await modalGone()
 console.log('provisioning codex env...')
+
 await page.waitForFunction(
-  () => document.querySelector('.env-node .status-running') || document.querySelector('.env-node .status-error'),
+  () => {
+    if (document.querySelector('.env-error')) return true
+    const m = document.querySelector('.session-node .session-mark')
+    const st = m && [...m.classList].find((c) => c.startsWith('mark-'))?.slice(5)
+    return st && ['running', 'waiting', 'idle'].includes(st)
+  },
+  undefined,
   { timeout: 600000, polling: 2000 }
 )
-if (await page.$('.env-node .status-error')) {
-  console.log('ENV ERROR:', await page.evaluate(() => document.querySelector('.env-error')?.innerText))
+// Keyless codex refuses session/new with 'Authentication required' (every
+// codex-acp version does) — that outcome still proves the whole pipe: install,
+// spawn, initialize, session/new round-trip, error surfaced in the UI. Any
+// other start error is a real failure.
+const startErr = await page.evaluate(() => document.querySelector('.env-error')?.innerText)
+if (startErr && !startErr.includes('Authentication required')) {
+  console.log('SESSION START FAILED:', startErr)
   await app.close()
   process.exit(1)
 }
-console.log('codex env running')
+console.log(
+  startErr
+    ? 'codex refused without a key at session/new (ACP pipe proven)'
+    : 'codex session started (ACP handshake OK)'
+)
 
-// session via sidebar "+" (fresh DOM query inside evaluate to avoid staleness)
-await page.evaluate(() => document.querySelector('.env-node button[title="new session"]').click())
-await page.waitForSelector('.chat-input', { timeout: 90000 })
+// open the chat; the header chip must name codex (right session opened)
+await page.evaluate(() => document.querySelector('.session-node .node-label')?.click())
+await page.waitForSelector('.chat-header', { timeout: 15000 })
 const header = await page.evaluate(() => document.querySelector('.chat-header')?.innerText)
 console.log('chat header:', header)
 if (!header.includes('codex')) {
@@ -101,12 +128,17 @@ if (!header.includes('codex')) {
   await app.close()
   process.exit(1)
 }
-await page.fill('.chat-input textarea', 'ping')
-await page.click('.chat-input button')
-await page.waitForSelector('.entry-system, .entry-agent, .entry-permission', { timeout: 120000 })
-await new Promise((r) => setTimeout(r, 1500))
-console.log('--- codex chat ---')
-console.log(await page.evaluate(() => document.querySelector('.chat-log')?.innerText))
+if (startErr) {
+  // A never-started session renders the draft pane, not a timeline — the
+  // error banner is the assertion.
+  console.log('--- codex draft pane ---')
+  console.log(await page.evaluate(() => document.querySelector('.env-error')?.innerText))
+} else {
+  await page.waitForSelector('.entry-text, .perm-card', { timeout: 120000 })
+  await new Promise((r) => setTimeout(r, 1500))
+  console.log('--- codex chat ---')
+  console.log(await page.evaluate(() => document.querySelector('.chat-log')?.innerText))
+}
 await page.screenshot({ path: path.join(SHOT_DIR, '10-codex.png') })
 await app.close()
 console.log('PHASE5 DONE')

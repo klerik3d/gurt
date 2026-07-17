@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import type { RepoChanges, SessionInfo, SessionSnapshot, Tree } from '../../shared/types'
+import { applyLog } from '../../shared/types'
 import { envKey } from '../../shared/keys'
 import { Sidebar } from './components/Sidebar'
 import { SessionPane } from './components/SessionPane'
@@ -50,8 +51,6 @@ export default function App() {
   })
   const selectionRef = useRef(selection)
   selectionRef.current = selection
-  /** Session busy flags, to detect the end of an agent turn (busy → idle). */
-  const busyRef = useRef<Record<string, boolean>>({})
   /** Tasks whose changes were already requested at least once (app-start lazy load). */
   const changesRequested = useRef<Set<string>>(new Set())
 
@@ -72,12 +71,26 @@ export default function App() {
   useEffect(() => {
     refreshTree()
     const offTree = window.gurt.onTreeChanged(refreshTree)
+    // session-changed carries no entries — keep the timeline we already hold;
+    // session:snapshot (on select) delivers the full fold.
     const offSession = window.gurt.onSessionChanged((snap) => {
-      setSnapshots((prev) => ({ ...prev, [snap.info.id]: snap }))
-      // End of an agent turn — recompute the task's git state, but never fetch.
-      if (busyRef.current[snap.info.id] && !snap.busy)
-        refreshChanges(snap.info.workspace, snap.info.task)
-      busyRef.current[snap.info.id] = snap.busy
+      setSnapshots((prev) => ({
+        ...prev,
+        [snap.info.id]: { ...snap, entries: snap.entries ?? prev[snap.info.id]?.entries }
+      }))
+    })
+    // Timeline deltas. Records for a session whose snapshot (with entries) isn't
+    // here yet are dropped — the snapshot fetch that follows selection supersedes them.
+    const offSessionLog = window.gurt.onSessionLog(({ sessionId, records }) => {
+      setSnapshots((prev) => {
+        const cur = prev[sessionId]
+        if (!cur?.entries) return prev
+        return { ...prev, [sessionId]: { ...cur, entries: applyLog(cur.entries, records) } }
+      })
+    })
+    // End of an agent turn — recompute the task's git state, but never fetch.
+    const offTurn = window.gurt.onSessionTurn(({ ref, phase }) => {
+      if (phase === 'ended') refreshChanges(ref.workspace, ref.task)
     })
     const offLog = window.gurt.onProvisionLog(({ key, line }) => {
       setLogs((prev) => ({ ...prev, [key]: [...(prev[key] ?? []).slice(-500), line] }))
@@ -85,6 +98,8 @@ export default function App() {
     return () => {
       offTree()
       offSession()
+      offSessionLog()
+      offTurn()
       offLog()
     }
   }, [refreshTree, refreshChanges])

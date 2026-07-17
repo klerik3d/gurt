@@ -55,7 +55,9 @@ const clickText = (page, scope, text) =>
   )
 const modalGone = (page) => page.waitForSelector('.modal', { state: 'detached' })
 
-// state of the session whose title matches, read from the .session-mark class.
+// Fine-grained status of the session whose title matches, read from the
+// .session-mark class. `started` renders as one of running/waiting/idle.
+const STARTED = ['running', 'waiting', 'idle']
 const sessionState = (page, title) =>
   page.evaluate((t) => {
     const node = [...document.querySelectorAll('.session-node')].find(
@@ -146,12 +148,12 @@ console.log(
 )
 
 // scheduler must start exactly A (session 2); B (session 3) stays queued
-await waitState(page, 'session 2', ['starting', 'started'])
+await waitState(page, 'session 2', ['starting', ...STARTED])
 console.log('A started provisioning; B =', await sessionState(page, 'session 3'))
 await page.screenshot({ path: path.join(SHOT_DIR, 'q1-A-starting.png') })
 
 // A reaches started (auth error inside), B must STILL be queued (serialization)
-await waitState(page, 'session 2', ['started'])
+await waitState(page, 'session 2', STARTED)
 const bWhileA = await sessionState(page, 'session 3')
 console.log('A started; B while A occupies repo =', bWhileA, bWhileA === 'queued' ? 'OK' : 'FAIL')
 
@@ -188,8 +190,8 @@ await page.waitForFunction(
 console.log('env stopped; scheduler should release B')
 
 // B now starts (reuses the stopped container + cached adapter → fast)
-await waitState(page, 'session 3', ['starting', 'started'])
-await waitState(page, 'session 3', ['started'])
+await waitState(page, 'session 3', ['starting', ...STARTED])
+await waitState(page, 'session 3', STARTED)
 console.log('B started after A env stopped — serialization holds')
 await page.screenshot({ path: path.join(SHOT_DIR, 'q3-B-started.png') })
 
