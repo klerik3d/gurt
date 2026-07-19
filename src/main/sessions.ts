@@ -283,6 +283,7 @@ export class SessionManager {
         info: this.infoWithRuntime(s),
         entries: s.entries,
         busy: s.busy,
+        resuming: s.loading || undefined,
         modes: s.modes,
         plan: s.plan,
         commands: s.commands,
@@ -683,8 +684,10 @@ export class SessionManager {
     const conn = await this.connection(s.ref, agentId, ctx)
     if (!s.attached) {
       if (!s.acpSessionId) throw new Error('session was never started')
+      // Resuming is a live indicator (snapshot.resuming), not chat history —
+      // the timeline stays clean of "resuming/resumed" noise.
       s.loading = true
-      this.push(s, { kind: 'system', text: 'resuming session...' })
+      this.bus.emit('session.changed', { sessionId: s.info.id })
       try {
         const mcpServers = [
           ...(await this.events.resolveMcpServers(s.ref, s.info.mcp)),
@@ -702,7 +705,6 @@ export class SessionManager {
         s.configOptions = normalizeConfigOptions(result?.configOptions) ?? s.configOptions
         s.attached = true
         await this.applyAutoAllow(s, conn)
-        this.push(s, { kind: 'system', text: 'session resumed' })
       } catch (e) {
         this.push(s, {
           kind: 'system',
@@ -711,6 +713,7 @@ export class SessionManager {
         throw e
       } finally {
         s.loading = false
+        this.bus.emit('session.changed', { sessionId: s.info.id })
       }
     }
     return conn
@@ -1105,6 +1108,16 @@ export class SessionManager {
     }))
     const title = params?.toolCall?.title ?? 'permission request'
     if (!s) return { outcome: { outcome: 'cancelled' } }
+
+    // The gurt turn-contract tool is our own plumbing — every turn must end
+    // with `complete`, so asking the user to approve it is pure friction (and
+    // a walked-away session would hang on it). Always allow, no timeline entry.
+    if (/^mcp__gurt__/.test(title)) {
+      const allow =
+        options.find((o) => o.kind === 'allow_once') ??
+        options.find((o) => o.kind?.startsWith('allow'))
+      if (allow) return { outcome: { outcome: 'selected', optionId: allow.optionId } }
+    }
 
     const entry = this.push(s, { kind: 'permission', title, options })
     return new Promise((resolve) => {
