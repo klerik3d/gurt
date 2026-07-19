@@ -1,26 +1,29 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import type { RepoChanges, SessionInfo, SessionSnapshot, Tree } from '../../shared/types'
-import { applyLog } from '../../shared/types'
+import { applyLog, sessionStatus } from '../../shared/types'
 import { envKey } from '../../shared/keys'
-import { Sidebar } from './components/Sidebar'
+import { Icon } from './components/icons'
+import { Sidebar, NameModal, NewSessionModal } from './components/Sidebar'
 import { SessionPane } from './components/SessionPane'
 import { TaskPane } from './components/TaskPane'
-import { AgentsModal } from './components/AgentsModal'
-import { CredentialsModal } from './components/CredentialsModal'
-import { DialogHost } from './dialog'
+import { SettingsPage, type SettingsSection } from './components/SettingsPage'
+import { CommandPalette } from './components/CommandPalette'
+import { DialogHost, alertDialog } from './dialog'
 
 export type Selection =
   | { type: 'session'; id: string }
   | { type: 'task'; ws: string; task: string }
   | null
 
+export type View = 'work' | 'dashboard' | 'settings'
+
 export { envKey }
 
 // Draggable sidebar width, persisted across launches.
-const SIDEBAR_MIN = 180
+const SIDEBAR_MIN = 200
 const SIDEBAR_MAX = 600
-const SIDEBAR_DEFAULT = 262
+const SIDEBAR_DEFAULT = 284
 const SIDEBAR_WIDTH_KEY = 'gurt.sidebarWidth'
 
 const clampSidebar = (w: number) => Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, w))
@@ -40,12 +43,18 @@ export function queuePositions(tree: Tree | null): Record<string, number> {
 export default function App() {
   const [tree, setTree] = useState<Tree | null>(null)
   const [selection, setSelection] = useState<Selection>(null)
+  const [view, setView] = useState<View>('work')
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>('environments')
   const [snapshots, setSnapshots] = useState<Record<string, SessionSnapshot>>({})
   const [logs, setLogs] = useState<Record<string, string[]>>({})
   /** Per-task git changes snapshot, keyed `ws/task` — read by TaskPane and the sidebar badge. */
   const [changes, setChanges] = useState<Record<string, RepoChanges[]>>({})
-  const [agentsOpen, setAgentsOpen] = useState(false)
-  const [credentialsOpen, setCredentialsOpen] = useState(false)
+  const [paletteOpen, setPaletteOpen] = useState(false)
+  /** New-session modal context; task empty → the modal's task picker chooses. */
+  const [newSession, setNewSession] = useState<{ ws: string; task: string } | null>(null)
+  const [newTask, setNewTask] = useState<string | null>(null)
+  const [newWorkspace, setNewWorkspace] = useState(false)
+  const [curWs, setCurWs] = useState<string | null>(null)
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     const saved = Number(localStorage.getItem(SIDEBAR_WIDTH_KEY))
     return saved ? clampSidebar(saved) : SIDEBAR_DEFAULT
@@ -114,11 +123,19 @@ export default function App() {
           refreshChanges(ws.name, task.name)
   }, [tree, refreshChanges])
 
-  // Drag the divider between sidebar and main; the sidebar's left edge is at
-  // x=0, so the pointer's clientX is the new width (clamped).
+  // Keep the current workspace valid as the tree changes.
+  const workspaces = tree?.workspaces ?? []
+  const ws = workspaces.find((w) => w.name === curWs) ?? workspaces[0]
+  useEffect(() => {
+    if (tree && !tree.workspaces.some((w) => w.name === curWs))
+      setCurWs(tree.workspaces[0]?.name ?? null)
+  }, [tree, curWs])
+
+  // Drag the divider between sidebar and main; the sidebar's left edge sits
+  // after the 52px activity bar, so the new width is clientX minus that.
   const startSidebarResize = useCallback((e: ReactMouseEvent) => {
     e.preventDefault()
-    const onMove = (ev: MouseEvent) => setSidebarWidth(clampSidebar(ev.clientX))
+    const onMove = (ev: MouseEvent) => setSidebarWidth(clampSidebar(ev.clientX - 52))
     const onUp = () => {
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
@@ -136,6 +153,7 @@ export default function App() {
   }, [sidebarWidth])
 
   const selectSession = useCallback((id: string) => {
+    setView('work')
     setSelection({ type: 'session', id })
     window.gurt
       .sessionSnapshot(id)
@@ -144,6 +162,50 @@ export default function App() {
       })
       .catch(console.error)
   }, [])
+
+  const selectTask = useCallback((tws: string, task: string) => {
+    setView('work')
+    setSelection({ type: 'task', ws: tws, task })
+  }, [])
+
+  const openNewSession = useCallback(
+    (ctx?: { ws: string; task: string }) => {
+      if (ctx) {
+        setNewSession(ctx)
+        return
+      }
+      if (!ws) return
+      // No explicit context (⌘N, palette) — prefill the task the user is looking at.
+      const sel = selectionRef.current
+      let task = ''
+      if (sel?.type === 'task' && sel.ws === ws.name) task = sel.task
+      else if (sel?.type === 'session')
+        task = ws.tasks.find((t) => t.sessions.some((s) => s.id === sel.id))?.name ?? ''
+      setNewSession({ ws: ws.name, task })
+    },
+    [ws]
+  )
+
+  // Global hotkeys: ⌘K palette · ⌘N new session · ⌘⇧N new task.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return
+      const k = e.key.toLowerCase()
+      if (k === 'k') {
+        e.preventDefault()
+        setPaletteOpen((o) => !o)
+      } else if (k === 'n') {
+        e.preventDefault()
+        if (e.shiftKey) {
+          if (ws) setNewTask(ws.name)
+        } else {
+          openNewSession()
+        }
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [ws, openNewSession])
 
   const positions = queuePositions(tree)
 
@@ -163,93 +225,266 @@ export default function App() {
       ?.tasks.find((t) => t.name === activeInfo.task)
       ?.envs.find((e) => e.repo === activeInfo.envRepo)
 
-  const titleText = activeInfo
-    ? `gurt — ${activeInfo.envRepo} · ${activeInfo.title}`
-    : selection?.type === 'task'
-      ? `gurt — ${selection.ws} / ${selection.task}`
-      : 'gurt'
+  // Footer counters across every session, live overlay included.
+  let runningCount = 0
+  let needYouCount = 0
+  for (const w of workspaces)
+    for (const t of w.tasks)
+      for (const s of t.sessions) {
+        const st = sessionStatus({ ...s, ...activity[s.id] })
+        if (st === 'running' || st === 'starting') runningCount++
+        else if (st === 'waiting') needYouCount++
+      }
+
+  const activeStatus = activeInfo
+    ? sessionStatus({ ...activeInfo, ...activity[activeInfo.id] })
+    : null
+
+  const crumb =
+    view === 'settings'
+      ? `${ws?.name ?? 'gurt'} / settings`
+      : view === 'dashboard'
+        ? `${ws?.name ?? 'gurt'} / dashboard`
+        : activeInfo
+          ? `${activeInfo.workspace} / ${activeInfo.task} · ${activeInfo.title}`
+          : selection?.type === 'task'
+            ? `${selection.ws} / ${selection.task}`
+            : (ws?.name ?? 'gurt')
+
+  const crumbTone =
+    view === 'work' && activeStatus
+      ? activeStatus === 'waiting' || activeStatus === 'running' || activeStatus === 'starting'
+        ? 'yellow'
+        : activeStatus === 'idle'
+          ? 'green'
+          : 'outline'
+      : null
 
   return (
     <div className="app">
       <div className="titlebar">
-        <div className="titlebar-pill">
-          <span style={{ opacity: 0.8 }}>⌕</span>
-          {titleText}
-        </div>
-        <div className="titlebar-icons">▤ ▦ ⬓</div>
-      </div>
-      <div className="workbench">
-        <Sidebar
-          width={sidebarWidth}
-          tree={tree}
-          selection={selection}
-          changes={changes}
-          activity={activity}
-          onSelectTask={(ws, task) => setSelection({ type: 'task', ws, task })}
-          onSelectSession={selectSession}
-          onOpenAgents={() => setAgentsOpen(true)}
-          onOpenCredentials={() => setCredentialsOpen(true)}
-        />
-        <div
-          className="sidebar-resizer"
-          onMouseDown={startSidebarResize}
-          title="drag to resize"
-        />
-        <main className="main">
-        {selection?.type === 'session' && (
-          <SessionPane
-            tree={tree}
-            snapshot={snapshots[selection.id]}
-            sessionId={selection.id}
-            queuePosition={positions[selection.id]}
-            log={
-              snapshots[selection.id]
-                ? logs[
-                    envKey({
-                      workspace: snapshots[selection.id].info.workspace,
-                      task: snapshots[selection.id].info.task,
-                      repo: snapshots[selection.id].info.envRepo
-                    })
-                  ] ?? []
-                : []
-            }
-            onDeleted={() => setSelection(null)}
-          />
-        )}
-        {selection?.type === 'task' && (
-          <TaskPane
-            tree={tree}
-            ws={selection.ws}
-            task={selection.task}
-            logs={logs}
-            positions={positions}
-            changes={changes[`${selection.ws}/${selection.task}`]}
-            onRefreshChanges={() => refreshChanges(selection.ws, selection.task, true)}
-            onSelectSession={selectSession}
-          />
-        )}
-        {!selection && (
-          <div className="placeholder">
-            select a session on the left, or create a workspace to get started
+        <div className="tb-logo">
+          <div className="logo-dots">
+            <span className="ld ld-accent" />
+            <span className="ld" />
+            <span className="ld" />
+            <span className="ld" />
           </div>
-        )}
-        </main>
+          <span className="tb-name">gurt</span>
+        </div>
+        <div className="tb-center">
+          <div className="tb-crumb">
+            {crumbTone && (
+              <span
+                className={`dot dot-${crumbTone}${activeStatus === 'running' || activeStatus === 'starting' ? ' dot-pulse' : ''}`}
+                style={{ width: 7, height: 7 }}
+              />
+            )}
+            {crumb}
+          </div>
+        </div>
+        <div className="tb-icons">
+          <button className="icon-sq tb-btn" title="Search · ⌘K" onClick={() => setPaletteOpen(true)}>
+            <Icon name="search" size={16} />
+          </button>
+          <button
+            className="icon-sq tb-btn"
+            title="Settings"
+            onClick={() => setView((v) => (v === 'settings' ? 'work' : 'settings'))}
+          >
+            <Icon name="gear" size={16} />
+          </button>
+        </div>
       </div>
-      <div className="statusbar">
-        {activeEnv ? (
+
+      <div className="workbench">
+        <div className="activitybar">
+          <button
+            className={`ab-item ${view === 'work' ? 'active' : ''}`}
+            title="Tasks & sessions"
+            onClick={() => setView('work')}
+          >
+            <Icon name="message" size={17} />
+          </button>
+          <button
+            className={`ab-item ${view === 'dashboard' ? 'active' : ''}`}
+            title="Dashboard"
+            onClick={() => setView('dashboard')}
+          >
+            <Icon name="grid" size={17} />
+          </button>
+          <span className="spacer" />
+          <button
+            className={`ab-item ${view === 'settings' ? 'active' : ''}`}
+            title="Settings"
+            onClick={() => setView('settings')}
+          >
+            <Icon name="sliders" size={17} />
+          </button>
+        </div>
+
+        {view === 'work' && (
           <>
-            <span className={activeEnv.status === 'running' ? 'ok' : ''}>
-              {activeEnv.status === 'running' ? '● ' : '○ '}
-              {activeInfo!.envRepo} {activeEnv.status}
-            </span>
-            <span>gurt/{activeInfo!.task}</span>
+            <Sidebar
+              width={sidebarWidth}
+              tree={tree}
+              ws={ws?.name ?? null}
+              selection={selection}
+              changes={changes}
+              activity={activity}
+              onPickWorkspace={setCurWs}
+              onNewWorkspace={() => setNewWorkspace(true)}
+              onNewTask={(w) => setNewTask(w)}
+              onNewSession={(w, t) => setNewSession({ ws: w, task: t })}
+              onSelectTask={selectTask}
+              onSelectSession={selectSession}
+              onOpenPalette={() => setPaletteOpen(true)}
+            />
+            <div className="sidebar-resizer" onMouseDown={startSidebarResize} />
+            <main className="main">
+              {selection?.type === 'session' && (
+                <SessionPane
+                  tree={tree}
+                  snapshot={snapshots[selection.id]}
+                  sessionId={selection.id}
+                  queuePosition={positions[selection.id]}
+                  log={
+                    snapshots[selection.id]
+                      ? logs[
+                          envKey({
+                            workspace: snapshots[selection.id].info.workspace,
+                            task: snapshots[selection.id].info.task,
+                            repo: snapshots[selection.id].info.envRepo
+                          })
+                        ] ?? []
+                      : []
+                  }
+                  onDeleted={() => setSelection(null)}
+                />
+              )}
+              {selection?.type === 'task' && (
+                <TaskPane
+                  tree={tree}
+                  ws={selection.ws}
+                  task={selection.task}
+                  logs={logs}
+                  positions={positions}
+                  changes={changes[`${selection.ws}/${selection.task}`]}
+                  onRefreshChanges={() => refreshChanges(selection.ws, selection.task, true)}
+                  onSelectSession={selectSession}
+                />
+              )}
+              {!selection && (
+                <div className="placeholder">
+                  select a session on the left, or press <span className="kbd">⌘K</span> to get
+                  started
+                </div>
+              )}
+            </main>
           </>
-        ) : (
-          <span>gurt</span>
+        )}
+
+        {view === 'dashboard' && (
+          <main className="main">
+            <div className="placeholder">dashboard — coming soon</div>
+          </main>
+        )}
+
+        {view === 'settings' && (
+          <SettingsPage
+            tree={tree}
+            ws={ws?.name ?? null}
+            section={settingsSection}
+            onSection={setSettingsSection}
+          />
         )}
       </div>
-      {agentsOpen && <AgentsModal onClose={() => setAgentsOpen(false)} />}
-      {credentialsOpen && <CredentialsModal onClose={() => setCredentialsOpen(false)} />}
+
+      <div className="footer">
+        <span className="foot-left">
+          {(runningCount > 0 || needYouCount > 0) && (
+            <span className={`dot dot-yellow${runningCount > 0 ? ' dot-pulse' : ''}`} style={{ width: 6, height: 6 }} />
+          )}
+          {runningCount} running · {needYouCount} need you
+        </span>
+        <span className="spacer" />
+        {activeInfo && activeEnv && (
+          <>
+            <span>
+              {activeInfo.envRepo} {activeEnv.status}
+            </span>
+            <span>gurt/{activeInfo.task}</span>
+          </>
+        )}
+      </div>
+
+      {paletteOpen && tree && (
+        <CommandPalette
+          tree={tree}
+          activity={activity}
+          onClose={() => setPaletteOpen(false)}
+          onNewSession={() => {
+            setPaletteOpen(false)
+            openNewSession()
+          }}
+          onNewTask={() => {
+            setPaletteOpen(false)
+            if (ws) setNewTask(ws.name)
+          }}
+          onSelectSession={(id) => {
+            setPaletteOpen(false)
+            selectSession(id)
+          }}
+          onSelectTask={(w, t) => {
+            setPaletteOpen(false)
+            selectTask(w, t)
+          }}
+        />
+      )}
+      {newSession && tree && (
+        <NewSessionModal
+          tree={tree}
+          ws={newSession.ws}
+          task={newSession.task}
+          onClose={() => setNewSession(null)}
+          onCreated={(s) => {
+            setNewSession(null)
+            selectSession(s.id)
+          }}
+        />
+      )}
+      {newTask && (
+        <NameModal
+          title={`New task in ${newTask}`}
+          placeholder="task name"
+          onClose={() => setNewTask(null)}
+          onSubmit={async (name) => {
+            try {
+              await window.gurt.createTask(newTask, name)
+              setNewTask(null)
+              selectTask(newTask, name)
+            } catch (e) {
+              void alertDialog(e instanceof Error ? e.message : String(e))
+            }
+          }}
+        />
+      )}
+      {newWorkspace && (
+        <NameModal
+          title="New workspace"
+          placeholder="workspace name"
+          onClose={() => setNewWorkspace(false)}
+          onSubmit={async (name) => {
+            try {
+              await window.gurt.createWorkspace(name)
+              setNewWorkspace(false)
+              setCurWs(name)
+            } catch (e) {
+              void alertDialog(e instanceof Error ? e.message : String(e))
+            }
+          }}
+        />
+      )}
       <DialogHost />
     </div>
   )

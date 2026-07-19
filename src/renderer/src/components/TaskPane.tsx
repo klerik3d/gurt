@@ -1,16 +1,17 @@
 import { useEffect, useRef, useState } from 'react'
-import type { EnvRef, RepoChanges, Tree } from '../../../shared/types'
+import type { EnvRef, EnvState, RepoChanges, Tree } from '../../../shared/types'
 import { isActionable, isDelivered } from '../../../shared/types'
 import { envKey } from '../App'
 import { agentName, useAgents } from '../useAgents'
 import { alertDialog, confirmDialog } from '../dialog'
+import { Icon, Dot } from './icons'
 import { Modal } from './Modal'
 
-const STATUS_ICON: Record<string, string> = {
-  stopped: '○',
-  starting: '◐',
-  running: '●',
-  error: '✕'
+const ENV_DOT: Record<EnvState['status'], { tone: 'green' | 'yellow' | 'red' | 'outline'; pulse?: boolean }> = {
+  stopped: { tone: 'outline' },
+  starting: { tone: 'yellow', pulse: true },
+  running: { tone: 'yellow', pulse: true },
+  error: { tone: 'red' }
 }
 
 export function TaskPane({
@@ -51,85 +52,109 @@ export function TaskPane({
 
   return (
     <div className="task-pane">
-      <div className="chat-header">
-        <span>{ws} / {task}</span>
+      <div className="chat-head">
+        <span className="chat-title">
+          <span className="dim" style={{ fontWeight: 400 }}>
+            {ws} /
+          </span>{' '}
+          {task}
+        </span>
       </div>
 
-      <ChangesSection ws={ws} task={task} changes={changes} onRefresh={onRefreshChanges} />
+      <div className="tp-body">
+        <ChangesSection ws={ws} task={task} changes={changes} onRefresh={onRefreshChanges} />
 
-      <div className="pane-section">
-        <h3>environments</h3>
-        {taskData.envs.length === 0 && (
-          <div className="hint">no environments yet — they are created when a session starts</div>
-        )}
-        <table className="env-table">
-          <tbody>
-            {taskData.envs.map((env) => {
-              const ref: EnvRef = { workspace: ws, task, repo: env.repo }
-              const key = envKey(ref)
-              return (
-                <tr key={env.repo}>
-                  <td className="env-cell">
-                    <span className={`status status-${env.status}`}>{STATUS_ICON[env.status]}</span>
-                    {env.repo}
-                    <span className="dim"> — {env.status}</span>
-                    {env.error && <span className="error inline-error"> {env.error}</span>}
-                  </td>
-                  <td className="env-actions">
-                    {(env.status === 'stopped' || env.status === 'error') && (
-                      <button onClick={() => window.gurt.startEnv(ref).catch(() => {})}>Start</button>
-                    )}
-                    {(env.status === 'running' || env.status === 'starting') && (
-                      <button onClick={() => window.gurt.stopEnv(ref).catch((e) => alertDialog(String(e)))}>
-                        Stop
-                      </button>
-                    )}
+        <div className="tp-sep" />
+
+        <div className="tp-section">
+          <span className="seclabel">ENVIRONMENTS</span>
+          {taskData.envs.length === 0 && (
+            <div className="tp-empty">no environments yet — they are created when a session starts</div>
+          )}
+          {taskData.envs.map((env) => {
+            const ref: EnvRef = { workspace: ws, task, repo: env.repo }
+            const key = envKey(ref)
+            const dot = ENV_DOT[env.status]
+            return (
+              <div key={env.repo}>
+                <div className="env-row">
+                  <Dot tone={dot.tone} pulse={dot.pulse} />
+                  <span className="env-name">{env.repo}</span>
+                  <span className={`env-status ${env.status === 'error' ? 'red' : 'dim'}`}>
+                    {env.status}
+                  </span>
+                  {env.error && <span className="env-err mono">{env.error}</span>}
+                  <span className="spacer" />
+                  {(env.status === 'stopped' || env.status === 'error') && (
+                    <button className="btn btn-xs" onClick={() => window.gurt.startEnv(ref).catch(() => {})}>
+                      Start
+                    </button>
+                  )}
+                  {(env.status === 'running' || env.status === 'starting') && (
                     <button
-                      onClick={async () => {
-                        if (await confirmDialog(`Delete env "${env.repo}" (container + clone)? Its sessions are kept and re-provision on next run. Uncommitted work is lost.`, { title: 'Delete environment', confirmText: 'Delete', danger: true }))
-                          window.gurt.removeEnv(ref).catch((e) => alertDialog(String(e)))
-                      }}
+                      className="btn btn-xs"
+                      onClick={() => window.gurt.stopEnv(ref).catch((e) => alertDialog(String(e)))}
                     >
-                      Delete
+                      Stop
                     </button>
-                    <button onClick={() => setOpenLog(openLog === key ? null : key)}>
-                      {openLog === key ? 'hide log' : 'log'}
-                    </button>
-                  </td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
-        {openLog && (
-          <pre className="env-log">
-            {(logs[openLog] ?? []).join('\n') || 'no provisioning output yet'}
-          </pre>
-        )}
-      </div>
+                  )}
+                  <button
+                    className="btn btn-xs"
+                    onClick={async () => {
+                      if (
+                        await confirmDialog(
+                          `Delete env "${env.repo}" (container + clone)? Its sessions are kept and re-provision on next run. Uncommitted work is lost.`,
+                          { title: 'Delete environment', confirmText: 'Delete', danger: true }
+                        )
+                      )
+                        window.gurt.removeEnv(ref).catch((e) => alertDialog(String(e)))
+                    }}
+                  >
+                    Delete
+                  </button>
+                  <button
+                    className="btn-log mono"
+                    onClick={() => setOpenLog(openLog === key ? null : key)}
+                  >
+                    {openLog === key ? 'hide' : 'log'}
+                  </button>
+                </div>
+                {openLog === key && (
+                  <pre className="env-log">
+                    {(logs[key] ?? []).join('\n') || 'no provisioning output yet'}
+                  </pre>
+                )}
+              </div>
+            )
+          })}
+        </div>
 
-      <div className="pane-section">
-        <h3>
-          queue{' '}
-          <span className="dim" title="a queued session starts when its repo is free; a repo frees only when its environment is stopped">
-            (ⓘ starts when the repo's env is stopped)
-          </span>
-        </h3>
-        {queued.length === 0 && <div className="hint">no queued sessions in this task</div>}
-        {queued.map((s) => (
-          <div key={s.id} className="queue-row">
-            <span className="queue-pos">#{positions[s.id]}</span>
-            <span className="node-label clickable" onClick={() => onSelectSession(s.id)}>
-              {s.title}
-            </span>
-            <span className="chip">{s.envRepo}</span>
-            <span className="chip">{agentName(agents, s.agent)}</span>
-            <span className="spacer" />
-            <button onClick={() => window.gurt.sessionCancelQueue(s.id).catch((e) => alertDialog(String(e)))}>
-              Cancel
-            </button>
+        <div className="tp-sep" />
+
+        <div className="tp-section">
+          <div className="tp-sec-head">
+            <span className="seclabel">QUEUE</span>
+            <span className="tp-sec-hint">· starts when the repo's env is stopped</span>
           </div>
-        ))}
+          {queued.length === 0 && <div className="tp-dashed">no queued sessions in this task</div>}
+          {queued.map((s) => (
+            <div key={s.id} className="queue-row">
+              <span className="queue-pos mono">#{positions[s.id]}</span>
+              <span className="queue-title clickable" onClick={() => onSelectSession(s.id)}>
+                {s.title}
+              </span>
+              <span className="tag">{s.envRepo}</span>
+              <span className="tag">{agentName(agents, s.agent)}</span>
+              <span className="spacer" />
+              <button
+                className="btn btn-xs"
+                onClick={() => window.gurt.sessionCancelQueue(s.id).catch((e) => alertDialog(String(e)))}
+              >
+                Cancel
+              </button>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   )
@@ -178,13 +203,16 @@ function ChangesSection({
     act(repo, () => window.gurt.changesOpenVscode(ws, task, repo))
 
   return (
-    <div className="pane-section changes-section">
-      <div className="changes-head">
-        <h3>changes</h3>
+    <div className="tp-section">
+      <div className="tp-sec-head">
+        <span className="seclabel">CHANGES</span>
         <span className="spacer" />
-        <button className="icon-btn" title="refresh changes" onClick={onRefresh}>↻</button>
+        <button className="icon-sq bordered" title="refresh changes" onClick={onRefresh}>
+          <Icon name="history" size={13} />
+        </button>
         {flat && (
           <button
+            className="btn btn-sm"
             disabled={busyRepo === rendered[0].repo}
             onClick={() => openVscode(rendered[0].repo)}
           >
@@ -192,14 +220,18 @@ function ChangesSection({
           </button>
         )}
       </div>
-      {rendered.length === 0 && <div className="hint no-changes">No changes</div>}
+      {rendered.length === 0 && <div className="tp-empty">No changes</div>}
       {rendered.map((r) => (
         <div key={r.repo} className="changes-group">
           {!flat && (
             <div className="changes-group-head">
               <span className="changes-repo">▾ {r.repo}</span>
               <span className="spacer" />
-              <button disabled={busyRepo === r.repo} onClick={() => openVscode(r.repo)}>
+              <button
+                className="btn btn-xs"
+                disabled={busyRepo === r.repo}
+                onClick={() => openVscode(r.repo)}
+              >
                 Open in VS Code
               </button>
             </div>
@@ -207,24 +239,30 @@ function ChangesSection({
           {r.dirty && (
             <div className="changes-block">
               <div className="block-head">Uncommitted</div>
-              {r.files.map((f) => (
-                <div key={f.path} className="file-row">
-                  <span className={`file-status st-${f.status}`}>{f.status}</span>
-                  <span
-                    className="file-path clickable"
-                    onClick={() => setDiffFile({ repo: r.repo, path: f.path })}
-                  >
-                    {f.path}
-                  </span>
-                </div>
-              ))}
-              <div className="changes-counts">
+              <div className="file-list mono">
+                {r.files.map((f) => (
+                  <div key={f.path} className="file-row">
+                    <span className={`file-status st-${f.status}`}>{f.status}</span>
+                    <span
+                      className="file-path clickable"
+                      onClick={() => setDiffFile({ repo: r.repo, path: f.path })}
+                    >
+                      {f.path}
+                    </span>
+                  </div>
+                ))}
+              </div>
+              <div className="changes-counts mono">
                 {r.files.length} file{r.files.length === 1 ? '' : 's'} ·{' '}
                 <span className="ins">+{r.insertions}</span>{' '}
                 <span className="del">−{r.deletions}</span>
               </div>
               <div className="changes-actions">
-                <button disabled={busyRepo === r.repo} onClick={() => setCommitRepo(r.repo)}>
+                <button
+                  className="btn btn-sm"
+                  disabled={busyRepo === r.repo}
+                  onClick={() => setCommitRepo(r.repo)}
+                >
                   Commit
                 </button>
               </div>
@@ -233,24 +271,27 @@ function ChangesSection({
           {!r.integrated && r.commits.length > 0 && (
             <div className="changes-block">
               <div className="block-head">
-                On gurt/{task} · {r.commits.length} commit{r.commits.length === 1 ? '' : 's'} not in{' '}
-                {r.defaultBranch}
+                On <span className="branch-name mono">gurt/{task}</span> · {r.commits.length} commit
+                {r.commits.length === 1 ? '' : 's'} not in {r.defaultBranch}
               </div>
-              {r.commits.map((c) => (
-                <div
-                  key={c.sha}
-                  className="commit-row clickable"
-                  onClick={() => setDiffCommit({ repo: r.repo, sha: c.sha })}
-                >
-                  <span className="commit-sha">{c.sha.slice(0, 7)}</span>
-                  <span className="commit-subject">{c.subject}</span>
-                  <span className={`commit-state ${c.pushed ? 'pushed' : 'local'}`}>
-                    {c.pushed ? 'pushed' : 'local'}
-                  </span>
-                </div>
-              ))}
+              <div className="commit-list">
+                {r.commits.map((c) => (
+                  <div
+                    key={c.sha}
+                    className="commit-row clickable"
+                    onClick={() => setDiffCommit({ repo: r.repo, sha: c.sha })}
+                  >
+                    <span className="commit-sha mono">{c.sha.slice(0, 7)}</span>
+                    <span className="commit-subject">{c.subject}</span>
+                    <span className={`tag ${c.pushed ? 'tag-green' : ''}`}>
+                      {c.pushed ? 'pushed' : 'local'}
+                    </span>
+                  </div>
+                ))}
+              </div>
               <div className="changes-actions">
                 <button
+                  className="btn btn-sm"
                   disabled={!r.commits.some((c) => !c.pushed) || busyRepo === r.repo}
                   onClick={() => act(r.repo, () => window.gurt.changesPush(ws, task, r.repo))}
                 >
@@ -258,6 +299,7 @@ function ChangesSection({
                 </button>
                 {r.prUrl && (
                   <button
+                    className="btn btn-sm"
                     disabled={busyRepo === r.repo}
                     onClick={() => act(r.repo, () => window.gurt.changesOpenPr(ws, task, r.repo))}
                   >
@@ -336,17 +378,17 @@ function DiffModal({
 
   return (
     <Modal title={title} wide onClose={onClose}>
-      <div className="diff-view">
+      <div className="diff-view mono">
         {error && <div className="error">{error}</div>}
-        {diff === null && !error && <div className="hint">loading diff…</div>}
+        {diff === null && !error && <div className="tp-empty">loading diff…</div>}
         {diff !== null &&
           (diff.trim()
             ? diff.split('\n').map((line, i) => (
-                <div key={i} className={`diff-line ${lineClass(line)}`}>
+                <div key={i} className={`diffline ${lineClass(line)}`}>
                   {line || ' '}
                 </div>
               ))
-            : <div className="hint">no diff</div>)}
+            : <div className="tp-empty">no diff</div>)}
       </div>
     </Modal>
   )
@@ -394,11 +436,11 @@ function CommitModal({
   }
   return (
     <Modal title={`Commit in ${repo}`} onClose={onClose}>
-      <div className="form">
-        <label>
-          message
+      <div className="modal-body">
+        <label className="fld">
+          <span className="seclabel">MESSAGE</span>
           <textarea
-            className="commit-message"
+            className="input commit-message"
             autoFocus
             rows={message.includes('\n') ? 6 : 2}
             value={message}
@@ -412,10 +454,15 @@ function CommitModal({
             }
           />
         </label>
-        <div className="row-buttons">
-          <button disabled={!message.trim()} onClick={() => onCommit(message.trim())}>Commit</button>
-          <button onClick={onClose}>Cancel</button>
-        </div>
+      </div>
+      <div className="modal-foot">
+        <span className="spacer" />
+        <button className="btn" onClick={onClose}>
+          Cancel
+        </button>
+        <button className="btn btn-primary" disabled={!message.trim()} onClick={() => onCommit(message.trim())}>
+          Commit
+        </button>
       </div>
     </Modal>
   )
