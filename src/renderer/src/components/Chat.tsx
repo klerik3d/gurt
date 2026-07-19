@@ -120,6 +120,23 @@ export function Chat({ snapshot, sessionId }: { snapshot?: SessionSnapshot; sess
 
   const hasPlan = !!plan && plan.length > 0
 
+  // The live tail indicator appears only when the tail itself shows no
+  // activity: a pending permission card or a running tool row is already the
+  // "what's happening" signal (and a streaming thought carries its own
+  // "thinking…" header). While session/load is in flight it reads "resuming…".
+  const lastEntry = entries[entries.length - 1]
+  const tailBusy =
+    (lastEntry?.kind === 'tool' &&
+      (lastEntry.status === 'in_progress' || lastEntry.status === 'pending')) ||
+    lastEntry?.kind === 'thought'
+  const liveTail = !busy
+    ? null
+    : snapshot.resuming
+      ? 'resuming session…'
+      : info.awaitingInput || tailBusy
+        ? null
+        : 'thinking…'
+
   return (
     <div className="chat">
       <div className="chat-head">
@@ -142,7 +159,7 @@ export function Chat({ snapshot, sessionId }: { snapshot?: SessionSnapshot; sess
             {entries.map((e) => (
               <Msg key={e.id} entry={e} sessionId={sessionId} />
             ))}
-            {busy && <ThinkingLive />}
+            {liveTail && <ThinkingLive label={liveTail} />}
           </div>
         </div>
       </div>
@@ -215,7 +232,7 @@ function Msg({ entry, sessionId }: { entry: ChatEntry; sessionId: string }) {
 }
 
 function ThoughtMsg({ text }: { text: string }) {
-  const [open, setOpen] = useState(true)
+  const [open, setOpen] = useState(false)
   return (
     <div className="msg">
       <span className="msg-dot" style={{ background: 'var(--yellow)' }} />
@@ -228,11 +245,11 @@ function ThoughtMsg({ text }: { text: string }) {
 }
 
 /** Live placeholder shown at the tail of the log while the agent is working. */
-function ThinkingLive() {
+function ThinkingLive({ label }: { label: string }) {
   return (
     <div className="msg">
       <span className="msg-dot dot-pulse" style={{ background: 'var(--yellow)' }} />
-      <div className="thought-head mono">▾ thinking…</div>
+      <div className="thought-head mono">{label}</div>
     </div>
   )
 }
@@ -249,14 +266,9 @@ function ToolMsg({ entry }: { entry: ChatToolCall }) {
   const failed = entry.status === 'failed'
   const running = entry.status === 'in_progress' || entry.status === 'pending'
   const hasDetail = !!entry.detail
-  // Run/edit output starts expanded (the design's default); everything else
-  // starts collapsed and always expands on failure.
-  const [open, setOpen] = useState(
-    failed || entry.toolKind === 'edit' || entry.toolKind === 'execute'
-  )
-  useEffect(() => {
-    if (failed) setOpen(true)
-  }, [failed])
+  // Everything expandable starts collapsed; the FAILED badge and red dot are
+  // the signal to click into a failure.
+  const [open, setOpen] = useState(false)
 
   const dotColor = failed ? 'var(--red)' : running ? 'var(--yellow)' : 'var(--border2)'
 

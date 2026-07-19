@@ -357,6 +357,8 @@ export interface SessionSnapshot {
   entries?: ChatEntry[]
   /** Agent is processing a prompt right now. */
   busy: boolean
+  /** `session/load` in flight — the UI shows a live "resuming" indicator. */
+  resuming?: boolean
   modes?: SessionModes
   plan?: PlanEntry[]
   commands?: CommandInfo[]
