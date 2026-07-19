@@ -532,7 +532,34 @@ export class SessionManager {
   closeEnv(ref: EnvRef): void {
     for (const conn of this.connections.values())
       if (envKey(conn.ref) === envKey(ref)) conn.kill()
+    // Reset the sessions' runtime overlay now, synchronously — don't wait for the
+    // adapter's `close` event (it may lag, or never fire for an orphaned exec once
+    // the container is gone), which would leave the tree mark stuck on running.
+    for (const s of this.sessions.values())
+      if (envKey(s.ref) === envKey(ref)) this.detachSession(s)
     this.events.stopMcpServers(ref)
+  }
+
+  /**
+   * Drop a session's live-connection overlay: cancel any pending permission,
+   * clear `busy`, and broadcast, so its tree mark can't linger on running/waiting
+   * once the agent connection is gone. Idempotent — safe to call from both the
+   * adapter `close` handler and an env teardown.
+   */
+  private detachSession(s: Session): void {
+    s.attached = false
+    const wasAwaiting = s.pendingPermissions.size > 0
+    for (const resolve of s.pendingPermissions.values())
+      resolve({ outcome: { outcome: 'cancelled' } })
+    s.pendingPermissions.clear()
+    if (wasAwaiting)
+      this.bus.emit('session.awaiting', { sessionId: s.info.id, ref: s.ref, awaiting: false })
+    if (s.busy) {
+      s.busy = false
+      this.push(s, { kind: 'system', text: 'agent process exited' }) // push emits session.changed
+    } else {
+      this.bus.emit('session.changed', { sessionId: s.info.id })
+    }
   }
 
   /** Forget sessions of a whole task without persisting (task dir is removed). */
@@ -625,22 +652,10 @@ export class SessionManager {
     const peer = new JsonRpcPeer(child, (err) => console.error(`[acp ${key}]`, err))
     child.on('close', () => {
       this.connections.delete(key)
-      for (const s of this.sessions.values()) {
-        if (connKey(s.ref, s.info.agent ?? '') !== key) continue
-        s.attached = false
-        const wasAwaiting = s.pendingPermissions.size > 0
-        for (const resolve of s.pendingPermissions.values())
-          resolve({ outcome: { outcome: 'cancelled' } })
-        s.pendingPermissions.clear()
-        if (wasAwaiting)
-          this.bus.emit('session.awaiting', { sessionId: s.info.id, ref: s.ref, awaiting: false })
-        if (s.busy) {
-          s.busy = false
-          this.push(s, { kind: 'system', text: 'agent process exited' })
-        }
-        // The in-flight `session/prompt` of a busy session rejects with the peer,
-        // so its runPrompt still emits the `session.turn` ended the idle policy needs.
-      }
+      // The in-flight `session/prompt` of a busy session rejects with the peer, so
+      // its runPrompt still emits the `session.turn` ended the idle policy needs.
+      for (const s of this.sessions.values())
+        if (connKey(s.ref, s.info.agent ?? '') === key) this.detachSession(s)
       // Covers the sessions that were NOT busy: the auto-stop policy re-evaluates
       // the env on adapter death even when no turn end will ever fire.
       this.bus.emit('env.adapterExited', { ref, agent: agentId })

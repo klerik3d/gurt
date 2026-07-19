@@ -141,7 +141,14 @@ export function Sidebar({
                   </div>
                   {!isCollapsed &&
                     task.sessions.map((s) => {
-                      const status = sessionStatus({ ...s, ...activity[s.id] })
+                      const raw = sessionStatus({ ...s, ...activity[s.id] })
+                      // running/waiting mean a live agent process is attached; if the
+                      // session's env isn't up, that process is gone — never render it
+                      // as live, however the runtime overlay lags.
+                      const env = task.envs.find((e) => e.repo === s.envRepo)
+                      const envLive = env?.status === 'running' || env?.status === 'starting'
+                      const status =
+                        !envLive && (raw === 'running' || raw === 'waiting') ? 'idle' : raw
                       const mark = STATUS_MARK[status]
                       return (
                       <div
