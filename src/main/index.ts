@@ -5,12 +5,13 @@ import { migrateAgentSecrets } from './credentials'
 
 function createWindow(): void {
   const win = new BrowserWindow({
-    width: 1280,
-    height: 820,
+    width: 1440,
+    height: 900,
     title: 'gurt',
-    backgroundColor: '#1f1f1f',
+    backgroundColor: '#100f0d',
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
-    trafficLightPosition: { x: 14, y: 13 },
+    // Centered in the 44px title bar (lights are 12px tall).
+    trafficLightPosition: { x: 16, y: 16 },
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
       contextIsolation: true,
