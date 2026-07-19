@@ -803,9 +803,14 @@ textarea.input {
   flex: none;
 }
 
-/* Pinned last request. */
+/* Pinned last request — overlays the feed top only while the real message
+   is scrolled out of view, and slides back up when it returns. */
 .pinned-req {
-  flex: none;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 4;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -813,6 +818,14 @@ textarea.input {
   background: var(--surface);
   border-bottom: 1px solid var(--border);
   cursor: pointer;
+  transition:
+    transform 0.22s ease,
+    opacity 0.22s ease;
+}
+.pinned-req.off {
+  transform: translateY(-100%);
+  opacity: 0;
+  pointer-events: none;
 }
 .pinned-req .seclabel {
   letter-spacing: 0.08em;
@@ -839,6 +852,14 @@ textarea.input {
 }
 
 /* Feed with timeline rail. */
+.feed-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
 .feed {
   flex: 1;
   overflow-y: auto;
@@ -852,13 +873,20 @@ textarea.input {
   padding: 18px 7% 18px calc(7% + 24px);
   min-height: 100%;
 }
-.feed-rail {
+/* Each entry draws its own rail segment down to the next entry's dot, so the
+   rail ends exactly at the last dot instead of running past it into nowhere.
+   26px = 14px flex gap + 12px reach to the next segment's start. */
+.feed-inner > .msg::before {
+  content: '';
   position: absolute;
-  left: calc(7% + 11px);
-  top: 20px;
-  bottom: 18px;
+  left: -13px;
+  top: 12px;
+  bottom: -26px;
   width: 2px;
   background: var(--border);
+}
+.feed-inner > .msg:last-child::before {
+  display: none;
 }
 
 .msg {

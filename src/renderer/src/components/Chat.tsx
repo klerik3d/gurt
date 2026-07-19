@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type {
   ChatEntry,
   ChatPermission,
@@ -31,14 +31,69 @@ const BLANKET_MODE_RE = /bypass|yolo/i
 const isBlanketMode = (m: SessionMode): boolean => BLANKET_MODE_RE.test(`${m.id} ${m.name}`)
 
 export function Chat({ snapshot, sessionId }: { snapshot?: SessionSnapshot; sessionId: string }) {
-  const bottomRef = useRef<HTMLDivElement>(null)
+  const feedRef = useRef<HTMLDivElement>(null)
+  const innerRef = useRef<HTMLDivElement>(null)
+  /** Follow-the-tail flag: true until the user scrolls away from the bottom. */
+  const stickRef = useRef(true)
+  const [reqPinned, setReqPinned] = useState(false)
   const agents = useAgents()
 
   const entries = snapshot?.entries ?? []
+  const hasSnapshot = !!snapshot
+  const lastUser = [...entries]
+    .reverse()
+    .find((e): e is ChatEntry & { kind: 'user' } => e.kind === 'user' && !!e.text.trim())
+  const lastUserId = lastUser?.id
 
+  // Keep the feed glued to its bottom edge while it's following the tail. A
+  // ResizeObserver catches every way the tail can move — text streaming into
+  // the same entry, the live thinking row appearing, the composer or plan bar
+  // resizing the viewport — which a discrete "new entry" effect misses.
+  useLayoutEffect(() => {
+    const feed = feedRef.current
+    const inner = innerRef.current
+    if (!feed || !inner) return
+    stickRef.current = true
+    feed.scrollTop = feed.scrollHeight
+    const ro = new ResizeObserver(() => {
+      if (stickRef.current) feed.scrollTop = feed.scrollHeight
+    })
+    ro.observe(inner)
+    ro.observe(feed)
+    return () => ro.disconnect()
+  }, [sessionId, hasSnapshot])
+
+  // Sending a prompt jumps to the tail even if the user had scrolled up.
+  useLayoutEffect(() => {
+    const feed = feedRef.current
+    if (!feed || lastUserId === undefined) return
+    stickRef.current = true
+    feed.scrollTop = feed.scrollHeight
+  }, [lastUserId])
+
+  /** Re-arm tail-following once the user is back within reach of the bottom. */
+  const onFeedScroll = () => {
+    const el = feedRef.current
+    if (!el) return
+    stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
+  }
+
+  // The "your request" bar overlays the feed only while the real message is
+  // scrolled out past the top; scrolling back hands off to the message in place.
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [entries.length, entries[entries.length - 1]?.id])
+    setReqPinned(false)
+    const feed = feedRef.current
+    if (!feed || lastUserId === undefined) return
+    const node = feed.querySelector(`.msg-user[data-eid="${lastUserId}"]`)
+    if (!node) return
+    const io = new IntersectionObserver(
+      ([e]) =>
+        setReqPinned(!e.isIntersecting && e.boundingClientRect.top < (e.rootBounds?.top ?? 0)),
+      { root: feed, rootMargin: '-36px 0px 0px 0px' }
+    )
+    io.observe(node)
+    return () => io.disconnect()
+  }, [sessionId, hasSnapshot, lastUserId])
 
   // Esc stops the current turn while the agent is working (replaces the Stop
   // button). Ignore Esc raised from a text field so it can close its own popup,
@@ -63,9 +118,6 @@ export function Chat({ snapshot, sessionId }: { snapshot?: SessionSnapshot; sess
 
   const { info, modes, plan, commands, configOptions, promptCapabilities } = snapshot
 
-  const lastUser = [...entries]
-    .reverse()
-    .find((e): e is ChatEntry & { kind: 'user' } => e.kind === 'user' && !!e.text.trim())
   const hasPlan = !!plan && plan.length > 0
 
   return (
@@ -83,16 +135,15 @@ export function Chat({ snapshot, sessionId }: { snapshot?: SessionSnapshot; sess
         {busy && <span className="chat-hint mono">esc to stop</span>}
       </div>
 
-      {lastUser && <PinnedRequest text={lastUser.text} />}
-
-      <div className="feed">
-        <div className="feed-inner">
-          <div className="feed-rail" />
-          {entries.map((e) => (
-            <Msg key={e.id} entry={e} sessionId={sessionId} />
-          ))}
-          {busy && <ThinkingLive />}
-          <div ref={bottomRef} />
+      <div className="feed-wrap">
+        {lastUser && <PinnedRequest text={lastUser.text} visible={reqPinned} />}
+        <div className="feed" ref={feedRef} onScroll={onFeedScroll}>
+          <div className="feed-inner" ref={innerRef}>
+            {entries.map((e) => (
+              <Msg key={e.id} entry={e} sessionId={sessionId} />
+            ))}
+            {busy && <ThinkingLive />}
+          </div>
         </div>
       </div>
 
@@ -111,11 +162,16 @@ export function Chat({ snapshot, sessionId }: { snapshot?: SessionSnapshot; sess
   )
 }
 
-/** Sticky one-line echo of the user's last request, expandable to full text. */
-function PinnedRequest({ text }: { text: string }) {
+/** Sticky one-line echo of the user's last request, expandable to full text.
+ *  Shown only while the real message is scrolled out of view (`visible`);
+ *  otherwise it slides away and the in-feed message takes over. */
+function PinnedRequest({ text, visible }: { text: string; visible: boolean }) {
   const [open, setOpen] = useState(false)
   return (
-    <div className={`pinned-req ${open ? 'open' : ''}`} onClick={() => setOpen((o) => !o)}>
+    <div
+      className={`pinned-req ${open ? 'open' : ''} ${visible ? '' : 'off'}`}
+      onClick={() => setOpen((o) => !o)}
+    >
       <span className="seclabel">↑ YOUR REQUEST</span>
       <span className="pinned-req-text">{text}</span>
       <span className="pinned-req-toggle mono">{open ? 'collapse ▴' : 'expand ▾'}</span>
@@ -129,7 +185,7 @@ function Msg({ entry, sessionId }: { entry: ChatEntry; sessionId: string }) {
   switch (entry.kind) {
     case 'user':
       return (
-        <div className="msg">
+        <div className="msg msg-user" data-eid={entry.id}>
           <span className="msg-dot" style={{ background: 'var(--accent)' }} />
           <div className="msg-you seclabel">YOU</div>
           <div className="msg-text user">{entry.text}</div>
