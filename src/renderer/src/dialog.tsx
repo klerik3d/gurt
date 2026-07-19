@@ -49,6 +49,7 @@ export const confirmDialog = (message: string, opts?: Omit<DialogRequest, 'messa
 export function DialogHost(): JSX.Element | null {
   const [queue, setQueue] = useState<ActiveDialog[]>([])
   const okRef = useRef<HTMLButtonElement>(null)
+  const cancelRef = useRef<HTMLButtonElement>(null)
   const current = queue[0]
 
   useEffect(() => {
@@ -66,15 +67,21 @@ export function DialogHost(): JSX.Element | null {
     })
   }, [])
 
-  // Focus the default action and wire Enter/Esc while a dialog is open.
+  // Focus the default action and wire Enter/Esc while a dialog is open. For a
+  // destructive confirm the safe button is the default — Enter must not delete;
+  // confirming takes a deliberate Tab or click.
   useEffect(() => {
     if (!current) return
-    okRef.current?.focus()
+    ;(current.danger ? cancelRef.current ?? okRef.current : okRef.current)?.focus()
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault()
         close(false)
       } else if (e.key === 'Enter') {
+        // Enter confirms only from the default action; a user who tabbed to
+        // another button (Cancel) gets that button's own activation instead.
+        const a = document.activeElement
+        if (a instanceof HTMLButtonElement && a !== okRef.current) return
         e.preventDefault()
         close(true)
       }
@@ -92,7 +99,7 @@ export function DialogHost(): JSX.Element | null {
         <div className="dialog-message">{current.message}</div>
         <div className="dialog-buttons">
           {current.kind === 'confirm' && (
-            <button className="dialog-cancel" onClick={() => close(false)}>
+            <button ref={cancelRef} className="dialog-cancel" onClick={() => close(false)}>
               {current.cancelText ?? 'Cancel'}
             </button>
           )}
