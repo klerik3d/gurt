@@ -1,6 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type {
   ChatEntry,
+  ChatPermission,
+  ChatToolCall,
   CommandInfo,
   PlanEntry,
   PromptCapabilities,
@@ -13,6 +15,7 @@ import type {
 } from '../../../shared/types'
 import { agentName, useAgents } from '../useAgents'
 import { alertDialog } from '../dialog'
+import { Icon, Dot } from './icons'
 
 /** Don't ping the main process on every keystroke — once per this interval is enough
  *  to keep postponing the env's idle auto-stop while the user is composing. */
@@ -28,15 +31,69 @@ const BLANKET_MODE_RE = /bypass|yolo/i
 const isBlanketMode = (m: SessionMode): boolean => BLANKET_MODE_RE.test(`${m.id} ${m.name}`)
 
 export function Chat({ snapshot, sessionId }: { snapshot?: SessionSnapshot; sessionId: string }) {
-  const [planOpen, setPlanOpen] = useState(true)
-  const bottomRef = useRef<HTMLDivElement>(null)
+  const feedRef = useRef<HTMLDivElement>(null)
+  const innerRef = useRef<HTMLDivElement>(null)
+  /** Follow-the-tail flag: true until the user scrolls away from the bottom. */
+  const stickRef = useRef(true)
+  const [reqPinned, setReqPinned] = useState(false)
   const agents = useAgents()
 
   const entries = snapshot?.entries ?? []
+  const hasSnapshot = !!snapshot
+  const lastUser = [...entries]
+    .reverse()
+    .find((e): e is ChatEntry & { kind: 'user' } => e.kind === 'user' && !!e.text.trim())
+  const lastUserId = lastUser?.id
 
+  // Keep the feed glued to its bottom edge while it's following the tail. A
+  // ResizeObserver catches every way the tail can move — text streaming into
+  // the same entry, the live thinking row appearing, the composer or plan bar
+  // resizing the viewport — which a discrete "new entry" effect misses.
+  useLayoutEffect(() => {
+    const feed = feedRef.current
+    const inner = innerRef.current
+    if (!feed || !inner) return
+    stickRef.current = true
+    feed.scrollTop = feed.scrollHeight
+    const ro = new ResizeObserver(() => {
+      if (stickRef.current) feed.scrollTop = feed.scrollHeight
+    })
+    ro.observe(inner)
+    ro.observe(feed)
+    return () => ro.disconnect()
+  }, [sessionId, hasSnapshot])
+
+  // Sending a prompt jumps to the tail even if the user had scrolled up.
+  useLayoutEffect(() => {
+    const feed = feedRef.current
+    if (!feed || lastUserId === undefined) return
+    stickRef.current = true
+    feed.scrollTop = feed.scrollHeight
+  }, [lastUserId])
+
+  /** Re-arm tail-following once the user is back within reach of the bottom. */
+  const onFeedScroll = () => {
+    const el = feedRef.current
+    if (!el) return
+    stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
+  }
+
+  // The "your request" bar overlays the feed only while the real message is
+  // scrolled out past the top; scrolling back hands off to the message in place.
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [entries.length, entries[entries.length - 1]?.id])
+    setReqPinned(false)
+    const feed = feedRef.current
+    if (!feed || lastUserId === undefined) return
+    const node = feed.querySelector(`.msg-user[data-eid="${lastUserId}"]`)
+    if (!node) return
+    const io = new IntersectionObserver(
+      ([e]) =>
+        setReqPinned(!e.isIntersecting && e.boundingClientRect.top < (e.rootBounds?.top ?? 0)),
+      { root: feed, rootMargin: '-36px 0px 0px 0px' }
+    )
+    io.observe(node)
+    return () => io.disconnect()
+  }, [sessionId, hasSnapshot, lastUserId])
 
   // Esc stops the current turn while the agent is working (replaces the Stop
   // button). Ignore Esc raised from a text field so it can close its own popup,
@@ -49,7 +106,7 @@ export function Chat({ snapshot, sessionId }: { snapshot?: SessionSnapshot; sess
       if (e.key !== 'Escape') return
       const t = e.target as HTMLElement | null
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return
-      if (document.querySelector('.modal-backdrop, .cmp-menu')) return
+      if (document.querySelector('.modal-backdrop, .cmp-menu, .gear-pop')) return
       e.preventDefault()
       window.gurt.sessionCancel(sessionId).catch(console.error)
     }
@@ -61,45 +118,58 @@ export function Chat({ snapshot, sessionId }: { snapshot?: SessionSnapshot; sess
 
   const { info, modes, plan, commands, configOptions, promptCapabilities } = snapshot
 
+  const hasPlan = !!plan && plan.length > 0
+
+  // The live tail indicator appears only when the tail itself shows no
+  // activity: a pending permission card or a running tool row is already the
+  // "what's happening" signal (and a streaming thought carries its own
+  // "thinking…" header). While session/load is in flight it reads "resuming…".
+  const lastEntry = entries[entries.length - 1]
+  const tailBusy =
+    (lastEntry?.kind === 'tool' &&
+      (lastEntry.status === 'in_progress' || lastEntry.status === 'pending')) ||
+    lastEntry?.kind === 'thought'
+  const liveTail = !busy
+    ? null
+    : snapshot.resuming
+      ? 'resuming session…'
+      : info.awaitingInput || tailBusy
+        ? null
+        : 'thinking…'
+
   return (
     <div className="chat">
-      <div className="chat-header">
-        <span className="breadcrumb">
-          {info.workspace}
-          <span className="sep">/</span>
-          {info.task}
-          <span className="sep">/</span>
-          <span className="leaf">{info.envRepo}</span>
+      <div className="chat-head">
+        <Dot tone={busy ? 'yellow' : info.awaitingInput ? 'yellow' : 'green'} pulse={busy} />
+        <span className="chat-title">
+          {info.task} / {info.title}
         </span>
-        {info.agent && <span className="chip">{agentName(agents, info.agent)}</span>}
         <span className="spacer" />
-        {busy && (
-          <span className="busy" title="press Esc to stop">
-            working… <span className="busy-hint">Esc to stop</span>
-          </span>
-        )}
+        <span className="chat-pill">
+          {info.envRepo}
+          {info.agent ? ` · ${agentName(agents, info.agent)}` : ''}
+        </span>
+        {busy && <span className="chat-hint mono">esc to stop</span>}
       </div>
 
-      <div className="chat-log">
-        {entries.map((e, i) => (
-          <EntryRow
-            key={e.id}
-            entry={e}
-            sessionId={sessionId}
-            last={i === entries.length - 1 && !busy}
-          />
-        ))}
-        {busy && <ThinkingRow />}
-        <div ref={bottomRef} />
+      <div className="feed-wrap">
+        {lastUser && <PinnedRequest text={lastUser.text} visible={reqPinned} />}
+        <div className="feed" ref={feedRef} onScroll={onFeedScroll}>
+          <div className="feed-inner" ref={innerRef}>
+            {entries.map((e) => (
+              <Msg key={e.id} entry={e} sessionId={sessionId} />
+            ))}
+            {liveTail && <ThinkingLive label={liveTail} />}
+          </div>
+        </div>
       </div>
 
-      {plan && plan.length > 0 && (
-        <PlanPanel plan={plan} open={planOpen} onToggle={() => setPlanOpen((o) => !o)} />
-      )}
+      {hasPlan && <PlanPinned plan={plan!} />}
 
       <Composer
         sessionId={sessionId}
         busy={busy}
+        flush={!hasPlan}
         modes={modes}
         commands={commands ?? []}
         configOptions={configOptions ?? []}
@@ -109,134 +179,230 @@ export function Chat({ snapshot, sessionId }: { snapshot?: SessionSnapshot; sess
   )
 }
 
-const MAX_TA_HEIGHT = 220
-
-// ---- inline icon set (feather-style strokes, matching the Composer design) ----
-
-type IconName =
-  | 'file'
-  | 'folder'
-  | 'git'
-  | 'search'
-  | 'mic'
-  | 'plus'
-  | 'send'
-  | 'auto'
-  | 'plan'
-  | 'ask'
-  | 'image'
-  | 'cpu'
-  | 'gauge'
-  | 'toggle'
-
-const ICON_PATHS: Record<IconName, JSX.Element> = {
-  file: (
-    <>
-      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-      <polyline points="14 2 14 8 20 8" />
-    </>
-  ),
-  folder: <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />,
-  git: (
-    <>
-      <circle cx="18" cy="18" r="3" />
-      <circle cx="6" cy="6" r="3" />
-      <path d="M6 21V9a9 9 0 0 0 9 9" />
-    </>
-  ),
-  search: (
-    <>
-      <circle cx="11" cy="11" r="8" />
-      <line x1="21" y1="21" x2="16.65" y2="16.65" />
-    </>
-  ),
-  mic: (
-    <>
-      <rect x="9" y="2" width="6" height="12" rx="3" />
-      <path d="M5 10a7 7 0 0 0 14 0" />
-      <line x1="12" y1="19" x2="12" y2="22" />
-    </>
-  ),
-  plus: (
-    <>
-      <line x1="12" y1="5" x2="12" y2="19" />
-      <line x1="5" y1="12" x2="19" y2="12" />
-    </>
-  ),
-  send: (
-    <>
-      <line x1="12" y1="19" x2="12" y2="5" />
-      <polyline points="5 12 12 5 19 12" />
-    </>
-  ),
-  auto: <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />,
-  plan: (
-    <>
-      <path d="M9 11l3 3L22 4" />
-      <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
-    </>
-  ),
-  ask: (
-    <>
-      <circle cx="12" cy="12" r="10" />
-      <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
-      <line x1="12" y1="17" x2="12.01" y2="17" />
-    </>
-  ),
-  image: (
-    <>
-      <rect x="3" y="3" width="18" height="18" rx="2" />
-      <circle cx="9" cy="9" r="2" />
-      <path d="M21 15l-5-5L5 21" />
-    </>
-  ),
-  cpu: (
-    <>
-      <rect x="9" y="9" width="6" height="6" rx="1" />
-      <rect x="4" y="4" width="16" height="16" rx="2" />
-      <path d="M9 1v3M15 1v3M9 20v3M15 20v3M1 9h3M1 15h3M20 9h3M20 15h3" />
-    </>
-  ),
-  gauge: (
-    <>
-      <path d="M12 14l4-4" />
-      <path d="M3.5 18a9 9 0 1 1 17 0" />
-    </>
-  ),
-  toggle: (
-    <>
-      <rect x="1" y="6" width="22" height="12" rx="6" />
-      <circle cx="16" cy="12" r="3" />
-    </>
-  )
-}
-
-function Icon({ name, size = 15 }: { name: IconName; size?: number }): JSX.Element {
+/** Sticky one-line echo of the user's last request, expandable to full text.
+ *  Shown only while the real message is scrolled out of view (`visible`);
+ *  otherwise it slides away and the in-feed message takes over. */
+function PinnedRequest({ text, visible }: { text: string; visible: boolean }) {
+  const [open, setOpen] = useState(false)
   return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2}
-      strokeLinecap="round"
-      strokeLinejoin="round"
+    <div
+      className={`pinned-req ${open ? 'open' : ''} ${visible ? '' : 'off'}`}
+      onClick={() => setOpen((o) => !o)}
     >
-      {ICON_PATHS[name]}
-    </svg>
+      <span className="seclabel">↑ YOUR REQUEST</span>
+      <span className="pinned-req-text">{text}</span>
+      <span className="pinned-req-toggle mono">{open ? 'collapse ▴' : 'expand ▾'}</span>
+    </div>
   )
 }
 
-/** Pick an icon + accent colour for a session mode by matching its id/name. The
- *  ACP mode set is agent-defined, so this is a best-effort mapping with a default. */
-function modeVisual(m: SessionMode): { icon: IconName; color: string } {
-  const k = `${m.id} ${m.name}`.toLowerCase()
-  if (k.includes('plan')) return { icon: 'plan', color: 'var(--accent)' }
-  if (k.includes('ask') || k.includes('default') || k.includes('manual') || k.includes('confirm'))
-    return { icon: 'ask', color: 'var(--yellow)' }
-  return { icon: 'auto', color: 'var(--green)' }
+// ---- feed entries ----
+
+function Msg({ entry, sessionId }: { entry: ChatEntry; sessionId: string }) {
+  switch (entry.kind) {
+    case 'user':
+      return (
+        <div className="msg msg-user" data-eid={entry.id}>
+          <span className="msg-dot" style={{ background: 'var(--accent)' }} />
+          <div className="msg-you seclabel">YOU</div>
+          <div className="msg-text user">{entry.text}</div>
+        </div>
+      )
+    case 'agent':
+      return (
+        <div className="msg">
+          <span className="msg-dot" style={{ background: 'var(--accent)' }} />
+          <div className="msg-text">{entry.text}</div>
+        </div>
+      )
+    case 'thought':
+      return <ThoughtMsg text={entry.text} />
+    case 'tool':
+      return <ToolMsg entry={entry} />
+    case 'permission':
+      return <PermissionMsg entry={entry} sessionId={sessionId} />
+    case 'system':
+      return (
+        <div className="msg msg-tool">
+          <span className="msg-dot msg-dot-sm" style={{ background: 'var(--border2)' }} />
+          <div className="msg-sys mono">{entry.text}</div>
+        </div>
+      )
+  }
 }
+
+function ThoughtMsg({ text }: { text: string }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="msg">
+      <span className="msg-dot" style={{ background: 'var(--yellow)' }} />
+      <div className="thought-head mono" onClick={() => setOpen((o) => !o)}>
+        {open ? '▾' : '▸'} thinking…
+      </div>
+      {open && <div className="thought-text">{text}</div>}
+    </div>
+  )
+}
+
+/** Live placeholder shown at the tail of the log while the agent is working. */
+function ThinkingLive({ label }: { label: string }) {
+  return (
+    <div className="msg">
+      <span className="msg-dot dot-pulse" style={{ background: 'var(--yellow)' }} />
+      <div className="thought-head mono">{label}</div>
+    </div>
+  )
+}
+
+/** Uppercase kind label for the tool row; falls back to a generic tag. */
+function toolLabel(entry: ChatToolCall): string {
+  const k = entry.toolKind
+  if (!k) return 'tool'
+  if (k === 'execute') return 'run'
+  return k
+}
+
+function ToolMsg({ entry }: { entry: ChatToolCall }) {
+  const failed = entry.status === 'failed'
+  const running = entry.status === 'in_progress' || entry.status === 'pending'
+  const hasDetail = !!entry.detail
+  // Everything expandable starts collapsed; the FAILED badge and red dot are
+  // the signal to click into a failure.
+  const [open, setOpen] = useState(false)
+
+  const dotColor = failed ? 'var(--red)' : running ? 'var(--yellow)' : 'var(--border2)'
+
+  const head = (
+    <div className={`tool-head ${hasDetail ? 'clickable' : ''}`} onClick={() => hasDetail && setOpen((o) => !o)}>
+      <span className="tool-kind mono">{toolLabel(entry)}</span>
+      <span className="tool-title mono">{entry.title}</span>
+      {failed && <span className="tool-exit mono">FAILED</span>}
+      <span className="spacer" />
+      {running && <span className="tool-meta mono" style={{ color: 'var(--yellow)' }}>running…</span>}
+      {hasDetail && <span className="tool-meta mono">{open ? 'collapse ▾' : 'expand ▸'}</span>}
+    </div>
+  )
+
+  return (
+    <div className="msg msg-tool">
+      <span
+        className={`msg-dot msg-dot-sm ${running ? 'dot-pulse' : ''}`}
+        style={{ background: dotColor }}
+      />
+      {hasDetail && open ? (
+        <div className="tool-card">
+          {head}
+          <ToolDetail detail={entry.detail!} kind={entry.toolKind} />
+        </div>
+      ) : (
+        <div className="tool-row">{head}</div>
+      )}
+    </div>
+  )
+}
+
+/** Expanded tool output. Diff-looking lines get the +/− tinted treatment. */
+function ToolDetail({ detail, kind }: { detail: string; kind?: string }) {
+  const lines = detail.replace(/\n+$/, '').split('\n')
+  const isDiff = kind === 'edit' || lines.some((l) => /^[+-](?![+-])/.test(l))
+  if (!isDiff) return <pre className="tool-out mono">{detail}</pre>
+  return (
+    <div className="tool-diff mono">
+      {lines.map((line, i) => {
+        const cls = line.startsWith('+') ? 'add' : line.startsWith('-') ? 'del' : ''
+        return (
+          <div key={i} className={`diffline ${cls}`}>
+            {line || ' '}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function PermissionMsg({
+  entry,
+  sessionId
+}: {
+  entry: ChatPermission & { id: number }
+  sessionId: string
+}) {
+  const pending = !entry.chosen
+  return (
+    <div className="msg">
+      <span
+        className={`msg-dot ${pending ? 'dot-pulse' : ''}`}
+        style={{ background: pending ? 'var(--yellow)' : 'var(--border2)' }}
+      />
+      <div className={`perm-card ${pending ? '' : 'settled'}`}>
+        <div className="perm-head">
+          <Icon name="lock" size={14} style={{ color: 'var(--yellow)', flex: 'none' }} />
+          <span className="perm-title">{entry.title}</span>
+        </div>
+        <div className="perm-foot">
+          {entry.chosen ? (
+            <span className="perm-chosen mono">
+              → {entry.options.find((o) => o.optionId === entry.chosen)?.name ?? entry.chosen}
+              {entry.chosen === 'auto' ? ' (auto)' : ''}
+            </span>
+          ) : (
+            entry.options.map((o) => (
+              <button
+                key={o.optionId}
+                className={o.kind?.startsWith('allow') ? 'btn btn-sm btn-primary' : 'btn btn-sm'}
+                onClick={() =>
+                  window.gurt.sessionPermission(sessionId, entry.id, o.optionId).catch(console.error)
+                }
+              >
+                {o.name}
+              </button>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ---- pinned plan bar (bottom) ----
+
+function PlanPinned({ plan }: { plan: PlanEntry[] }) {
+  const [open, setOpen] = useState(false)
+  const done = plan.filter((p) => p.status === 'completed').length
+  const current = plan.find((p) => p.status === 'in_progress') ?? plan.find((p) => p.status !== 'completed')
+  return (
+    <div className="plan-pin">
+      <div className="plan-pin-bar" onClick={() => setOpen((o) => !o)}>
+        <span className="seclabel">{open ? '▾' : '▸'} PLAN</span>
+        <span className="plan-count mono">
+          {done} / {plan.length}
+        </span>
+        {!open && current && <span className="plan-current">◪ {current.content}</span>}
+      </div>
+      {open && (
+        <div className="plan-list">
+          {plan.map((p, i) => (
+            <div
+              key={i}
+              className={`plan-item ${
+                p.status === 'completed' ? 'done' : p.status === 'in_progress' ? 'active' : ''
+              }`}
+            >
+              <span className="pm mono">
+                {p.status === 'completed' ? '✓' : p.status === 'in_progress' ? '›' : '·'}
+              </span>
+              {p.content}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ---- composer ----
+
+const MAX_TA_HEIGHT = 220
 
 /** Trailing-slash-tolerant basename, also handling `git:` pseudo-paths. */
 const basename = (p: string): string => {
@@ -245,14 +411,8 @@ const basename = (p: string): string => {
   return cleaned.split('/').pop() || cleaned || p
 }
 
-const chipIcon = (path: string): IconName =>
-  path.startsWith('git:') ? 'git' : path.endsWith('/') ? 'folder' : 'file'
-
-function configIcon(category?: string): IconName {
-  if (category === 'model') return 'cpu'
-  if (category === 'thought_level') return 'gauge'
-  return 'toggle'
-}
+const chipIcon = (path: string): 'branch' | 'folder' | 'file' =>
+  path.startsWith('git:') ? 'branch' : path.endsWith('/') ? 'folder' : 'file'
 
 /** Read a File as bare base64 (no `data:...;base64,` prefix), for an ACP image block. */
 function fileToBase64(file: File): Promise<string> {
@@ -267,6 +427,7 @@ function fileToBase64(file: File): Promise<string> {
 function Composer({
   sessionId,
   busy,
+  flush,
   modes,
   commands,
   configOptions,
@@ -274,6 +435,8 @@ function Composer({
 }: {
   sessionId: string
   busy: boolean
+  /** No plan bar above — the composer sits flush against the feed. */
+  flush: boolean
   modes?: SessionModes
   commands: CommandInfo[]
   configOptions: SessionConfigOption[]
@@ -285,9 +448,7 @@ function Composer({
   const [images, setImages] = useState<PromptImage[]>([])
   const [slashOpen, setSlashOpen] = useState(false)
   const [addOpen, setAddOpen] = useState(false)
-  const [modeOpen, setModeOpen] = useState(false)
-  /** id of the config-option select whose dropdown is open, or null. */
-  const [openConfigId, setOpenConfigId] = useState<string | null>(null)
+  const [gearOpen, setGearOpen] = useState(false)
   const [cmdQuery, setCmdQuery] = useState('')
   const [cmdIdx, setCmdIdx] = useState(0)
   /** null → the add-context item list; 'file'/'folder' → an inline path input. */
@@ -322,9 +483,9 @@ function Composer({
 
   // Close every popup on an outside click or Esc. The textarea/slash input
   // handle their own Esc; this document listener covers the rest (e.g. focus
-  // left on the pill button that opened the menu).
+  // left on the button that opened the menu).
   useEffect(() => {
-    if (!slashOpen && !addOpen && !modeOpen && openConfigId === null) return
+    if (!slashOpen && !addOpen && !gearOpen) return
     const onDown = (e: MouseEvent) => {
       if (rootRef.current && !rootRef.current.contains(e.target as Node)) closeMenus()
     }
@@ -337,7 +498,7 @@ function Composer({
       document.removeEventListener('mousedown', onDown)
       document.removeEventListener('keydown', onKey)
     }
-  }, [slashOpen, addOpen, modeOpen, openConfigId])
+  }, [slashOpen, addOpen, gearOpen])
 
   // Stop any live dictation when the composer unmounts (session switch).
   useEffect(() => () => recogRef.current?.stop(), [])
@@ -359,16 +520,14 @@ function Composer({
   const closeMenus = () => {
     setSlashOpen(false)
     setAddOpen(false)
-    setModeOpen(false)
-    setOpenConfigId(null)
+    setGearOpen(false)
     setAddKind(null)
     setAddPath('')
   }
 
   const openSlash = (open: boolean) => {
     setAddOpen(false)
-    setModeOpen(false)
-    setOpenConfigId(null)
+    setGearOpen(false)
     setSlashOpen(open)
     setCmdQuery('')
     setCmdIdx(0)
@@ -377,8 +536,7 @@ function Composer({
 
   const openAdd = (open: boolean) => {
     setSlashOpen(false)
-    setModeOpen(false)
-    setOpenConfigId(null)
+    setGearOpen(false)
     setAddKind(null)
     setAddPath('')
     setAddOpen(open)
@@ -431,16 +589,9 @@ function Composer({
 
   const removeImage = (i: number) => setImages((imgs) => imgs.filter((_, j) => j !== i))
 
-  const changeConfig = (opt: SessionConfigOption, value: string | boolean) => {
-    setOpenConfigId(null)
-    window.gurt.sessionSetConfigOption(sessionId, opt.id, value).catch((e) => alertDialog(String(e)))
-  }
-
   const pickCommand = (name: string) => {
     setText(`/${name} `)
-    setSlashOpen(false)
-    setCmdQuery('')
-    setCmdIdx(0)
+    closeMenus()
     setTimeout(() => taRef.current?.focus(), 0)
   }
 
@@ -531,56 +682,19 @@ function Composer({
   }
 
   const canSend = !busy && (text.trim().length > 0 || images.length > 0)
-  const curMode = modes?.availableModes.find((m) => m.id === modes.currentModeId)
-  const curVisual = curMode ? modeVisual(curMode) : null
-  const hasModes = !!modes && modes.availableModes.length > 0
-  // The agent may surface Mode as a config option too; we already render it as the
-  // dedicated mode pill, so drop it here to avoid a duplicate control.
-  const cfgOptions = configOptions.filter((o) => o.category !== 'mode')
-  const openConfig = cfgOptions.find((o) => o.id === openConfigId && o.type === 'select')
+  const hasGearContent =
+    (!!modes && modes.availableModes.length > 0) || configOptions.length > 0 || commands.length > 0
 
   return (
-    <div className="composer-wrap">
-      {(chips.length > 0 || images.length > 0) && (
-        <div className="composer-chips">
-          {chips.map((c, i) => (
-            <span className="ctx-chip" key={`${c.path}-${i}`}>
-              <span className="ctx-ic">
-                <Icon name={chipIcon(c.path)} size={12} />
-              </span>
-              <span className="ctx-name">{c.name}</span>
-              <span className="ctx-x" title="Remove" onClick={() => removeChip(i)}>
-                ×
-              </span>
-            </span>
-          ))}
-          {images.map((img, i) => (
-            <span className="ctx-chip" key={`img-${img.name}-${i}`}>
-              <span className="ctx-ic">
-                <Icon name="image" size={12} />
-              </span>
-              <span className="ctx-name">{img.name}</span>
-              <span className="ctx-x" title="Remove" onClick={() => removeImage(i)}>
-                ×
-              </span>
-            </span>
-          ))}
-        </div>
-      )}
-
-      <div
-        ref={rootRef}
-        className={`composer ${busy ? 'disabled' : ''} ${focused && !busy ? 'focused' : ''}`}
-      >
+    <div className={`composer-wrap ${flush ? 'flush' : ''}`}>
+      <div ref={rootRef} className={`composer ${busy ? 'disabled' : ''} ${focused && !busy ? 'focused' : ''}`}>
         {showSlash && (
           <div className="cmp-menu slash-menu">
             <div className="slash-filter-row">
-              <span className="slash-search">
-                <Icon name="search" size={13} />
-              </span>
+              <Icon name="search" size={13} className="faint" />
               <input
                 ref={cmdRef}
-                className="cmp-input slash-filter"
+                className="cmp-input"
                 placeholder="Filter commands…"
                 value={cmdQuery}
                 onChange={(e) => {
@@ -597,14 +711,14 @@ function Composer({
                 filteredCmds.map((c, i) => (
                   <div
                     key={c.name}
-                    className={`cmp-menu-item ${i === cmdIdx ? 'active' : ''}`}
+                    className={`menu-item ${i === cmdIdx ? 'active' : ''}`}
                     onMouseEnter={() => setCmdIdx(i)}
                     onMouseDown={(e) => {
                       e.preventDefault()
                       pickCommand(c.name)
                     }}
                   >
-                    <span className="cmd-name">/{c.name}</span>
+                    <span className="cmd-name mono">/{c.name}</span>
                     {c.description && <span className="cmd-desc">{c.description}</span>}
                   </div>
                 ))
@@ -617,61 +731,53 @@ function Composer({
           <div className="cmp-menu add-menu">
             {addKind === null ? (
               <>
-                <div className="cmp-menu-head">ADD CONTEXT</div>
+                <div className="cmp-menu-head seclabel">ADD CONTEXT</div>
                 <div
-                  className="cmp-menu-item ctx-item"
+                  className="menu-item"
                   onMouseDown={(e) => {
                     e.preventDefault()
                     setAddKind('file')
                   }}
                 >
-                  <span className="ctx-ic">
-                    <Icon name="file" />
-                  </span>
+                  <Icon name="file" size={14} className="code" />
                   <span>File…</span>
                 </div>
                 <div
-                  className="cmp-menu-item ctx-item"
+                  className="menu-item"
                   onMouseDown={(e) => {
                     e.preventDefault()
                     setAddKind('folder')
                   }}
                 >
-                  <span className="ctx-ic">
-                    <Icon name="folder" />
-                  </span>
+                  <Icon name="folder" size={14} className="code" />
                   <span>Folder…</span>
                 </div>
                 <div
-                  className="cmp-menu-item ctx-item"
+                  className="menu-item"
                   onMouseDown={(e) => {
                     e.preventDefault()
                     addChip({ name: 'git diff', path: 'git:diff' })
                   }}
                 >
-                  <span className="ctx-ic">
-                    <Icon name="git" />
-                  </span>
+                  <Icon name="branch" size={14} className="code" />
                   <span>Git diff</span>
                 </div>
                 {promptCaps?.image && (
                   <div
-                    className="cmp-menu-item ctx-item"
+                    className="menu-item"
                     onMouseDown={(e) => {
                       e.preventDefault()
                       imgRef.current?.click()
                     }}
                   >
-                    <span className="ctx-ic">
-                      <Icon name="image" />
-                    </span>
+                    <Icon name="image" size={14} className="code" />
                     <span>Image…</span>
                   </div>
                 )}
               </>
             ) : (
               <>
-                <div className="cmp-menu-head">
+                <div className="cmp-menu-head seclabel">
                   {addKind === 'file' ? 'ADD FILE' : 'ADD FOLDER'}
                 </div>
                 <input
@@ -697,52 +803,14 @@ function Composer({
           </div>
         )}
 
-        {modeOpen && hasModes && (
-          <div className="cmp-menu mode-menu">
-            <div className="cmp-menu-head">MODE</div>
-            {modes!.availableModes.filter((m) => !isBlanketMode(m)).map((m) => {
-              const v = modeVisual(m)
-              return (
-                <div
-                  key={m.id}
-                  className="cmp-menu-item mode-row"
-                  onMouseDown={(e) => {
-                    e.preventDefault()
-                    setModeOpen(false)
-                    window.gurt.sessionSetMode(sessionId, m.id).catch((er) => alertDialog(String(er)))
-                  }}
-                >
-                  <span className="mode-ic" style={{ color: v.color }}>
-                    <Icon name={v.icon} size={14} />
-                  </span>
-                  <span className="mode-name">{m.name}</span>
-                  {m.id === modes!.currentModeId && <span className="mode-check">✓</span>}
-                </div>
-              )
-            })}
-          </div>
-        )}
-
-        {openConfig && (
-          <div className="cmp-menu mode-menu">
-            <div className="cmp-menu-head">{openConfig.name.toUpperCase()}</div>
-            <div className="slash-list">
-              {(openConfig.options ?? []).map((o) => (
-                <div
-                  key={o.value}
-                  className="cmp-menu-item mode-row"
-                  title={o.description ?? undefined}
-                  onMouseDown={(e) => {
-                    e.preventDefault()
-                    changeConfig(openConfig, o.value)
-                  }}
-                >
-                  <span className="mode-name">{o.name}</span>
-                  {o.value === openConfig.currentValue && <span className="mode-check">✓</span>}
-                </div>
-              ))}
-            </div>
-          </div>
+        {gearOpen && (
+          <GearPopup
+            sessionId={sessionId}
+            modes={modes}
+            configOptions={configOptions}
+            commands={commands}
+            onPickCommand={pickCommand}
+          />
         )}
 
         <input
@@ -757,12 +825,12 @@ function Composer({
           }}
         />
 
-        <div className="composer-row">
+        <div className="composer-top">
           <textarea
             ref={taRef}
             rows={1}
             className="composer-input"
-            placeholder={busy ? 'agent is working…' : 'Ask gurt to change your code, or type / for commands…'}
+            placeholder={busy ? 'agent is working…' : 'Ask gurt to change your code…'}
             value={text}
             disabled={busy}
             onFocus={() => setFocused(true)}
@@ -783,89 +851,64 @@ function Composer({
             disabled={busy}
             onClick={toggleMic}
           >
-            <Icon name="mic" size={17} />
+            <Icon name="mic" size={14} />
           </button>
         </div>
 
-        <div className="composer-toolbar">
+        <div className="composer-bar">
           <button
-            className={`tbtn ${addOpen ? 'active' : ''}`}
+            className={`icon-sq ${addOpen ? 'active' : ''}`}
             title="Add context"
             disabled={busy}
             onClick={() => openAdd(!addOpen)}
           >
-            <Icon name="plus" />
+            <Icon name="plus" size={14} />
           </button>
           <button
-            className={`tbtn tbtn-slash ${showSlash ? 'active' : ''}`}
+            className={`icon-sq ${showSlash ? 'active' : ''}`}
             title="Commands"
-            disabled={busy}
+            disabled={busy || commands.length === 0}
             onClick={() => openSlash(!slashOpen)}
           >
-            /
+            <Icon name="slash" size={14} />
           </button>
-          <span className="spacer" />
-          {text.length > 0 && <span className="char-count">{text.length} chars</span>}
-          {hasModes && (
+          {chips.map((c, i) => (
             <button
-              className={`mode-pill ${modeOpen ? 'active' : ''}`}
+              key={`${c.path}-${i}`}
+              className="icon-sq att"
+              title={`${c.name} — click to remove`}
+              onClick={() => removeChip(i)}
+            >
+              <Icon name={chipIcon(c.path)} size={13} />
+            </button>
+          ))}
+          {images.map((img, i) => (
+            <button
+              key={`img-${img.name}-${i}`}
+              className="icon-sq att"
+              title={`${img.name} — click to remove`}
+              onClick={() => removeImage(i)}
+            >
+              <Icon name="image" size={13} />
+            </button>
+          ))}
+          <span className="spacer" />
+          {hasGearContent && (
+            <button
+              className={`icon-sq ${gearOpen ? 'active' : ''}`}
+              title="Session settings"
               onClick={() => {
                 setSlashOpen(false)
                 setAddOpen(false)
-                setModeOpen((o) => !o)
+                setGearOpen((o) => !o)
               }}
             >
-              {curVisual && (
-                <span className="mode-ic" style={{ color: curVisual.color }}>
-                  <Icon name={curVisual.icon} size={14} />
-                </span>
-              )}
-              {curMode?.name ?? 'Mode'}
-              <span className="caret">▾</span>
+              <Icon name="gear" size={14} />
             </button>
           )}
-          {cfgOptions.map((opt) => {
-            if (opt.type === 'boolean') {
-              const on = opt.currentValue === true
-              return (
-                <button
-                  key={opt.id}
-                  className={`mode-pill ${on ? 'active' : ''}`}
-                  title={opt.description ?? opt.name}
-                  disabled={busy}
-                  onClick={() => changeConfig(opt, !on)}
-                >
-                  <span className="mode-ic" style={{ color: on ? 'var(--green)' : 'var(--text-dim3)' }}>
-                    <Icon name="toggle" size={14} />
-                  </span>
-                  {opt.name}
-                </button>
-              )
-            }
-            const cur = opt.options?.find((o) => o.value === opt.currentValue)
-            return (
-              <button
-                key={opt.id}
-                className={`mode-pill ${openConfigId === opt.id ? 'active' : ''}`}
-                title={opt.description ?? opt.name}
-                disabled={busy}
-                onClick={() => {
-                  setSlashOpen(false)
-                  setAddOpen(false)
-                  setModeOpen(false)
-                  setOpenConfigId((id) => (id === opt.id ? null : opt.id))
-                }}
-              >
-                <span className="mode-ic" style={{ color: 'var(--accent)' }}>
-                  <Icon name={configIcon(opt.category)} size={14} />
-                </span>
-                {cur?.name ?? opt.name}
-                <span className="caret">▾</span>
-              </button>
-            )
-          })}
           <button className="send-btn" disabled={!canSend} onClick={send} title="Send">
-            <Icon name="send" size={17} />
+            <Icon name="send" size={12} />
+            send
           </button>
         </div>
       </div>
@@ -874,10 +917,114 @@ function Composer({
           {micError}
         </div>
       )}
-      <div className="composer-hint">
-        Enter to send · Shift+Enter for newline · <span className="k">/</span> for commands ·{' '}
-        <span className="k">+</span> for context
+    </div>
+  )
+}
+
+/** ⚙ popup (#1b): model / effort / mode chip groups + quick commands. */
+function GearPopup({
+  sessionId,
+  modes,
+  configOptions,
+  commands,
+  onPickCommand
+}: {
+  sessionId: string
+  modes?: SessionModes
+  configOptions: SessionConfigOption[]
+  commands: CommandInfo[]
+  onPickCommand: (name: string) => void
+}) {
+  const setMode = (id: string) =>
+    window.gurt.sessionSetMode(sessionId, id).catch((e) => alertDialog(String(e)))
+  const setConfig = (opt: SessionConfigOption, value: string | boolean) =>
+    window.gurt.sessionSetConfigOption(sessionId, opt.id, value).catch((e) => alertDialog(String(e)))
+
+  // The agent may surface Mode as a config option too; the dedicated mode group
+  // already renders it, so drop the duplicate control.
+  const cfg = configOptions.filter((o) => o.category !== 'mode')
+  const sectionTitle = (o: SessionConfigOption) =>
+    o.category === 'model' ? 'MODEL' : o.category === 'thought_level' ? 'EFFORT' : o.name.toUpperCase()
+
+  return (
+    <div className="cmp-menu gear-pop">
+      <div className="gear-groups">
+        {cfg.map((opt) =>
+          opt.type === 'select' ? (
+            <div key={opt.id} className="gear-group">
+              <div className="seclabel">{sectionTitle(opt)}</div>
+              <div className="chip-row">
+                {(opt.options ?? []).map((o) => (
+                  <button
+                    key={o.value}
+                    className={`chip-btn ${o.value === opt.currentValue ? 'on' : ''}`}
+                    title={o.description ?? undefined}
+                    onClick={() => setConfig(opt, o.value)}
+                  >
+                    {o.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div key={opt.id} className="gear-group">
+              <div className="seclabel">{sectionTitle(opt)}</div>
+              <div className="chip-row">
+                <button
+                  className={`chip-btn ${opt.currentValue === true ? 'on' : ''}`}
+                  onClick={() => setConfig(opt, true)}
+                >
+                  on
+                </button>
+                <button
+                  className={`chip-btn ${opt.currentValue === false ? 'on' : ''}`}
+                  onClick={() => setConfig(opt, false)}
+                >
+                  off
+                </button>
+              </div>
+            </div>
+          )
+        )}
+        {modes && modes.availableModes.length > 0 && (
+          <div className="gear-group">
+            <div className="seclabel">MODE</div>
+            <div className="chip-row">
+              {modes.availableModes
+                .filter((m) => !isBlanketMode(m))
+                .map((m) => (
+                  <button
+                    key={m.id}
+                    className={`chip-btn ${m.id === modes.currentModeId ? 'on' : ''}`}
+                    onClick={() => setMode(m.id)}
+                  >
+                    {m.name}
+                  </button>
+                ))}
+            </div>
+          </div>
+        )}
       </div>
+      {commands.length > 0 && (
+        <div className="gear-cmds">
+          <div className="seclabel">QUICK COMMANDS</div>
+          <div className="gear-cmd-list">
+            {commands.map((c) => (
+              <div
+                key={c.name}
+                className="menu-item"
+                onMouseDown={(e) => {
+                  e.preventDefault()
+                  onPickCommand(c.name)
+                }}
+              >
+                <span className="cmd-name mono code">/{c.name}</span>
+                {c.description && <span className="cmd-desc right">{c.description}</span>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -917,198 +1064,4 @@ function speechErrorMessage(code?: string): string {
     default:
       return `dictation error: ${code ?? 'unknown'}`
   }
-}
-
-function EntryRow({
-  entry,
-  sessionId,
-  last
-}: {
-  entry: ChatEntry
-  sessionId: string
-  last: boolean
-}) {
-  return (
-    <div className="entry-row">
-      <div className="rail">
-        <RailNode entry={entry} />
-        {!last && <span className="rail-line" />}
-      </div>
-      <div className="entry-body">
-        <EntryBody entry={entry} sessionId={sessionId} />
-      </div>
-    </div>
-  )
-}
-
-/** Live placeholder shown at the tail of the log while the agent is working,
- *  so there's visible feedback before its first output arrives. */
-function ThinkingRow() {
-  return (
-    <div className="entry-row">
-      <div className="rail">
-        <span className="rail-node rn-agent thinking-node">G</span>
-      </div>
-      <div className="entry-body">
-        <div className="entry-label">
-          Thinking
-          <span className="thinking-dots">
-            <span>.</span>
-            <span>.</span>
-            <span>.</span>
-          </span>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function RailNode({ entry }: { entry: ChatEntry }) {
-  switch (entry.kind) {
-    case 'user':
-      return <span className="rail-dot" style={{ background: 'var(--accent)' }} />
-    case 'agent':
-      return <span className="rail-node rn-agent">G</span>
-    case 'thought':
-      return <span className="rail-node rn-thought">◔</span>
-    case 'tool': {
-      const cls =
-        entry.status === 'completed' ? 'rn-ok' : entry.status === 'failed' ? 'rn-fail' : 'rn-run'
-      const mark = entry.status === 'completed' ? '✓' : entry.status === 'failed' ? '✕' : '◔'
-      return <span className={`rail-node ${cls}`}>{mark}</span>
-    }
-    case 'permission':
-      return <span className="rail-node rn-perm">!</span>
-    case 'system':
-      return <span className="rail-node rn-sys">·</span>
-  }
-}
-
-function EntryBody({ entry, sessionId }: { entry: ChatEntry; sessionId: string }) {
-  switch (entry.kind) {
-    case 'user':
-      return (
-        <>
-          <div className="entry-label">You</div>
-          <div className="entry-text user">{entry.text}</div>
-        </>
-      )
-    case 'agent':
-      return <div className="entry-text">{entry.text}</div>
-    case 'thought':
-      return (
-        <>
-          <div className="entry-label">Thinking</div>
-          <div className="entry-text thought">{entry.text}</div>
-        </>
-      )
-    case 'tool':
-      return (
-        <div className="tool-block">
-          <div className="tool-chip">
-            <span className={`tool-status tool-${entry.status}`}>{entry.status}</span>
-            {entry.toolKind && <span className="tk">[{entry.toolKind}]</span>}
-            <span>{entry.title}</span>
-          </div>
-          {entry.detail && (
-            <details>
-              <summary className="tool-chip" style={{ borderRadius: '0 0 7px 7px', borderTop: 'none' }}>
-                <span className="tk">output ▸</span>
-              </summary>
-              <pre className="tool-detail">{entry.detail}</pre>
-            </details>
-          )}
-        </div>
-      )
-    case 'permission':
-      return (
-        <div className="perm-card">
-          <div className="perm-title">
-            <span style={{ color: 'var(--yellow)' }}>🔓</span>
-            {entry.title}
-          </div>
-          {entry.chosen ? (
-            <div className="perm-chosen">
-              → {entry.options.find((o) => o.optionId === entry.chosen)?.name ?? entry.chosen}
-              {entry.chosen === 'auto' ? ' (auto)' : ''}
-            </div>
-          ) : (
-            <div className="perm-buttons">
-              {entry.options.map((o) => (
-                <button
-                  key={o.optionId}
-                  className={o.kind?.startsWith('allow') ? 'allow-btn' : 'reject-btn'}
-                  onClick={() =>
-                    window.gurt.sessionPermission(sessionId, entry.id, o.optionId).catch(console.error)
-                  }
-                >
-                  {o.name}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      )
-    case 'system':
-      return <div className="entry-text sys">{entry.text}</div>
-  }
-}
-
-function PlanPanel({
-  plan,
-  open,
-  onToggle
-}: {
-  plan: PlanEntry[]
-  open: boolean
-  onToggle: () => void
-}) {
-  const done = plan.filter((p) => p.status === 'completed').length
-  const running = plan.some((p) => p.status === 'in_progress')
-  const pct = plan.length ? Math.round((done / plan.length) * 100) : 0
-  return (
-    <div className="plan-panel">
-      <div className="plan-toggle" onClick={onToggle}>
-        <svg
-          className="plan-chevron"
-          width="11"
-          height="11"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="3"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          style={{ transform: open ? 'rotate(0deg)' : 'rotate(-90deg)' }}
-        >
-          <polyline points="6 9 12 15 18 9" />
-        </svg>
-        <span>TODO</span>
-        <span style={{ color: 'var(--text-dim3)', fontWeight: 400 }}>
-          {done} / {plan.length}
-        </span>
-        <div className="plan-bar">
-          <div style={{ width: `${pct}%` }} />
-        </div>
-        {running && <span className="plan-running">running</span>}
-      </div>
-      {open && (
-        <div className="plan-list">
-          {plan.map((p, i) => (
-            <div
-              key={i}
-              className={`plan-item ${
-                p.status === 'completed' ? 'done' : p.status === 'in_progress' ? 'active' : ''
-              }`}
-            >
-              <span className="pm">
-                {p.status === 'completed' ? '✓' : p.status === 'in_progress' ? '›' : '·'}
-              </span>
-              {p.content}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  )
 }

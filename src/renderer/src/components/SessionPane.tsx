@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { SessionSnapshot, Tree } from '../../../shared/types'
 import { agentName, useAgents } from '../useAgents'
 import { alertDialog, confirmDialog } from '../dialog'
+import { Dot } from './icons'
 import { Chat } from './Chat'
 import { NewSessionModal } from './Sidebar'
 
@@ -35,16 +36,29 @@ export function SessionPane({
   )
 }
 
+const STATE_DOT = {
+  draft: { tone: 'outline' as const, pulse: false },
+  queued: { tone: 'accent' as const, pulse: false },
+  starting: { tone: 'yellow' as const, pulse: true },
+  started: { tone: 'green' as const, pulse: false }
+}
+
 function Header({ snapshot }: { snapshot: SessionSnapshot }) {
   const { info } = snapshot
   const agents = useAgents()
+  const dot = STATE_DOT[info.state]
   return (
-    <div className="chat-header">
-      <span>
-        {info.workspace} / {info.task} / {info.envRepo} — {info.title}
+    <div className="chat-head">
+      <Dot tone={dot.tone} pulse={dot.pulse} />
+      <span className="chat-title">
+        {info.task} / {info.title}
       </span>
-      <span className={`chip mark-${info.state}`}>{info.state}</span>
-      {info.agent && <span className="chip">{agentName(agents, info.agent)}</span>}
+      <span className="tag">{info.state}</span>
+      <span className="spacer" />
+      <span className="chat-pill">
+        {info.envRepo}
+        {info.agent ? ` · ${agentName(agents, info.agent)}` : ''}
+      </span>
     </div>
   )
 }
@@ -89,18 +103,20 @@ function NonStartedPane({
       {info.state === 'draft' && (
         <div className="draft-body">
           <div className="draft-settings">
-            <span className="chip">{info.envRepo}</span>
-            <span className="chip">{info.agent ? agentName(agents, info.agent) : 'no agent'}</span>
-            <span className="chip">{info.autoAllow === false ? 'manual' : 'auto'}</span>
-            {info.gitAccess && <span className="chip chip-git">git</span>}
+            <span className="tag">{info.envRepo}</span>
+            <span className="tag">{info.agent ? agentName(agents, info.agent) : 'no agent'}</span>
+            <span className="tag">{info.autoAllow === false ? 'manual' : 'auto'}</span>
+            {info.gitAccess && <span className="tag tag-green">git</span>}
             {info.mcp?.map((m) => (
-              <span key={m.id} className="chip chip-mcp" title={`MCP ${m.id} · ${m.mode}`}>
+              <span key={m.id} className="tag tag-accent" title={`MCP ${m.id} · ${m.mode}`}>
                 {m.id}
                 {m.mode === 'read-only' ? ' ᴿᴼ' : ''}
               </span>
             ))}
             <span className="spacer" />
-            <button onClick={() => setEditOpen(true)}>Edit settings</button>
+            <button className="btn btn-sm" onClick={() => setEditOpen(true)}>
+              Edit settings
+            </button>
           </div>
           <textarea
             className="draft-prompt"
@@ -114,6 +130,7 @@ function NonStartedPane({
           />
           <div className="row-buttons">
             <button
+              className="btn btn-primary"
               disabled={!text.trim()}
               onClick={async () => {
                 if (text !== info.startPrompt) await window.gurt.sessionEditPrompt(sessionId, text)
@@ -123,6 +140,7 @@ function NonStartedPane({
               Run now
             </button>
             <button
+              className="btn"
               disabled={!text.trim()}
               onClick={async () => {
                 if (text !== info.startPrompt) await window.gurt.sessionEditPrompt(sessionId, text)
@@ -131,7 +149,10 @@ function NonStartedPane({
             >
               Add to queue
             </button>
-            <button onClick={del}>Delete</button>
+            <span className="spacer" />
+            <button className="btn btn-danger-text" onClick={del}>
+              Delete
+            </button>
           </div>
           {editOpen && tree && (
             <NewSessionModal
@@ -159,10 +180,16 @@ function NonStartedPane({
           )}
           <pre className="draft-prompt readonly">{info.startPrompt}</pre>
           <div className="row-buttons">
-            <button onClick={() => window.gurt.sessionCancelQueue(sessionId).catch((e) => alertDialog(String(e)))}>
+            <button
+              className="btn"
+              onClick={() => window.gurt.sessionCancelQueue(sessionId).catch((e) => alertDialog(String(e)))}
+            >
               Cancel
             </button>
-            <button onClick={del}>Delete</button>
+            <span className="spacer" />
+            <button className="btn btn-danger-text" onClick={del}>
+              Delete
+            </button>
           </div>
         </div>
       )}
