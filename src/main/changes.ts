@@ -164,7 +164,9 @@ async function repoChanges(
   const access = await hostGitAccessForRepo(ws, repo)
   if (fetch) await fetchPrune(dir, access, task)
 
-  const porcelain = await git(dir, access, ['status', '--porcelain'])
+  // `-uall` lists every untracked file individually; the default `normal` mode
+  // collapses a wholly-untracked directory into one `newdir/` entry, hiding its files.
+  const porcelain = await git(dir, access, ['status', '--porcelain', '-uall'])
   const files = porcelain
     .split('\n')
     .filter((l) => l.trim())
