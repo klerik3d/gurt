@@ -742,45 +742,55 @@ export class SessionManager {
     const agentId = s.info.agent ?? 'claude-code'
     const existing = this.connections.get(connKey(s.ref, agentId))
     if (existing && s.attached) return existing
-    const ctx = await this.events.resolveEnv(s.ref, agentId, s.info.gitAccess ?? false)
-    s.remoteCwd = ctx.remoteWorkspaceFolder
-    const conn = await this.connection(s.ref, agentId, ctx)
-    if (!s.attached) {
-      if (!s.acpSessionId) throw new Error('session was never started')
-      // Resuming is a live indicator (snapshot.resuming), not chat history —
-      // the timeline stays clean of "resuming/resumed" noise.
+    // We're going to re-open the session (resolveEnv wakes the container, then
+    // session/load). Raise the "resuming" indicator NOW — before the slow
+    // container wake — so the UI reads "resuming…" for the whole reattach rather
+    // than "thinking…" until the container is up and only then flipping. Resuming
+    // is a live indicator (snapshot.resuming), never chat history.
+    const resuming = !s.attached
+    if (resuming) {
       s.loading = true
       this.bus.emit('session.changed', { sessionId: s.info.id })
-      try {
-        const mcpServers = [
-          ...(await this.events.resolveMcpServers(s.ref, s.info.mcp)),
-          await this.events.resolveGurtServer(s.ref, s.info.id, (p) => this.onComplete(s.info.id, p))
-        ]
-        const result = await conn.peer.request<{
-          modes?: SessionModes
-          configOptions?: unknown[]
-        }>('session/load', {
-          sessionId: s.acpSessionId,
-          cwd: ctx.remoteWorkspaceFolder,
-          mcpServers
-        })
-        s.modes = result?.modes ?? s.modes
-        s.configOptions = normalizeConfigOptions(result?.configOptions) ?? s.configOptions
-        s.attached = true
-        this.cacheAgentConfig(s)
-        await this.applyAutoAllow(s, conn)
-      } catch (e) {
-        this.push(s, {
-          kind: 'system',
-          text: `could not resume (${e instanceof Error ? e.message : e}) — create a new session`
-        })
-        throw e
-      } finally {
+    }
+    try {
+      const ctx = await this.events.resolveEnv(s.ref, agentId, s.info.gitAccess ?? false)
+      s.remoteCwd = ctx.remoteWorkspaceFolder
+      const conn = await this.connection(s.ref, agentId, ctx)
+      if (!s.attached) {
+        if (!s.acpSessionId) throw new Error('session was never started')
+        try {
+          const mcpServers = [
+            ...(await this.events.resolveMcpServers(s.ref, s.info.mcp)),
+            await this.events.resolveGurtServer(s.ref, s.info.id, (p) => this.onComplete(s.info.id, p))
+          ]
+          const result = await conn.peer.request<{
+            modes?: SessionModes
+            configOptions?: unknown[]
+          }>('session/load', {
+            sessionId: s.acpSessionId,
+            cwd: ctx.remoteWorkspaceFolder,
+            mcpServers
+          })
+          s.modes = result?.modes ?? s.modes
+          s.configOptions = normalizeConfigOptions(result?.configOptions) ?? s.configOptions
+          s.attached = true
+          this.cacheAgentConfig(s)
+          await this.applyAutoAllow(s, conn)
+        } catch (e) {
+          this.push(s, {
+            kind: 'system',
+            text: `could not resume (${e instanceof Error ? e.message : e}) — create a new session`
+          })
+          throw e
+        }
+      }
+      return conn
+    } finally {
+      if (resuming) {
         s.loading = false
         this.bus.emit('session.changed', { sessionId: s.info.id })
       }
     }
-    return conn
   }
 
   /** Build the ACP prompt content blocks: the message text, a `resource_link` for
