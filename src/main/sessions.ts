@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import type {
   AcpHttpMcpServer,
+  AgentConfig,
+  AgentConfigCache,
   ChangeProposal,
   ChatEntry,
   ChatEntryBase,
@@ -20,6 +22,7 @@ import type {
   StoredProposal
 } from '../shared/types'
 import { applyLog } from '../shared/types'
+import { defaultAgentConfig } from '../shared/agentConfig'
 import type { AgentDef } from '../shared/agents'
 import type { CreateAction } from '../shared/api'
 import { connKey, envKey, taskKey } from '../shared/keys'
@@ -160,6 +163,8 @@ export interface SessionEvents {
   /** Current infra status of the env (for the scheduler's free-repo predicate). */
   envStatus: (ref: EnvRef) => Promise<EnvStatus>
   persist: (ws: string, task: string, records: PersistedSession[]) => void
+  /** Persist the refreshed config surface for an agent instance (cache). */
+  saveAgentConfig: (agentId: string, cfg: AgentConfig) => void
   /** Append records to the session's JSONL log (append-only, ordered).
    *  Resolves once the records are on disk — the flush cursor waits for it. */
   appendLog: (ws: string, task: string, sessionId: string, records: SessionLogRecord[]) => Promise<void>
@@ -217,6 +222,13 @@ export class SessionManager {
   private persistTimers = new Map<string, NodeJS.Timeout>()
   /** (env, agent) pairs whose adapter is installed this app run. */
   private installedAdapters = new Set<string>()
+  /** Per agent-instance id, its last-known config surface (models/effort/commands/
+   *  modes). Seeded from the persisted cache at restore, refreshed on every live
+   *  session start/load/update — the source of truth the New Session modal reads
+   *  and the fallback a detached session's snapshot uses. */
+  private agentConfigs = new Map<string, AgentConfig>()
+  /** Serialized form of the last cache write per agent — skips redundant saves. */
+  private agentConfigWritten = new Map<string, string>()
 
   constructor(
     private events: SessionEvents,
@@ -253,6 +265,39 @@ export class SessionManager {
     }
   }
 
+  /** Seed the in-memory config cache from the persisted one (called once at boot). */
+  loadAgentConfigs(cache: AgentConfigCache): void {
+    for (const [id, cfg] of Object.entries(cache)) {
+      this.agentConfigs.set(id, cfg)
+      this.agentConfigWritten.set(id, JSON.stringify(cfg))
+    }
+  }
+
+  /** Cached config for an agent instance, or its kind's hardcoded default. */
+  agentConfig(agentId: string, kind?: string): AgentConfig {
+    return this.agentConfigs.get(agentId) ?? defaultAgentConfig(kind ?? agentId)
+  }
+
+  /** Fold a started session's live surface into the agent cache and persist it
+   *  (deduped). No-op for sessions without an agent id. */
+  private cacheAgentConfig(s: Session): void {
+    const agentId = s.info.agent
+    if (!agentId) return
+    const prev = this.agentConfigs.get(agentId)
+    const cfg: AgentConfig = {
+      configOptions: s.configOptions ?? prev?.configOptions ?? [],
+      commands: s.commands ?? prev?.commands ?? [],
+      modes: s.modes ?? prev?.modes,
+      updatedAt: new Date().toISOString()
+    }
+    this.agentConfigs.set(agentId, cfg)
+    // Compare without the timestamp so a pure re-report doesn't churn the file.
+    const key = JSON.stringify({ ...cfg, updatedAt: undefined })
+    if (this.agentConfigWritten.get(agentId) === key) return
+    this.agentConfigWritten.set(agentId, key)
+    this.events.saveAgentConfig(agentId, cfg)
+  }
+
   listForTask(ws: string, task: string): SessionInfo[] {
     return [...this.sessions.values()]
       .filter((s) => s.ref.workspace === ws && s.ref.task === task)
@@ -278,23 +323,26 @@ export class SessionManager {
 
   snapshot(sessionId: string): SessionSnapshot | undefined {
     const s = this.sessions.get(sessionId)
-    return (
-      s && {
-        info: this.infoWithRuntime(s),
-        entries: s.entries,
-        busy: s.busy,
-        resuming: s.loading || undefined,
-        modes: s.modes,
-        plan: s.plan,
-        commands: s.commands,
-        configOptions: s.configOptions,
-        promptCapabilities: this.connections.get(connKey(s.ref, s.info.agent ?? ''))
-          ?.promptCapabilities,
-        startError: s.startError,
-        queuePosition: this.queuePosition(sessionId),
-        proposal: s.proposal
-      }
-    )
+    if (!s) return undefined
+    // A started-but-detached session (e.g. restored after a restart, or an env
+    // that auto-stopped) has no live surface yet — fall back to the agent cache
+    // so the composer still shows its commands/modes and running one wakes it.
+    const cached = s.info.agent ? this.agentConfigs.get(s.info.agent) : undefined
+    return {
+      info: this.infoWithRuntime(s),
+      entries: s.entries,
+      busy: s.busy,
+      resuming: s.loading || undefined,
+      modes: s.modes ?? cached?.modes,
+      plan: s.plan,
+      commands: s.commands ?? cached?.commands,
+      configOptions: s.configOptions ?? cached?.configOptions,
+      promptCapabilities: this.connections.get(connKey(s.ref, s.info.agent ?? ''))
+        ?.promptCapabilities,
+      startError: s.startError,
+      queuePosition: this.queuePosition(sessionId),
+      proposal: s.proposal
+    }
   }
 
   // --- lifecycle: create / run / enqueue / cancel / edit / delete ---------
@@ -306,7 +354,8 @@ export class SessionManager {
     action: CreateAction,
     mcp: McpSelection[] = [],
     autoAllow = true,
-    gitAccess = false
+    gitAccess = false,
+    configValues: Record<string, string | boolean> = {}
   ): SessionInfo {
     const n = this.listForTask(ref.workspace, ref.task).length + 1
     const info: SessionInfo = {
@@ -320,7 +369,8 @@ export class SessionManager {
       state: 'draft',
       mcp,
       gitAccess,
-      startPrompt
+      startPrompt,
+      configValues: Object.keys(configValues).length ? configValues : undefined
     }
     this.sessions.set(info.id, {
       info,
@@ -398,6 +448,7 @@ export class SessionManager {
       gitAccess?: boolean
       mcp?: McpSelection[]
       startPrompt?: string
+      configValues?: Record<string, string | boolean>
     }
   ): void {
     const s = this.sessions.get(sessionId)
@@ -407,6 +458,8 @@ export class SessionManager {
     if (patch.gitAccess !== undefined) s.info.gitAccess = patch.gitAccess
     if (patch.mcp !== undefined) s.info.mcp = patch.mcp
     if (patch.startPrompt !== undefined) s.info.startPrompt = patch.startPrompt
+    if (patch.configValues !== undefined)
+      s.info.configValues = Object.keys(patch.configValues).length ? patch.configValues : undefined
     if (patch.envRepo !== undefined && patch.envRepo !== s.info.envRepo) {
       s.info.envRepo = patch.envRepo
       s.ref = { ...s.ref, repo: patch.envRepo }
@@ -498,16 +551,26 @@ export class SessionManager {
         ...(await this.events.resolveMcpServers(s.ref, s.info.mcp)),
         await this.events.resolveGurtServer(s.ref, s.info.id, (p) => this.onComplete(s.info.id, p))
       ]
+      // Model/effort chosen for the draft ride `_meta` so the very first turn
+      // already runs on them (claude-code honors `_meta.claudeCode.options`);
+      // any other picks (e.g. fast mode) are reconciled below, before the prompt.
+      const meta = this.startMeta(ctx.agent, s.info.configValues)
       const result = await conn.peer.request<{
         sessionId: string
         modes?: SessionModes
         configOptions?: unknown[]
-      }>('session/new', { cwd: ctx.remoteWorkspaceFolder, mcpServers })
+      }>('session/new', {
+        cwd: ctx.remoteWorkspaceFolder,
+        mcpServers,
+        ...(meta ? { _meta: meta } : {})
+      })
       s.acpSessionId = result.sessionId
       s.modes = result.modes ?? s.modes
       s.configOptions = normalizeConfigOptions(result.configOptions)
       s.attached = true
       s.info.state = 'started'
+      await this.applyStartConfig(s, conn)
+      this.cacheAgentConfig(s)
       await this.applyAutoAllow(s, conn)
       this.bus.emit('tree.changed', undefined)
       this.emitState(s)
@@ -704,6 +767,7 @@ export class SessionManager {
         s.modes = result?.modes ?? s.modes
         s.configOptions = normalizeConfigOptions(result?.configOptions) ?? s.configOptions
         s.attached = true
+        this.cacheAgentConfig(s)
         await this.applyAutoAllow(s, conn)
       } catch (e) {
         this.push(s, {
@@ -949,15 +1013,56 @@ export class SessionManager {
     return full
   }
 
-  /** Change a live agent-reported config option (model, effort, fast-mode, …) via
-   *  ACP `session/set_config_option`. The agent echoes back the full option set with
-   *  the new current values, which we adopt (some options change others, e.g. picking
-   *  a model swaps the available effort levels). */
-  async setConfigOption(sessionId: string, configId: string, value: string | boolean): Promise<void> {
-    const s = this.sessions.get(sessionId)
-    if (!s) throw new Error('unknown session')
-    const conn = this.connections.get(connKey(s.ref, s.info.agent ?? ''))
-    if (!conn) throw new Error('agent is not running — send a prompt first')
+  /** Build the `_meta` passed to `session/new` from a draft's chosen config. Only
+   *  claude-code honors `_meta.claudeCode.options`; model and effort map onto the
+   *  SDK's query options there (effort `default` means "don't set it"). Returns
+   *  undefined when there is nothing to forward. */
+  private startMeta(
+    agent: AgentDef,
+    configValues: Record<string, string | boolean> | undefined
+  ): Record<string, unknown> | undefined {
+    if (agent.id !== 'claude-code' || !configValues) return undefined
+    const options: Record<string, string> = {}
+    const model = configValues.model
+    const effort = configValues.effort
+    if (typeof model === 'string' && model) options.model = model
+    if (typeof effort === 'string' && effort && effort !== 'default') options.effort = effort
+    if (!Object.keys(options).length) return undefined
+    return { claudeCode: { options } }
+  }
+
+  /** Reconcile a freshly-opened session against the draft's chosen config values:
+   *  for every pick whose live current value differs, push it via
+   *  `session/set_config_option`. Runs before the first prompt so the turn uses
+   *  the intended settings even for options `_meta` can't carry (e.g. fast mode).
+   *  Best-effort — a rejected option is logged, not fatal. */
+  private async applyStartConfig(s: Session, conn: Connection): Promise<void> {
+    const values = s.info.configValues
+    if (!values) return
+    for (const [configId, value] of Object.entries(values)) {
+      const opt = s.configOptions?.find((o) => o.id === configId)
+      // Skip when the option isn't offered here or already holds the value.
+      if (!opt || opt.currentValue === value) continue
+      try {
+        await this.pushConfigOption(s, conn, configId, value)
+      } catch (e) {
+        this.push(s, {
+          kind: 'system',
+          text: `could not set ${configId}: ${e instanceof Error ? e.message : e}`
+        })
+      }
+    }
+  }
+
+  /** Issue one `session/set_config_option` and adopt the echoed option set. The
+   *  agent may rewrite sibling options (picking a model swaps its effort levels),
+   *  so we replace `s.configOptions` wholesale from the response. */
+  private async pushConfigOption(
+    s: Session,
+    conn: Connection,
+    configId: string,
+    value: string | boolean
+  ): Promise<void> {
     const params =
       typeof value === 'boolean'
         ? { sessionId: s.acpSessionId, configId, type: 'boolean', value }
@@ -968,6 +1073,20 @@ export class SessionManager {
     )
     const next = normalizeConfigOptions(res?.configOptions)
     if (next) s.configOptions = next
+  }
+
+  /** Change a live agent-reported config option (model, effort, fast-mode, …) via
+   *  ACP `session/set_config_option`. Also records the choice on the draft-time
+   *  `configValues` so it survives a detach and re-applies on the next start, and
+   *  refreshes the agent cache with the new option set. */
+  async setConfigOption(sessionId: string, configId: string, value: string | boolean): Promise<void> {
+    const s = this.sessions.get(sessionId)
+    if (!s) throw new Error('unknown session')
+    const conn = this.connections.get(connKey(s.ref, s.info.agent ?? ''))
+    if (!conn) throw new Error('agent is not running — send a prompt first')
+    await this.pushConfigOption(s, conn, configId, value)
+    s.info.configValues = { ...s.info.configValues, [configId]: value }
+    this.cacheAgentConfig(s)
     this.bus.emit('session.changed', { sessionId })
     this.schedulePersist(s.ref)
   }
@@ -1081,15 +1200,18 @@ export class SessionManager {
           name: c.name,
           description: c.description
         }))
+        this.cacheAgentConfig(s)
         this.bus.emit('session.changed', { sessionId: s.info.id })
         break
       case 'current_mode_update':
         if (s.modes) s.modes.currentModeId = u.currentModeId
         else s.modes = { currentModeId: u.currentModeId, availableModes: [] }
+        this.cacheAgentConfig(s)
         this.bus.emit('session.changed', { sessionId: s.info.id })
         break
       case 'config_option_update':
         s.configOptions = normalizeConfigOptions(u.configOptions) ?? s.configOptions
+        this.cacheAgentConfig(s)
         this.bus.emit('session.changed', { sessionId: s.info.id })
         break
       default:

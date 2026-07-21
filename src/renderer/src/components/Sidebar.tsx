@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type {
+  AgentConfig,
   AgentsFile,
   McpMode,
   McpSelection,
   RepoChanges,
+  SessionConfigOption,
   SessionInfo,
   SessionStatus,
   Tree
@@ -334,6 +336,12 @@ export function NewSessionModal({
   const [autoAllow, setAutoAllow] = useState(edit?.autoAllow ?? true)
   /** Native git access injection — off by default; the user opts in per session. */
   const [gitAccess, setGitAccess] = useState(edit?.gitAccess ?? false)
+  /** The selected agent's cached config surface (models/effort/commands). */
+  const [agentConfig, setAgentConfig] = useState<AgentConfig | null>(null)
+  /** Config-option picks keyed by option id; empty = agent defaults. */
+  const [configValues, setConfigValues] = useState<Record<string, string | boolean>>(
+    edit?.configValues ?? {}
+  )
   const [credentials, setCredentials] = useState<CredentialEntry[]>([])
   const [harnessOpen, setHarnessOpen] = useState(false)
   /** Which quiet-select menu is open. */
@@ -372,6 +380,33 @@ export function NewSessionModal({
     if (!repo && repos.length) setRepo(repos[0].name)
   }, [repo, repos])
 
+  // Load the chosen agent's cached config surface so the model/effort/command
+  // controls can be offered before the container is up. A stale response from a
+  // previous agent is dropped via the `live` guard.
+  useEffect(() => {
+    if (!agent) {
+      setAgentConfig(null)
+      return
+    }
+    let live = true
+    window.gurt
+      .getAgentConfig(agent)
+      .then((c) => live && setAgentConfig(c))
+      .catch(() => live && setAgentConfig(null))
+    return () => {
+      live = false
+    }
+  }, [agent])
+
+  const setConfig = (opt: SessionConfigOption, value: string | boolean) =>
+    setConfigValues((prev) => ({ ...prev, [opt.id]: value }))
+  // Effective value of an option: the user's pick, else the agent's current.
+  const effective = (opt: SessionConfigOption) => configValues[opt.id] ?? opt.currentValue
+  // Model/effort/fast live here; Mode is expressed via the auto/manual toggle.
+  const cfgOptions = (agentConfig?.configOptions ?? []).filter((o) => o.category !== 'mode')
+  const cfgLabel = (o: SessionConfigOption) =>
+    o.category === 'model' ? 'MODEL' : o.category === 'thought_level' ? 'EFFORT' : o.name.toUpperCase()
+
   const repoCfg = repos.find((r) => r.name === repo)
   const gitResolution = repoCfg ? resolveForRepo(credentials, repoCfg) : null
   const gitCredNote = gitResolution
@@ -393,7 +428,8 @@ export function NewSessionModal({
         autoAllow,
         gitAccess,
         mcp: mcpSelection(),
-        startPrompt: prompt
+        startPrompt: prompt,
+        configValues
       })
       onClose()
     } catch (e) {
@@ -424,7 +460,8 @@ export function NewSessionModal({
         action,
         mcpSelection(),
         autoAllow,
-        gitAccess
+        gitAccess,
+        configValues
       )
       onCreated(s)
     } catch (e) {
@@ -556,6 +593,70 @@ export function NewSessionModal({
             {agent && <Dot tone="green" size={7} />}
             <span className="pick-meta">{agentName(agents ?? {}, agent) || 'none'}</span>
           </PickRow>
+
+          {/* model / effort / fast — from the agent's cached config surface */}
+          {cfgOptions.length > 0 && (
+            <div className="ns-config">
+              {cfgOptions.map((opt) =>
+                opt.type === 'select' ? (
+                  <div key={opt.id} className="hc-block">
+                    <span className="seclabel">{cfgLabel(opt)}</span>
+                    <div className="chip-row">
+                      {(opt.options ?? []).map((o) => (
+                        <button
+                          key={o.value}
+                          type="button"
+                          className={`chip-btn ${effective(opt) === o.value ? 'on' : ''}`}
+                          title={o.description ?? undefined}
+                          onClick={() => setConfig(opt, o.value)}
+                        >
+                          {o.name}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <div key={opt.id} className="hc-block">
+                    <span className="seclabel">{cfgLabel(opt)}</span>
+                    <div className="chip-row">
+                      <button
+                        type="button"
+                        className={`chip-btn ${effective(opt) === true ? 'on' : ''}`}
+                        onClick={() => setConfig(opt, true)}
+                      >
+                        on
+                      </button>
+                      <button
+                        type="button"
+                        className={`chip-btn ${effective(opt) === false ? 'on' : ''}`}
+                        onClick={() => setConfig(opt, false)}
+                      >
+                        off
+                      </button>
+                    </div>
+                  </div>
+                )
+              )}
+              {(agentConfig?.commands.length ?? 0) > 0 && (
+                <div className="hc-block">
+                  <span className="seclabel">COMMANDS</span>
+                  <div className="ns-cmds">
+                    {agentConfig!.commands.map((c) => (
+                      <button
+                        key={c.name}
+                        type="button"
+                        className="ns-cmd"
+                        title={c.description ?? undefined}
+                        onClick={() => setPrompt((p) => (p ? `${p} /${c.name} ` : `/${c.name} `))}
+                      >
+                        /{c.name}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           <div className={`hc ${harnessOpen ? 'open' : ''}`}>
             <button type="button" className="pick-row hc-head" onClick={() => setHarnessOpen((o) => !o)}>
