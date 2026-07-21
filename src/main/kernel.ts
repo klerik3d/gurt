@@ -55,6 +55,11 @@ export function createKernel(): Kernel {
       persist: (ws, task, records) => {
         store.writeSessions(ws, task, records).catch((e) => console.error('persist failed:', e))
       },
+      saveAgentConfig: (agentId, cfg) => {
+        store
+          .setAgentConfig(agentId, cfg)
+          .catch((e) => console.error('agent-config persist failed:', e))
+      },
       appendLog: (ws, task, sessionId, records) =>
         store.appendSessionLog(ws, task, sessionId, records),
       deleteLog: (ws, task, sessionId) => {
@@ -84,6 +89,7 @@ export function createKernel(): Kernel {
   bus.on('env.activity', ({ ref }) => envs.noteActive(ref))
 
   async function restoreSessions(): Promise<void> {
+    sessions.loadAgentConfigs(await store.getAgentConfigs())
     const t = await store.buildTree()
     for (const ws of t.workspaces)
       for (const task of ws.tasks) {
