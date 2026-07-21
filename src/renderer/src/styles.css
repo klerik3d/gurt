@@ -1613,6 +1613,31 @@ textarea.input {
 .ns-section > * + * {
   margin-top: 0;
 }
+.ns-config {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px 2px 2px;
+}
+.ns-cmds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.ns-cmd {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--dim);
+  padding: 3px 8px;
+  border: 1px solid var(--border2);
+  border-radius: 7px;
+  background: transparent;
+  cursor: pointer;
+}
+.ns-cmd:hover {
+  color: var(--fg);
+  border-color: var(--border);
+}
 
 /* ---- session pane (draft / queued / starting) ---- */
 

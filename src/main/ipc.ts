@@ -33,6 +33,15 @@ export function registerIpc(): void {
     getMcpDefs: async () => MCP_DEFS,
     getAgents: () => store.getAgents(),
     setAgents: (agents) => store.setAgents(agents),
+    getAgentConfig: async (agentId) => {
+      // Prefer the live in-memory cache (freshest); fall back to the persisted
+      // file / hardcoded default when no session has refreshed it this run.
+      const agents = await store.getAgents()
+      const kind = agents[agentId]?.kind
+      const live = kernel.sessions.agentConfig(agentId, kind)
+      if (live.updatedAt) return live
+      return store.getAgentConfig(agentId)
+    },
     getCredentials: () => getCredentials(),
     setCredentials: (data) => setCredentials(data),
     credentialUsedBy: (id) => credentialUsedBy(id),
@@ -74,8 +83,17 @@ export function registerIpc(): void {
       await shell.openExternal(await kernel.prUrl(ws, task, repo))
     },
     changesOpenVscode: (ws, task, repo) => changes.openInVscode(ws, task, repo),
-    createSession: async (ref, agent, prompt, action, mcp, autoAllow, gitAccess) =>
-      kernel.sessions.createSession(ref, agent, prompt, action, mcp, autoAllow, gitAccess),
+    createSession: async (ref, agent, prompt, action, mcp, autoAllow, gitAccess, configValues) =>
+      kernel.sessions.createSession(
+        ref,
+        agent,
+        prompt,
+        action,
+        mcp,
+        autoAllow,
+        gitAccess,
+        configValues
+      ),
     sessionRun: async (id) => kernel.sessions.run(id),
     sessionEnqueue: async (id) => kernel.sessions.enqueue(id),
     sessionCancelQueue: async (id) => kernel.sessions.cancelQueue(id),

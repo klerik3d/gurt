@@ -133,6 +133,15 @@ export interface SessionInfo {
   gitAccess?: boolean
   /** First prompt, sent automatically when the session starts. */
   startPrompt: string
+  /**
+   * Config-option values (model, effort, fast mode, …) chosen for this session,
+   * keyed by `SessionConfigOption.id`. Applied at start: `model`/`effort` ride
+   * `_meta.claudeCode.options` on `session/new`, the rest are reconciled via
+   * `session/set_config_option` before the first prompt. Picked from the agent's
+   * cached option set (see {@link AgentConfig}); an empty/absent map means "let
+   * the agent choose its defaults".
+   */
+  configValues?: Record<string, string | boolean>
   /** ISO timestamp, present while queued — defines global FIFO order. */
   queuedAt?: string
   /** Runtime overlay (never persisted): the agent is processing a prompt right now. */
@@ -329,6 +338,28 @@ export interface SessionConfigOption {
   /** Present for `type: 'select'` — flattened (any option groups are inlined). */
   options?: ConfigSelectOption[]
 }
+
+/**
+ * The last-known configuration surface of an agent instance — the selectors and
+ * commands it reports, cached so the New Session modal can offer model/effort/
+ * command choices *before* a container is up (getting them live requires an
+ * expensive `session/new` inside the env). Seeded from a hardcoded default
+ * (see `defaultAgentConfig`) and refreshed on every real session start/load, so
+ * the cache is the source of truth the UI reads.
+ */
+export interface AgentConfig {
+  /** Live-reported config selectors (model, effort, fast mode, …). */
+  configOptions: SessionConfigOption[]
+  /** Slash commands the agent exposes. */
+  commands: CommandInfo[]
+  /** Permission/interaction modes, when reported. */
+  modes?: SessionModes
+  /** ISO timestamp of the last refresh from a live session; absent for a seed. */
+  updatedAt?: string
+}
+
+/** agent-config-cache.json — per agent-instance id (see `AgentInstance`). */
+export type AgentConfigCache = Record<string, AgentConfig>
 
 /** An image the user attached to a prompt — sent as an ACP `image` content block. */
 export interface PromptImage {

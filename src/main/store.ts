@@ -5,6 +5,8 @@ import { promisify } from 'node:util'
 import os from 'node:os'
 import path from 'node:path'
 import type {
+  AgentConfig,
+  AgentConfigCache,
   AgentsFile,
   EnvState,
   PersistedSession,
@@ -15,6 +17,7 @@ import type {
   WorkspaceFile
 } from '../shared/types'
 import { agentDef } from '../shared/agents'
+import { defaultAgentConfig } from '../shared/agentConfig'
 
 const pexecFile = promisify(execFile)
 
@@ -52,7 +55,7 @@ export const overrideConfigPath = (ws: string, repo: string) =>
  *  named `sessions` would collide with the task's session-log dir, etc.
  *  Compared case-insensitively (macOS default FS is case-insensitive). */
 const RESERVED_NAMES: Record<string, string[]> = {
-  workspace: ['agents.json', 'credentials.json'],
+  workspace: ['agents.json', 'credentials.json', 'agent-config-cache.json'],
   task: ['workspace.json', '.devcontainers'],
   repo: ['task.json', 'sessions.json', 'sessions']
 }
@@ -106,6 +109,34 @@ export async function getAgents(): Promise<AgentsFile> {
 
 export async function setAgents(agents: AgentsFile): Promise<void> {
   await writeJson(agentsFile(), agents)
+}
+
+const agentConfigFile = () => path.join(gurtRoot, 'agent-config-cache.json')
+
+/** The whole per-agent config cache (empty object when the file is absent). */
+export async function getAgentConfigs(): Promise<AgentConfigCache> {
+  return readJson<AgentConfigCache>(agentConfigFile(), {})
+}
+
+/**
+ * Cached config for one agent instance, or its kind's hardcoded default when the
+ * cache has no entry yet. Pure read: the default is NOT written back — it stays
+ * deterministic in code, so improving `defaultAgentConfig` reaches every
+ * not-yet-run agent immediately instead of being shadowed by a stale on-disk
+ * seed. The cache file only ever holds configs a live session actually reported.
+ */
+export async function getAgentConfig(agentId: string): Promise<AgentConfig> {
+  const cache = await getAgentConfigs()
+  const hit = cache[agentId]
+  if (hit) return hit
+  const agents = await getAgents()
+  return defaultAgentConfig(agents[agentId]?.kind ?? agentId)
+}
+
+export async function setAgentConfig(agentId: string, cfg: AgentConfig): Promise<void> {
+  const cache = await getAgentConfigs()
+  cache[agentId] = cfg
+  await writeJson(agentConfigFile(), cache)
 }
 
 export async function createWorkspace(name: string): Promise<void> {
