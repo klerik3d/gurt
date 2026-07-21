@@ -3,6 +3,7 @@
 // derives `window.gurt` from `API_METHODS`. Adding a method here is the whole
 // wiring — no per-method glue in main/preload.
 import type {
+  AgentConfig,
   AgentsFile,
   EnvRef,
   McpSelection,
@@ -30,6 +31,8 @@ export interface SessionDraftPatch {
   gitAccess?: boolean
   mcp?: McpSelection[]
   startPrompt?: string
+  /** Config-option picks (model, effort, …), keyed by option id. */
+  configValues?: Record<string, string | boolean>
 }
 
 export interface GurtApi {
@@ -37,6 +40,9 @@ export interface GurtApi {
   getMcpDefs(): Promise<McpDef[]>
   getAgents(): Promise<AgentsFile>
   setAgents(agents: AgentsFile): Promise<void>
+  /** Cached (or hardcoded-default) config surface of an agent instance — the
+   *  New Session modal reads it to offer model/effort/command choices upfront. */
+  getAgentConfig(agentId: string): Promise<AgentConfig>
   getCredentials(): Promise<CredentialsFile>
   /** Replace the whole credential set; rejects if a still-linked entry was dropped. */
   setCredentials(data: CredentialsFile): Promise<void>
@@ -73,7 +79,8 @@ export interface GurtApi {
     action: CreateAction,
     mcp: McpSelection[],
     autoAllow: boolean,
-    gitAccess: boolean
+    gitAccess: boolean,
+    configValues: Record<string, string | boolean>
   ): Promise<SessionInfo>
   sessionRun(id: string): Promise<void>
   sessionEnqueue(id: string): Promise<void>
@@ -105,6 +112,7 @@ const METHODS = {
   getMcpDefs: true,
   getAgents: true,
   setAgents: true,
+  getAgentConfig: true,
   getCredentials: true,
   setCredentials: true,
   credentialUsedBy: true,
