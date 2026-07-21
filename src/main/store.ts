@@ -120,19 +120,17 @@ export async function getAgentConfigs(): Promise<AgentConfigCache> {
 
 /**
  * Cached config for one agent instance, or its kind's hardcoded default when the
- * cache has no entry yet. The default is written back so the cache "always
- * exists" once an agent has been asked about (matching the seed-then-persist
- * contract); an unknown id (no matching agent) is not seeded.
+ * cache has no entry yet. Pure read: the default is NOT written back — it stays
+ * deterministic in code, so improving `defaultAgentConfig` reaches every
+ * not-yet-run agent immediately instead of being shadowed by a stale on-disk
+ * seed. The cache file only ever holds configs a live session actually reported.
  */
 export async function getAgentConfig(agentId: string): Promise<AgentConfig> {
   const cache = await getAgentConfigs()
   const hit = cache[agentId]
   if (hit) return hit
   const agents = await getAgents()
-  const kind = agents[agentId]?.kind
-  const seed = defaultAgentConfig(kind ?? agentId)
-  if (kind) await setAgentConfig(agentId, seed)
-  return seed
+  return defaultAgentConfig(agents[agentId]?.kind ?? agentId)
 }
 
 export async function setAgentConfig(agentId: string, cfg: AgentConfig): Promise<void> {
