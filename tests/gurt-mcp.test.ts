@@ -5,7 +5,12 @@ import { afterAll, it } from 'vitest'
 import assert from 'node:assert/strict'
 import type { AddressInfo } from 'node:net'
 
-import { buildGurtHttpServer } from '../src/main/mcp/gurtServer'
+import {
+  buildGurtHttpServer,
+  ensureGurtServer,
+  stopGurtServer,
+  stopGurtServersForEnv
+} from '../src/main/mcp/gurtServer'
 
 const TOKEN = 'test-token'
 /** Payloads the host callback received — the machine-readable outcome. */
@@ -121,4 +126,63 @@ it('invalid calls: isError, and the callback never fires', async () => {
 it('transport guards: wrong token → 404, GET → 405', async () => {
   assert.equal((await post({ jsonrpc: '2.0', id: ++id, method: 'tools/list' }, { token: 'nope' })).status, 404)
   assert.equal((await post({}, { method: 'GET' })).status, 405)
+})
+
+// --- per-session server lifecycle (ensure/stop) ------------------------------
+
+const ref = (session: string) => ({ workspace: 'w', task: 't', env: 'e', session })
+
+/** The descriptor URL with docker's host alias swapped for loopback. */
+const localUrl = (u: string) => u.replace('host.docker.internal', '127.0.0.1')
+
+const callComplete = (u: string) =>
+  fetch(localUrl(u), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: ++id,
+      method: 'tools/call',
+      params: { name: 'complete', arguments: { version: 1, outcome: 'no_changes' } }
+    })
+  })
+
+it('ensureGurtServer: one server per session, re-attach swaps the closure', async () => {
+  const got: [string, unknown][] = []
+  const d1 = await ensureGurtServer(ref('s1'), 's1', (p) => got.push(['first', p]))
+  assert.equal(d1.type, 'http')
+  assert.equal(d1.name, 'gurt')
+  assert.match(d1.url, /^http:\/\/host\.docker\.internal:\d+\/mcp\/[0-9a-f-]+$/)
+
+  // same session → same descriptor, but the newest closure receives proposals
+  const d2 = await ensureGurtServer(ref('s1'), 's1', (p) => got.push(['second', p]))
+  assert.deepEqual(d2, d1)
+  assert.equal((await callComplete(d1.url)).status, 200)
+  assert.deepEqual(got, [['second', { version: 1, outcome: 'no_changes' }]])
+
+  // a different session gets its own server on its own port/token
+  const d3 = await ensureGurtServer(ref('s2'), 's2', () => {})
+  assert.notEqual(d3.url, d1.url)
+  stopGurtServer('s1')
+  stopGurtServer('s2')
+})
+
+it('stopGurtServersForEnv closes only the matching instance; stop is idempotent', async () => {
+  const a = await ensureGurtServer(ref('sa'), 'sa', () => {})
+  const b = await ensureGurtServer(ref('sb'), 'sb', () => {})
+
+  stopGurtServersForEnv(ref('sa'))
+  await assert.rejects(() => callComplete(a.url), 'stopped server refuses connections')
+  assert.equal((await callComplete(b.url)).status, 200, 'sibling session server untouched')
+
+  // idempotent: a second stop (either flavor) is a no-op
+  stopGurtServersForEnv(ref('sa'))
+  stopGurtServer('sa')
+
+  // ensure after stop mints a fresh server
+  const a2 = await ensureGurtServer(ref('sa'), 'sa', () => {})
+  assert.notEqual(a2.url, a.url)
+  assert.equal((await callComplete(a2.url)).status, 200)
+  stopGurtServer('sa')
+  stopGurtServer('sb')
 })
