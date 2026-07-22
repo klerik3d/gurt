@@ -13,7 +13,7 @@ import { resolveCredential } from '../../shared/credentials'
 import { DEFAULT_TOKEN_USER } from '../../shared/credentials'
 import { canonicalRepoId } from '../../shared/repoId'
 import { envKey } from '../../shared/keys'
-import { getWorkspace } from '../store'
+import { getTask, getWorkspace } from '../store'
 import { listCredentials } from '../credentials'
 import { providerForHost } from './providers'
 
@@ -32,8 +32,11 @@ function listen(server: Server): Promise<number> {
   })
 }
 
-async function envRepo(ref: EnvRef): Promise<RepoConfig | undefined> {
-  return (await getWorkspace(ref.workspace)).repos.find((r) => r.name === ref.repo)
+/** The RepoConfig this env instance was provisioned with (its `EnvState.repo`). */
+async function provisionedRepo(ref: EnvRef): Promise<RepoConfig | undefined> {
+  const repo = (await getTask(ref.workspace, ref.task)).envs.find((e) => e.env === ref.env)?.repo
+  if (!repo) return undefined
+  return (await getWorkspace(ref.workspace)).repos.find((r) => r.name === repo)
 }
 
 function readBody(req: IncomingMessage): Promise<string> {
@@ -63,7 +66,7 @@ async function handleCredential(ref: EnvRef, req: IncomingMessage, res: ServerRe
     res.writeHead(204).end()
     return
   }
-  const repo = await envRepo(ref)
+  const repo = await provisionedRepo(ref)
   if (!repo) {
     res.writeHead(204).end()
     return
@@ -82,7 +85,7 @@ async function handleCredential(ref: EnvRef, req: IncomingMessage, res: ServerRe
 
 /** GET /forge-env — the forge CLI env map from the env repo's provider. */
 async function handleForgeEnv(ref: EnvRef, res: ServerResponse): Promise<void> {
-  const repo = await envRepo(ref)
+  const repo = await provisionedRepo(ref)
   const host = repo ? canonicalRepoId(repo.url)?.host : undefined
   if (!repo || !host) {
     res.writeHead(204).end()

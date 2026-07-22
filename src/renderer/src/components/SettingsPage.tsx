@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { AgentInstance, AgentsFile, RepoConfig, Tree } from '../../../shared/types'
+import type { AgentInstance, AgentsFile, EnvConfig, RepoConfig, Tree } from '../../../shared/types'
 import type { CredentialEntry, CredentialKind } from '../../../shared/credentials'
 import {
   CREDENTIAL_KINDS,
@@ -16,7 +16,7 @@ import { alertDialog, confirmDialog } from '../dialog'
 import { Icon, Dot } from './icons'
 import { Modal } from './Modal'
 
-export type SettingsSection = 'general' | 'environments' | 'clients' | 'credentials'
+export type SettingsSection = 'general' | 'environments' | 'repos' | 'clients' | 'credentials'
 
 /** Vendor tag shown beside each provider in the combobox (#4c). */
 const PROVIDER_VENDOR: Record<string, string> = {
@@ -45,7 +45,7 @@ export function SettingsPage({
             General
           </div>
           <div className="set-nav-sep" />
-          {(['environments', 'clients', 'credentials'] as const).map((s) => (
+          {(['environments', 'repos', 'clients', 'credentials'] as const).map((s) => (
             <div
               key={s}
               className={`set-nav-item ${section === s ? 'active' : ''}`}
@@ -58,6 +58,7 @@ export function SettingsPage({
       </div>
       <div className="set-content">
         {section === 'environments' && <EnvironmentsSection tree={tree} ws={ws} />}
+        {section === 'repos' && <ReposSection tree={tree} ws={ws} />}
         {section === 'clients' && <ClientsSection />}
         {section === 'credentials' && <CredentialsSection />}
         {section === 'general' && <div className="placeholder">general settings — coming soon</div>}
@@ -66,9 +67,251 @@ export function SettingsPage({
   )
 }
 
-// ---- Environments (#4a) — the workspace's repo configs ----
+/** `https://github.com/acme/x.git` → `github.com/acme/x`. */
+function stripProtocol(url: string): string {
+  return url.replace(/^[a-z+]+:\/\//, '').replace(/^git@/, '').replace(/\.git$/, '')
+}
+
+// ---- Environments (#4a) — the workspace's env definitions ----
 
 function EnvironmentsSection({ tree, ws }: { tree: Tree | null; ws: string | null }) {
+  const [editing, setEditing] = useState<EnvConfig | null>(null)
+  const [adding, setAdding] = useState(false)
+  const wsData = tree?.workspaces.find((w) => w.name === ws)
+  const envs = wsData?.envs ?? []
+  const repos = wsData?.repos ?? []
+
+  return (
+    <>
+      <div className="set-head">
+        <div className="set-title-wrap">
+          <span className="set-title">Environments</span>
+          <span className="set-count mono">
+            {envs.length} env{envs.length === 1 ? '' : 's'}
+            {ws ? ` · ${ws}` : ''}
+          </span>
+        </div>
+        <span className="spacer" />
+        <button className="btn btn-primary" disabled={!ws} onClick={() => setAdding(true)}>
+          + New environment
+        </button>
+      </div>
+      <div className="set-list">
+        {envs.map((e) => (
+          <div key={e.name} className="set-row">
+            <span className="set-row-label">{e.name}</span>
+            <span className="set-row-url mono">
+              {e.repo ? e.repo : 'no default repo'}
+              {e.devcontainer ? ' · inline devcontainer' : ''}
+            </span>
+            <button className="btn-link" onClick={() => setEditing(e)}>
+              edit
+            </button>
+          </div>
+        ))}
+        {envs.length === 0 && (
+          <div className="tp-dashed">no environments yet — add one to run sessions</div>
+        )}
+      </div>
+      {(editing || adding) && ws && (
+        <EnvModal
+          key={editing?.name ?? '__new'}
+          ws={ws}
+          repos={repos}
+          initial={editing ?? undefined}
+          onClose={() => {
+            setEditing(null)
+            setAdding(false)
+          }}
+        />
+      )}
+    </>
+  )
+}
+
+// ---- Edit environment popup (#4b) — name, default repo, devcontainer ----
+
+function EnvModal({
+  ws,
+  repos,
+  initial,
+  onClose
+}: {
+  ws: string
+  repos: RepoConfig[]
+  initial?: EnvConfig
+  onClose: () => void
+}) {
+  const editing = !!initial
+  const [name, setName] = useState(initial?.name ?? '')
+  const [repo, setRepo] = useState<string | null>(initial?.repo ?? null)
+  const [devcontainer, setDevcontainer] = useState(initial?.devcontainer ?? '')
+  const [repoMenu, setRepoMenu] = useState(false)
+  const [discovering, setDiscovering] = useState(false)
+  const [discoverMsg, setDiscoverMsg] = useState('')
+  const [error, setError] = useState('')
+  const repoRef = useRef<HTMLDivElement>(null)
+  useOutsideClose(repoMenu, repoRef, () => setRepoMenu(false))
+
+  const valid = !!name.trim()
+  const draft: EnvConfig = {
+    name: name.trim(),
+    devcontainer,
+    repo: repo ?? undefined
+  }
+  const repoUrl = repo ? repos.find((r) => r.name === repo)?.url : undefined
+
+  const discover = async () => {
+    if (!repoUrl) return
+    setDiscoverMsg('')
+    setDiscovering(true)
+    try {
+      const found = await window.gurt.discoverDevcontainer(repoUrl)
+      if (found) {
+        setDevcontainer(found.content)
+        setDiscoverMsg(`loaded ${found.path}`)
+      } else {
+        setDiscoverMsg('no devcontainer.json found in repo')
+      }
+    } catch (e) {
+      setDiscoverMsg(e instanceof Error ? e.message : String(e))
+    } finally {
+      setDiscovering(false)
+    }
+  }
+
+  const save = async () => {
+    setError('')
+    try {
+      await (editing ? window.gurt.updateEnv(ws, draft) : window.gurt.addEnv(ws, draft))
+      onClose()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  const del = async () => {
+    if (
+      !(await confirmDialog(`Delete environment "${initial!.name}"?`, {
+        title: 'Delete environment',
+        confirmText: 'Delete',
+        danger: true
+      }))
+    )
+      return
+    try {
+      await window.gurt.removeEnv(ws, initial!.name)
+      onClose()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  return (
+    <Modal title={editing ? 'Edit environment' : 'New environment'} width={500} onClose={onClose}>
+      <div className="modal-body env-modal">
+        <label className="fld">
+          <span className="seclabel">NAME</span>
+          <input
+            className="input"
+            autoFocus={!editing}
+            placeholder="web-app"
+            value={name}
+            disabled={editing}
+            onChange={(e) => setName(e.target.value)}
+          />
+        </label>
+
+        <div className="fld">
+          <span className="seclabel">DEFAULT REPOSITORY</span>
+          <div className="pick-wrap" ref={repoRef}>
+            <button type="button" className="pick-row" onClick={() => setRepoMenu((o) => !o)}>
+              <span className={`pick-value ${repo ? '' : 'faint'}`}>
+                {repo ?? 'no repository'}
+              </span>
+              {repoUrl && <span className="pick-meta mono">{stripProtocol(repoUrl)}</span>}
+              <span className="spacer" />
+              <Icon name="chevron" size={12} className="faint" style={{ flex: 'none' }} />
+            </button>
+            {repoMenu && (
+              <div className="menu pick-menu">
+                <div
+                  className={`menu-item ${repo == null ? 'active' : ''}`}
+                  onMouseDown={(e) => {
+                    e.preventDefault()
+                    setRepo(null)
+                    setRepoMenu(false)
+                  }}
+                >
+                  no repository
+                </div>
+                {repos.map((r) => (
+                  <div
+                    key={r.name}
+                    className={`menu-item ${r.name === repo ? 'active' : ''}`}
+                    onMouseDown={(e) => {
+                      e.preventDefault()
+                      setRepo(r.name)
+                      setRepoMenu(false)
+                    }}
+                  >
+                    <Icon name="branch" size={11} className="faint" />
+                    {r.name}
+                    <span className="menu-meta mono">{stripProtocol(r.url)}</span>
+                  </div>
+                ))}
+                {repos.length === 0 && (
+                  <div className="menu-empty">no repos — add one in Settings → Repos</div>
+                )}
+              </div>
+            )}
+          </div>
+          <span className="fld-hint">seeds the repo of new sessions on this env; changeable per session</span>
+        </div>
+
+        <div className="fld">
+          <div className="fld-head">
+            <span className="seclabel">DEVCONTAINER</span>
+            <span className="fld-hint mono">
+              {devcontainer ? 'inline override' : "empty — repo's own config"}
+            </span>
+            <span className="spacer" />
+            <button
+              className="btn-link mono"
+              disabled={!repoUrl || discovering}
+              title={!repoUrl ? 'set a default repository first' : undefined}
+              onClick={discover}
+            >
+              {discovering ? 'detecting…' : '⤢ auto-detect from repo'}
+            </button>
+          </div>
+          <JsonEditor value={devcontainer} onChange={setDevcontainer} />
+          {discoverMsg && <div className="fld-hint mono">{discoverMsg}</div>}
+        </div>
+
+        {error && <div className="error">{error}</div>}
+      </div>
+      <div className="modal-foot">
+        {editing && (
+          <button className="btn btn-danger-text" onClick={del}>
+            Delete
+          </button>
+        )}
+        <span className="spacer" />
+        <button className="btn" onClick={onClose}>
+          Cancel
+        </button>
+        <button className="btn btn-primary" disabled={!valid} onClick={save}>
+          Save
+        </button>
+      </div>
+    </Modal>
+  )
+}
+
+// ---- Repos — the workspace's repo identities (url + credential) ----
+
+function ReposSection({ tree, ws }: { tree: Tree | null; ws: string | null }) {
   const [editing, setEditing] = useState<RepoConfig | null>(null)
   const [adding, setAdding] = useState(false)
   const repos = tree?.workspaces.find((w) => w.name === ws)?.repos ?? []
@@ -77,15 +320,15 @@ function EnvironmentsSection({ tree, ws }: { tree: Tree | null; ws: string | nul
     <>
       <div className="set-head">
         <div className="set-title-wrap">
-          <span className="set-title">Environments</span>
+          <span className="set-title">Repos</span>
           <span className="set-count mono">
-            {repos.length} config{repos.length === 1 ? '' : 's'}
+            {repos.length} repo{repos.length === 1 ? '' : 's'}
             {ws ? ` · ${ws}` : ''}
           </span>
         </div>
         <span className="spacer" />
         <button className="btn btn-primary" disabled={!ws} onClick={() => setAdding(true)}>
-          + New environment
+          + New repo
         </button>
       </div>
       <div className="set-list">
@@ -99,11 +342,11 @@ function EnvironmentsSection({ tree, ws }: { tree: Tree | null; ws: string | nul
           </div>
         ))}
         {repos.length === 0 && (
-          <div className="tp-dashed">no environments yet — add one to clone a repo per task</div>
+          <div className="tp-dashed">no repos yet — add one to clone in a session</div>
         )}
       </div>
       {(editing || adding) && ws && (
-        <EnvironmentModal
+        <RepoModal
           key={editing?.name ?? '__new'}
           ws={ws}
           initial={editing ?? undefined}
@@ -117,14 +360,7 @@ function EnvironmentsSection({ tree, ws }: { tree: Tree | null; ws: string | nul
   )
 }
 
-/** `https://github.com/acme/x.git` → `github.com/acme/x`. */
-function stripProtocol(url: string): string {
-  return url.replace(/^[a-z+]+:\/\//, '').replace(/^git@/, '').replace(/\.git$/, '')
-}
-
-// ---- Edit environment popup (#4b) ----
-
-function EnvironmentModal({
+function RepoModal({
   ws,
   initial,
   onClose
@@ -136,12 +372,9 @@ function EnvironmentModal({
   const editing = !!initial
   const [name, setName] = useState(initial?.name ?? '')
   const [url, setUrl] = useState(initial?.url ?? '')
-  const [devcontainer, setDevcontainer] = useState(initial?.devcontainer ?? '')
   const [credentialId, setCredentialId] = useState(initial?.credentialId ?? '')
   const [credentials, setCredentials] = useState<CredentialEntry[]>([])
   const [credMenu, setCredMenu] = useState(false)
-  const [discovering, setDiscovering] = useState(false)
-  const [discoverMsg, setDiscoverMsg] = useState('')
   const [error, setError] = useState('')
   const credRef = useRef<HTMLDivElement>(null)
   useOutsideClose(credMenu, credRef, () => setCredMenu(false))
@@ -154,7 +387,6 @@ function EnvironmentModal({
   const draft: RepoConfig = {
     name: name.trim(),
     url: url.trim(),
-    devcontainer,
     credentialId: credentialId || undefined
   }
 
@@ -173,24 +405,6 @@ function EnvironmentModal({
             ? `auto → ${resolution.entry.label} · ${credentialKindLabel(resolution.entry.kind)} (${host})`
             : `host credentials (ambient) — ${host}`
 
-  const discover = async () => {
-    setDiscoverMsg('')
-    setDiscovering(true)
-    try {
-      const found = await window.gurt.discoverDevcontainer(url.trim())
-      if (found) {
-        setDevcontainer(found.content)
-        setDiscoverMsg(`loaded ${found.path}`)
-      } else {
-        setDiscoverMsg('no devcontainer.json found in repo')
-      }
-    } catch (e) {
-      setDiscoverMsg(e instanceof Error ? e.message : String(e))
-    } finally {
-      setDiscovering(false)
-    }
-  }
-
   const save = async () => {
     setError('')
     try {
@@ -203,8 +417,8 @@ function EnvironmentModal({
 
   const del = async () => {
     if (
-      !(await confirmDialog(`Delete environment "${initial!.name}"?`, {
-        title: 'Delete environment',
+      !(await confirmDialog(`Delete repo "${initial!.name}"?`, {
+        title: 'Delete repo',
         confirmText: 'Delete',
         danger: true
       }))
@@ -219,14 +433,14 @@ function EnvironmentModal({
   }
 
   return (
-    <Modal title={editing ? 'Edit environment' : 'New environment'} width={500} onClose={onClose}>
+    <Modal title={editing ? 'Edit repo' : 'New repo'} width={500} onClose={onClose}>
       <div className="modal-body env-modal">
         <label className="fld">
-          <span className="seclabel">LABEL</span>
+          <span className="seclabel">NAME</span>
           <input
             className="input"
             autoFocus={!editing}
-            placeholder="web-app"
+            placeholder="checkout-web"
             value={name}
             disabled={editing}
             onChange={(e) => setName(e.target.value)}
@@ -288,21 +502,6 @@ function EnvironmentModal({
               {accessNote && <span className="env-access-note mono">{accessNote}</span>}
             </div>
           </div>
-        </div>
-
-        <div className="fld">
-          <div className="fld-head">
-            <span className="seclabel">DEVCONTAINER</span>
-            <span className="fld-hint mono">
-              {devcontainer ? 'inline override' : "empty — repo's own config"}
-            </span>
-            <span className="spacer" />
-            <button className="btn-link mono" disabled={!url.trim() || discovering} onClick={discover}>
-              {discovering ? 'detecting…' : '⤢ auto-detect from repo'}
-            </button>
-          </div>
-          <JsonEditor value={devcontainer} onChange={setDevcontainer} />
-          {discoverMsg && <div className="fld-hint mono">{discoverMsg}</div>}
         </div>
 
         {error && <div className="error">{error}</div>}
@@ -890,7 +1089,7 @@ function CredentialsSection() {
     // Block deleting an entry a repo still links to (§9).
     const used = await window.gurt.credentialUsedBy(c.id).catch(() => [])
     if (used.length) {
-      setError(`linked by ${used.join(', ')} — unlink it (environment / client settings) first`)
+      setError(`linked by ${used.join(', ')} — unlink it (repo / client settings) first`)
       return
     }
     if (

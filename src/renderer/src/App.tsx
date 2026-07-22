@@ -223,7 +223,7 @@ export default function App() {
     tree?.workspaces
       .find((w) => w.name === activeInfo.workspace)
       ?.tasks.find((t) => t.name === activeInfo.task)
-      ?.envs.find((e) => e.repo === activeInfo.envRepo)
+      ?.envs.find((e) => e.env === activeInfo.env)
 
   // Footer counters across every session, live overlay included.
   let runningCount = 0
@@ -354,7 +354,7 @@ export default function App() {
                           envKey({
                             workspace: snapshots[selection.id].info.workspace,
                             task: snapshots[selection.id].info.task,
-                            repo: snapshots[selection.id].info.envRepo
+                            env: snapshots[selection.id].info.env
                           })
                         ] ?? []
                       : []
@@ -411,7 +411,8 @@ export default function App() {
         {activeInfo && activeEnv && (
           <>
             <span>
-              {activeInfo.envRepo} {activeEnv.status}
+              {activeInfo.env}
+              {activeInfo.repo ? ` · ${activeInfo.repo}` : ''} {activeEnv.status}
             </span>
             <span>gurt/{activeInfo.task}</span>
           </>

@@ -5,6 +5,7 @@
 import type {
   AgentConfig,
   AgentsFile,
+  EnvConfig,
   EnvRef,
   McpSelection,
   PromptContext,
@@ -25,8 +26,10 @@ export type CreateAction = 'run' | 'queue' | 'draft'
 /** Editable settings of a draft session (all optional — only supplied keys change). */
 export interface SessionDraftPatch {
   agent?: string
-  /** Target repo of the (task, repo) env — re-points the not-yet-started session. */
-  envRepo?: string
+  /** Re-point the not-yet-started session onto another env definition. */
+  env?: string
+  /** The session's repo: a repo name, `null` to clear it, absent to leave it. */
+  repo?: string | null
   autoAllow?: boolean
   gitAccess?: boolean
   mcp?: McpSelection[]
@@ -53,12 +56,18 @@ export interface GurtApi {
   discoverDevcontainer(url: string): Promise<{ path: string; content: string } | null>
   updateRepo(ws: string, repo: RepoConfig): Promise<void>
   removeRepo(ws: string, name: string): Promise<void>
+  /** Register an env definition in the workspace. */
+  addEnv(ws: string, env: EnvConfig): Promise<void>
+  /** Update an env definition, matched by its (immutable) name. */
+  updateEnv(ws: string, env: EnvConfig): Promise<void>
+  /** Remove an env definition (blocked while any task has an instance of it). */
+  removeEnv(ws: string, name: string): Promise<void>
   createTask(ws: string, name: string): Promise<void>
   removeTask(ws: string, name: string): Promise<void>
   taskDirtyRepos(ws: string, name: string): Promise<string[]>
-  startEnv(ref: EnvRef): Promise<void>
   stopEnv(ref: EnvRef): Promise<void>
-  removeEnv(ref: EnvRef): Promise<void>
+  /** Tear down one task's env instance (container + clone). */
+  removeTaskEnv(ref: EnvRef): Promise<void>
   /** Git state of every clone of the task, computed on the host; `fetch` reaches the network. */
   getTaskChanges(ws: string, task: string, opts?: { fetch?: boolean }): Promise<RepoChanges[]>
   /** Read-only unified diff of one file (untracked shown as whole-file added). */
@@ -74,6 +83,8 @@ export interface GurtApi {
   changesOpenVscode(ws: string, task: string, repo: string): Promise<void>
   createSession(
     ref: EnvRef,
+    /** The session's repo (a repo name), or null for a repo-less draft. */
+    repo: string | null,
     agent: string,
     prompt: string,
     action: CreateAction,
@@ -121,12 +132,14 @@ const METHODS = {
   discoverDevcontainer: true,
   updateRepo: true,
   removeRepo: true,
+  addEnv: true,
+  updateEnv: true,
+  removeEnv: true,
   createTask: true,
   removeTask: true,
   taskDirtyRepos: true,
-  startEnv: true,
   stopEnv: true,
-  removeEnv: true,
+  removeTaskEnv: true,
   getTaskChanges: true,
   getFileDiff: true,
   getCommitDiff: true,

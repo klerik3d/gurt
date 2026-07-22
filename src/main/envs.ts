@@ -28,9 +28,9 @@ export interface EnvManagerDeps {
   bus: Bus
 }
 
-/** Everything env-lifecycle: clone + devcontainer per (task, repo), idle auto-stop. */
+/** Everything env-lifecycle: clone + devcontainer per (task, env), idle auto-stop. */
 export class EnvManager {
-  /** In-flight `up` per env, so concurrent starts (Run now + confirm) share one. */
+  /** In-flight `up` per session, so its concurrent start/attach share one. */
   private ensureInFlight = new Map<string, Promise<EnvState>>()
   /** Envs whose git shims are installed this app run — cleared on stop/delete. */
   private gitShimsInstalled = new Set<string>()
@@ -46,14 +46,14 @@ export class EnvManager {
 
   /** Persist the env status and announce it (`env.status` + the tree re-render). */
   private async setStatus(ref: EnvRef, patch: Partial<EnvState> & { status: EnvStatus }): Promise<void> {
-    await store.updateEnv(ref.workspace, ref.task, ref.repo, patch)
+    await store.updateTaskEnv(ref.workspace, ref.task, ref.env, patch)
     this.deps.bus.emit('env.status', { ref, status: patch.status })
     this.deps.bus.emit('tree.changed', undefined)
   }
 
   async find(ref: EnvRef): Promise<EnvState | undefined> {
     const task = await store.getTask(ref.workspace, ref.task)
-    return task.envs.find((e) => e.repo === ref.repo)
+    return task.envs.find((e) => e.env === ref.env)
   }
 
   async status(ref: EnvRef): Promise<EnvStatus> {
@@ -61,22 +61,22 @@ export class EnvManager {
   }
 
   /**
-   * Ensure the container is up: create the env record if missing, clone, and
-   * `devcontainer up` (reusing a stopped container). Idempotent; agent-agnostic.
+   * Ensure the session's container is up: clone (if needed) and `devcontainer
+   * up` under the session's id-label — creating its container, or restarting
+   * its own stopped one. Who may start here at all is the scheduler's start
+   * gate, not this method's concern.
    */
-  ensureRunning(ref: EnvRef): Promise<EnvState> {
-    const key = envKey(ref)
-    const running = this.ensureInFlight.get(key)
-    if (running) return running
+  ensureRunning(ref: EnvRef, repo: string, session: string): Promise<EnvState> {
+    const inflight = this.ensureInFlight.get(session)
+    if (inflight) return inflight
     const p = (async () => {
-      await store.ensureEnv(ref.workspace, ref.task, ref.repo)
+      await store.ensureTaskEnv(ref.workspace, ref.task, ref.env)
       let env = await this.find(ref)
-      // The persisted `running` status can be stale — e.g. a Docker daemon
-      // restart stops the container without gurt noticing. Only trust it if the
-      // container is actually up; otherwise fall through to `up`, which restarts
-      // the stopped container.
+      // The session's own container, still up → just attach. (Probe it — the
+      // persisted status can be stale after a Docker daemon restart.)
       if (
-        env?.status === 'running' &&
+        env?.session === session &&
+        env.status === 'running' &&
         env.remoteWorkspaceFolder &&
         env.containerId &&
         (await dockerRunning(env.containerId))
@@ -84,17 +84,38 @@ export class EnvManager {
         return env
 
       const ws = await store.getWorkspace(ref.workspace)
-      const repo = ws.repos.find((r) => r.name === ref.repo)
-      if (!repo) throw new Error(`repo "${ref.repo}" is not registered in "${ref.workspace}"`)
+      const repoCfg = ws.repos.find((r) => r.name === repo)
+      if (!repoCfg) throw new Error(`repo "${repo}" is not registered in "${ref.workspace}"`)
+      const envCfg = ws.envs.find((e) => e.name === ref.env)
       const log = this.logFor(ref)
 
-      await this.setStatus(ref, { status: 'starting', error: undefined })
+      // Leftover container of the env's previous session (that session is done
+      // — the start gate saw the env free). The record tracks one container per
+      // env, so it makes way for this session's own.
+      const leftover = env?.containerId && env.session !== session ? env.containerId : undefined
+      await this.setStatus(ref, {
+        status: 'starting',
+        error: undefined,
+        ...(leftover
+          ? { containerId: undefined, remoteWorkspaceFolder: undefined, session: undefined }
+          : {})
+      })
       try {
-        const dir = await ensureClone(ref, repo, log)
-        const configArgs = await overrideConfigArgs(ref, repo)
-        const up = await devcontainerUp(ref, configArgs, dir, log, canonicalRepoId(repo.url)?.host)
+        if (leftover) await dockerRemove(leftover, log)
+        const dir = await ensureClone(ref, repoCfg, log)
+        const configArgs = await overrideConfigArgs(ref, envCfg)
+        const up = await devcontainerUp(
+          session,
+          configArgs,
+          dir,
+          log,
+          repoCfg.name,
+          canonicalRepoId(repoCfg.url)?.host
+        )
         await this.setStatus(ref, {
           status: 'running',
+          repo,
+          session,
           containerId: up.containerId,
           remoteWorkspaceFolder: up.remoteWorkspaceFolder
         })
@@ -108,8 +129,8 @@ export class EnvManager {
         throw e
       }
     })()
-    this.ensureInFlight.set(key, p)
-    p.finally(() => this.ensureInFlight.delete(key)).catch(() => {})
+    this.ensureInFlight.set(session, p)
+    p.finally(() => this.ensureInFlight.delete(session)).catch(() => {})
     return p
   }
 
@@ -140,8 +161,16 @@ export class EnvManager {
     return containerGitEnv(broker.url, host, resolved?.kind ?? 'git-host', identity)
   }
 
-  /** Ensure env is up, then build the validated launch context for an agent. */
-  async resolveEnv(ref: EnvRef, agentId: string, gitAccess: boolean): Promise<EnvContext> {
+  /** Ensure the session's container is up, then build the validated launch
+   *  context for an agent. Throws if the session has no repo or one that is
+   *  not registered. */
+  async resolveEnv(
+    ref: EnvRef,
+    repo: string | undefined,
+    session: string,
+    agentId: string,
+    gitAccess: boolean
+  ): Promise<EnvContext> {
     const agents = await store.getAgents()
     const cfg = agents[agentId]
     if (!cfg) throw new Error(`unknown agent "${agentId}"`)
@@ -150,21 +179,25 @@ export class EnvManager {
     // The secret lives in credentials.json now; the agent only links it (§6).
     const { secret, error: credError } = resolveAgentSecret(await listCredentials(), cfg.credentialId)
     if (credError) throw new Error(`agent "${cfg.label}": ${credError}`)
-    const repo = (await store.getWorkspace(ref.workspace)).repos.find((r) => r.name === ref.repo)
-    if (!repo) throw new Error(`repo "${ref.repo}" is not registered in "${ref.workspace}"`)
+    if (!repo) throw new Error('session has no repository')
+    const workspace = await store.getWorkspace(ref.workspace)
+    const repoCfg = workspace.repos.find((r) => r.name === repo)
+    if (!repoCfg) throw new Error(`repo "${repo}" is not registered in "${ref.workspace}"`)
+    const envCfg = workspace.envs.find((e) => e.name === ref.env)
 
-    const env = await this.ensureRunning(ref)
+    const env = await this.ensureRunning(ref, repo, session)
     if (env.status !== 'running' || !env.remoteWorkspaceFolder)
       throw new Error('environment is not running')
 
-    const configArgs = await overrideConfigArgs(ref, repo)
-    const hostWorkspaceFolder = cloneDir(ref.workspace, ref.task, ref.repo)
+    const configArgs = await overrideConfigArgs(ref, envCfg)
+    const hostWorkspaceFolder = cloneDir(ref.workspace, ref.task, repo)
     const gitBrokerEnv = gitAccess
-      ? await this.resolveGitAccess(ref, repo, env.containerId)
+      ? await this.resolveGitAccess(ref, repoCfg, env.containerId)
       : undefined
 
     return {
       agent: def,
+      session,
       remoteWorkspaceFolder: env.remoteWorkspaceFolder,
       hostWorkspaceFolder,
       configArgs,
@@ -177,11 +210,7 @@ export class EnvManager {
 
   /** Install the agent's adapter packages in the container (idempotent). */
   async installAdapter(ref: EnvRef, ctx: EnvContext): Promise<void> {
-    await installAcpAdapter(ref, ctx.agent, ctx.configArgs, ctx.hostWorkspaceFolder, this.logFor(ref))
-  }
-
-  async start(ref: EnvRef): Promise<void> {
-    await this.ensureRunning(ref)
+    await installAcpAdapter(ctx.session, ctx.agent, ctx.configArgs, ctx.hostWorkspaceFolder, this.logFor(ref))
   }
 
   async stop(ref: EnvRef): Promise<void> {
@@ -198,6 +227,30 @@ export class EnvManager {
     this.deps.sessions().schedule()
   }
 
+  /**
+   * The owning session was deleted — its container must go with it (it is
+   * session-bound; no other session may inherit it). The clone and the instance
+   * record stay: uncommitted work in the working tree outlives the session.
+   */
+  async releaseSession(ref: EnvRef, sessionId: string): Promise<void> {
+    const env = await this.find(ref)
+    if (!env || env.session !== sessionId) return
+    this.noteActive(ref)
+    const log = this.logFor(ref)
+    this.deps.sessions().closeEnv(ref)
+    stopGitBroker(ref)
+    this.gitShimsInstalled.delete(envKey(ref))
+    if (env.containerId) await dockerRemove(env.containerId, log)
+    await this.setStatus(ref, {
+      status: 'stopped',
+      containerId: undefined,
+      remoteWorkspaceFolder: undefined,
+      session: undefined
+    })
+    log('container removed (owning session deleted)')
+    this.deps.sessions().schedule()
+  }
+
   /** Delete the env infrastructure. Sessions are kept (they re-provision on run). */
   async remove(ref: EnvRef): Promise<void> {
     this.noteActive(ref)
@@ -207,14 +260,21 @@ export class EnvManager {
     stopGitBroker(ref)
     this.gitShimsInstalled.delete(envKey(ref))
     if (env?.containerId) await dockerRemove(env.containerId, log)
-    // Drop the env record even if the clone can't be fully removed, so a filesystem
-    // hiccup never leaves a ghost env in the tree pointing at a half-deleted clone.
-    try {
-      await removeClone(ref)
-    } catch (e) {
-      log(`clone removal failed: ${e instanceof Error ? e.message : String(e)}`)
+    // The clone is keyed by repo name and shared across envs of the task; only
+    // remove it when no other env instance still uses that repo. Drop the env
+    // record regardless, so a filesystem hiccup never leaves a ghost env.
+    if (env?.repo) {
+      const task = await store.getTask(ref.workspace, ref.task)
+      const shared = task.envs.some((e) => e.env !== ref.env && e.repo === env.repo)
+      if (!shared) {
+        try {
+          await removeClone(ref.workspace, ref.task, env.repo)
+        } catch (e) {
+          log(`clone removal failed: ${e instanceof Error ? e.message : String(e)}`)
+        }
+      }
     }
-    await store.removeEnv(ref.workspace, ref.task, ref.repo)
+    await store.removeTaskEnv(ref.workspace, ref.task, ref.env)
     this.deps.bus.emit('tree.changed', undefined)
     this.deps.sessions().schedule()
   }
@@ -223,7 +283,7 @@ export class EnvManager {
   async teardownTask(ws: string, task: string): Promise<void> {
     const data = await store.getTask(ws, task)
     for (const env of data.envs) {
-      const ref = { workspace: ws, task, repo: env.repo }
+      const ref = { workspace: ws, task, env: env.env }
       this.noteActive(ref)
       this.deps.sessions().closeEnv(ref)
       stopGitBroker(ref)

@@ -42,7 +42,11 @@ export function createKernel(): Kernel {
 
   sessions = new SessionManager(
     {
-      resolveEnv: (ref, agentId, gitAccess) => envs.resolveEnv(ref, agentId, gitAccess),
+      resolveEnv: (ref, repo, session, agentId, gitAccess) =>
+        envs.resolveEnv(ref, repo, session, agentId, gitAccess),
+      releaseEnv: (ref, sessionId) => {
+        envs.releaseSession(ref, sessionId).catch((e) => console.error('env release failed:', e))
+      },
       installAdapter: (ref, ctx) => envs.installAdapter(ref, ctx),
       resolveMcpServers,
       stopMcpServers: (ref) => {
@@ -51,7 +55,12 @@ export function createKernel(): Kernel {
       },
       resolveGurtServer: ensureGurtServer,
       stopGurtServer,
-      envStatus: (ref) => envs.status(ref),
+      taskEnvStates: async (ws, task) =>
+        (await store.getTask(ws, task)).envs.map((e) => ({
+          env: e.env,
+          repo: e.repo,
+          status: e.status
+        })),
       persist: (ws, task, records) => {
         store.writeSessions(ws, task, records).catch((e) => console.error('persist failed:', e))
       },
@@ -132,17 +141,21 @@ export function createKernel(): Kernel {
 
     async taskDirtyRepos(ws: string, task: string): Promise<string[]> {
       const data = await store.getTask(ws, task)
+      // Clones are keyed by repo name and shared across envs — dedupe by repo.
+      const repos = [...new Set(data.envs.map((e) => e.repo).filter((r): r is string => !!r))]
       const dirty: string[] = []
-      for (const env of data.envs)
-        if (await isDirty(cloneDir(ws, task, env.repo))) dirty.push(env.repo)
+      for (const repo of repos) if (await isDirty(cloneDir(ws, task, repo))) dirty.push(repo)
       return dirty
     },
 
     async editDraft(sessionId: string, patch: SessionDraftPatch): Promise<void> {
-      if (patch.envRepo !== undefined) {
-        const info = sessions.snapshot(sessionId)?.info
-        if (info && !(await store.getWorkspace(info.workspace)).repos.some((r) => r.name === patch.envRepo))
-          throw new Error(`repo "${patch.envRepo}" is not registered in "${info.workspace}"`)
+      const info = sessions.snapshot(sessionId)?.info
+      if (info) {
+        const wsData = await store.getWorkspace(info.workspace)
+        if (patch.repo != null && !wsData.repos.some((r) => r.name === patch.repo))
+          throw new Error(`repo "${patch.repo}" is not registered in "${info.workspace}"`)
+        if (patch.env !== undefined && !wsData.envs.some((e) => e.name === patch.env))
+          throw new Error(`environment "${patch.env}" is not registered in "${info.workspace}"`)
       }
       sessions.editDraft(sessionId, patch)
     },

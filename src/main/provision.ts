@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { createRequire } from 'node:module'
-import type { EnvRef, RepoConfig } from '../shared/types'
+import type { EnvConfig, EnvRef, RepoConfig } from '../shared/types'
 import type { AgentDef } from '../shared/agents'
 import { cloneDir, overrideConfigPath, rmTree, taskDir } from './store'
 import { listCredentials } from './credentials'
@@ -98,7 +98,7 @@ export function run(cmd: string, args: string[], log: LogSink, opts: RunOpts = {
 }
 
 export async function ensureClone(ref: EnvRef, repo: RepoConfig, log: LogSink): Promise<string> {
-  const dir = cloneDir(ref.workspace, ref.task, ref.repo)
+  const dir = cloneDir(ref.workspace, ref.task, repo.name)
   // Same git-native contract as the container: a gurt-managed token clones over
   // https even from an ssh URL, and no operation blocks on a credential prompt.
   const { env, gitArgs } = await hostGitAccess(repo, await listCredentials())
@@ -117,8 +117,8 @@ export async function ensureClone(ref: EnvRef, repo: RepoConfig, log: LogSink): 
   return dir
 }
 
-export async function removeClone(ref: EnvRef): Promise<void> {
-  await rmTree(cloneDir(ref.workspace, ref.task, ref.repo))
+export async function removeClone(ws: string, task: string, repo: string): Promise<void> {
+  await rmTree(cloneDir(ws, task, repo))
 }
 
 /** True if the clone at `dir` has uncommitted changes (staged, unstaged, or untracked). */
@@ -161,10 +161,7 @@ export async function discoverDevcontainer(url: string): Promise<DiscoveredDevco
     // blocking on a credential prompt with no terminal. `--` guards against a
     // URL beginning with `-` being parsed as a git option. The timeout is a
     // backstop for a clone that stalls on a slow/hanging network.
-    const { env, gitArgs } = await hostGitAccess(
-      { name: '', url, devcontainer: '' },
-      await listCredentials()
-    )
+    const { env, gitArgs } = await hostGitAccess({ name: '', url }, await listCredentials())
     await run('git', [...gitArgs, 'clone', '--depth', '1', '--no-tags', '--', url, dir], () => {}, {
       env,
       timeoutMs: DISCOVER_TIMEOUT_MS
@@ -184,20 +181,26 @@ export async function discoverDevcontainer(url: string): Promise<DiscoveredDevco
  * host path and returns the CLI args that make every command use it. The
  * same args must go to `up` and to each `exec` — exec re-resolves the config.
  */
-export async function overrideConfigArgs(ref: EnvRef, repo: RepoConfig): Promise<string[]> {
-  if (!repo.devcontainer.trim()) return []
-  const override = overrideConfigPath(ref.workspace, ref.repo)
+export async function overrideConfigArgs(
+  ref: EnvRef,
+  env: EnvConfig | undefined
+): Promise<string[]> {
+  if (!env?.devcontainer.trim()) return []
+  const override = overrideConfigPath(ref.workspace, ref.env)
   await fs.mkdir(path.dirname(override), { recursive: true })
-  await fs.writeFile(override, repo.devcontainer)
+  await fs.writeFile(override, env.devcontainer)
   return ['--override-config', override]
 }
 
-function idLabelArgs(ref: EnvRef): string[] {
-  return [
-    '--id-label', `gurt.workspace=${ref.workspace}`,
-    '--id-label', `gurt.task=${ref.task}`,
-    '--id-label', `gurt.repo=${ref.repo}`
-  ]
+/**
+ * Id-labels are the devcontainer CLI's find-key for an existing container.
+ * A container belongs to exactly one session, so the session IS the identity —
+ * one label, passed identically by `up`, `exec` and the adapter spawn. The env
+ * manager guarantees at most one container per env (it removes any other
+ * session's container before `up`).
+ */
+function idLabelArgs(session: string): string[] {
+  return ['--id-label', `gurt.session=${session}`]
 }
 
 export interface UpResult {
@@ -206,10 +209,11 @@ export interface UpResult {
 }
 
 export async function devcontainerUp(
-  ref: EnvRef,
+  session: string,
   configArgs: string[],
   workspaceFolder: string,
   log: LogSink,
+  repoName: string,
   repoHost?: string | null
 ): Promise<UpResult> {
   // The container is agent-agnostic: only the node feature is injected, plus any
@@ -221,7 +225,7 @@ export async function devcontainerUp(
     'up',
     '--workspace-folder', workspaceFolder,
     '--additional-features', JSON.stringify(features),
-    ...idLabelArgs(ref),
+    ...idLabelArgs(session),
     ...configArgs
   ]
   const { code, stdout } = await runNodeCli(args, log)
@@ -235,12 +239,12 @@ export async function devcontainerUp(
   }
   return {
     containerId: result.containerId,
-    remoteWorkspaceFolder: result.remoteWorkspaceFolder ?? '/workspaces/' + ref.repo
+    remoteWorkspaceFolder: result.remoteWorkspaceFolder ?? '/workspaces/' + repoName
   }
 }
 
 export async function installAcpAdapter(
-  ref: EnvRef,
+  session: string,
   agent: AgentDef,
   configArgs: string[],
   workspaceFolder: string,
@@ -251,7 +255,7 @@ export async function installAcpAdapter(
     [
       'exec',
       '--workspace-folder', workspaceFolder,
-      ...idLabelArgs(ref),
+      ...idLabelArgs(session),
       ...configArgs,
       'npm', 'install', '-g', ...agent.adapterPackages
     ],
@@ -286,7 +290,7 @@ export async function installGitShims(
 
 /** Spawns the ACP adapter inside the environment; caller owns the process. */
 export function spawnAcpAdapter(
-  ref: EnvRef,
+  session: string,
   agent: AgentDef,
   configArgs: string[],
   workspaceFolder: string,
@@ -299,7 +303,7 @@ export function spawnAcpAdapter(
     devcontainerCliPath(),
     'exec',
     '--workspace-folder', workspaceFolder,
-    ...idLabelArgs(ref),
+    ...idLabelArgs(session),
     ...configArgs
   ]
   if (secret) args.push('--remote-env', `${secretEnv}=${secret}`)

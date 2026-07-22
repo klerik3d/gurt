@@ -4,7 +4,7 @@ import type { Server } from 'node:http'
 import type { AcpHttpMcpServer, EnvRef, McpMode, McpSelection } from '../../shared/types'
 import { mcpDef } from '../../shared/mcp'
 import { envKey, mcpServerKey } from '../../shared/keys'
-import { cloneDir } from '../store'
+import { cloneDir, getTask } from '../store'
 import { buildGithubHttpServer } from './githubServer'
 
 interface Running {
@@ -24,11 +24,11 @@ function listen(server: Server): Promise<number> {
   })
 }
 
-async function startServer(ref: EnvRef, id: string, mode: McpMode): Promise<Running> {
-  const dir = cloneDir(ref.workspace, ref.task, ref.repo)
+async function startServer(ref: EnvRef, repo: string, id: string, mode: McpMode): Promise<Running> {
+  const dir = cloneDir(ref.workspace, ref.task, repo)
   const token = randomUUID()
   // Only github is implemented; the registry is the extension point for more.
-  const http = buildGithubHttpServer(ref, dir, mode, token)
+  const http = buildGithubHttpServer(ref, repo, dir, mode, token)
   const port = await listen(http)
   return {
     mode,
@@ -51,8 +51,13 @@ export async function resolveMcpServers(
   ref: EnvRef,
   selection: McpSelection[] | undefined
 ): Promise<AcpHttpMcpServer[]> {
+  if (!selection?.length) return []
+  // The MCP servers operate on the env instance's provisioned clone. Without a
+  // repo there is no clone to serve.
+  const repo = (await getTask(ref.workspace, ref.task)).envs.find((e) => e.env === ref.env)?.repo
+  if (!repo) return []
   const out: AcpHttpMcpServer[] = []
-  for (const sel of selection ?? []) {
+  for (const sel of selection) {
     if (!mcpDef(sel.id)) continue
     const key = mcpServerKey(ref, sel.id)
     let rec = running.get(key)
@@ -62,7 +67,7 @@ export async function resolveMcpServers(
       rec = undefined
     }
     if (!rec) {
-      rec = await startServer(ref, sel.id, sel.mode)
+      rec = await startServer(ref, repo, sel.id, sel.mode)
       running.set(key, rec)
     }
     out.push(rec.descriptor)

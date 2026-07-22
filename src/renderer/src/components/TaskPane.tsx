@@ -72,24 +72,20 @@ export function TaskPane({
             <div className="tp-empty">no environments yet — they are created when a session starts</div>
           )}
           {taskData.envs.map((env) => {
-            const ref: EnvRef = { workspace: ws, task, repo: env.repo }
+            const ref: EnvRef = { workspace: ws, task, env: env.env }
             const key = envKey(ref)
             const dot = ENV_DOT[env.status]
             return (
-              <div key={env.repo}>
+              <div key={env.env}>
                 <div className="env-row">
                   <Dot tone={dot.tone} pulse={dot.pulse} />
-                  <span className="env-name">{env.repo}</span>
+                  <span className="env-name">{env.env}</span>
+                  {env.repo && <span className="tag">{env.repo}</span>}
                   <span className={`env-status ${env.status === 'error' ? 'red' : 'dim'}`}>
                     {env.status}
                   </span>
                   {env.error && <span className="env-err mono">{env.error}</span>}
                   <span className="spacer" />
-                  {(env.status === 'stopped' || env.status === 'error') && (
-                    <button className="btn btn-xs" onClick={() => window.gurt.startEnv(ref).catch(() => {})}>
-                      Start
-                    </button>
-                  )}
                   {(env.status === 'running' || env.status === 'starting') && (
                     <button
                       className="btn btn-xs"
@@ -103,11 +99,11 @@ export function TaskPane({
                     onClick={async () => {
                       if (
                         await confirmDialog(
-                          `Delete env "${env.repo}" (container + clone)? Its sessions are kept and re-provision on next run. Uncommitted work is lost.`,
+                          `Delete env "${env.env}" (container + clone)? Its sessions are kept and re-provision on next run. Uncommitted work is lost.`,
                           { title: 'Delete environment', confirmText: 'Delete', danger: true }
                         )
                       )
-                        window.gurt.removeEnv(ref).catch((e) => alertDialog(String(e)))
+                        window.gurt.removeTaskEnv(ref).catch((e) => alertDialog(String(e)))
                     }}
                   >
                     Delete
@@ -134,7 +130,7 @@ export function TaskPane({
         <div className="tp-section">
           <div className="tp-sec-head">
             <span className="seclabel">QUEUE</span>
-            <span className="tp-sec-hint">· starts when the repo's env is stopped</span>
+            <span className="tp-sec-hint">· starts when the environment and its repository are free</span>
           </div>
           {queued.length === 0 && <div className="tp-dashed">no queued sessions in this task</div>}
           {queued.map((s) => (
@@ -143,7 +139,8 @@ export function TaskPane({
               <span className="queue-title clickable" onClick={() => onSelectSession(s.id)}>
                 {s.title}
               </span>
-              <span className="tag">{s.envRepo}</span>
+              <span className="tag">{s.env}</span>
+              {s.repo && <span className="tag">{s.repo}</span>}
               <span className="tag">{agentName(agents, s.agent)}</span>
               <span className="spacer" />
               <button
