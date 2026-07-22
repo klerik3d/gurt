@@ -1,10 +1,11 @@
-// Host git broker: one HTTP service per running env, following mcp/manager.ts —
-// bind 0.0.0.0 (container-reachable via host.docker.internal), a random UUID
-// token in the path, started with the env and stopped with it. Resolves
-// credentials per request (§3.1, §4). Never logs secrets.
+// Host git broker: one HTTP service per running env instance (i.e. per
+// session's container), following mcp/manager.ts — bind 0.0.0.0
+// (container-reachable via host.docker.internal), a random UUID token in the
+// path, started with the instance and stopped with it. Resolves credentials
+// per request (§3.1, §4). Never logs secrets.
 //
 // The ssh-agent TCP bridge (§4.2) is phase 2 and not implemented here yet; the
-// per-env, single-service shape leaves room for it on the same listener.
+// per-instance, single-service shape leaves room for it on the same listener.
 import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -22,7 +23,7 @@ interface Running {
   descriptor: { url: string }
 }
 
-/** One broker per env, reused across the env's sessions. */
+/** One broker per env instance, keyed by its owning session (via envKey). */
 const running = new Map<string, Running>()
 
 function listen(server: Server): Promise<number> {
@@ -32,9 +33,11 @@ function listen(server: Server): Promise<number> {
   })
 }
 
-/** The RepoConfig this env instance was provisioned with (its `EnvState.repo`). */
+/** The RepoConfig this session's instance was provisioned with (its `EnvState.repo`). */
 async function provisionedRepo(ref: EnvRef): Promise<RepoConfig | undefined> {
-  const repo = (await getTask(ref.workspace, ref.task)).envs.find((e) => e.env === ref.env)?.repo
+  const repo = (await getTask(ref.workspace, ref.task)).envs.find(
+    (e) => e.session === ref.session
+  )?.repo
   if (!repo) return undefined
   return (await getWorkspace(ref.workspace)).repos.find((r) => r.name === repo)
 }

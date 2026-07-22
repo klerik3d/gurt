@@ -100,20 +100,20 @@ export interface WorkspaceFile {
 export type EnvStatus = 'stopped' | 'starting' | 'running' | 'error'
 
 /**
- * A per-task environment instance: pure infrastructure — a clone + devcontainer.
- * Keyed by the `EnvConfig.name` it runs; `repo` is the repo it was actually
- * provisioned with (stamped at `up`), which drives its clone and git access.
- * The container is bound to one session: it is created for that session and
- * never reused by another — a different session (or repo) recreates it.
+ * A per-session environment instance: pure infrastructure — a clone + a
+ * devcontainer created for exactly one session. Keyed by `session`; `env` is
+ * the `EnvConfig.name` it runs, `repo` the repo it was provisioned with
+ * (stamped at `up`), which drives its clone and git access. Two sessions on
+ * the same env definition get two independent containers — instances never
+ * outlive or serve any session but their own.
  */
 export interface EnvState {
-  /** Identity — the `EnvConfig.name`. */
+  /** Owning session (`SessionInfo.id`) — the instance identity. */
+  session: string
+  /** The env definition this instance runs — an `EnvConfig.name`. */
   env: string
   /** Repo it was provisioned with; stamped at up, absent before the first up. */
   repo?: string
-  /** Session the container belongs to — its identity; stamped at up, absent
-   *  before the first up. Any other session tears the container down first. */
-  session?: string
   containerId?: string
   /** Workspace folder path inside the container, needed to spawn sessions. */
   remoteWorkspaceFolder?: string
@@ -154,8 +154,8 @@ export interface SessionInfo {
   /**
    * Inject native git access (credential helper + transport rewrite, and the gh
    * wrapper) into the agent process when it starts. Off = status quo: no
-   * injection, the github MCP remains the delegated remote path. Fixed at the
-   * first start of the (env, agent) adapter this session shares (§6).
+   * injection, the github MCP remains the delegated remote path. Fixed when the
+   * session's adapter spawns (§6).
    */
   gitAccess?: boolean
   /** First prompt, sent automatically when the session starts. */
@@ -448,11 +448,14 @@ export interface PersistedSession {
   entries?: ChatEntry[]
 }
 
+/** Reference to one session's environment instance. */
 export interface EnvRef {
   workspace: string
   task: string
-  /** The env instance — an `EnvConfig.name`. */
+  /** The env definition the instance runs — an `EnvConfig.name`. */
   env: string
+  /** Owning session (`SessionInfo.id`) — the instance identity. */
+  session: string
 }
 
 // Changes panel: the delivery thread of a (task, repo) clone —

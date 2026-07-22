@@ -13,7 +13,7 @@ interface Running {
   descriptor: AcpHttpMcpServer
 }
 
-/** One host MCP server per (env, mcp id), reused across the env's sessions. */
+/** One host MCP server per (session's instance, mcp id). */
 const running = new Map<string, Running>()
 
 function listen(server: Server): Promise<number> {
@@ -44,17 +44,20 @@ async function startServer(ref: EnvRef, repo: string, id: string, mode: McpMode)
 }
 
 /**
- * Ensure the host MCP servers for `selection` are running for this env and return
- * their ACP descriptors. Restarts a server whose granted mode changed.
+ * Ensure the host MCP servers for `selection` are running for this session's
+ * instance and return their ACP descriptors. Restarts a server whose granted
+ * mode changed.
  */
 export async function resolveMcpServers(
   ref: EnvRef,
   selection: McpSelection[] | undefined
 ): Promise<AcpHttpMcpServer[]> {
   if (!selection?.length) return []
-  // The MCP servers operate on the env instance's provisioned clone. Without a
+  // The MCP servers operate on the instance's provisioned clone. Without a
   // repo there is no clone to serve.
-  const repo = (await getTask(ref.workspace, ref.task)).envs.find((e) => e.env === ref.env)?.repo
+  const repo = (await getTask(ref.workspace, ref.task)).envs.find(
+    (e) => e.session === ref.session
+  )?.repo
   if (!repo) return []
   const out: AcpHttpMcpServer[] = []
   for (const sel of selection) {
@@ -75,7 +78,7 @@ export async function resolveMcpServers(
   return out
 }
 
-/** Tear down every host MCP server of an env (env stop/delete). */
+/** Tear down every host MCP server of a session's instance (stop/delete). */
 export function stopMcpServers(ref: EnvRef): void {
   const prefix = `${envKey(ref)}::`
   for (const [key, rec] of running) {

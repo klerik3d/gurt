@@ -211,22 +211,36 @@ export async function updateRepo(ws: string, repo: RepoConfig): Promise<void> {
   await saveWorkspace(ws, data)
 }
 
-/** Task names that have an env instance provisioned with this repo (a live clone). */
+/** Task names holding a live clone of this repo (a `<task>/<repo>/.git` on disk).
+ *  Disk-based, not record-based: instance records are per-session and released
+ *  with their session, while the clone (and any uncommitted work) stays. */
 export async function tasksUsingRepo(ws: string, repo: string): Promise<string[]> {
   const used: string[] = []
-  for (const task of await listTasks(ws)) {
-    const data = await getTask(ws, task)
-    if (data.envs.some((e) => e.repo === repo)) used.push(task)
-  }
+  for (const task of await listTasks(ws))
+    if (existsSync(path.join(cloneDir(ws, task, repo), '.git'))) used.push(task)
   return used
 }
 
-/** Task names that have an instance of this env. */
+/** Repo clones of a task present on disk (any task-dir subdirectory with a .git). */
+export async function taskCloneRepos(ws: string, task: string): Promise<string[]> {
+  const dir = taskDir(ws, task)
+  const out: string[] = []
+  for (const entry of await fs.readdir(dir, { withFileTypes: true }).catch(() => []))
+    if (entry.isDirectory() && existsSync(path.join(dir, entry.name, '.git'))) out.push(entry.name)
+  return out
+}
+
+/** Task names using this env definition — an instance record of it, or a
+ *  session that runs on it (sessions outlive their instances). */
 export async function tasksUsingEnv(ws: string, env: string): Promise<string[]> {
   const used: string[] = []
   for (const task of await listTasks(ws)) {
     const data = await getTask(ws, task)
-    if (data.envs.some((e) => e.env === env)) used.push(task)
+    if (
+      data.envs.some((e) => e.env === env) ||
+      (await readSessions(ws, task)).some((r) => r.info.env === env)
+    )
+      used.push(task)
   }
   return used
 }
@@ -292,19 +306,19 @@ export async function listTasks(ws: string): Promise<string[]> {
   return tasks
 }
 
-/** Read task.json, lazily migrating pre-split env records once: an entry with a
- *  `repo` and no `env` gets `env = repo` (its provisioned repo is kept). */
+/** Read task.json, shedding pre-per-session records once: instances are now
+ *  keyed by their owning session (stamped when the record is created for a
+ *  concrete session), so an entry without a `session` belongs to no session
+ *  and cannot be addressed — drop it. Such entries never carry a container
+ *  (the session was stamped at `up` in every model that created one). */
 export async function getTask(ws: string, task: string): Promise<TaskFile> {
   const file = path.join(taskDir(ws, task), 'task.json')
   const data = await readJson<TaskFile>(file, { envs: [] })
-  let migrated = false
-  for (const e of data.envs as (EnvState & { env?: string })[]) {
-    if (e.env === undefined && typeof e.repo === 'string') {
-      e.env = e.repo
-      migrated = true
-    }
+  const kept = data.envs.filter((e) => typeof e.session === 'string' && e.session)
+  if (kept.length !== data.envs.length) {
+    data.envs = kept
+    await saveTask(ws, task, data)
   }
-  if (migrated) await saveTask(ws, task, data)
   return data
 }
 
@@ -316,29 +330,41 @@ export async function removeTaskDir(ws: string, task: string): Promise<void> {
   await rmTree(taskDir(ws, task))
 }
 
-/** Ensure a (stopped) env instance record exists for `env`; idempotent. */
-export async function ensureTaskEnv(ws: string, task: string, env: string): Promise<void> {
+/** Ensure a (stopped) env instance record exists for `session`; idempotent.
+ *  `env` is adopted on an existing record too — a re-pointed draft may reuse
+ *  the record its failed start left behind. */
+export async function ensureTaskEnv(
+  ws: string,
+  task: string,
+  env: string,
+  session: string
+): Promise<void> {
   const data = await getTask(ws, task)
-  if (data.envs.some((e) => e.env === env)) return
-  data.envs.push({ env, status: 'stopped' } satisfies EnvState)
+  const inst = data.envs.find((e) => e.session === session)
+  if (inst) {
+    if (inst.env === env) return
+    inst.env = env
+  } else {
+    data.envs.push({ session, env, status: 'stopped' } satisfies EnvState)
+  }
   await saveTask(ws, task, data)
 }
 
-export async function removeTaskEnv(ws: string, task: string, env: string): Promise<void> {
+export async function removeTaskEnv(ws: string, task: string, session: string): Promise<void> {
   const data = await getTask(ws, task)
-  data.envs = data.envs.filter((e) => e.env !== env)
+  data.envs = data.envs.filter((e) => e.session !== session)
   await saveTask(ws, task, data)
 }
 
 export async function updateTaskEnv(
   ws: string,
   task: string,
-  env: string,
+  session: string,
   patch: Partial<EnvState>
 ): Promise<void> {
   const data = await getTask(ws, task)
-  const inst = data.envs.find((e) => e.env === env)
-  if (!inst) throw new Error(`no env instance "${env}" in task "${task}"`)
+  const inst = data.envs.find((e) => e.session === session)
+  if (!inst) throw new Error(`no env instance for session "${session}" in task "${task}"`)
   Object.assign(inst, patch)
   await saveTask(ws, task, data)
 }
@@ -463,6 +489,7 @@ export async function buildTree(): Promise<Tree> {
       tasks.push({
         name: task,
         envs: taskData.envs.map((e) => ({
+          session: e.session,
           env: e.env,
           repo: e.repo,
           containerId: e.containerId,

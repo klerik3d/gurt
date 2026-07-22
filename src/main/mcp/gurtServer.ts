@@ -195,7 +195,8 @@ export function stopGurtServer(sessionId: string): void {
   running.delete(sessionId)
 }
 
-/** Tear down every `gurt` server of an env (env stop/delete). */
+/** Tear down the `gurt` server(s) attached to this instance (stop/delete).
+ *  Instances are per-session, so the envKey match hits at most one record. */
 export function stopGurtServersForEnv(ref: EnvRef): void {
   const key = envKey(ref)
   for (const [sessionId, rec] of running) {

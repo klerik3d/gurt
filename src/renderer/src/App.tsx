@@ -223,7 +223,7 @@ export default function App() {
     tree?.workspaces
       .find((w) => w.name === activeInfo.workspace)
       ?.tasks.find((t) => t.name === activeInfo.task)
-      ?.envs.find((e) => e.env === activeInfo.env)
+      ?.envs.find((e) => e.session === activeInfo.id)
 
   // Footer counters across every session, live overlay included.
   let runningCount = 0
@@ -354,7 +354,8 @@ export default function App() {
                           envKey({
                             workspace: snapshots[selection.id].info.workspace,
                             task: snapshots[selection.id].info.task,
-                            env: snapshots[selection.id].info.env
+                            env: snapshots[selection.id].info.env,
+                            session: snapshots[selection.id].info.id
                           })
                         ] ?? []
                       : []

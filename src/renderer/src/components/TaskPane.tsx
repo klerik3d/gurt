@@ -72,14 +72,20 @@ export function TaskPane({
             <div className="tp-empty">no environments yet — they are created when a session starts</div>
           )}
           {taskData.envs.map((env) => {
-            const ref: EnvRef = { workspace: ws, task, env: env.env }
+            const ref: EnvRef = { workspace: ws, task, env: env.env, session: env.session }
             const key = envKey(ref)
             const dot = ENV_DOT[env.status]
+            const owner = taskData.sessions.find((s) => s.id === env.session)
             return (
-              <div key={env.env}>
+              <div key={env.session}>
                 <div className="env-row">
                   <Dot tone={dot.tone} pulse={dot.pulse} />
                   <span className="env-name">{env.env}</span>
+                  {owner && (
+                    <span className="tag clickable" onClick={() => onSelectSession(owner.id)}>
+                      {owner.title}
+                    </span>
+                  )}
                   {env.repo && <span className="tag">{env.repo}</span>}
                   <span className={`env-status ${env.status === 'error' ? 'red' : 'dim'}`}>
                     {env.status}
@@ -99,7 +105,7 @@ export function TaskPane({
                     onClick={async () => {
                       if (
                         await confirmDialog(
-                          `Delete env "${env.env}" (container + clone)? Its sessions are kept and re-provision on next run. Uncommitted work is lost.`,
+                          `Delete env "${env.env}" (container + clone)? Its session is kept and re-provisions on next run. Uncommitted work is lost.`,
                           { title: 'Delete environment', confirmText: 'Delete', danger: true }
                         )
                       )
@@ -130,7 +136,7 @@ export function TaskPane({
         <div className="tp-section">
           <div className="tp-sec-head">
             <span className="seclabel">QUEUE</span>
-            <span className="tp-sec-hint">· starts when the environment and its repository are free</span>
+            <span className="tp-sec-hint">· starts when its repository is free</span>
           </div>
           {queued.length === 0 && <div className="tp-dashed">no queued sessions in this task</div>}
           {queued.map((s) => (

@@ -122,7 +122,7 @@ interface Session {
   pendingPermissions: Map<number, (outcome: unknown) => void>
 }
 
-/** Everything needed to (re)spawn the agent process for an environment. */
+/** Everything needed to (re)spawn the agent process for a session's container. */
 export interface EnvContext {
   agent: AgentDef
   /** Owning session — the container's identity; exec/spawn find it by this. */
@@ -134,9 +134,8 @@ export interface EnvContext {
   secretEnv: string
   /** Extra env vars for the adapter (e.g. a local model's base URL). */
   env?: Record<string, string>
-  /** Git-access injection (§6): broker URL + GIT_CONFIG_*; present only when the
-   *  starting session enabled git access. Fixes git access for the shared
-   *  (env, agent) adapter at its first spawn. */
+  /** Git-access injection (§6): broker URL + GIT_CONFIG_*; present only when
+   *  the session enabled git access. Fixed at the adapter's spawn. */
   gitBrokerEnv?: Record<string, string>
 }
 
@@ -149,7 +148,6 @@ export interface SessionEvents {
   resolveEnv: (
     ref: EnvRef,
     repo: string | undefined,
-    session: string,
     agentId: string,
     gitAccess: boolean
   ) => Promise<EnvContext>
@@ -168,15 +166,15 @@ export interface SessionEvents {
   ) => Promise<AcpHttpMcpServer>
   /** Tear down one session's `gurt` server (session deleted). */
   stopGurtServer: (sessionId: string) => void
-  /** Remove the container this session owns, if any — on delete, or when a
-   *  draft is re-pointed to another repo/env. The clone and env record stay. */
-  releaseEnv: (ref: EnvRef, sessionId: string) => void
-  /** Instance states of every env in the task, with the repo each was
-   *  provisioned with — the scheduler's env-free / repo-free predicate. */
+  /** Remove the container and instance record this session owns, if any — on
+   *  delete, or when a draft is re-pointed to another repo/env. The clone stays. */
+  releaseEnv: (ref: EnvRef) => void
+  /** Instance states of every env instance in the task, with the repo each was
+   *  provisioned with — the scheduler's repo-free predicate. */
   taskEnvStates: (
     ws: string,
     task: string
-  ) => Promise<{ env: string; repo?: string; status: EnvStatus }[]>
+  ) => Promise<{ session: string; env: string; repo?: string; status: EnvStatus }[]>
   persist: (ws: string, task: string, records: PersistedSession[]) => void
   /** Persist the refreshed config surface for an agent instance (cache). */
   saveAgentConfig: (agentId: string, cfg: AgentConfig) => void
@@ -235,7 +233,7 @@ export class SessionManager {
   private connections = new Map<string, Connection>()
   private sessions = new Map<string, Session>()
   private persistTimers = new Map<string, NodeJS.Timeout>()
-  /** (env, agent) pairs whose adapter is installed this app run. */
+  /** Session containers (per agent) whose adapter is installed this app run. */
   private installedAdapters = new Set<string>()
   /** Per agent-instance id, its last-known config surface (models/effort/commands/
    *  modes). Seeded from the persisted cache at restore, refreshed on every live
@@ -262,7 +260,12 @@ export class SessionManager {
       const lastSeq = r.log.length ? r.log[r.log.length - 1].seq : 0
       this.sessions.set(r.info.id, {
         info: r.info,
-        ref: { workspace: r.info.workspace, task: r.info.task, env: r.info.env },
+        ref: {
+          workspace: r.info.workspace,
+          task: r.info.task,
+          env: r.info.env,
+          session: r.info.id
+        },
         acpSessionId: r.acpSessionId,
         proposal: r.proposal,
         records: r.log,
@@ -363,7 +366,7 @@ export class SessionManager {
   // --- lifecycle: create / run / enqueue / cancel / edit / delete ---------
 
   createSession(
-    ref: EnvRef,
+    target: Omit<EnvRef, 'session'>,
     repo: string | null,
     agentId: string,
     startPrompt: string,
@@ -377,13 +380,13 @@ export class SessionManager {
     // the IPC boundary enforces it too). A draft with no repo is allowed.
     if ((action === 'run' || action === 'queue') && !repo)
       throw new Error('session has no repository')
-    const n = this.listForTask(ref.workspace, ref.task).length + 1
+    const n = this.listForTask(target.workspace, target.task).length + 1
     const info: SessionInfo = {
       id: randomUUID(),
-      env: ref.env,
+      env: target.env,
       repo: repo ?? undefined,
-      task: ref.task,
-      workspace: ref.workspace,
+      task: target.task,
+      workspace: target.workspace,
       title: `session ${n}`,
       agent: agentId,
       autoAllow,
@@ -393,6 +396,7 @@ export class SessionManager {
       startPrompt,
       configValues: Object.keys(configValues).length ? configValues : undefined
     }
+    const ref: EnvRef = { ...target, session: info.id }
     this.sessions.set(info.id, {
       info,
       ref,
@@ -485,14 +489,14 @@ export class SessionManager {
     if (patch.configValues !== undefined)
       s.info.configValues = Object.keys(patch.configValues).length ? patch.configValues : undefined
     // repo: null clears it, a string sets it; absent leaves it. Never touches
-    // the env. Re-pointing repo or env releases the draft's container if a
+    // the env. Re-pointing repo or env releases the draft's instance if a
     // failed start left one — it was provisioned for the old target.
     if (patch.repo !== undefined && (patch.repo ?? undefined) !== s.info.repo) {
-      this.events.releaseEnv(s.ref, s.info.id)
+      this.events.releaseEnv(s.ref)
       s.info.repo = patch.repo ?? undefined
     }
     if (patch.env !== undefined && patch.env !== s.info.env) {
-      this.events.releaseEnv(s.ref, s.info.id)
+      this.events.releaseEnv(s.ref)
       s.info.env = patch.env
       s.ref = { ...s.ref, env: patch.env }
     }
@@ -509,8 +513,9 @@ export class SessionManager {
     this.sessions.delete(sessionId)
     this.events.deleteLog(s.ref.workspace, s.ref.task, sessionId)
     this.events.stopGurtServer(sessionId)
-    // The container is bound to this session — take it down with the session.
-    this.events.releaseEnv(s.ref, sessionId)
+    // The instance (container + record) is bound to this session — take it
+    // down with the session.
+    this.events.releaseEnv(s.ref)
     this.schedulePersist(s.ref)
     this.bus.emit('tree.changed', undefined)
   }
@@ -530,40 +535,40 @@ export class SessionManager {
     const queued = [...this.sessions.values()]
       .filter((s) => s.info.state === 'queued')
       .sort((a, b) => (a.info.queuedAt ?? '').localeCompare(b.info.queuedAt ?? ''))
-    // A pass may start several items; claim each started item's env AND repo so a
-    // later item over either stays queued (multiple envs may share one repo).
+    // A pass may start several items; claim each started item's repo so a later
+    // item over the same repo stays queued. The repo is the only exclusive
+    // resource — containers are per-session, so envs never gate each other.
     const claimed = new Set<string>()
-    const repoClaim = (s: Session) =>
-      s.info.repo ? `${s.ref.workspace}/${s.ref.task}/${s.info.repo}` : null
     for (const s of queued) {
-      const ekey = envKey(s.ref)
-      const rkey = repoClaim(s)
-      if (claimed.has(ekey) || (rkey && claimed.has(rkey))) continue
+      const rkey = s.info.repo ? `${s.ref.workspace}/${s.ref.task}/${s.info.repo}` : null
+      if (!rkey || claimed.has(rkey)) continue
       if (!(await this.canStart(s))) continue
-      claimed.add(ekey)
-      if (rkey) claimed.add(rkey)
+      claimed.add(rkey)
       void this.startSession(s.info.id)
     }
   }
 
   /**
-   * Start gate: within the task, BOTH the env and the session's repo must be
-   * free. Free = no instance in that role is starting/running, and no other
-   * session is `starting` on the same env / same repo. A repo-less session never
-   * starts. Future predicates (concurrency, priorities) compose here.
+   * Start gate: within the task, the session's repo must be free — the clone is
+   * per (task, repo) and shared, so two live sessions on it would trample each
+   * other's working tree. Free = no other session's instance on that repo is
+   * starting/running, and no other session is `starting` on it. The env
+   * definition is NOT a gate: every session gets its own container. A repo-less
+   * session never starts. Future predicates (concurrency, priorities) compose here.
    */
   private async canStart(s: Session): Promise<boolean> {
     if (!s.info.repo) return false
     const busy = (st: EnvStatus) => st === 'starting' || st === 'running'
     const states = await this.events.taskEnvStates(s.ref.workspace, s.ref.task)
-    // env free / repo free among provisioned instances
-    if (states.some((e) => e.env === s.info.env && busy(e.status))) return false
-    if (states.some((e) => e.repo === s.info.repo && busy(e.status))) return false
-    // no other session mid-start on the same env or the same repo of this task
+    // repo free among the other sessions' provisioned instances
+    if (
+      states.some((e) => e.session !== s.info.id && e.repo === s.info.repo && busy(e.status))
+    )
+      return false
+    // no other session mid-start on the same repo of this task
     for (const o of this.sessions.values()) {
       if (o.info.id === s.info.id || o.info.state !== 'starting') continue
       if (o.info.workspace !== s.info.workspace || o.info.task !== s.info.task) continue
-      if (o.info.env === s.info.env) return false
       if (o.info.repo && o.info.repo === s.info.repo) return false
     }
     return true
@@ -585,12 +590,11 @@ export class SessionManager {
       // scheduler pre-checks it to pick queue items, "Run now" doesn't need to.
       if (!(await this.canStart(s)))
         throw new Error(
-          `environment "${s.info.env}" or repository "${s.info.repo}" is busy — queue the session instead`
+          `repository "${s.info.repo}" is busy in this task — queue the session instead`
         )
       const ctx = await this.events.resolveEnv(
         s.ref,
         s.info.repo,
-        s.info.id,
         s.info.agent!,
         s.info.gitAccess ?? false
       )
@@ -641,7 +645,7 @@ export class SessionManager {
 
   // --- connections --------------------------------------------------------
 
-  /** Kill the adapter processes of an environment (all agents) — env stop/delete. */
+  /** Kill the adapter process(es) of a session's container — instance stop/delete. */
   closeEnv(ref: EnvRef): void {
     for (const conn of this.connections.values())
       if (envKey(conn.ref) === envKey(ref)) conn.kill()
@@ -805,7 +809,6 @@ export class SessionManager {
       const ctx = await this.events.resolveEnv(
         s.ref,
         s.info.repo,
-        s.info.id,
         agentId,
         s.info.gitAccess ?? false
       )
@@ -977,14 +980,12 @@ export class SessionManager {
     return best
   }
 
-  /** No session sharing this env is busy or mid-start. */
+  /** The instance's owning session is not busy or mid-start (instances are
+   *  per-session, so exactly one session can ever hold it up). */
   isEnvIdle(ref: EnvRef): boolean {
-    const key = envKey(ref)
-    for (const s of this.sessions.values()) {
-      if (envKey(s.ref) !== key) continue
-      if (s.busy || s.info.state === 'starting') return false
-    }
-    return true
+    const s = this.sessions.get(ref.session)
+    if (!s) return true
+    return !(s.busy || s.info.state === 'starting')
   }
 
   /** Ping from the UI (e.g. typing in the composer) — postpones a pending auto-stop. */

@@ -65,8 +65,9 @@ export interface GurtApi {
   createTask(ws: string, name: string): Promise<void>
   removeTask(ws: string, name: string): Promise<void>
   taskDirtyRepos(ws: string, name: string): Promise<string[]>
+  /** Stop one session's environment container. */
   stopEnv(ref: EnvRef): Promise<void>
-  /** Tear down one task's env instance (container + clone). */
+  /** Tear down one session's env instance (container + clone). */
   removeTaskEnv(ref: EnvRef): Promise<void>
   /** Git state of every clone of the task, computed on the host; `fetch` reaches the network. */
   getTaskChanges(ws: string, task: string, opts?: { fetch?: boolean }): Promise<RepoChanges[]>
@@ -82,7 +83,10 @@ export interface GurtApi {
   changesOpenPr(ws: string, task: string, repo: string): Promise<void>
   changesOpenVscode(ws: string, task: string, repo: string): Promise<void>
   createSession(
-    ref: EnvRef,
+    /** Where to create it: workspace, task, and the env definition to run on.
+     *  (Not an `EnvRef` — the instance identity is the session id, which does
+     *  not exist yet.) */
+    target: Omit<EnvRef, 'session'>,
     /** The session's repo (a repo name), or null for a repo-less draft. */
     repo: string | null,
     agent: string,

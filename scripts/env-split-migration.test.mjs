@@ -79,33 +79,34 @@ try {
   assert.equal(read(wsPath), migratedWs, 'workspace.json write-back happens exactly once')
   console.log('workspace.json migration + write-once OK')
 
-  // --- task.json: env records key by repo, no env ---
+  // --- task.json: instances are per-session now — records without a `session`
+  // belong to no session and are shed; session-keyed records are kept ---
   const taskPath = path.join(GURT_ROOT, ws, task, 'task.json')
   fs.writeFileSync(
     taskPath,
     JSON.stringify({
       envs: [
         { repo: 'alpha', status: 'stopped' },
-        { repo: 'beta', status: 'running', containerId: 'cid', remoteWorkspaceFolder: '/workspaces/beta' }
+        { env: 'beta', repo: 'beta', status: 'stopped' },
+        { session: 's1', env: 'beta', repo: 'beta', status: 'running', containerId: 'cid' }
       ]
     })
   )
   const legacyTask = read(taskPath)
-  assert.ok(!legacyTask.includes('"env"'), 'fixture starts without env identity')
 
   const taskData = await m.getTask(ws, task)
-  // env = repo, the provisioned repo is kept
-  assert.equal(taskData.envs[0].env, 'alpha')
-  assert.equal(taskData.envs[0].repo, 'alpha')
-  assert.equal(taskData.envs[1].env, 'beta')
-  assert.equal(taskData.envs[1].repo, 'beta')
-  assert.equal(taskData.envs[1].containerId, 'cid')
+  // only the session-keyed record survives, untouched
+  assert.equal(taskData.envs.length, 1)
+  assert.equal(taskData.envs[0].session, 's1')
+  assert.equal(taskData.envs[0].env, 'beta')
+  assert.equal(taskData.envs[0].repo, 'beta')
+  assert.equal(taskData.envs[0].containerId, 'cid')
 
   const migratedTask = read(taskPath)
   assert.notEqual(migratedTask, legacyTask, 'task.json rewritten on first read')
   await m.getTask(ws, task)
   assert.equal(read(taskPath), migratedTask, 'task.json write-back happens exactly once')
-  console.log('task.json migration + write-once OK')
+  console.log('task.json sessionless-record shedding + write-once OK')
 
   // --- sessions.json: info.envRepo fuses env + repo ---
   const sessPath = path.join(GURT_ROOT, ws, task, 'sessions.json')

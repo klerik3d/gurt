@@ -6,9 +6,9 @@ export interface DomainEvents {
   /** Tree-shape change: ws/task/repo CRUD, env status, session list/state. */
   'tree.changed': void
   'env.status': { ref: EnvRef; status: EnvStatus }
-  /** User or agent activity on an env — postpones idle auto-stop. */
+  /** User or agent activity on a session's env — postpones idle auto-stop. */
   'env.activity': { ref: EnvRef }
-  /** The ACP adapter process of (env, agent) exited — its sessions detached. */
+  /** The ACP adapter process of a session's container exited — it detached. */
   'env.adapterExited': { ref: EnvRef; agent: string }
   'session.state': { sessionId: string; ref: EnvRef; state: SessionState }
   'session.turn': { sessionId: string; ref: EnvRef; phase: 'started' | 'ended' }

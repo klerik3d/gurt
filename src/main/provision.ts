@@ -195,9 +195,7 @@ export async function overrideConfigArgs(
 /**
  * Id-labels are the devcontainer CLI's find-key for an existing container.
  * A container belongs to exactly one session, so the session IS the identity —
- * one label, passed identically by `up`, `exec` and the adapter spawn. The env
- * manager guarantees at most one container per env (it removes any other
- * session's container before `up`).
+ * one label, passed identically by `up`, `exec` and the adapter spawn.
  */
 function idLabelArgs(session: string): string[] {
   return ['--id-label', `gurt.session=${session}`]

@@ -42,10 +42,10 @@ export function createKernel(): Kernel {
 
   sessions = new SessionManager(
     {
-      resolveEnv: (ref, repo, session, agentId, gitAccess) =>
-        envs.resolveEnv(ref, repo, session, agentId, gitAccess),
-      releaseEnv: (ref, sessionId) => {
-        envs.releaseSession(ref, sessionId).catch((e) => console.error('env release failed:', e))
+      resolveEnv: (ref, repo, agentId, gitAccess) =>
+        envs.resolveEnv(ref, repo, agentId, gitAccess),
+      releaseEnv: (ref) => {
+        envs.release(ref).catch((e) => console.error('env release failed:', e))
       },
       installAdapter: (ref, ctx) => envs.installAdapter(ref, ctx),
       resolveMcpServers,
@@ -57,6 +57,7 @@ export function createKernel(): Kernel {
       stopGurtServer,
       taskEnvStates: async (ws, task) =>
         (await store.getTask(ws, task)).envs.map((e) => ({
+          session: e.session,
           env: e.env,
           repo: e.repo,
           status: e.status
@@ -80,8 +81,8 @@ export function createKernel(): Kernel {
     bus
   )
 
-  // Idle auto-stop policy: an env whose sessions all finished their turns is
-  // stopped after a grace period; any activity cancels the pending stop.
+  // Idle auto-stop policy: a session's container is stopped after a grace
+  // period once its turn finished; any activity cancels the pending stop.
   // `noteIdle` re-verifies idleness *and* the running status before stopping.
   bus.on('session.turn', ({ ref, phase }) => {
     if (phase === 'started') envs.noteActive(ref)
@@ -140,11 +141,11 @@ export function createKernel(): Kernel {
     },
 
     async taskDirtyRepos(ws: string, task: string): Promise<string[]> {
-      const data = await store.getTask(ws, task)
-      // Clones are keyed by repo name and shared across envs — dedupe by repo.
-      const repos = [...new Set(data.envs.map((e) => e.repo).filter((r): r is string => !!r))]
+      // Disk-based: clones outlive the per-session instance records (a deleted
+      // session releases its record but keeps the clone).
       const dirty: string[] = []
-      for (const repo of repos) if (await isDirty(cloneDir(ws, task, repo))) dirty.push(repo)
+      for (const repo of await store.taskCloneRepos(ws, task))
+        if (await isDirty(cloneDir(ws, task, repo))) dirty.push(repo)
       return dirty
     },
 
