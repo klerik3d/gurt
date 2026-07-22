@@ -62,14 +62,14 @@ export interface AgentInstance {
 /** agents.json — registry of agent instances, keyed by a stable instance id. */
 export type AgentsFile = Record<string, AgentInstance>
 
+/**
+ * Repo identity: a registered git repository of the workspace. Repos and envs
+ * are separate entities now — the devcontainer definition lives on `EnvConfig`,
+ * not here.
+ */
 export interface RepoConfig {
   name: string
   url: string
-  /**
-   * Inline devcontainer.json content provided by the user. When empty, the
-   * repo's own .devcontainer configuration is used as-is.
-   */
-  devcontainer: string
   /**
    * Link into credentials.json (a `CredentialEntry.id`), never a secret. Absent
    * = auto-resolve by host. The stored `url` is only the initial clone source;
@@ -78,19 +78,42 @@ export interface RepoConfig {
   credentialId?: string
 }
 
+/**
+ * Environment definition: a named, workspace-level environment carrying its
+ * inline devcontainer and an optional *default* repo that seeds new sessions.
+ * The name is the identity key and immutable (like `RepoConfig.name`).
+ */
+export interface EnvConfig {
+  name: string
+  /** Inline devcontainer.json; '' = use the session repo's own .devcontainer. */
+  devcontainer: string
+  /** Default repo, seeds new sessions on this env; not a runtime binding. */
+  repo?: string
+}
+
 /** <workspace>/workspace.json */
 export interface WorkspaceFile {
   repos: RepoConfig[]
+  envs: EnvConfig[]
 }
 
 export type EnvStatus = 'stopped' | 'starting' | 'running' | 'error'
 
 /**
- * An environment is pure infrastructure: a clone + devcontainer per (task, repo).
- * It is agent-agnostic — different agents' adapters coexist in the one container.
+ * A per-task environment instance: pure infrastructure — a clone + devcontainer.
+ * Keyed by the `EnvConfig.name` it runs; `repo` is the repo it was actually
+ * provisioned with (stamped at `up`), which drives its clone and git access.
+ * The container is bound to one session: it is created for that session and
+ * never reused by another — a different session (or repo) recreates it.
  */
 export interface EnvState {
-  repo: string
+  /** Identity — the `EnvConfig.name`. */
+  env: string
+  /** Repo it was provisioned with; stamped at up, absent before the first up. */
+  repo?: string
+  /** Session the container belongs to — its identity; stamped at up, absent
+   *  before the first up. Any other session tears the container down first. */
+  session?: string
   containerId?: string
   /** Workspace folder path inside the container, needed to spawn sessions. */
   remoteWorkspaceFolder?: string
@@ -113,7 +136,11 @@ export type SessionState = 'draft' | 'queued' | 'starting' | 'started'
 
 export interface SessionInfo {
   id: string
-  envRepo: string
+  /** The env this session runs on — an `EnvConfig.name`. */
+  env: string
+  /** The session's repo (seeded from the env's default, changeable while a
+   *  draft, fixed at start). Absent on a repo-less draft — it cannot start. */
+  repo?: string
   task: string
   workspace: string
   title: string
@@ -179,6 +206,8 @@ export interface Tree {
   workspaces: {
     name: string
     repos: RepoConfig[]
+    /** Environment definitions (listed in Settings and the New Session modal). */
+    envs: EnvConfig[]
     tasks: {
       name: string
       /** Infrastructure environments (shown in the task pane, not the tree). */
@@ -422,7 +451,8 @@ export interface PersistedSession {
 export interface EnvRef {
   workspace: string
   task: string
-  repo: string
+  /** The env instance — an `EnvConfig.name`. */
+  env: string
 }
 
 // Changes panel: the delivery thread of a (task, repo) clone —
