@@ -59,8 +59,8 @@ async function runTool(
  * repo's gurt-managed credential, or with ambient host auth only when an
  * explicit `git-host` credential says so — never as a silent fallback.
  */
-async function requireGitAccess(ref: EnvRef): Promise<HostGitAccess | ToolResult> {
-  const access = await hostGitAccessForRepo(ref.workspace, ref.repo)
+async function requireGitAccess(ref: EnvRef, repo: string): Promise<HostGitAccess | ToolResult> {
+  const access = await hostGitAccessForRepo(ref.workspace, repo)
   if (access.mode === 'blocked')
     return errorResult(`git access is blocked: ${access.reason ?? 'no credential resolves'}`)
   return access
@@ -117,14 +117,14 @@ function serverInstructions(mode: McpMode): string {
 }
 
 /** Build the MCP server for one clone; write tools are only registered in full mode. */
-function makeMcpServer(ref: EnvRef, dir: string, mode: McpMode): McpServer {
+function makeMcpServer(ref: EnvRef, repo: string, dir: string, mode: McpMode): McpServer {
   const server = new McpServer(
     { name: 'gurt-github', version: '0.1.0' },
     { instructions: serverInstructions(mode) }
   )
 
   const gitTool = async (args: string[]): Promise<ToolResult> => {
-    const access = await requireGitAccess(ref)
+    const access = await requireGitAccess(ref, repo)
     if (isToolResult(access)) return access
     return runTool('git', ['-C', dir, ...access.gitArgs, ...args], dir, access.env)
   }
@@ -162,7 +162,7 @@ function makeMcpServer(ref: EnvRef, dir: string, mode: McpMode): McpServer {
         }
       },
       async ({ title, body }) => {
-        const access = await requireGitAccess(ref)
+        const access = await requireGitAccess(ref, repo)
         if (isToolResult(access)) return access
         const push = await runTool(
           'git',
@@ -188,7 +188,13 @@ function makeMcpServer(ref: EnvRef, dir: string, mode: McpMode): McpServer {
  * bookkeeping; credentials resolve per tool call, so store edits apply live.
  * The token guards the endpoint, which must bind a container-reachable interface.
  */
-export function buildGithubHttpServer(ref: EnvRef, dir: string, mode: McpMode, token: string): Server {
+export function buildGithubHttpServer(
+  ref: EnvRef,
+  repo: string,
+  dir: string,
+  mode: McpMode,
+  token: string
+): Server {
   const prefix = `/mcp/${token}`
   return createServer(async (req, res) => {
     if (!req.url || !req.url.startsWith(prefix)) {
@@ -200,7 +206,7 @@ export function buildGithubHttpServer(ref: EnvRef, dir: string, mode: McpMode, t
       return
     }
     try {
-      const server = makeMcpServer(ref, dir, mode)
+      const server = makeMcpServer(ref, repo, dir, mode)
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
         enableJsonResponse: true

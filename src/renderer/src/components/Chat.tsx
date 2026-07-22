@@ -146,7 +146,8 @@ export function Chat({ snapshot, sessionId }: { snapshot?: SessionSnapshot; sess
         </span>
         <span className="spacer" />
         <span className="chat-pill">
-          {info.envRepo}
+          {info.env}
+          {info.repo ? ` · ${info.repo}` : ''}
           {info.agent ? ` · ${agentName(agents, info.agent)}` : ''}
         </span>
         {busy && <span className="chat-hint mono">esc to stop</span>}

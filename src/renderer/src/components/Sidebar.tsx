@@ -325,7 +325,10 @@ export function NewSessionModal({
   const [agents, setAgents] = useState<AgentsFile | null>(null)
   const [agent, setAgent] = useState(edit?.agent ?? '')
   const [taskName, setTaskName] = useState(edit?.task ?? task)
-  const [repo, setRepo] = useState(edit?.envRepo ?? '')
+  /** The env definition this session runs on. */
+  const [env, setEnv] = useState(edit?.env ?? '')
+  /** The session's repo (null = none). Seeded from the picked env's default. */
+  const [repo, setRepo] = useState<string | null>(edit?.repo ?? null)
   const [prompt, setPrompt] = useState(edit?.startPrompt ?? '')
   const [mcpDefs, setMcpDefs] = useState<McpDef[]>([])
   /** MCP id -> granted mode; absent = not attached. */
@@ -345,7 +348,7 @@ export function NewSessionModal({
   const [credentials, setCredentials] = useState<CredentialEntry[]>([])
   const [harnessOpen, setHarnessOpen] = useState(false)
   /** Which quiet-select menu is open. */
-  const [picker, setPicker] = useState<'task' | 'env' | 'client' | null>(null)
+  const [picker, setPicker] = useState<'task' | 'env' | 'repo' | 'client' | null>(null)
   const [error, setError] = useState('')
   const taRef = useRef<HTMLTextAreaElement>(null)
 
@@ -370,15 +373,28 @@ export function NewSessionModal({
   const tasks = wsData?.tasks ?? []
   const taskData = tasks.find((t) => t.name === taskName)
   const repos = wsData?.repos ?? []
+  const envs = wsData?.envs ?? []
   const agentList = agents ? Object.entries(agents).map(([id, a]) => ({ id, label: a.label })) : []
 
   useEffect(() => {
     if (!taskName && tasks.length) setTaskName(tasks[0].name)
   }, [taskName, tasks])
 
+  // Default to the first env; seed the session repo from its default (create mode
+  // only — edit mode keeps the session's saved repo).
   useEffect(() => {
-    if (!repo && repos.length) setRepo(repos[0].name)
-  }, [repo, repos])
+    if (!env && envs.length) {
+      setEnv(envs[0].name)
+      if (!editing) setRepo(envs[0].repo ?? null)
+    }
+  }, [env, envs, editing])
+
+  // Picking a (different) env re-seeds the session repo from that env's default.
+  const pickEnv = (name: string) => {
+    setEnv(name)
+    setRepo(envs.find((e) => e.name === name)?.repo ?? null)
+    setPicker(null)
+  }
 
   // Load the chosen agent's cached config surface so the model/effort/command
   // controls can be offered before the container is up. A stale response from a
@@ -407,7 +423,7 @@ export function NewSessionModal({
   const cfgLabel = (o: SessionConfigOption) =>
     o.category === 'model' ? 'MODEL' : o.category === 'thought_level' ? 'EFFORT' : o.name.toUpperCase()
 
-  const repoCfg = repos.find((r) => r.name === repo)
+  const repoCfg = repo ? repos.find((r) => r.name === repo) : undefined
   const gitResolution = repoCfg ? resolveForRepo(credentials, repoCfg) : null
   const gitCredNote = gitResolution
     ? hasManagedCredential(gitResolution)
@@ -424,7 +440,8 @@ export function NewSessionModal({
     try {
       await window.gurt.sessionEditDraft(edit!.id, {
         agent,
-        envRepo: repo,
+        env,
+        repo,
         autoAllow,
         gitAccess,
         mcp: mcpSelection(),
@@ -439,22 +456,10 @@ export function NewSessionModal({
 
   const create = async (action: 'run' | 'queue' | 'draft') => {
     setError('')
-    if (action === 'run') {
-      const busy = (taskData?.sessions ?? []).some(
-        (s) => s.envRepo === repo && (s.state === 'starting' || s.state === 'started')
-      )
-      if (
-        busy &&
-        !(await confirmDialog(
-          `Another session is already working on "${repo}". Running now means two agents share one working tree. Continue?`,
-          { title: 'Shared working tree', confirmText: 'Run anyway' }
-        ))
-      )
-        return
-    }
     try {
       const s = await window.gurt.createSession(
-        { workspace: ws, task: taskName, repo },
+        { workspace: ws, task: taskName, env },
+        repo,
         agent,
         prompt,
         action,
@@ -469,7 +474,9 @@ export function NewSessionModal({
     }
   }
 
-  const ready = !!taskName && !!repo && !!agent && !!prompt.trim()
+  // Draft only needs env + agent + prompt; running/queueing also needs a repo.
+  const ready = !!taskName && !!env && !!agent && !!prompt.trim()
+  const canRun = ready && !!repo
   const mcpCount = Object.keys(mcp).length
   const harnessSummary = `${autoAllow ? 'auto' : 'manual'} · ${mcpCount} mcp`
 
@@ -523,8 +530,50 @@ export function NewSessionModal({
             onToggle={() => setPicker(picker === 'env' ? null : 'env')}
             onClose={() => setPicker(null)}
             menu={
-              repos.length ? (
-                repos.map((r) => (
+              envs.length ? (
+                envs.map((e) => (
+                  <div
+                    key={e.name}
+                    className={`menu-item ${e.name === env ? 'active' : ''}`}
+                    onMouseDown={(ev) => {
+                      ev.preventDefault()
+                      pickEnv(e.name)
+                    }}
+                  >
+                    <Icon name="box" size={13} className="dim" />
+                    {e.name}
+                    {e.repo && <span className="menu-meta mono">{e.repo}</span>}
+                  </div>
+                ))
+              ) : (
+                <div className="menu-empty">no environments — add one in Settings → Environments</div>
+              )
+            }
+          >
+            <Icon name="box" size={14} className="dim" style={{ flex: 'none' }} />
+            <span className="pick-value strong">{env || 'pick an environment'}</span>
+            <span className="spacer" />
+          </PickRow>
+
+          {/* session repository — seeded from the env's default, changeable here */}
+          <span className="seclabel">REPOSITORY</span>
+          <PickRow
+            open={picker === 'repo'}
+            onToggle={() => setPicker(picker === 'repo' ? null : 'repo')}
+            onClose={() => setPicker(null)}
+            menu={
+              <>
+                <div
+                  className={`menu-item ${repo == null ? 'active' : ''}`}
+                  onMouseDown={(e) => {
+                    e.preventDefault()
+                    setRepo(null)
+                    setPicker(null)
+                  }}
+                >
+                  no repository
+                </div>
+                {repos.map((r) => (
                   <div
                     key={r.name}
                     className={`menu-item ${r.name === repo ? 'active' : ''}`}
@@ -534,29 +583,26 @@ export function NewSessionModal({
                       setPicker(null)
                     }}
                   >
-                    <Icon name="box" size={13} className="dim" />
+                    <Icon name="branch" size={11} className="faint" />
                     {r.name}
+                    <span className="menu-meta mono">{shortRepoUrl(r.url)}</span>
                   </div>
-                ))
-              ) : (
-                <div className="menu-empty">no environments — add one in Settings → Environments</div>
-              )
+                ))}
+              </>
             }
           >
-            <Icon name="box" size={14} className="dim" style={{ flex: 'none' }} />
-            <span className="pick-value strong">{repo || 'pick an environment'}</span>
-            <span className="spacer" />
-          </PickRow>
-          {repoCfg && (
-            <div className="ns-chips">
+            {repoCfg ? (
               <span className="chip-tag">
                 <Icon name="branch" size={11} className="faint" />
                 {shortRepoUrl(repoCfg.url)}
               </span>
-              <span className="chip-dashed" title="multi-repo environments — coming later">
-                + repo
-              </span>
-            </div>
+            ) : (
+              <span className="chip-dashed">no repository</span>
+            )}
+            <span className="spacer" />
+          </PickRow>
+          {!repo && (
+            <div className="hc-note">no repository — Run/Queue disabled until you pick one</div>
           )}
         </div>
 
@@ -774,9 +820,11 @@ export function NewSessionModal({
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && ready) {
+              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
                 e.preventDefault()
-                editing ? saveEdit() : create('run')
+                if (editing) {
+                  if (ready) saveEdit()
+                } else if (canRun) create('run')
               }
             }}
           />
@@ -805,10 +853,20 @@ export function NewSessionModal({
               Save draft
             </button>
             <span className="spacer" />
-            <button className="btn" disabled={!ready} onClick={() => create('queue')}>
+            <button
+              className="btn"
+              disabled={!canRun}
+              title={!repo ? 'pick a repository to queue' : undefined}
+              onClick={() => create('queue')}
+            >
               Add to queue
             </button>
-            <button className="btn btn-primary" disabled={!ready} onClick={() => create('run')}>
+            <button
+              className="btn btn-primary"
+              disabled={!canRun}
+              title={!repo ? 'pick a repository to run' : undefined}
+              onClick={() => create('run')}
+            >
               <Icon name="play" size={11} />
               Run now
             </button>
