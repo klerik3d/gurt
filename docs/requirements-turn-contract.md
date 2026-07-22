@@ -170,8 +170,8 @@ last one wins.
 
 ## 7. Acceptance
 
-1. `node scripts/gurt-mcp.test.mjs` (new, pure node, no docker; harness
-   style of `scripts/session-log.test.mjs`): drives the built server over
+1. `npx vitest run tests/gurt-mcp.test.ts` (new, pure node, no docker; harness
+   style of `tests/session-log.test.ts`): drives the built server over
    HTTP with MCP JSON-RPC — `tools/list` shows exactly `complete`; valid
    changes call → callback gets the payload, result not error; changes
    without `commit` → `isError`, callback not called; blocked without
@@ -181,7 +181,7 @@ last one wins.
    end_turn without complete → exactly one nudge; nudge turn without
    complete → `incomplete` + system entry, no second nudge; complete during
    the nudge turn → clean; stopReason `cancelled` → no nudge.
-3. Smoke (built app, offline local bare origins, pattern of `smoke7.mjs`):
+3. Smoke (built app, offline local bare origins, pattern of `archive/smokes/smoke7.mjs`):
    a trivial-edit session ends with `sessions.json` holding a proposal
    (outcome changes, non-empty subject), the `complete: changes — …` system
    entry in the JSONL, `latestProposal` returning it, and `Kernel.prUrl`

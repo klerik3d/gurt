@@ -44,6 +44,6 @@ name→id migration a one-file change instead of a codebase sweep.
 ## 4. Acceptance
 
 1. Behavior identical; no persisted-format change.
-2. `node scripts/git-logic.test.mjs` passes; `smoke.mjs` and `smoke7.mjs`
+2. `npx vitest run tests/git-logic.test.ts` passes; `archive/smokes/smoke.mjs` and `archive/smokes/smoke7.mjs`
    pass (no docker needed).
 3. The grep rule above holds.

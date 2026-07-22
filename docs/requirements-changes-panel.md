@@ -164,7 +164,7 @@ polling loops.
 
 ## 7. Verification
 
-Extend the Playwright smoke suite (`scripts/smoke*.mjs` pattern, run
+Extend the Playwright smoke suite (`archive/smokes/*.mjs` pattern, run
 against `npm run build` output). No agent secrets needed: the test can
 mutate the clone directly (write a file into
 `GURT_ROOT/<ws>/<task>/<repo>/`), trigger `↻`, and assert the panel and

@@ -1,46 +1,26 @@
 // Pure-node test for the `gurt` host MCP server (the turn contract, §7.1 of
-// docs/requirements-turn-contract.md). No docker, no electron: it bundles the
-// server with esbuild and drives it over real HTTP with MCP JSON-RPC. Harness
-// style of scripts/session-log.test.mjs.
-//
-//   node scripts/gurt-mcp.test.mjs
-import { build } from 'esbuild'
-import { pathToFileURL, fileURLToPath } from 'node:url'
-import path from 'node:path'
-import os from 'node:os'
-import fs from 'node:fs'
+// docs/requirements-turn-contract.md). No docker, no electron: it drives the
+// real server over HTTP with MCP JSON-RPC.
+import { afterAll, it } from 'vitest'
 import assert from 'node:assert/strict'
+import type { AddressInfo } from 'node:net'
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const outfile = path.join(os.tmpdir(), `gurt-mcp-${process.pid}.mjs`)
-const S = (rel) => JSON.stringify(path.join(ROOT, rel))
-
-await build({
-  stdin: {
-    contents: `export { buildGurtHttpServer } from ${S('src/main/mcp/gurtServer.ts')}`,
-    resolveDir: ROOT,
-    loader: 'ts',
-    sourcefile: 'entry.ts'
-  },
-  bundle: true,
-  format: 'esm',
-  platform: 'node',
-  outfile,
-  logLevel: 'silent'
-})
-
-const { buildGurtHttpServer } = await import(pathToFileURL(outfile).href)
+import { buildGurtHttpServer } from '../src/main/mcp/gurtServer'
 
 const TOKEN = 'test-token'
 /** Payloads the host callback received — the machine-readable outcome. */
-const received = []
+const received: any[] = []
 const server = buildGurtHttpServer(TOKEN, (p) => received.push(p))
-await new Promise((r) => server.listen(0, '127.0.0.1', r))
-const port = server.address().port
+await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
+const port = (server.address() as AddressInfo).port
 const url = (token = TOKEN) => `http://127.0.0.1:${port}/mcp/${token}`
 
+afterAll(() => {
+  server.close()
+})
+
 /** POST one JSON-RPC message; returns { status, body }. */
-async function post(message, { token, method = 'POST' } = {}) {
+async function post(message: object, { token, method = 'POST' }: { token?: string; method?: string } = {}) {
   const res = await fetch(url(token), {
     method,
     headers: {
@@ -50,7 +30,7 @@ async function post(message, { token, method = 'POST' } = {}) {
     body: method === 'GET' ? undefined : JSON.stringify(message)
   })
   const text = await res.text()
-  let body
+  let body: any
   try {
     body = JSON.parse(text)
   } catch {
@@ -61,7 +41,7 @@ async function post(message, { token, method = 'POST' } = {}) {
 
 let id = 0
 /** Call the `complete` tool; returns { isError, text }. */
-async function complete(args) {
+async function complete(args: object) {
   const { body } = await post({
     jsonrpc: '2.0',
     id: ++id,
@@ -71,12 +51,11 @@ async function complete(args) {
   return { isError: body.result?.isError === true, text: body.result?.content?.[0]?.text ?? '' }
 }
 
-try {
-  // --- tools/list: exactly `complete`, with a real (non-empty, strict) schema ---
+it('tools/list: exactly `complete`, with a real (non-empty, strict) schema', async () => {
   const list = await post({ jsonrpc: '2.0', id: ++id, method: 'tools/list', params: {} })
   const tools = list.body.result.tools
   assert.deepEqual(
-    tools.map((t) => t.name),
+    tools.map((t: any) => t.name),
     ['complete'],
     'tools/list shows exactly `complete`'
   )
@@ -87,9 +66,9 @@ try {
     ['commit', 'notes', 'outcome', 'pr', 'reason', 'version'],
     'input schema advertises the proposal fields'
   )
-  console.log('tools/list OK')
+})
 
-  // --- valid changes call → callback gets the payload, result not an error ----
+it('valid changes call → callback gets the payload, result not an error', async () => {
   const before = received.length
   const ok = await complete({ version: 1, outcome: 'changes', commit: { subject: 'do the thing' } })
   assert.equal(ok.isError, false, 'valid changes call is not an error')
@@ -99,9 +78,9 @@ try {
     outcome: 'changes',
     commit: { subject: 'do the thing' }
   })
-  console.log('valid changes OK')
+})
 
-  // valid no_changes and blocked (+ optional pr on changes) also succeed --------
+it('valid no_changes / blocked / changes+pr also succeed', async () => {
   assert.equal((await complete({ version: 1, outcome: 'no_changes' })).isError, false)
   assert.equal(
     (await complete({ version: 1, outcome: 'blocked', reason: 'missing credentials' })).isError,
@@ -118,11 +97,11 @@ try {
     ).isError,
     false
   )
-  console.log('valid no_changes / blocked / changes+pr OK')
+})
 
-  // --- invalid calls: isError, and the callback never fires -------------------
+it('invalid calls: isError, and the callback never fires', async () => {
   const guard = received.length
-  const rejects = [
+  const rejects: [string, object][] = [
     ['changes without commit', { version: 1, outcome: 'changes' }],
     ['blocked without reason', { version: 1, outcome: 'blocked' }],
     ['commit outside changes', { version: 1, outcome: 'no_changes', commit: { subject: 's' } }],
@@ -137,15 +116,9 @@ try {
     assert.equal(r.isError, true, `${label} → isError`)
   }
   assert.equal(received.length, guard, 'no rejected call reached the host callback')
-  console.log('invalid calls rejected, callback untouched OK')
+})
 
-  // --- transport guards -------------------------------------------------------
-  assert.equal((await post({ jsonrpc: '2.0', id: ++id, method: 'tools/list' }, { token: 'nope' })).status, 404, 'wrong token → 404')
-  assert.equal((await post({}, { method: 'GET' })).status, 405, 'GET → 405')
-  console.log('token / method guards OK')
-
-  console.log('gurt-mcp.test: PASS')
-} finally {
-  server.close()
-  fs.rmSync(outfile, { force: true })
-}
+it('transport guards: wrong token → 404, GET → 405', async () => {
+  assert.equal((await post({ jsonrpc: '2.0', id: ++id, method: 'tools/list' }, { token: 'nope' })).status, 404)
+  assert.equal((await post({}, { method: 'GET' })).status, 405)
+})

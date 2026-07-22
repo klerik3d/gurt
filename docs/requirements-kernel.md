@@ -134,8 +134,8 @@ Target ≤ ~100 lines.
 
 ## 7. Acceptance
 
-1. Full smoke suite passes unchanged (`smoke.mjs` … `smoke8.mjs`,
-   `git-logic.test.mjs`).
+1. Full smoke suite passes unchanged (`archive/smokes/smoke.mjs` … `archive/smokes/smoke8.mjs`,
+   `tests/git-logic.test.ts`).
 2. `grep -rln "from 'electron'" src/main` → `index.ts`, `ipc.ts` only.
 3. `ipc.ts` no longer contains env-lifecycle state or logic.
 4. Renderer source is byte-identical (except imports if types moved).

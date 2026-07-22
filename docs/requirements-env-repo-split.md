@@ -197,8 +197,8 @@ export interface EnvRef { workspace: string; task: string; env: string }
 ## 9. Acceptance
 
 1. `npm run typecheck` and `npm run build` pass.
-2. All existing `node scripts/*.test.mjs` suites pass.
-3. New `scripts/env-split-migration.test.mjs`: old-format fixtures for
+2. All existing `npm test` suites pass.
+3. New `tests/env-split-migration.test.ts`: old-format fixtures for
    workspace.json / task.json / sessions.json read back migrated (one env
    per repo with the same name; repos stripped of `devcontainer`;
    `envRepo` → `env` + `repo`), and the write-back happens exactly once.

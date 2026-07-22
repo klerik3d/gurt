@@ -157,7 +157,7 @@ Migration: existing records without `state` are treated as `started`.
 
 ## 8. Verification
 
-Extend the Playwright smoke suite (`scripts/smoke*.mjs` show the pattern;
+Extend the Playwright smoke suite (`archive/smokes/*.mjs` show the pattern;
 run against `npm run build` output). Mind the gotchas from README:
 `ELECTRON_RUN_AS_NODE` must be stripped, `GURT_ROOT` must be unique per run
 (Docker Desktop stale-cache bug), roots must live under `/Users`. Without

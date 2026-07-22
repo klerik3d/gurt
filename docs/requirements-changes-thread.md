@@ -92,7 +92,7 @@ exclusions.
 
 ## Verification
 
-Smoke like `smoke7.mjs` (offline, local bare origins, built app): merge
+Smoke like `archive/smokes/smoke7.mjs` (offline, local bare origins, built app): merge
 case; squash case (`git update-ref -d` in the bare repo, assert
 `refs/gurt/integrated` in the clone); offline case (rename the bare
 dir); assert pushes via `git log` in the bare repo. Gotchas: strip

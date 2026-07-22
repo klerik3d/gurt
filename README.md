@@ -130,41 +130,28 @@ Because gurt provisions *child* dev containers at runtime, the container ships
 **Docker-in-Docker** (the inner daemon shares its filesystem, so clones under
 `GURT_ROOT` bind-mount into the children). Electron runs headless on an Xvfb
 display (`:99`), started automatically — `xvfb-run` is not needed. Reopen the
-folder in the container, then `npm run dev` or the smoke scripts work as above.
-The full docker-provisioning smokes are heavy nested-in-nested; the UI-only
-`smoke.mjs` is the light check.
+folder in the container, then `npm run dev` or the tests work as above.
 
-## Smoke tests
+## Tests
 
 ```bash
-npm run build
-SCRATCH=/tmp/gurt-smoke node scripts/smoke.mjs    # UI only, no docker
-SCRATCH=/tmp/gurt-smoke node scripts/smoke2.mjs   # provisioning + ACP session
-SCRATCH=/tmp/gurt-smoke node scripts/smoke3.mjs   # session persistence across restart
-SCRATCH=/tmp/gurt-smoke node scripts/smoke4.mjs   # CRUD + stop/delete + codex handshake
-SCRATCH=/tmp/gurt-smoke node scripts/smoke5.mjs   # codex-in-gurt handshake
-SCRATCH=/tmp/gurt-smoke node scripts/smoke6.mjs   # session queue: draft/serialization/restart
-SCRATCH=/tmp/gurt-smoke node scripts/smoke7.mjs   # Changes panel delivery thread, no docker (local bare repos)
-SCRATCH=/tmp/gurt-smoke node scripts/smoke8.mjs   # native git access: credentials CRUD + resolution + composer toggle, no docker
-# turn contract end-to-end (docker + a working claude secret; SKIPs without one):
-SCRATCH=/tmp/gurt-smoke GURT_SMOKE_CLAUDE_TOKEN=… node scripts/smoke9.mjs
+npm test           # vitest unit suites (tests/*.test.ts) — no docker, no electron
+npm run check      # typecheck + tests
+npm run smoke      # build + boot smoke: launch, render, no renderer console errors
 ```
 
-Docker-free unit tests (pure node, bundled on the fly with esbuild):
+Unit suites import `src/` TypeScript directly (vitest transpiles) and cover:
+the git contract (repo identity, credential resolution, rewrites, forge), the
+append-only session log + legacy migration, the `gurt` MCP server and the
+turn-contract decision matrix, proposal restore/`prUrl`, and the store
+migrations (agents.json → credential store, env/repo split). CI
+(`.github/workflows/ci.yml`) runs typecheck + build + tests on every PR.
 
-```bash
-node scripts/git-logic.test.mjs        # git contract: repo identity, credential resolution, rewrites, forge
-node scripts/session-log.test.mjs      # append-only session log + legacy migration
-node scripts/gurt-mcp.test.mjs         # turn contract: the `gurt` MCP server + `complete` tool validation
-node scripts/turn-contract.test.mjs    # turn contract: the post-turn nudge/incomplete decision matrix
-node scripts/proposal-store.test.mjs   # turn contract: proposal restore, latestProposal, Kernel.prUrl params
-```
-
-All drive the built app with Playwright through the real UI and screenshot
-into `$SCRATCH/shots`. Without agent secrets the chat shows an auth error —
-that still proves the ACP pipe. The scripts strip `ELECTRON_RUN_AS_NODE`
-(shells spawned from a VSCode extension host inherit it and it makes Electron
-start as plain Node).
+The boot smoke (`scripts/smoke-boot.mjs`) drives the built app with Playwright
+and strips `ELECTRON_RUN_AS_NODE` (shells spawned from a VSCode extension host
+inherit it and it makes Electron start as plain Node). The old scenario smokes
+live in `archive/smokes/` — their selectors predate the redesign, but they
+document the acceptance flows for future scenario coverage.
 
 ## Docker Desktop gotchas (macOS)
 
