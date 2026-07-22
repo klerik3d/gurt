@@ -64,15 +64,26 @@ export function registerIpc(): void {
       await store.removeRepo(ws, name)
       kernel.bus.emit('tree.changed', undefined)
     },
+    addEnv: async (ws, env) => {
+      await store.addEnv(ws, env)
+      kernel.bus.emit('tree.changed', undefined)
+    },
+    updateEnv: async (ws, env) => {
+      await store.updateEnv(ws, env)
+      kernel.bus.emit('tree.changed', undefined)
+    },
+    removeEnv: async (ws, name) => {
+      await store.removeEnv(ws, name)
+      kernel.bus.emit('tree.changed', undefined)
+    },
     createTask: async (ws, name) => {
       await store.createTask(ws, name)
       kernel.bus.emit('tree.changed', undefined)
     },
     removeTask: (ws, name) => kernel.deleteTask(ws, name),
     taskDirtyRepos: (ws, name) => kernel.taskDirtyRepos(ws, name),
-    startEnv: (ref) => kernel.envs.start(ref),
     stopEnv: (ref) => kernel.envs.stop(ref),
-    removeEnv: (ref) => kernel.envs.remove(ref),
+    removeTaskEnv: (ref) => kernel.envs.remove(ref),
     getTaskChanges: (ws, task, opts) => changes.getTaskChanges(ws, task, opts ?? {}),
     getFileDiff: (ws, task, repo, file) => changes.getFileDiff(ws, task, repo, file),
     getCommitDiff: (ws, task, repo, sha) => changes.getCommitDiff(ws, task, repo, sha),
@@ -83,9 +94,10 @@ export function registerIpc(): void {
       await shell.openExternal(await kernel.prUrl(ws, task, repo))
     },
     changesOpenVscode: (ws, task, repo) => changes.openInVscode(ws, task, repo),
-    createSession: async (ref, agent, prompt, action, mcp, autoAllow, gitAccess, configValues) =>
+    createSession: async (ref, repo, agent, prompt, action, mcp, autoAllow, gitAccess, configValues) =>
       kernel.sessions.createSession(
         ref,
+        repo,
         agent,
         prompt,
         action,

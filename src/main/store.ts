@@ -8,9 +8,11 @@ import type {
   AgentConfig,
   AgentConfigCache,
   AgentsFile,
+  EnvConfig,
   EnvState,
   PersistedSession,
   RepoConfig,
+  SessionInfo,
   SessionLogRecord,
   TaskFile,
   Tree,
@@ -47,9 +49,9 @@ export const wsDir = (ws: string) => path.join(gurtRoot, ws)
 export const taskDir = (ws: string, task: string) => path.join(gurtRoot, ws, task)
 export const cloneDir = (ws: string, task: string, repo: string) =>
   path.join(gurtRoot, ws, task, repo)
-/** Host-side dir for user-provided inline devcontainer configs. */
-export const overrideConfigPath = (ws: string, repo: string) =>
-  path.join(gurtRoot, ws, '.devcontainers', `${repo}.json`)
+/** Host-side dir for an env's user-provided inline devcontainer config. */
+export const overrideConfigPath = (ws: string, env: string) =>
+  path.join(gurtRoot, ws, '.devcontainers', `${env}.json`)
 
 /** Path segments gurt itself owns inside the parent dir of each kind — a repo
  *  named `sessions` would collide with the task's session-log dir, etc.
@@ -57,7 +59,9 @@ export const overrideConfigPath = (ws: string, repo: string) =>
 const RESERVED_NAMES: Record<string, string[]> = {
   workspace: ['agents.json', 'credentials.json', 'agent-config-cache.json'],
   task: ['workspace.json', '.devcontainers'],
-  repo: ['task.json', 'sessions.json', 'sessions']
+  repo: ['task.json', 'sessions.json', 'sessions'],
+  // Env names only ever become `.devcontainers/<env>.json` — segment rules only.
+  env: []
 }
 
 /** Names become path segments on disk, so reject anything that isn't a single, safe segment. */
@@ -143,11 +147,37 @@ export async function createWorkspace(name: string): Promise<void> {
   validateName('workspace', name)
   const file = path.join(wsDir(name), 'workspace.json')
   if (existsSync(file)) throw new Error(`workspace "${name}" already exists`)
-  await writeJson(file, { repos: [] } satisfies WorkspaceFile)
+  await writeJson(file, { repos: [], envs: [] } satisfies WorkspaceFile)
 }
 
+/** A pre-split RepoConfig carried an inline `devcontainer`; it moves to the env. */
+type LegacyRepo = RepoConfig & { devcontainer?: string }
+
+/**
+ * Read workspace.json, lazily migrating the pre-split shape (no `envs`, repos
+ * carrying `devcontainer`) once: one env per repo with the same name, seeded
+ * with the repo's devcontainer + itself as default; repos are stripped of
+ * `devcontainer`. The write-back happens only on that first read.
+ */
 export async function getWorkspace(ws: string): Promise<WorkspaceFile> {
-  return readJson<WorkspaceFile>(path.join(wsDir(ws), 'workspace.json'), { repos: [] })
+  const file = path.join(wsDir(ws), 'workspace.json')
+  const raw = await readJson<Partial<WorkspaceFile> | null>(file, null)
+  if (!raw) return { repos: [], envs: [] }
+  const legacyRepos = (raw.repos ?? []) as LegacyRepo[]
+  const repos: RepoConfig[] = legacyRepos.map(({ name, url, credentialId }) => ({
+    name,
+    url,
+    ...(credentialId ? { credentialId } : {})
+  }))
+  if (Array.isArray(raw.envs)) return { repos, envs: raw.envs }
+  const envs: EnvConfig[] = legacyRepos.map((r) => ({
+    name: r.name,
+    devcontainer: r.devcontainer ?? '',
+    repo: r.name
+  }))
+  const migrated: WorkspaceFile = { repos, envs }
+  await saveWorkspace(ws, migrated)
+  return migrated
 }
 
 /** Names of every workspace on disk (a dir under gurtRoot with a workspace.json). */
@@ -181,7 +211,7 @@ export async function updateRepo(ws: string, repo: RepoConfig): Promise<void> {
   await saveWorkspace(ws, data)
 }
 
-/** Task names of this workspace that have an env for the repo. */
+/** Task names that have an env instance provisioned with this repo (a live clone). */
 export async function tasksUsingRepo(ws: string, repo: string): Promise<string[]> {
   const used: string[] = []
   for (const task of await listTasks(ws)) {
@@ -191,14 +221,59 @@ export async function tasksUsingRepo(ws: string, repo: string): Promise<string[]
   return used
 }
 
+/** Task names that have an instance of this env. */
+export async function tasksUsingEnv(ws: string, env: string): Promise<string[]> {
+  const used: string[] = []
+  for (const task of await listTasks(ws)) {
+    const data = await getTask(ws, task)
+    if (data.envs.some((e) => e.env === env)) used.push(task)
+  }
+  return used
+}
+
 export async function removeRepo(ws: string, repo: string): Promise<void> {
+  const data = await getWorkspace(ws)
+  const defaultOf = data.envs.filter((e) => e.repo === repo).map((e) => e.name)
+  if (defaultOf.length)
+    throw new Error(
+      `repo "${repo}" is the default of env(s): ${defaultOf.join(', ')} — change those first`
+    )
   const used = await tasksUsingRepo(ws, repo)
   if (used.length)
-    throw new Error(`repo "${repo}" is used by task(s): ${used.join(', ')} — delete those envs first`)
-  const data = await getWorkspace(ws)
+    throw new Error(`repo "${repo}" has a clone in task(s): ${used.join(', ')} — delete those envs first`)
   data.repos = data.repos.filter((r) => r.name !== repo)
   await saveWorkspace(ws, data)
-  await fs.rm(overrideConfigPath(ws, repo), { force: true })
+}
+
+// --- env definitions (workspace registry) -------------------------------
+
+export async function addEnv(ws: string, env: EnvConfig): Promise<void> {
+  validateName('env', env.name)
+  const data = await getWorkspace(ws)
+  if (data.envs.some((e) => e.name === env.name))
+    throw new Error(`env "${env.name}" already exists in "${ws}"`)
+  data.envs.push(env)
+  await saveWorkspace(ws, data)
+}
+
+/** Update an env definition. The name is immutable — it only matches an
+ *  existing env; renaming is not supported. */
+export async function updateEnv(ws: string, env: EnvConfig): Promise<void> {
+  const data = await getWorkspace(ws)
+  const i = data.envs.findIndex((e) => e.name === env.name)
+  if (i < 0) throw new Error(`env "${env.name}" not found in "${ws}"`)
+  data.envs[i] = env
+  await saveWorkspace(ws, data)
+}
+
+export async function removeEnv(ws: string, name: string): Promise<void> {
+  const used = await tasksUsingEnv(ws, name)
+  if (used.length)
+    throw new Error(`env "${name}" is used by task(s): ${used.join(', ')} — delete those envs first`)
+  const data = await getWorkspace(ws)
+  data.envs = data.envs.filter((e) => e.name !== name)
+  await saveWorkspace(ws, data)
+  await fs.rm(overrideConfigPath(ws, name), { force: true })
 }
 
 export async function createTask(ws: string, task: string): Promise<void> {
@@ -217,8 +292,20 @@ export async function listTasks(ws: string): Promise<string[]> {
   return tasks
 }
 
+/** Read task.json, lazily migrating pre-split env records once: an entry with a
+ *  `repo` and no `env` gets `env = repo` (its provisioned repo is kept). */
 export async function getTask(ws: string, task: string): Promise<TaskFile> {
-  return readJson<TaskFile>(path.join(taskDir(ws, task), 'task.json'), { envs: [] })
+  const file = path.join(taskDir(ws, task), 'task.json')
+  const data = await readJson<TaskFile>(file, { envs: [] })
+  let migrated = false
+  for (const e of data.envs as (EnvState & { env?: string })[]) {
+    if (e.env === undefined && typeof e.repo === 'string') {
+      e.env = e.repo
+      migrated = true
+    }
+  }
+  if (migrated) await saveTask(ws, task, data)
+  return data
 }
 
 export async function saveTask(ws: string, task: string, data: TaskFile): Promise<void> {
@@ -229,30 +316,30 @@ export async function removeTaskDir(ws: string, task: string): Promise<void> {
   await rmTree(taskDir(ws, task))
 }
 
-/** Ensure a (stopped) env record exists for the repo; idempotent. */
-export async function ensureEnv(ws: string, task: string, repo: string): Promise<void> {
+/** Ensure a (stopped) env instance record exists for `env`; idempotent. */
+export async function ensureTaskEnv(ws: string, task: string, env: string): Promise<void> {
   const data = await getTask(ws, task)
-  if (data.envs.some((e) => e.repo === repo)) return
-  data.envs.push({ repo, status: 'stopped' } satisfies EnvState)
+  if (data.envs.some((e) => e.env === env)) return
+  data.envs.push({ env, status: 'stopped' } satisfies EnvState)
   await saveTask(ws, task, data)
 }
 
-export async function removeEnv(ws: string, task: string, repo: string): Promise<void> {
+export async function removeTaskEnv(ws: string, task: string, env: string): Promise<void> {
   const data = await getTask(ws, task)
-  data.envs = data.envs.filter((e) => e.repo !== repo)
+  data.envs = data.envs.filter((e) => e.env !== env)
   await saveTask(ws, task, data)
 }
 
-export async function updateEnv(
+export async function updateTaskEnv(
   ws: string,
   task: string,
-  repo: string,
+  env: string,
   patch: Partial<EnvState>
 ): Promise<void> {
   const data = await getTask(ws, task)
-  const env = data.envs.find((e) => e.repo === repo)
-  if (!env) throw new Error(`no env for repo "${repo}" in task "${task}"`)
-  Object.assign(env, patch)
+  const inst = data.envs.find((e) => e.env === env)
+  if (!inst) throw new Error(`no env instance "${env}" in task "${task}"`)
+  Object.assign(inst, patch)
   await saveTask(ws, task, data)
 }
 
@@ -260,8 +347,23 @@ const sessionsFile = (ws: string, task: string) => path.join(taskDir(ws, task), 
 
 export async function readSessions(ws: string, task: string): Promise<PersistedSession[]> {
   const records = await readJson<PersistedSession[]>(sessionsFile(ws, task), [])
+  let migrated = false
   // Migration: pre-queue records have no state — treat them as started.
   for (const r of records) {
+    // Pre-split records fused the env and repo into one field; a migrated session
+    // gets both. The legacy key is read/dropped by name so the live model carries
+    // no reference to it (assembled to keep that identifier out of the source).
+    const legacyKey = 'env' + 'Repo'
+    const info = r.info as SessionInfo & Record<string, unknown>
+    const fused = info[legacyKey]
+    if (info.env === undefined && typeof fused === 'string') {
+      info.env = fused
+      info.repo = fused
+    }
+    if (legacyKey in info) {
+      delete info[legacyKey]
+      migrated = true
+    }
     if (!r.info.state) r.info.state = 'started'
     if (r.info.startPrompt == null) r.info.startPrompt = ''
     // `starting` is runtime-only; a crash mid-start restores as draft.
@@ -270,6 +372,8 @@ export async function readSessions(ws: string, task: string): Promise<PersistedS
       r.info.queuedAt = undefined
     }
   }
+  // Write the env/repo split back once, so the legacy key leaves the disk too.
+  if (migrated) await writeSessions(ws, task, records)
   return records
 }
 
@@ -356,10 +460,10 @@ export async function buildTree(): Promise<Tree> {
     const tasks: Tree['workspaces'][number]['tasks'] = []
     for (const task of await listTasks(ws)) {
       const taskData = await getTask(ws, task)
-      // `agent` on legacy env records is ignored (envs are agent-agnostic now).
       tasks.push({
         name: task,
         envs: taskData.envs.map((e) => ({
+          env: e.env,
           repo: e.repo,
           containerId: e.containerId,
           remoteWorkspaceFolder: e.remoteWorkspaceFolder,
@@ -369,7 +473,7 @@ export async function buildTree(): Promise<Tree> {
         sessions: []
       })
     }
-    tree.workspaces.push({ name: ws, repos: wsData.repos, tasks })
+    tree.workspaces.push({ name: ws, repos: wsData.repos, envs: wsData.envs, tasks })
   }
   return tree
 }

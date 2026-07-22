@@ -56,7 +56,8 @@ function Header({ snapshot }: { snapshot: SessionSnapshot }) {
       <span className="tag">{info.state}</span>
       <span className="spacer" />
       <span className="chat-pill">
-        {info.envRepo}
+        {info.env}
+        {info.repo ? ` · ${info.repo}` : ''}
         {info.agent ? ` · ${agentName(agents, info.agent)}` : ''}
       </span>
     </div>
@@ -103,7 +104,14 @@ function NonStartedPane({
       {info.state === 'draft' && (
         <div className="draft-body">
           <div className="draft-settings">
-            <span className="tag">{info.envRepo}</span>
+            <span className="tag">{info.env}</span>
+            {info.repo ? (
+              <span className="tag">{info.repo}</span>
+            ) : (
+              <span className="tag" title="no repository — Run/Queue disabled">
+                no repo
+              </span>
+            )}
             <span className="tag">{info.agent ? agentName(agents, info.agent) : 'no agent'}</span>
             <span className="tag">{info.autoAllow === false ? 'manual' : 'auto'}</span>
             {info.gitAccess && <span className="tag tag-green">git</span>}
@@ -131,7 +139,8 @@ function NonStartedPane({
           <div className="row-buttons">
             <button
               className="btn btn-primary"
-              disabled={!text.trim()}
+              disabled={!text.trim() || !info.repo}
+              title={!info.repo ? 'pick a repository first (Edit settings)' : undefined}
               onClick={async () => {
                 if (text !== info.startPrompt) await window.gurt.sessionEditPrompt(sessionId, text)
                 window.gurt.sessionRun(sessionId).catch((e) => alertDialog(String(e)))
@@ -141,7 +150,8 @@ function NonStartedPane({
             </button>
             <button
               className="btn"
-              disabled={!text.trim()}
+              disabled={!text.trim() || !info.repo}
+              title={!info.repo ? 'pick a repository first (Edit settings)' : undefined}
               onClick={async () => {
                 if (text !== info.startPrompt) await window.gurt.sessionEditPrompt(sessionId, text)
                 window.gurt.sessionEnqueue(sessionId).catch((e) => alertDialog(String(e)))
@@ -172,10 +182,7 @@ function NonStartedPane({
           {queuePosition != null && (
             <div className="queue-badge">
               queued — position #{queuePosition}
-              <div className="dim">
-                starts when this repo's environment is stopped (an agent finishes by its env being
-                stopped)
-              </div>
+              <div className="dim">starts when the environment and its repository are free</div>
             </div>
           )}
           <pre className="draft-prompt readonly">{info.startPrompt}</pre>
