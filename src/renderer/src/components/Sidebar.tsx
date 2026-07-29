@@ -349,6 +349,9 @@ export function NewSessionModal({
   const [harnessOpen, setHarnessOpen] = useState(false)
   /** Which quiet-select menu is open. */
   const [picker, setPicker] = useState<'task' | 'env' | 'repo' | 'client' | null>(null)
+  /** Task picker showing its inline "new task" text field instead of the list. */
+  const [creatingTask, setCreatingTask] = useState(false)
+  const [newTaskName, setNewTaskName] = useState('')
   const [error, setError] = useState('')
   const taRef = useRef<HTMLTextAreaElement>(null)
 
@@ -396,6 +399,27 @@ export function NewSessionModal({
     setPicker(null)
   }
 
+  const closeTaskPicker = () => {
+    setPicker(null)
+    setCreatingTask(false)
+    setNewTaskName('')
+  }
+
+  // Creates the task on the fly and selects it, so the picker never forces a
+  // detour through the sidebar's separate "new task" flow.
+  const createTaskInline = async () => {
+    const name = newTaskName.trim()
+    if (!name) return
+    setError('')
+    try {
+      await window.gurt.createTask(ws, name)
+      setTaskName(name)
+      closeTaskPicker()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
   // Load the chosen agent's cached config surface so the model/effort/command
   // controls can be offered before the container is up. A stale response from a
   // previous agent is dropped via the `live` guard.
@@ -418,10 +442,19 @@ export function NewSessionModal({
     setConfigValues((prev) => ({ ...prev, [opt.id]: value }))
   // Effective value of an option: the user's pick, else the agent's current.
   const effective = (opt: SessionConfigOption) => configValues[opt.id] ?? opt.currentValue
-  // Model/effort/fast live here; Mode is expressed via the auto/manual toggle.
+  // Model/effort/fast — rendered inside Harness config, alongside Mode/Git
+  // access/MCP/Skills; they're all part of the same "how does this session run"
+  // surface. Mode itself is expressed via the auto/manual toggle, not this list.
   const cfgOptions = (agentConfig?.configOptions ?? []).filter((o) => o.category !== 'mode')
   const cfgLabel = (o: SessionConfigOption) =>
     o.category === 'model' ? 'MODEL' : o.category === 'thought_level' ? 'EFFORT' : o.name.toUpperCase()
+  // What the currently-picked value of a select option actually means — shown under
+  // the chips so e.g. "Default" doesn't sit unexplained (it's whatever the agent
+  // itself reports for that entry).
+  const selectedDescription = (opt: SessionConfigOption): string | undefined =>
+    opt.options?.find((o) => o.value === effective(opt))?.description ?? undefined
+  const selectedName = (opt: SessionConfigOption): string | undefined =>
+    opt.options?.find((o) => o.value === effective(opt))?.name
 
   const repoCfg = repo ? repos.find((r) => r.name === repo) : undefined
   const gitResolution = repoCfg ? resolveForRepo(credentials, repoCfg) : null
@@ -478,7 +511,17 @@ export function NewSessionModal({
   const ready = !!taskName && !!env && !!agent && !!prompt.trim()
   const canRun = ready && !!repo
   const mcpCount = Object.keys(mcp).length
-  const harnessSummary = `${autoAllow ? 'auto' : 'manual'} · ${mcpCount} mcp`
+  // Model/effort surface in the summary so they stay legible while the panel's collapsed.
+  const modelOpt = cfgOptions.find((o) => o.category === 'model')
+  const effortOpt = cfgOptions.find((o) => o.category === 'thought_level')
+  const harnessSummary = [
+    modelOpt && selectedName(modelOpt),
+    effortOpt && selectedName(effortOpt),
+    autoAllow ? 'auto' : 'manual',
+    `${mcpCount} mcp`
+  ]
+    .filter(Boolean)
+    .join(' · ')
 
   const taskStatusTone = (t: { sessions: SessionInfo[] }): 'green' | 'yellow' | 'outline' => {
     if (t.sessions.some((s) => s.busy || s.awaitingInput)) return 'yellow'
@@ -493,27 +536,54 @@ export function NewSessionModal({
         <PickRow
           open={picker === 'task'}
           onToggle={() => setPicker(picker === 'task' ? null : 'task')}
-          onClose={() => setPicker(null)}
-          menu={tasks.map((t) => (
-            <div
-              key={t.name}
-              className={`menu-item ${t.name === taskName ? 'active' : ''}`}
-              onMouseDown={(e) => {
-                e.preventDefault()
-                setTaskName(t.name)
-                setPicker(null)
-              }}
-            >
-              <Dot tone={taskStatusTone(t)} />
-              {t.name}
-            </div>
-          ))}
+          onClose={closeTaskPicker}
+          menu={
+            creatingTask ? (
+              <div className="menu-item-input">
+                <input
+                  autoFocus
+                  className="input"
+                  placeholder="task name"
+                  value={newTaskName}
+                  onChange={(e) => setNewTaskName(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && createTaskInline()}
+                />
+              </div>
+            ) : (
+              <>
+                {tasks.map((t) => (
+                  <div
+                    key={t.name}
+                    className={`menu-item ${t.name === taskName ? 'active' : ''}`}
+                    onMouseDown={(e) => {
+                      e.preventDefault()
+                      setTaskName(t.name)
+                      setPicker(null)
+                    }}
+                  >
+                    <Dot tone={taskStatusTone(t)} />
+                    {t.name}
+                  </div>
+                ))}
+                {tasks.length > 0 && <div className="menu-sep" />}
+                <div
+                  className="menu-item"
+                  onMouseDown={(e) => {
+                    e.preventDefault()
+                    setCreatingTask(true)
+                  }}
+                >
+                  + new task
+                </div>
+              </>
+            )
+          }
         >
           <span className="seclabel">TASK</span>
           <span className="pick-div" />
-          {taskData ? (
+          {taskName ? (
             <>
-              <Dot tone={taskStatusTone(taskData)} />
+              <Dot tone={taskData ? taskStatusTone(taskData) : 'outline'} />
               <span className="pick-value">{taskName}</span>
             </>
           ) : (
@@ -640,70 +710,6 @@ export function NewSessionModal({
             <span className="pick-meta">{agentName(agents ?? {}, agent) || 'none'}</span>
           </PickRow>
 
-          {/* model / effort / fast — from the agent's cached config surface */}
-          {cfgOptions.length > 0 && (
-            <div className="ns-config">
-              {cfgOptions.map((opt) =>
-                opt.type === 'select' ? (
-                  <div key={opt.id} className="hc-block">
-                    <span className="seclabel">{cfgLabel(opt)}</span>
-                    <div className="chip-row">
-                      {(opt.options ?? []).map((o) => (
-                        <button
-                          key={o.value}
-                          type="button"
-                          className={`chip-btn ${effective(opt) === o.value ? 'on' : ''}`}
-                          title={o.description ?? undefined}
-                          onClick={() => setConfig(opt, o.value)}
-                        >
-                          {o.name}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                ) : (
-                  <div key={opt.id} className="hc-block">
-                    <span className="seclabel">{cfgLabel(opt)}</span>
-                    <div className="chip-row">
-                      <button
-                        type="button"
-                        className={`chip-btn ${effective(opt) === true ? 'on' : ''}`}
-                        onClick={() => setConfig(opt, true)}
-                      >
-                        on
-                      </button>
-                      <button
-                        type="button"
-                        className={`chip-btn ${effective(opt) === false ? 'on' : ''}`}
-                        onClick={() => setConfig(opt, false)}
-                      >
-                        off
-                      </button>
-                    </div>
-                  </div>
-                )
-              )}
-              {(agentConfig?.commands.length ?? 0) > 0 && (
-                <div className="hc-block">
-                  <span className="seclabel">COMMANDS</span>
-                  <div className="ns-cmds">
-                    {agentConfig!.commands.map((c) => (
-                      <button
-                        key={c.name}
-                        type="button"
-                        className="ns-cmd"
-                        title={c.description ?? undefined}
-                        onClick={() => setPrompt((p) => (p ? `${p} /${c.name} ` : `/${c.name} `))}
-                      >
-                        /{c.name}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-
           <div className={`hc ${harnessOpen ? 'open' : ''}`}>
             <button type="button" className="pick-row hc-head" onClick={() => setHarnessOpen((o) => !o)}>
               <Icon
@@ -718,6 +724,53 @@ export function NewSessionModal({
             </button>
             {harnessOpen && (
               <div className="hc-body">
+                {/* model / effort / fast — from the agent's cached config surface. The
+                    agent's "default" entry (e.g. effort's unlabeled "Default") isn't a
+                    real choice, it's the absence of one — omitted here so "nothing
+                    selected" reads as itself instead of a mystery option. */}
+                {cfgOptions.map((opt) =>
+                  opt.type === 'select' ? (
+                    <div key={opt.id} className="hc-block">
+                      <span className="seclabel">{cfgLabel(opt)}</span>
+                      <div className="chip-row">
+                        {(opt.options ?? []).filter((o) => o.value !== 'default').map((o) => (
+                          <button
+                            key={o.value}
+                            type="button"
+                            className={`chip-btn ${effective(opt) === o.value ? 'on' : ''}`}
+                            title={o.description ?? undefined}
+                            onClick={() => setConfig(opt, o.value)}
+                          >
+                            {o.name}
+                          </button>
+                        ))}
+                      </div>
+                      {selectedDescription(opt) && (
+                        <div className="hc-note">{selectedDescription(opt)}</div>
+                      )}
+                    </div>
+                  ) : (
+                    <div key={opt.id} className="hc-block">
+                      <span className="seclabel">{cfgLabel(opt)}</span>
+                      <div className="chip-row">
+                        <button
+                          type="button"
+                          className={`chip-btn ${effective(opt) === true ? 'on' : ''}`}
+                          onClick={() => setConfig(opt, true)}
+                        >
+                          on
+                        </button>
+                        <button
+                          type="button"
+                          className={`chip-btn ${effective(opt) === false ? 'on' : ''}`}
+                          onClick={() => setConfig(opt, false)}
+                        >
+                          off
+                        </button>
+                      </div>
+                    </div>
+                  )
+                )}
                 <div className="hc-block">
                   <span className="seclabel">MODE</span>
                   <div className="chip-row">

@@ -335,6 +335,10 @@ textarea.input {
   color: var(--accent);
   border-color: var(--accent);
 }
+.tag-red {
+  color: var(--red);
+  border-color: var(--red);
+}
 
 /* Selected/ghost chip buttons (composer popup, harness config). */
 .chip-row {
@@ -428,6 +432,12 @@ textarea.input {
   background: var(--border);
   margin: 5px 8px;
 }
+.menu-item-input {
+  padding: 3px;
+}
+.menu-item-input .input {
+  width: 100%;
+}
 .menu-empty {
   padding: 10px 9px;
   font-size: 12px;
@@ -478,8 +488,13 @@ textarea.input {
   border-radius: 50%;
   background: var(--dim);
 }
-.ld-accent {
-  background: var(--accent);
+/* The four dots are literal session states: done, two idle-grey, one empty. */
+.ld-green {
+  background: var(--green);
+}
+.ld-outline {
+  border: 1.5px solid var(--dim);
+  background: transparent;
 }
 .tb-name {
   font-weight: 700;
@@ -923,6 +938,106 @@ textarea.input {
   font-size: 11px;
   color: var(--faint);
   padding-top: 7px;
+}
+
+/* Markdown rendering for agent messages. */
+.msg-text.markdown {
+  white-space: normal;
+}
+.msg-text.markdown > :first-child {
+  margin-top: 0;
+}
+.msg-text.markdown > :last-child {
+  margin-bottom: 0;
+}
+.msg-text.markdown p {
+  margin: 0 0 10px;
+}
+.msg-text.markdown ul,
+.msg-text.markdown ol {
+  margin: 0 0 10px;
+  padding-left: 22px;
+}
+.msg-text.markdown li {
+  margin: 2px 0;
+}
+.msg-text.markdown li > p {
+  margin: 0;
+}
+.msg-text.markdown h1,
+.msg-text.markdown h2,
+.msg-text.markdown h3,
+.msg-text.markdown h4 {
+  margin: 16px 0 8px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.msg-text.markdown h1 {
+  font-size: 18px;
+}
+.msg-text.markdown h2 {
+  font-size: 16px;
+}
+.msg-text.markdown h3 {
+  font-size: 14.5px;
+}
+.msg-text.markdown h4 {
+  font-size: 13.5px;
+}
+.msg-text.markdown a {
+  color: var(--accent);
+}
+.msg-text.markdown strong {
+  font-weight: 600;
+}
+.msg-text.markdown code {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+.msg-text.markdown pre {
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.6;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 13px;
+  margin: 0 0 10px;
+  overflow: auto;
+}
+.msg-text.markdown pre code {
+  background: none;
+  border: none;
+  padding: 0;
+}
+.msg-text.markdown blockquote {
+  margin: 0 0 10px;
+  padding: 2px 12px;
+  border-left: 2px solid var(--border2);
+  color: var(--dim);
+}
+.msg-text.markdown hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 12px 0;
+}
+.msg-text.markdown table {
+  border-collapse: collapse;
+  margin: 0 0 10px;
+  font-size: 12.5px;
+}
+.msg-text.markdown th,
+.msg-text.markdown td {
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+}
+.msg-text.markdown th {
+  color: var(--dim);
+  font-weight: 600;
 }
 
 .thought-head {
@@ -1612,31 +1727,6 @@ textarea.input {
 }
 .ns-section > * + * {
   margin-top: 0;
-}
-.ns-config {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 12px 2px 2px;
-}
-.ns-cmds {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.ns-cmd {
-  font-family: var(--mono);
-  font-size: 11.5px;
-  color: var(--dim);
-  padding: 3px 8px;
-  border: 1px solid var(--border2);
-  border-radius: 7px;
-  background: transparent;
-  cursor: pointer;
-}
-.ns-cmd:hover {
-  color: var(--fg);
-  border-color: var(--border);
 }
 
 /* ---- session pane (draft / queued / starting) ---- */

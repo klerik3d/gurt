@@ -19,11 +19,17 @@ const require = createRequire(import.meta.url)
 /** Features every environment gets (adapters are npm packages). */
 const BASE_FEATURES = { 'ghcr.io/devcontainers/features/node:1': {} }
 
+/**
+ * In a packaged build the CLI lives inside app.asar, which only Electron's own
+ * fs can read — we spawn it as a separate process, so it must come from the
+ * unpacked mirror instead (see `asarUnpack` in electron-builder.yml). Resolving
+ * still goes through the asar path; only the returned path is redirected.
+ */
 function devcontainerCliPath(): string {
-  return path.join(
-    path.dirname(require.resolve('@devcontainers/cli/package.json')),
-    'devcontainer.js'
-  )
+  const dir = path
+    .dirname(require.resolve('@devcontainers/cli/package.json'))
+    .replace(`${path.sep}app.asar${path.sep}`, `${path.sep}app.asar.unpacked${path.sep}`)
+  return path.join(dir, 'devcontainer.js')
 }
 
 export type LogSink = (line: string) => void
