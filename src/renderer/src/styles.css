@@ -2144,6 +2144,31 @@ textarea.input {
   text-overflow: ellipsis;
 }
 
+/* Environments: image badge extras + streamed build-log tail under a row. */
+.env-image-hint {
+  font-size: 11px;
+  color: var(--faint);
+  flex: none;
+}
+.env-building {
+  font-size: 11px;
+  color: var(--faint);
+  flex: none;
+  animation: pulse 1.4s ease-in-out infinite;
+}
+.env-build-log {
+  margin: 2px 8px 0;
+  padding: 8px 14px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 0 0 10px 10px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--faint);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
 .set-card {
   background: var(--surface);
   border: 1px solid var(--border2);
