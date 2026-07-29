@@ -12,7 +12,9 @@
   },
   "dependencies": {
     "@devcontainers/cli": "^0.80.0",
-    "@modelcontextprotocol/sdk": "^1.29.0"
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@fontsource/ibm-plex-mono": "^5.3.0",
