@@ -1,7 +1,10 @@
 // Generate resources/icon.png (1024x1024) — the gurt app icon.
 // Pure Node: draws a macOS-style rounded square in warm graphite with the
-// 2x2 dot logo (top-left dot in accent blue), supersampled 2x for AA, and
-// encodes the PNG by hand (zlib + CRC32). No image dependencies.
+// 2x2 dot logo, supersampled 2x for AA, and encodes the PNG by hand
+// (zlib + CRC32). No image dependencies.
+//
+// The dots are literal session states, in the same colors the UI uses:
+// top-left done (green), two idle (grey), bottom-right empty (outline).
 import fs from 'node:fs'
 import path from 'node:path'
 import zlib from 'node:zlib'
@@ -17,6 +20,7 @@ const inset = 100 * SS // transparent margin, macOS icons keep ~10%
 const radius = 186 * SS
 const dotR = 88 * SS
 const dotD = 264 * SS // center-to-center
+const ringW = 30 * SS // stroke of the outline dot
 const cx = S / 2
 const cy = S / 2
 
@@ -25,7 +29,7 @@ const bgTop = [0x26, 0x24, 0x20]
 const bgBot = [0x15, 0x14, 0x11]
 const border = [0x4a, 0x47, 0x40]
 const dim = [0xa3, 0xa0, 0x99]
-const accent = [0x4d, 0xa3, 0xff]
+const green = [0x6c, 0xc4, 0x7f]
 
 /** Signed distance to the rounded-square border (<0 inside). */
 const sdRoundRect = (x, y) => {
@@ -41,7 +45,8 @@ const dots = [-1, 1].flatMap((gy) =>
   [-1, 1].map((gx) => ({
     x: cx + (gx * dotD) / 2,
     y: cy + (gy * dotD) / 2,
-    color: gx === -1 && gy === -1 ? accent : dim
+    color: gx === -1 && gy === -1 ? green : dim,
+    ring: gx === 1 && gy === 1
   }))
 )
 
@@ -61,9 +66,11 @@ for (let y = 0; y < S; y++) {
       b = b * (1 - k) + border[2] * k
     }
     for (const dot of dots) {
-      const dd = Math.hypot(x + 0.5 - dot.x, y + 0.5 - dot.y) - dotR
-      if (dd < 0.5) {
-        const k = Math.min(1, 0.5 - dd) // 1px AA ramp on the dot edge
+      const dist = Math.hypot(x + 0.5 - dot.x, y + 0.5 - dot.y)
+      // 1px AA ramps: outer edge for every dot, inner edge for the ring only.
+      let k = Math.min(1, 0.5 - (dist - dotR))
+      if (dot.ring) k = Math.min(k, Math.min(1, 0.5 - (dotR - ringW - dist)))
+      if (k > 0) {
         r = r * (1 - k) + dot.color[0] * k
         g = g * (1 - k) + dot.color[1] * k
         b = b * (1 - k) + dot.color[2] * k
