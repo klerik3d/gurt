@@ -86,11 +86,15 @@ export interface RepoConfig {
 export interface EnvConfig {
   name: string
   /** Inline devcontainer.json; '' = use the session repo's own .devcontainer.
-   *  Ignored when `dockerfilePath` is set. */
+   *  Ignored when `dockerfile` is set. */
   devcontainer: string
-  /** Build the image from this repo-relative Dockerfile instead of a
-   *  devcontainer.json. Mutually exclusive with `devcontainer` (the editor
-   *  clears whichever field its mode isn't using); takes precedence when set. */
+  /** Dockerfile content to build the image from, instead of a devcontainer.json
+   *  — editable in the env editor, seeded from (but independent of) the repo's
+   *  own file. Mutually exclusive with `devcontainer` (the editor clears
+   *  whichever field its mode isn't using); takes precedence when set. */
+  dockerfile?: string
+  /** Repo-relative path `dockerfile` was last loaded from — provenance shown
+   *  in the editor, not used at build time (the edited content is). */
   dockerfilePath?: string
   /** Default repo, seeds new sessions on this env; not a runtime binding. */
   repo?: string

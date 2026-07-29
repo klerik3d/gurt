@@ -7,7 +7,7 @@ import { listCredentials } from './credentials'
 import { resolveGitBroker, stopGitBroker } from './git/broker'
 import { containerGitEnv } from './git/config'
 import * as store from './store'
-import { cloneDir } from './store'
+import { cloneDir, overrideDockerfilePath } from './store'
 import {
   devcontainerUp,
   dockerRemove,
@@ -105,8 +105,8 @@ export class EnvManager {
       try {
         if (leftover) await dockerRemove(leftover, log)
         const dir = await ensureClone(ref, repoCfg, log)
-        const configArgs = envCfg?.dockerfilePath
-          ? await this.dockerfileConfigArgs(ref, repoCfg.url, envCfg.dockerfilePath, dir, log)
+        const configArgs = envCfg?.dockerfile
+          ? await this.dockerfileConfigArgs(ref, repoCfg.url, envCfg.dockerfile, dir, log)
           : await overrideConfigArgs(ref, envCfg)
         const up = await devcontainerUp(
           session,
@@ -143,15 +143,18 @@ export class EnvManager {
    *  an inline devcontainer.json, so `devcontainerUp` needs no changes. The
    *  clone at `contextDir` (already made by `ensureClone`) is the build
    *  context: no separate scratch clone, no relocated Dockerfile, no path
-   *  translation — `COPY`/`ADD` resolve exactly as in the repo. */
+   *  translation — `COPY`/`ADD` resolve exactly as in the repo. The
+   *  Dockerfile *content* is the env's own (editable) copy, written to its
+   *  stable host path — never re-read from the repo, so edits actually apply. */
   private async dockerfileConfigArgs(
     ref: EnvRef,
     repoUrl: string,
-    dockerfilePath: string,
+    dockerfileContent: string,
     contextDir: string,
     log: (line: string) => void
   ): Promise<string[]> {
-    const tag = await ensureBuiltImage(repoUrl, dockerfilePath, contextDir, log)
+    const writeTo = overrideDockerfilePath(ref.workspace, ref.env)
+    const tag = await ensureBuiltImage(repoUrl, dockerfileContent, contextDir, writeTo, log)
     return writeOverrideConfig(ref, JSON.stringify({ image: tag }))
   }
 
