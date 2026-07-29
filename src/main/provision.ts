@@ -307,9 +307,14 @@ export async function discoverDevcontainer(
       const found: DiscoveredDevcontainer = { path: rel, content }
       const buildDockerfile = parseEnvDevcontainer(content).build?.dockerfile
       if (buildDockerfile) {
-        const dfRel = path.join(path.dirname(rel), buildDockerfile)
-        const dfContent = await fs.readFile(path.join(dir, dfRel), 'utf8').catch(() => null)
-        if (dfContent != null) found.dockerfile = { path: dfRel, content: dfContent }
+        const dfAbs = path.resolve(
+          dir,
+          path.dirname(rel),
+          buildDockerfile.replaceAll('${localWorkspaceFolder}', dir)
+        )
+        const dfContent = await fs.readFile(dfAbs, 'utf8').catch(() => null)
+        if (dfContent != null)
+          found.dockerfile = { path: path.relative(dir, dfAbs), content: dfContent }
       }
       return found
     }
@@ -422,13 +427,18 @@ export async function buildEnvImage(
     const devcontainerDir = path.join(contextDir, '.devcontainer')
     await fs.mkdir(devcontainerDir, { recursive: true })
     await fs.writeFile(path.join(devcontainerDir, 'devcontainer.json'), envCfg.devcontainer)
-    const dockerfilePath = path.join(devcontainerDir, build.dockerfile ?? 'Dockerfile')
+    // ${localWorkspaceFolder} in build.dockerfile/context means the repo root —
+    // the CLI substitutes it at `up`, but this build runs outside the CLI.
+    // Use-time only: the tag hashes the raw build object, so the temporary
+    // snapshot path never enters the image identity.
+    const subst = (p: string) => p.replaceAll('${localWorkspaceFolder}', contextDir)
+    const dockerfilePath = path.resolve(devcontainerDir, subst(build.dockerfile ?? 'Dockerfile'))
     await fs.mkdir(path.dirname(dockerfilePath), { recursive: true })
     await fs.writeFile(dockerfilePath, envCfg.dockerfile!)
     // build.context resolves relative to `.devcontainer/`; the default is the
     // repo root — gurt's convention (documented divergence from the spec
     // default). `build.options` / `cacheFrom` are ignored (non-goals).
-    const context = build.context ? path.resolve(devcontainerDir, build.context) : contextDir
+    const context = build.context ? path.resolve(devcontainerDir, subst(build.context)) : contextDir
     const args = ['build', '-f', dockerfilePath, '-t', tag]
     for (const [k, v] of Object.entries(build.args ?? {})) args.push('--build-arg', `${k}=${v}`)
     if (build.target) args.push('--target', build.target)

@@ -147,6 +147,12 @@ export async function buildEnvImage(
    relative to `<contextDir>/.devcontainer/`, default `<contextDir>` (repo
    root — gurt's convention; documented divergence from the spec default).
    `build.options` / `cacheFrom` are ignored (Non-goals).
+5. `${localWorkspaceFolder}` in `build.dockerfile` / `build.context` is
+   substituted with `<contextDir>` (the snapshot root) before the path
+   resolution above — the CLI does this at `up`, but this build runs outside
+   the CLI. No other variables are substituted. Substitution is use-time
+   only: the tag hashes the RAW `build` object (§3), so the temporary
+   snapshot path never enters the image identity.
 
 `materializeEnvConfig`:
 
@@ -225,7 +231,8 @@ Both read the SAVED `EnvConfig` (workspace-level, no task context).
 - `detect from repo` keeps seeding the devcontainer field. Extend
   `discoverDevcontainer` to also return the companion Dockerfile when the
   discovered config has `build.dockerfile` (read from the same shallow
-  clone, path resolved relative to the config's directory):
+  clone, path resolved relative to the config's directory, with
+  `${localWorkspaceFolder}` = repo root):
   `Promise<{ path, content, dockerfile?: { path, content } } | null>` —
   seeds both fields at once.
 - The Dockerfile section (editor + existing `detect Dockerfiles in repo`
