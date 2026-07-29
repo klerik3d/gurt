@@ -490,6 +490,10 @@ export interface RepoChanges {
   integrated: boolean
   /** Forge compare URL — present only when the origin matches a forge and a commit is pushed. */
   prUrl?: string
+  /** Commits on `<default>` not yet in this branch — the "update from main" signal. */
+  behind: number
+  /** A prior update-from-main merge left conflicts unresolved (`MERGE_HEAD` present). */
+  conflicted: boolean
 }
 
 /**

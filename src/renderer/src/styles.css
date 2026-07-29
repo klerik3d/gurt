@@ -335,6 +335,10 @@ textarea.input {
   color: var(--accent);
   border-color: var(--accent);
 }
+.tag-red {
+  color: var(--red);
+  border-color: var(--red);
+}
 
 /* Selected/ghost chip buttons (composer popup, harness config). */
 .chip-row {
