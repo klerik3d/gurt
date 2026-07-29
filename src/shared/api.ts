@@ -53,11 +53,16 @@ export interface GurtApi {
   credentialUsedBy(id: string): Promise<string[]>
   createWorkspace(name: string): Promise<void>
   addRepo(ws: string, repo: RepoConfig): Promise<void>
-  discoverDevcontainer(url: string): Promise<{ path: string; content: string } | null>
+  /** Resolves credentials the same way session clones do (by registered repo,
+   *  honoring a repo-linked credential), so it works for private repos too. */
+  discoverDevcontainer(
+    ws: string,
+    repo: string
+  ): Promise<{ path: string; content: string } | null>
   /** Dockerfile candidates (with content) for a repo with no devcontainer.json
    *  (repo root + `.devcontainer/**`), loaded into the env editor's Dockerfile
    *  field — editable there after loading, not re-read from the repo. */
-  discoverDockerfiles(url: string): Promise<{ path: string; content: string }[]>
+  discoverDockerfiles(ws: string, repo: string): Promise<{ path: string; content: string }[]>
   updateRepo(ws: string, repo: RepoConfig): Promise<void>
   removeRepo(ws: string, name: string): Promise<void>
   /** Register an env definition in the workspace. */
