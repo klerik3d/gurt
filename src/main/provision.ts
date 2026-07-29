@@ -104,8 +104,53 @@ export function run(cmd: string, args: string[], log: LogSink, opts: RunOpts = {
   })
 }
 
-export async function ensureClone(ref: EnvRef, repo: RepoConfig, log: LogSink): Promise<string> {
+/** True if `refs/heads/<branch>` exists in the clone. Fully qualified on
+ *  purpose: the short name would also match a tag or a remote-tracking ref
+ *  through rev-parse's DWIM rules, and the answer decides create-vs-switch. */
+async function localBranchExists(
+  dir: string,
+  gitArgs: string[],
+  env: NodeJS.ProcessEnv,
+  branch: string
+): Promise<boolean> {
+  const out = await run(
+    'git',
+    ['-C', dir, ...gitArgs, 'rev-parse', '--verify', '--quiet', `refs/heads/${branch}`],
+    () => {},
+    { env, okCodes: [0, 1] }
+  )
+  return out.trim().length > 0
+}
+
+/** Clone provisioning in flight, keyed by clone dir. One clone is shared by
+ *  every env of a task (`~/.gurt/<ws>/<task>/<repo>/`), so two sessions of the
+ *  same task starting at once would otherwise race over it: the second sees the
+ *  half-written dir as an existing clone, and both run `checkout -b`, the loser
+ *  failing with `a branch named 'gurt/<task>' already exists`. Callers queue
+ *  behind each other instead — the body is idempotent, so the follower just
+ *  finds the finished clone. */
+const clonesInFlight = new Map<string, Promise<string>>()
+
+export function ensureClone(ref: EnvRef, repo: RepoConfig, log: LogSink): Promise<string> {
   const dir = cloneDir(ref.workspace, ref.task, repo.name)
+  const prev = clonesInFlight.get(dir)
+  // A failed predecessor must not fail this caller — it re-runs the work itself.
+  const p = (prev ? prev.catch(() => {}) : Promise.resolve()).then(() =>
+    provisionClone(dir, ref, repo, log)
+  )
+  clonesInFlight.set(dir, p)
+  p.catch(() => {}).finally(() => {
+    if (clonesInFlight.get(dir) === p) clonesInFlight.delete(dir)
+  })
+  return p
+}
+
+async function provisionClone(
+  dir: string,
+  ref: EnvRef,
+  repo: RepoConfig,
+  log: LogSink
+): Promise<string> {
   // Same git-native contract as the container: a gurt-managed token clones over
   // https even from an ssh URL, and no operation blocks on a credential prompt.
   const { env, gitArgs } = await hostGitAccess(repo, await listCredentials())
@@ -115,12 +160,12 @@ export async function ensureClone(ref: EnvRef, repo: RepoConfig, log: LogSink): 
     await run('git', [...gitArgs, 'clone', '--', repo.url, dir], log, { env })
   }
   const branch = `gurt/${ref.task}`
-  try {
-    await run('git', ['-C', dir, ...gitArgs, 'rev-parse', '--verify', branch], () => {}, { env })
+  // Create vs switch, never one masking the other: a `checkout` that fails on
+  // its own (dirty tree, missing ref) must surface that error, not retry as
+  // `checkout -b` and report the misleading "branch already exists".
+  if (await localBranchExists(dir, gitArgs, env, branch))
     await run('git', ['-C', dir, ...gitArgs, 'checkout', branch], log, { env })
-  } catch {
-    await run('git', ['-C', dir, ...gitArgs, 'checkout', '-b', branch], log, { env })
-  }
+  else await run('git', ['-C', dir, ...gitArgs, 'checkout', '-b', branch], log, { env })
   return dir
 }
 
