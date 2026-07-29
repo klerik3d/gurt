@@ -349,6 +349,9 @@ export function NewSessionModal({
   const [harnessOpen, setHarnessOpen] = useState(false)
   /** Which quiet-select menu is open. */
   const [picker, setPicker] = useState<'task' | 'env' | 'repo' | 'client' | null>(null)
+  /** Task picker showing its inline "new task" text field instead of the list. */
+  const [creatingTask, setCreatingTask] = useState(false)
+  const [newTaskName, setNewTaskName] = useState('')
   const [error, setError] = useState('')
   const taRef = useRef<HTMLTextAreaElement>(null)
 
@@ -394,6 +397,27 @@ export function NewSessionModal({
     setEnv(name)
     setRepo(envs.find((e) => e.name === name)?.repo ?? null)
     setPicker(null)
+  }
+
+  const closeTaskPicker = () => {
+    setPicker(null)
+    setCreatingTask(false)
+    setNewTaskName('')
+  }
+
+  // Creates the task on the fly and selects it, so the picker never forces a
+  // detour through the sidebar's separate "new task" flow.
+  const createTaskInline = async () => {
+    const name = newTaskName.trim()
+    if (!name) return
+    setError('')
+    try {
+      await window.gurt.createTask(ws, name)
+      setTaskName(name)
+      closeTaskPicker()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
   }
 
   // Load the chosen agent's cached config surface so the model/effort/command
@@ -498,27 +522,54 @@ export function NewSessionModal({
         <PickRow
           open={picker === 'task'}
           onToggle={() => setPicker(picker === 'task' ? null : 'task')}
-          onClose={() => setPicker(null)}
-          menu={tasks.map((t) => (
-            <div
-              key={t.name}
-              className={`menu-item ${t.name === taskName ? 'active' : ''}`}
-              onMouseDown={(e) => {
-                e.preventDefault()
-                setTaskName(t.name)
-                setPicker(null)
-              }}
-            >
-              <Dot tone={taskStatusTone(t)} />
-              {t.name}
-            </div>
-          ))}
+          onClose={closeTaskPicker}
+          menu={
+            creatingTask ? (
+              <div className="menu-item-input">
+                <input
+                  autoFocus
+                  className="input"
+                  placeholder="task name"
+                  value={newTaskName}
+                  onChange={(e) => setNewTaskName(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && createTaskInline()}
+                />
+              </div>
+            ) : (
+              <>
+                {tasks.map((t) => (
+                  <div
+                    key={t.name}
+                    className={`menu-item ${t.name === taskName ? 'active' : ''}`}
+                    onMouseDown={(e) => {
+                      e.preventDefault()
+                      setTaskName(t.name)
+                      setPicker(null)
+                    }}
+                  >
+                    <Dot tone={taskStatusTone(t)} />
+                    {t.name}
+                  </div>
+                ))}
+                {tasks.length > 0 && <div className="menu-sep" />}
+                <div
+                  className="menu-item"
+                  onMouseDown={(e) => {
+                    e.preventDefault()
+                    setCreatingTask(true)
+                  }}
+                >
+                  + new task
+                </div>
+              </>
+            )
+          }
         >
           <span className="seclabel">TASK</span>
           <span className="pick-div" />
-          {taskData ? (
+          {taskName ? (
             <>
-              <Dot tone={taskStatusTone(taskData)} />
+              <Dot tone={taskData ? taskStatusTone(taskData) : 'outline'} />
               <span className="pick-value">{taskName}</span>
             </>
           ) : (
