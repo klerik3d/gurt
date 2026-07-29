@@ -325,11 +325,27 @@ async function dockerfileCandidates(dir: string): Promise<string[]> {
   return out
 }
 
-/** Shallow-clones the repo and lists every Dockerfile candidate (repo root +
- *  `.devcontainer/**`) — the env editor's picker when there's no devcontainer.json. */
-export async function discoverDockerfiles(ws: string, repoName: string): Promise<string[]> {
+export interface DiscoveredDockerfile {
+  path: string
+  content: string
+}
+
+/** Shallow-clones the repo and returns every Dockerfile candidate (repo root +
+ *  `.devcontainer/**`) with its content — the env editor loads one into its
+ *  (editable) Dockerfile field when there's no devcontainer.json. */
+export async function discoverDockerfiles(
+  ws: string,
+  repoName: string
+): Promise<DiscoveredDockerfile[]> {
   const repo = await requireRepo(ws, repoName)
-  return withShallowClone(repo, (dir) => dockerfileCandidates(dir))
+  return withShallowClone(repo, async (dir) => {
+    const out: DiscoveredDockerfile[] = []
+    for (const rel of await dockerfileCandidates(dir)) {
+      const content = await fs.readFile(path.join(dir, rel), 'utf8').catch(() => null)
+      if (content != null) out.push({ path: rel, content })
+    }
+    return out
+  })
 }
 
 /** Writes `content` as the env's override devcontainer.json and returns the
@@ -368,24 +384,31 @@ export function dockerImageExists(tag: string): Promise<boolean> {
 const buildsInFlight = new Map<string, Promise<string>>()
 
 /**
- * Ensures a Docker image exists for `dockerfilePath` inside `contextDir` (a
- * repo clone, already checked out by `ensureClone`) and returns its tag.
- * Tagged by content — `repoUrl` + `dockerfilePath` + the clone's current
- * commit — so it is built once and reused by every later session on this env,
- * on any task, until the repo's committed content actually changes.
- * Uncommitted edits to the clone are not reflected in the tag (commit to
- * force a rebuild) — hashing the whole build context on every `up` would cost
- * far more for a case that rarely matters.
+ * Ensures a Docker image exists for `dockerfileContent` built against
+ * `contextDir` (a repo clone, already checked out by `ensureClone`) and
+ * returns its tag. `dockerfileContent` is the env's own (editable, possibly
+ * user-modified) Dockerfile text — written to `writeTo` before building, so
+ * `docker build -f` reads exactly what the editor shows, never silently
+ * re-reading the repo's file. Tagged by content — `repoUrl` + the Dockerfile
+ * text + the clone's current commit — so it is built once and reused by every
+ * later session on this env, on any task, until either the Dockerfile is
+ * edited or the repo's committed content changes.
+ * Uncommitted edits to the clone itself are not reflected in the tag (commit
+ * to force a rebuild) — hashing the whole build context on every `up` would
+ * cost far more for a case that rarely matters.
  */
 export async function ensureBuiltImage(
   repoUrl: string,
-  dockerfilePath: string,
+  dockerfileContent: string,
   contextDir: string,
+  writeTo: string,
   log: LogSink
 ): Promise<string> {
+  await fs.mkdir(path.dirname(writeTo), { recursive: true })
+  await fs.writeFile(writeTo, dockerfileContent)
   const head = (await run('git', ['-C', contextDir, 'rev-parse', 'HEAD'], () => {})).trim()
   const hash = createHash('sha256')
-    .update(`${repoUrl}\n${dockerfilePath}\n${head}`)
+    .update(`${repoUrl}\n${dockerfileContent}\n${head}`)
     .digest('hex')
     .slice(0, 16)
   const tag = `gurt-env:${hash}`
@@ -393,12 +416,8 @@ export async function ensureBuiltImage(
   if (inflight) return inflight
   const p = (async () => {
     if (!(await dockerImageExists(tag))) {
-      log(`building ${tag} from ${dockerfilePath} ...`)
-      await run(
-        'docker',
-        ['build', '-f', path.join(contextDir, dockerfilePath), '-t', tag, contextDir],
-        log
-      )
+      log(`building ${tag} ...`)
+      await run('docker', ['build', '-f', writeTo, '-t', tag, contextDir], log)
     }
     return tag
   })()
