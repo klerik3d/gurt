@@ -84,6 +84,46 @@ try {
   assert.equal((await gitClone('rev-parse', 'HEAD')).stdout.trim(), head, 'branch is not reset')
   console.log('existing work preserved OK')
 
+  // --- a clone left conflicted by "update from main" is still provisionable ---
+  // Git refuses even a same-branch checkout while the index has unmerged entries,
+  // so provisioning must skip it — otherwise no agent could be started to resolve
+  // the conflict.
+  fs.writeFileSync(path.join(dir, 'README.md'), 'ours\n')
+  await gitClone('commit', '-qam', 'ours')
+  fs.writeFileSync(path.join(seed, 'README.md'), 'theirs\n')
+  await gitSeed('commit', '-qam', 'theirs')
+  await gitSeed('push', '-q', origin, 'HEAD:refs/heads/main')
+  await gitClone('fetch', '-q', 'origin')
+  await gitClone('merge', 'origin/main', '--no-edit').then(
+    () => assert.fail('merge should have conflicted'),
+    () => {}
+  )
+  const merging = path.join(dir, '.git', 'MERGE_HEAD')
+  assert.ok(fs.existsSync(merging), 'clone is mid-merge with conflicts')
+  await m.ensureClone(refFor('env-d'), REPO, () => {})
+  assert.equal(await branchOf(dir), `gurt/${TASK}`, 'still on the task branch')
+  assert.ok(fs.existsSync(merging), 'conflict state is left for the agent to resolve')
+  console.log('conflicted clone OK')
+
+  await gitClone('merge', '--abort')
+
+  // --- same for a rebase stopped on conflicts, which also detaches HEAD ---
+  await gitClone('rebase', 'origin/main').then(
+    () => assert.fail('rebase should have conflicted'),
+    () => {}
+  )
+  assert.equal(await branchOf(dir), 'HEAD', 'mid-rebase HEAD is detached')
+  await m.ensureClone(refFor('env-e'), REPO, () => {})
+  assert.equal(await branchOf(dir), 'HEAD', 'rebase is not clobbered by a checkout')
+  console.log('mid-rebase clone OK')
+
+  // Resolve, so the following assertions start from a clean tree.
+  await gitClone('rebase', '--abort')
+  await gitClone('merge', 'origin/main', '--no-edit').catch(() => {})
+  fs.writeFileSync(path.join(dir, 'README.md'), 'resolved\n')
+  await gitClone('add', '-A')
+  await gitClone('commit', '-qm', 'resolve')
+
   // --- concurrent start of two sessions on a fresh task: no branch-exists race ---
   const hot = { workspace: 'ws', task: 'task-2', env: 'env-a' }
   const results = await Promise.all([
