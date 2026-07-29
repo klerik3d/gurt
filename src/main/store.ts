@@ -52,6 +52,9 @@ export const cloneDir = (ws: string, task: string, repo: string) =>
 /** Host-side dir for an env's user-provided inline devcontainer config. */
 export const overrideConfigPath = (ws: string, env: string) =>
   path.join(gurtRoot, ws, '.devcontainers', `${env}.json`)
+/** Host-side file for an env's editable Dockerfile-mode build content. */
+export const overrideDockerfilePath = (ws: string, env: string) =>
+  path.join(gurtRoot, ws, '.devcontainers', `${env}.Dockerfile`)
 
 /** Path segments gurt itself owns inside the parent dir of each kind — a repo
  *  named `sessions` would collide with the task's session-log dir, etc.

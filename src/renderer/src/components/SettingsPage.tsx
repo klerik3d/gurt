@@ -102,8 +102,8 @@ function EnvironmentsSection({ tree, ws }: { tree: Tree | null; ws: string | nul
             <span className="set-row-label">{e.name}</span>
             <span className="set-row-url mono">
               {e.repo ? e.repo : 'no default repo'}
-              {e.dockerfilePath
-                ? ` · Dockerfile: ${e.dockerfilePath}`
+              {e.dockerfile
+                ? ` · Dockerfile${e.dockerfilePath ? `: ${e.dockerfilePath}` : ''}`
                 : e.devcontainer
                   ? ' · inline devcontainer'
                   : ''}
@@ -158,20 +158,24 @@ function EnvModal({
   useOutsideClose(repoMenu, repoRef, () => setRepoMenu(false))
 
   const [mode, setMode] = useState<'devcontainer' | 'dockerfile'>(
-    initial?.dockerfilePath ? 'dockerfile' : 'devcontainer'
+    initial?.dockerfile ? 'dockerfile' : 'devcontainer'
   )
+  const [dockerfile, setDockerfile] = useState(initial?.dockerfile ?? '')
   const [dockerfilePath, setDockerfilePath] = useState(initial?.dockerfilePath ?? '')
-  const [dockerfileCandidates, setDockerfileCandidates] = useState<string[] | null>(null)
+  const [dockerfileCandidates, setDockerfileCandidates] = useState<
+    { path: string; content: string }[] | null
+  >(null)
   const [dockerfileMenu, setDockerfileMenu] = useState(false)
   const [detectingDockerfiles, setDetectingDockerfiles] = useState(false)
   const [dockerfileMsg, setDockerfileMsg] = useState('')
   const dockerfileRef = useRef<HTMLDivElement>(null)
   useOutsideClose(dockerfileMenu, dockerfileRef, () => setDockerfileMenu(false))
 
-  const valid = !!name.trim() && (mode === 'devcontainer' || !!dockerfilePath)
+  const valid = !!name.trim() && (mode === 'devcontainer' || !!dockerfile.trim())
   const draft: EnvConfig = {
     name: name.trim(),
     devcontainer: mode === 'devcontainer' ? devcontainer : '',
+    dockerfile: mode === 'dockerfile' ? dockerfile : undefined,
     dockerfilePath: mode === 'dockerfile' ? dockerfilePath || undefined : undefined,
     repo: repo ?? undefined
   }
@@ -205,8 +209,9 @@ function EnvModal({
       setDockerfileCandidates(found)
       if (found.length === 0) setDockerfileMsg('no Dockerfile found in repo')
       else if (found.length === 1) {
-        setDockerfilePath(found[0])
-        setDockerfileMsg(`loaded ${found[0]}`)
+        setDockerfilePath(found[0].path)
+        setDockerfile(found[0].content)
+        setDockerfileMsg(`loaded ${found[0].path}`)
       } else {
         setDockerfileMsg(`${found.length} candidates — pick one below`)
       }
@@ -348,7 +353,9 @@ function EnvModal({
           ) : (
             <>
               <div className="fld-head">
-                <span className="fld-hint mono">{dockerfilePath || 'no Dockerfile selected'}</span>
+                <span className="fld-hint mono">
+                  {dockerfile ? (dockerfilePath ? `from ${dockerfilePath}` : 'custom') : 'empty'}
+                </span>
                 <span className="spacer" />
                 <button
                   className="btn-link mono"
@@ -376,21 +383,28 @@ function EnvModal({
                     <div className="menu pick-menu">
                       {dockerfileCandidates.map((c) => (
                         <div
-                          key={c}
-                          className={`menu-item ${c === dockerfilePath ? 'active' : ''}`}
+                          key={c.path}
+                          className={`menu-item ${c.path === dockerfilePath ? 'active' : ''}`}
                           onMouseDown={(e) => {
                             e.preventDefault()
-                            setDockerfilePath(c)
+                            setDockerfilePath(c.path)
+                            setDockerfile(c.content)
+                            setDockerfileMsg(`loaded ${c.path}`)
                             setDockerfileMenu(false)
                           }}
                         >
-                          {c}
+                          {c.path}
                         </div>
                       ))}
                     </div>
                   )}
                 </div>
               )}
+              <CodeEditor
+                value={dockerfile}
+                onChange={setDockerfile}
+                placeholder={'FROM node:20\nWORKDIR /app\nCOPY . .\nRUN npm ci'}
+              />
               {dockerfileMsg && <div className="fld-hint mono">{dockerfileMsg}</div>}
               <div className="fld-hint">
                 gurt builds this Dockerfile using the repository as build context —
@@ -636,8 +650,19 @@ function RepoModal({
   )
 }
 
-/** Line-numbered JSON editor with a highlight overlay behind a transparent textarea. */
-function JsonEditor({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+/** Line-numbered code editor with an optional highlight overlay behind a
+ *  transparent textarea — plain text when `highlight` is omitted. */
+function CodeEditor({
+  value,
+  onChange,
+  highlight,
+  placeholder
+}: {
+  value: string
+  onChange: (v: string) => void
+  highlight?: (src: string) => JSX.Element[]
+  placeholder?: string
+}) {
   const taRef = useRef<HTMLTextAreaElement>(null)
   const hlRef = useRef<HTMLPreElement>(null)
   const gutRef = useRef<HTMLDivElement>(null)
@@ -663,20 +688,32 @@ function JsonEditor({ value, onChange }: { value: string; onChange: (v: string) 
       </div>
       <div className="jsoned-area">
         <pre ref={hlRef} className="jsoned-hl mono" aria-hidden>
-          {highlightJson(value)}
+          {highlight ? highlight(value) : value}
           {'\n'}
         </pre>
         <textarea
           ref={taRef}
           className="jsoned-input mono"
           spellCheck={false}
-          placeholder='{ "image": "mcr.microsoft.com/devcontainers/base:ubuntu" }'
+          placeholder={placeholder}
           value={value}
           onChange={(e) => onChange(e.target.value)}
           onScroll={sync}
         />
       </div>
     </div>
+  )
+}
+
+/** JSON-flavored `CodeEditor` — devcontainer.json inline overrides. */
+function JsonEditor({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  return (
+    <CodeEditor
+      value={value}
+      onChange={onChange}
+      highlight={highlightJson}
+      placeholder='{ "image": "mcr.microsoft.com/devcontainers/base:ubuntu" }'
+    />
   )
 }
 

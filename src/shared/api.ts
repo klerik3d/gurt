@@ -59,9 +59,10 @@ export interface GurtApi {
     ws: string,
     repo: string
   ): Promise<{ path: string; content: string } | null>
-  /** Dockerfile candidates for a repo with no devcontainer.json (repo root +
-   *  `.devcontainer/**`), for the env editor's Dockerfile-mode picker. */
-  discoverDockerfiles(ws: string, repo: string): Promise<string[]>
+  /** Dockerfile candidates (with content) for a repo with no devcontainer.json
+   *  (repo root + `.devcontainer/**`), loaded into the env editor's Dockerfile
+   *  field — editable there after loading, not re-read from the repo. */
+  discoverDockerfiles(ws: string, repo: string): Promise<{ path: string; content: string }[]>
   updateRepo(ws: string, repo: RepoConfig): Promise<void>
   removeRepo(ws: string, name: string): Promise<void>
   /** Register an env definition in the workspace. */
