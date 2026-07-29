@@ -1,4 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import type {
   ChatEntry,
   ChatPermission,
@@ -269,7 +271,9 @@ function Msg({ entry, sessionId }: { entry: ChatEntry; sessionId: string }) {
       return (
         <div className="msg">
           <span className="msg-dot" style={{ background: 'var(--accent)' }} />
-          <div className="msg-text">{entry.text}</div>
+          <div className="msg-text markdown">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{entry.text}</ReactMarkdown>
+          </div>
         </div>
       )
     case 'thought':
