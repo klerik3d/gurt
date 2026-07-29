@@ -7,7 +7,7 @@ import type { AgentConfig, SessionConfigOption } from './types'
 
 /** Effort levels offered by default; the live agent narrows these per model. */
 const EFFORT_OPTIONS = [
-  { value: 'default', name: 'Default' },
+  { value: 'default', name: 'Default', description: "the model's built-in effort for this task" },
   { value: 'low', name: 'Low' },
   { value: 'medium', name: 'Medium' },
   { value: 'high', name: 'High' },
