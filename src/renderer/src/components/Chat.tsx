@@ -32,6 +32,14 @@ const ACTIVITY_PING_INTERVAL_MS = 5_000
 const BLANKET_MODE_RE = /bypass|yolo/i
 const isBlanketMode = (m: SessionMode): boolean => BLANKET_MODE_RE.test(`${m.id} ${m.name}`)
 
+/** Word count × an average tokens-per-word ratio — not the real tokenizer, just
+ *  enough to animate the live thinking counter and the session size pill. */
+function approxTokens(text: string): number {
+  return Math.round(text.trim().split(/\s+/).filter(Boolean).length * 1.3)
+}
+
+const formatTokens = (n: number): string => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`)
+
 /** Height the pinned request bar overlays at the top of the feed — used both to
  *  decide when the real message counts as "scrolled out" and to clear the bar
  *  when jumping back to that message. */
@@ -47,6 +55,28 @@ export function Chat({ snapshot, sessionId }: { snapshot?: SessionSnapshot; sess
 
   const entries = snapshot?.entries ?? []
   const hasSnapshot = !!snapshot
+  // Real usage (ACP `usage_update`) wins when the adapter sends it; otherwise fall
+  // back to a rough word-count estimate over the log — not every adapter reports
+  // usage yet (e.g. codex-acp).
+  const usage = snapshot?.usage
+  const sessionTokens = entries.reduce((sum, e) => {
+    switch (e.kind) {
+      case 'user':
+      case 'agent':
+      case 'thought':
+      case 'system':
+        return sum + approxTokens(e.text)
+      case 'tool':
+        return sum + approxTokens(`${e.title} ${e.detail ?? ''}`)
+      case 'permission':
+        return sum + approxTokens(e.title)
+      default:
+        return sum
+    }
+  }, 0)
+  const sizeLabel = usage
+    ? `${formatTokens(usage.used)}/${formatTokens(usage.size)} tokens`
+    : `~${formatTokens(sessionTokens)} tokens`
   const lastUser = [...entries]
     .reverse()
     .find((e): e is ChatEntry & { kind: 'user' } => e.kind === 'user' && !!e.text.trim())
@@ -163,6 +193,7 @@ export function Chat({ snapshot, sessionId }: { snapshot?: SessionSnapshot; sess
           {info.task} / {info.title}
         </span>
         <span className="spacer" />
+        <span className="chat-pill">{sizeLabel}</span>
         <span className="chat-pill">
           {info.env}
           {info.repo ? ` · ${info.repo}` : ''}
@@ -177,8 +208,8 @@ export function Chat({ snapshot, sessionId }: { snapshot?: SessionSnapshot; sess
         )}
         <div className="feed" ref={feedRef} onScroll={onFeedScroll}>
           <div className="feed-inner" ref={innerRef}>
-            {entries.map((e) => (
-              <Msg key={e.id} entry={e} sessionId={sessionId} />
+            {entries.map((e, i) => (
+              <Msg key={e.id} entry={e} sessionId={sessionId} live={busy && i === entries.length - 1} />
             ))}
             {liveTail && <ThinkingLive label={liveTail} />}
           </div>
@@ -257,7 +288,15 @@ function PinnedRequest({
 
 // ---- feed entries ----
 
-function Msg({ entry, sessionId }: { entry: ChatEntry; sessionId: string }) {
+function Msg({
+  entry,
+  sessionId,
+  live
+}: {
+  entry: ChatEntry
+  sessionId: string
+  live?: boolean
+}) {
   switch (entry.kind) {
     case 'user':
       return (
@@ -277,7 +316,7 @@ function Msg({ entry, sessionId }: { entry: ChatEntry; sessionId: string }) {
         </div>
       )
     case 'thought':
-      return <ThoughtMsg text={entry.text} />
+      return <ThoughtMsg text={entry.text} live={live} />
     case 'tool':
       return <ToolMsg entry={entry} />
     case 'permission':
@@ -292,13 +331,13 @@ function Msg({ entry, sessionId }: { entry: ChatEntry; sessionId: string }) {
   }
 }
 
-function ThoughtMsg({ text }: { text: string }) {
+function ThoughtMsg({ text, live }: { text: string; live?: boolean }) {
   const [open, setOpen] = useState(false)
   return (
     <div className="msg">
       <span className="msg-dot" style={{ background: 'var(--yellow)' }} />
       <div className="thought-head mono" onClick={() => setOpen((o) => !o)}>
-        {open ? '▾' : '▸'} thinking…
+        {open ? '▾' : '▸'} thinking…{live ? ` · ~${approxTokens(text)} tokens` : ''}
       </div>
       {open && <div className="thought-text">{text}</div>}
     </div>
