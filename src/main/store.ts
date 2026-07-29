@@ -20,6 +20,7 @@ import type {
 } from '../shared/types'
 import { agentDef } from '../shared/agents'
 import { defaultAgentConfig } from '../shared/agentConfig'
+import { validateEnvConfig } from '../shared/envConfig'
 
 const pexecFile = promisify(execFile)
 
@@ -49,12 +50,9 @@ export const wsDir = (ws: string) => path.join(gurtRoot, ws)
 export const taskDir = (ws: string, task: string) => path.join(gurtRoot, ws, task)
 export const cloneDir = (ws: string, task: string, repo: string) =>
   path.join(gurtRoot, ws, task, repo)
-/** Host-side dir for an env's user-provided inline devcontainer config. */
+/** Host-side file the env's materialized devcontainer config is written to. */
 export const overrideConfigPath = (ws: string, env: string) =>
   path.join(gurtRoot, ws, '.devcontainers', `${env}.json`)
-/** Host-side file for an env's editable Dockerfile-mode build content. */
-export const overrideDockerfilePath = (ws: string, env: string) =>
-  path.join(gurtRoot, ws, '.devcontainers', `${env}.Dockerfile`)
 
 /** Path segments gurt itself owns inside the parent dir of each kind — a repo
  *  named `sessions` would collide with the task's session-log dir, etc.
@@ -157,10 +155,15 @@ export async function createWorkspace(name: string): Promise<void> {
 type LegacyRepo = RepoConfig & { devcontainer?: string }
 
 /**
- * Read workspace.json, lazily migrating the pre-split shape (no `envs`, repos
- * carrying `devcontainer`) once: one env per repo with the same name, seeded
- * with the repo's devcontainer + itself as default; repos are stripped of
- * `devcontainer`. The write-back happens only on that first read.
+ * Read workspace.json, lazily migrating stale shapes once (write-back on the
+ * first read that changes anything):
+ * - pre-split (no `envs`, repos carrying `devcontainer`): one env per repo with
+ *   the same name, seeded with the repo's devcontainer + itself as default;
+ *   repos are stripped of `devcontainer`.
+ * - old Dockerfile mode (`dockerfile` set, `devcontainer` blank): the env gets
+ *   a synthesized `{ build: { dockerfile: 'Dockerfile' } }` devcontainer —
+ *   dockerfile/dockerfilePath are kept as-is. An env with both fields blank
+ *   stays as-is (now invalid; the next start throws and the editor guides).
  */
 export async function getWorkspace(ws: string): Promise<WorkspaceFile> {
   const file = path.join(wsDir(ws), 'workspace.json')
@@ -172,15 +175,23 @@ export async function getWorkspace(ws: string): Promise<WorkspaceFile> {
     url,
     ...(credentialId ? { credentialId } : {})
   }))
-  if (Array.isArray(raw.envs)) return { repos, envs: raw.envs }
-  const envs: EnvConfig[] = legacyRepos.map((r) => ({
-    name: r.name,
-    devcontainer: r.devcontainer ?? '',
-    repo: r.name
-  }))
-  const migrated: WorkspaceFile = { repos, envs }
-  await saveWorkspace(ws, migrated)
-  return migrated
+  let migrated = !Array.isArray(raw.envs)
+  const envs: EnvConfig[] = Array.isArray(raw.envs)
+    ? raw.envs
+    : legacyRepos.map((r) => ({
+        name: r.name,
+        devcontainer: r.devcontainer ?? '',
+        repo: r.name
+      }))
+  for (const env of envs) {
+    if (env.dockerfile && !env.devcontainer?.trim()) {
+      env.devcontainer = JSON.stringify({ build: { dockerfile: 'Dockerfile' } }, null, 2)
+      migrated = true
+    }
+  }
+  const data: WorkspaceFile = { repos, envs }
+  if (migrated) await saveWorkspace(ws, data)
+  return data
 }
 
 /** Names of every workspace on disk (a dir under gurtRoot with a workspace.json). */
@@ -252,6 +263,8 @@ export async function removeRepo(ws: string, repo: string): Promise<void> {
 
 export async function addEnv(ws: string, env: EnvConfig): Promise<void> {
   validateName('env', env.name)
+  const invalid = validateEnvConfig(env)
+  if (invalid) throw new Error(`env "${env.name}": ${invalid}`)
   const data = await getWorkspace(ws)
   if (data.envs.some((e) => e.name === env.name))
     throw new Error(`env "${env.name}" already exists in "${ws}"`)
@@ -262,6 +275,8 @@ export async function addEnv(ws: string, env: EnvConfig): Promise<void> {
 /** Update an env definition. The name is immutable — it only matches an
  *  existing env; renaming is not supported. */
 export async function updateEnv(ws: string, env: EnvConfig): Promise<void> {
+  const invalid = validateEnvConfig(env)
+  if (invalid) throw new Error(`env "${env.name}": ${invalid}`)
   const data = await getWorkspace(ws)
   const i = data.envs.findIndex((e) => e.name === env.name)
   if (i < 0) throw new Error(`env "${env.name}" not found in "${ws}"`)

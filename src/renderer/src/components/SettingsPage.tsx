@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { AgentInstance, AgentsFile, EnvConfig, RepoConfig, Tree } from '../../../shared/types'
+import type { EnvImageStatus } from '../../../shared/api'
+import { parseEnvDevcontainer, validateEnvConfig } from '../../../shared/envConfig'
 import type { CredentialEntry, CredentialKind } from '../../../shared/credentials'
 import {
   CREDENTIAL_KINDS,
@@ -77,9 +79,62 @@ function stripProtocol(url: string): string {
 function EnvironmentsSection({ tree, ws }: { tree: Tree | null; ws: string | null }) {
   const [editing, setEditing] = useState<EnvConfig | null>(null)
   const [adding, setAdding] = useState(false)
+  const [statuses, setStatuses] = useState<Record<string, EnvImageStatus>>({})
+  const [building, setBuilding] = useState<Set<string>>(new Set())
+  const [buildLogs, setBuildLogs] = useState<Record<string, string[]>>({})
+  const [buildErrors, setBuildErrors] = useState<Record<string, string>>({})
   const wsData = tree?.workspaces.find((w) => w.name === ws)
   const envs = wsData?.envs ?? []
   const repos = wsData?.repos ?? []
+
+  const loadStatus = (env: string) => {
+    if (!ws) return
+    window.gurt
+      .envImageStatus(ws, env)
+      .then((s) => setStatuses((prev) => ({ ...prev, [env]: s })))
+      .catch(() => {})
+  }
+
+  // Badges load lazily when the section opens; refreshed per-env after a build.
+  const envNames = envs.map((e) => e.name).join('\n')
+  useEffect(() => {
+    for (const name of envNames ? envNames.split('\n') : []) loadStatus(name)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ws, envNames])
+
+  // Build-log tail: main streams `provision.log` with key `env-build:<ws>/<env>`.
+  useEffect(() => {
+    if (!ws) return
+    const prefix = `env-build:${ws}/`
+    return window.gurt.onProvisionLog(({ key, line }) => {
+      if (!key.startsWith(prefix)) return
+      const env = key.slice(prefix.length)
+      setBuildLogs((prev) => ({ ...prev, [env]: [...(prev[env] ?? []).slice(-20), line] }))
+    })
+  }, [ws])
+
+  const build = async (env: string) => {
+    if (!ws) return
+    setBuilding((prev) => new Set(prev).add(env))
+    setBuildLogs((prev) => ({ ...prev, [env]: [] }))
+    setBuildErrors((prev) => ({ ...prev, [env]: '' }))
+    try {
+      await window.gurt.envBuildImage(ws, env)
+      setBuildLogs((prev) => ({ ...prev, [env]: [] }))
+    } catch (e) {
+      setBuildErrors((prev) => ({
+        ...prev,
+        [env]: e instanceof Error ? e.message : String(e)
+      }))
+    } finally {
+      setBuilding((prev) => {
+        const next = new Set(prev)
+        next.delete(env)
+        return next
+      })
+      loadStatus(env)
+    }
+  }
 
   return (
     <>
@@ -97,22 +152,54 @@ function EnvironmentsSection({ tree, ws }: { tree: Tree | null; ws: string | nul
         </button>
       </div>
       <div className="set-list">
-        {envs.map((e) => (
-          <div key={e.name} className="set-row">
-            <span className="set-row-label">{e.name}</span>
-            <span className="set-row-url mono">
-              {e.repo ? e.repo : 'no default repo'}
-              {e.dockerfile
-                ? ` · Dockerfile${e.dockerfilePath ? `: ${e.dockerfilePath}` : ''}`
-                : e.devcontainer
-                  ? ' · inline devcontainer'
-                  : ''}
-            </span>
-            <button className="btn-link" onClick={() => setEditing(e)}>
-              edit
-            </button>
-          </div>
-        ))}
+        {envs.map((e) => {
+          const st = statuses[e.name]
+          const isBuilding = building.has(e.name)
+          const tail = buildLogs[e.name] ?? []
+          const buildError = buildErrors[e.name]
+          return (
+            <div key={e.name}>
+              <div className="set-row">
+                <span className="set-row-label">{e.name}</span>
+                <span className="set-row-url mono">
+                  {e.repo ? e.repo : 'no default repo'}
+                  {e.dockerfile
+                    ? ` · Dockerfile${e.dockerfilePath ? `: ${e.dockerfilePath}` : ''}`
+                    : ''}
+                </span>
+                {st?.state === 'exists' && (
+                  <span className="tag tag-green">image ✓ {st.tag}</span>
+                )}
+                {st?.state === 'missing' && <span className="tag tag-red">image ✗ {st.tag}</span>}
+                {st?.state === 'no-repo' && (
+                  <span className="env-image-hint mono">no repo to build from</span>
+                )}
+                {st?.state === 'invalid' && (
+                  <span className="env-image-hint mono">invalid config</span>
+                )}
+                {(st?.state === 'missing' || st?.state === 'exists') &&
+                  (isBuilding ? (
+                    <span className="env-building mono">building…</span>
+                  ) : (
+                    <button className="btn-link" onClick={() => void build(e.name)}>
+                      build
+                    </button>
+                  ))}
+                <button className="btn-link" onClick={() => setEditing(e)}>
+                  edit
+                </button>
+              </div>
+              {(isBuilding || buildError) && (tail.length > 0 || buildError) && (
+                <div className="env-build-log mono">
+                  {tail.slice(-5).map((l, i) => (
+                    <div key={i}>{l}</div>
+                  ))}
+                  {buildError && <div className="error">{buildError}</div>}
+                </div>
+              )}
+            </div>
+          )
+        })}
         {envs.length === 0 && (
           <div className="tp-dashed">no environments yet — add one to run sessions</div>
         )}
@@ -126,6 +213,8 @@ function EnvironmentsSection({ tree, ws }: { tree: Tree | null; ws: string | nul
           onClose={() => {
             setEditing(null)
             setAdding(false)
+            // The config may have changed — recompute the badges.
+            for (const e of envs) loadStatus(e.name)
           }}
         />
       )}
@@ -157,9 +246,6 @@ function EnvModal({
   const repoRef = useRef<HTMLDivElement>(null)
   useOutsideClose(repoMenu, repoRef, () => setRepoMenu(false))
 
-  const [mode, setMode] = useState<'devcontainer' | 'dockerfile'>(
-    initial?.dockerfile ? 'dockerfile' : 'devcontainer'
-  )
   const [dockerfile, setDockerfile] = useState(initial?.dockerfile ?? '')
   const [dockerfilePath, setDockerfilePath] = useState(initial?.dockerfilePath ?? '')
   const [dockerfileCandidates, setDockerfileCandidates] = useState<
@@ -171,14 +257,18 @@ function EnvModal({
   const dockerfileRef = useRef<HTMLDivElement>(null)
   useOutsideClose(dockerfileMenu, dockerfileRef, () => setDockerfileMenu(false))
 
-  const valid = !!name.trim() && (mode === 'devcontainer' || !!dockerfile.trim())
+  // The devcontainer is the single runtime description; the Dockerfile section
+  // exists only while the (parseable) config carries a `build` section.
+  const hasBuild = !!parseEnvDevcontainer(devcontainer).build
   const draft: EnvConfig = {
     name: name.trim(),
-    devcontainer: mode === 'devcontainer' ? devcontainer : '',
-    dockerfile: mode === 'dockerfile' ? dockerfile : undefined,
-    dockerfilePath: mode === 'dockerfile' ? dockerfilePath || undefined : undefined,
+    devcontainer,
+    dockerfile: hasBuild && dockerfile ? dockerfile : undefined,
+    dockerfilePath: hasBuild && dockerfile ? dockerfilePath || undefined : undefined,
     repo: repo ?? undefined
   }
+  const cfgError = validateEnvConfig(draft)
+  const valid = !!name.trim() && cfgError === null
   const repoUrl = repo ? repos.find((r) => r.name === repo)?.url : undefined
 
   const discover = async () => {
@@ -189,7 +279,13 @@ function EnvModal({
       const found = await window.gurt.discoverDevcontainer(ws, repo)
       if (found) {
         setDevcontainer(found.content)
-        setDiscoverMsg(`loaded ${found.path}`)
+        if (found.dockerfile) {
+          setDockerfile(found.dockerfile.content)
+          setDockerfilePath(found.dockerfile.path)
+          setDiscoverMsg(`loaded ${found.path} + ${found.dockerfile.path}`)
+        } else {
+          setDiscoverMsg(`loaded ${found.path}`)
+        }
       } else {
         setDiscoverMsg('no devcontainer.json found in repo')
       }
@@ -314,107 +410,91 @@ function EnvModal({
         <div className="fld">
           <div className="fld-head">
             <span className="seclabel">DEVCONTAINER</span>
+            <span className="fld-hint mono">{devcontainer.trim() ? '' : 'required'}</span>
             <span className="spacer" />
             <button
-              type="button"
-              className={`chip-btn ${mode === 'devcontainer' ? 'on' : ''}`}
-              onClick={() => setMode('devcontainer')}
+              className="btn-link mono"
+              disabled={!repoUrl || discovering}
+              title={!repoUrl ? 'set a default repository first' : undefined}
+              onClick={discover}
             >
-              devcontainer.json
-            </button>
-            <button
-              type="button"
-              className={`chip-btn ${mode === 'dockerfile' ? 'on' : ''}`}
-              onClick={() => setMode('dockerfile')}
-            >
-              Dockerfile
+              {discovering ? 'detecting…' : '⤢ detect from repo'}
             </button>
           </div>
-
-          {mode === 'devcontainer' ? (
-            <>
-              <div className="fld-head">
-                <span className="fld-hint mono">
-                  {devcontainer ? 'inline override' : "empty — repo's own config"}
-                </span>
-                <span className="spacer" />
-                <button
-                  className="btn-link mono"
-                  disabled={!repoUrl || discovering}
-                  title={!repoUrl ? 'set a default repository first' : undefined}
-                  onClick={discover}
-                >
-                  {discovering ? 'detecting…' : '⤢ auto-detect from repo'}
-                </button>
-              </div>
-              <JsonEditor value={devcontainer} onChange={setDevcontainer} />
-              {discoverMsg && <div className="fld-hint mono">{discoverMsg}</div>}
-            </>
-          ) : (
-            <>
-              <div className="fld-head">
-                <span className="fld-hint mono">
-                  {dockerfile ? (dockerfilePath ? `from ${dockerfilePath}` : 'custom') : 'empty'}
-                </span>
-                <span className="spacer" />
-                <button
-                  className="btn-link mono"
-                  disabled={!repoUrl || detectingDockerfiles}
-                  title={!repoUrl ? 'set a default repository first' : undefined}
-                  onClick={detectDockerfiles}
-                >
-                  {detectingDockerfiles ? 'detecting…' : '⤢ detect Dockerfiles in repo'}
-                </button>
-              </div>
-              {dockerfileCandidates && dockerfileCandidates.length > 1 && (
-                <div className="pick-wrap" ref={dockerfileRef}>
-                  <button
-                    type="button"
-                    className="pick-row"
-                    onClick={() => setDockerfileMenu((o) => !o)}
-                  >
-                    <span className={`pick-value mono ${dockerfilePath ? '' : 'faint'}`}>
-                      {dockerfilePath || 'choose a Dockerfile'}
-                    </span>
-                    <span className="spacer" />
-                    <Icon name="chevron" size={12} className="faint" style={{ flex: 'none' }} />
-                  </button>
-                  {dockerfileMenu && (
-                    <div className="menu pick-menu">
-                      {dockerfileCandidates.map((c) => (
-                        <div
-                          key={c.path}
-                          className={`menu-item ${c.path === dockerfilePath ? 'active' : ''}`}
-                          onMouseDown={(e) => {
-                            e.preventDefault()
-                            setDockerfilePath(c.path)
-                            setDockerfile(c.content)
-                            setDockerfileMsg(`loaded ${c.path}`)
-                            setDockerfileMenu(false)
-                          }}
-                        >
-                          {c.path}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-              <CodeEditor
-                value={dockerfile}
-                onChange={setDockerfile}
-                placeholder={'FROM node:20\nWORKDIR /app\nCOPY . .\nRUN npm ci'}
-              />
-              {dockerfileMsg && <div className="fld-hint mono">{dockerfileMsg}</div>}
-              <div className="fld-hint">
-                gurt builds this Dockerfile using the repository as build context —
-                COPY/ADD paths resolve exactly as in the repo; the built image is
-                cached and reused until the repo's content changes.
-              </div>
-            </>
-          )}
+          <JsonEditor value={devcontainer} onChange={setDevcontainer} />
+          {discoverMsg && <div className="fld-hint mono">{discoverMsg}</div>}
         </div>
 
+        {hasBuild && (
+          <div className="fld">
+            <div className="fld-head">
+              <span className="seclabel">DOCKERFILE</span>
+              <span className="fld-hint mono">
+                {dockerfile
+                  ? dockerfilePath
+                    ? `from ${dockerfilePath}`
+                    : 'custom'
+                  : 'required by the build section'}
+              </span>
+              <span className="spacer" />
+              <button
+                className="btn-link mono"
+                disabled={!repoUrl || detectingDockerfiles}
+                title={!repoUrl ? 'set a default repository first' : undefined}
+                onClick={detectDockerfiles}
+              >
+                {detectingDockerfiles ? 'detecting…' : '⤢ detect Dockerfiles in repo'}
+              </button>
+            </div>
+            {dockerfileCandidates && dockerfileCandidates.length > 1 && (
+              <div className="pick-wrap" ref={dockerfileRef}>
+                <button
+                  type="button"
+                  className="pick-row"
+                  onClick={() => setDockerfileMenu((o) => !o)}
+                >
+                  <span className={`pick-value mono ${dockerfilePath ? '' : 'faint'}`}>
+                    {dockerfilePath || 'choose a Dockerfile'}
+                  </span>
+                  <span className="spacer" />
+                  <Icon name="chevron" size={12} className="faint" style={{ flex: 'none' }} />
+                </button>
+                {dockerfileMenu && (
+                  <div className="menu pick-menu">
+                    {dockerfileCandidates.map((c) => (
+                      <div
+                        key={c.path}
+                        className={`menu-item ${c.path === dockerfilePath ? 'active' : ''}`}
+                        onMouseDown={(e) => {
+                          e.preventDefault()
+                          setDockerfilePath(c.path)
+                          setDockerfile(c.content)
+                          setDockerfileMsg(`loaded ${c.path}`)
+                          setDockerfileMenu(false)
+                        }}
+                      >
+                        {c.path}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+            <CodeEditor
+              value={dockerfile}
+              onChange={setDockerfile}
+              placeholder={'FROM node:20\nWORKDIR /app\nCOPY . .\nRUN npm ci'}
+            />
+            {dockerfileMsg && <div className="fld-hint mono">{dockerfileMsg}</div>}
+            <div className="fld-hint">
+              gurt builds this Dockerfile in a temporary snapshot of the repo at HEAD (build
+              context = repo root); the image is cached and reused until the Dockerfile, the
+              build args, or the repo's committed content change.
+            </div>
+          </div>
+        )}
+
+        {cfgError && <div className="fld-hint mono">⚠ {cfgError}</div>}
         {error && <div className="error">{error}</div>}
       </div>
       <div className="modal-foot">
