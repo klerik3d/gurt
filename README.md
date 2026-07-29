@@ -123,6 +123,23 @@ npm run dev        # requires docker daemon for env start
 
 `GURT_ROOT` env var overrides `~/.gurt` (used by tests).
 
+## Packaging (alpha builds)
+
+```bash
+npm run dist       # → release/gurt-<version>-arm64.dmg + release/mac-arm64/gurt.app
+```
+
+Config lives in `electron-builder.yml`. Builds are **unsigned**: they run on the
+machine that produced them, but a Mac that downloads the dmg will refuse to open
+it until the quarantine flag is cleared:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/gurt.app
+```
+
+The devcontainer CLI is kept outside `app.asar` (`asarUnpack`) because gurt
+spawns it as a child process — only Electron's own fs can read from an asar.
+
 ## Dev container
 
 `.devcontainer/` provides a Node 20 environment for working on gurt itself.

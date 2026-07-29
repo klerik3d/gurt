@@ -446,6 +446,11 @@ export function NewSessionModal({
   const cfgOptions = (agentConfig?.configOptions ?? []).filter((o) => o.category !== 'mode')
   const cfgLabel = (o: SessionConfigOption) =>
     o.category === 'model' ? 'MODEL' : o.category === 'thought_level' ? 'EFFORT' : o.name.toUpperCase()
+  // What the currently-picked value of a select option actually means — shown under
+  // the chips so e.g. "Default" doesn't sit unexplained (it's whatever the agent
+  // itself reports for that entry).
+  const selectedDescription = (opt: SessionConfigOption): string | undefined =>
+    opt.options?.find((o) => o.value === effective(opt))?.description ?? undefined
 
   const repoCfg = repo ? repos.find((r) => r.name === repo) : undefined
   const gitResolution = repoCfg ? resolveForRepo(credentials, repoCfg) : null
@@ -691,9 +696,12 @@ export function NewSessionModal({
             <span className="pick-meta">{agentName(agents ?? {}, agent) || 'none'}</span>
           </PickRow>
 
-          {/* model / effort / fast — from the agent's cached config surface */}
+          {/* model / effort / fast — from the agent's cached config surface. Grouped
+              and labeled separately from "Permissions" below: these pick who the
+              agent is and how it thinks, not what it's allowed to touch. */}
           {cfgOptions.length > 0 && (
             <div className="ns-config">
+              <span className="seclabel">AGENT CONFIG</span>
               {cfgOptions.map((opt) =>
                 opt.type === 'select' ? (
                   <div key={opt.id} className="hc-block">
@@ -711,6 +719,9 @@ export function NewSessionModal({
                         </button>
                       ))}
                     </div>
+                    {selectedDescription(opt) && (
+                      <div className="hc-note">{selectedDescription(opt)}</div>
+                    )}
                   </div>
                 ) : (
                   <div key={opt.id} className="hc-block">
@@ -763,7 +774,7 @@ export function NewSessionModal({
                 className="faint"
                 style={{ flex: 'none', transform: harnessOpen ? undefined : 'rotate(-90deg)' }}
               />
-              <span className="pick-value">Harness config</span>
+              <span className="pick-value">Permissions</span>
               <span className="spacer" />
               <span className="pick-meta">{harnessSummary}</span>
             </button>

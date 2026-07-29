@@ -1,0 +1,38 @@
+# Packaging config for `npm run dist` (alpha preview builds).
+# The app itself is built by electron-vite into out/ first.
+appId: dev.gurt.app
+productName: gurt
+directories:
+  output: release
+
+# Start from the default set (which prunes node_modules to production deps)
+# and drop everything that is source or scratch.
+files:
+  - "**/*"
+  - "!src/**"
+  - "!scripts/**"
+  - "!docs/**"
+  - "!archive/**"
+  - "!smoke-shots/**"
+  - "!tmp/**"
+  - "!release/**"
+  - "!*.md"
+  - "!electron.vite.config.ts"
+  - "!tsconfig.*.json"
+
+# Two things must exist as real files on disk, not inside app.asar:
+#  - the devcontainer CLI, because we spawn it as a separate process
+#    (see devcontainerCliPath() in src/main/provision.ts)
+#  - the icon, which is handed to nativeImage/BrowserWindow by path
+asarUnpack:
+  - node_modules/@devcontainers/cli/**
+  - resources/**
+
+mac:
+  icon: resources/icon.png
+  category: public.app-category.developer-tools
+  target:
+    - dmg
+  # Alpha builds are unsigned. They run fine locally; on another Mac the
+  # recipient has to clear the download quarantine (see README).
+  identity: null

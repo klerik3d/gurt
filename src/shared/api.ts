@@ -76,6 +76,8 @@ export interface GurtApi {
   getCommitDiff(ws: string, task: string, repo: string, sha: string): Promise<string>
   changesCommit(ws: string, task: string, repo: string, message: string): Promise<void>
   changesPush(ws: string, task: string, repo: string): Promise<void>
+  /** Merge the fetched default branch into the task branch; conflicts surface as `conflicted`. */
+  changesUpdateFromMain(ws: string, task: string, repo: string): Promise<void>
   /** Newest change proposal for this env, if any — the Commit modal prefills from it. */
   latestProposal(ws: string, task: string, repo: string): Promise<StoredProposal | undefined>
   /** Open the browser at the forge's compare URL (impl: `prUrl` + `shell.openExternal`). */
@@ -145,6 +147,7 @@ const METHODS = {
   getCommitDiff: true,
   changesCommit: true,
   changesPush: true,
+  changesUpdateFromMain: true,
   latestProposal: true,
   changesOpenPr: true,
   changesOpenVscode: true,
