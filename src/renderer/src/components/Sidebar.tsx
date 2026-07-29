@@ -442,7 +442,9 @@ export function NewSessionModal({
     setConfigValues((prev) => ({ ...prev, [opt.id]: value }))
   // Effective value of an option: the user's pick, else the agent's current.
   const effective = (opt: SessionConfigOption) => configValues[opt.id] ?? opt.currentValue
-  // Model/effort/fast live here; Mode is expressed via the auto/manual toggle.
+  // Model/effort/fast — rendered inside Harness config, alongside Mode/Git
+  // access/MCP/Skills; they're all part of the same "how does this session run"
+  // surface. Mode itself is expressed via the auto/manual toggle, not this list.
   const cfgOptions = (agentConfig?.configOptions ?? []).filter((o) => o.category !== 'mode')
   const cfgLabel = (o: SessionConfigOption) =>
     o.category === 'model' ? 'MODEL' : o.category === 'thought_level' ? 'EFFORT' : o.name.toUpperCase()
@@ -451,6 +453,8 @@ export function NewSessionModal({
   // itself reports for that entry).
   const selectedDescription = (opt: SessionConfigOption): string | undefined =>
     opt.options?.find((o) => o.value === effective(opt))?.description ?? undefined
+  const selectedName = (opt: SessionConfigOption): string | undefined =>
+    opt.options?.find((o) => o.value === effective(opt))?.name
 
   const repoCfg = repo ? repos.find((r) => r.name === repo) : undefined
   const gitResolution = repoCfg ? resolveForRepo(credentials, repoCfg) : null
@@ -507,7 +511,17 @@ export function NewSessionModal({
   const ready = !!taskName && !!env && !!agent && !!prompt.trim()
   const canRun = ready && !!repo
   const mcpCount = Object.keys(mcp).length
-  const harnessSummary = `${autoAllow ? 'auto' : 'manual'} · ${mcpCount} mcp`
+  // Model/effort surface in the summary so they stay legible while the panel's collapsed.
+  const modelOpt = cfgOptions.find((o) => o.category === 'model')
+  const effortOpt = cfgOptions.find((o) => o.category === 'thought_level')
+  const harnessSummary = [
+    modelOpt && selectedName(modelOpt),
+    effortOpt && selectedName(effortOpt),
+    autoAllow ? 'auto' : 'manual',
+    `${mcpCount} mcp`
+  ]
+    .filter(Boolean)
+    .join(' · ')
 
   const taskStatusTone = (t: { sessions: SessionInfo[] }): 'green' | 'yellow' | 'outline' => {
     if (t.sessions.some((s) => s.busy || s.awaitingInput)) return 'yellow'
@@ -696,76 +710,6 @@ export function NewSessionModal({
             <span className="pick-meta">{agentName(agents ?? {}, agent) || 'none'}</span>
           </PickRow>
 
-          {/* model / effort / fast — from the agent's cached config surface. Grouped
-              and labeled separately from "Permissions" below: these pick who the
-              agent is and how it thinks, not what it's allowed to touch. */}
-          {cfgOptions.length > 0 && (
-            <div className="ns-config">
-              <span className="seclabel">AGENT CONFIG</span>
-              {cfgOptions.map((opt) =>
-                opt.type === 'select' ? (
-                  <div key={opt.id} className="hc-block">
-                    <span className="seclabel">{cfgLabel(opt)}</span>
-                    <div className="chip-row">
-                      {(opt.options ?? []).map((o) => (
-                        <button
-                          key={o.value}
-                          type="button"
-                          className={`chip-btn ${effective(opt) === o.value ? 'on' : ''}`}
-                          title={o.description ?? undefined}
-                          onClick={() => setConfig(opt, o.value)}
-                        >
-                          {o.name}
-                        </button>
-                      ))}
-                    </div>
-                    {selectedDescription(opt) && (
-                      <div className="hc-note">{selectedDescription(opt)}</div>
-                    )}
-                  </div>
-                ) : (
-                  <div key={opt.id} className="hc-block">
-                    <span className="seclabel">{cfgLabel(opt)}</span>
-                    <div className="chip-row">
-                      <button
-                        type="button"
-                        className={`chip-btn ${effective(opt) === true ? 'on' : ''}`}
-                        onClick={() => setConfig(opt, true)}
-                      >
-                        on
-                      </button>
-                      <button
-                        type="button"
-                        className={`chip-btn ${effective(opt) === false ? 'on' : ''}`}
-                        onClick={() => setConfig(opt, false)}
-                      >
-                        off
-                      </button>
-                    </div>
-                  </div>
-                )
-              )}
-              {(agentConfig?.commands.length ?? 0) > 0 && (
-                <div className="hc-block">
-                  <span className="seclabel">COMMANDS</span>
-                  <div className="ns-cmds">
-                    {agentConfig!.commands.map((c) => (
-                      <button
-                        key={c.name}
-                        type="button"
-                        className="ns-cmd"
-                        title={c.description ?? undefined}
-                        onClick={() => setPrompt((p) => (p ? `${p} /${c.name} ` : `/${c.name} `))}
-                      >
-                        /{c.name}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-
           <div className={`hc ${harnessOpen ? 'open' : ''}`}>
             <button type="button" className="pick-row hc-head" onClick={() => setHarnessOpen((o) => !o)}>
               <Icon
@@ -774,12 +718,59 @@ export function NewSessionModal({
                 className="faint"
                 style={{ flex: 'none', transform: harnessOpen ? undefined : 'rotate(-90deg)' }}
               />
-              <span className="pick-value">Permissions</span>
+              <span className="pick-value">Harness config</span>
               <span className="spacer" />
               <span className="pick-meta">{harnessSummary}</span>
             </button>
             {harnessOpen && (
               <div className="hc-body">
+                {/* model / effort / fast — from the agent's cached config surface. The
+                    agent's "default" entry (e.g. effort's unlabeled "Default") isn't a
+                    real choice, it's the absence of one — omitted here so "nothing
+                    selected" reads as itself instead of a mystery option. */}
+                {cfgOptions.map((opt) =>
+                  opt.type === 'select' ? (
+                    <div key={opt.id} className="hc-block">
+                      <span className="seclabel">{cfgLabel(opt)}</span>
+                      <div className="chip-row">
+                        {(opt.options ?? []).filter((o) => o.value !== 'default').map((o) => (
+                          <button
+                            key={o.value}
+                            type="button"
+                            className={`chip-btn ${effective(opt) === o.value ? 'on' : ''}`}
+                            title={o.description ?? undefined}
+                            onClick={() => setConfig(opt, o.value)}
+                          >
+                            {o.name}
+                          </button>
+                        ))}
+                      </div>
+                      {selectedDescription(opt) && (
+                        <div className="hc-note">{selectedDescription(opt)}</div>
+                      )}
+                    </div>
+                  ) : (
+                    <div key={opt.id} className="hc-block">
+                      <span className="seclabel">{cfgLabel(opt)}</span>
+                      <div className="chip-row">
+                        <button
+                          type="button"
+                          className={`chip-btn ${effective(opt) === true ? 'on' : ''}`}
+                          onClick={() => setConfig(opt, true)}
+                        >
+                          on
+                        </button>
+                        <button
+                          type="button"
+                          className={`chip-btn ${effective(opt) === false ? 'on' : ''}`}
+                          onClick={() => setConfig(opt, false)}
+                        >
+                          off
+                        </button>
+                      </div>
+                    </div>
+                  )
+                )}
                 <div className="hc-block">
                   <span className="seclabel">MODE</span>
                   <div className="chip-row">
