@@ -104,8 +104,94 @@ export function run(cmd: string, args: string[], log: LogSink, opts: RunOpts = {
   })
 }
 
-export async function ensureClone(ref: EnvRef, repo: RepoConfig, log: LogSink): Promise<string> {
+/** True if `refs/heads/<branch>` exists in the clone. Fully qualified on
+ *  purpose: the short name would also match a tag or a remote-tracking ref
+ *  through rev-parse's DWIM rules, and the answer decides create-vs-switch. */
+async function localBranchExists(
+  dir: string,
+  gitArgs: string[],
+  env: NodeJS.ProcessEnv,
+  branch: string
+): Promise<boolean> {
+  const out = await run(
+    'git',
+    ['-C', dir, ...gitArgs, 'rev-parse', '--verify', '--quiet', `refs/heads/${branch}`],
+    () => {},
+    { env, okCodes: [0, 1] }
+  )
+  return out.trim().length > 0
+}
+
+/** Short name of the checked-out branch, or '' when HEAD is detached. */
+async function currentBranch(
+  dir: string,
+  gitArgs: string[],
+  env: NodeJS.ProcessEnv
+): Promise<string> {
+  const out = await run(
+    'git',
+    ['-C', dir, ...gitArgs, 'symbolic-ref', '--quiet', '--short', 'HEAD'],
+    () => {},
+    { env, okCodes: [0, 1] }
+  )
+  return out.trim()
+}
+
+/** Files under the git dir that mark an operation git left half-finished. A
+ *  rebase/cherry-pick that stopped on conflicts also detaches HEAD, so the
+ *  branch check alone would not recognise it. */
+const IN_PROGRESS_MARKERS = [
+  'MERGE_HEAD',
+  'CHERRY_PICK_HEAD',
+  'REVERT_HEAD',
+  'rebase-merge',
+  'rebase-apply'
+]
+
+/** True while the clone is mid-merge / mid-rebase / mid-cherry-pick. */
+async function operationInProgress(
+  dir: string,
+  gitArgs: string[],
+  env: NodeJS.ProcessEnv
+): Promise<boolean> {
+  const gitDir = (
+    await run('git', ['-C', dir, ...gitArgs, 'rev-parse', '--absolute-git-dir'], () => {}, {
+      env
+    }).catch(() => '')
+  ).trim()
+  if (!gitDir) return false
+  return IN_PROGRESS_MARKERS.some((name) => existsSync(path.join(gitDir, name)))
+}
+
+/** Clone provisioning in flight, keyed by clone dir. One clone is shared by
+ *  every env of a task (`~/.gurt/<ws>/<task>/<repo>/`), so two sessions of the
+ *  same task starting at once would otherwise race over it: the second sees the
+ *  half-written dir as an existing clone, and both run `checkout -b`, the loser
+ *  failing with `a branch named 'gurt/<task>' already exists`. Callers queue
+ *  behind each other instead — the body is idempotent, so the follower just
+ *  finds the finished clone. */
+const clonesInFlight = new Map<string, Promise<string>>()
+
+export function ensureClone(ref: EnvRef, repo: RepoConfig, log: LogSink): Promise<string> {
   const dir = cloneDir(ref.workspace, ref.task, repo.name)
+  const prev = clonesInFlight.get(dir)
+  // A failed predecessor must not fail this caller — it re-runs the work itself.
+  const p = (prev ? prev.catch(() => {}) : Promise.resolve()).then(() =>
+    provisionClone(dir, ref, repo, log)
+  )
+  clonesInFlight.set(dir, p)
+  p.catch(() => {}).finally(() => {
+    if (clonesInFlight.get(dir) === p) clonesInFlight.delete(dir)
+  })
+  return p
+}
+
+async function provisionClone(
+  dir: string,
+  ref: EnvRef,
+  repo: RepoConfig,
+  log: LogSink
+): Promise<string> {
   // Same git-native contract as the container: a gurt-managed token clones over
   // https even from an ssh URL, and no operation blocks on a credential prompt.
   const { env, gitArgs } = await hostGitAccess(repo, await listCredentials())
@@ -115,12 +201,24 @@ export async function ensureClone(ref: EnvRef, repo: RepoConfig, log: LogSink): 
     await run('git', [...gitArgs, 'clone', '--', repo.url, dir], log, { env })
   }
   const branch = `gurt/${ref.task}`
-  try {
-    await run('git', ['-C', dir, ...gitArgs, 'rev-parse', '--verify', branch], () => {}, { env })
-    await run('git', ['-C', dir, ...gitArgs, 'checkout', branch], log, { env })
-  } catch {
-    await run('git', ['-C', dir, ...gitArgs, 'checkout', '-b', branch], log, { env })
+  // Nothing to check out when we are already on the task branch — and skipping
+  // that no-op is what keeps a conflicted clone startable: with unmerged index
+  // entries git refuses even a same-branch checkout ("you need to resolve your
+  // current index first"). Without this, an `update from main` that conflicted
+  // would leave the task unable to start any agent, including one asked to
+  // resolve the conflict. Same for a half-finished merge/rebase (which also
+  // detaches HEAD): the tree is left exactly as it is, for the agent to finish.
+  if ((await currentBranch(dir, gitArgs, env)) === branch) return dir
+  if (await operationInProgress(dir, gitArgs, env)) {
+    log(`git operation in progress in ${dir} — leaving the tree as is`)
+    return dir
   }
+  // Create vs switch, never one masking the other: a `checkout` that fails on
+  // its own (dirty tree, missing ref) must surface that error, not retry as
+  // `checkout -b` and report the misleading "branch already exists".
+  if (await localBranchExists(dir, gitArgs, env, branch))
+    await run('git', ['-C', dir, ...gitArgs, 'checkout', branch], log, { env })
+  else await run('git', ['-C', dir, ...gitArgs, 'checkout', '-b', branch], log, { env })
   return dir
 }
 
