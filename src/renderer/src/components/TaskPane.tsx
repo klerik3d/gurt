@@ -178,9 +178,12 @@ function ChangesSection({
   /** repo with an action in flight — its buttons are disabled. */
   const [busyRepo, setBusyRepo] = useState<string | null>(null)
 
-  // A repo renders while it has work to do or work awaiting merge; an integrated
-  // thread is gone from the panel until a new commit reopens it.
-  const rendered = (changes ?? []).filter((r) => isActionable(r) || isDelivered(r))
+  // A repo renders while it has work to do, work awaiting merge, or is behind
+  // its default branch; an integrated thread with nothing behind is gone from
+  // the panel until a new commit (or the default branch moving) reopens it.
+  const rendered = (changes ?? []).filter(
+    (r) => isActionable(r) || isDelivered(r) || r.behind > 0
+  )
   const flat = rendered.length === 1
 
   const act = async (repo: string, fn: () => Promise<void>) => {
@@ -261,6 +264,30 @@ function ChangesSection({
                   onClick={() => setCommitRepo(r.repo)}
                 >
                   Commit
+                </button>
+              </div>
+            </div>
+          )}
+          {r.behind > 0 && (
+            <div className="changes-block">
+              <div className="block-head">
+                {r.behind} commit{r.behind === 1 ? '' : 's'} behind {r.defaultBranch}
+                {r.conflicted && (
+                  <span className="tag tag-red" style={{ marginLeft: 6 }}>
+                    conflicts
+                  </span>
+                )}
+              </div>
+              <div className="changes-actions">
+                <button
+                  className="btn btn-sm"
+                  disabled={busyRepo === r.repo || r.conflicted}
+                  title={r.conflicted ? 'resolve the conflicts below, then commit' : undefined}
+                  onClick={() =>
+                    act(r.repo, () => window.gurt.changesUpdateFromMain(ws, task, r.repo))
+                  }
+                >
+                  Update from {r.defaultBranch}
                 </button>
               </div>
             </div>
