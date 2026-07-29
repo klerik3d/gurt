@@ -419,6 +419,16 @@ export interface PromptContext {
   path: string
 }
 
+/** Context-window usage, from ACP's `usage_update` session/update variant.
+ *  Not every adapter sends it (e.g. codex-acp doesn't yet). */
+export interface SessionUsage {
+  /** Tokens currently occupying the context window. */
+  used: number
+  /** Context window size, in tokens. */
+  size: number
+  cost?: { amount: number; currency: string }
+}
+
 export interface SessionSnapshot {
   info: SessionInfo
   /** Full folded timeline — present from `session:snapshot` only; the per-change
@@ -441,6 +451,8 @@ export interface SessionSnapshot {
   queuePosition?: number
   /** Latest change proposal from a `complete` call (outcome=changes), if any. */
   proposal?: StoredProposal
+  /** Latest context-window usage reported by the agent, if the adapter sends it. */
+  usage?: SessionUsage
 }
 
 /**

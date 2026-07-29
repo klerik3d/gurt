@@ -110,6 +110,8 @@ interface Session {
   modes?: SessionModes
   plan?: SessionSnapshot['plan']
   commands?: SessionSnapshot['commands']
+  /** Latest context-window usage from ACP's `usage_update`, if the adapter sends it. */
+  usage?: SessionSnapshot['usage']
   /** Live agent-reported config selectors (model/effort/…), from session/new & updates. */
   configOptions?: SessionConfigOption[]
   /** The live connection knows this ACP session (created or loaded this run). */
@@ -356,7 +358,8 @@ export class SessionManager {
         ?.promptCapabilities,
       startError: s.startError,
       queuePosition: this.queuePosition(sessionId),
-      proposal: s.proposal
+      proposal: s.proposal,
+      usage: s.usage
     }
   }
 
@@ -1277,6 +1280,10 @@ export class SessionManager {
       case 'config_option_update':
         s.configOptions = normalizeConfigOptions(u.configOptions) ?? s.configOptions
         this.cacheAgentConfig(s)
+        this.bus.emit('session.changed', { sessionId: s.info.id })
+        break
+      case 'usage_update':
+        s.usage = { used: u.used, size: u.size, cost: u.cost ?? undefined }
         this.bus.emit('session.changed', { sessionId: s.info.id })
         break
       default:
