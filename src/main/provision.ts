@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process'
 import { promises as fs } from 'node:fs'
 import { existsSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
 import { createRequire } from 'node:module'
@@ -150,8 +151,9 @@ async function devcontainerCandidates(dir: string): Promise<string[]> {
   return candidates
 }
 
-/** Shallow-clones the repo to a scratch dir and looks for its devcontainer.json. */
-export async function discoverDevcontainer(url: string): Promise<DiscoveredDevcontainer | null> {
+/** Shallow-clones `url` to a scratch dir, runs `fn` against it, and always
+ *  cleans up — the shared body behind every repo-discovery helper below. */
+async function withShallowClone<T>(url: string, fn: (dir: string) => Promise<T>): Promise<T> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gurt-discover-'))
   try {
     // Same credential policy as everything else: resolve by the URL's host
@@ -166,30 +168,124 @@ export async function discoverDevcontainer(url: string): Promise<DiscoveredDevco
       env,
       timeoutMs: DISCOVER_TIMEOUT_MS
     })
-    for (const rel of await devcontainerCandidates(dir)) {
-      const content = await fs.readFile(path.join(dir, rel), 'utf8').catch(() => null)
-      if (content != null) return { path: rel, content }
-    }
-    return null
+    return await fn(dir)
   } finally {
     await fs.rm(dir, { recursive: true, force: true })
   }
 }
 
+/** Shallow-clones the repo to a scratch dir and looks for its devcontainer.json. */
+export async function discoverDevcontainer(url: string): Promise<DiscoveredDevcontainer | null> {
+  return withShallowClone(url, async (dir) => {
+    for (const rel of await devcontainerCandidates(dir)) {
+      const content = await fs.readFile(path.join(dir, rel), 'utf8').catch(() => null)
+      if (content != null) return { path: rel, content }
+    }
+    return null
+  })
+}
+
+const isDockerfileName = (name: string) => name === 'Dockerfile' || name.startsWith('Dockerfile.')
+
+/** Root `Dockerfile*` plus `.devcontainer/**`'s `Dockerfile*`, root first —
+ *  candidates for a repo with no devcontainer.json to build from directly. */
+async function dockerfileCandidates(dir: string): Promise<string[]> {
+  const out: string[] = []
+  for (const entry of await fs.readdir(dir, { withFileTypes: true }).catch(() => []))
+    if (entry.isFile() && isDockerfileName(entry.name)) out.push(entry.name)
+  const devcontainerDir = path.join(dir, '.devcontainer')
+  for (const entry of await fs.readdir(devcontainerDir, { withFileTypes: true }).catch(() => [])) {
+    if (entry.isFile() && isDockerfileName(entry.name)) {
+      out.push(path.join('.devcontainer', entry.name))
+    } else if (entry.isDirectory()) {
+      const sub = path.join(devcontainerDir, entry.name)
+      for (const nested of await fs.readdir(sub, { withFileTypes: true }).catch(() => []))
+        if (nested.isFile() && isDockerfileName(nested.name))
+          out.push(path.join('.devcontainer', entry.name, nested.name))
+    }
+  }
+  return out
+}
+
+/** Shallow-clones the repo and lists every Dockerfile candidate (repo root +
+ *  `.devcontainer/**`) — the env editor's picker when there's no devcontainer.json. */
+export async function discoverDockerfiles(url: string): Promise<string[]> {
+  return withShallowClone(url, (dir) => dockerfileCandidates(dir))
+}
+
+/** Writes `content` as the env's override devcontainer.json and returns the
+ *  CLI args that make every command use it. The same args must go to `up` and
+ *  to each `exec` — exec re-resolves the config. */
+export async function writeOverrideConfig(ref: EnvRef, content: string): Promise<string[]> {
+  const override = overrideConfigPath(ref.workspace, ref.env)
+  await fs.mkdir(path.dirname(override), { recursive: true })
+  await fs.writeFile(override, content)
+  return ['--override-config', override]
+}
+
 /**
  * Writes the user-provided inline devcontainer config (if any) to a stable
- * host path and returns the CLI args that make every command use it. The
- * same args must go to `up` and to each `exec` — exec re-resolves the config.
+ * host path and returns the CLI args that make every command use it.
  */
 export async function overrideConfigArgs(
   ref: EnvRef,
   env: EnvConfig | undefined
 ): Promise<string[]> {
   if (!env?.devcontainer.trim()) return []
-  const override = overrideConfigPath(ref.workspace, ref.env)
-  await fs.mkdir(path.dirname(override), { recursive: true })
-  await fs.writeFile(override, env.devcontainer)
-  return ['--override-config', override]
+  return writeOverrideConfig(ref, env.devcontainer)
+}
+
+/** True if an image with this tag exists in the local Docker image store. */
+export function dockerImageExists(tag: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const child = spawn('docker', ['image', 'inspect', '-f', '{{.Id}}', tag])
+    child.on('error', () => resolve(false))
+    child.on('close', (code) => resolve(code === 0))
+  })
+}
+
+/** Builds in flight, keyed by tag — dedupes concurrent callers building the
+ *  same content (e.g. two tasks starting on the same env at once). */
+const buildsInFlight = new Map<string, Promise<string>>()
+
+/**
+ * Ensures a Docker image exists for `dockerfilePath` inside `contextDir` (a
+ * repo clone, already checked out by `ensureClone`) and returns its tag.
+ * Tagged by content — `repoUrl` + `dockerfilePath` + the clone's current
+ * commit — so it is built once and reused by every later session on this env,
+ * on any task, until the repo's committed content actually changes.
+ * Uncommitted edits to the clone are not reflected in the tag (commit to
+ * force a rebuild) — hashing the whole build context on every `up` would cost
+ * far more for a case that rarely matters.
+ */
+export async function ensureBuiltImage(
+  repoUrl: string,
+  dockerfilePath: string,
+  contextDir: string,
+  log: LogSink
+): Promise<string> {
+  const head = (await run('git', ['-C', contextDir, 'rev-parse', 'HEAD'], () => {})).trim()
+  const hash = createHash('sha256')
+    .update(`${repoUrl}\n${dockerfilePath}\n${head}`)
+    .digest('hex')
+    .slice(0, 16)
+  const tag = `gurt-env:${hash}`
+  const inflight = buildsInFlight.get(tag)
+  if (inflight) return inflight
+  const p = (async () => {
+    if (!(await dockerImageExists(tag))) {
+      log(`building ${tag} from ${dockerfilePath} ...`)
+      await run(
+        'docker',
+        ['build', '-f', path.join(contextDir, dockerfilePath), '-t', tag, contextDir],
+        log
+      )
+    }
+    return tag
+  })()
+  buildsInFlight.set(tag, p)
+  p.finally(() => buildsInFlight.delete(tag)).catch(() => {})
+  return p
 }
 
 /**

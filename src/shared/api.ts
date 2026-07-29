@@ -54,6 +54,9 @@ export interface GurtApi {
   createWorkspace(name: string): Promise<void>
   addRepo(ws: string, repo: RepoConfig): Promise<void>
   discoverDevcontainer(url: string): Promise<{ path: string; content: string } | null>
+  /** Dockerfile candidates for a repo with no devcontainer.json (repo root +
+   *  `.devcontainer/**`), for the env editor's Dockerfile-mode picker. */
+  discoverDockerfiles(url: string): Promise<string[]>
   updateRepo(ws: string, repo: RepoConfig): Promise<void>
   removeRepo(ws: string, name: string): Promise<void>
   /** Register an env definition in the workspace. */
@@ -130,6 +133,7 @@ const METHODS = {
   createWorkspace: true,
   addRepo: true,
   discoverDevcontainer: true,
+  discoverDockerfiles: true,
   updateRepo: true,
   removeRepo: true,
   addEnv: true,
