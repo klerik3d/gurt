@@ -335,6 +335,10 @@ textarea.input {
   color: var(--accent);
   border-color: var(--accent);
 }
+.tag-red {
+  color: var(--red);
+  border-color: var(--red);
+}
 
 /* Selected/ghost chip buttons (composer popup, harness config). */
 .chip-row {
@@ -484,8 +488,13 @@ textarea.input {
   border-radius: 50%;
   background: var(--dim);
 }
-.ld-accent {
-  background: var(--accent);
+/* The four dots are literal session states: done, two idle-grey, one empty. */
+.ld-green {
+  background: var(--green);
+}
+.ld-outline {
+  border: 1.5px solid var(--dim);
+  background: transparent;
 }
 .tb-name {
   font-weight: 700;
