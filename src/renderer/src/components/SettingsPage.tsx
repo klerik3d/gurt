@@ -102,7 +102,11 @@ function EnvironmentsSection({ tree, ws }: { tree: Tree | null; ws: string | nul
             <span className="set-row-label">{e.name}</span>
             <span className="set-row-url mono">
               {e.repo ? e.repo : 'no default repo'}
-              {e.devcontainer ? ' · inline devcontainer' : ''}
+              {e.dockerfilePath
+                ? ` · Dockerfile: ${e.dockerfilePath}`
+                : e.devcontainer
+                  ? ' · inline devcontainer'
+                  : ''}
             </span>
             <button className="btn-link" onClick={() => setEditing(e)}>
               edit
@@ -153,10 +157,22 @@ function EnvModal({
   const repoRef = useRef<HTMLDivElement>(null)
   useOutsideClose(repoMenu, repoRef, () => setRepoMenu(false))
 
-  const valid = !!name.trim()
+  const [mode, setMode] = useState<'devcontainer' | 'dockerfile'>(
+    initial?.dockerfilePath ? 'dockerfile' : 'devcontainer'
+  )
+  const [dockerfilePath, setDockerfilePath] = useState(initial?.dockerfilePath ?? '')
+  const [dockerfileCandidates, setDockerfileCandidates] = useState<string[] | null>(null)
+  const [dockerfileMenu, setDockerfileMenu] = useState(false)
+  const [detectingDockerfiles, setDetectingDockerfiles] = useState(false)
+  const [dockerfileMsg, setDockerfileMsg] = useState('')
+  const dockerfileRef = useRef<HTMLDivElement>(null)
+  useOutsideClose(dockerfileMenu, dockerfileRef, () => setDockerfileMenu(false))
+
+  const valid = !!name.trim() && (mode === 'devcontainer' || !!dockerfilePath)
   const draft: EnvConfig = {
     name: name.trim(),
-    devcontainer,
+    devcontainer: mode === 'devcontainer' ? devcontainer : '',
+    dockerfilePath: mode === 'dockerfile' ? dockerfilePath || undefined : undefined,
     repo: repo ?? undefined
   }
   const repoUrl = repo ? repos.find((r) => r.name === repo)?.url : undefined
@@ -177,6 +193,27 @@ function EnvModal({
       setDiscoverMsg(e instanceof Error ? e.message : String(e))
     } finally {
       setDiscovering(false)
+    }
+  }
+
+  const detectDockerfiles = async () => {
+    if (!repoUrl) return
+    setDockerfileMsg('')
+    setDetectingDockerfiles(true)
+    try {
+      const found = await window.gurt.discoverDockerfiles(repoUrl)
+      setDockerfileCandidates(found)
+      if (found.length === 0) setDockerfileMsg('no Dockerfile found in repo')
+      else if (found.length === 1) {
+        setDockerfilePath(found[0])
+        setDockerfileMsg(`loaded ${found[0]}`)
+      } else {
+        setDockerfileMsg(`${found.length} candidates — pick one below`)
+      }
+    } catch (e) {
+      setDockerfileMsg(e instanceof Error ? e.message : String(e))
+    } finally {
+      setDetectingDockerfiles(false)
     }
   }
 
@@ -272,21 +309,96 @@ function EnvModal({
         <div className="fld">
           <div className="fld-head">
             <span className="seclabel">DEVCONTAINER</span>
-            <span className="fld-hint mono">
-              {devcontainer ? 'inline override' : "empty — repo's own config"}
-            </span>
             <span className="spacer" />
             <button
-              className="btn-link mono"
-              disabled={!repoUrl || discovering}
-              title={!repoUrl ? 'set a default repository first' : undefined}
-              onClick={discover}
+              type="button"
+              className={`chip-btn ${mode === 'devcontainer' ? 'on' : ''}`}
+              onClick={() => setMode('devcontainer')}
             >
-              {discovering ? 'detecting…' : '⤢ auto-detect from repo'}
+              devcontainer.json
+            </button>
+            <button
+              type="button"
+              className={`chip-btn ${mode === 'dockerfile' ? 'on' : ''}`}
+              onClick={() => setMode('dockerfile')}
+            >
+              Dockerfile
             </button>
           </div>
-          <JsonEditor value={devcontainer} onChange={setDevcontainer} />
-          {discoverMsg && <div className="fld-hint mono">{discoverMsg}</div>}
+
+          {mode === 'devcontainer' ? (
+            <>
+              <div className="fld-head">
+                <span className="fld-hint mono">
+                  {devcontainer ? 'inline override' : "empty — repo's own config"}
+                </span>
+                <span className="spacer" />
+                <button
+                  className="btn-link mono"
+                  disabled={!repoUrl || discovering}
+                  title={!repoUrl ? 'set a default repository first' : undefined}
+                  onClick={discover}
+                >
+                  {discovering ? 'detecting…' : '⤢ auto-detect from repo'}
+                </button>
+              </div>
+              <JsonEditor value={devcontainer} onChange={setDevcontainer} />
+              {discoverMsg && <div className="fld-hint mono">{discoverMsg}</div>}
+            </>
+          ) : (
+            <>
+              <div className="fld-head">
+                <span className="fld-hint mono">{dockerfilePath || 'no Dockerfile selected'}</span>
+                <span className="spacer" />
+                <button
+                  className="btn-link mono"
+                  disabled={!repoUrl || detectingDockerfiles}
+                  title={!repoUrl ? 'set a default repository first' : undefined}
+                  onClick={detectDockerfiles}
+                >
+                  {detectingDockerfiles ? 'detecting…' : '⤢ detect Dockerfiles in repo'}
+                </button>
+              </div>
+              {dockerfileCandidates && dockerfileCandidates.length > 1 && (
+                <div className="pick-wrap" ref={dockerfileRef}>
+                  <button
+                    type="button"
+                    className="pick-row"
+                    onClick={() => setDockerfileMenu((o) => !o)}
+                  >
+                    <span className={`pick-value mono ${dockerfilePath ? '' : 'faint'}`}>
+                      {dockerfilePath || 'choose a Dockerfile'}
+                    </span>
+                    <span className="spacer" />
+                    <Icon name="chevron" size={12} className="faint" style={{ flex: 'none' }} />
+                  </button>
+                  {dockerfileMenu && (
+                    <div className="menu pick-menu">
+                      {dockerfileCandidates.map((c) => (
+                        <div
+                          key={c}
+                          className={`menu-item ${c === dockerfilePath ? 'active' : ''}`}
+                          onMouseDown={(e) => {
+                            e.preventDefault()
+                            setDockerfilePath(c)
+                            setDockerfileMenu(false)
+                          }}
+                        >
+                          {c}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+              {dockerfileMsg && <div className="fld-hint mono">{dockerfileMsg}</div>}
+              <div className="fld-hint">
+                gurt builds this Dockerfile using the repository as build context —
+                COPY/ADD paths resolve exactly as in the repo; the built image is
+                cached and reused until the repo's content changes.
+              </div>
+            </>
+          )}
         </div>
 
         {error && <div className="error">{error}</div>}
