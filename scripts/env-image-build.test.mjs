@@ -108,6 +108,23 @@ try {
   assert.ok(r5.built, 'changed repo content rebuilds')
   console.log('repo content change changes tag + rebuilds OK')
 
+  // --- ${localWorkspaceFolder} in dockerfile/context: substituted with the
+  // snapshot root, so COPY sees the repo files (regression: it used to become
+  // a literal directory name holding only the written Dockerfile) ---
+  const r6 = await ensure(
+    envCfg(DOCKERFILE_V1, {
+      dockerfile: '${localWorkspaceFolder}/Dockerfile',
+      context: '${localWorkspaceFolder}'
+    })
+  )
+  assert.ok(r6.built, '${localWorkspaceFolder} form builds')
+  assert.equal(
+    fs.readFileSync(path.join(repoDir, 'Dockerfile'), 'utf8'),
+    DOCKERFILE_V1,
+    'dockerfile written at the substituted path (snapshot root)'
+  )
+  console.log('${localWorkspaceFolder} substitution OK')
+
   console.log('env-image-build.test: PASS')
 } catch (e) {
   console.error('env-image-build.test: FAIL')
