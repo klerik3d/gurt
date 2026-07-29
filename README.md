@@ -7,17 +7,20 @@ there is archived in `archive/`; the model mostly still applies).
 ## Model
 
 - **workspace** — top-level divider, a directory in `~/.gurt/<ws>/`
-- **repo** — registered per workspace: git URL + optional inline
-  devcontainer.json (used via `--override-config` when the repo has none);
-  add/edit/delete via the workspace "repos" modal
+- **repo** — registered per workspace: git URL + optional credential link;
+  add/edit/delete via Settings → Repos
 - **agent** — an instance of a built-in kind (claude code / codex / opencode).
   The registry starts empty; add instances as needed via ⚙ in the sidebar. Each
   maps to its secret by linking an `agent-token` credential (never storing it
   inline, like a repo's credential link); env var name + extra env are per-agent
 - **task** — unit of work, `~/.gurt/<ws>/<task>/`, holds repo clones; deletable
-- **env** — infrastructure only: a clone on branch `gurt/<task>` + a devcontainer
-  per (task, repo). Agent-agnostic — several agents' adapters coexist in the one
-  container. Not a tree node; managed from the task pane (start / stop / delete).
+- **env** — a workspace entity: a mandatory devcontainer.json (+ companion
+  Dockerfile when it has `build`), stored entirely in gurt and seeded from the
+  repo's own files (then edited in gurt — the repo is never the source of
+  truth at runtime). Instances per (task, session) as before: a clone on
+  branch `gurt/<task>` + a container. Agent-agnostic — several agents'
+  adapters coexist in the one container. Not a tree node; managed from the
+  task pane (start / stop / delete).
 - **session** — the primary entity: (workspace, task, repo, agent, startPrompt,
   state) + chat history + optional ACP session id. States:
   `draft → queued → starting → started`.
@@ -47,20 +50,30 @@ session back to draft with the error shown, and does not block the queue.
 ## How a session starts
 
 1. clone repo into `~/.gurt/<ws>/<task>/<repo>/` (if missing), branch `gurt/<task>`
-2. `devcontainer up` (bundled `@devcontainers/cli`, spawned via Electron's own
+2. when the env's devcontainer has a `build` section, the image is built first:
+   a temporary snapshot of the clone at HEAD (`git archive` — the working clone
+   is never touched) gets the env's devcontainer.json + Dockerfile written into
+   its `.devcontainer/`, then `docker build` runs with the config's
+   args/target. Images are tagged by content (repo url + commit + Dockerfile +
+   build config), so an unchanged env is reused, including one pre-built from
+   Settings → Environments (the `build` button there, with an exists/missing
+   badge per env).
+3. `devcontainer up` (bundled `@devcontainers/cli`, spawned via Electron's own
    binary in Node mode) injecting **only** the `node` feature + gurt id-labels.
    The container is agent-agnostic; a stopped container is reused.
-3. on the first connection of an agent in an env, its ACP adapter is
+4. on the first connection of an agent in an env, its ACP adapter is
    npm-installed globally via `devcontainer exec` (claude:
    `@agentclientprotocol/claude-agent-acp`, codex: `@agentclientprotocol/codex-acp`,
    opencode: `opencode-ai`) — cached per (env, agent) for the app run.
-4. ACP `session/new`, then the session's `startPrompt` is sent as the first
+5. ACP `session/new`, then the session's `startPrompt` is sent as the first
    prompt. ACP (JSON-RPC over stdio) runs through `devcontainer exec`; the agent
    secret is passed via `--remote-env <secretEnv>=<secret>`. Connections are per
    (env, agent), so different agents each get their own adapter process.
 
-The inline devcontainer config is passed via `--override-config` — to `up`
-and to every `exec` (exec re-resolves the config and fails without it).
+The materialized env config (the stored devcontainer.json, with `build`
+replaced by the built `image` tag when present) is ALWAYS passed via
+`--override-config` — to `up` and to every `exec` (exec re-resolves the
+config and fails without it).
 
 Sessions are persisted to `<ws>/<task>/sessions.json` (info incl. state /
 startPrompt / queuedAt, ACP session id, chat history) and restored on app
@@ -175,6 +188,7 @@ node scripts/session-log.test.mjs      # append-only session log + legacy migrat
 node scripts/gurt-mcp.test.mjs         # turn contract: the `gurt` MCP server + `complete` tool validation
 node scripts/turn-contract.test.mjs    # turn contract: the post-turn nudge/incomplete decision matrix
 node scripts/proposal-store.test.mjs   # turn contract: proposal restore, latestProposal, Kernel.prUrl params
+node scripts/env-config.test.mjs       # env normal form: JSONC parse/validation, envImageTag identity, migration
 ```
 
 All drive the built app with Playwright through the real UI and screenshot

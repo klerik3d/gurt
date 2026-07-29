@@ -7,19 +7,18 @@ import { listCredentials } from './credentials'
 import { resolveGitBroker, stopGitBroker } from './git/broker'
 import { containerGitEnv } from './git/config'
 import * as store from './store'
-import { cloneDir, overrideDockerfilePath } from './store'
+import { cloneDir } from './store'
 import {
   devcontainerUp,
   dockerRemove,
   dockerRunning,
   dockerStop,
-  ensureBuiltImage,
   ensureClone,
   installAcpAdapter,
   installGitShims,
+  materializeEnvConfig,
   overrideConfigArgs,
-  removeClone,
-  writeOverrideConfig
+  removeClone
 } from './provision'
 import type { Bus } from './bus'
 import type { EnvContext, SessionManager } from './sessions'
@@ -89,6 +88,7 @@ export class EnvManager {
       const repoCfg = ws.repos.find((r) => r.name === repo)
       if (!repoCfg) throw new Error(`repo "${repo}" is not registered in "${ref.workspace}"`)
       const envCfg = ws.envs.find((e) => e.name === ref.env)
+      if (!envCfg) throw new Error(`env "${ref.env}" is not registered in "${ref.workspace}"`)
       const log = this.logFor(ref)
 
       // Leftover container of the env's previous session (that session is done
@@ -105,9 +105,7 @@ export class EnvManager {
       try {
         if (leftover) await dockerRemove(leftover, log)
         const dir = await ensureClone(ref, repoCfg, log)
-        const configArgs = envCfg?.dockerfile
-          ? await this.dockerfileConfigArgs(ref, repoCfg.url, envCfg.dockerfile, dir, log)
-          : await overrideConfigArgs(ref, envCfg)
+        const configArgs = await materializeEnvConfig(ref, envCfg, repoCfg, dir, log)
         const up = await devcontainerUp(
           session,
           configArgs,
@@ -136,26 +134,6 @@ export class EnvManager {
     this.ensureInFlight.set(session, p)
     p.finally(() => this.ensureInFlight.delete(session)).catch(() => {})
     return p
-  }
-
-  /** Build (if needed) the env's Dockerfile image and reference it via a
-   *  synthesized `{"image": tag}` override — same override-config plumbing as
-   *  an inline devcontainer.json, so `devcontainerUp` needs no changes. The
-   *  clone at `contextDir` (already made by `ensureClone`) is the build
-   *  context: no separate scratch clone, no relocated Dockerfile, no path
-   *  translation — `COPY`/`ADD` resolve exactly as in the repo. The
-   *  Dockerfile *content* is the env's own (editable) copy, written to its
-   *  stable host path — never re-read from the repo, so edits actually apply. */
-  private async dockerfileConfigArgs(
-    ref: EnvRef,
-    repoUrl: string,
-    dockerfileContent: string,
-    contextDir: string,
-    log: (line: string) => void
-  ): Promise<string[]> {
-    const writeTo = overrideDockerfilePath(ref.workspace, ref.env)
-    const tag = await ensureBuiltImage(repoUrl, dockerfileContent, contextDir, writeTo, log)
-    return writeOverrideConfig(ref, JSON.stringify({ image: tag }))
   }
 
   /**
@@ -207,13 +185,14 @@ export class EnvManager {
     const workspace = await store.getWorkspace(ref.workspace)
     const repoCfg = workspace.repos.find((r) => r.name === repo)
     if (!repoCfg) throw new Error(`repo "${repo}" is not registered in "${ref.workspace}"`)
-    const envCfg = workspace.envs.find((e) => e.name === ref.env)
 
     const env = await this.ensureRunning(ref, repo, session)
     if (env.status !== 'running' || !env.remoteWorkspaceFolder)
       throw new Error('environment is not running')
 
-    const configArgs = await overrideConfigArgs(ref, envCfg)
+    // The file behind these args was materialized by ensureRunning's up (and
+    // persists across app restarts) — up and every exec resolve the same config.
+    const configArgs = overrideConfigArgs(ref)
     const hostWorkspaceFolder = cloneDir(ref.workspace, ref.task, repo)
     const gitBrokerEnv = gitAccess
       ? await this.resolveGitAccess(ref, repoCfg, env.containerId)
