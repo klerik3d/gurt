@@ -13,11 +13,13 @@ import {
   dockerRemove,
   dockerRunning,
   dockerStop,
+  ensureBuiltImage,
   ensureClone,
   installAcpAdapter,
   installGitShims,
   overrideConfigArgs,
-  removeClone
+  removeClone,
+  writeOverrideConfig
 } from './provision'
 import type { Bus } from './bus'
 import type { EnvContext, SessionManager } from './sessions'
@@ -103,7 +105,9 @@ export class EnvManager {
       try {
         if (leftover) await dockerRemove(leftover, log)
         const dir = await ensureClone(ref, repoCfg, log)
-        const configArgs = await overrideConfigArgs(ref, envCfg)
+        const configArgs = envCfg?.dockerfilePath
+          ? await this.dockerfileConfigArgs(ref, repoCfg.url, envCfg.dockerfilePath, dir, log)
+          : await overrideConfigArgs(ref, envCfg)
         const up = await devcontainerUp(
           session,
           configArgs,
@@ -132,6 +136,23 @@ export class EnvManager {
     this.ensureInFlight.set(session, p)
     p.finally(() => this.ensureInFlight.delete(session)).catch(() => {})
     return p
+  }
+
+  /** Build (if needed) the env's Dockerfile image and reference it via a
+   *  synthesized `{"image": tag}` override — same override-config plumbing as
+   *  an inline devcontainer.json, so `devcontainerUp` needs no changes. The
+   *  clone at `contextDir` (already made by `ensureClone`) is the build
+   *  context: no separate scratch clone, no relocated Dockerfile, no path
+   *  translation — `COPY`/`ADD` resolve exactly as in the repo. */
+  private async dockerfileConfigArgs(
+    ref: EnvRef,
+    repoUrl: string,
+    dockerfilePath: string,
+    contextDir: string,
+    log: (line: string) => void
+  ): Promise<string[]> {
+    const tag = await ensureBuiltImage(repoUrl, dockerfilePath, contextDir, log)
+    return writeOverrideConfig(ref, JSON.stringify({ image: tag }))
   }
 
   /**

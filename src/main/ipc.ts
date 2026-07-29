@@ -6,7 +6,7 @@ import { API_METHODS, type GurtApi } from '../shared/api'
 import { MCP_DEFS } from '../shared/mcp'
 import { createKernel } from './kernel'
 import { getCredentials, setCredentials, credentialUsedBy } from './credentials'
-import { discoverDevcontainer } from './provision'
+import { discoverDevcontainer, discoverDockerfiles } from './provision'
 import * as store from './store'
 import * as changes from './changes'
 
@@ -56,6 +56,7 @@ export function registerIpc(): void {
       kernel.bus.emit('tree.changed', undefined)
     },
     discoverDevcontainer: (url) => discoverDevcontainer(url),
+    discoverDockerfiles: (url) => discoverDockerfiles(url),
     updateRepo: async (ws, repo) => {
       await store.updateRepo(ws, repo)
       kernel.bus.emit('tree.changed', undefined)
