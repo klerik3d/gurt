@@ -1,4 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import type {
   ChatEntry,
   ChatPermission,
@@ -29,6 +31,11 @@ const ACTIVITY_PING_INTERVAL_MS = 5_000
  */
 const BLANKET_MODE_RE = /bypass|yolo/i
 const isBlanketMode = (m: SessionMode): boolean => BLANKET_MODE_RE.test(`${m.id} ${m.name}`)
+
+/** Height the pinned request bar overlays at the top of the feed — used both to
+ *  decide when the real message counts as "scrolled out" and to clear the bar
+ *  when jumping back to that message. */
+const PIN_BAR_CLEARANCE = 36
 
 export function Chat({ snapshot, sessionId }: { snapshot?: SessionSnapshot; sessionId: string }) {
   const feedRef = useRef<HTMLDivElement>(null)
@@ -89,11 +96,22 @@ export function Chat({ snapshot, sessionId }: { snapshot?: SessionSnapshot; sess
     const io = new IntersectionObserver(
       ([e]) =>
         setReqPinned(!e.isIntersecting && e.boundingClientRect.top < (e.rootBounds?.top ?? 0)),
-      { root: feed, rootMargin: '-36px 0px 0px 0px' }
+      { root: feed, rootMargin: `-${PIN_BAR_CLEARANCE}px 0px 0px 0px` }
     )
     io.observe(node)
     return () => io.disconnect()
   }, [sessionId, hasSnapshot, lastUserId])
+
+  // Clicking the pinned bar jumps straight to the real message it's echoing,
+  // clearing the same top margin the IntersectionObserver above uses so the
+  // bar doesn't immediately re-cover it.
+  const scrollToLastUser = () => {
+    const feed = feedRef.current
+    if (!feed || lastUserId === undefined) return
+    const node = feed.querySelector<HTMLElement>(`.msg-user[data-eid="${lastUserId}"]`)
+    if (!node) return
+    feed.scrollTo({ top: node.offsetTop - PIN_BAR_CLEARANCE, behavior: 'smooth' })
+  }
 
   // Esc stops the current turn while the agent is working (replaces the Stop
   // button). Ignore Esc raised from a text field so it can close its own popup,
@@ -154,7 +172,9 @@ export function Chat({ snapshot, sessionId }: { snapshot?: SessionSnapshot; sess
       </div>
 
       <div className="feed-wrap">
-        {lastUser && <PinnedRequest text={lastUser.text} visible={reqPinned} />}
+        {lastUser && (
+          <PinnedRequest text={lastUser.text} visible={reqPinned} onNavigate={scrollToLastUser} />
+        )}
         <div className="feed" ref={feedRef} onScroll={onFeedScroll}>
           <div className="feed-inner" ref={innerRef}>
             {entries.map((e) => (
@@ -180,19 +200,57 @@ export function Chat({ snapshot, sessionId }: { snapshot?: SessionSnapshot; sess
   )
 }
 
-/** Sticky one-line echo of the user's last request, expandable to full text.
- *  Shown only while the real message is scrolled out of view (`visible`);
- *  otherwise it slides away and the in-feed message takes over. */
-function PinnedRequest({ text, visible }: { text: string; visible: boolean }) {
+/** Sticky one-line echo of the user's last request. Shown only while the real
+ *  message is scrolled out of view (`visible`); otherwise it slides away and
+ *  the in-feed message takes over. Clicking it jumps to that message; the
+ *  separate expand toggle (shown only when the preview is actually truncated)
+ *  reveals the full text in place without leaving the current scroll spot. */
+function PinnedRequest({
+  text,
+  visible,
+  onNavigate
+}: {
+  text: string
+  visible: boolean
+  onNavigate: () => void
+}) {
   const [open, setOpen] = useState(false)
+  const textRef = useRef<HTMLSpanElement>(null)
+  const [truncated, setTruncated] = useState(false)
+
+  // Only re-measure while collapsed: expanded text wraps instead of
+  // overflowing, so checking then would wrongly read as "not truncated"
+  // and hide the toggle needed to collapse back.
+  useLayoutEffect(() => {
+    const el = textRef.current
+    if (!el || open) return
+    const check = (): void => setTruncated(el.scrollWidth > el.clientWidth)
+    check()
+    const ro = new ResizeObserver(check)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [text, open])
+
   return (
     <div
       className={`pinned-req ${open ? 'open' : ''} ${visible ? '' : 'off'}`}
-      onClick={() => setOpen((o) => !o)}
+      onClick={onNavigate}
     >
       <span className="seclabel">↑ YOUR REQUEST</span>
-      <span className="pinned-req-text">{text}</span>
-      <span className="pinned-req-toggle mono">{open ? 'collapse ▴' : 'expand ▾'}</span>
+      <span className="pinned-req-text" ref={textRef}>
+        {text}
+      </span>
+      {truncated && (
+        <span
+          className="pinned-req-toggle mono"
+          onClick={(e) => {
+            e.stopPropagation()
+            setOpen((o) => !o)
+          }}
+        >
+          {open ? 'collapse ▴' : 'expand ▾'}
+        </span>
+      )}
     </div>
   )
 }
@@ -213,7 +271,9 @@ function Msg({ entry, sessionId }: { entry: ChatEntry; sessionId: string }) {
       return (
         <div className="msg">
           <span className="msg-dot" style={{ background: 'var(--accent)' }} />
-          <div className="msg-text">{entry.text}</div>
+          <div className="msg-text markdown">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{entry.text}</ReactMarkdown>
+          </div>
         </div>
       )
     case 'thought':

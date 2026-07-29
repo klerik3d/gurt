@@ -90,6 +90,7 @@ export function registerIpc(): void {
     getCommitDiff: (ws, task, repo, sha) => changes.getCommitDiff(ws, task, repo, sha),
     changesCommit: (ws, task, repo, message) => changes.commit(ws, task, repo, message),
     changesPush: (ws, task, repo) => changes.push(ws, task, repo),
+    changesUpdateFromMain: (ws, task, repo) => changes.updateFromMain(ws, task, repo),
     latestProposal: async (ws, task, repo) => kernel.sessions.latestProposal(ws, task, repo),
     changesOpenPr: async (ws, task, repo) => {
       await shell.openExternal(await kernel.prUrl(ws, task, repo))

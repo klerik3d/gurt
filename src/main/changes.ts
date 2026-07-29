@@ -188,6 +188,11 @@ async function repoChanges(
   const integrated =
     commits.length === 0 || (!!marker && marker === (await revParse(dir, access, 'HEAD')))
   const url = commits.some((c) => c.pushed) ? await compareUrl(dir, access, task) : null
+  const behindOut = await git(dir, access, ['rev-list', '--count', `HEAD..origin/${def}`]).catch(
+    () => '0'
+  )
+  const behind = parseInt(behindOut.trim(), 10) || 0
+  const conflicted = !!(await revParse(dir, access, 'MERGE_HEAD'))
 
   return {
     repo,
@@ -198,6 +203,8 @@ async function repoChanges(
     defaultBranch: def,
     commits,
     integrated,
+    behind,
+    conflicted,
     ...(url ? { prUrl: url } : {})
   }
 }
@@ -267,6 +274,20 @@ export async function push(ws: string, task: string, repo: string): Promise<void
   await git(cloneDir(ws, task, repo), await hostGitAccessForRepo(ws, repo), [
     'push', '-u', 'origin', branchFor(task)
   ])
+}
+
+/**
+ * Merges the fetched default branch into the task branch. Exit code 1 (merge
+ * left conflicts) is not an error here — it surfaces as `conflicted` on the
+ * next `getTaskChanges`, for the user (or agent, inside the container) to
+ * resolve like any other local conflict, rather than on the forge.
+ */
+export async function updateFromMain(ws: string, task: string, repo: string): Promise<void> {
+  const dir = cloneDir(ws, task, repo)
+  const access = await hostGitAccessForRepo(ws, repo)
+  await git(dir, access, ['fetch', 'origin'], { timeoutMs: FETCH_TIMEOUT_MS })
+  const def = await defaultBranch(dir, access)
+  await git(dir, access, ['merge', `origin/${def}`, '--no-edit'], { okCodes: [0, 1] })
 }
 
 /** PoC delivery: the forge's compare URL for gurt/<task> (the IPC layer opens it). */
