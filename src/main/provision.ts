@@ -1,12 +1,13 @@
 import { spawn } from 'node:child_process'
 import { promises as fs } from 'node:fs'
 import { existsSync } from 'node:fs'
-import { createHash } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
 import { createRequire } from 'node:module'
 import type { EnvConfig, EnvRef, RepoConfig } from '../shared/types'
 import type { AgentDef } from '../shared/agents'
+import { envImageTag, parseEnvDevcontainer, validateEnvConfig } from '../shared/envConfig'
+import type { EnvImageStatus } from '../shared/api'
 import { cloneDir, getWorkspace, overrideConfigPath, rmTree, taskDir } from './store'
 import { listCredentials } from './credentials'
 import { hostGitAccess } from './git/env'
@@ -243,6 +244,8 @@ const DISCOVER_TIMEOUT_MS = 60_000
 export interface DiscoveredDevcontainer {
   path: string
   content: string
+  /** Companion Dockerfile, when the discovered config has `build.dockerfile`. */
+  dockerfile?: { path: string; content: string }
 }
 
 /** Repo-relative paths checked, in order, plus any `.devcontainer/<name>/` variant. */
@@ -288,7 +291,10 @@ async function withShallowClone<T>(repo: RepoConfig, fn: (dir: string) => Promis
   }
 }
 
-/** Shallow-clones the repo to a scratch dir and looks for its devcontainer.json. */
+/** Shallow-clones the repo to a scratch dir and looks for its devcontainer.json.
+ *  When the discovered config has `build.dockerfile`, the companion Dockerfile
+ *  (path resolved relative to the config's directory) is returned too — the env
+ *  editor seeds both fields at once. */
 export async function discoverDevcontainer(
   ws: string,
   repoName: string
@@ -297,7 +303,15 @@ export async function discoverDevcontainer(
   return withShallowClone(repo, async (dir) => {
     for (const rel of await devcontainerCandidates(dir)) {
       const content = await fs.readFile(path.join(dir, rel), 'utf8').catch(() => null)
-      if (content != null) return { path: rel, content }
+      if (content == null) continue
+      const found: DiscoveredDevcontainer = { path: rel, content }
+      const buildDockerfile = parseEnvDevcontainer(content).build?.dockerfile
+      if (buildDockerfile) {
+        const dfRel = path.join(path.dirname(rel), buildDockerfile)
+        const dfContent = await fs.readFile(path.join(dir, dfRel), 'utf8').catch(() => null)
+        if (dfContent != null) found.dockerfile = { path: dfRel, content: dfContent }
+      }
+      return found
     }
     return null
   })
@@ -348,26 +362,19 @@ export async function discoverDockerfiles(
   })
 }
 
-/** Writes `content` as the env's override devcontainer.json and returns the
- *  CLI args that make every command use it. The same args must go to `up` and
- *  to each `exec` — exec re-resolves the config. */
-export async function writeOverrideConfig(ref: EnvRef, content: string): Promise<string[]> {
+/** Writes `content` as the env's materialized devcontainer.json. */
+async function writeOverrideConfig(ref: EnvRef, content: string): Promise<void> {
   const override = overrideConfigPath(ref.workspace, ref.env)
   await fs.mkdir(path.dirname(override), { recursive: true })
   await fs.writeFile(override, content)
-  return ['--override-config', override]
 }
 
-/**
- * Writes the user-provided inline devcontainer config (if any) to a stable
- * host path and returns the CLI args that make every command use it.
- */
-export async function overrideConfigArgs(
-  ref: EnvRef,
-  env: EnvConfig | undefined
-): Promise<string[]> {
-  if (!env?.devcontainer.trim()) return []
-  return writeOverrideConfig(ref, env.devcontainer)
+/** ['--override-config', path] — no content logic; the file was written by
+ *  `materializeEnvConfig` at `up` (it persists on disk across app restarts, so
+ *  the reattach path needs nothing). The same args must go to `up` and to each
+ *  `exec` — exec re-resolves the config. */
+export function overrideConfigArgs(ref: EnvRef): string[] {
+  return ['--override-config', overrideConfigPath(ref.workspace, ref.env)]
 }
 
 /** True if an image with this tag exists in the local Docker image store. */
@@ -384,46 +391,149 @@ export function dockerImageExists(tag: string): Promise<boolean> {
 const buildsInFlight = new Map<string, Promise<string>>()
 
 /**
- * Ensures a Docker image exists for `dockerfileContent` built against
- * `contextDir` (a repo clone, already checked out by `ensureClone`) and
- * returns its tag. `dockerfileContent` is the env's own (editable, possibly
- * user-modified) Dockerfile text — written to `writeTo` before building, so
- * `docker build -f` reads exactly what the editor shows, never silently
- * re-reading the repo's file. Tagged by content — `repoUrl` + the Dockerfile
- * text + the clone's current commit — so it is built once and reused by every
- * later session on this env, on any task, until either the Dockerfile is
- * edited or the repo's committed content changes.
- * Uncommitted edits to the clone itself are not reflected in the tag (commit
- * to force a rebuild) — hashing the whole build context on every `up` would
- * cost far more for a case that rarely matters.
+ * Ensure the image for (repo, commit, envCfg) exists and return its tag.
+ * `contextDir` is a disposable snapshot of the repo at `commit` — the env's own
+ * devcontainer.json + Dockerfile are written into its `.devcontainer/`
+ * (overwriting the repo's versions: the env config is the source of truth),
+ * then `docker build` runs with the config's build args/target. Tagged by
+ * content (`envImageTag`), so the image is built once and reused by every later
+ * session on this env until the Dockerfile, the build args, or the repo's
+ * committed content change. Shared by session start and Settings pre-build.
  */
-export async function ensureBuiltImage(
-  repoUrl: string,
-  dockerfileContent: string,
+export async function buildEnvImage(
+  repo: RepoConfig,
+  envCfg: EnvConfig,
   contextDir: string,
-  writeTo: string,
+  commit: string,
   log: LogSink
 ): Promise<string> {
-  await fs.mkdir(path.dirname(writeTo), { recursive: true })
-  await fs.writeFile(writeTo, dockerfileContent)
-  const head = (await run('git', ['-C', contextDir, 'rev-parse', 'HEAD'], () => {})).trim()
-  const hash = createHash('sha256')
-    .update(`${repoUrl}\n${dockerfileContent}\n${head}`)
-    .digest('hex')
-    .slice(0, 16)
-  const tag = `gurt-env:${hash}`
+  const invalid = validateEnvConfig(envCfg)
+  if (invalid) throw new Error(`env "${envCfg.name}": ${invalid}`)
+  const build = parseEnvDevcontainer(envCfg.devcontainer).build
+  if (!build) throw new Error(`env "${envCfg.name}" has no build section — nothing to build`)
+  const tag = envImageTag(repo.url, commit, envCfg.dockerfile!, build)
   const inflight = buildsInFlight.get(tag)
   if (inflight) return inflight
   const p = (async () => {
-    if (!(await dockerImageExists(tag))) {
-      log(`building ${tag} ...`)
-      await run('docker', ['build', '-f', writeTo, '-t', tag, contextDir], log)
+    if (await dockerImageExists(tag)) {
+      log(`image ${tag} already present`)
+      return tag
     }
+    const devcontainerDir = path.join(contextDir, '.devcontainer')
+    await fs.mkdir(devcontainerDir, { recursive: true })
+    await fs.writeFile(path.join(devcontainerDir, 'devcontainer.json'), envCfg.devcontainer)
+    const dockerfilePath = path.join(devcontainerDir, build.dockerfile ?? 'Dockerfile')
+    await fs.mkdir(path.dirname(dockerfilePath), { recursive: true })
+    await fs.writeFile(dockerfilePath, envCfg.dockerfile!)
+    // build.context resolves relative to `.devcontainer/`; the default is the
+    // repo root — gurt's convention (documented divergence from the spec
+    // default). `build.options` / `cacheFrom` are ignored (non-goals).
+    const context = build.context ? path.resolve(devcontainerDir, build.context) : contextDir
+    const args = ['build', '-f', dockerfilePath, '-t', tag]
+    for (const [k, v] of Object.entries(build.args ?? {})) args.push('--build-arg', `${k}=${v}`)
+    if (build.target) args.push('--target', build.target)
+    args.push(context)
+    log(`building ${tag} ...`)
+    await run('docker', args, log)
     return tag
   })()
   buildsInFlight.set(tag, p)
   p.finally(() => buildsInFlight.delete(tag)).catch(() => {})
   return p
+}
+
+/**
+ * Write the env's effective devcontainer.json to `overrideConfigPath` and
+ * return ['--override-config', path]. Without a `build` section the stored
+ * config is written verbatim (JSONC is fine, the CLI reads it). With one, the
+ * image is ensured first — built in a temporary snapshot of the clone at HEAD
+ * (`git archive`; the working clone is never touched) — and the materialized
+ * config has `build` replaced by `image: tag`, all other fields preserved.
+ * Comments are lost only in that materialized file, never in the stored config.
+ */
+export async function materializeEnvConfig(
+  ref: EnvRef,
+  envCfg: EnvConfig,
+  repo: RepoConfig,
+  cloneDir: string,
+  log: LogSink
+): Promise<string[]> {
+  const invalid = validateEnvConfig(envCfg)
+  if (invalid) throw new Error(`env "${envCfg.name}": ${invalid}`)
+  const { config, build } = parseEnvDevcontainer(envCfg.devcontainer)
+  if (!build) {
+    await writeOverrideConfig(ref, envCfg.devcontainer)
+    return overrideConfigArgs(ref)
+  }
+  const scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'gurt-env-snapshot-'))
+  try {
+    const tarFile = path.join(scratch, 'src.tar')
+    const srcDir = path.join(scratch, 'src')
+    await fs.mkdir(srcDir)
+    await run('git', ['-C', cloneDir, 'archive', '--format=tar', '-o', tarFile, 'HEAD'], log)
+    await run('tar', ['-xf', tarFile, '-C', srcDir], log)
+    const commit = (await run('git', ['-C', cloneDir, 'rev-parse', 'HEAD'], () => {})).trim()
+    const tag = await buildEnvImage(repo, envCfg, srcDir, commit, log)
+    const materialized: Record<string, unknown> = { ...config!, image: tag }
+    delete materialized.build
+    await writeOverrideConfig(ref, JSON.stringify(materialized, null, 2))
+    return overrideConfigArgs(ref)
+  } finally {
+    await fs.rm(scratch, { recursive: true, force: true })
+  }
+}
+
+/** Remote HEAD commit of `repo`, resolved with the same credentials as clones. */
+async function remoteHead(repo: RepoConfig): Promise<string> {
+  const { env, gitArgs } = await hostGitAccess(repo, await listCredentials())
+  const out = await run('git', [...gitArgs, 'ls-remote', '--', repo.url, 'HEAD'], () => {}, {
+    env,
+    timeoutMs: DISCOVER_TIMEOUT_MS
+  })
+  const commit = out.split(/\s+/)[0]?.trim()
+  if (!commit) throw new Error(`cannot resolve remote HEAD of ${repo.url}`)
+  return commit
+}
+
+/** Image status of a SAVED env config (workspace-level, no task context): the
+ *  tag it would build at the default repo's remote HEAD, and whether that image
+ *  already exists locally. */
+export async function envImageStatus(ws: string, envName: string): Promise<EnvImageStatus> {
+  const wsData = await getWorkspace(ws)
+  const envCfg = wsData.envs.find((e) => e.name === envName)
+  if (!envCfg) throw new Error(`env "${envName}" not found in "${ws}"`)
+  if (validateEnvConfig(envCfg)) return { state: 'invalid' }
+  const build = parseEnvDevcontainer(envCfg.devcontainer).build
+  if (!build) return { state: 'not-applicable' }
+  const repo = envCfg.repo ? wsData.repos.find((r) => r.name === envCfg.repo) : undefined
+  if (!repo) return { state: 'no-repo' }
+  const commit = await remoteHead(repo)
+  const tag = envImageTag(repo.url, commit, envCfg.dockerfile!, build)
+  return { state: (await dockerImageExists(tag)) ? 'exists' : 'missing', tag, commit }
+}
+
+/** Pre-build the SAVED env config's image from its default repo's HEAD — the
+ *  shallow clone IS the temporary repo snapshot. Session start reuses the
+ *  result automatically via the content tag. */
+export async function envBuildImage(
+  ws: string,
+  envName: string,
+  log: LogSink
+): Promise<{ tag: string }> {
+  const wsData = await getWorkspace(ws)
+  const envCfg = wsData.envs.find((e) => e.name === envName)
+  if (!envCfg) throw new Error(`env "${envName}" not found in "${ws}"`)
+  const invalid = validateEnvConfig(envCfg)
+  if (invalid) throw new Error(`env "${envName}": ${invalid}`)
+  if (!parseEnvDevcontainer(envCfg.devcontainer).build)
+    throw new Error(`env "${envName}" has no build section — nothing to build`)
+  const repo = envCfg.repo ? wsData.repos.find((r) => r.name === envCfg.repo) : undefined
+  if (!repo) throw new Error(`env "${envName}" has no default repository to build from`)
+  const tag = await withShallowClone(repo, async (dir) => {
+    const commit = (await run('git', ['-C', dir, 'rev-parse', 'HEAD'], () => {})).trim()
+    return buildEnvImage(repo, envCfg, dir, commit, log)
+  })
+  return { tag }
 }
 
 /**

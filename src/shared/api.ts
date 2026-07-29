@@ -23,6 +23,20 @@ import type { McpDef } from './mcp'
 
 export type CreateAction = 'run' | 'queue' | 'draft'
 
+/** Image state of a saved env config, shown as a badge in Settings. */
+export interface EnvImageStatus {
+  state:
+    | 'not-applicable' // config has no build section
+    | 'no-repo' //         build section but no default repo to build from
+    | 'invalid' //         validateEnvConfig failed
+    | 'exists'
+    | 'missing'
+  /** For exists | missing. */
+  tag?: string
+  /** Remote HEAD used for the tag. */
+  commit?: string
+}
+
 /** Editable settings of a draft session (all optional — only supplied keys change). */
 export interface SessionDraftPatch {
   agent?: string
@@ -54,15 +68,26 @@ export interface GurtApi {
   createWorkspace(name: string): Promise<void>
   addRepo(ws: string, repo: RepoConfig): Promise<void>
   /** Resolves credentials the same way session clones do (by registered repo,
-   *  honoring a repo-linked credential), so it works for private repos too. */
+   *  honoring a repo-linked credential), so it works for private repos too.
+   *  When the found config has `build.dockerfile`, the companion Dockerfile is
+   *  returned too — the env editor seeds both fields at once. */
   discoverDevcontainer(
     ws: string,
     repo: string
-  ): Promise<{ path: string; content: string } | null>
-  /** Dockerfile candidates (with content) for a repo with no devcontainer.json
-   *  (repo root + `.devcontainer/**`), loaded into the env editor's Dockerfile
-   *  field — editable there after loading, not re-read from the repo. */
+  ): Promise<{
+    path: string
+    content: string
+    dockerfile?: { path: string; content: string }
+  } | null>
+  /** Dockerfile candidates (with content) from the repo (root +
+   *  `.devcontainer/**`), loaded into the env editor's Dockerfile field —
+   *  editable there after loading, not re-read from the repo. */
   discoverDockerfiles(ws: string, repo: string): Promise<{ path: string; content: string }[]>
+  /** Image status of the SAVED env config (badge in Settings → Environments). */
+  envImageStatus(ws: string, env: string): Promise<EnvImageStatus>
+  /** Pre-build the SAVED env config's image from its default repo's HEAD; the
+   *  build log streams over `provision-log` with key `env-build:<ws>/<env>`. */
+  envBuildImage(ws: string, env: string): Promise<{ tag: string }>
   updateRepo(ws: string, repo: RepoConfig): Promise<void>
   removeRepo(ws: string, name: string): Promise<void>
   /** Register an env definition in the workspace. */
@@ -142,6 +167,8 @@ const METHODS = {
   addRepo: true,
   discoverDevcontainer: true,
   discoverDockerfiles: true,
+  envImageStatus: true,
+  envBuildImage: true,
   updateRepo: true,
   removeRepo: true,
   addEnv: true,

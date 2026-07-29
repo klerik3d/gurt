@@ -6,7 +6,12 @@ import { API_METHODS, type GurtApi } from '../shared/api'
 import { MCP_DEFS } from '../shared/mcp'
 import { createKernel } from './kernel'
 import { getCredentials, setCredentials, credentialUsedBy } from './credentials'
-import { discoverDevcontainer, discoverDockerfiles } from './provision'
+import {
+  discoverDevcontainer,
+  discoverDockerfiles,
+  envBuildImage,
+  envImageStatus
+} from './provision'
 import * as store from './store'
 import * as changes from './changes'
 
@@ -57,6 +62,18 @@ export function registerIpc(): void {
     },
     discoverDevcontainer: (ws, repo) => discoverDevcontainer(ws, repo),
     discoverDockerfiles: (ws, repo) => discoverDockerfiles(ws, repo),
+    envImageStatus: (ws, env) => envImageStatus(ws, env),
+    envBuildImage: async (ws, env) => {
+      // The renderer subscribes to this key for the streamed build-log tail.
+      const key = `env-build:${ws}/${env}`
+      const log = (line: string) => kernel.bus.emit('provision.log', { key, line })
+      try {
+        return await envBuildImage(ws, env, log)
+      } catch (e) {
+        log(`error: ${e instanceof Error ? e.message : String(e)}`)
+        throw e
+      }
+    },
     updateRepo: async (ws, repo) => {
       await store.updateRepo(ws, repo)
       kernel.bus.emit('tree.changed', undefined)

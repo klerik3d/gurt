@@ -29,6 +29,9 @@ await build({
   bundle: true,
   format: 'esm',
   platform: 'node',
+  // jsonc-parser's `main` is a UMD build esbuild can't wrap into ESM output —
+  // prefer each package's ESM entry, like vite does.
+  mainFields: ['module', 'main'],
   external: ['electron'],
   outfile,
   logLevel: 'silent'
