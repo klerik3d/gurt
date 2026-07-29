@@ -7,7 +7,7 @@ import path from 'node:path'
 import { createRequire } from 'node:module'
 import type { EnvConfig, EnvRef, RepoConfig } from '../shared/types'
 import type { AgentDef } from '../shared/agents'
-import { cloneDir, overrideConfigPath, rmTree, taskDir } from './store'
+import { cloneDir, getWorkspace, overrideConfigPath, rmTree, taskDir } from './store'
 import { listCredentials } from './credentials'
 import { hostGitAccess } from './git/env'
 import { forgeFeatures, forgeWrappers } from './git/providers'
@@ -157,23 +157,33 @@ async function devcontainerCandidates(dir: string): Promise<string[]> {
   return candidates
 }
 
-/** Shallow-clones `url` to a scratch dir, runs `fn` against it, and always
+/** Looks up the registered repo the same way `ensureClone` does, so discovery
+ *  resolves credentials (including a repo-linked `credentialId`) identically
+ *  to the real clone instead of falling back to host-auto-match only. */
+async function requireRepo(ws: string, repoName: string): Promise<RepoConfig> {
+  const repo = (await getWorkspace(ws)).repos.find((r) => r.name === repoName)
+  if (!repo) throw new Error(`repo "${repoName}" is not registered in "${ws}"`)
+  return repo
+}
+
+/** Shallow-clones `repo` to a scratch dir, runs `fn` against it, and always
  *  cleans up — the shared body behind every repo-discovery helper below. */
-async function withShallowClone<T>(url: string, fn: (dir: string) => Promise<T>): Promise<T> {
+async function withShallowClone<T>(repo: RepoConfig, fn: (dir: string) => Promise<T>): Promise<T> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gurt-discover-'))
   try {
-    // Same credential policy as everything else: resolve by the URL's host
-    // (auto-match — there is no RepoConfig yet), never fall back to ambient.
-    // Anonymous https clones of public repos still work under the blocked env.
+    // Same credential resolution as `ensureClone` — the real RepoConfig (with
+    // its `credentialId` link, if any), not a synthetic `{ name: '', url }`.
     // GIT_TERMINAL_PROMPT=0 → private/unreachable URLs fail fast instead of
     // blocking on a credential prompt with no terminal. `--` guards against a
     // URL beginning with `-` being parsed as a git option. The timeout is a
     // backstop for a clone that stalls on a slow/hanging network.
-    const { env, gitArgs } = await hostGitAccess({ name: '', url }, await listCredentials())
-    await run('git', [...gitArgs, 'clone', '--depth', '1', '--no-tags', '--', url, dir], () => {}, {
-      env,
-      timeoutMs: DISCOVER_TIMEOUT_MS
-    })
+    const { env, gitArgs } = await hostGitAccess(repo, await listCredentials())
+    await run(
+      'git',
+      [...gitArgs, 'clone', '--depth', '1', '--no-tags', '--', repo.url, dir],
+      () => {},
+      { env, timeoutMs: DISCOVER_TIMEOUT_MS }
+    )
     return await fn(dir)
   } finally {
     await fs.rm(dir, { recursive: true, force: true })
@@ -181,8 +191,12 @@ async function withShallowClone<T>(url: string, fn: (dir: string) => Promise<T>)
 }
 
 /** Shallow-clones the repo to a scratch dir and looks for its devcontainer.json. */
-export async function discoverDevcontainer(url: string): Promise<DiscoveredDevcontainer | null> {
-  return withShallowClone(url, async (dir) => {
+export async function discoverDevcontainer(
+  ws: string,
+  repoName: string
+): Promise<DiscoveredDevcontainer | null> {
+  const repo = await requireRepo(ws, repoName)
+  return withShallowClone(repo, async (dir) => {
     for (const rel of await devcontainerCandidates(dir)) {
       const content = await fs.readFile(path.join(dir, rel), 'utf8').catch(() => null)
       if (content != null) return { path: rel, content }
@@ -215,8 +229,9 @@ async function dockerfileCandidates(dir: string): Promise<string[]> {
 
 /** Shallow-clones the repo and lists every Dockerfile candidate (repo root +
  *  `.devcontainer/**`) — the env editor's picker when there's no devcontainer.json. */
-export async function discoverDockerfiles(url: string): Promise<string[]> {
-  return withShallowClone(url, (dir) => dockerfileCandidates(dir))
+export async function discoverDockerfiles(ws: string, repoName: string): Promise<string[]> {
+  const repo = await requireRepo(ws, repoName)
+  return withShallowClone(repo, (dir) => dockerfileCandidates(dir))
 }
 
 /** Writes `content` as the env's override devcontainer.json and returns the
