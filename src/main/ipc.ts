@@ -55,8 +55,8 @@ export function registerIpc(): void {
       await store.addRepo(ws, repo)
       kernel.bus.emit('tree.changed', undefined)
     },
-    discoverDevcontainer: (url) => discoverDevcontainer(url),
-    discoverDockerfiles: (url) => discoverDockerfiles(url),
+    discoverDevcontainer: (ws, repo) => discoverDevcontainer(ws, repo),
+    discoverDockerfiles: (ws, repo) => discoverDockerfiles(ws, repo),
     updateRepo: async (ws, repo) => {
       await store.updateRepo(ws, repo)
       kernel.bus.emit('tree.changed', undefined)

@@ -182,11 +182,11 @@ function EnvModal({
   const repoUrl = repo ? repos.find((r) => r.name === repo)?.url : undefined
 
   const discover = async () => {
-    if (!repoUrl) return
+    if (!repo) return
     setDiscoverMsg('')
     setDiscovering(true)
     try {
-      const found = await window.gurt.discoverDevcontainer(repoUrl)
+      const found = await window.gurt.discoverDevcontainer(ws, repo)
       if (found) {
         setDevcontainer(found.content)
         setDiscoverMsg(`loaded ${found.path}`)
@@ -201,11 +201,11 @@ function EnvModal({
   }
 
   const detectDockerfiles = async () => {
-    if (!repoUrl) return
+    if (!repo) return
     setDockerfileMsg('')
     setDetectingDockerfiles(true)
     try {
-      const found = await window.gurt.discoverDockerfiles(repoUrl)
+      const found = await window.gurt.discoverDockerfiles(ws, repo)
       setDockerfileCandidates(found)
       if (found.length === 0) setDockerfileMsg('no Dockerfile found in repo')
       else if (found.length === 1) {
