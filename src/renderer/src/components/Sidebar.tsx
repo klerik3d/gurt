@@ -44,7 +44,6 @@ export function Sidebar({
   activity,
   onPickWorkspace,
   onNewWorkspace,
-  onNewTask,
   onNewSession,
   onSelectTask,
   onSelectSession,
@@ -62,7 +61,6 @@ export function Sidebar({
   activity: Record<string, { busy?: boolean; awaitingInput?: boolean }>
   onPickWorkspace: (ws: string) => void
   onNewWorkspace: () => void
-  onNewTask: (ws: string) => void
   onNewSession: (ws: string, task: string) => void
   onSelectTask: (ws: string, task: string) => void
   onSelectSession: (id: string) => void
@@ -71,6 +69,13 @@ export function Sidebar({
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const [wsMenuOpen, setWsMenuOpen] = useState(false)
   const wsMenuRef = useRef<HTMLDivElement>(null)
+  const [creatingTask, setCreatingTask] = useState(false)
+  const [taskDraftName, setTaskDraftName] = useState('')
+  const taskPopRef = useRef<HTMLDivElement>(null)
+  useOutsideClose(creatingTask, taskPopRef, () => {
+    setCreatingTask(false)
+    setTaskDraftName('')
+  })
   const agents = useAgents()
 
   const wsData = tree?.workspaces.find((w) => w.name === ws)
@@ -106,6 +111,21 @@ export function Sidebar({
       : `Delete task "${taskName}" with all its environments, clones and sessions?`
     if (await confirmDialog(warning, { title: 'Delete task', confirmText: 'Delete', danger: true }))
       window.gurt.removeTask(ws, taskName).catch((e) => alertDialog(String(e)))
+  }
+
+  // Creates the task right from the header "+", no modal round-trip — click,
+  // type, Enter. Selects it immediately so the flow lands somewhere useful.
+  const submitNewTask = async () => {
+    const name = taskDraftName.trim()
+    if (!name || !ws) return
+    setCreatingTask(false)
+    setTaskDraftName('')
+    try {
+      await window.gurt.createTask(ws, name)
+      onSelectTask(ws, name)
+    } catch (e) {
+      await alertDialog(e instanceof Error ? e.message : String(e))
+    }
   }
 
   return (
@@ -149,13 +169,29 @@ export function Sidebar({
         <button className="icon-sq" title="Search · ⌘K" onClick={onOpenPalette}>
           <Icon name="search" size={14} />
         </button>
-        <button
-          className="icon-sq"
-          title="New task · ⌘⇧N"
-          onClick={() => ws && onNewTask(ws)}
-        >
-          <Icon name="plus" size={14} />
-        </button>
+        <div className="sb-newtask" ref={taskPopRef}>
+          <button
+            className="icon-sq"
+            title="New task · ⌘⇧N"
+            onClick={() => setCreatingTask((o) => !o)}
+          >
+            <Icon name="plus" size={14} />
+          </button>
+          {creatingTask && (
+            <div className="menu sb-newtask-menu">
+              <div className="menu-item-input">
+                <input
+                  autoFocus
+                  className="input"
+                  placeholder="task name"
+                  value={taskDraftName}
+                  onChange={(e) => setTaskDraftName(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && submitNewTask()}
+                />
+              </div>
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="sb-tree">
@@ -184,7 +220,7 @@ export function Sidebar({
                   title="new session"
                   onClick={() => onNewSession(wsData.name, task.name)}
                 >
-                  <Icon name="plus" size={13} />
+                  <Icon name="message" size={13} />
                 </button>
                 <button className="icon-sq sb-act" title="delete task" onClick={() => deleteTask(task.name)}>
                   <Icon name="trash" size={13} />
