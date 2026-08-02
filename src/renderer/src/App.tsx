@@ -61,6 +61,8 @@ export default function App() {
   })
   const selectionRef = useRef(selection)
   selectionRef.current = selection
+  const treeRef = useRef(tree)
+  treeRef.current = tree
   /** Tasks whose changes were already requested at least once (app-start lazy load). */
   const changesRequested = useRef<Set<string>>(new Set())
 
@@ -155,6 +157,13 @@ export default function App() {
   const selectSession = useCallback((id: string) => {
     setView('work')
     setSelection({ type: 'session', id })
+    // Keep curWs in step with whatever workspace actually owns this session —
+    // otherwise a cross-workspace jump (e.g. via the palette) leaves curWs
+    // pointing at the old workspace, and the next ⌘N/⌘⇧N silently targets it.
+    const owner = treeRef.current?.workspaces.find((w) =>
+      w.tasks.some((t) => t.sessions.some((s) => s.id === id))
+    )
+    if (owner) setCurWs(owner.name)
     window.gurt
       .sessionSnapshot(id)
       .then((snap) => {
@@ -166,6 +175,7 @@ export default function App() {
   const selectTask = useCallback((tws: string, task: string) => {
     setView('work')
     setSelection({ type: 'task', ws: tws, task })
+    setCurWs(tws)
   }, [])
 
   const openNewSession = useCallback(
@@ -334,7 +344,6 @@ export default function App() {
               activity={activity}
               onPickWorkspace={setCurWs}
               onNewWorkspace={() => setNewWorkspace(true)}
-              onNewTask={(w) => setNewTask(w)}
               onNewSession={(w, t) => setNewSession({ ws: w, task: t })}
               onSelectTask={selectTask}
               onSelectSession={selectSession}
