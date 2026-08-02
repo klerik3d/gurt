@@ -666,6 +666,15 @@ textarea.input {
   left: 0;
   min-width: 180px;
 }
+.sb-newtask {
+  position: relative;
+}
+.sb-newtask-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 200px;
+}
 
 .sb-tree {
   flex: 1;
