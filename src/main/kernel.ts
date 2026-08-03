@@ -21,6 +21,10 @@ export interface Kernel {
   /** store.buildTree + session overlay. */
   tree(): Promise<Tree>
   deleteTask(ws: string, task: string): Promise<void>
+  /** Rename a task: stops its envs (a running container's bind mount is
+   *  pinned to the old directory), moves the directory, and best-effort
+   *  renames its branch in every clone. */
+  renameTask(ws: string, task: string, newName: string): Promise<void>
   /** Repos in this task whose clone has uncommitted changes. */
   taskDirtyRepos(ws: string, task: string): Promise<string[]>
   /** sessions.editDraft behind a repo check — the UI constrains the choice, IPC must too. */
@@ -136,6 +140,15 @@ export function createKernel(): Kernel {
       await envs.teardownTask(ws, task)
       sessions.dropTaskSessions(ws, task)
       await store.removeTaskDir(ws, task)
+      bus.emit('tree.changed', undefined)
+    },
+
+    async renameTask(ws: string, task: string, newName: string): Promise<void> {
+      if (newName === task) return
+      await envs.stopTask(ws, task)
+      await store.renameTask(ws, task, newName)
+      await changes.renameTaskBranches(ws, newName, task)
+      sessions.renameTask(ws, task, newName)
       bus.emit('tree.changed', undefined)
     },
 

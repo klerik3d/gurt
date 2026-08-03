@@ -683,6 +683,7 @@ textarea.input {
   flex-direction: column;
   gap: 1px;
   padding: 10px 8px;
+  outline: none;
 }
 .sb-group + .sb-group {
   margin-top: 8px;
@@ -694,14 +695,15 @@ textarea.input {
   padding: 5px 8px;
   border-radius: 7px;
   min-height: 26px;
+  cursor: pointer;
 }
+.sb-task:hover,
 .sb-task.selected {
   background: var(--hover);
 }
 .sb-chev {
   display: flex;
   color: var(--faint);
-  cursor: pointer;
   flex: none;
 }
 .sb-chev:hover {
@@ -711,13 +713,30 @@ textarea.input {
   font-weight: 600;
   font-size: 12px;
   color: var(--dim);
-  cursor: pointer;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.sb-task-name:hover {
+.sb-task:hover .sb-task-name,
+.sb-task.selected .sb-task-name {
   color: var(--text);
+}
+/* The focused tree marks its cursor row, so keyboard nav has something to follow. */
+.sb-tree:focus-visible .sb-task.selected,
+.sb-tree:focus-visible .sb-session.selected {
+  box-shadow: inset 0 0 0 1px var(--border2);
+}
+.sb-rename {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--app);
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  padding: 1px 5px;
+  outline: none;
 }
 .sb-task .sb-act {
   visibility: hidden;

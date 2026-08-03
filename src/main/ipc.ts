@@ -99,6 +99,7 @@ export function registerIpc(): void {
       kernel.bus.emit('tree.changed', undefined)
     },
     removeTask: (ws, name) => kernel.deleteTask(ws, name),
+    renameTask: (ws, name, newName) => kernel.renameTask(ws, name, newName),
     taskDirtyRepos: (ws, name) => kernel.taskDirtyRepos(ws, name),
     stopEnv: (ref) => kernel.envs.stop(ref),
     removeTaskEnv: (ref) => kernel.envs.remove(ref),
@@ -129,6 +130,7 @@ export function registerIpc(): void {
     sessionEnqueue: async (id) => kernel.sessions.enqueue(id),
     sessionCancelQueue: async (id) => kernel.sessions.cancelQueue(id),
     sessionEditPrompt: async (id, text) => kernel.sessions.editPrompt(id, text),
+    renameSession: async (id, title) => kernel.sessions.renameSession(id, title),
     sessionEditDraft: async (id, patch) => kernel.editDraft(id, patch),
     sessionDelete: async (id) => kernel.sessions.deleteSession(id),
     sessionSnapshot: async (id) => kernel.sessions.snapshot(id),
