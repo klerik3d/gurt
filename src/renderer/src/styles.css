@@ -981,6 +981,11 @@ textarea.input {
   left: -16px;
   top: 12px;
 }
+.msg-dot-user {
+  background: var(--app);
+  border: 2px solid var(--accent);
+  box-sizing: border-box;
+}
 .msg-you {
   margin-bottom: 4px;
   letter-spacing: 0.08em;

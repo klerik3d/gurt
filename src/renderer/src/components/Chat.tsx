@@ -58,7 +58,8 @@ export function Chat({
   const innerRef = useRef<HTMLDivElement>(null)
   /** Follow-the-tail flag: true until the user scrolls away from the bottom. */
   const stickRef = useRef(true)
-  const [reqPinned, setReqPinned] = useState(false)
+  const [pinnedId, setPinnedId] = useState<number | undefined>(undefined)
+  const pinnedTextRef = useRef('')
   const agents = useAgents()
 
   const entries = snapshot?.entries ?? []
@@ -85,10 +86,12 @@ export function Chat({
   const sizeLabel = usage
     ? `${formatTokens(usage.used)}/${formatTokens(usage.size)} tokens`
     : `~${formatTokens(sessionTokens)} tokens`
-  const lastUser = [...entries]
-    .reverse()
-    .find((e): e is ChatEntry & { kind: 'user' } => e.kind === 'user' && !!e.text.trim())
-  const lastUserId = lastUser?.id
+  const userEntries = entries.filter(
+    (e): e is ChatEntry & { kind: 'user' } => e.kind === 'user' && !!e.text.trim()
+  )
+  const lastUserId = userEntries[userEntries.length - 1]?.id
+  const pinnedEntry = userEntries.find((e) => e.id === pinnedId)
+  if (pinnedEntry) pinnedTextRef.current = pinnedEntry.text
 
   // Keep the feed glued to its bottom edge while it's following the tail. A
   // ResizeObserver catches every way the tail can move — text streaming into
@@ -123,30 +126,55 @@ export function Chat({
     stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
   }
 
-  // The "your request" bar overlays the feed only while the real message is
-  // scrolled out past the top; scrolling back hands off to the message in place.
+  // The "your request" bar tracks whichever user message the current scroll
+  // position has passed — like a scrollspy following section headings — so
+  // scrolling back through history always shows the request that's "active"
+  // for what's on screen, not just the very last one in the whole session.
+  // Recomputed from live geometry on every scroll/resize rather than tracked
+  // incrementally: an IntersectionObserver only fires when a node crosses the
+  // visibility threshold, so a node that jumps straight from above-the-fold
+  // to below-the-fold (a fast scrollbar drag, Home/End) never fires and its
+  // last-known state goes stale.
   useEffect(() => {
-    setReqPinned(false)
     const feed = feedRef.current
-    if (!feed || lastUserId === undefined) return
-    const node = feed.querySelector(`.msg-user[data-eid="${lastUserId}"]`)
-    if (!node) return
-    const io = new IntersectionObserver(
-      ([e]) =>
-        setReqPinned(!e.isIntersecting && e.boundingClientRect.top < (e.rootBounds?.top ?? 0)),
-      { root: feed, rootMargin: `-${PIN_BAR_CLEARANCE}px 0px 0px 0px` }
-    )
-    io.observe(node)
-    return () => io.disconnect()
+    if (!feed || userEntries.length === 0) {
+      setPinnedId(undefined)
+      return
+    }
+    const nodes = userEntries
+      .map((e) => ({ id: e.id, node: feed.querySelector<HTMLElement>(`.msg-user[data-eid="${e.id}"]`) }))
+      .filter((n): n is { id: number; node: HTMLElement } => !!n.node)
+    if (nodes.length === 0) {
+      setPinnedId(undefined)
+      return
+    }
+
+    const recompute = () => {
+      const threshold = feed.getBoundingClientRect().top + PIN_BAR_CLEARANCE
+      let active: number | undefined
+      for (const { id, node } of nodes) {
+        if (node.getBoundingClientRect().top < threshold) active = id
+      }
+      setPinnedId(active)
+    }
+    recompute()
+    feed.addEventListener('scroll', recompute, { passive: true })
+    const ro = new ResizeObserver(recompute)
+    ro.observe(feed)
+    return () => {
+      feed.removeEventListener('scroll', recompute)
+      ro.disconnect()
+    }
   }, [sessionId, hasSnapshot, lastUserId])
 
   // Clicking the pinned bar jumps straight to the real message it's echoing,
-  // clearing the same top margin the IntersectionObserver above uses so the
-  // bar doesn't immediately re-cover it.
-  const scrollToLastUser = () => {
+  // clearing the same clearance the recompute above uses so the bar doesn't
+  // immediately re-cover it.
+  const scrollToPinned = () => {
     const feed = feedRef.current
-    if (!feed || lastUserId === undefined) return
-    const node = feed.querySelector<HTMLElement>(`.msg-user[data-eid="${lastUserId}"]`)
+    const id = pinnedId ?? lastUserId
+    if (!feed || id === undefined) return
+    const node = feed.querySelector<HTMLElement>(`.msg-user[data-eid="${id}"]`)
     if (!node) return
     feed.scrollTo({ top: node.offsetTop - PIN_BAR_CLEARANCE, behavior: 'smooth' })
   }
@@ -215,8 +243,12 @@ export function Chat({
       </div>
 
       <div className="feed-wrap">
-        {lastUser && (
-          <PinnedRequest text={lastUser.text} visible={reqPinned} onNavigate={scrollToLastUser} />
+        {userEntries.length > 0 && (
+          <PinnedRequest
+            text={pinnedTextRef.current || userEntries[userEntries.length - 1].text}
+            visible={pinnedId !== undefined}
+            onNavigate={scrollToPinned}
+          />
         )}
         <div className="feed" ref={feedRef} onScroll={onFeedScroll}>
           <div className="feed-inner" ref={innerRef}>
@@ -313,7 +345,7 @@ function Msg({
     case 'user':
       return (
         <div className="msg msg-user" data-eid={entry.id}>
-          <span className="msg-dot" style={{ background: 'var(--accent)' }} />
+          <span className="msg-dot msg-dot-user" />
           <div className="msg-you seclabel">YOU</div>
           <div className="msg-text user">{entry.text}</div>
         </div>
