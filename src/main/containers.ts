@@ -188,7 +188,9 @@ export class ContainerManager {
       await dockerRemove(owned.id, log)
     }
 
-    this.setStatus(sessionId, { ...(owned ?? {}), status: 'starting', error: undefined })
+    // `building` covers the clone and the image (ours or the CLI's); `up` flips
+    // it to `post` as soon as the container exists and its hooks start running.
+    this.setStatus(sessionId, { ...(owned ?? {}), status: 'building', error: undefined })
     try {
       const dir = await ensureClone(this.refOf(info), repoCfg, log)
       const configArgs = await materializeEnvConfig(this.refOf(info), envCfg, repoCfg, dir, log)
@@ -198,7 +200,8 @@ export class ContainerManager {
         dir,
         log,
         repoCfg.name,
-        canonicalRepoId(repoCfg.url)?.host
+        canonicalRepoId(repoCfg.url)?.host,
+        () => this.setStatus(sessionId, { ...(this.container(sessionId) ?? {}), status: 'post' })
       )
       const next: SessionContainer = {
         status: 'running',

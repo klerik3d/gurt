@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import type { RepoChanges, SessionInfo, SessionSnapshot, Tree } from '../../shared/types'
 import { applyLog, sessionStatus } from '../../shared/types'
+import { SESSION_DOT, containerDot } from './status'
 import { Icon } from './components/icons'
 import { EnvRepoMarks } from './components/tags'
 import { Sidebar, NameModal, NewSessionModal } from './components/Sidebar'
@@ -255,14 +256,7 @@ export default function App() {
             ? `${selection.ws} / ${selection.task}`
             : (ws?.name ?? 'gurt')
 
-  const crumbTone =
-    view === 'work' && activeStatus
-      ? activeStatus === 'waiting' || activeStatus === 'running' || activeStatus === 'starting'
-        ? 'yellow'
-        : activeStatus === 'idle'
-          ? 'green'
-          : 'outline'
-      : null
+  const crumbDot = view === 'work' && activeStatus ? SESSION_DOT[activeStatus] : null
 
   return (
     <div className="app">
@@ -278,9 +272,10 @@ export default function App() {
         </div>
         <div className="tb-center">
           <div className="tb-crumb">
-            {crumbTone && (
+            {crumbDot && (
               <span
-                className={`dot dot-${crumbTone}${activeStatus === 'running' || activeStatus === 'starting' ? ' dot-pulse' : ''}`}
+                className={`dot dot-${crumbDot.tone}${crumbDot.pulse ? ' dot-pulse' : ''}`}
+                title={crumbDot.label}
                 style={{ width: 7, height: 7 }}
               />
             )}
@@ -396,7 +391,10 @@ export default function App() {
       <div className="footer">
         <span className="foot-left">
           {(runningCount > 0 || needYouCount > 0) && (
-            <span className={`dot dot-yellow${runningCount > 0 ? ' dot-pulse' : ''}`} style={{ width: 6, height: 6 }} />
+            <span
+              className={`dot ${runningCount > 0 ? 'dot-green dot-pulse' : 'dot-yellow'}`}
+              style={{ width: 6, height: 6 }}
+            />
           )}
           {runningCount} running · {needYouCount} need you
         </span>
@@ -405,7 +403,7 @@ export default function App() {
           <>
             <span className="foot-env">
               <EnvRepoMarks env={activeInfo.env} repo={activeInfo.repo} />
-              <span>{activeContainer.status}</span>
+              <span>{containerDot(activeContainer.status).label}</span>
             </span>
             <span>gurt/{activeInfo.task}</span>
           </>
