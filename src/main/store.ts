@@ -301,6 +301,30 @@ export async function createTask(ws: string, task: string): Promise<void> {
   await writeJson(file, { envs: [] } satisfies TaskFile)
 }
 
+/** Renames the task's whole directory (config, clones, session logs move with
+ *  it). Caller stops the task's envs first — a running container's bind mount
+ *  is pinned to the old path and would be orphaned by the move — and re-persists
+ *  `sessions.json` under the new name afterwards. */
+export async function renameTask(ws: string, task: string, newName: string): Promise<void> {
+  validateName('task', newName)
+  if (newName === task) return
+  const from = taskDir(ws, task)
+  if (!existsSync(path.join(from, 'task.json')))
+    throw new Error(`task "${task}" not found in "${ws}"`)
+  const to = taskDir(ws, newName)
+  if (existsSync(to)) throw new Error(`task "${newName}" already exists in "${ws}"`)
+  // An append landing mid-rename would recreate the old directory and take the
+  // records with it, so let the in-flight ones finish first. Their chain keys
+  // are the old paths — drop them; the next append rebuilds them under the new.
+  const prefix = from + path.sep
+  for (const [file, chain] of appendChains) {
+    if (!file.startsWith(prefix)) continue
+    await chain
+    appendChains.delete(file)
+  }
+  await fs.rename(from, to)
+}
+
 export async function listTasks(ws: string): Promise<string[]> {
   const tasks: string[] = []
   for (const entry of await fs.readdir(wsDir(ws), { withFileTypes: true }).catch(() => [])) {

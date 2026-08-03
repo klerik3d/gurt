@@ -282,6 +282,18 @@ export class EnvManager {
     this.deps.sessions().schedule()
   }
 
+  /** Env half of a task rename: stop every env of the task that isn't already
+   *  stopped, so no running container's bind mount is left pointing at the
+   *  directory the rename is about to move. Clones and instance records
+   *  survive — only the containers come down, same as a manual `stop`. */
+  async stopTask(ws: string, task: string): Promise<void> {
+    const data = await store.getTask(ws, task)
+    for (const env of data.envs) {
+      if (env.status === 'stopped') continue
+      await this.stop({ workspace: ws, task, env: env.env })
+    }
+  }
+
   /** Env half of task deletion: containers, brokers and adapters of every env. */
   async teardownTask(ws: string, task: string): Promise<void> {
     const data = await store.getTask(ws, task)

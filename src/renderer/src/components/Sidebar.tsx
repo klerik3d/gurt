@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { ReactNode } from 'react'
+import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react'
 import type {
   AgentConfig,
   AgentsFile,
@@ -34,6 +34,13 @@ const STATUS_DOT: Record<
   waiting: { tone: 'yellow', pulse: true, label: 'needs you' },
   idle: { tone: 'green', label: 'idle — turn ended' }
 }
+
+/** One visible line of the tree — the unit arrow-key navigation moves over. */
+type Row =
+  | { kind: 'task'; ws: string; task: string }
+  | { kind: 'session'; id: string; ws: string; task: string }
+
+const rowKey = (r: Row) => (r.kind === 'task' ? `t:${r.ws}/${r.task}` : `s:${r.id}`)
 
 export function Sidebar({
   width,
@@ -77,6 +84,15 @@ export function Sidebar({
     setTaskDraftName('')
   })
   const agents = useAgents()
+  /** The row whose name is currently swapped for a text field, if any. */
+  const [renaming, setRenaming] = useState<Row | null>(null)
+  const [renameDraft, setRenameDraft] = useState('')
+  /** Guards the edit against resolving twice: both Escape and a keyboard commit
+   *  move focus off the input, and the blur that follows would otherwise run the
+   *  commit a second time — against a name that no longer exists. */
+  const renameSettled = useRef(false)
+  const treeRef = useRef<HTMLDivElement>(null)
+  const selectedRef = useRef<HTMLDivElement>(null)
 
   const wsData = tree?.workspaces.find((w) => w.name === ws)
 
@@ -96,12 +112,24 @@ export function Sidebar({
     }
   }, [wsMenuOpen])
 
-  const toggle = (key: string) =>
+  // Keyboard navigation can walk the selection out of view — follow it.
+  useEffect(() => {
+    selectedRef.current?.scrollIntoView({ block: 'nearest' })
+  }, [selection])
+
+  const setCollapse = (ws2: string, task: string, on: boolean) => {
     setCollapsed((prev) => {
       const next = new Set(prev)
-      next.has(key) ? next.delete(key) : next.add(key)
+      on ? next.add(`${ws2}/${task}`) : next.delete(`${ws2}/${task}`)
       return next
     })
+    // Collapsing hides the selected session — move the selection up to the task
+    // so it stays visible and arrow navigation keeps its place.
+    if (on && selection?.type === 'session') {
+      const owner = wsData?.tasks.find((t) => t.sessions.some((s) => s.id === selection.id))
+      if (owner?.name === task) onSelectTask(ws2, task)
+    }
+  }
 
   const deleteTask = async (taskName: string) => {
     if (!ws) return
@@ -126,6 +154,112 @@ export function Sidebar({
     } catch (e) {
       await alertDialog(e instanceof Error ? e.message : String(e))
     }
+  }
+
+  // The tree as the user sees it, top to bottom — collapsed tasks contribute
+  // only their own row. Arrow keys walk this list; nothing else needs the shape.
+  const rows: Row[] = []
+  for (const task of wsData?.tasks ?? []) {
+    rows.push({ kind: 'task', ws: wsData!.name, task: task.name })
+    if (!collapsed.has(`${wsData!.name}/${task.name}`))
+      for (const s of task.sessions)
+        rows.push({ kind: 'session', id: s.id, ws: wsData!.name, task: task.name })
+  }
+  const isSelected = (r: Row) =>
+    r.kind === 'task'
+      ? selection?.type === 'task' && selection.ws === r.ws && selection.task === r.task
+      : selection?.type === 'session' && selection.id === r.id
+  const cursor = rows.findIndex(isSelected)
+  const selectRow = (r: Row) =>
+    r.kind === 'task' ? onSelectTask(r.ws, r.task) : onSelectSession(r.id)
+
+  const startRename = (r: Row) => {
+    renameSettled.current = false
+    setRenameDraft(
+      r.kind === 'task'
+        ? r.task
+        : (wsData?.tasks.flatMap((t) => t.sessions).find((s) => s.id === r.id)?.title ?? '')
+    )
+    setRenaming(r)
+  }
+
+  /** `refocus` distinguishes committing with Enter — where the caret should fall
+   *  back to the tree so navigation continues — from committing by clicking
+   *  away, where focus has already gone somewhere the user chose. */
+  const commitRename = async (refocus: boolean) => {
+    if (renameSettled.current) return
+    renameSettled.current = true
+    const r = renaming
+    const name = renameDraft.trim()
+    setRenaming(null)
+    if (refocus) treeRef.current?.focus()
+    if (!r || !name) return
+    try {
+      if (r.kind === 'task') {
+        if (name === r.task) return
+        // The rename moves the task directory, so any container bind-mounted on
+        // it has to come down first — say so before doing it behind their back.
+        const live = (wsData?.tasks.find((t) => t.name === r.task)?.envs ?? []).filter(
+          (e) => e.status !== 'stopped'
+        )
+        if (
+          live.length &&
+          !(await confirmDialog(
+            `Renaming "${r.task}" stops its running environment(s): ${live.map((e) => e.env).join(', ')}. Continue?`,
+            { title: 'Rename task', confirmText: 'Rename' }
+          ))
+        )
+          return
+        await window.gurt.renameTask(r.ws, r.task, name)
+        // The selection holds the old name — re-point it at the renamed task.
+        if (selection?.type === 'task' && selection.ws === r.ws && selection.task === r.task)
+          onSelectTask(r.ws, name)
+      } else {
+        await window.gurt.renameSession(r.id, name)
+      }
+    } catch (e) {
+      await alertDialog(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  const cancelRename = () => {
+    renameSettled.current = true
+    setRenaming(null)
+    treeRef.current?.focus()
+  }
+
+  const onTreeKey = (e: ReactKeyboardEvent) => {
+    if (renaming || !rows.length) return
+    const cur = rows[cursor]
+    const collapsedNow = cur?.kind === 'task' && collapsed.has(`${cur.ws}/${cur.task}`)
+    switch (e.key) {
+      case 'ArrowDown':
+        selectRow(rows[Math.min(cursor + 1, rows.length - 1)])
+        break
+      case 'ArrowUp':
+        selectRow(rows[Math.max(cursor - 1, 0)])
+        break
+      case 'ArrowRight':
+        if (!cur) return
+        // Expand first; on an already-expanded task, step into its sessions.
+        if (cur.kind !== 'task') return
+        if (collapsedNow) setCollapse(cur.ws, cur.task, false)
+        else if (rows[cursor + 1]?.kind === 'session') selectRow(rows[cursor + 1])
+        break
+      case 'ArrowLeft':
+        if (!cur) return
+        // Mirror of Right: out of the sessions to the task, then collapse it.
+        if (cur.kind === 'session') onSelectTask(cur.ws, cur.task)
+        else if (!collapsedNow) setCollapse(cur.ws, cur.task, true)
+        break
+      case 'Enter':
+      case 'F2':
+        if (cur) startRename(cur)
+        break
+      default:
+        return
+    }
+    e.preventDefault()
   }
 
   return (
@@ -194,53 +328,104 @@ export function Sidebar({
         </div>
       </div>
 
-      <div className="sb-tree">
+      <div className="sb-tree" ref={treeRef} tabIndex={0} role="tree" onKeyDown={onTreeKey}>
         {wsData?.tasks.map((task) => {
           const tkey = `${wsData.name}/${task.name}`
           const isCollapsed = collapsed.has(tkey)
-          const taskSelected =
-            selection?.type === 'task' && selection.ws === wsData.name && selection.task === task.name
+          const row: Row = { kind: 'task', ws: wsData.name, task: task.name }
+          const taskSelected = isSelected(row)
+          const editing = renaming && rowKey(renaming) === rowKey(row)
           return (
             <div key={task.name} className="sb-group">
-              <div className={`sb-task ${taskSelected ? 'selected' : ''}`}>
-                <span className="sb-chev" onClick={() => toggle(tkey)}>
+              <div
+                className={`sb-task ${taskSelected ? 'selected' : ''}`}
+                ref={taskSelected ? selectedRef : undefined}
+                role="treeitem"
+                aria-expanded={!isCollapsed}
+                aria-selected={taskSelected}
+                onClick={() => onSelectTask(wsData.name, task.name)}
+                onDoubleClick={() => startRename(row)}
+              >
+                <span
+                  className="sb-chev"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setCollapse(wsData.name, task.name, !isCollapsed)
+                  }}
+                >
                   <Icon
                     name="chevron"
                     size={11}
                     style={isCollapsed ? { transform: 'rotate(-90deg)' } : undefined}
                   />
                 </span>
-                <span className="sb-task-name" onClick={() => onSelectTask(wsData.name, task.name)}>
-                  {task.name}
-                </span>
-                <TaskBadge repos={changes[tkey] ?? []} />
-                <span className="spacer" />
-                <button
-                  className="icon-sq sb-act"
-                  title="new session"
-                  onClick={() => onNewSession(wsData.name, task.name)}
-                >
-                  <Icon name="message" size={13} />
-                </button>
-                <button className="icon-sq sb-act" title="delete task" onClick={() => deleteTask(task.name)}>
-                  <Icon name="trash" size={13} />
-                </button>
+                {editing ? (
+                  <RenameInput
+                    value={renameDraft}
+                    onChange={setRenameDraft}
+                    onCommit={commitRename}
+                    onCancel={cancelRename}
+                  />
+                ) : (
+                  <>
+                    <span className="sb-task-name">{task.name}</span>
+                    <TaskBadge repos={changes[tkey] ?? []} />
+                    <span className="spacer" />
+                    <button
+                      className="icon-sq sb-act"
+                      title="new session"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onNewSession(wsData.name, task.name)
+                      }}
+                    >
+                      <Icon name="message" size={13} />
+                    </button>
+                    <button
+                      className="icon-sq sb-act"
+                      title="delete task"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        deleteTask(task.name)
+                      }}
+                    >
+                      <Icon name="trash" size={13} />
+                    </button>
+                  </>
+                )}
               </div>
               {!isCollapsed &&
                 task.sessions.map((s) => {
                   const status = sessionStatus({ ...s, ...activity[s.id] })
                   const dot = STATUS_DOT[status]
-                  const selected = selection?.type === 'session' && selection.id === s.id
+                  const srow: Row = { kind: 'session', id: s.id, ws: wsData.name, task: task.name }
+                  const selected = isSelected(srow)
+                  const renamingThis = renaming && rowKey(renaming) === rowKey(srow)
                   return (
                     <div
                       key={s.id}
                       className={`sb-session ${selected ? 'selected' : ''}`}
+                      ref={selected ? selectedRef : undefined}
+                      role="treeitem"
+                      aria-selected={selected}
                       title={dot.label}
                       onClick={() => onSelectSession(s.id)}
+                      onDoubleClick={() => startRename(srow)}
                     >
                       <Dot tone={dot.tone} pulse={dot.pulse} />
-                      <span className="sb-session-name">{s.title}</span>
-                      <span className="sb-session-client">{agentName(agents, s.agent)}</span>
+                      {renamingThis ? (
+                        <RenameInput
+                          value={renameDraft}
+                          onChange={setRenameDraft}
+                          onCommit={commitRename}
+                          onCancel={cancelRename}
+                        />
+                      ) : (
+                        <>
+                          <span className="sb-session-name">{s.title}</span>
+                          <span className="sb-session-client">{agentName(agents, s.agent)}</span>
+                        </>
+                      )}
                     </div>
                   )
                 })}
@@ -262,6 +447,38 @@ export function Sidebar({
         )}
       </div>
     </aside>
+  )
+}
+
+/** Inline name editor for a tree row: commits on Enter or blur, drops on Escape.
+ *  Its keys stop at the input so the tree's own arrow/Enter handling stays out. */
+function RenameInput({
+  value,
+  onChange,
+  onCommit,
+  onCancel
+}: {
+  value: string
+  onChange: (v: string) => void
+  onCommit: (refocus: boolean) => void
+  onCancel: () => void
+}) {
+  return (
+    <input
+      autoFocus
+      className="sb-rename"
+      value={value}
+      onFocus={(e) => e.currentTarget.select()}
+      onChange={(e) => onChange(e.target.value)}
+      onClick={(e) => e.stopPropagation()}
+      onDoubleClick={(e) => e.stopPropagation()}
+      onBlur={() => onCommit(false)}
+      onKeyDown={(e) => {
+        e.stopPropagation()
+        if (e.key === 'Enter') onCommit(true)
+        else if (e.key === 'Escape') onCancel()
+      }}
+    />
   )
 }
 
