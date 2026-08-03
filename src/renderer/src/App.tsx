@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import type { RepoChanges, SessionInfo, SessionSnapshot, Tree } from '../../shared/types'
 import { applyLog, sessionStatus } from '../../shared/types'
-import { envKey } from '../../shared/keys'
 import { Icon } from './components/icons'
 import { Sidebar, NameModal, NewSessionModal } from './components/Sidebar'
 import { SessionPane } from './components/SessionPane'
@@ -17,8 +16,6 @@ export type Selection =
   | null
 
 export type View = 'work' | 'dashboard' | 'settings'
-
-export { envKey }
 
 // Draggable sidebar width, persisted across launches.
 const SIDEBAR_MIN = 200
@@ -228,12 +225,8 @@ export default function App() {
 
   const activeSnap = selection?.type === 'session' ? snapshots[selection.id] : undefined
   const activeInfo = activeSnap?.info
-  const activeEnv =
-    activeInfo &&
-    tree?.workspaces
-      .find((w) => w.name === activeInfo.workspace)
-      ?.tasks.find((t) => t.name === activeInfo.task)
-      ?.envs.find((e) => e.env === activeInfo.env)
+  // The container is the session's own — no lookup through the task any more.
+  const activeContainer = activeInfo?.container
 
   // Footer counters across every session, live overlay included.
   let runningCount = 0
@@ -357,17 +350,7 @@ export default function App() {
                   snapshot={snapshots[selection.id]}
                   sessionId={selection.id}
                   queuePosition={positions[selection.id]}
-                  log={
-                    snapshots[selection.id]
-                      ? logs[
-                          envKey({
-                            workspace: snapshots[selection.id].info.workspace,
-                            task: snapshots[selection.id].info.task,
-                            env: snapshots[selection.id].info.env
-                          })
-                        ] ?? []
-                      : []
-                  }
+                  log={logs[selection.id] ?? []}
                   onDeleted={() => setSelection(null)}
                 />
               )}
@@ -417,11 +400,11 @@ export default function App() {
           {runningCount} running · {needYouCount} need you
         </span>
         <span className="spacer" />
-        {activeInfo && activeEnv && (
+        {activeInfo && activeContainer && (
           <>
             <span>
               {activeInfo.env}
-              {activeInfo.repo ? ` · ${activeInfo.repo}` : ''} {activeEnv.status}
+              {activeInfo.repo ? ` · ${activeInfo.repo}` : ''} {activeContainer.status}
             </span>
             <span>gurt/{activeInfo.task}</span>
           </>

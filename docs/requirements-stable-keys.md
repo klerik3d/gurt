@@ -15,6 +15,11 @@ The `${ws}/${task}/${repo}` key template is hand-built in 5 files (local
 paths and as identity. Centralizing key derivation makes a future
 name→id migration a one-file change instead of a codebase sweep.
 
+> **Superseded in part** by `requirements-session-container.md`: `envKey` and
+> `connKey` are gone. Everything bound to a container is keyed by session id
+> (`mcpServerKey`) or by the Docker container id; `taskKey` is unchanged. The
+> rule in §2 — no inline entity-key templates outside `keys.ts` — still holds.
+
 ## 2. Decisions
 
 - New `src/shared/keys.ts`:

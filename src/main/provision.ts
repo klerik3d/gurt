@@ -8,7 +8,7 @@ import type { EnvConfig, EnvRef, RepoConfig } from '../shared/types'
 import type { AgentDef } from '../shared/agents'
 import { envImageTag, parseEnvDevcontainer, validateEnvConfig } from '../shared/envConfig'
 import type { EnvImageStatus } from '../shared/api'
-import { cloneDir, getWorkspace, overrideConfigPath, rmTree, taskDir } from './store'
+import { cloneDir, getWorkspace, overrideConfigPath, taskDir } from './store'
 import { listCredentials } from './credentials'
 import { hostGitAccess } from './git/env'
 import { forgeFeatures, forgeWrappers } from './git/providers'
@@ -221,10 +221,6 @@ async function provisionClone(
     await run('git', ['-C', dir, ...gitArgs, 'checkout', branch], log, { env })
   else await run('git', ['-C', dir, ...gitArgs, 'checkout', '-b', branch], log, { env })
   return dir
-}
-
-export async function removeClone(ws: string, task: string, repo: string): Promise<void> {
-  await rmTree(cloneDir(ws, task, repo))
 }
 
 /** True if the clone at `dir` has uncommitted changes (staged, unstaged, or untracked). */
@@ -675,8 +671,40 @@ export function spawnAcpAdapter(
   })
 }
 
+/**
+ * Every gurt-created container the daemon currently knows, as session id →
+ * container id, running or not. Containers are stamped `gurt.session=<id>` at
+ * `up`, so Docker itself is the registry: this is what the persisted records
+ * are reconciled against at boot, and how containers orphaned by a crash (their
+ * session record never written) are found.
+ */
+export function dockerSessionContainers(): Promise<Map<string, string> | null> {
+  return new Promise((resolve) => {
+    const child = spawn('docker', [
+      'ps', '-a',
+      '--filter', 'label=gurt.session',
+      '--format', '{{.Label "gurt.session"}} {{.ID}}'
+    ])
+    let out = ''
+    child.stdout.on('data', (d: Buffer) => (out += d.toString()))
+    // null, not an empty map: "the daemon says there are none" and "we could not
+    // ask the daemon" must not read alike — the caller deletes records on the
+    // first and would wipe every one of them on the second.
+    child.on('error', () => resolve(null))
+    child.on('close', (code) => {
+      if (code !== 0) return resolve(null)
+      const map = new Map<string, string>()
+      for (const line of out.split('\n')) {
+        const [session, id] = line.trim().split(/\s+/)
+        if (session && id) map.set(session, id)
+      }
+      resolve(map)
+    })
+  })
+}
+
 /** True only if the container exists and is actually running (survives a Docker
- *  daemon restart, after which a previously-`running` env is left `Exited`). */
+ *  daemon restart, after which a previously-`running` container is left `Exited`). */
 export function dockerRunning(containerId: string): Promise<boolean> {
   return new Promise((resolve) => {
     const child = spawn('docker', ['inspect', '-f', '{{.State.Running}}', containerId])

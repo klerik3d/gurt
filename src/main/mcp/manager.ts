@@ -3,8 +3,8 @@ import type { AddressInfo } from 'node:net'
 import type { Server } from 'node:http'
 import type { AcpHttpMcpServer, EnvRef, McpMode, McpSelection } from '../../shared/types'
 import { mcpDef } from '../../shared/mcp'
-import { envKey, mcpServerKey } from '../../shared/keys'
-import { cloneDir, getTask } from '../store'
+import { mcpServerKey } from '../../shared/keys'
+import { cloneDir } from '../store'
 import { buildGithubHttpServer } from './githubServer'
 
 interface Running {
@@ -13,7 +13,8 @@ interface Running {
   descriptor: AcpHttpMcpServer
 }
 
-/** One host MCP server per (env, mcp id), reused across the env's sessions. */
+/** One host MCP server per (session, mcp id). Servers operate on the session's
+ *  clone, and are torn down with the session's container. */
 const running = new Map<string, Running>()
 
 function listen(server: Server): Promise<number> {
@@ -44,22 +45,22 @@ async function startServer(ref: EnvRef, repo: string, id: string, mode: McpMode)
 }
 
 /**
- * Ensure the host MCP servers for `selection` are running for this env and return
- * their ACP descriptors. Restarts a server whose granted mode changed.
+ * Ensure the host MCP servers for `selection` are running for this session and
+ * return their ACP descriptors. Restarts a server whose granted mode changed.
  */
 export async function resolveMcpServers(
   ref: EnvRef,
+  sessionId: string,
+  repo: string | undefined,
   selection: McpSelection[] | undefined
 ): Promise<AcpHttpMcpServer[]> {
   if (!selection?.length) return []
-  // The MCP servers operate on the env instance's provisioned clone. Without a
-  // repo there is no clone to serve.
-  const repo = (await getTask(ref.workspace, ref.task)).envs.find((e) => e.env === ref.env)?.repo
+  // The servers operate on the session's clone; without a repo there is none.
   if (!repo) return []
   const out: AcpHttpMcpServer[] = []
   for (const sel of selection) {
     if (!mcpDef(sel.id)) continue
-    const key = mcpServerKey(ref, sel.id)
+    const key = mcpServerKey(sessionId, sel.id)
     let rec = running.get(key)
     if (rec && rec.mode !== sel.mode) {
       rec.http.close()
@@ -75,9 +76,9 @@ export async function resolveMcpServers(
   return out
 }
 
-/** Tear down every host MCP server of an env (env stop/delete). */
-export function stopMcpServers(ref: EnvRef): void {
-  const prefix = `${envKey(ref)}::`
+/** Tear down every host MCP server of a session (its container is going away). */
+export function stopMcpServers(sessionId: string): void {
+  const prefix = `${sessionId}::`
   for (const [key, rec] of running) {
     if (!key.startsWith(prefix)) continue
     rec.http.close()
