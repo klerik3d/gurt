@@ -36,7 +36,7 @@ export class EnvManager {
   /** Envs whose git shims are installed this app run — cleared on stop/delete. */
   private gitShimsInstalled = new Set<string>()
   /** Container is stopped after a session sits idle this long with no new activity. */
-  private readonly ENV_IDLE_STOP_MS = 30_000
+  private readonly ENV_IDLE_STOP_MS = 10 * 60_000
   private idleTimers = new Map<string, NodeJS.Timeout>()
 
   constructor(private deps: EnvManagerDeps) {}
@@ -59,6 +59,18 @@ export class EnvManager {
 
   async status(ref: EnvRef): Promise<EnvStatus> {
     return (await this.find(ref))?.status ?? 'stopped'
+  }
+
+  /** External `vscode://` URI that has the desktop app attach to this env's running
+   *  container (the `vscode-remote` authority VS Code itself uses for "Attach to
+   *  Running Container"). Throws if it isn't up yet — the header button gates on
+   *  `status === 'running'`. */
+  async vscodeUri(ref: EnvRef): Promise<string> {
+    const env = await this.find(ref)
+    if (env?.status !== 'running' || !env.containerId || !env.remoteWorkspaceFolder)
+      throw new Error('environment is not running')
+    const hex = Buffer.from(env.containerId).toString('hex')
+    return `vscode://vscode-remote/attached-container+${hex}${env.remoteWorkspaceFolder}`
   }
 
   /**
