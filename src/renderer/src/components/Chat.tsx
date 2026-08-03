@@ -18,6 +18,7 @@ import type {
 import { agentName, useAgents } from '../useAgents'
 import { alertDialog } from '../dialog'
 import { Icon, Dot } from './icons'
+import { EnvRepoMarks } from './tags'
 import { VscodeButton } from './VscodeButton'
 
 /** Don't ping the main process on every keystroke — once per this interval is enough
@@ -202,9 +203,8 @@ export function Chat({
         <span className="spacer" />
         <span className="chat-pill">{sizeLabel}</span>
         <span className="chat-pill">
-          {info.env}
-          {info.repo ? ` · ${info.repo}` : ''}
-          {info.agent ? ` · ${agentName(agents, info.agent)}` : ''}
+          <EnvRepoMarks env={info.env} repo={info.repo} />
+          {info.agent && <span>· {agentName(agents, info.agent)}</span>}
         </span>
         <VscodeButton info={info} />
         {busy && <span className="chat-hint mono">esc to stop</span>}

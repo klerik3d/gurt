@@ -3,6 +3,7 @@ import type { SessionSnapshot, Tree } from '../../../shared/types'
 import { agentName, useAgents } from '../useAgents'
 import { alertDialog, confirmDialog } from '../dialog'
 import { Dot } from './icons'
+import { EnvRepoMarks, EnvTag, RepoTag } from './tags'
 import { Chat } from './Chat'
 import { NewSessionModal } from './Sidebar'
 import { VscodeButton } from './VscodeButton'
@@ -58,9 +59,10 @@ function Header({ snapshot }: { snapshot: SessionSnapshot }) {
       <span className="tag">{info.state}</span>
       <span className="spacer" />
       <span className="chat-pill">
-        {info.env}
-        {info.repo ? ` · ${info.repo}` : ''}
-        {info.agent ? ` · ${agentName(agents, info.agent)}` : ''}
+        <EnvRepoMarks env={info.env} repo={info.repo} />
+        {/* Own element, not a bare string: adjacent text nodes collapse into one
+            flex item and lose the row's gap. */}
+        {info.agent && <span>· {agentName(agents, info.agent)}</span>}
       </span>
       <VscodeButton info={info} />
     </div>
@@ -107,13 +109,11 @@ function NonStartedPane({
       {info.state === 'draft' && (
         <div className="draft-body">
           <div className="draft-settings">
-            <span className="tag">{info.env}</span>
+            <EnvTag name={info.env} />
             {info.repo ? (
-              <span className="tag">{info.repo}</span>
+              <RepoTag name={info.repo} />
             ) : (
-              <span className="tag" title="no repository — Run/Queue disabled">
-                no repo
-              </span>
+              <RepoTag name="no repo" title="no repository — Run/Queue disabled" />
             )}
             <span className="tag">{info.agent ? agentName(agents, info.agent) : 'no agent'}</span>
             <span className="tag">{info.autoAllow === false ? 'manual' : 'auto'}</span>

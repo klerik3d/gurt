@@ -3,6 +3,7 @@ import type { MouseEvent as ReactMouseEvent } from 'react'
 import type { RepoChanges, SessionInfo, SessionSnapshot, Tree } from '../../shared/types'
 import { applyLog, sessionStatus } from '../../shared/types'
 import { Icon } from './components/icons'
+import { EnvRepoMarks } from './components/tags'
 import { Sidebar, NameModal, NewSessionModal } from './components/Sidebar'
 import { SessionPane } from './components/SessionPane'
 import { TaskPane } from './components/TaskPane'
@@ -402,9 +403,9 @@ export default function App() {
         <span className="spacer" />
         {activeInfo && activeContainer && (
           <>
-            <span>
-              {activeInfo.env}
-              {activeInfo.repo ? ` · ${activeInfo.repo}` : ''} {activeContainer.status}
+            <span className="foot-env">
+              <EnvRepoMarks env={activeInfo.env} repo={activeInfo.repo} />
+              <span>{activeContainer.status}</span>
             </span>
             <span>gurt/{activeInfo.task}</span>
           </>
