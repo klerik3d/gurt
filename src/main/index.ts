@@ -1,4 +1,4 @@
-import { app, BrowserWindow, nativeImage } from 'electron'
+import { app, BrowserWindow, nativeImage, shell } from 'electron'
 import path from 'node:path'
 import { registerIpc } from './ipc'
 import { migrateAgentSecrets } from './credentials'
@@ -22,6 +22,25 @@ function createWindow(): void {
       contextIsolation: true,
       nodeIntegration: false
     }
+  })
+
+  // Any link the renderer wants to open in a new window (target="_blank",
+  // window.open) goes to the OS browser instead of a second app window.
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    shell.openExternal(url)
+    return { action: 'deny' }
+  })
+
+  // Same for in-place navigation (a plain <a href> click): only the app's
+  // own page may load in this window, everything else goes to the browser.
+  const isAppUrl = (url: string): boolean =>
+    process.env.ELECTRON_RENDERER_URL
+      ? url.startsWith(process.env.ELECTRON_RENDERER_URL)
+      : url.startsWith('file://')
+  win.webContents.on('will-navigate', (event, url) => {
+    if (isAppUrl(url)) return
+    event.preventDefault()
+    shell.openExternal(url)
   })
 
   if (process.env.ELECTRON_RENDERER_URL) {
