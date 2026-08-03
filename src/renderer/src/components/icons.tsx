@@ -25,6 +25,10 @@ export type IconName =
   | 'folder'
   | 'trash'
   | 'vscode'
+  | 'agent-claude'
+  | 'agent-codex'
+  | 'agent-opencode'
+  | 'agent-generic'
 
 const PATHS: Record<IconName, JSX.Element> = {
   search: (
@@ -156,6 +160,33 @@ const PATHS: Record<IconName, JSX.Element> = {
   ),
   vscode: (
     <path d="M23.15 2.587L18.21.21a1.494 1.494 0 0 0-1.705.29l-9.46 8.63-4.12-3.128a.999.999 0 0 0-1.276.057L.327 7.261A1 1 0 0 0 .326 8.74L3.899 12 .326 15.26a1 1 0 0 0 .001 1.479L1.65 17.94a.999.999 0 0 0 1.276.057l4.12-3.128 9.46 8.63a1.492 1.492 0 0 0 1.704.29l4.942-2.377A1.5 1.5 0 0 0 24 20.06V3.939a1.5 1.5 0 0 0-.85-1.352zm-5.146 14.861L10.826 12l7.178-5.448v10.896z" />
+  ),
+  // Generic (non-brand) marks for agent kinds — a plain glyph per kind rather
+  // than a vendor logo, so the tag set carries no trademark/licensing baggage.
+  'agent-claude': (
+    <path d="M12 3l1.6 5.4L19 10l-5.4 1.6L12 17l-1.6-5.4L5 10l5.4-1.6L12 3z" />
+  ),
+  'agent-codex': (
+    <>
+      <polyline points="16 6 22 12 16 18" />
+      <polyline points="8 6 2 12 8 18" />
+    </>
+  ),
+  'agent-opencode': (
+    <>
+      <rect x="2" y="4" width="20" height="16" rx="2" />
+      <polyline points="6 9 10 12 6 15" />
+      <line x1="12" y1="15" x2="16" y2="15" />
+    </>
+  ),
+  'agent-generic': (
+    <>
+      <rect x="4" y="8" width="16" height="12" rx="2" />
+      <circle cx="9" cy="14" r="1.3" />
+      <circle cx="15" cy="14" r="1.3" />
+      <line x1="12" y1="8" x2="12" y2="4" />
+      <circle cx="12" cy="3" r="1.3" />
+    </>
   )
 }
 

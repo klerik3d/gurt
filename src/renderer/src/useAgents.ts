@@ -39,3 +39,7 @@ export function useAgents(): AgentsFile {
 /** The agent instance's user-facing name, falling back to its id if unknown. */
 export const agentName = (agents: AgentsFile, id?: string): string =>
   (id && agents[id]?.label) || id || ''
+
+/** The agent instance's kind (references `AgentDef.id`), for icon lookup. */
+export const agentKind = (agents: AgentsFile, id?: string): string | undefined =>
+  id ? agents[id]?.kind : undefined

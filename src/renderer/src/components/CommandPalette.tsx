@@ -1,14 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { SessionStatus, Tree } from '../../../shared/types'
 import { sessionStatus } from '../../../shared/types'
-import { agentName, useAgents } from '../useAgents'
+import { agentKind, agentName, useAgents } from '../useAgents'
 import { Icon, Dot } from './icons'
+import { AgentMark } from './tags'
 
 interface SessionItem {
   kind: 'session'
   id: string
   title: string
   client: string
+  clientKind?: string
   status: SessionStatus
 }
 
@@ -90,6 +92,7 @@ export function CommandPalette({
               id: s.id,
               title: s.title,
               client: agentName(agents, s.agent),
+              clientKind: agentKind(agents, s.agent),
               status: sessionStatus({ ...s, ...activity[s.id] })
             })
       }
@@ -161,7 +164,11 @@ export function CommandPalette({
           <Dot tone={dot.tone} pulse={dot.pulse} />
           <span className={`pal-title ${active ? 'strong' : ''}`}>{item.title}</span>
           <span className="pal-meta mono">
-            {item.client && `${item.client} · `}
+            {item.client && (
+              <>
+                <AgentMark kind={item.clientKind} name={item.client} /> ·{' '}
+              </>
+            )}
             <span className={st.cls}>{st.word}</span>
           </span>
         </div>
