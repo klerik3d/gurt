@@ -8,6 +8,11 @@ first. Key code: `src/main/ipc.ts` (everything moves out of here),
 `src/shared/types.ts`. Do not change the contract described here without
 asking the owner. Depends on: `requirements-stable-keys.md` (merged first).
 
+> **Superseded in part** by `requirements-session-container.md`: `EnvManager`
+> (`src/main/envs.ts`) is now `ContainerManager` (`src/main/containers.ts`) and
+> manages one container per session rather than per-task env instances. §3 below
+> describes the former shape.
+
 ## 1. Motivation
 
 `ipc.ts` is simultaneously the composition root, the env-lifecycle manager

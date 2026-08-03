@@ -1,22 +1,22 @@
-// Composition root of the electron-free core: wires EnvManager and
+// Composition root of the electron-free core: wires ContainerManager and
 // SessionManager over the domain bus and exposes the operations that span
 // both. Importable without an Electron app (headless runs, orchestrator,
 // tests).
 import type { Tree } from '../shared/types'
 import type { SessionDraftPatch } from '../shared/api'
 import { resolveMcpServers, stopMcpServers } from './mcp/manager'
-import { ensureGurtServer, stopGurtServer, stopGurtServersForEnv } from './mcp/gurtServer'
+import { ensureGurtServer, stopGurtServer } from './mcp/gurtServer'
 import { isDirty } from './provision'
 import * as store from './store'
 import { cloneDir } from './store'
 import * as changes from './changes'
 import { createBus, type Bus } from './bus'
-import { EnvManager } from './envs'
+import { ContainerManager } from './containers'
 import { SessionManager, type RestoredSession } from './sessions'
 
 export interface Kernel {
   bus: Bus
-  envs: EnvManager
+  containers: ContainerManager
   sessions: SessionManager
   /** store.buildTree + session overlay. */
   tree(): Promise<Tree>
@@ -38,33 +38,31 @@ export interface Kernel {
 export function createKernel(): Kernel {
   const bus = createBus()
 
-  // EnvManager and SessionManager depend on each other; the lazy getter breaks
-  // the construction-order knot.
+  // The container manager reads and writes container state that lives *on* the
+  // session, and the session manager asks it to provision — a genuine mutual
+  // dependency, so one lazy getter breaks the construction-order knot.
   let sessions: SessionManager
 
-  const envs = new EnvManager({ sessions: () => sessions, bus })
+  const containers = new ContainerManager({
+    bus,
+    session: (id) => sessions.sessionInfo(id),
+    sessions: () => sessions.allSessions(),
+    patchContainer: (id, patch) => sessions.patchContainer(id, patch),
+    isSessionIdle: (id) => sessions.isSessionIdle(id),
+    detach: (id) => sessions.detach(id)
+  })
 
   sessions = new SessionManager(
     {
-      resolveEnv: (ref, repo, session, agentId, gitAccess) =>
-        envs.resolveEnv(ref, repo, session, agentId, gitAccess),
-      releaseEnv: (ref, sessionId) => {
-        envs.releaseSession(ref, sessionId).catch((e) => console.error('env release failed:', e))
+      resolveLaunch: (sessionId) => containers.resolveLaunch(sessionId),
+      releaseContainer: (sessionId) => {
+        containers.release(sessionId).catch((e) => console.error('container release failed:', e))
       },
-      installAdapter: (ref, ctx) => envs.installAdapter(ref, ctx),
+      installAdapter: (ctx) => containers.installAdapter(ctx),
       resolveMcpServers,
-      stopMcpServers: (ref) => {
-        stopMcpServers(ref)
-        stopGurtServersForEnv(ref)
-      },
+      stopMcpServers,
       resolveGurtServer: ensureGurtServer,
       stopGurtServer,
-      taskEnvStates: async (ws, task) =>
-        (await store.getTask(ws, task)).envs.map((e) => ({
-          env: e.env,
-          repo: e.repo,
-          status: e.status
-        })),
       persist: (ws, task, records) => {
         store.writeSessions(ws, task, records).catch((e) => console.error('persist failed:', e))
       },
@@ -84,22 +82,34 @@ export function createKernel(): Kernel {
     bus
   )
 
-  // Idle auto-stop policy: an env whose sessions all finished their turns is
-  // stopped after a grace period; any activity cancels the pending stop.
-  // `noteIdle` re-verifies idleness *and* the running status before stopping.
-  bus.on('session.turn', ({ ref, phase }) => {
-    if (phase === 'started') envs.noteActive(ref)
-    else if (sessions.isEnvIdle(ref)) envs.noteIdle(ref)
+  // Idle auto-stop policy: a session's container is stopped after it has sat
+  // idle for a grace period; any activity cancels the pending stop. `noteIdle`
+  // re-verifies idleness *and* the running status before stopping.
+  const idle = (sessionId: string): void => {
+    if (sessions.isSessionIdle(sessionId)) containers.noteIdle(sessionId)
+  }
+  bus.on('session.turn', ({ sessionId, phase }) => {
+    if (phase === 'started') containers.noteActive(sessionId)
+    else idle(sessionId)
   })
-  bus.on('session.awaiting', ({ ref, awaiting }) => {
-    if (!awaiting && sessions.isEnvIdle(ref)) envs.noteIdle(ref)
+  bus.on('session.awaiting', ({ sessionId, awaiting }) => {
+    if (!awaiting) idle(sessionId)
   })
-  // A dead adapter leaves its non-busy sessions with no turn end to emit — the
-  // env would otherwise keep running forever if a pending stop had been cancelled.
-  bus.on('env.adapterExited', ({ ref }) => {
-    if (sessions.isEnvIdle(ref)) envs.noteIdle(ref)
+  // A dead adapter leaves a non-busy session with no turn end to emit — its
+  // container would otherwise keep running if a pending stop had been cancelled.
+  bus.on('session.adapterExited', ({ sessionId }) => idle(sessionId))
+  // A failed start drops the session back to `draft` while its container may
+  // already be up — and no turn will ever end to trigger the check. Without
+  // this the container would hold the session's repo indefinitely.
+  bus.on('session.state', ({ sessionId, state }) => {
+    if (state === 'draft') idle(sessionId)
   })
-  bus.on('env.activity', ({ ref }) => envs.noteActive(ref))
+  bus.on('session.activity', ({ sessionId }) => containers.noteActive(sessionId))
+  // A container that came down released its session's clone — the next queued
+  // session of that repo can start now.
+  bus.on('container.status', ({ status }) => {
+    if (status === 'stopped' || status === 'error') sessions.schedule()
+  })
 
   async function restoreSessions(): Promise<void> {
     sessions.loadAgentConfigs(await store.getAgentConfigs())
@@ -119,6 +129,9 @@ export function createKernel(): Kernel {
         }
         sessions.restore(restored)
       }
+    // Docker is the registry: correct the restored container records against it
+    // (and reap orphans) before anything tries to exec into one.
+    await containers.reconcile().catch((e) => console.error('container reconcile failed:', e))
     // Resume the queue once, after everything is restored.
     sessions.schedule()
   }
@@ -126,7 +139,7 @@ export function createKernel(): Kernel {
 
   return {
     bus,
-    envs,
+    containers,
     sessions,
 
     async tree(): Promise<Tree> {
@@ -137,7 +150,7 @@ export function createKernel(): Kernel {
     },
 
     async deleteTask(ws: string, task: string): Promise<void> {
-      await envs.teardownTask(ws, task)
+      await containers.teardownTask(ws, task)
       sessions.dropTaskSessions(ws, task)
       await store.removeTaskDir(ws, task)
       bus.emit('tree.changed', undefined)
@@ -145,7 +158,7 @@ export function createKernel(): Kernel {
 
     async renameTask(ws: string, task: string, newName: string): Promise<void> {
       if (newName === task) return
-      await envs.stopTask(ws, task)
+      await containers.stopTask(ws, task)
       await store.renameTask(ws, task, newName)
       await changes.renameTaskBranches(ws, newName, task)
       sessions.renameTask(ws, task, newName)
@@ -153,11 +166,9 @@ export function createKernel(): Kernel {
     },
 
     async taskDirtyRepos(ws: string, task: string): Promise<string[]> {
-      const data = await store.getTask(ws, task)
-      // Clones are keyed by repo name and shared across envs — dedupe by repo.
-      const repos = [...new Set(data.envs.map((e) => e.repo).filter((r): r is string => !!r))]
       const dirty: string[] = []
-      for (const repo of repos) if (await isDirty(cloneDir(ws, task, repo))) dirty.push(repo)
+      for (const repo of await store.taskClones(ws, task))
+        if (await isDirty(cloneDir(ws, task, repo))) dirty.push(repo)
       return dirty
     },
 

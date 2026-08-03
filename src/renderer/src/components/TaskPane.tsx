@@ -1,13 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
-import type { EnvRef, EnvState, RepoChanges, Tree } from '../../../shared/types'
+import type { ContainerStatus, RepoChanges, Tree } from '../../../shared/types'
 import { isActionable, isDelivered } from '../../../shared/types'
-import { envKey } from '../App'
 import { agentName, useAgents } from '../useAgents'
 import { alertDialog, confirmDialog } from '../dialog'
 import { Icon, Dot } from './icons'
 import { Modal } from './Modal'
 
-const ENV_DOT: Record<EnvState['status'], { tone: 'green' | 'yellow' | 'red' | 'outline'; pulse?: boolean }> = {
+const ENV_DOT: Record<ContainerStatus, { tone: 'green' | 'yellow' | 'red' | 'outline'; pulse?: boolean }> = {
   stopped: { tone: 'outline' },
   starting: { tone: 'yellow', pulse: true },
   running: { tone: 'yellow', pulse: true },
@@ -49,6 +48,9 @@ export function TaskPane({
   const queued = taskData.sessions
     .filter((s) => s.state === 'queued')
     .sort((a, b) => (positions[a.id] ?? 0) - (positions[b.id] ?? 0))
+  // A container belongs to exactly one session, so the task's infrastructure is
+  // just the sessions that have provisioned one.
+  const withContainer = taskData.sessions.filter((s) => s.container)
 
   return (
     <div className="task-pane">
@@ -67,29 +69,33 @@ export function TaskPane({
         <div className="tp-sep" />
 
         <div className="tp-section">
-          <span className="seclabel">ENVIRONMENTS</span>
-          {taskData.envs.length === 0 && (
-            <div className="tp-empty">no environments yet — they are created when a session starts</div>
+          <span className="seclabel">CONTAINERS</span>
+          {withContainer.length === 0 && (
+            <div className="tp-empty">no containers yet — one is created when a session starts</div>
           )}
-          {taskData.envs.map((env) => {
-            const ref: EnvRef = { workspace: ws, task, env: env.env }
-            const key = envKey(ref)
-            const dot = ENV_DOT[env.status]
+          {withContainer.map((s) => {
+            const c = s.container!
+            const dot = ENV_DOT[c.status]
             return (
-              <div key={env.env}>
+              <div key={s.id}>
                 <div className="env-row">
                   <Dot tone={dot.tone} pulse={dot.pulse} />
-                  <span className="env-name">{env.env}</span>
-                  {env.repo && <span className="tag">{env.repo}</span>}
-                  <span className={`env-status ${env.status === 'error' ? 'red' : 'dim'}`}>
-                    {env.status}
+                  <span className="env-name clickable" onClick={() => onSelectSession(s.id)}>
+                    {s.title}
                   </span>
-                  {env.error && <span className="env-err mono">{env.error}</span>}
+                  <span className="tag">{s.env}</span>
+                  {c.repo && <span className="tag">{c.repo}</span>}
+                  <span className={`env-status ${c.status === 'error' ? 'red' : 'dim'}`}>
+                    {c.status}
+                  </span>
+                  {c.error && <span className="env-err mono">{c.error}</span>}
                   <span className="spacer" />
-                  {(env.status === 'running' || env.status === 'starting') && (
+                  {(c.status === 'running' || c.status === 'starting') && (
                     <button
                       className="btn btn-xs"
-                      onClick={() => window.gurt.stopEnv(ref).catch((e) => alertDialog(String(e)))}
+                      onClick={() =>
+                        window.gurt.stopContainer(s.id).catch((e) => alertDialog(String(e)))
+                      }
                     >
                       Stop
                     </button>
@@ -99,25 +105,25 @@ export function TaskPane({
                     onClick={async () => {
                       if (
                         await confirmDialog(
-                          `Delete env "${env.env}" (container + clone)? Its sessions are kept and re-provision on next run. Uncommitted work is lost.`,
-                          { title: 'Delete environment', confirmText: 'Delete', danger: true }
+                          `Delete the container of "${s.title}"? The session and its clone are kept — it re-provisions on the next run.`,
+                          { title: 'Delete container', confirmText: 'Delete', danger: true }
                         )
                       )
-                        window.gurt.removeTaskEnv(ref).catch((e) => alertDialog(String(e)))
+                        window.gurt.releaseContainer(s.id).catch((e) => alertDialog(String(e)))
                     }}
                   >
                     Delete
                   </button>
                   <button
                     className="btn-log mono"
-                    onClick={() => setOpenLog(openLog === key ? null : key)}
+                    onClick={() => setOpenLog(openLog === s.id ? null : s.id)}
                   >
-                    {openLog === key ? 'hide' : 'log'}
+                    {openLog === s.id ? 'hide' : 'log'}
                   </button>
                 </div>
-                {openLog === key && (
+                {openLog === s.id && (
                   <pre className="env-log">
-                    {(logs[key] ?? []).join('\n') || 'no provisioning output yet'}
+                    {(logs[s.id] ?? []).join('\n') || 'no provisioning output yet'}
                   </pre>
                 )}
               </div>
@@ -130,7 +136,7 @@ export function TaskPane({
         <div className="tp-section">
           <div className="tp-sec-head">
             <span className="seclabel">QUEUE</span>
-            <span className="tp-sec-hint">· starts when the environment and its repository are free</span>
+            <span className="tp-sec-hint">· starts when its repository is free</span>
           </div>
           {queued.length === 0 && <div className="tp-dashed">no queued sessions in this task</div>}
           {queued.map((s) => (

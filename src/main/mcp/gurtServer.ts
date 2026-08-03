@@ -5,7 +5,6 @@ import { z } from 'zod'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import type { AcpHttpMcpServer, ChangeProposal, EnvRef } from '../../shared/types'
-import { envKey } from '../../shared/keys'
 
 /**
  * The turn contract: every turn ends with the agent calling `complete` on this
@@ -193,14 +192,4 @@ export function stopGurtServer(sessionId: string): void {
   if (!rec) return
   rec.http.close()
   running.delete(sessionId)
-}
-
-/** Tear down every `gurt` server of an env (env stop/delete). */
-export function stopGurtServersForEnv(ref: EnvRef): void {
-  const key = envKey(ref)
-  for (const [sessionId, rec] of running) {
-    if (envKey(rec.ref) !== key) continue
-    rec.http.close()
-    running.delete(sessionId)
-  }
 }

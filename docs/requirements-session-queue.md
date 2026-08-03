@@ -8,6 +8,10 @@ code: `src/shared/types.ts`, `src/shared/agents.ts`, `src/main/{store,provision,
 `src/renderer/src/**`. Do not change the contract described here without
 asking the owner.
 
+> **Superseded in part** by `requirements-session-container.md`: ACP connections
+> are per session (not per `(env, agent)`), and the start gate requires only that
+> the session's repo is free — the env is no longer a predicate.
+
 ## 1. Motivation
 
 Today an environment (task × repo container) is bound to one agent, and

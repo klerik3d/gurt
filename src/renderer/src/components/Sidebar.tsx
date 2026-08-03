@@ -199,13 +199,13 @@ export function Sidebar({
         if (name === r.task) return
         // The rename moves the task directory, so any container bind-mounted on
         // it has to come down first — say so before doing it behind their back.
-        const live = (wsData?.tasks.find((t) => t.name === r.task)?.envs ?? []).filter(
-          (e) => e.status !== 'stopped'
+        const live = (wsData?.tasks.find((t) => t.name === r.task)?.sessions ?? []).filter(
+          (s) => s.container && s.container.status !== 'stopped'
         )
         if (
           live.length &&
           !(await confirmDialog(
-            `Renaming "${r.task}" stops its running environment(s): ${live.map((e) => e.env).join(', ')}. Continue?`,
+            `Renaming "${r.task}" stops the container(s) of: ${live.map((s) => s.title).join(', ')}. Continue?`,
             { title: 'Rename task', confirmText: 'Rename' }
           ))
         )
