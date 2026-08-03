@@ -15,8 +15,10 @@ import type {
   SessionModes,
   SessionSnapshot
 } from '../../../shared/types'
+import { sessionStatus } from '../../../shared/types'
 import { agentKind, agentName, useAgents } from '../useAgents'
 import { alertDialog } from '../dialog'
+import { SESSION_DOT } from '../status'
 import { Icon, Dot } from './icons'
 import { AgentMark, EnvRepoMarks } from './tags'
 import { VscodeButton } from './VscodeButton'
@@ -221,10 +223,13 @@ export function Chat({
         ? null
         : 'thinking…'
 
+  // `busy` is the live flag, fresher than the copy on `info`.
+  const headDot = SESSION_DOT[sessionStatus({ ...info, busy })]
+
   return (
     <div className="chat">
       <div className="chat-head">
-        <Dot tone={busy ? 'yellow' : info.awaitingInput ? 'yellow' : 'green'} pulse={busy} />
+        <Dot tone={headDot.tone} pulse={headDot.pulse} />
         <span className="chat-title">
           {info.task} / {info.title}
         </span>

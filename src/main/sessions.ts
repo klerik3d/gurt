@@ -553,7 +553,8 @@ export class SessionManager {
     for (const o of this.sessions.values()) {
       if (o.info.id === s.info.id || this.repoKey(o) !== rkey) continue
       const live = o.info.container?.status
-      if (o.info.state === 'starting' || live === 'starting' || live === 'running') return o
+      const busyContainer = live === 'building' || live === 'post' || live === 'running'
+      if (o.info.state === 'starting' || busyContainer) return o
     }
     return undefined
   }

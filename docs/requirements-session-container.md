@@ -61,8 +61,8 @@ address a physical resource.
   working tree shared by every session of the task that picked that repo, and it
   outlives all of them (it holds their uncommitted work). So a repo is exclusive
   across the task: `SessionManager.repoHolder` returns the session holding it,
-  where holding means *mid-start, or owning a container that is starting or
-  running*. An idle session whose container auto-stopped holds nothing and
+  where holding means *mid-start, or owning a container that is provisioning
+  (`building`/`post`) or running*. An idle session whose container auto-stopped holds nothing and
   releases the repo for the next session — which is how a task runs a series of
   sessions against one repo without deleting the finished ones.
 
