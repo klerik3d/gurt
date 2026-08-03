@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
 import type { SessionSnapshot, Tree } from '../../../shared/types'
-import { agentName, useAgents } from '../useAgents'
+import { agentKind, agentName, useAgents } from '../useAgents'
 import { alertDialog, confirmDialog } from '../dialog'
 import { Dot } from './icons'
-import { EnvRepoMarks, EnvTag, RepoTag } from './tags'
+import { AgentMark, AgentTag, EnvRepoMarks, EnvTag, RepoTag } from './tags'
 import { Chat } from './Chat'
 import { NewSessionModal } from './Sidebar'
 import { VscodeButton } from './VscodeButton'
@@ -62,7 +62,11 @@ function Header({ snapshot }: { snapshot: SessionSnapshot }) {
         <EnvRepoMarks env={info.env} repo={info.repo} />
         {/* Own element, not a bare string: adjacent text nodes collapse into one
             flex item and lose the row's gap. */}
-        {info.agent && <span>· {agentName(agents, info.agent)}</span>}
+        {info.agent && (
+          <span>
+            · <AgentMark kind={agentKind(agents, info.agent)} name={agentName(agents, info.agent)} />
+          </span>
+        )}
       </span>
       <VscodeButton info={info} />
     </div>
@@ -115,7 +119,11 @@ function NonStartedPane({
             ) : (
               <RepoTag name="no repo" title="no repository — Run/Queue disabled" />
             )}
-            <span className="tag">{info.agent ? agentName(agents, info.agent) : 'no agent'}</span>
+            {info.agent ? (
+              <AgentTag kind={agentKind(agents, info.agent)} name={agentName(agents, info.agent)} />
+            ) : (
+              <span className="tag">no agent</span>
+            )}
             <span className="tag">{info.autoAllow === false ? 'manual' : 'auto'}</span>
             {info.gitAccess && <span className="tag tag-green">git</span>}
             {info.mcp?.map((m) => (

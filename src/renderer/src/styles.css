@@ -338,6 +338,17 @@ textarea.input {
   flex: none;
   opacity: 0.75;
 }
+/* Unpilled agent mark — inline icon + name, used where a bare `.tag` pill
+   would be too heavy (chat header, session list, palette). */
+.agent-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  vertical-align: middle;
+}
+.agent-mark svg {
+  flex: none;
+}
 .tag-green {
   color: var(--green);
   border-color: var(--green);
