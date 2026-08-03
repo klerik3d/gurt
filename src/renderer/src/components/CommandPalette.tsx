@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { SessionStatus, Tree } from '../../../shared/types'
 import { sessionStatus } from '../../../shared/types'
 import { agentKind, agentName, useAgents } from '../useAgents'
+import type { Tone } from '../status'
+import { SESSION_DOT } from '../status'
 import { Icon, Dot } from './icons'
 import { AgentMark } from './tags'
 
@@ -30,24 +32,17 @@ interface ActionItem {
 
 type Item = ActionItem | SessionItem | TaskItem
 
-const STATUS_WORD: Record<SessionStatus, { word: string; cls: string }> = {
-  draft: { word: 'draft', cls: 'faint' },
-  queued: { word: 'queued', cls: 'accent' },
-  starting: { word: 'starting', cls: 'yellow' },
-  running: { word: 'running', cls: 'yellow' },
-  waiting: { word: 'waits', cls: 'yellow' },
-  idle: { word: 'idle', cls: 'green' }
+/** Short wording for the result row; its colour comes from the shared mark. */
+const STATUS_WORD: Record<SessionStatus, string> = {
+  draft: 'draft',
+  queued: 'queued',
+  starting: 'starting',
+  running: 'working',
+  waiting: 'waits',
+  idle: 'idle'
 }
 
-const STATUS_DOT: Record<SessionStatus, { tone: 'green' | 'yellow' | 'red' | 'accent' | 'outline'; pulse?: boolean }> =
-  {
-    draft: { tone: 'outline' },
-    queued: { tone: 'accent' },
-    starting: { tone: 'yellow', pulse: true },
-    running: { tone: 'yellow', pulse: true },
-    waiting: { tone: 'yellow', pulse: true },
-    idle: { tone: 'green' }
-  }
+const wordClass = (tone: Tone) => (tone === 'outline' ? 'faint' : tone)
 
 export function CommandPalette({
   tree,
@@ -157,8 +152,7 @@ export function CommandPalette({
         </div>
       )
     if (item.kind === 'session') {
-      const dot = STATUS_DOT[item.status]
-      const st = STATUS_WORD[item.status]
+      const dot = SESSION_DOT[item.status]
       return (
         <div key={item.id} {...common}>
           <Dot tone={dot.tone} pulse={dot.pulse} />
@@ -169,7 +163,7 @@ export function CommandPalette({
                 <AgentMark kind={item.clientKind} name={item.client} /> ·{' '}
               </>
             )}
-            <span className={st.cls}>{st.word}</span>
+            <span className={wordClass(dot.tone)}>{STATUS_WORD[item.status]}</span>
           </span>
         </div>
       )

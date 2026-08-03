@@ -1,18 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
-import type { ContainerStatus, RepoChanges, Tree } from '../../../shared/types'
+import type { RepoChanges, Tree } from '../../../shared/types'
 import { isActionable, isDelivered } from '../../../shared/types'
 import { agentKind, agentName, useAgents } from '../useAgents'
 import { alertDialog, confirmDialog } from '../dialog'
+import { containerDot } from '../status'
 import { Icon, Dot } from './icons'
 import { AgentTag, EnvTag, RepoTag } from './tags'
 import { Modal } from './Modal'
-
-const ENV_DOT: Record<ContainerStatus, { tone: 'green' | 'yellow' | 'red' | 'outline'; pulse?: boolean }> = {
-  stopped: { tone: 'outline' },
-  starting: { tone: 'yellow', pulse: true },
-  running: { tone: 'yellow', pulse: true },
-  error: { tone: 'red' }
-}
 
 export function TaskPane({
   tree,
@@ -76,7 +70,7 @@ export function TaskPane({
           )}
           {withContainer.map((s) => {
             const c = s.container!
-            const dot = ENV_DOT[c.status]
+            const dot = containerDot(c.status)
             return (
               <div key={s.id}>
                 <div className="env-row">
@@ -87,11 +81,11 @@ export function TaskPane({
                   <EnvTag name={s.env} />
                   {c.repo && <RepoTag name={c.repo} />}
                   <span className={`env-status ${c.status === 'error' ? 'red' : 'dim'}`}>
-                    {c.status}
+                    {dot.label}
                   </span>
                   {c.error && <span className="env-err mono">{c.error}</span>}
                   <span className="spacer" />
-                  {(c.status === 'running' || c.status === 'starting') && (
+                  {c.status !== 'stopped' && c.status !== 'error' && (
                     <button
                       className="btn btn-xs"
                       onClick={() =>

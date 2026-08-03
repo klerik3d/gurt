@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
 import type { SessionSnapshot, Tree } from '../../../shared/types'
+import { sessionStatus } from '../../../shared/types'
 import { agentKind, agentName, useAgents } from '../useAgents'
 import { alertDialog, confirmDialog } from '../dialog'
+import { SESSION_DOT } from '../status'
 import { Dot } from './icons'
 import { AgentMark, AgentTag, EnvRepoMarks, EnvTag, RepoTag } from './tags'
 import { Chat } from './Chat'
@@ -39,17 +41,10 @@ export function SessionPane({
   )
 }
 
-const STATE_DOT = {
-  draft: { tone: 'outline' as const, pulse: false },
-  queued: { tone: 'accent' as const, pulse: false },
-  starting: { tone: 'yellow' as const, pulse: true },
-  started: { tone: 'green' as const, pulse: false }
-}
-
 function Header({ snapshot }: { snapshot: SessionSnapshot }) {
   const { info } = snapshot
   const agents = useAgents()
-  const dot = STATE_DOT[info.state]
+  const dot = SESSION_DOT[sessionStatus(info)]
   return (
     <div className="chat-head">
       <Dot tone={dot.tone} pulse={dot.pulse} />

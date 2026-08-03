@@ -411,6 +411,11 @@ export async function readSessions(ws: string, task: string): Promise<PersistedS
       r.info.state = 'draft'
       r.info.queuedAt = undefined
     }
+    // Same for the container's provisioning phases (and the legacy `starting`):
+    // nothing is building any more, so the record restores as stopped and the
+    // boot reconcile decides from Docker whether it is actually up.
+    const c = r.info.container
+    if (c && c.status !== 'running' && c.status !== 'error') c.status = 'stopped'
   }
   // Write the env/repo split back once, so the legacy key leaves the disk too.
   if (migrated) await writeSessions(ws, task, records)

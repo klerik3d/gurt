@@ -558,13 +558,24 @@ export interface UpResult {
   remoteWorkspaceFolder: string
 }
 
+/**
+ * The CLI announces every lifecycle hook it is about to run with this banner
+ * (`Running the postCreateCommand from devcontainer.json...`, or
+ * `Running 'name' from <feature>...` for named/feature commands). Seeing it is
+ * the point where the image is done and the container exists — everything after
+ * it is post-commands. Bold-ANSI wrapped, hence the loose match.
+ */
+const LIFECYCLE_BANNER = /Running (?:the \w+|'[^']*') from /
+
 export async function devcontainerUp(
   session: string,
   configArgs: string[],
   workspaceFolder: string,
   log: LogSink,
   repoName: string,
-  repoHost?: string | null
+  repoHost?: string | null,
+  /** Called once, when `up` moves from building the image to post-commands. */
+  onPostCommands?: () => void
 ): Promise<UpResult> {
   // The container is agent-agnostic: only the node feature is injected, plus any
   // forge-CLI features for the repo's host (computed from the host alone, so the
@@ -578,7 +589,15 @@ export async function devcontainerUp(
     ...idLabelArgs(session),
     ...configArgs
   ]
-  const { code, stdout } = await runNodeCli(args, log)
+  let announced = false
+  const watch: LogSink = (line) => {
+    if (!announced && LIFECYCLE_BANNER.test(line)) {
+      announced = true
+      onPostCommands?.()
+    }
+    log(line)
+  }
+  const { code, stdout } = await runNodeCli(args, watch)
   const jsonLine = stdout
     .split('\n')
     .reverse()
