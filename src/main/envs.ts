@@ -36,7 +36,7 @@ export class EnvManager {
   /** Envs whose git shims are installed this app run — cleared on stop/delete. */
   private gitShimsInstalled = new Set<string>()
   /** Container is stopped after a session sits idle this long with no new activity. */
-  private readonly ENV_IDLE_STOP_MS = 30_000
+  private readonly ENV_IDLE_STOP_MS = 10 * 60_000
   private idleTimers = new Map<string, NodeJS.Timeout>()
 
   constructor(private deps: EnvManagerDeps) {}
