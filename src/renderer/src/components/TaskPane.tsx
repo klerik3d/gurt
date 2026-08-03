@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ContainerStatus, RepoChanges, Tree } from '../../../shared/types'
 import { isActionable, isDelivered } from '../../../shared/types'
-import { agentName, useAgents } from '../useAgents'
+import { agentKind, agentName, useAgents } from '../useAgents'
 import { alertDialog, confirmDialog } from '../dialog'
 import { Icon, Dot } from './icons'
-import { EnvTag, RepoTag } from './tags'
+import { AgentTag, EnvTag, RepoTag } from './tags'
 import { Modal } from './Modal'
 
 const ENV_DOT: Record<ContainerStatus, { tone: 'green' | 'yellow' | 'red' | 'outline'; pulse?: boolean }> = {
@@ -148,7 +148,7 @@ export function TaskPane({
               </span>
               <EnvTag name={s.env} />
               {s.repo && <RepoTag name={s.repo} />}
-              <span className="tag">{agentName(agents, s.agent)}</span>
+              <AgentTag kind={agentKind(agents, s.agent)} name={agentName(agents, s.agent)} />
               <span className="spacer" />
               <button
                 className="btn btn-xs"

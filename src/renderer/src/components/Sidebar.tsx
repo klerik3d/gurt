@@ -16,10 +16,11 @@ import type { CredentialEntry } from '../../../shared/credentials'
 import { hasManagedCredential, resolveForRepo } from '../../../shared/credentials'
 import type { McpDef } from '../../../shared/mcp'
 import type { Selection } from '../App'
-import { agentName, useAgents } from '../useAgents'
+import { agentKind, agentName, useAgents } from '../useAgents'
 import { useOutsideClose } from '../hooks'
 import { alertDialog, confirmDialog } from '../dialog'
 import { Icon, Dot } from './icons'
+import { AgentMark, agentIcon } from './tags'
 import { Modal } from './Modal'
 
 /** Sidebar dot per fine-grained status — running pulses, done is green, idle hollow. */
@@ -423,7 +424,11 @@ export function Sidebar({
                       ) : (
                         <>
                           <span className="sb-session-name">{s.title}</span>
-                          <span className="sb-session-client">{agentName(agents, s.agent)}</span>
+                          <span className="sb-session-client">
+                            {s.agent && (
+                              <AgentMark kind={agentKind(agents, s.agent)} name={agentName(agents, s.agent)} />
+                            )}
+                          </span>
                         </>
                       )}
                     </div>
@@ -630,7 +635,9 @@ export function NewSessionModal({
   const taskData = tasks.find((t) => t.name === taskName)
   const repos = wsData?.repos ?? []
   const envs = wsData?.envs ?? []
-  const agentList = agents ? Object.entries(agents).map(([id, a]) => ({ id, label: a.label })) : []
+  const agentList = agents
+    ? Object.entries(agents).map(([id, a]) => ({ id, label: a.label, kind: a.kind }))
+    : []
 
   useEffect(() => {
     if (!taskName && tasks.length) setTaskName(tasks[0].name)
@@ -949,6 +956,7 @@ export function NewSessionModal({
                     }}
                   >
                     <Dot tone="green" size={7} />
+                    <Icon name={agentIcon(a.kind)} size={12} className="faint" />
                     {a.label}
                   </div>
                 ))
@@ -960,7 +968,13 @@ export function NewSessionModal({
             <span className="pick-value">Client</span>
             <span className="spacer" />
             {agent && <Dot tone="green" size={7} />}
-            <span className="pick-meta">{agentName(agents ?? {}, agent) || 'none'}</span>
+            <span className="pick-meta">
+              {agent ? (
+                <AgentMark kind={agentKind(agents ?? {}, agent)} name={agentName(agents ?? {}, agent)} />
+              ) : (
+                'none'
+              )}
+            </span>
           </PickRow>
 
           <div className={`hc ${harnessOpen ? 'open' : ''}`}>

@@ -16,6 +16,7 @@ import { refreshAgents } from '../useAgents'
 import { useOutsideClose } from '../hooks'
 import { alertDialog, confirmDialog } from '../dialog'
 import { Icon, Dot } from './icons'
+import { AgentTag, agentIcon } from './tags'
 import { Modal } from './Modal'
 
 export type SettingsSection = 'general' | 'environments' | 'repos' | 'clients' | 'credentials'
@@ -997,7 +998,7 @@ function ClientsSection() {
             return (
               <div key={id} className="set-row clickable" onClick={() => expand(id, cfg)}>
                 <span className="set-row-label">{cfg.label || 'unnamed'}</span>
-                <span className="tag">{kindLabel}</span>
+                <AgentTag kind={cfg.kind} name={kindLabel} />
                 <span className="spacer" />
                 <Icon name="chevron" size={12} className="faint" style={{ transform: 'rotate(-90deg)' }} />
               </div>
@@ -1006,7 +1007,10 @@ function ClientsSection() {
             <div key={id} className="set-card">
               <div className="set-card-head" onClick={collapse}>
                 <span className="set-row-label">{draft?.label || cfg.label || 'new client'}</span>
-                <span className="tag">{agentDef(draft?.kind ?? cfg.kind)?.label ?? cfg.kind}</span>
+                <AgentTag
+                  kind={draft?.kind ?? cfg.kind}
+                  name={agentDef(draft?.kind ?? cfg.kind)?.label ?? cfg.kind}
+                />
                 <span className="spacer" />
                 <button
                   className="btn-danger-text sm"
@@ -1119,6 +1123,7 @@ function ProviderCombo({ value, onPick }: { value: string; onPick: (kind: string
             setQuery('')
           }}
         >
+          <Icon name={agentIcon(value)} size={13} className="faint" style={{ flex: 'none' }} />
           <span className="pick-value">{cur?.label ?? value}</span>
           <span className="spacer" />
           <Icon name="chevron" size={12} className="faint" style={{ flex: 'none' }} />
@@ -1151,6 +1156,7 @@ function ProviderCombo({ value, onPick }: { value: string; onPick: (kind: string
                   setOpen(false)
                 }}
               >
+                <Icon name={agentIcon(d.id)} size={13} className="faint" />
                 <span className={d.id === value ? 'strong' : undefined}>{d.label}</span>
                 <span className="menu-meta mono">{PROVIDER_VENDOR[d.id] ?? ''}</span>
               </div>
