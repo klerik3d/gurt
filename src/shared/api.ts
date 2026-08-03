@@ -105,8 +105,8 @@ export interface GurtApi {
   stopContainer(sessionId: string): Promise<void>
   /** Destroy a session's container. The clone (and its uncommitted work) stays. */
   releaseContainer(sessionId: string): Promise<void>
-  /** Launch VS Code attached to the session's running container (impl:
-   *  `ContainerManager.vscodeUri` + `shell.openExternal`). Rejects if it isn't running. */
+  /** Launch VS Code, in its own window, attached to the session's running
+   *  container (impl: `ContainerManager.openVscode`). Rejects if it isn't running. */
   sessionOpenVscode(sessionId: string): Promise<void>
   /** Git state of every clone of the task, computed on the host; `fetch` reaches the network. */
   getTaskChanges(ws: string, task: string, opts?: { fetch?: boolean }): Promise<RepoChanges[]>
