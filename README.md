@@ -194,6 +194,7 @@ SCRATCH=/tmp/gurt-smoke node scripts/smoke7.mjs   # Changes panel delivery threa
 SCRATCH=/tmp/gurt-smoke node scripts/smoke8.mjs   # native git access: credentials CRUD + resolution + composer toggle, no docker
 # turn contract end-to-end (docker + a working claude secret; SKIPs without one):
 SCRATCH=/tmp/gurt-smoke GURT_SMOKE_CLAUDE_TOKEN=… node scripts/smoke9.mjs
+node scripts/smoke-delete-row.mjs                 # sidebar Del/⌫: confirm, delete, move the selection, no docker
 ```
 
 Docker-free unit tests (pure node, bundled on the fly with esbuild):
@@ -205,6 +206,7 @@ node scripts/gurt-mcp.test.mjs         # turn contract: the `gurt` MCP server + 
 node scripts/turn-contract.test.mjs    # turn contract: the post-turn nudge/incomplete decision matrix
 node scripts/proposal-store.test.mjs   # turn contract: proposal restore, latestProposal, Kernel.prUrl params
 node scripts/env-config.test.mjs       # env normal form: JSONC parse/validation, envImageTag identity, migration
+node scripts/session-delete-container.test.mjs  # deleting a session takes its container down with it
 ```
 
 All drive the built app with Playwright through the real UI and screenshot
