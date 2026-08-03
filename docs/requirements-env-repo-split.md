@@ -2,6 +2,10 @@
 
 Status: draft for review · Owner: klerik3d · Target: gurt Electron PoC (this repo)
 
+> **Superseded in part** by `requirements-session-container.md`: a container now
+> belongs to exactly one session (there are no env instances, and `task.json`
+> holds no container records), and the start gate keys on the repo alone.
+
 This document is a work order for an implementing agent. Read `README.md`
 first. Key code: `src/shared/types.ts`, `src/shared/api.ts`,
 `src/shared/keys.ts`, `src/main/store.ts`, `src/main/envs.ts`,

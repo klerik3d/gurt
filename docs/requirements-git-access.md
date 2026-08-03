@@ -10,6 +10,11 @@ first. Key code: `src/main/provision.ts` (clone, `spawnAcpAdapter`
 `src/shared/types.ts`. Do not change the contract described here without
 asking the owner.
 
+> **Superseded in part** by `requirements-session-container.md`: the host broker
+> and the container shims are per session (a container belongs to one session),
+> not per env. The contract itself — git's own extension points, no forge API —
+> is unchanged.
+
 ## 1. Motivation
 
 Today all authenticated git runs on the host with ambient credentials

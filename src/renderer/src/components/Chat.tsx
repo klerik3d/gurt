@@ -13,12 +13,10 @@ import type {
   SessionConfigOption,
   SessionMode,
   SessionModes,
-  SessionSnapshot,
-  Tree
+  SessionSnapshot
 } from '../../../shared/types'
 import { agentName, useAgents } from '../useAgents'
 import { alertDialog } from '../dialog'
-import { findEnvState } from '../envLookup'
 import { Icon, Dot } from './icons'
 import { VscodeButton } from './VscodeButton'
 
@@ -50,12 +48,10 @@ const PIN_BAR_CLEARANCE = 36
 
 export function Chat({
   snapshot,
-  sessionId,
-  tree
+  sessionId
 }: {
   snapshot?: SessionSnapshot
   sessionId: string
-  tree: Tree | null
 }) {
   const feedRef = useRef<HTMLDivElement>(null)
   const innerRef = useRef<HTMLDivElement>(null)
@@ -176,8 +172,6 @@ export function Chat({
   if (!snapshot) return <div className="placeholder">loading session…</div>
 
   const { info, modes, plan, commands, configOptions, promptCapabilities } = snapshot
-  const envState = findEnvState(tree, info)
-  const envRef = { workspace: info.workspace, task: info.task, env: info.env }
 
   const hasPlan = !!plan && plan.length > 0
 
@@ -212,7 +206,7 @@ export function Chat({
           {info.repo ? ` · ${info.repo}` : ''}
           {info.agent ? ` · ${agentName(agents, info.agent)}` : ''}
         </span>
-        <VscodeButton envRef={envRef} env={envState} />
+        <VscodeButton info={info} />
         {busy && <span className="chat-hint mono">esc to stop</span>}
       </div>
 

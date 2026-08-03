@@ -101,10 +101,10 @@ export function registerIpc(): void {
     removeTask: (ws, name) => kernel.deleteTask(ws, name),
     renameTask: (ws, name, newName) => kernel.renameTask(ws, name, newName),
     taskDirtyRepos: (ws, name) => kernel.taskDirtyRepos(ws, name),
-    stopEnv: (ref) => kernel.envs.stop(ref),
-    removeTaskEnv: (ref) => kernel.envs.remove(ref),
-    envOpenVscode: async (ref) => {
-      await shell.openExternal(await kernel.envs.vscodeUri(ref))
+    stopContainer: (sessionId) => kernel.containers.stop(sessionId),
+    releaseContainer: (sessionId) => kernel.containers.release(sessionId),
+    sessionOpenVscode: async (sessionId) => {
+      await shell.openExternal(kernel.containers.vscodeUri(sessionId))
     },
     getTaskChanges: (ws, task, opts) => changes.getTaskChanges(ws, task, opts ?? {}),
     getFileDiff: (ws, task, repo, file) => changes.getFileDiff(ws, task, repo, file),

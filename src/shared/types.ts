@@ -105,33 +105,48 @@ export interface WorkspaceFile {
   envs: EnvConfig[]
 }
 
-export type EnvStatus = 'stopped' | 'starting' | 'running' | 'error'
+export type ContainerStatus = 'stopped' | 'starting' | 'running' | 'error'
 
 /**
- * A per-task environment instance: pure infrastructure — a clone + devcontainer.
- * Keyed by the `EnvConfig.name` it runs; `repo` is the repo it was actually
- * provisioned with (stamped at `up`), which drives its clone and git access.
- * The container is bound to one session: it is created for that session and
- * never reused by another — a different session (or repo) recreates it.
+ * The devcontainer a session owns — strictly 1:1. It is created at the session's
+ * first start, stopped when the session goes idle, and destroyed with the
+ * session; it is never shared with, nor inherited by, another session.
+ *
+ * Docker is the source of truth: every container carries the id-label
+ * `gurt.session=<session id>`. This record is a cache of that, reconciled
+ * against the daemon at boot (a daemon restart invalidates `status`).
  */
-export interface EnvState {
-  /** Identity — the `EnvConfig.name`. */
-  env: string
-  /** Repo it was provisioned with; stamped at up, absent before the first up. */
-  repo?: string
-  /** Session the container belongs to — its identity; stamped at up, absent
-   *  before the first up. Any other session tears the container down first. */
-  session?: string
-  containerId?: string
-  /** Workspace folder path inside the container, needed to spawn sessions. */
+export interface SessionContainer {
+  status: ContainerStatus
+  /** Docker container id; absent until the first successful `up`. */
+  id?: string
+  /** Workspace folder inside the container — the agent's cwd. */
   remoteWorkspaceFolder?: string
-  status: EnvStatus
+  /** Repo it was provisioned with (stamped at `up`); drives clone + git access. */
+  repo?: string
   error?: string
 }
 
-/** <workspace>/<task>/task.json */
+/**
+ * <workspace>/<task>/task.json — now only the marker that makes a directory a
+ * task. Container state lives on the session that owns it ({@link SessionContainer});
+ * the clones live on disk as `<task>/<repo>` and are discovered from there.
+ */
 export interface TaskFile {
-  envs: EnvState[]
+  /** Legacy per-env container records, folded onto their owning session at read
+   *  and dropped from disk. Never written by the current code. */
+  envs?: LegacyEnvState[]
+}
+
+/** Pre-1:1 shape of a `task.json` env record — read once, migrated, discarded. */
+export interface LegacyEnvState {
+  env: string
+  repo?: string
+  session?: string
+  containerId?: string
+  remoteWorkspaceFolder?: string
+  status: ContainerStatus
+  error?: string
 }
 
 /**
@@ -177,6 +192,8 @@ export interface SessionInfo {
    * the agent choose its defaults".
    */
   configValues?: Record<string, string | boolean>
+  /** The devcontainer this session owns, 1:1. Absent until its first start. */
+  container?: SessionContainer
   /** ISO timestamp, present while queued — defines global FIFO order. */
   queuedAt?: string
   /** Runtime overlay (never persisted): the agent is processing a prompt right now. */
@@ -218,9 +235,11 @@ export interface Tree {
     envs: EnvConfig[]
     tasks: {
       name: string
-      /** Infrastructure environments (shown in the task pane, not the tree). */
-      envs: EnvState[]
-      /** Sessions of this task, primary tree nodes. */
+      /** Repos with a clone in this task (discovered on disk). A clone outlives
+       *  the sessions that used it — it holds their uncommitted work. */
+      repos: string[]
+      /** Sessions of this task, primary tree nodes. Each carries its own
+       *  container, so the task has no infrastructure of its own. */
       sessions: SessionInfo[]
     }[]
   }[]
@@ -468,10 +487,16 @@ export interface PersistedSession {
   entries?: ChatEntry[]
 }
 
+/**
+ * Where a session sits: its task, plus the env *definition* it runs. Since a
+ * container belongs to one session, this addresses no infrastructure of its own
+ * — several sessions of a task may share one `EnvRef` and still own separate
+ * containers. Host resources are keyed by session id, never by this.
+ */
 export interface EnvRef {
   workspace: string
   task: string
-  /** The env instance — an `EnvConfig.name`. */
+  /** The env definition this session runs — an `EnvConfig.name`. */
   env: string
 }
 

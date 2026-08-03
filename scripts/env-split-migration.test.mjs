@@ -1,7 +1,7 @@
-// Pure-fs tests for the env/repo split migration (no docker, no electron):
-// legacy workspace.json / task.json / sessions.json read back in the new shape,
-// and the read-time write-back happens exactly once. Bundles store.ts with
-// esbuild on the fly, like agent-migration.test.mjs.
+// Pure-fs tests for the on-disk migrations (no docker, no electron): legacy
+// workspace.json / task.json / sessions.json read back in the new shape, and
+// the read-time write-back happens exactly once. Bundles store.ts with esbuild
+// on the fly, like agent-migration.test.mjs.
 //
 //   node scripts/env-split-migration.test.mjs
 import { build } from 'esbuild'
@@ -82,38 +82,76 @@ try {
   assert.equal(read(wsPath), migratedWs, 'workspace.json write-back happens exactly once')
   console.log('workspace.json migration + write-once OK')
 
-  // --- task.json: env records key by repo, no env ---
+  // --- task.json: per-env container records fold onto their owning session ---
+  // Containers used to live in task.json, one slot per env reused by successive
+  // sessions. Each record names the session that owned it, so the fold is just
+  // moving it to that session; a record naming no live session describes a
+  // container nobody can claim and is dropped (the boot reconcile reaps it).
   const taskPath = path.join(GURT_ROOT, ws, task, 'task.json')
   fs.writeFileSync(
     taskPath,
     JSON.stringify({
       envs: [
-        { repo: 'alpha', status: 'stopped' },
-        { repo: 'beta', status: 'running', containerId: 'cid', remoteWorkspaceFolder: '/workspaces/beta' }
+        { env: 'alpha', repo: 'alpha', session: 's1', status: 'running', containerId: 'cid1', remoteWorkspaceFolder: '/app' },
+        { env: 'beta', repo: 'beta', session: 'gone', status: 'running', containerId: 'cid2' },
+        { env: 'gamma', repo: 'gamma', status: 'stopped' }
       ]
     })
   )
-  const legacyTask = read(taskPath)
-  assert.ok(!legacyTask.includes('"env"'), 'fixture starts without env identity')
-
-  const taskData = await m.getTask(ws, task)
-  // env = repo, the provisioned repo is kept
-  assert.equal(taskData.envs[0].env, 'alpha')
-  assert.equal(taskData.envs[0].repo, 'alpha')
-  assert.equal(taskData.envs[1].env, 'beta')
-  assert.equal(taskData.envs[1].repo, 'beta')
-  assert.equal(taskData.envs[1].containerId, 'cid')
-
-  const migratedTask = read(taskPath)
-  assert.notEqual(migratedTask, legacyTask, 'task.json rewritten on first read')
-  await m.getTask(ws, task)
-  assert.equal(read(taskPath), migratedTask, 'task.json write-back happens exactly once')
-  console.log('task.json migration + write-once OK')
-
-  // --- sessions.json: info.envRepo fuses env + repo ---
   const sessPath = path.join(GURT_ROOT, ws, task, 'sessions.json')
   fs.writeFileSync(
     sessPath,
+    JSON.stringify([
+      {
+        info: {
+          id: 's1',
+          env: 'alpha',
+          repo: 'alpha',
+          task,
+          workspace: ws,
+          title: 'session 1',
+          agent: 'claude-code',
+          state: 'started',
+          startPrompt: 'hi'
+        },
+        acpSessionId: 'a1'
+      }
+    ])
+  )
+
+  const [owner] = await m.readSessions(ws, task)
+  assert.deepEqual(
+    owner.info.container,
+    {
+      status: 'running',
+      id: 'cid1',
+      remoteWorkspaceFolder: '/app',
+      repo: 'alpha',
+      error: undefined
+    },
+    'the container record moved onto the session that owned it'
+  )
+
+  // task.json no longer carries containers, and the records with no live owner
+  // left with it.
+  assert.deepEqual(await m.getTask(ws, task), {}, 'task.json holds no env records')
+  assert.ok(!read(taskPath).includes('cid2'), 'orphaned container record dropped')
+
+  // The fold is persisted, and happens exactly once.
+  const migratedTask = read(taskPath)
+  const migratedSess = read(sessPath)
+  assert.ok(migratedSess.includes('cid1'), 'container persisted on the session')
+  await m.readSessions(ws, task)
+  assert.equal(read(taskPath), migratedTask, 'task.json write-back happens exactly once')
+  assert.equal(read(sessPath), migratedSess, 'sessions.json write-back happens exactly once')
+  console.log('container fold onto sessions + write-once OK')
+
+  // --- sessions.json: info.envRepo fuses env + repo ---
+  const task2 = 't2'
+  fs.mkdirSync(path.join(GURT_ROOT, ws, task2), { recursive: true })
+  const sess2Path = path.join(GURT_ROOT, ws, task2, 'sessions.json')
+  fs.writeFileSync(
+    sess2Path,
     JSON.stringify([
       {
         info: {
@@ -130,17 +168,17 @@ try {
       }
     ])
   )
-  const legacySess = read(sessPath)
-  const [rec] = await m.readSessions(ws, task)
+  const legacySess = read(sess2Path)
+  const [rec] = await m.readSessions(ws, task2)
   assert.equal(rec.info.env, 'alpha', 'env taken from envRepo')
   assert.equal(rec.info.repo, 'alpha', 'repo taken from envRepo')
   assert.ok(!('envRepo' in rec.info), 'legacy envRepo dropped')
   // write-back happened (legacy key left the disk) … and exactly once
-  const migratedSess = read(sessPath)
-  assert.notEqual(migratedSess, legacySess, 'sessions.json rewritten on first read')
-  assert.ok(!migratedSess.includes('envRepo'), 'legacy key gone from disk')
-  await m.readSessions(ws, task)
-  assert.equal(read(sessPath), migratedSess, 'sessions.json write-back happens exactly once')
+  const migrated2 = read(sess2Path)
+  assert.notEqual(migrated2, legacySess, 'sessions.json rewritten on first read')
+  assert.ok(!migrated2.includes('envRepo'), 'legacy key gone from disk')
+  await m.readSessions(ws, task2)
+  assert.equal(read(sess2Path), migrated2, 'sessions.json write-back happens exactly once')
   console.log('sessions.json migration OK')
 
   // --- already-migrated workspace.json is not rewritten ---

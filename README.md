@@ -14,20 +14,30 @@ there is archived in `archive/`; the model mostly still applies).
   maps to its secret by linking an `agent-token` credential (never storing it
   inline, like a repo's credential link); env var name + extra env are per-agent
 - **task** — unit of work, `~/.gurt/<ws>/<task>/`, holds repo clones; deletable
-- **env** — a workspace entity: a mandatory devcontainer.json (+ companion
-  Dockerfile when it has `build`), stored entirely in gurt and seeded from the
-  repo's own files (then edited in gurt — the repo is never the source of
-  truth at runtime). Instances per (task, session) as before: a clone on
-  branch `gurt/<task>` + a container. Agent-agnostic — several agents'
-  adapters coexist in the one container. Not a tree node; managed from the
-  task pane (start / stop / delete).
-- **session** — the primary entity: (workspace, task, repo, agent, startPrompt,
-  state) + chat history + optional ACP session id. States:
-  `draft → queued → starting → started`.
+- **env** — a workspace entity and purely a *definition*: a mandatory
+  devcontainer.json (+ companion Dockerfile when it has `build`), stored
+  entirely in gurt and seeded from the repo's own files (then edited in gurt —
+  the repo is never the source of truth at runtime). It is a template, not an
+  instance: any number of sessions may run the same env at once.
+- **container** — owned by exactly one session, 1:1. Created at that session's
+  first start, stopped when it goes idle, destroyed with it; never shared with
+  or inherited by another session. Docker is the registry (every container
+  carries the id-label `gurt.session=<id>`), and the record on the session is a
+  cache reconciled against the daemon at boot. Managed from the task pane
+  (stop / delete).
+- **clone** — `~/.gurt/<ws>/<task>/<repo>/` on branch `gurt/<task>`, shared by
+  every session of the task that picked that repo, and outliving all of them
+  (it holds their uncommitted work). Because it is one working tree, a repo is
+  **exclusive**: only one session of the task may hold it at a time — where
+  "hold" means mid-start or owning a live container. An idle session whose
+  container has auto-stopped releases it for the next one.
+- **session** — the primary entity: (workspace, task, env, repo, agent,
+  startPrompt, state) + its container + chat history + optional ACP session id.
+  States: `draft → queued → starting → started`.
 
-Sidebar: workspace → task → session. A task click opens the **task pane** (env
-table + this task's queued sessions). A session click opens its pane: chat when
-`started`, otherwise the start prompt + actions.
+Sidebar: workspace → task → session. A task click opens the **task pane** (the
+containers of its sessions + this task's queued sessions). A session click opens
+its pane: chat when `started`, otherwise the start prompt + actions.
 
 ### Sessions, queue, serialization
 
@@ -60,15 +70,18 @@ session back to draft with the error shown, and does not block the queue.
    badge per env).
 3. `devcontainer up` (bundled `@devcontainers/cli`, spawned via Electron's own
    binary in Node mode) injecting **only** the `node` feature + gurt id-labels.
-   The container is agent-agnostic; a stopped container is reused.
-4. on the first connection of an agent in an env, its ACP adapter is
+   The container belongs to the starting session (`gurt.session=<id>`); its own
+   stopped container is restarted in place, another session's is never taken.
+4. on the first connection into a container, the session's ACP adapter is
    npm-installed globally via `devcontainer exec` (claude:
    `@agentclientprotocol/claude-agent-acp`, codex: `@agentclientprotocol/codex-acp`,
-   opencode: `opencode-ai`) — cached per (env, agent) for the app run.
+   opencode: `opencode-ai`) — cached per **container id**, so a container that is
+   stopped and restarted keeps its install and a replaced one reinstalls.
 5. ACP `session/new`, then the session's `startPrompt` is sent as the first
    prompt. ACP (JSON-RPC over stdio) runs through `devcontainer exec`; the agent
-   secret is passed via `--remote-env <secretEnv>=<secret>`. Connections are per
-   (env, agent), so different agents each get their own adapter process.
+   secret is passed via `--remote-env <secretEnv>=<secret>`. One adapter process
+   per session, held under the session id and tagged with the container it was
+   spawned into — a connection cannot outlive that container.
 
 The materialized env config (the stored devcontainer.json, with `build`
 replaced by the built `image` tag when present) is ALWAYS passed via
@@ -76,8 +89,11 @@ replaced by the built `image` tag when present) is ALWAYS passed via
 config and fails without it).
 
 Sessions are persisted to `<ws>/<task>/sessions.json` (info incl. state /
-startPrompt / queuedAt, ACP session id, chat history) and restored on app
-start. A restored `started` session reattaches lazily: the first prompt runs ACP
+startPrompt / queuedAt / its container record, ACP session id, chat history) and
+restored on app start; `task.json` is now only the marker that makes a directory
+a task. At boot the restored container records are reconciled against
+`docker ps --filter label=gurt.session`: one describing a container the daemon no
+longer has is dropped, and a container whose session is gone is removed. A restored `started` session reattaches lazily: the first prompt runs ACP
 `session/load` with the stored id (claude `--resume` under the hood). The agent's
 own session state lives inside the container, so resume survives an app restart
 but not a container recreation.
@@ -112,8 +128,8 @@ for the full design. Phase 1 (this slice) covers the HTTPS path:
   store's `agent-token` kind — an agent links one by id (no host matching); old
   inline `agents.json` secrets migrate into it on first launch.
 - The contract is **git's own extension points**, never a forge API: an in-container
-  credential-helper shim forwards to a host **broker** (one per env, like the MCP
-  servers) that answers from the store; `url.<base>.insteadOf` rewrites make the
+  credential-helper shim forwards to a host **broker** (one per session, like the
+  MCP servers) that answers from the store; `url.<base>.insteadOf` rewrites make the
   transport follow the *credential* (a token repo pushes over https even if cloned
   over ssh). All injected via `GIT_CONFIG_*` env into the agent process only —
   nothing is written into the clone or the container's global config, and secrets
