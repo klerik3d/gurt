@@ -84,7 +84,8 @@ export function TaskPane({
                     {s.title}
                   </span>
                   <span className="tag">{s.env}</span>
-                  {c.repo && <span className="tag">{c.repo}</span>}
+                  {/* An env is usually named after the repo it serves — one tag says it all then. */}
+                  {c.repo && c.repo !== s.env && <span className="tag">{c.repo}</span>}
                   <span className={`env-status ${c.status === 'error' ? 'red' : 'dim'}`}>
                     {c.status}
                   </span>
@@ -146,7 +147,7 @@ export function TaskPane({
                 {s.title}
               </span>
               <span className="tag">{s.env}</span>
-              {s.repo && <span className="tag">{s.repo}</span>}
+              {s.repo && s.repo !== s.env && <span className="tag">{s.repo}</span>}
               <span className="tag">{agentName(agents, s.agent)}</span>
               <span className="spacer" />
               <button
