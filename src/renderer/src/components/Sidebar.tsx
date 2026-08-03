@@ -8,7 +8,6 @@ import type {
   RepoChanges,
   SessionConfigOption,
   SessionInfo,
-  SessionStatus,
   Tree
 } from '../../../shared/types'
 import { isActionable, isDelivered, sessionStatus } from '../../../shared/types'
@@ -19,22 +18,10 @@ import type { Selection } from '../App'
 import { agentKind, agentName, useAgents } from '../useAgents'
 import { useOutsideClose } from '../hooks'
 import { alertDialog, confirmDialog } from '../dialog'
+import { SESSION_DOT } from '../status'
 import { Icon, Dot } from './icons'
 import { AgentMark, agentIcon } from './tags'
 import { Modal } from './Modal'
-
-/** Sidebar dot per fine-grained status — running pulses, done is green, idle hollow. */
-const STATUS_DOT: Record<
-  SessionStatus,
-  { tone: 'green' | 'yellow' | 'red' | 'accent' | 'outline'; pulse?: boolean; label: string }
-> = {
-  draft: { tone: 'outline', label: 'draft' },
-  queued: { tone: 'accent', label: 'queued' },
-  starting: { tone: 'yellow', pulse: true, label: 'starting' },
-  running: { tone: 'yellow', pulse: true, label: 'running' },
-  waiting: { tone: 'yellow', pulse: true, label: 'needs you' },
-  idle: { tone: 'green', label: 'idle — turn ended' }
-}
 
 /** One visible line of the tree — the unit arrow-key navigation moves over. */
 type Row =
@@ -398,7 +385,7 @@ export function Sidebar({
               {!isCollapsed &&
                 task.sessions.map((s) => {
                   const status = sessionStatus({ ...s, ...activity[s.id] })
-                  const dot = STATUS_DOT[status]
+                  const dot = SESSION_DOT[status]
                   const srow: Row = { kind: 'session', id: s.id, ws: wsData.name, task: task.name }
                   const selected = isSelected(srow)
                   const renamingThis = renaming && rowKey(renaming) === rowKey(srow)
@@ -783,8 +770,10 @@ export function NewSessionModal({
     .filter(Boolean)
     .join(' · ')
 
+  /** A task's mark is its liveliest session: someone needs you (solid yellow)
+   *  wins over merely having live sessions (green). */
   const taskStatusTone = (t: { sessions: SessionInfo[] }): 'green' | 'yellow' | 'outline' => {
-    if (t.sessions.some((s) => s.busy || s.awaitingInput)) return 'yellow'
+    if (t.sessions.some((s) => s.awaitingInput)) return 'yellow'
     if (t.sessions.some((s) => s.state === 'started')) return 'green'
     return 'outline'
   }

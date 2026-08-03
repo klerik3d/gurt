@@ -105,7 +105,17 @@ export interface WorkspaceFile {
   envs: EnvConfig[]
 }
 
-export type ContainerStatus = 'stopped' | 'starting' | 'running' | 'error'
+/**
+ * stopped  — no container, or one that exists but is not up.
+ * building — clone + image build, i.e. everything before the container exists.
+ * post     — the container is up and its post-commands (devcontainer lifecycle
+ *            hooks) are running; it is not usable yet.
+ * running  — up and usable.
+ *
+ * `building`/`post` are runtime-only: a crash mid-provision restores as
+ * `stopped` (see `readSessions`).
+ */
+export type ContainerStatus = 'stopped' | 'building' | 'post' | 'running' | 'error'
 
 /**
  * The devcontainer a session owns — strictly 1:1. It is created at the session's
