@@ -13,11 +13,14 @@ import type {
   SessionConfigOption,
   SessionMode,
   SessionModes,
-  SessionSnapshot
+  SessionSnapshot,
+  Tree
 } from '../../../shared/types'
 import { agentName, useAgents } from '../useAgents'
 import { alertDialog } from '../dialog'
+import { findEnvState } from '../envLookup'
 import { Icon, Dot } from './icons'
+import { VscodeButton } from './VscodeButton'
 
 /** Don't ping the main process on every keystroke — once per this interval is enough
  *  to keep postponing the env's idle auto-stop while the user is composing. */
@@ -45,7 +48,15 @@ const formatTokens = (n: number): string => (n >= 1000 ? `${(n / 1000).toFixed(1
  *  when jumping back to that message. */
 const PIN_BAR_CLEARANCE = 36
 
-export function Chat({ snapshot, sessionId }: { snapshot?: SessionSnapshot; sessionId: string }) {
+export function Chat({
+  snapshot,
+  sessionId,
+  tree
+}: {
+  snapshot?: SessionSnapshot
+  sessionId: string
+  tree: Tree | null
+}) {
   const feedRef = useRef<HTMLDivElement>(null)
   const innerRef = useRef<HTMLDivElement>(null)
   /** Follow-the-tail flag: true until the user scrolls away from the bottom. */
@@ -165,6 +176,8 @@ export function Chat({ snapshot, sessionId }: { snapshot?: SessionSnapshot; sess
   if (!snapshot) return <div className="placeholder">loading session…</div>
 
   const { info, modes, plan, commands, configOptions, promptCapabilities } = snapshot
+  const envState = findEnvState(tree, info)
+  const envRef = { workspace: info.workspace, task: info.task, env: info.env }
 
   const hasPlan = !!plan && plan.length > 0
 
@@ -199,6 +212,7 @@ export function Chat({ snapshot, sessionId }: { snapshot?: SessionSnapshot; sess
           {info.repo ? ` · ${info.repo}` : ''}
           {info.agent ? ` · ${agentName(agents, info.agent)}` : ''}
         </span>
+        <VscodeButton envRef={envRef} env={envState} />
         {busy && <span className="chat-hint mono">esc to stop</span>}
       </div>
 

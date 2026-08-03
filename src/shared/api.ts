@@ -102,6 +102,9 @@ export interface GurtApi {
   stopEnv(ref: EnvRef): Promise<void>
   /** Tear down one task's env instance (container + clone). */
   removeTaskEnv(ref: EnvRef): Promise<void>
+  /** Launch VS Code attached to the env's running container (impl: `EnvManager.vscodeUri`
+   *  + `shell.openExternal`). Rejects if the container isn't running. */
+  envOpenVscode(ref: EnvRef): Promise<void>
   /** Git state of every clone of the task, computed on the host; `fetch` reaches the network. */
   getTaskChanges(ws: string, task: string, opts?: { fetch?: boolean }): Promise<RepoChanges[]>
   /** Read-only unified diff of one file (untracked shown as whole-file added). */
@@ -179,6 +182,7 @@ const METHODS = {
   taskDirtyRepos: true,
   stopEnv: true,
   removeTaskEnv: true,
+  envOpenVscode: true,
   getTaskChanges: true,
   getFileDiff: true,
   getCommitDiff: true,

@@ -2,9 +2,11 @@ import { useEffect, useState } from 'react'
 import type { SessionSnapshot, Tree } from '../../../shared/types'
 import { agentName, useAgents } from '../useAgents'
 import { alertDialog, confirmDialog } from '../dialog'
+import { findEnvState } from '../envLookup'
 import { Dot } from './icons'
 import { Chat } from './Chat'
 import { NewSessionModal } from './Sidebar'
+import { VscodeButton } from './VscodeButton'
 
 export function SessionPane({
   tree,
@@ -22,7 +24,8 @@ export function SessionPane({
   onDeleted: () => void
 }) {
   if (!snapshot) return <div className="placeholder">loading session…</div>
-  if (snapshot.info.state === 'started') return <Chat snapshot={snapshot} sessionId={sessionId} />
+  if (snapshot.info.state === 'started')
+    return <Chat snapshot={snapshot} sessionId={sessionId} tree={tree} />
 
   return (
     <NonStartedPane
@@ -43,10 +46,11 @@ const STATE_DOT = {
   started: { tone: 'green' as const, pulse: false }
 }
 
-function Header({ snapshot }: { snapshot: SessionSnapshot }) {
+function Header({ snapshot, tree }: { snapshot: SessionSnapshot; tree: Tree | null }) {
   const { info } = snapshot
   const agents = useAgents()
   const dot = STATE_DOT[info.state]
+  const envRef = { workspace: info.workspace, task: info.task, env: info.env }
   return (
     <div className="chat-head">
       <Dot tone={dot.tone} pulse={dot.pulse} />
@@ -60,6 +64,7 @@ function Header({ snapshot }: { snapshot: SessionSnapshot }) {
         {info.repo ? ` · ${info.repo}` : ''}
         {info.agent ? ` · ${agentName(agents, info.agent)}` : ''}
       </span>
+      <VscodeButton envRef={envRef} env={findEnvState(tree, info)} />
     </div>
   )
 }
@@ -96,7 +101,7 @@ function NonStartedPane({
 
   return (
     <div className="session-pane">
-      <Header snapshot={snapshot} />
+      <Header snapshot={snapshot} tree={tree} />
       {snapshot.startError && (
         <div className="error env-error">start failed: {snapshot.startError}</div>
       )}
