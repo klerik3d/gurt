@@ -298,6 +298,28 @@ export async function prUrl(ws: string, task: string, repo: string): Promise<str
   return url
 }
 
+/**
+ * Best-effort follow-up to a task rename: point each clone's local task branch
+ * at the new name. Runs against the already-moved task dir, so `task` is the
+ * new name and `oldTask` the one to look for. A clone with no such branch yet
+ * (never provisioned, or provisioned under a different scheme) is skipped
+ * rather than failing the whole rename.
+ */
+export async function renameTaskBranches(ws: string, task: string, oldTask: string): Promise<void> {
+  const dir = taskDir(ws, task)
+  for (const entry of await fs.readdir(dir, { withFileTypes: true }).catch(() => [])) {
+    if (!entry.isDirectory()) continue
+    const repoDir = path.join(dir, entry.name)
+    if (!existsSync(path.join(repoDir, '.git'))) continue
+    const access = await hostGitAccessForRepo(ws, entry.name)
+    const oldBranch = branchFor(oldTask)
+    if (!(await revParse(repoDir, access, oldBranch))) continue
+    await git(repoDir, access, ['branch', '-m', oldBranch, branchFor(task)]).catch((e) =>
+      console.error(`changes: branch rename failed in ${repoDir}:`, e)
+    )
+  }
+}
+
 /** PoC escape hatch: open the clone with host VS Code. */
 export function openInVscode(ws: string, task: string, repo: string): Promise<void> {
   const dir = cloneDir(ws, task, repo)
