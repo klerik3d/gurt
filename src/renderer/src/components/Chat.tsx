@@ -263,6 +263,7 @@ export function Chat({
       {hasPlan && <PlanPinned plan={plan!} />}
 
       <Composer
+        key={sessionId}
         sessionId={sessionId}
         busy={busy}
         flush={!hasPlan}
