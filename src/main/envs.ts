@@ -61,6 +61,18 @@ export class EnvManager {
     return (await this.find(ref))?.status ?? 'stopped'
   }
 
+  /** External `vscode://` URI that has the desktop app attach to this env's running
+   *  container (the `vscode-remote` authority VS Code itself uses for "Attach to
+   *  Running Container"). Throws if it isn't up yet — the header button gates on
+   *  `status === 'running'`. */
+  async vscodeUri(ref: EnvRef): Promise<string> {
+    const env = await this.find(ref)
+    if (env?.status !== 'running' || !env.containerId || !env.remoteWorkspaceFolder)
+      throw new Error('environment is not running')
+    const hex = Buffer.from(env.containerId).toString('hex')
+    return `vscode://vscode-remote/attached-container+${hex}${env.remoteWorkspaceFolder}`
+  }
+
   /**
    * Ensure the session's container is up: clone (if needed) and `devcontainer
    * up` under the session's id-label — creating its container, or restarting
