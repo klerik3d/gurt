@@ -327,6 +327,17 @@ textarea.input {
   white-space: nowrap;
   flex: none;
 }
+/* Tag carrying a leading mark — env vs. repo, which read alike without it. */
+.tag-ico {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding-left: 6px;
+}
+.tag-ico svg {
+  flex: none;
+  opacity: 0.75;
+}
 .tag-green {
   color: var(--green);
   border-color: var(--green);
@@ -589,6 +600,12 @@ textarea.input {
   align-items: center;
   gap: 6px;
 }
+/* env · repo · container status — the marks need the same row layout. */
+.foot-env {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
 
 .main {
   flex: 1;
@@ -682,7 +699,7 @@ textarea.input {
   display: flex;
   flex-direction: column;
   gap: 1px;
-  padding: 10px 8px;
+  padding: 6px 0;
   outline: none;
 }
 .sb-group + .sb-group {
@@ -692,12 +709,14 @@ textarea.input {
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 5px 8px;
-  border-radius: 7px;
+  padding: 5px 16px;
   min-height: 26px;
   cursor: pointer;
 }
-.sb-task:hover,
+.sb-task:hover {
+  background: var(--hover);
+  box-shadow: inset 0 0 0 1px var(--border2);
+}
 .sb-task.selected {
   background: var(--hover);
 }
@@ -762,12 +781,12 @@ textarea.input {
   display: flex;
   align-items: center;
   gap: 9px;
-  padding: 7px 10px 7px 26px;
-  border-radius: 8px;
+  padding: 7px 18px 7px 34px;
   cursor: pointer;
 }
 .sb-session:hover {
   background: var(--hover);
+  box-shadow: inset 0 0 0 1px var(--border2);
 }
 .sb-session.selected {
   background: var(--hover);
@@ -791,7 +810,7 @@ textarea.input {
   flex: none;
 }
 .sb-empty {
-  padding: 4px 10px 4px 26px;
+  padding: 4px 18px 4px 34px;
   font-size: 11.5px;
   color: var(--faint);
 }
