@@ -129,6 +129,28 @@ export function Sidebar({
       window.gurt.removeTask(ws, taskName).catch((e) => alertDialog(String(e)))
   }
 
+  /** Resolves true once the delete has been confirmed and sent. */
+  const deleteSession = async (id: string): Promise<boolean> => {
+    const s = wsData?.tasks.flatMap((t) => t.sessions).find((x) => x.id === id)
+    if (!s) return false
+    // A session owns its container, so deleting it takes the container down —
+    // say so, and say what survives: the clone and whatever is uncommitted in it.
+    const warning =
+      s.container && s.container.status !== 'stopped'
+        ? `Delete session "${s.title}"? Its container goes down with it; the clone and any uncommitted changes stay.`
+        : `Delete session "${s.title}"?`
+    if (
+      !(await confirmDialog(warning, {
+        title: 'Delete session',
+        confirmText: 'Delete',
+        danger: true
+      }))
+    )
+      return false
+    window.gurt.sessionDelete(id).catch((e) => alertDialog(String(e)))
+    return true
+  }
+
   // Creates the task right from the header "+", no modal round-trip — click,
   // type, Enter. Selects it immediately so the flow lands somewhere useful.
   const submitNewTask = async () => {
@@ -244,6 +266,28 @@ export function Sidebar({
       case 'F2':
         if (cur) startRename(cur)
         break
+      // Both keys: ⌦ where the keyboard has one, ⌫ where Delete *is* backspace.
+      // Neither acts on its own — the confirmation is the whole safety net.
+      case 'Delete':
+      case 'Backspace': {
+        if (!cur) return
+        // The dialog takes the caret and never hands it back — the tree needs it
+        // to go on navigating, whichever way the answer went.
+        if (cur.kind === 'task') {
+          deleteTask(cur.task).then(() => treeRef.current?.focus())
+          break
+        }
+        // A selection left on the deleted session would sit on an empty pane, so
+        // step off it — but only once the delete is actually going through, or a
+        // cancelled dialog would still have moved the cursor. Either neighbour
+        // outlives this session: a sibling, or the task row that must be above it.
+        const next = rows[cursor + 1] ?? rows[cursor - 1]
+        deleteSession(cur.id).then((deleted) => {
+          if (deleted && next) selectRow(next)
+          treeRef.current?.focus()
+        })
+        break
+      }
       default:
         return
     }

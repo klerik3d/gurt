@@ -490,11 +490,14 @@ export class SessionManager {
     if (!s) return
     for (const resolve of s.pendingPermissions.values())
       resolve({ outcome: { outcome: 'cancelled' } })
+    // The container is bound to this session — take it down with the session.
+    // Before the record goes: the container manager finds the container through
+    // this map, so a session dropped first would leave its container orphaned
+    // until the next boot reconcile.
+    this.events.releaseContainer(sessionId)
     this.sessions.delete(sessionId)
     this.events.deleteLog(s.ref.workspace, s.ref.task, sessionId)
     this.events.stopGurtServer(sessionId)
-    // The container is bound to this session — take it down with the session.
-    this.events.releaseContainer(sessionId)
     this.schedulePersist(s.ref)
     this.bus.emit('tree.changed', undefined)
     // Its clone may now be free — let the next queued session take it.
