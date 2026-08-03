@@ -103,9 +103,7 @@ export function registerIpc(): void {
     taskDirtyRepos: (ws, name) => kernel.taskDirtyRepos(ws, name),
     stopContainer: (sessionId) => kernel.containers.stop(sessionId),
     releaseContainer: (sessionId) => kernel.containers.release(sessionId),
-    sessionOpenVscode: async (sessionId) => {
-      await shell.openExternal(kernel.containers.vscodeUri(sessionId))
-    },
+    sessionOpenVscode: (sessionId) => kernel.containers.openVscode(sessionId),
     getTaskChanges: (ws, task, opts) => changes.getTaskChanges(ws, task, opts ?? {}),
     getFileDiff: (ws, task, repo, file) => changes.getFileDiff(ws, task, repo, file),
     getCommitDiff: (ws, task, repo, sha) => changes.getCommitDiff(ws, task, repo, sha),
