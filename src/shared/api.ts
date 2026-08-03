@@ -94,19 +94,20 @@ export interface GurtApi {
   addEnv(ws: string, env: EnvConfig): Promise<void>
   /** Update an env definition, matched by its (immutable) name. */
   updateEnv(ws: string, env: EnvConfig): Promise<void>
-  /** Remove an env definition (blocked while any task has an instance of it). */
+  /** Remove an env definition (blocked while any session still runs it). */
   removeEnv(ws: string, name: string): Promise<void>
   createTask(ws: string, name: string): Promise<void>
   removeTask(ws: string, name: string): Promise<void>
-  /** Rename a task; stops its envs and best-effort renames its branch in every clone. */
+  /** Rename a task; stops its containers and best-effort renames its branch in every clone. */
   renameTask(ws: string, name: string, newName: string): Promise<void>
   taskDirtyRepos(ws: string, name: string): Promise<string[]>
-  stopEnv(ref: EnvRef): Promise<void>
-  /** Tear down one task's env instance (container + clone). */
-  removeTaskEnv(ref: EnvRef): Promise<void>
-  /** Launch VS Code attached to the env's running container (impl: `EnvManager.vscodeUri`
-   *  + `shell.openExternal`). Rejects if the container isn't running. */
-  envOpenVscode(ref: EnvRef): Promise<void>
+  /** Stop a session's container; it keeps its filesystem and resumes on next use. */
+  stopContainer(sessionId: string): Promise<void>
+  /** Destroy a session's container. The clone (and its uncommitted work) stays. */
+  releaseContainer(sessionId: string): Promise<void>
+  /** Launch VS Code attached to the session's running container (impl:
+   *  `ContainerManager.vscodeUri` + `shell.openExternal`). Rejects if it isn't running. */
+  sessionOpenVscode(sessionId: string): Promise<void>
   /** Git state of every clone of the task, computed on the host; `fetch` reaches the network. */
   getTaskChanges(ws: string, task: string, opts?: { fetch?: boolean }): Promise<RepoChanges[]>
   /** Read-only unified diff of one file (untracked shown as whole-file added). */
@@ -185,9 +186,9 @@ const METHODS = {
   removeTask: true,
   renameTask: true,
   taskDirtyRepos: true,
-  stopEnv: true,
-  removeTaskEnv: true,
-  envOpenVscode: true,
+  stopContainer: true,
+  releaseContainer: true,
+  sessionOpenVscode: true,
   getTaskChanges: true,
   getFileDiff: true,
   getCommitDiff: true,

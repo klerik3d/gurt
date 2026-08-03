@@ -7,7 +7,6 @@ import type {
   ChatEntry,
   ChatEntryBase,
   EnvRef,
-  EnvStatus,
   McpSelection,
   PermissionOption,
   PersistedSession,
@@ -15,6 +14,7 @@ import type {
   PromptContext,
   PromptImage,
   SessionConfigOption,
+  SessionContainer,
   SessionInfo,
   SessionLogRecord,
   SessionModes,
@@ -25,8 +25,9 @@ import { applyLog } from '../shared/types'
 import { defaultAgentConfig } from '../shared/agentConfig'
 import type { AgentDef } from '../shared/agents'
 import type { CreateAction } from '../shared/api'
-import { connKey, envKey, taskKey } from '../shared/keys'
+import { taskKey } from '../shared/keys'
 import type { Bus } from './bus'
+import type { LaunchContext } from './containers'
 import { spawnAcpAdapter } from './provision'
 import { JsonRpcPeer } from './jsonrpc'
 
@@ -75,9 +76,16 @@ function normalizeConfigOptions(raw: unknown[] | undefined): SessionConfigOption
   return out
 }
 
+/**
+ * One ACP adapter process, owned by one session and running inside that
+ * session's container. Held under the session id; `containerId` records which
+ * container it was spawned into, so a connection can be recognised as belonging
+ * to a container that no longer exists.
+ */
 interface Connection {
   peer: JsonRpcPeer
-  ref: EnvRef
+  sessionId: string
+  containerId: string
   agent: string
   /** Prompt content the agent accepts, from the `initialize` response (agent-level). */
   promptCapabilities?: PromptCapabilities
@@ -124,43 +132,24 @@ interface Session {
   pendingPermissions: Map<number, (outcome: unknown) => void>
 }
 
-/** Everything needed to (re)spawn the agent process for an environment. */
-export interface EnvContext {
-  agent: AgentDef
-  /** Owning session — the container's identity; exec/spawn find it by this. */
-  session: string
-  remoteWorkspaceFolder: string
-  hostWorkspaceFolder: string
-  configArgs: string[]
-  secret: string
-  secretEnv: string
-  /** Extra env vars for the adapter (e.g. a local model's base URL). */
-  env?: Record<string, string>
-  /** Git-access injection (§6): broker URL + GIT_CONFIG_*; present only when the
-   *  starting session enabled git access. Fixes git access for the shared
-   *  (env, agent) adapter at its first spawn. */
-  gitBrokerEnv?: Record<string, string>
-}
-
-/** Capabilities the session manager needs from the env/mcp/store layers.
+/** Capabilities the session manager needs from the container/mcp/store layers.
  *  Notifications ride the domain bus instead. */
 export interface SessionEvents {
-  /** Ensure the session's container is up (clone `repo` + up under its
-   *  id-label) and return the agent's launch context. When `gitAccess`, also
-   *  starts the git broker, installs shims, and includes the injection env. */
-  resolveEnv: (
-    ref: EnvRef,
-    repo: string | undefined,
-    session: string,
-    agentId: string,
-    gitAccess: boolean
-  ) => Promise<EnvContext>
-  /** Install the agent's adapter packages in the container (idempotent). */
-  installAdapter: (ref: EnvRef, ctx: EnvContext) => Promise<void>
+  /** Ensure the session's container is up and return the agent's launch context.
+   *  When the session enabled git access, this also starts its broker and
+   *  installs the shims into that container. */
+  resolveLaunch: (sessionId: string) => Promise<LaunchContext>
+  /** Install the agent's adapter packages in the session's container. */
+  installAdapter: (ctx: LaunchContext) => Promise<void>
   /** Ensure the host MCP servers for this selection are up; return ACP descriptors. */
-  resolveMcpServers: (ref: EnvRef, selection: McpSelection[] | undefined) => Promise<AcpHttpMcpServer[]>
-  /** Tear down the env's host MCP servers (env stop/delete). */
-  stopMcpServers: (ref: EnvRef) => void
+  resolveMcpServers: (
+    ref: EnvRef,
+    sessionId: string,
+    repo: string | undefined,
+    selection: McpSelection[] | undefined
+  ) => Promise<AcpHttpMcpServer[]>
+  /** Tear down the session's host MCP servers. */
+  stopMcpServers: (sessionId: string) => void
   /** Ensure the per-session `gurt` server (the turn contract) is up; return its
    *  ACP descriptor. Attached to every session unconditionally. */
   resolveGurtServer: (
@@ -170,15 +159,9 @@ export interface SessionEvents {
   ) => Promise<AcpHttpMcpServer>
   /** Tear down one session's `gurt` server (session deleted). */
   stopGurtServer: (sessionId: string) => void
-  /** Remove the container this session owns, if any — on delete, or when a
-   *  draft is re-pointed to another repo/env. The clone and env record stay. */
-  releaseEnv: (ref: EnvRef, sessionId: string) => void
-  /** Instance states of every env in the task, with the repo each was
-   *  provisioned with — the scheduler's env-free / repo-free predicate. */
-  taskEnvStates: (
-    ws: string,
-    task: string
-  ) => Promise<{ env: string; repo?: string; status: EnvStatus }[]>
+  /** Destroy the container this session owns, if any — on delete, or when a
+   *  draft is re-pointed at another repo/env. The clone stays. */
+  releaseContainer: (sessionId: string) => void
   persist: (ws: string, task: string, records: PersistedSession[]) => void
   /** Persist the refreshed config surface for an agent instance (cache). */
   saveAgentConfig: (agentId: string, cfg: AgentConfig) => void
@@ -234,11 +217,10 @@ export function postTurnDecision(o: {
 }
 
 export class SessionManager {
+  /** One ACP adapter per session, held under the session id. */
   private connections = new Map<string, Connection>()
   private sessions = new Map<string, Session>()
   private persistTimers = new Map<string, NodeJS.Timeout>()
-  /** (env, agent) pairs whose adapter is installed this app run. */
-  private installedAdapters = new Set<string>()
   /** Per agent-instance id, its last-known config surface (models/effort/commands/
    *  modes). Seeded from the persisted cache at restore, refreshed on every live
    *  session start/load/update — the source of truth the New Session modal reads
@@ -354,8 +336,7 @@ export class SessionManager {
       plan: s.plan,
       commands: s.commands ?? cached?.commands,
       configOptions: s.configOptions ?? cached?.configOptions,
-      promptCapabilities: this.connections.get(connKey(s.ref, s.info.agent ?? ''))
-        ?.promptCapabilities,
+      promptCapabilities: this.connections.get(sessionId)?.promptCapabilities,
       startError: s.startError,
       queuePosition: this.queuePosition(sessionId),
       proposal: s.proposal,
@@ -491,11 +472,11 @@ export class SessionManager {
     // the env. Re-pointing repo or env releases the draft's container if a
     // failed start left one — it was provisioned for the old target.
     if (patch.repo !== undefined && (patch.repo ?? undefined) !== s.info.repo) {
-      this.events.releaseEnv(s.ref, s.info.id)
+      this.events.releaseContainer(s.info.id)
       s.info.repo = patch.repo ?? undefined
     }
     if (patch.env !== undefined && patch.env !== s.info.env) {
-      this.events.releaseEnv(s.ref, s.info.id)
+      this.events.releaseContainer(s.info.id)
       s.info.env = patch.env
       s.ref = { ...s.ref, env: patch.env }
     }
@@ -513,9 +494,11 @@ export class SessionManager {
     this.events.deleteLog(s.ref.workspace, s.ref.task, sessionId)
     this.events.stopGurtServer(sessionId)
     // The container is bound to this session — take it down with the session.
-    this.events.releaseEnv(s.ref, sessionId)
+    this.events.releaseContainer(sessionId)
     this.schedulePersist(s.ref)
     this.bus.emit('tree.changed', undefined)
+    // Its clone may now be free — let the next queued session take it.
+    this.schedule()
   }
 
   // --- scheduler ----------------------------------------------------------
@@ -526,57 +509,66 @@ export class SessionManager {
    * occupied by a just-started item keeps its later items queued.
    */
   schedule(): void {
-    void this.scheduleAsync()
+    this.scheduleSync()
   }
 
-  private async scheduleAsync(): Promise<void> {
+  private scheduleSync(): void {
     const queued = [...this.sessions.values()]
       .filter((s) => s.info.state === 'queued')
       .sort((a, b) => (a.info.queuedAt ?? '').localeCompare(b.info.queuedAt ?? ''))
-    // A pass may start several items; claim each started item's env AND repo so a
-    // later item over either stays queued (multiple envs may share one repo).
+    // A pass may start several items; claim each started item's repo so a later
+    // item over the same clone stays queued.
     const claimed = new Set<string>()
-    const repoClaim = (s: Session) =>
-      s.info.repo ? `${s.ref.workspace}/${s.ref.task}/${s.info.repo}` : null
     for (const s of queued) {
-      const ekey = envKey(s.ref)
-      const rkey = repoClaim(s)
-      if (claimed.has(ekey) || (rkey && claimed.has(rkey))) continue
-      if (!(await this.canStart(s))) continue
-      claimed.add(ekey)
-      if (rkey) claimed.add(rkey)
+      const rkey = this.repoKey(s)
+      if (!rkey || claimed.has(rkey)) continue
+      if (!this.canStart(s)) continue
+      claimed.add(rkey)
       void this.startSession(s.info.id)
     }
   }
 
+  /** The clone a session works in — `(task, repo)`, shared by every session of
+   *  the task that picked that repo. Null for a repo-less draft. */
+  private repoKey(s: Session): string | null {
+    return s.info.repo ? `${taskKey(s.ref.workspace, s.ref.task)}/${s.info.repo}` : null
+  }
+
   /**
-   * Start gate: within the task, BOTH the env and the session's repo must be
-   * free. Free = no instance in that role is starting/running, and no other
-   * session is `starting` on the same env / same repo. A repo-less session never
-   * starts. Future predicates (concurrency, priorities) compose here.
+   * The other session currently holding this session's clone, if any.
+   *
+   * A clone is one working tree shared by every session of the task that picked
+   * that repo, so only one of them may be able to touch it at a time. "Able to
+   * touch it" means mid-start, or owning a container that is up: an idle session
+   * whose container has been auto-stopped holds nothing and releases the repo
+   * for the next one — which is how a task runs a series of sessions against the
+   * same repo without deleting the finished ones.
+   *
+   * The env is *not* a constraint. Each session owns its container, so any
+   * number of sessions may run the same env definition at once.
    */
-  private async canStart(s: Session): Promise<boolean> {
-    if (!s.info.repo) return false
-    const busy = (st: EnvStatus) => st === 'starting' || st === 'running'
-    const states = await this.events.taskEnvStates(s.ref.workspace, s.ref.task)
-    // env free / repo free among provisioned instances
-    if (states.some((e) => e.env === s.info.env && busy(e.status))) return false
-    if (states.some((e) => e.repo === s.info.repo && busy(e.status))) return false
-    // no other session mid-start on the same env or the same repo of this task
+  private repoHolder(s: Session): Session | undefined {
+    const rkey = this.repoKey(s)
+    if (!rkey) return undefined
     for (const o of this.sessions.values()) {
-      if (o.info.id === s.info.id || o.info.state !== 'starting') continue
-      if (o.info.workspace !== s.info.workspace || o.info.task !== s.info.task) continue
-      if (o.info.env === s.info.env) return false
-      if (o.info.repo && o.info.repo === s.info.repo) return false
+      if (o.info.id === s.info.id || this.repoKey(o) !== rkey) continue
+      const live = o.info.container?.status
+      if (o.info.state === 'starting' || live === 'starting' || live === 'running') return o
     }
-    return true
+    return undefined
+  }
+
+  /** Start gate: the session has a repo and nothing else is holding its clone.
+   *  Future predicates (concurrency, priorities) compose here. */
+  private canStart(s: Session): boolean {
+    return !!this.repoKey(s) && !this.repoHolder(s)
   }
 
   /** Provision (if needed), open the ACP session, and send the start prompt. */
   private async startSession(sessionId: string): Promise<void> {
     const s = this.sessions.get(sessionId)
     if (!s || s.info.state === 'starting' || s.info.state === 'started') return
-    this.bus.emit('env.activity', { ref: s.ref })
+    this.bus.emit('session.activity', { sessionId: s.info.id })
     s.info.state = 'starting'
     s.info.queuedAt = undefined
     s.startError = undefined
@@ -586,21 +578,17 @@ export class SessionManager {
     try {
       // Every start path funnels here, so the gate is checked once, here: the
       // scheduler pre-checks it to pick queue items, "Run now" doesn't need to.
-      if (!(await this.canStart(s)))
+      if (!s.info.repo) throw new Error('session has no repository')
+      const holder = this.repoHolder(s)
+      if (holder)
         throw new Error(
-          `environment "${s.info.env}" or repository "${s.info.repo}" is busy — queue the session instead`
+          `repository "${s.info.repo}" is in use by session "${holder.info.title}" — queue this one instead`
         )
-      const ctx = await this.events.resolveEnv(
-        s.ref,
-        s.info.repo,
-        s.info.id,
-        s.info.agent!,
-        s.info.gitAccess ?? false
-      )
+      const ctx = await this.events.resolveLaunch(s.info.id)
       s.remoteCwd = ctx.remoteWorkspaceFolder
-      const conn = await this.connection(s.ref, s.info.agent!, ctx)
+      const conn = await this.connection(s, ctx)
       const mcpServers = [
-        ...(await this.events.resolveMcpServers(s.ref, s.info.mcp)),
+        ...(await this.events.resolveMcpServers(s.ref, s.info.id, s.info.repo, s.info.mcp)),
         await this.events.resolveGurtServer(s.ref, s.info.id, (p) => this.onComplete(s.info.id, p))
       ]
       // Model/effort chosen for the draft ride `_meta` so the very first turn
@@ -644,24 +632,53 @@ export class SessionManager {
 
   // --- connections --------------------------------------------------------
 
-  /** Kill the adapter processes of an environment (all agents) — env stop/delete. */
-  closeEnv(ref: EnvRef): void {
-    for (const conn of this.connections.values())
-      if (envKey(conn.ref) === envKey(ref)) conn.kill()
-    this.events.stopMcpServers(ref)
+  /**
+   * Drop everything this session's container backs: the ACP adapter running
+   * inside it and the host MCP servers pointed at its clone. Called by the
+   * container manager immediately *before* the container is stopped or removed,
+   * which is the whole reason nothing container-derived can go stale — there is
+   * one such path, and it runs first.
+   */
+  detach(sessionId: string): void {
+    const conn = this.connections.get(sessionId)
+    if (conn) conn.kill()
+    this.events.stopMcpServers(sessionId)
+    const s = this.sessions.get(sessionId)
+    if (s) s.attached = false
+  }
+
+  /** Read a session's persisted info (the container manager's view of it). */
+  sessionInfo(sessionId: string): SessionInfo | undefined {
+    return this.sessions.get(sessionId)?.info
+  }
+
+  /** Every live session's info — the boot reconcile and task teardown walk these. */
+  allSessions(): SessionInfo[] {
+    return [...this.sessions.values()].map((s) => s.info)
+  }
+
+  /**
+   * Write the session's container record. The container manager owns the
+   * contents; the session owns the storage, since the container is a field of
+   * the session and is persisted and deleted with it.
+   */
+  patchContainer(sessionId: string, container: SessionContainer | undefined): void {
+    const s = this.sessions.get(sessionId)
+    if (!s) return
+    if (container) s.info.container = container
+    else delete s.info.container
+    this.bus.emit('session.changed', { sessionId })
+    this.schedulePersist(s.ref)
   }
 
   /** Forget sessions of a whole task without persisting (task dir is removed). */
   dropTaskSessions(ws: string, task: string): void {
     for (const [id, s] of this.sessions) {
       if (s.ref.workspace !== ws || s.ref.task !== task) continue
+      this.detach(id)
+      this.events.stopGurtServer(id)
       this.sessions.delete(id)
     }
-    for (const conn of this.connections.values())
-      if (conn.ref.workspace === ws && conn.ref.task === task) {
-        conn.kill()
-        this.events.stopMcpServers(conn.ref)
-      }
     this.bus.emit('tree.changed', undefined)
   }
 
@@ -711,11 +728,8 @@ export class SessionManager {
   renameTask(ws: string, oldTask: string, newTask: string): void {
     clearTimeout(this.persistTimers.get(taskKey(ws, oldTask)))
     this.persistTimers.delete(taskKey(ws, oldTask))
-    for (const conn of this.connections.values())
-      if (conn.ref.workspace === ws && conn.ref.task === oldTask) {
-        conn.kill()
-        this.events.stopMcpServers(conn.ref)
-      }
+    for (const s of this.sessions.values())
+      if (s.ref.workspace === ws && s.ref.task === oldTask) this.detach(s.info.id)
     for (const s of this.sessions.values()) {
       if (s.ref.workspace !== ws || s.ref.task !== oldTask) continue
       s.ref = { ...s.ref, task: newTask }
@@ -762,15 +776,19 @@ export class SessionManager {
       })
   }
 
-  private async connection(ref: EnvRef, agentId: string, ctx: EnvContext): Promise<Connection> {
-    const key = connKey(ref, agentId)
+  /**
+   * The session's ACP adapter, spawned on first use. A cached connection is
+   * reused only while it still belongs to the session's *current* container: a
+   * container that was replaced took its adapter process with it, and the id
+   * comparison is what makes that impossible to miss.
+   */
+  private async connection(s: Session, ctx: LaunchContext): Promise<Connection> {
+    const key = s.info.id
     const existing = this.connections.get(key)
-    if (existing) return existing
+    if (existing && existing.containerId === ctx.containerId) return existing
+    if (existing) this.connections.delete(key)
 
-    if (!this.installedAdapters.has(key)) {
-      await this.events.installAdapter(ref, ctx)
-      this.installedAdapters.add(key)
-    }
+    await this.events.installAdapter(ctx)
 
     const child = spawnAcpAdapter(
       ctx.session,
@@ -782,29 +800,44 @@ export class SessionManager {
       ctx.env,
       ctx.gitBrokerEnv
     )
-    child.stderr.on('data', (d: Buffer) => console.error(`[acp ${key}]`, d.toString().trim()))
-    const peer = new JsonRpcPeer(child, (err) => console.error(`[acp ${key}]`, err))
+    // The adapter's own diagnostics: the reason a start fails is almost always
+    // here, so it is mirrored into the session's provisioning log rather than
+    // only the main-process console.
+    const tag = `acp ${key}`
+    child.stderr.on('data', (d: Buffer) => {
+      const line = d.toString().trim()
+      if (!line) return
+      console.error(`[${tag}]`, line)
+      this.bus.emit('provision.log', { key, line: `[agent] ${line}` })
+    })
+    const peer = new JsonRpcPeer(child, (err) => console.error(`[${tag}]`, err))
     child.on('close', () => {
-      this.connections.delete(key)
-      for (const s of this.sessions.values()) {
-        if (connKey(s.ref, s.info.agent ?? '') !== key) continue
-        s.attached = false
-        const wasAwaiting = s.pendingPermissions.size > 0
-        for (const resolve of s.pendingPermissions.values())
+      // Only clear the slot if it still holds *this* process — a replaced
+      // container's adapter must not evict its successor on its way out.
+      if (this.connections.get(key)?.peer === peer) this.connections.delete(key)
+      const dead = this.sessions.get(key)
+      if (dead) {
+        dead.attached = false
+        const wasAwaiting = dead.pendingPermissions.size > 0
+        for (const resolve of dead.pendingPermissions.values())
           resolve({ outcome: { outcome: 'cancelled' } })
-        s.pendingPermissions.clear()
+        dead.pendingPermissions.clear()
         if (wasAwaiting)
-          this.bus.emit('session.awaiting', { sessionId: s.info.id, ref: s.ref, awaiting: false })
-        if (s.busy) {
-          s.busy = false
-          this.push(s, { kind: 'system', text: 'agent process exited' })
+          this.bus.emit('session.awaiting', {
+            sessionId: dead.info.id,
+            ref: dead.ref,
+            awaiting: false
+          })
+        if (dead.busy) {
+          dead.busy = false
+          this.push(dead, { kind: 'system', text: 'agent process exited' })
         }
         // The in-flight `session/prompt` of a busy session rejects with the peer,
         // so its runPrompt still emits the `session.turn` ended the idle policy needs.
       }
-      // Covers the sessions that were NOT busy: the auto-stop policy re-evaluates
-      // the env on adapter death even when no turn end will ever fire.
-      this.bus.emit('env.adapterExited', { ref, agent: agentId })
+      // Covers a session that was NOT busy: the auto-stop policy re-evaluates it
+      // on adapter death even when no turn end will ever fire.
+      this.bus.emit('session.adapterExited', { sessionId: key })
     })
 
     peer.onNotification('session/update', (params) => this.onSessionUpdate(params))
@@ -825,8 +858,9 @@ export class SessionManager {
 
     const conn: Connection = {
       peer,
-      ref,
-      agent: agentId,
+      sessionId: key,
+      containerId: ctx.containerId,
+      agent: ctx.agent.id,
       promptCapabilities: init?.agentCapabilities?.promptCapabilities,
       kill: () => child.kill()
     }
@@ -836,10 +870,9 @@ export class SessionManager {
 
   /** Reconnect a session: spawn the adapter if needed and session/load. */
   private async attach(s: Session): Promise<Connection> {
-    const agentId = s.info.agent ?? 'claude-code'
-    const existing = this.connections.get(connKey(s.ref, agentId))
+    const existing = this.connections.get(s.info.id)
     if (existing && s.attached) return existing
-    // We're going to re-open the session (resolveEnv wakes the container, then
+    // We're going to re-open the session (resolveLaunch wakes the container, then
     // session/load). Raise the "resuming" indicator NOW — before the slow
     // container wake — so the UI reads "resuming…" for the whole reattach rather
     // than "thinking…" until the container is up and only then flipping. Resuming
@@ -850,20 +883,22 @@ export class SessionManager {
       this.bus.emit('session.changed', { sessionId: s.info.id })
     }
     try {
-      const ctx = await this.events.resolveEnv(
-        s.ref,
-        s.info.repo,
-        s.info.id,
-        agentId,
-        s.info.gitAccess ?? false
-      )
+      // Waking a session brings its container back up on the shared clone, so it
+      // is gated exactly like a start — otherwise a resume could put two live
+      // containers on one working tree.
+      const holder = this.repoHolder(s)
+      if (holder)
+        throw new Error(
+          `repository "${s.info.repo}" is in use by session "${holder.info.title}" — wait for it to go idle`
+        )
+      const ctx = await this.events.resolveLaunch(s.info.id)
       s.remoteCwd = ctx.remoteWorkspaceFolder
-      const conn = await this.connection(s.ref, agentId, ctx)
+      const conn = await this.connection(s, ctx)
       if (!s.attached) {
         if (!s.acpSessionId) throw new Error('session was never started')
         try {
           const mcpServers = [
-            ...(await this.events.resolveMcpServers(s.ref, s.info.mcp)),
+            ...(await this.events.resolveMcpServers(s.ref, s.info.id, s.info.repo, s.info.mcp)),
             await this.events.resolveGurtServer(s.ref, s.info.id, (p) => this.onComplete(s.info.id, p))
           ]
           const result = await conn.peer.request<{
@@ -931,7 +966,7 @@ export class SessionManager {
     context?: PromptContext[],
     images?: PromptImage[]
   ): Promise<{ stopReason?: string; threw: boolean }> {
-    this.bus.emit('env.activity', { ref: s.ref })
+    this.bus.emit('session.activity', { sessionId: s.info.id })
     this.push(s, { kind: entryKind, text })
     // Prompt start: the turn is incomplete until `complete` fires; clear any
     // prior violation overlay.
@@ -1026,20 +1061,17 @@ export class SessionManager {
   }
 
   /** No session sharing this env is busy or mid-start. */
-  isEnvIdle(ref: EnvRef): boolean {
-    const key = envKey(ref)
-    for (const s of this.sessions.values()) {
-      if (envKey(s.ref) !== key) continue
-      if (s.busy || s.info.state === 'starting') return false
-    }
-    return true
+  isSessionIdle(sessionId: string): boolean {
+    const s = this.sessions.get(sessionId)
+    if (!s) return false
+    return !s.busy && s.info.state !== 'starting'
   }
 
   /** Ping from the UI (e.g. typing in the composer) — postpones a pending auto-stop. */
   activity(sessionId: string): void {
     const s = this.sessions.get(sessionId)
     if (!s) return
-    this.bus.emit('env.activity', { ref: s.ref })
+    this.bus.emit('session.activity', { sessionId: s.info.id })
   }
 
   async prompt(
@@ -1062,7 +1094,7 @@ export class SessionManager {
   cancel(sessionId: string): void {
     const s = this.sessions.get(sessionId)
     if (!s) return
-    const conn = this.connections.get(connKey(s.ref, s.info.agent ?? ''))
+    const conn = this.connections.get(s.info.id)
     if (s.acpSessionId) conn?.peer.notify('session/cancel', { sessionId: s.acpSessionId })
     const wasAwaiting = s.pendingPermissions.size > 0
     for (const resolve of s.pendingPermissions.values())
@@ -1075,7 +1107,7 @@ export class SessionManager {
   async setMode(sessionId: string, modeId: string): Promise<void> {
     const s = this.sessions.get(sessionId)
     if (!s) throw new Error('unknown session')
-    const conn = this.connections.get(connKey(s.ref, s.info.agent ?? ''))
+    const conn = this.connections.get(s.info.id)
     if (!conn) throw new Error('agent is not running — send a prompt first')
     await conn.peer.request('session/set_mode', { sessionId: s.acpSessionId, modeId })
     if (s.modes) s.modes.currentModeId = modeId
@@ -1195,7 +1227,7 @@ export class SessionManager {
   async setConfigOption(sessionId: string, configId: string, value: string | boolean): Promise<void> {
     const s = this.sessions.get(sessionId)
     if (!s) throw new Error('unknown session')
-    const conn = this.connections.get(connKey(s.ref, s.info.agent ?? ''))
+    const conn = this.connections.get(s.info.id)
     if (!conn) throw new Error('agent is not running — send a prompt first')
     await this.pushConfigOption(s, conn, configId, value)
     s.info.configValues = { ...s.info.configValues, [configId]: value }

@@ -8,6 +8,13 @@ first. Key code: `src/main/{kernel,envs,sessions,ipc}.ts`,
 without asking the owner. Depends on: `requirements-kernel.md` (merged
 first).
 
+> **Superseded in part** by `requirements-session-container.md`: the three
+> env-scoped events are now session-scoped — `env.status` → `container.status`
+> `{ sessionId, ref, status }`, `env.activity` → `session.activity`
+> `{ sessionId }`, `env.adapterExited` → `session.adapterExited`
+> `{ sessionId }`. `provision.log`'s `key` is a session id. The bus contract
+> (synchronous dispatch, isolated handlers) is unchanged.
+
 ## 1. Motivation
 
 The only eventing today is two coarse UI channels (`tree-changed`,

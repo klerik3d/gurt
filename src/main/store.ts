@@ -9,7 +9,6 @@ import type {
   AgentConfigCache,
   AgentsFile,
   EnvConfig,
-  EnvState,
   PersistedSession,
   RepoConfig,
   SessionInfo,
@@ -225,22 +224,20 @@ export async function updateRepo(ws: string, repo: RepoConfig): Promise<void> {
   await saveWorkspace(ws, data)
 }
 
-/** Task names that have an env instance provisioned with this repo (a live clone). */
+/** Task names holding a clone of this repo — the work that would be destroyed. */
 export async function tasksUsingRepo(ws: string, repo: string): Promise<string[]> {
   const used: string[] = []
-  for (const task of await listTasks(ws)) {
-    const data = await getTask(ws, task)
-    if (data.envs.some((e) => e.repo === repo)) used.push(task)
-  }
+  for (const task of await listTasks(ws))
+    if ((await taskClones(ws, task)).includes(repo)) used.push(task)
   return used
 }
 
-/** Task names that have an instance of this env. */
+/** Task names with a session that runs this env definition. */
 export async function tasksUsingEnv(ws: string, env: string): Promise<string[]> {
   const used: string[] = []
   for (const task of await listTasks(ws)) {
-    const data = await getTask(ws, task)
-    if (data.envs.some((e) => e.env === env)) used.push(task)
+    const sessions = await readJson<PersistedSession[]>(sessionsFile(ws, task), [])
+    if (sessions.some((s) => s.info.env === env)) used.push(task)
   }
   return used
 }
@@ -254,7 +251,7 @@ export async function removeRepo(ws: string, repo: string): Promise<void> {
     )
   const used = await tasksUsingRepo(ws, repo)
   if (used.length)
-    throw new Error(`repo "${repo}" has a clone in task(s): ${used.join(', ')} — delete those envs first`)
+    throw new Error(`repo "${repo}" has a clone in task(s): ${used.join(', ')} — delete those tasks first`)
   data.repos = data.repos.filter((r) => r.name !== repo)
   await saveWorkspace(ws, data)
 }
@@ -287,7 +284,9 @@ export async function updateEnv(ws: string, env: EnvConfig): Promise<void> {
 export async function removeEnv(ws: string, name: string): Promise<void> {
   const used = await tasksUsingEnv(ws, name)
   if (used.length)
-    throw new Error(`env "${name}" is used by task(s): ${used.join(', ')} — delete those envs first`)
+    throw new Error(
+      `env "${name}" is used by session(s) in task(s): ${used.join(', ')} — delete those first`
+    )
   const data = await getWorkspace(ws)
   data.envs = data.envs.filter((e) => e.name !== name)
   await saveWorkspace(ws, data)
@@ -298,7 +297,7 @@ export async function createTask(ws: string, task: string): Promise<void> {
   validateName('task', task)
   const file = path.join(taskDir(ws, task), 'task.json')
   if (existsSync(file)) throw new Error(`task "${task}" already exists in "${ws}"`)
-  await writeJson(file, { envs: [] } satisfies TaskFile)
+  await writeJson(file, {} satisfies TaskFile)
 }
 
 /** Renames the task's whole directory (config, clones, session logs move with
@@ -334,20 +333,25 @@ export async function listTasks(ws: string): Promise<string[]> {
   return tasks
 }
 
-/** Read task.json, lazily migrating pre-split env records once: an entry with a
- *  `repo` and no `env` gets `env = repo` (its provisioned repo is kept). */
+/** Read task.json. Legacy `envs` entries are returned as-is; `readSessions`
+ *  folds them onto their owning session and clears them from disk. */
 export async function getTask(ws: string, task: string): Promise<TaskFile> {
-  const file = path.join(taskDir(ws, task), 'task.json')
-  const data = await readJson<TaskFile>(file, { envs: [] })
-  let migrated = false
-  for (const e of data.envs as (EnvState & { env?: string })[]) {
-    if (e.env === undefined && typeof e.repo === 'string') {
-      e.env = e.repo
-      migrated = true
-    }
-  }
-  if (migrated) await saveTask(ws, task, data)
-  return data
+  return readJson<TaskFile>(path.join(taskDir(ws, task), 'task.json'), {})
+}
+
+/**
+ * Repos with a clone in this task, discovered on disk rather than recorded: the
+ * clone directory *is* the fact. A clone outlives every session that used it
+ * (it holds their uncommitted work), so nothing session-scoped may own this.
+ */
+export async function taskClones(ws: string, task: string): Promise<string[]> {
+  const out: string[] = []
+  for (const entry of await fs
+    .readdir(taskDir(ws, task), { withFileTypes: true })
+    .catch(() => []))
+    if (entry.isDirectory() && existsSync(path.join(taskDir(ws, task), entry.name, '.git')))
+      out.push(entry.name)
+  return out
 }
 
 export async function saveTask(ws: string, task: string, data: TaskFile): Promise<void> {
@@ -358,38 +362,32 @@ export async function removeTaskDir(ws: string, task: string): Promise<void> {
   await rmTree(taskDir(ws, task))
 }
 
-/** Ensure a (stopped) env instance record exists for `env`; idempotent. */
-export async function ensureTaskEnv(ws: string, task: string, env: string): Promise<void> {
-  const data = await getTask(ws, task)
-  if (data.envs.some((e) => e.env === env)) return
-  data.envs.push({ env, status: 'stopped' } satisfies EnvState)
-  await saveTask(ws, task, data)
-}
-
-export async function removeTaskEnv(ws: string, task: string, env: string): Promise<void> {
-  const data = await getTask(ws, task)
-  data.envs = data.envs.filter((e) => e.env !== env)
-  await saveTask(ws, task, data)
-}
-
-export async function updateTaskEnv(
-  ws: string,
-  task: string,
-  env: string,
-  patch: Partial<EnvState>
-): Promise<void> {
-  const data = await getTask(ws, task)
-  const inst = data.envs.find((e) => e.env === env)
-  if (!inst) throw new Error(`no env instance "${env}" in task "${task}"`)
-  Object.assign(inst, patch)
-  await saveTask(ws, task, data)
-}
-
 const sessionsFile = (ws: string, task: string) => path.join(taskDir(ws, task), 'sessions.json')
 
 export async function readSessions(ws: string, task: string): Promise<PersistedSession[]> {
   const records = await readJson<PersistedSession[]>(sessionsFile(ws, task), [])
   let migrated = false
+  // Containers used to be tracked per env in task.json, one slot reused by
+  // successive sessions. Hand each record to the session that owned it — that
+  // binding already existed as `EnvState.session`, it was just stored on the
+  // wrong entity. A record whose owner is gone describes a container no session
+  // can claim; it is dropped here and reaped by the boot reconcile.
+  const legacy = (await getTask(ws, task)).envs
+  if (legacy?.length) {
+    for (const e of legacy) {
+      const owner = e.session ? records.find((r) => r.info.id === e.session) : undefined
+      if (!owner || owner.info.container) continue
+      owner.info.container = {
+        status: e.status,
+        id: e.containerId,
+        remoteWorkspaceFolder: e.remoteWorkspaceFolder,
+        repo: e.repo,
+        error: e.error
+      }
+    }
+    await saveTask(ws, task, {})
+    migrated = true
+  }
   // Migration: pre-queue records have no state — treat them as started.
   for (const r of records) {
     // Pre-split records fused the env and repo into one field; a migrated session
@@ -500,21 +498,8 @@ export async function buildTree(): Promise<Tree> {
     if (!existsSync(path.join(wsDir(ws), 'workspace.json'))) continue
     const wsData = await getWorkspace(ws)
     const tasks: Tree['workspaces'][number]['tasks'] = []
-    for (const task of await listTasks(ws)) {
-      const taskData = await getTask(ws, task)
-      tasks.push({
-        name: task,
-        envs: taskData.envs.map((e) => ({
-          env: e.env,
-          repo: e.repo,
-          containerId: e.containerId,
-          remoteWorkspaceFolder: e.remoteWorkspaceFolder,
-          status: e.status,
-          error: e.error
-        })),
-        sessions: []
-      })
-    }
+    for (const task of await listTasks(ws))
+      tasks.push({ name: task, repos: await taskClones(ws, task), sessions: [] })
     tree.workspaces.push({ name: ws, repos: wsData.repos, envs: wsData.envs, tasks })
   }
   return tree
