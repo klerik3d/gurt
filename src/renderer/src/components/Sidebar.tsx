@@ -436,12 +436,12 @@ export function Sidebar({
           )
         })}
         {wsData && wsData.tasks.length === 0 && (
-          <div className="sb-empty" style={{ paddingLeft: 10 }}>
+          <div className="sb-empty" style={{ paddingLeft: 18 }}>
             no tasks yet — “+” above to add one
           </div>
         )}
         {tree && tree.workspaces.length === 0 && (
-          <div className="sb-empty" style={{ paddingLeft: 10 }}>
+          <div className="sb-empty" style={{ paddingLeft: 18 }}>
             no workspaces yet — create one via the workspace menu
           </div>
         )}

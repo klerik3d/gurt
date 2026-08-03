@@ -4,6 +4,7 @@ import { isActionable, isDelivered } from '../../../shared/types'
 import { agentName, useAgents } from '../useAgents'
 import { alertDialog, confirmDialog } from '../dialog'
 import { Icon, Dot } from './icons'
+import { EnvTag, RepoTag } from './tags'
 import { Modal } from './Modal'
 
 const ENV_DOT: Record<ContainerStatus, { tone: 'green' | 'yellow' | 'red' | 'outline'; pulse?: boolean }> = {
@@ -83,9 +84,8 @@ export function TaskPane({
                   <span className="env-name clickable" onClick={() => onSelectSession(s.id)}>
                     {s.title}
                   </span>
-                  <span className="tag">{s.env}</span>
-                  {/* An env is usually named after the repo it serves — one tag says it all then. */}
-                  {c.repo && c.repo !== s.env && <span className="tag">{c.repo}</span>}
+                  <EnvTag name={s.env} />
+                  {c.repo && <RepoTag name={c.repo} />}
                   <span className={`env-status ${c.status === 'error' ? 'red' : 'dim'}`}>
                     {c.status}
                   </span>
@@ -146,8 +146,8 @@ export function TaskPane({
               <span className="queue-title clickable" onClick={() => onSelectSession(s.id)}>
                 {s.title}
               </span>
-              <span className="tag">{s.env}</span>
-              {s.repo && s.repo !== s.env && <span className="tag">{s.repo}</span>}
+              <EnvTag name={s.env} />
+              {s.repo && <RepoTag name={s.repo} />}
               <span className="tag">{agentName(agents, s.agent)}</span>
               <span className="spacer" />
               <button
