@@ -198,6 +198,14 @@ const FILLED = new Set<IconName>([
   'agent-opencode'
 ])
 
+/** Brand marks keep their real color instead of inheriting currentColor —
+ *  the whole point is at-a-glance recognition. opencode has no signature
+ *  color in its own branding, so it's absent here and stays currentColor. */
+const BRAND_COLOR: Partial<Record<IconName, string>> = {
+  'agent-claude': '#D97757',
+  'agent-codex': '#7A9DFF'
+}
+
 export function Icon({
   name,
   size = 15,
@@ -214,7 +222,7 @@ export function Icon({
       width={size}
       height={size}
       viewBox="0 0 24 24"
-      fill={FILLED.has(name) ? 'currentColor' : 'none'}
+      fill={FILLED.has(name) ? (BRAND_COLOR[name] ?? 'currentColor') : 'none'}
       stroke={FILLED.has(name) ? 'none' : 'currentColor'}
       strokeWidth={1.75}
       strokeLinecap="round"
