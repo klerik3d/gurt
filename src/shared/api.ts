@@ -98,6 +98,8 @@ export interface GurtApi {
   removeEnv(ws: string, name: string): Promise<void>
   createTask(ws: string, name: string): Promise<void>
   removeTask(ws: string, name: string): Promise<void>
+  /** Rename a task; stops its envs and best-effort renames its branch in every clone. */
+  renameTask(ws: string, name: string, newName: string): Promise<void>
   taskDirtyRepos(ws: string, name: string): Promise<string[]>
   stopEnv(ref: EnvRef): Promise<void>
   /** Tear down one task's env instance (container + clone). */
@@ -136,6 +138,8 @@ export interface GurtApi {
   sessionEnqueue(id: string): Promise<void>
   sessionCancelQueue(id: string): Promise<void>
   sessionEditPrompt(id: string, text: string): Promise<void>
+  /** Rename a session's display title (sidebar/pane header) — cosmetic only. */
+  renameSession(id: string, title: string): Promise<void>
   /** Change a draft's settings (agent, repo, mode, git, MCP, prompt) before it starts. */
   sessionEditDraft(id: string, patch: SessionDraftPatch): Promise<void>
   sessionDelete(id: string): Promise<void>
@@ -179,6 +183,7 @@ const METHODS = {
   removeEnv: true,
   createTask: true,
   removeTask: true,
+  renameTask: true,
   taskDirtyRepos: true,
   stopEnv: true,
   removeTaskEnv: true,
@@ -197,6 +202,7 @@ const METHODS = {
   sessionEnqueue: true,
   sessionCancelQueue: true,
   sessionEditPrompt: true,
+  renameSession: true,
   sessionEditDraft: true,
   sessionDelete: true,
   sessionSnapshot: true,

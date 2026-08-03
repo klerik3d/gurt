@@ -665,31 +665,76 @@ export class SessionManager {
     this.bus.emit('tree.changed', undefined)
   }
 
+  /** Live sessions of the task, projected to their persisted shape. */
+  private recordsFor(ws: string, task: string): PersistedSession[] {
+    return this.sessionsFor(ws, task).map((s) => {
+      const info = { ...s.info }
+      // `starting` is runtime-only; persist it as draft (crash-safe).
+      if (info.state === 'starting') {
+        info.state = 'draft'
+        info.queuedAt = undefined
+      }
+      // `incomplete` is a runtime overlay — never persisted.
+      delete info.incomplete
+      return { info, acpSessionId: s.acpSessionId, proposal: s.proposal }
+    })
+  }
+
+  private sessionsFor(ws: string, task: string): Session[] {
+    const key = taskKey(ws, task)
+    return [...this.sessions.values()].filter((s) => taskKey(s.ref.workspace, s.ref.task) === key)
+  }
+
   private schedulePersist(ref: EnvRef): void {
     const key = taskKey(ref.workspace, ref.task)
     clearTimeout(this.persistTimers.get(key))
     this.persistTimers.set(
       key,
       setTimeout(() => {
-        const sessions = [...this.sessions.values()].filter(
-          (s) => taskKey(s.ref.workspace, s.ref.task) === key
-        )
-        const records: PersistedSession[] = sessions.map((s) => {
-          const info = { ...s.info }
-          // `starting` is runtime-only; persist it as draft (crash-safe).
-          if (info.state === 'starting') {
-            info.state = 'draft'
-            info.queuedAt = undefined
-          }
-          // `incomplete` is a runtime overlay — never persisted.
-          delete info.incomplete
-          return { info, acpSessionId: s.acpSessionId, proposal: s.proposal }
-        })
-        this.events.persist(ref.workspace, ref.task, records)
+        this.events.persist(ref.workspace, ref.task, this.recordsFor(ref.workspace, ref.task))
         // Flush each session's unflushed log tail (the JSONL is append-only).
-        for (const s of sessions) this.flushLog(s)
+        for (const s of this.sessionsFor(ref.workspace, ref.task)) this.flushLog(s)
       }, 300)
     )
+  }
+
+  /**
+   * Point every live session of the task at its new name and persist under it —
+   * the caller has already moved the task's directory (with its `sessions.json`
+   * and logs) there on disk. Any pending debounced persist under the old name is
+   * dropped first: left alone it would fire 300ms later, find no sessions under
+   * the old key, and write an empty `sessions.json` into a directory that is
+   * gone. Surviving adapters are killed rather than re-pointed — each was
+   * spawned against the old workspace path and cannot follow the move; sessions
+   * re-attach on their next prompt.
+   */
+  renameTask(ws: string, oldTask: string, newTask: string): void {
+    clearTimeout(this.persistTimers.get(taskKey(ws, oldTask)))
+    this.persistTimers.delete(taskKey(ws, oldTask))
+    for (const conn of this.connections.values())
+      if (conn.ref.workspace === ws && conn.ref.task === oldTask) {
+        conn.kill()
+        this.events.stopMcpServers(conn.ref)
+      }
+    for (const s of this.sessions.values()) {
+      if (s.ref.workspace !== ws || s.ref.task !== oldTask) continue
+      s.ref = { ...s.ref, task: newTask }
+      s.info.task = newTask
+      s.attached = false
+    }
+    this.events.persist(ws, newTask, this.recordsFor(ws, newTask))
+    this.bus.emit('tree.changed', undefined)
+  }
+
+  /** Rename a session's display title (sidebar/pane header) — cosmetic only. */
+  renameSession(sessionId: string, title: string): void {
+    const s = this.sessions.get(sessionId)
+    const trimmed = title.trim()
+    if (!s || !trimmed || trimmed === s.info.title) return
+    s.info.title = trimmed
+    this.bus.emit('tree.changed', undefined)
+    this.bus.emit('session.changed', { sessionId })
+    this.schedulePersist(s.ref)
   }
 
   /** Append the unflushed log tail; `flushedSeq` advances only once the write is
