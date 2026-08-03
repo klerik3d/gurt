@@ -324,7 +324,7 @@ export async function renameTaskBranches(ws: string, task: string, oldTask: stri
 export function openInVscode(ws: string, task: string, repo: string): Promise<void> {
   const dir = cloneDir(ws, task, repo)
   return new Promise((resolve, reject) => {
-    const child = spawn('code', [dir], { stdio: 'ignore', detached: true })
+    const child = spawn('code', ['--new-window', dir], { stdio: 'ignore', detached: true })
     child.on('error', () =>
       reject(new Error('could not launch "code" — install the VS Code shell command'))
     )

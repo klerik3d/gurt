@@ -9,6 +9,7 @@
 // or env name. A container id is minted by `docker` and never reused, so a
 // record keyed by it cannot survive the thing it describes. That is what makes
 // stale-cache reuse unrepresentable rather than merely avoided.
+import { spawn } from 'node:child_process'
 import type { EnvRef, RepoConfig, SessionContainer, SessionInfo } from '../shared/types'
 import type { AgentDef } from '../shared/agents'
 import { agentDef } from '../shared/agents'
@@ -113,15 +114,31 @@ export class ContainerManager {
   }
 
   /**
-   * External `vscode://` URI attaching the desktop app to this session's running
-   * container. Throws if it isn't up — the header button gates on `running`.
+   * Launch VS Code attached to this session's running container, in its own
+   * window. Goes through the `code` CLI with `--new-window` rather than the
+   * `vscode://` URI handler (`shell.openExternal`), which reuses whatever
+   * window is already focused instead of opening one per session. Throws if
+   * the container isn't up — the header button gates on `running`.
    */
-  vscodeUri(sessionId: string): string {
+  openVscode(sessionId: string): Promise<void> {
     const c = this.container(sessionId)
     if (c?.status !== 'running' || !c.id || !c.remoteWorkspaceFolder)
       throw new Error('container is not running')
     const hex = Buffer.from(c.id).toString('hex')
-    return `vscode://vscode-remote/attached-container+${hex}${c.remoteWorkspaceFolder}`
+    const folderUri = `vscode-remote://attached-container+${hex}${c.remoteWorkspaceFolder}`
+    return new Promise((resolve, reject) => {
+      const child = spawn('code', ['--new-window', '--folder-uri', folderUri], {
+        stdio: 'ignore',
+        detached: true
+      })
+      child.on('error', () =>
+        reject(new Error('could not launch "code" — install the VS Code shell command'))
+      )
+      child.on('spawn', () => {
+        child.unref()
+        resolve()
+      })
+    })
   }
 
   /**
