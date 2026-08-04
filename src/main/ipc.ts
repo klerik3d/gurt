@@ -115,8 +115,24 @@ export function registerIpc(): void {
       await shell.openExternal(await kernel.prUrl(ws, task, repo))
     },
     changesOpenVscode: (ws, task, repo) => changes.openInVscode(ws, task, repo),
-    createSession: async (ref, repo, agent, prompt, action, mcp, autoAllow, gitAccess, configValues) =>
-      kernel.sessions.createSession(
+    createSession: async (
+      ref,
+      repo,
+      agent,
+      prompt,
+      action,
+      mcp,
+      autoAllow,
+      gitAccess,
+      configValues
+    ) => {
+      // The session's first persist mkdir -p's its way into the task directory,
+      // so a stale or in-flight task name from the renderer would silently
+      // recreate a deleted task — a directory with sessions and no `task.json`,
+      // invisible in the tree. The task has to exist *before* the session does.
+      if (!store.taskExists(ref.workspace, ref.task))
+        throw new Error(`task "${ref.task}" not found in "${ref.workspace}"`)
+      return kernel.sessions.createSession(
         ref,
         repo,
         agent,
@@ -126,7 +142,8 @@ export function registerIpc(): void {
         autoAllow,
         gitAccess,
         configValues
-      ),
+      )
+    },
     sessionRun: async (id) => kernel.sessions.run(id),
     sessionEnqueue: async (id) => kernel.sessions.enqueue(id),
     sessionCancelQueue: async (id) => kernel.sessions.cancelQueue(id),

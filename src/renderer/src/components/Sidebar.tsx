@@ -640,6 +640,8 @@ export function NewSessionModal({
   const [picker, setPicker] = useState<'task' | 'env' | 'repo' | 'client' | null>(null)
   /** Task picker showing its inline "new task" text field instead of the list. */
   const [creatingTask, setCreatingTask] = useState(false)
+  /** In-flight inline task creation, awaited before a session is created. */
+  const taskCreation = useRef<Promise<void> | null>(null)
   const [newTaskName, setNewTaskName] = useState('')
   const [error, setError] = useState('')
   const taRef = useRef<HTMLTextAreaElement>(null)
@@ -697,17 +699,28 @@ export function NewSessionModal({
   }
 
   // Creates the task on the fly and selects it, so the picker never forces a
-  // detour through the sidebar's separate "new task" flow.
+  // detour through the sidebar's separate "new task" flow. The task is
+  // committed to immediately — the picker must not keep a previously selected
+  // name (possibly a task that no longer exists) while the IPC is in flight,
+  // or a session run in that window would land on the wrong task. `create`
+  // waits on the same promise, so the task exists before the session does. On
+  // failure the pick reverts and the error is shown.
   const createTaskInline = async () => {
     const name = newTaskName.trim()
     if (!name) return
+    const prev = taskName
     setError('')
+    setTaskName(name)
+    closeTaskPicker()
+    const pending = window.gurt.createTask(ws, name)
+    taskCreation.current = pending
     try {
-      await window.gurt.createTask(ws, name)
-      setTaskName(name)
-      closeTaskPicker()
+      await pending
     } catch (e) {
+      setTaskName(prev)
       setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      if (taskCreation.current === pending) taskCreation.current = null
     }
   }
 
@@ -781,6 +794,9 @@ export function NewSessionModal({
   const create = async (action: 'run' | 'queue' | 'draft') => {
     setError('')
     try {
+      // An inline task pick is only optimistic until its IPC lands — the
+      // session must not be created before the task it names exists.
+      await taskCreation.current?.catch(() => {})
       const s = await window.gurt.createSession(
         { workspace: ws, task: taskName, env },
         repo,

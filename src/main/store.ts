@@ -293,11 +293,16 @@ export async function removeEnv(ws: string, name: string): Promise<void> {
   await fs.rm(overrideConfigPath(ws, name), { force: true })
 }
 
+/** Whether the task exists: `task.json` is the fact, a bare directory is not
+ *  (that is what a stray log or session write leaves behind). */
+export function taskExists(ws: string, task: string): boolean {
+  return existsSync(path.join(taskDir(ws, task), 'task.json'))
+}
+
 export async function createTask(ws: string, task: string): Promise<void> {
   validateName('task', task)
-  const file = path.join(taskDir(ws, task), 'task.json')
-  if (existsSync(file)) throw new Error(`task "${task}" already exists in "${ws}"`)
-  await writeJson(file, {} satisfies TaskFile)
+  if (taskExists(ws, task)) throw new Error(`task "${task}" already exists in "${ws}"`)
+  await writeJson(path.join(taskDir(ws, task), 'task.json'), {} satisfies TaskFile)
 }
 
 /** Renames the task's whole directory (config, clones, session logs move with
@@ -308,27 +313,20 @@ export async function renameTask(ws: string, task: string, newName: string): Pro
   validateName('task', newName)
   if (newName === task) return
   const from = taskDir(ws, task)
-  if (!existsSync(path.join(from, 'task.json')))
-    throw new Error(`task "${task}" not found in "${ws}"`)
+  if (!taskExists(ws, task)) throw new Error(`task "${task}" not found in "${ws}"`)
   const to = taskDir(ws, newName)
   if (existsSync(to)) throw new Error(`task "${newName}" already exists in "${ws}"`)
   // An append landing mid-rename would recreate the old directory and take the
   // records with it, so let the in-flight ones finish first. Their chain keys
   // are the old paths — drop them; the next append rebuilds them under the new.
-  const prefix = from + path.sep
-  for (const [file, chain] of appendChains) {
-    if (!file.startsWith(prefix)) continue
-    await chain
-    appendChains.delete(file)
-  }
+  await drainAppends(from)
   await fs.rename(from, to)
 }
 
 export async function listTasks(ws: string): Promise<string[]> {
   const tasks: string[] = []
   for (const entry of await fs.readdir(wsDir(ws), { withFileTypes: true }).catch(() => [])) {
-    if (entry.isDirectory() && existsSync(path.join(taskDir(ws, entry.name), 'task.json')))
-      tasks.push(entry.name)
+    if (entry.isDirectory() && taskExists(ws, entry.name)) tasks.push(entry.name)
   }
   return tasks
 }
@@ -359,7 +357,12 @@ export async function saveTask(ws: string, task: string, data: TaskFile): Promis
 }
 
 export async function removeTaskDir(ws: string, task: string): Promise<void> {
-  await rmTree(taskDir(ws, task))
+  // Same reason as the rename: an append that lands after the tree is gone
+  // recreates the directory (`appendSessionLog` mkdir -p's its way back in),
+  // leaving a task dir with logs and no `task.json` — invisible in the tree.
+  const dir = taskDir(ws, task)
+  await drainAppends(dir)
+  await rmTree(dir)
 }
 
 const sessionsFile = (ws: string, task: string) => path.join(taskDir(ws, task), 'sessions.json')
@@ -437,6 +440,17 @@ const sessionLogFile = (ws: string, task: string, sessionId: string) =>
 
 /** Per-file append chain, so overlapping flushes never interleave lines. */
 const appendChains = new Map<string, Promise<void>>()
+
+/** Let every in-flight append under `dir` settle, then forget its chain — the
+ *  caller is about to move or remove that directory out from under them. */
+async function drainAppends(dir: string): Promise<void> {
+  const prefix = dir + path.sep
+  for (const [file, chain] of appendChains) {
+    if (!file.startsWith(prefix)) continue
+    await chain
+    appendChains.delete(file)
+  }
+}
 
 /** Append records as JSONL lines. The file is only ever appended to, never rewritten. */
 export function appendSessionLog(
