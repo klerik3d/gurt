@@ -62,8 +62,18 @@ export function AgentMark({ kind, name }: { kind?: string; name: string }): JSX.
 }
 
 /** The same pair unpilled, for the header pills and the footer — the chip around
- *  them already carries the frame, and both lay their children out with a gap. */
-export function EnvRepoMarks({ env, repo }: { env: string; repo?: string }): JSX.Element {
+ *  them already carries the frame, and both lay their children out with a gap.
+ *  `task`, when given alongside `repo`, appends the task's branch name — every
+ *  clone's task branch is named `gurt/<task>` (see `branchFor` in changes.ts). */
+export function EnvRepoMarks({
+  env,
+  repo,
+  task
+}: {
+  env: string
+  repo?: string
+  task?: string
+}): JSX.Element {
   return (
     <>
       <Icon name="box" size={11} className="faint" />
@@ -74,6 +84,7 @@ export function EnvRepoMarks({ env, repo }: { env: string; repo?: string }): JSX
           {repo}
         </>
       )}
+      {repo && task && <span className="dim">gurt/{task}</span>}
     </>
   )
 }
