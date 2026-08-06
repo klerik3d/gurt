@@ -133,6 +133,32 @@ export default function App() {
       setCurWs(tree.workspaces[0]?.name ?? null)
   }, [tree, curWs])
 
+  // The tree is the source of truth for what still exists. A task or session
+  // that was deleted can no longer be selected — otherwise ⌘N/⌘⇧N and the
+  // header actions keep silently targeting it, e.g. a new-session modal
+  // pre-filled with a deleted task's name.
+  //
+  // Only what the tree has already shown is pruned: creating a task or session
+  // selects it right after the IPC returns, one tree refresh *before* it shows
+  // up in `tree` — pruning on absence alone would wipe every fresh selection.
+  const treeKnown = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    if (!tree) return
+    const alive = new Set<string>()
+    for (const w of tree.workspaces)
+      for (const t of w.tasks) {
+        alive.add(`task:${w.name}/${t.name}`)
+        for (const s of t.sessions) alive.add(`session:${s.id}`)
+      }
+    const key = selection
+      ? selection.type === 'session'
+        ? `session:${selection.id}`
+        : `task:${selection.ws}/${selection.task}`
+      : null
+    if (key && treeKnown.current.has(key) && !alive.has(key)) setSelection(null)
+    treeKnown.current = alive
+  }, [tree, selection])
+
   // Drag the divider between sidebar and main; the sidebar's left edge sits
   // after the 52px activity bar, so the new width is clientX minus that.
   const startSidebarResize = useCallback((e: ReactMouseEvent) => {
@@ -191,6 +217,10 @@ export default function App() {
       if (sel?.type === 'task' && sel.ws === ws.name) task = sel.task
       else if (sel?.type === 'session')
         task = ws.tasks.find((t) => t.sessions.some((s) => s.id === sel.id))?.name ?? ''
+      // The selection can lag the tree (a task deleted while selected). Never
+      // prefill a task that no longer exists — the session would be created
+      // inside a task that isn't there.
+      if (task && !ws.tasks.some((t) => t.name === task)) task = ''
       setNewSession({ ws: ws.name, task })
     },
     [ws]
