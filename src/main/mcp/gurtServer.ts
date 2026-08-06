@@ -5,6 +5,9 @@ import { z } from 'zod'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import type { AcpHttpMcpServer, ChangeProposal, EnvRef } from '../../shared/types'
+import { createLogger } from '../log'
+
+const log = createLogger('mcp')
 
 /**
  * The turn contract: every turn ends with the agent calling `complete` on this
@@ -123,7 +126,7 @@ export function buildGurtHttpServer(
       await server.connect(transport)
       await transport.handleRequest(req, res)
     } catch (e) {
-      console.error('[mcp gurt]', e)
+      log.error('internal.fail', { site: 'mcp-handler', id: 'gurt', err: e })
       if (!res.headersSent) res.writeHead(500).end()
     }
   })
@@ -133,6 +136,9 @@ interface RunningGurt {
   http: Server
   /** Resolves to the ACP descriptor once the server is listening. */
   ready: Promise<AcpHttpMcpServer>
+  /** Set once `ready` resolves — the stop log needs the port without re-deriving
+   *  it from the descriptor's URL, which carries the session's bearer token. */
+  port?: number
   ref: EnvRef
   /** Latest callback for this session — updated on re-ensure (re-attach). */
   onComplete: (p: ChangeProposal) => void
@@ -170,13 +176,17 @@ export async function ensureGurtServer(
   // The record enters the map before any await, so a concurrent ensure for the
   // same session reuses this server instead of racing a second one into a leak.
   rec.ready = listen(rec.http).then(
-    (port): AcpHttpMcpServer => ({
-      type: 'http',
-      name: 'gurt',
-      // host.docker.internal resolves to the host from Docker Desktop containers.
-      url: `http://host.docker.internal:${port}/mcp/${token}`,
-      headers: []
-    }),
+    (port): AcpHttpMcpServer => {
+      rec.port = port
+      log.info('mcp.start', { id: 'gurt', s: sessionId, mode: 'turn-contract', port })
+      return {
+        type: 'http',
+        name: 'gurt',
+        // host.docker.internal resolves to the host from Docker Desktop containers.
+        url: `http://host.docker.internal:${port}/mcp/${token}`,
+        headers: []
+      }
+    },
     (e) => {
       if (running.get(sessionId) === rec) running.delete(sessionId)
       throw e
@@ -191,5 +201,6 @@ export function stopGurtServer(sessionId: string): void {
   const rec = running.get(sessionId)
   if (!rec) return
   rec.http.close()
+  log.info('mcp.stop', { id: 'gurt', s: sessionId, mode: 'turn-contract', port: rec.port })
   running.delete(sessionId)
 }

@@ -158,6 +158,8 @@ export interface GurtApi {
   sessionPermission(id: string, entryId: number, optionId: string): Promise<void>
   /** Ping that the user is active in this session (e.g. typing) — postpones env auto-stop. */
   sessionActivity(id: string): Promise<void>
+  /** Reveal `~/.gurt/logs` in the OS file manager (⌘K → "Open logs folder"). */
+  openLogsFolder(): Promise<void>
 }
 
 /** Compile-checked to cover `GurtApi` exactly: a missing method fails the
@@ -212,7 +214,8 @@ const METHODS = {
   sessionSetMode: true,
   sessionSetConfigOption: true,
   sessionPermission: true,
-  sessionActivity: true
+  sessionActivity: true,
+  openLogsFolder: true
 } as const satisfies Record<keyof GurtApi, true>
 
 /** Runtime method list; `api:<method>` is the IPC channel per entry. */
