@@ -1,6 +1,6 @@
 # Requirements: task Changes panel (product surface)
 
-Status: draft for review · Owner: klerik3d · Target: gurt Electron PoC (this repo)
+Status: draft for review · Owner: klerik3d · Target: gurt Electron MVP (this repo)
 
 This document is a work order for an implementing agent. Read `README.md`
 first. Key code: `src/main/provision.ts` (clone + `gurt/<task>` branch,
@@ -98,12 +98,12 @@ Per group (or the flat panel):
   - `Push` — enabled when ahead (including right after a commit). Runs
     `git push -u origin gurt/<task>`.
   - `Create PR` — enabled when the remote branch exists and is current.
-    PoC scope: open the browser at the GitHub compare URL
+    MVP scope: open the browser at the GitHub compare URL
     `https://github.com/<owner>/<repo>/compare/<default>...gurt/<task>?expand=1`,
     deriving `<owner>/<repo>` from the origin URL path. Show the button
     only when the origin host contains `github` (SSH host aliases like
     `github.com-personal` count); hide otherwise.
-  - `Open in VS Code` — PoC scope: open the clone directory with host
+  - `Open in VS Code` — MVP scope: open the clone directory with host
     VS Code (`code <cloneDir>`). This is the escape hatch for when the
     diff view is not enough; later it becomes the in-container `vsc`
     service.

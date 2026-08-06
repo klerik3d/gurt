@@ -5,6 +5,7 @@ import { BrowserWindow, ipcMain, shell } from 'electron'
 import { API_METHODS, type GurtApi } from '../shared/api'
 import { MCP_DEFS } from '../shared/mcp'
 import { createKernel } from './kernel'
+import { createLogger, dropSessionLog, enabled, logDir, logLevel, logRenderer } from './log'
 import { getCredentials, setCredentials, credentialUsedBy } from './credentials'
 import {
   discoverDevcontainer,
@@ -15,8 +16,35 @@ import {
 import * as store from './store'
 import * as changes from './changes'
 
+const log = createLogger('ipc')
+
 function broadcast(channel: string, ...args: unknown[]): void {
   for (const win of BrowserWindow.getAllWindows()) win.webContents.send(channel, ...args)
+}
+
+/**
+ * Methods whose arguments carry user or agent prose — prompts, commit messages,
+ * credential payloads, whole devcontainer configs. Their args are never logged,
+ * not even at DBG: "no chat content in the log" has to hold at the boundary,
+ * not at each call site's discretion.
+ */
+const OPAQUE_ARGS = new Set<keyof GurtApi>([
+  'createSession',
+  'sessionPrompt',
+  'sessionEditPrompt',
+  'sessionEditDraft',
+  'renameSession',
+  'changesCommit',
+  'setCredentials',
+  'setAgents',
+  'addEnv',
+  'updateEnv'
+])
+
+/** Args for the DBG trace: a count for the opaque methods, the (redacted,
+ *  truncated) values for everything else. */
+function argCtx(method: keyof GurtApi, args: unknown[]): unknown {
+  return OPAQUE_ARGS.has(method) ? `${args.length} arg(s) [not logged]` : args
 }
 
 export function registerIpc(): void {
@@ -92,6 +120,9 @@ export function registerIpc(): void {
     },
     removeEnv: async (ws, name) => {
       await store.removeEnv(ws, name)
+      // The env's build log (`logs/session-env-build-….log`) goes with the env —
+      // same lifecycle rule as a session's file going with the session.
+      dropSessionLog(`env-build:${ws}/${name}`)
       kernel.bus.emit('tree.changed', undefined)
     },
     createTask: async (ws, name) => {
@@ -159,11 +190,44 @@ export function registerIpc(): void {
       kernel.sessions.setConfigOption(id, configId, value),
     sessionPermission: async (id, entryId, optionId) =>
       kernel.sessions.respondPermission(id, entryId, optionId),
-    sessionActivity: async (id) => kernel.sessions.activity(id)
+    sessionActivity: async (id) => kernel.sessions.activity(id),
+    openLogsFolder: async () => {
+      const err = await shell.openPath(logDir())
+      if (err) throw new Error(err)
+    }
   }
 
+  // Renderer records: validated, rate-limited and truncated inside `logRenderer`
+  // — everything arriving here is untrusted input.
+  ipcMain.on('log', (_e, level: unknown, scope: unknown, msg: unknown, ctx: unknown, ts: unknown) =>
+    logRenderer(level, scope, msg, ctx, ts)
+  )
+  // The effective threshold, mirrored to the renderer once at preload time so a
+  // filtered-out debug call costs a comparison there, not an IPC message main
+  // throws away. Main keeps filtering regardless — this is an optimization,
+  // never the authority.
+  ipcMain.on('log:level', (e) => {
+    e.returnValue = logLevel
+  })
+
+  // One wrapper for the whole API surface: every call is timed, every rejection
+  // is recorded once — here, at the boundary — and then rethrown unchanged so
+  // the renderer still sees the original error.
   for (const m of API_METHODS)
-    ipcMain.handle(`api:${m}`, (_e, ...args) =>
-      (impl[m] as (...a: unknown[]) => unknown)(...args)
-    )
+    ipcMain.handle(`api:${m}`, async (_e, ...args) => {
+      const started = Date.now()
+      try {
+        const result = await (impl[m] as (...a: unknown[]) => unknown)(...args)
+        log.debug('ipc.call', { method: m, ms: Date.now() - started, args: argCtx(m, args) })
+        return result
+      } catch (e) {
+        log.error('ipc.fail', {
+          method: m,
+          ms: Date.now() - started,
+          err: e,
+          ...(enabled('debug') ? { args: argCtx(m, args) } : {})
+        })
+        throw e
+      }
+    })
 }

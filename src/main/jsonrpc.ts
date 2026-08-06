@@ -1,9 +1,15 @@
 import type { ChildProcessWithoutNullStreams } from 'node:child_process'
+import { createLogger, enabled } from './log'
 
 // Minimal JSON-RPC 2.0 peer over newline-delimited JSON on child stdio,
 // which is what ACP (Agent Client Protocol) speaks.
 
 type Handler = (params: any) => Promise<unknown> | unknown
+
+const log = createLogger('rpc')
+/** Frames carry prompts, agent output and tool arguments, so the trace is the
+ *  envelope only — method, id, direction, size. Never params, at any level. */
+const trace = enabled('debug')
 
 export class JsonRpcPeer {
   private nextId = 1
@@ -14,7 +20,9 @@ export class JsonRpcPeer {
 
   constructor(
     private child: ChildProcessWithoutNullStreams,
-    private onFatal: (err: Error) => void
+    private onFatal: (err: Error) => void,
+    /** Owning session, for the frame trace. */
+    private sessionId?: string
   ) {
     child.stdout.on('data', (d: Buffer) => this.onData(d.toString()))
     child.on('close', () => {
@@ -46,7 +54,20 @@ export class JsonRpcPeer {
   }
 
   private send(msg: unknown): void {
-    this.child.stdin.write(JSON.stringify(msg) + '\n')
+    const line = JSON.stringify(msg) + '\n'
+    // Byte length, not code units — the trace's `bytes` is what went down the pipe.
+    if (trace) this.traceFrame('out', msg as Record<string, unknown>, Buffer.byteLength(line, 'utf8'))
+    this.child.stdin.write(line)
+  }
+
+  private traceFrame(dir: 'in' | 'out', msg: Record<string, unknown>, bytes: number): void {
+    log.debug('rpc.msg', {
+      s: this.sessionId,
+      dir,
+      method: typeof msg?.method === 'string' ? msg.method : undefined,
+      id: typeof msg?.id === 'number' || typeof msg?.id === 'string' ? msg.id : undefined,
+      bytes
+    })
   }
 
   private onData(chunk: string): void {
@@ -62,6 +83,7 @@ export class JsonRpcPeer {
       } catch {
         continue // stray log line on stdout — ignore
       }
+      if (trace) this.traceFrame('in', msg, Buffer.byteLength(line, 'utf8'))
       this.dispatch(msg)
     }
   }

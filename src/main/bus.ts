@@ -1,4 +1,7 @@
 import type { DomainEvents } from '../shared/events'
+import { createLogger } from './log'
+
+const log = createLogger('bus')
 
 export interface Bus {
   emit<K extends keyof DomainEvents>(type: K, payload: DomainEvents[K]): void
@@ -19,7 +22,7 @@ export function createBus(): Bus {
         try {
           ;(fn as (p: DomainEvents[typeof type]) => void)(payload)
         } catch (e) {
-          console.error(`bus: "${type}" handler failed:`, e)
+          log.error('internal.fail', { site: 'bus-handler', event: type, err: e })
         }
       }
     },
