@@ -16,7 +16,7 @@ const S = (rel) => JSON.stringify(path.join(ROOT, rel))
 
 await build({
   stdin: {
-    contents: `export { postTurnDecision, NUDGE_PROMPT } from ${S('src/main/sessions.ts')}`,
+    contents: `export { postTurnDecision, NUDGE_PROMPT, adapterExitCode } from ${S('src/main/sessions.ts')}`,
     resolveDir: ROOT,
     loader: 'ts',
     sourcefile: 'entry.ts'
@@ -31,7 +31,7 @@ await build({
   logLevel: 'silent'
 })
 
-const { postTurnDecision, NUDGE_PROMPT } = await import(pathToFileURL(outfile).href)
+const { postTurnDecision, NUDGE_PROMPT, adapterExitCode } = await import(pathToFileURL(outfile).href)
 
 const decide = (o) =>
   postTurnDecision({ threw: false, isNudge: false, stopReason: 'end_turn', turnComplete: false, ...o })
@@ -73,6 +73,22 @@ try {
   )
 
   assert.match(NUDGE_PROMPT, /complete/, 'nudge prompt asks for `complete`')
+
+  // kill -9 mid-turn → 137, the exact case docs/logging.md's acceptance #2 relies on
+  assert.equal(adapterExitCode(null, 'SIGKILL'), 137, 'SIGKILL → 128 + 9')
+
+  // SIGTERM → 143, the other commonly-hit signal
+  assert.equal(adapterExitCode(null, 'SIGTERM'), 143, 'SIGTERM → 128 + 15')
+
+  // clean exits pass their code through untouched, including a clean 0
+  assert.equal(adapterExitCode(0, null), 0, 'clean exit 0 → 0')
+  assert.equal(adapterExitCode(3, null), 3, 'nonzero exit code passes through')
+
+  // neither a code nor a signal → sentinel -1, never a missing/undefined field
+  assert.equal(adapterExitCode(null, null), -1, 'no code, no signal → -1')
+
+  // a signal outside the SIGNUM table still reads as "died", not "clean"
+  assert.equal(adapterExitCode(null, 'SIGWINCH'), 128, 'unlisted signal → 128')
 
   console.log('turn-contract.test: PASS')
 } finally {

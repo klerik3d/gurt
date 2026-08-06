@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { SessionStatus, Tree } from '../../../shared/types'
 import { sessionStatus } from '../../../shared/types'
 import { agentKind, agentName, useAgents } from '../useAgents'
+import { logErr } from '../log'
 import type { Tone } from '../status'
 import { SESSION_DOT } from '../status'
 import { Icon, Dot } from './icons'
@@ -25,9 +26,16 @@ interface TaskItem {
 
 interface ActionItem {
   kind: 'action'
-  id: 'new-session' | 'new-task'
+  id: 'new-session' | 'new-task' | 'open-logs'
   title: string
   keys: string
+}
+
+/** Icon per action row. */
+const ACTION_ICON: Record<ActionItem['id'], 'plus' | 'branch' | 'folder'> = {
+  'new-session': 'plus',
+  'new-task': 'branch',
+  'open-logs': 'folder'
 }
 
 type Item = ActionItem | SessionItem | TaskItem
@@ -72,7 +80,8 @@ export function CommandPalette({
 
     const actions: ActionItem[] = [
       { kind: 'action', id: 'new-session', title: 'New session…', keys: '⌘N' },
-      { kind: 'action', id: 'new-task', title: 'New task…', keys: '⌘⇧N' }
+      { kind: 'action', id: 'new-task', title: 'New task…', keys: '⌘⇧N' },
+      { kind: 'action', id: 'open-logs', title: 'Open logs folder', keys: '' }
     ].filter((a) => match(a.title)) as ActionItem[]
 
     const sessions: SessionItem[] = []
@@ -103,8 +112,16 @@ export function CommandPalette({
   }, [items.length, idx])
 
   const run = (item: Item) => {
-    if (item.kind === 'action') item.id === 'new-session' ? onNewSession() : onNewTask()
-    else if (item.kind === 'session') onSelectSession(item.id)
+    if (item.kind === 'action') {
+      if (item.id === 'new-session') onNewSession()
+      else if (item.id === 'new-task') onNewTask()
+      else {
+        // Reveals ~/.gurt/logs — the log is local, so "open it" is the whole
+        // support story (see docs/logging.md).
+        window.gurt.openLogsFolder().catch(logErr('openLogsFolder'))
+        onClose()
+      }
+    } else if (item.kind === 'session') onSelectSession(item.id)
     else onSelectTask(item.ws, item.task)
   }
 
@@ -146,7 +163,7 @@ export function CommandPalette({
     if (item.kind === 'action')
       return (
         <div key={item.id} {...common}>
-          <Icon name={item.id === 'new-session' ? 'plus' : 'branch'} size={15} className={active ? '' : 'dim'} />
+          <Icon name={ACTION_ICON[item.id]} size={15} className={active ? '' : 'dim'} />
           <span className={`pal-title ${active ? 'strong' : ''}`}>{item.title}</span>
           <span className="pal-meta mono">{item.keys}</span>
         </div>

@@ -11,6 +11,7 @@ import { TaskPane } from './components/TaskPane'
 import { SettingsPage, type SettingsSection } from './components/SettingsPage'
 import { CommandPalette } from './components/CommandPalette'
 import { DialogHost, alertDialog } from './dialog'
+import { logErr } from './log'
 
 export type Selection =
   | { type: 'session'; id: string }
@@ -66,7 +67,7 @@ export default function App() {
   const changesRequested = useRef<Set<string>>(new Set())
 
   const refreshTree = useCallback(() => {
-    window.gurt.getTree().then(setTree).catch(console.error)
+    window.gurt.getTree().then(setTree).catch(logErr('getTree'))
   }, [])
 
   /** `fetch` reaches the network — only the panel's own triggers pass it. */
@@ -76,7 +77,7 @@ export default function App() {
     window.gurt
       .getTaskChanges(ws, task, { fetch })
       .then((c) => setChanges((prev) => ({ ...prev, [key]: c })))
-      .catch(console.error)
+      .catch(logErr('getTaskChanges'))
   }, [])
 
   useEffect(() => {
@@ -194,7 +195,7 @@ export default function App() {
       .then((snap) => {
         if (snap) setSnapshots((prev) => ({ ...prev, [id]: snap }))
       })
-      .catch(console.error)
+      .catch(logErr('sessionSnapshot'))
   }, [])
 
   const selectTask = useCallback((tws: string, task: string) => {

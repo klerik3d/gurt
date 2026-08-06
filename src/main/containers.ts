@@ -11,6 +11,7 @@
 // stale-cache reuse unrepresentable rather than merely avoided.
 import { spawn } from 'node:child_process'
 import type { EnvRef, RepoConfig, SessionContainer, SessionInfo } from '../shared/types'
+import type { ContainerStatusReason } from '../shared/events'
 import type { AgentDef } from '../shared/agents'
 import { agentDef } from '../shared/agents'
 import { canonicalRepoId } from '../shared/repoId'
@@ -33,6 +34,9 @@ import {
   overrideConfigArgs
 } from './provision'
 import type { Bus } from './bus'
+import { createLogger, errCtx } from './log'
+
+const log = createLogger('containers')
 
 /** Everything needed to (re)spawn the agent process for a session. */
 export interface LaunchContext {
@@ -98,10 +102,16 @@ export class ContainerManager {
   }
 
   /** Patch the session's container record and announce the new status. */
-  private setStatus(id: string, patch: SessionContainer): void {
+  private setStatus(id: string, patch: SessionContainer, reason: ContainerStatusReason): void {
     this.deps.patchContainer(id, patch)
     const info = this.deps.session(id)
-    if (info) this.deps.bus.emit('container.status', { sessionId: id, ref: this.refOf(info), status: patch.status })
+    if (info)
+      this.deps.bus.emit('container.status', {
+        sessionId: id,
+        ref: this.refOf(info),
+        status: patch.status,
+        reason
+      })
     this.deps.bus.emit('tree.changed', undefined)
   }
 
@@ -119,6 +129,11 @@ export class ContainerManager {
    * `vscode://` URI handler (`shell.openExternal`), which reuses whatever
    * window is already focused instead of opening one per session. Throws if
    * the container isn't up — the header button gates on `running`.
+   *
+   * `--disable-workspace-trust`: the folder URI is keyed on the container id,
+   * which changes on every recreate, so VS Code would otherwise treat each
+   * attach as a brand-new untrusted workspace and prompt every time. The
+   * container is already gurt's own sandbox, so there's nothing to gate here.
    */
   openVscode(sessionId: string): Promise<void> {
     const c = this.container(sessionId)
@@ -127,10 +142,11 @@ export class ContainerManager {
     const hex = Buffer.from(c.id).toString('hex')
     const folderUri = `vscode-remote://attached-container+${hex}${c.remoteWorkspaceFolder}`
     return new Promise((resolve, reject) => {
-      const child = spawn('code', ['--new-window', '--folder-uri', folderUri], {
-        stdio: 'ignore',
-        detached: true
-      })
+      const child = spawn(
+        'code',
+        ['--new-window', '--disable-workspace-trust', '--folder-uri', folderUri],
+        { stdio: 'ignore', detached: true }
+      )
       child.on('error', () =>
         reject(new Error('could not launch "code" — install the VS Code shell command'))
       )
@@ -159,7 +175,7 @@ export class ContainerManager {
     const info = this.deps.session(sessionId)
     if (!info) throw new Error('session no longer exists')
     if (!info.repo) throw new Error('session has no repository')
-    const log = this.logFor(sessionId)
+    const provisionLog = this.logFor(sessionId)
 
     // Its own container, still up → just reuse it. (Probe the daemon: a Docker
     // restart leaves a persisted `running` record describing an exited container.)
@@ -185,23 +201,48 @@ export class ContainerManager {
     if (owned?.id && owned.repo && owned.repo !== info.repo) {
       this.deps.detach(sessionId)
       this.forget(owned.id)
-      await dockerRemove(owned.id, log)
+      await dockerRemove(owned.id, provisionLog)
     }
 
     // `building` covers the clone and the image (ours or the CLI's); `up` flips
     // it to `post` as soon as the container exists and its hooks start running.
-    this.setStatus(sessionId, { ...(owned ?? {}), status: 'building', error: undefined })
+    this.setStatus(sessionId, { ...(owned ?? {}), status: 'building', error: undefined }, 'user')
+    // Each provisioning step is timed on its own — "which phase is slow" is the
+    // first question a slow start raises, and the phases have wildly different
+    // costs (a cold image build vs. a restart of an existing container).
+    let phase: 'clone' | 'image' | 'up' = 'clone'
+    let since = Date.now()
+    /** Close the running phase, logging its duration; opens `next` if given. */
+    const enter = (next?: typeof phase): void => {
+      log.info('provision.phase', { s: sessionId, phase, ms: Date.now() - since })
+      if (!next) return
+      phase = next
+      since = Date.now()
+    }
     try {
-      const dir = await ensureClone(this.refOf(info), repoCfg, log)
-      const configArgs = await materializeEnvConfig(this.refOf(info), envCfg, repoCfg, dir, log)
+      const dir = await ensureClone(this.refOf(info), repoCfg, provisionLog)
+      enter('image')
+      const configArgs = await materializeEnvConfig(
+        this.refOf(info),
+        envCfg,
+        repoCfg,
+        dir,
+        provisionLog
+      )
+      enter('up')
       const up = await devcontainerUp(
         sessionId,
         configArgs,
         dir,
-        log,
+        provisionLog,
         repoCfg.name,
         canonicalRepoId(repoCfg.url)?.host,
-        () => this.setStatus(sessionId, { ...(this.container(sessionId) ?? {}), status: 'post' })
+        () =>
+          this.setStatus(
+            sessionId,
+            { ...(this.container(sessionId) ?? {}), status: 'post' },
+            'user'
+          )
       )
       const next: SessionContainer = {
         status: 'running',
@@ -209,13 +250,15 @@ export class ContainerManager {
         remoteWorkspaceFolder: up.remoteWorkspaceFolder,
         repo: info.repo
       }
-      this.setStatus(sessionId, next)
-      log('container is running')
+      this.setStatus(sessionId, next, 'user')
+      enter()
+      provisionLog('container is running')
       return next
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e)
-      this.setStatus(sessionId, { ...(owned ?? {}), status: 'error', error: message })
-      log(`error: ${message}`)
+      this.setStatus(sessionId, { ...(owned ?? {}), status: 'error', error: message }, 'error')
+      log.error('provision.fail', { s: sessionId, phase, code: errCtx(e).code, err: e })
+      provisionLog(`error: ${message}`)
       throw e
     }
   }
@@ -315,7 +358,11 @@ export class ContainerManager {
    * filesystem) so the session can resume into it; `remove` destroys it. Both
    * detach first — nothing derived from a container may outlive it.
    */
-  private async teardown(sessionId: string, mode: 'stop' | 'remove'): Promise<void> {
+  private async teardown(
+    sessionId: string,
+    mode: 'stop' | 'remove',
+    reason: ContainerStatusReason
+  ): Promise<void> {
     this.noteActive(sessionId)
     this.deps.detach(sessionId)
     stopGitBroker(sessionId)
@@ -325,22 +372,25 @@ export class ContainerManager {
       return
     }
     this.forget(c.id)
-    const log = this.logFor(sessionId)
+    const provisionLog = this.logFor(sessionId)
+    const started = Date.now()
     if (mode === 'stop') {
-      await dockerStop(c.id, log)
-      this.setStatus(sessionId, { ...c, status: 'stopped', error: undefined })
-      log('container stopped')
+      await dockerStop(c.id, provisionLog)
+      this.setStatus(sessionId, { ...c, status: 'stopped', error: undefined }, reason)
+      log.info('container.stop', { s: sessionId, c: c.id, reason, ms: Date.now() - started })
+      provisionLog('container stopped')
     } else {
-      await dockerRemove(c.id, log)
+      await dockerRemove(c.id, provisionLog)
       this.deps.patchContainer(sessionId, undefined)
       this.deps.bus.emit('tree.changed', undefined)
-      log('container removed')
+      log.info('container.remove', { s: sessionId, c: c.id, reason, ms: Date.now() - started })
+      provisionLog('container removed')
     }
   }
 
   /** Stop the session's container; it keeps its filesystem and can resume. */
-  async stop(sessionId: string): Promise<void> {
-    await this.teardown(sessionId, 'stop')
+  async stop(sessionId: string, reason: ContainerStatusReason = 'user'): Promise<void> {
+    await this.teardown(sessionId, 'stop', reason)
   }
 
   /**
@@ -348,22 +398,22 @@ export class ContainerManager {
    * re-pointed at another repo/env. The clone stays: uncommitted work in the
    * working tree outlives the session that produced it.
    */
-  async release(sessionId: string): Promise<void> {
-    await this.teardown(sessionId, 'remove')
+  async release(sessionId: string, reason: ContainerStatusReason = 'user'): Promise<void> {
+    await this.teardown(sessionId, 'remove', reason)
   }
 
   /** Stop every container of a task — a rename is about to move its directory,
    *  and a running container's bind mount is pinned to the old path. */
   async stopTask(ws: string, task: string): Promise<void> {
     for (const info of this.sessionsOf(ws, task))
-      if (info.container && info.container.status !== 'stopped') await this.stop(info.id)
+      if (info.container && info.container.status !== 'stopped') await this.stop(info.id, 'user')
   }
 
   /** Destroy every container of a task — the task is going away. The clones go
    *  with the task directory the caller removes next, so they are not touched
    *  here: outside of deleting the task, a clone always outlives its sessions. */
   async teardownTask(ws: string, task: string): Promise<void> {
-    for (const info of this.sessionsOf(ws, task)) await this.release(info.id)
+    for (const info of this.sessionsOf(ws, task)) await this.release(info.id, 'task-deleted')
   }
 
   private sessionsOf(ws: string, task: string): SessionInfo[] {
@@ -385,7 +435,9 @@ export class ContainerManager {
     this.noteActive(sessionId)
     const timer = setTimeout(() => {
       this.idleTimers.delete(sessionId)
-      this.autoStopIfIdle(sessionId).catch((e) => console.error('auto-stop failed:', e))
+      this.autoStopIfIdle(sessionId).catch((e) =>
+        log.error('internal.fail', { site: 'container-auto-stop', s: sessionId, err: e })
+      )
     }, this.IDLE_STOP_MS)
     // Background housekeeping must not be a reason for the process to stay
     // alive: Electron's loop keeps running regardless, while a headless embedder
@@ -400,7 +452,7 @@ export class ContainerManager {
   private async autoStopIfIdle(sessionId: string): Promise<void> {
     if (!this.deps.isSessionIdle(sessionId)) return
     if (this.status(sessionId) !== 'running') return
-    await this.stop(sessionId)
+    await this.stop(sessionId, 'idle')
   }
 
   // --- boot reconcile ------------------------------------------------------
@@ -419,9 +471,11 @@ export class ContainerManager {
     // Could not reach the daemon — leave every record alone rather than read its
     // silence as "no containers exist" and delete all of them.
     if (!live) {
-      console.warn('[reconcile] docker unavailable — container records left as-is')
+      log.warn('reconcile skipped — docker unavailable, container records left as-is')
       return
     }
+    let fixed = 0
+    let orphans = 0
     const known = new Set<string>()
     for (const info of this.deps.sessions()) {
       known.add(info.id)
@@ -431,21 +485,29 @@ export class ContainerManager {
       if (!actual) {
         // Container gone: keep the session, drop the record it can't use.
         this.deps.patchContainer(info.id, undefined)
+        fixed++
         continue
       }
       const running = await dockerRunning(actual)
-      if (c.id !== actual || (c.status === 'running') !== running)
-        this.deps.patchContainer(info.id, {
-          ...c,
-          id: actual,
-          status: running ? 'running' : 'stopped',
-          error: undefined
-        })
+      if (c.id !== actual || (c.status === 'running') !== running) {
+        this.setStatus(
+          info.id,
+          { ...c, id: actual, status: running ? 'running' : 'stopped', error: undefined },
+          'reconcile'
+        )
+        fixed++
+      }
     }
     for (const [session, containerId] of live) {
       if (known.has(session)) continue
-      await dockerRemove(containerId, (line) => console.log('[reconcile]', line))
+      orphans++
+      // Not `this.logFor(session)`: that would create a `session-<id>.log` for
+      // a session that no longer exists — a file nothing would ever delete. The
+      // removal is traced by `proc.spawn`/`proc.exit` anyway; the docker output
+      // itself goes to the app log at DBG.
+      await dockerRemove(containerId, (line) => log.debug('reconcile.orphan', { c: containerId, line }))
     }
+    log.info('reconcile.done', { fixed, orphans })
     this.deps.bus.emit('tree.changed', undefined)
   }
 }

@@ -18,10 +18,14 @@ import { resolveCredential } from '../../shared/credentials'
 import { DEFAULT_TOKEN_USER } from '../../shared/credentials'
 import { canonicalRepoId } from '../../shared/repoId'
 import { listCredentials } from '../credentials'
+import { createLogger } from '../log'
 import { providerForHost } from './providers'
+
+const log = createLogger('gitbroker')
 
 interface Running {
   http: Server
+  port: number
   descriptor: { url: string }
 }
 
@@ -115,7 +119,7 @@ function buildServer(repo: RepoConfig, token: string): Server {
       if (sub === '/forge-env' && req.method === 'GET') return await handleForgeEnv(repo, res)
       res.writeHead(404).end()
     } catch (e) {
-      console.error('[git broker]', e)
+      log.error('internal.fail', { site: 'gitbroker-request', err: e })
       if (!res.headersSent) res.writeHead(500).end()
     }
   })
@@ -131,8 +135,11 @@ export async function resolveGitBroker(
   const token = randomUUID()
   const http = buildServer(repo, token)
   const port = await listen(http)
+  // The URL carries the broker's bearer token in its path — the port is the
+  // only part of it that may be logged.
+  log.info('gitbroker.start', { s: sessionId, port })
   const descriptor = { url: `http://host.docker.internal:${port}/git/${token}` }
-  running.set(sessionId, { http, descriptor })
+  running.set(sessionId, { http, port, descriptor })
   return descriptor
 }
 
@@ -141,5 +148,6 @@ export function stopGitBroker(sessionId: string): void {
   const rec = running.get(sessionId)
   if (!rec) return
   rec.http.close()
+  log.info('gitbroker.stop', { s: sessionId, port: rec.port })
   running.delete(sessionId)
 }
