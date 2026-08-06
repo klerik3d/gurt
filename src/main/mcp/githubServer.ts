@@ -7,8 +7,10 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import type { EnvRef, McpMode } from '../../shared/types'
 import { hostGitAccessForRepo, type HostGitAccess } from '../git/env'
 import { providerForHost } from '../git/providers'
+import { createLogger } from '../log'
 
 const pexec = promisify(execFile)
+const log = createLogger('mcp')
 
 /** A tool result the SDK understands. */
 type ToolResult = { content: { type: 'text'; text: string }[]; isError?: boolean }
@@ -218,7 +220,7 @@ export function buildGithubHttpServer(
       await server.connect(transport)
       await transport.handleRequest(req, res)
     } catch (e) {
-      console.error('[mcp github]', e)
+      log.error('internal.fail', { site: 'mcp-handler', id: 'github', err: e })
       if (!res.headersSent) res.writeHead(500).end()
     }
   })

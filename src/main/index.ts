@@ -1,7 +1,12 @@
-import { app, BrowserWindow, nativeImage, shell } from 'electron'
+import { app, BrowserWindow, dialog, nativeImage, shell } from 'electron'
 import path from 'node:path'
 import { registerIpc } from './ipc'
-import { migrateAgentSecrets } from './credentials'
+import { loadSecrets, migrateAgentSecrets } from './credentials'
+import { createLogger, flushSync, logDir, logLevel } from './log'
+import { dockerVersion } from './provision'
+import { gurtRoot } from './store'
+
+const log = createLogger('app')
 
 // Bundled app icon; on macOS the dock icon is set at runtime (the packaged
 // .icns route only exists once we ship a real bundle).
@@ -50,14 +55,33 @@ function createWindow(): void {
   }
 }
 
+/** First record of every run: what this build is, and what it is running on.
+ *  Docker is probed best-effort — its absence is the single most common cause
+ *  of a session that never starts, and it belongs in the banner, not a guess. */
+async function logStartBanner(): Promise<void> {
+  log.info('app.start', {
+    gurt: app.getVersion(),
+    electron: process.versions.electron,
+    node: process.versions.node,
+    platform: `${process.platform}-${process.arch}`,
+    docker: (await dockerVersion()) ?? 'unavailable',
+    root: gurtRoot,
+    logs: logDir(),
+    level: logLevel
+  })
+}
+
 app.whenReady().then(async () => {
+  void logStartBanner()
   if (process.platform === 'darwin') {
     const icon = nativeImage.createFromPath(iconPath)
     if (!icon.isEmpty()) app.dock?.setIcon(icon)
   }
-  // Lift any inline agent secrets into the credential store before the IPC
-  // surface (and thus getAgents) serves the renderer.
-  await migrateAgentSecrets().catch((e) => console.error('agent-secret migration failed:', e))
+  // Arm value-based log redaction before anything can spawn a process holding a
+  // token, then lift any inline agent secrets into the credential store — both
+  // before the IPC surface (and thus getAgents) serves the renderer.
+  await loadSecrets().catch((e) => log.error('internal.fail', { site: 'credential-load', err: e }))
+  await migrateAgentSecrets().catch((e) => log.error('internal.fail', { site: 'agent-secret-migrate', err: e }))
   registerIpc()
   createWindow()
   app.on('activate', () => {
@@ -67,4 +91,61 @@ app.whenReady().then(async () => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
+})
+
+app.on('before-quit', () => {
+  log.info('app.quit')
+  flushSync()
+})
+
+/**
+ * Crash popup, replacing Electron's default dialog (which registering our
+ * uncaughtException handler suppresses). "Send Report to Developer" is a stub:
+ * nothing is collected or sent anywhere yet — the click is followed by a
+ * one-second beat and the exit. When an upload endpoint exists, that beat is
+ * where the log gets packed and sent, under the hood, behind this same button.
+ */
+function showCrashDialog(): void {
+  // dialog is unusable before `ready` — the record and the exit still happen.
+  if (!app.isReady()) return
+  try {
+    dialog.showMessageBoxSync({
+      type: 'error',
+      title: 'gurt',
+      message: 'Unknown error',
+      detail: 'gurt hit an unexpected error and has to close.',
+      buttons: ['Send Report to Developer'],
+      defaultId: 0,
+      noLink: true
+    })
+  } catch {
+    // A broken dialog must not mask the crash itself.
+  }
+}
+
+// A crash must leave a record behind: log it, then force the queue to disk with
+// a synchronous write — the process may not survive to the next drain tick.
+// Registering this handler suppresses Electron's own crash dialog, so we show
+// our own, then exit: resuming after an uncaught exception is unsafe (the
+// process state is undefined).
+let crashing = false
+process.on('uncaughtException', (err) => {
+  // A second exception while the dialog is up (or during the exit grace period)
+  // is still recorded, but must not stack a second dialog on the first.
+  if (crashing) {
+    log.error('app.crash', { reason: 'uncaughtException', err })
+    flushSync()
+    return
+  }
+  crashing = true
+  log.error('app.crash', { reason: 'uncaughtException', err })
+  flushSync()
+  showCrashDialog()
+  setTimeout(() => process.exit(1), 1000)
+})
+// A rejection is recorded but not fatal — matching Electron's own default,
+// which warns on unhandled rejections without taking the process down.
+process.on('unhandledRejection', (reason) => {
+  log.error('app.crash', { reason: 'unhandledRejection', err: reason })
+  flushSync()
 })

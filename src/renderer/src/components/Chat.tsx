@@ -18,10 +18,13 @@ import type {
 import { sessionStatus } from '../../../shared/types'
 import { agentKind, agentName, useAgents } from '../useAgents'
 import { alertDialog } from '../dialog'
+import { createLogger, logErr } from '../log'
 import { SESSION_DOT } from '../status'
 import { Icon, Dot } from './icons'
 import { AgentMark, EnvRepoMarks } from './tags'
 import { VscodeButton } from './VscodeButton'
+
+const log = createLogger('chat')
 
 /** Don't ping the main process on every keystroke — once per this interval is enough
  *  to keep postponing the env's idle auto-stop while the user is composing. */
@@ -194,7 +197,7 @@ export function Chat({
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return
       if (document.querySelector('.modal-backdrop, .cmp-menu, .gear-pop')) return
       e.preventDefault()
-      window.gurt.sessionCancel(sessionId).catch(console.error)
+      window.gurt.sessionCancel(sessionId).catch(logErr('sessionCancel'))
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -501,7 +504,7 @@ function PermissionMsg({
                 key={o.optionId}
                 className={o.kind?.startsWith('allow') ? 'btn btn-sm btn-primary' : 'btn btn-sm'}
                 onClick={() =>
-                  window.gurt.sessionPermission(sessionId, entry.id, o.optionId).catch(console.error)
+                  window.gurt.sessionPermission(sessionId, entry.id, o.optionId).catch(logErr('sessionPermission'))
                 }
               >
                 {o.name}
@@ -618,7 +621,7 @@ function Composer({
     const now = performance.now()
     if (now - lastActivityPingRef.current < ACTIVITY_PING_INTERVAL_MS) return
     lastActivityPingRef.current = now
-    window.gurt.sessionActivity(sessionId).catch(console.error)
+    window.gurt.sessionActivity(sessionId).catch(logErr('sessionActivity'))
   }
 
   const autoGrow = () => {
@@ -701,7 +704,7 @@ function Composer({
     setChips([])
     setImages([])
     closeMenus()
-    window.gurt.sessionPrompt(sessionId, t, context, imgs).catch(console.error)
+    window.gurt.sessionPrompt(sessionId, t, context, imgs).catch(logErr('sessionPrompt'))
   }
 
   /** Read image files into attachment chips (shared by the picker and paste). */
@@ -712,7 +715,7 @@ function Composer({
       try {
         added.push({ name: f.name || 'pasted image', mimeType: f.type, data: await fileToBase64(f) })
       } catch (e) {
-        console.error(e)
+        log.warn('image attach failed', { name: f.name, err: e })
       }
     }
     if (added.length) setImages((imgs) => [...imgs, ...added])

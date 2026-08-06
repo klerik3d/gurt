@@ -11,6 +11,9 @@ import { run } from './provision'
 import { cloneDir, taskDir } from './store'
 import { hostGitAccessForRepo, type HostGitAccess } from './git/env'
 import { canonicalRepoId } from '../shared/repoId'
+import { createLogger } from './log'
+
+const log = createLogger('changes')
 
 /** Bounds a fetch against an unreachable origin; failure is non-fatal anyway. */
 const FETCH_TIMEOUT_MS = 30_000
@@ -19,6 +22,9 @@ interface GitOpts {
   /** Exit codes to treat as success (default [0]). */
   okCodes?: number[]
   timeoutMs?: number
+  /** This call's argv carries prose (a commit message) — traced as an
+   *  argument count, never the values. See `run`'s `opaqueArgv`. */
+  opaqueArgv?: boolean
 }
 
 /**
@@ -81,7 +87,7 @@ function parseOrigin(url: string): Origin | null {
   return { host: id.host, owner: segs[0], repo: segs[1] }
 }
 
-/** Origin host → PR compare URL. PoC scope: one entry; an unknown host gets no button. */
+/** Origin host → PR compare URL. MVP scope: one entry; an unknown host gets no button. */
 const FORGES: {
   match: (host: string) => boolean
   compareUrl: (o: Origin, def: string, branch: string) => string
@@ -119,7 +125,8 @@ async function fetchPrune(dir: string, access: HostGitAccess, task: string): Pro
   try {
     await git(dir, access, ['fetch', '--prune', 'origin'], { timeoutMs: FETCH_TIMEOUT_MS })
   } catch (e) {
-    console.error(`changes: fetch failed in ${dir}:`, e)
+    // Non-fatal: the panel renders the refs as they are (WRN, not ERR).
+    log.warn('fetch failed', { dir, err: e })
     return
   }
   // Pruned while it pointed at HEAD → the thread landed on the remote.
@@ -135,7 +142,7 @@ async function threadCommits(
   task: string,
   base: string
 ): Promise<ThreadCommit[]> {
-  const log = await git(dir, access, ['log', '--format=%H%x00%s', `${base}..HEAD`])
+  const commits = await git(dir, access, ['log', '--format=%H%x00%s', `${base}..HEAD`])
   const pushed = new Set(
     (
       await git(dir, access, ['rev-list', `${base}..refs/remotes/origin/${branchFor(task)}`]).catch(
@@ -145,7 +152,7 @@ async function threadCommits(
       .split('\n')
       .filter(Boolean)
   )
-  return log
+  return commits
     .split('\n')
     .filter(Boolean)
     .map((line) => {
@@ -230,7 +237,7 @@ export async function getTaskChanges(
     try {
       out.push(await repoChanges(ws, task, entry.name, opts.fetch === true))
     } catch (e) {
-      console.error(`changes: skipping ${ws}/${task}/${entry.name}:`, e)
+      log.warn('repo skipped', { ws, task, repo: entry.name, err: e })
     }
   }
   return out.sort((a, b) => a.repo.localeCompare(b.repo))
@@ -267,7 +274,9 @@ export async function commit(ws: string, task: string, repo: string, message: st
   const dir = cloneDir(ws, task, repo)
   const access = await hostGitAccessForRepo(ws, repo)
   await git(dir, access, ['add', '-A'])
-  await git(dir, access, ['commit', '-m', message])
+  // The message is user/agent prose — never logged, matching ipc.ts's
+  // OPAQUE_ARGS treatment of `changesCommit` at the IPC boundary.
+  await git(dir, access, ['commit', '-m', message], { opaqueArgv: true })
 }
 
 export async function push(ws: string, task: string, repo: string): Promise<void> {
@@ -290,7 +299,7 @@ export async function updateFromMain(ws: string, task: string, repo: string): Pr
   await git(dir, access, ['merge', `origin/${def}`, '--no-edit'], { okCodes: [0, 1] })
 }
 
-/** PoC delivery: the forge's compare URL for gurt/<task> (the IPC layer opens it). */
+/** MVP delivery: the forge's compare URL for gurt/<task> (the IPC layer opens it). */
 export async function prUrl(ws: string, task: string, repo: string): Promise<string> {
   const dir = cloneDir(ws, task, repo)
   const url = await compareUrl(dir, await hostGitAccessForRepo(ws, repo), task)
@@ -315,12 +324,12 @@ export async function renameTaskBranches(ws: string, task: string, oldTask: stri
     const oldBranch = branchFor(oldTask)
     if (!(await revParse(repoDir, access, oldBranch))) continue
     await git(repoDir, access, ['branch', '-m', oldBranch, branchFor(task)]).catch((e) =>
-      console.error(`changes: branch rename failed in ${repoDir}:`, e)
+      log.warn('branch rename failed', { dir: repoDir, err: e })
     )
   }
 }
 
-/** PoC escape hatch: open the clone with host VS Code. */
+/** MVP escape hatch: open the clone with host VS Code. */
 export function openInVscode(ws: string, task: string, repo: string): Promise<void> {
   const dir = cloneDir(ws, task, repo)
   return new Promise((resolve, reject) => {

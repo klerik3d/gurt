@@ -1,6 +1,6 @@
 # gurt
 
-Electron PoC: a local-first manager for dev environments and coding agents.
+Electron MVP: a local-first manager for dev environments and coding agents.
 Concept background lives in [CONCEPT.md](CONCEPT.md) (the Go stack described
 there is archived in `archive/`; the model mostly still applies).
 
@@ -150,7 +150,9 @@ npm install
 npm run dev        # requires docker daemon for env start
 ```
 
-`GURT_ROOT` env var overrides `~/.gurt` (used by tests).
+`GURT_ROOT` env var overrides `~/.gurt` (used by tests). `GURT_LOG=debug|info|warn|error`
+sets the log level — the app writes `~/.gurt/logs/gurt.log` (⌘K → "Open logs
+folder"); see [docs/logging.md](docs/logging.md).
 
 ## Packaging (alpha builds)
 
@@ -195,6 +197,7 @@ SCRATCH=/tmp/gurt-smoke node scripts/smoke8.mjs   # native git access: credentia
 # turn contract end-to-end (docker + a working claude secret; SKIPs without one):
 SCRATCH=/tmp/gurt-smoke GURT_SMOKE_CLAUDE_TOKEN=… node scripts/smoke9.mjs
 node scripts/smoke-delete-row.mjs                 # sidebar Del/⌫: confirm, delete, move the selection, no docker
+node scripts/smoke-logging.mjs                    # app log: startup banner, IPC wrapper, renderer transport, needs docker
 ```
 
 Docker-free unit tests (pure node, bundled on the fly with esbuild):
@@ -207,6 +210,7 @@ node scripts/turn-contract.test.mjs    # turn contract: the post-turn nudge/inco
 node scripts/proposal-store.test.mjs   # turn contract: proposal restore, latestProposal, Kernel.prUrl params
 node scripts/env-config.test.mjs       # env normal form: JSONC parse/validation, envImageTag identity, migration
 node scripts/session-delete-container.test.mjs  # deleting a session takes its container down with it
+node scripts/log.test.mjs              # app log: writer, rotation, sanitization, redaction, drop accounting
 ```
 
 All drive the built app with Playwright through the real UI and screenshot
