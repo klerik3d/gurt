@@ -747,8 +747,15 @@ export class SessionManager {
     this.schedulePersist(s.ref)
   }
 
-  /** Forget sessions of a whole task without persisting (task dir is removed). */
+  /** Forget sessions of a whole task without persisting (task dir is removed).
+   *  A pending debounced persist for the task is cancelled first: the container
+   *  teardown that precedes this schedules one (a session's container record is
+   *  cleared), and left alone it fires after the directory is gone — silently
+   *  resurrecting the deleted task with an empty sessions.json. */
   dropTaskSessions(ws: string, task: string): void {
+    const key = taskKey(ws, task)
+    clearTimeout(this.persistTimers.get(key))
+    this.persistTimers.delete(key)
     for (const [id, s] of this.sessions) {
       if (s.ref.workspace !== ws || s.ref.task !== task) continue
       this.detach(id)
