@@ -3,6 +3,7 @@ import type { SessionSnapshot, Tree } from '../../../shared/types'
 import { sessionStatus } from '../../../shared/types'
 import { agentKind, agentName, useAgents } from '../useAgents'
 import { alertDialog, confirmDialog } from '../dialog'
+import { logErr } from '../log'
 import { SESSION_DOT } from '../status'
 import { Dot } from './icons'
 import { AgentMark, AgentTag, EnvRepoMarks, EnvTag, RepoTag } from './tags'
@@ -139,7 +140,7 @@ function NonStartedPane({
             onChange={(e) => setText(e.target.value)}
             onBlur={() => {
               if (text !== info.startPrompt)
-                window.gurt.sessionEditPrompt(sessionId, text).catch(console.error)
+                window.gurt.sessionEditPrompt(sessionId, text).catch(logErr('sessionEditPrompt'))
             }}
           />
           <div className="row-buttons">

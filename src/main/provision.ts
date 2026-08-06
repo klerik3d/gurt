@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { StringDecoder } from 'node:string_decoder'
 import { promises as fs } from 'node:fs'
 import { existsSync } from 'node:fs'
 import os from 'node:os'
@@ -14,8 +15,58 @@ import { hostGitAccess } from './git/env'
 import { forgeFeatures, forgeWrappers } from './git/providers'
 import { BASE_SHIMS, shimInstallScript } from './git/shims'
 import { LAUNCH_BIN } from './git/config'
+import { createLogger } from './log'
 
 const require = createRequire(import.meta.url)
+
+// Named `procLog` because most functions here take a `log: LogSink` sink.
+const procLog = createLogger('proc')
+
+/** Cap on the unterminated remainder buffered between chunks in `lineBuffer`. A
+ *  process that never emits '\n' must not grow it without bound — matches the
+ *  record truncation limit in log.ts. Well above any realistic secret length,
+ *  but not a hard guarantee: a single line longer than this with no '\n' can
+ *  still force a flush mid-secret, splitting it across two redacted records.
+ *  Accepted as a rare edge case (real devcontainer/git output does not run this
+ *  long without a newline) — the unbounded-growth risk this cap prevents
+ *  matters more than closing that last gap. */
+const MAX_LINE_BUFFER = 32 * 1024
+
+/**
+ * Trace one child process. The devcontainer CLI is rare and slow enough that
+ * its lifecycle belongs in the default log; the host probes below it (`git`,
+ * `docker inspect`, `tar`) run several times per panel refresh, so they trace
+ * at DBG — a failing one still surfaces at WRN. argv rides through the ctx
+ * redactor, which scrubs `://user:pass@` URLs and every known secret value —
+ * but that only catches known secrets, not free-form prose (a commit
+ * message). A caller whose argv carries prose passes `opaqueArgv` so this
+ * traces an argument count instead, never the values — the same treatment
+ * `ipc.ts`'s `OPAQUE_ARGS` gives `changesCommit` at the IPC boundary; without
+ * it that protection is defeated the moment the same call reaches a subprocess.
+ */
+function traceProc(
+  level: 'info' | 'debug',
+  cmd: string,
+  argv: string[],
+  pid: number | undefined,
+  opaqueArgv = false
+): (code: number | null, ms: number, ok: boolean) => void {
+  procLog[level]('proc.spawn', {
+    cmd,
+    argv: opaqueArgv ? `${argv.length} arg(s) [not logged]` : argv,
+    pid
+  })
+  let done = false
+  return (code, ms, ok) => {
+    // An 'error' after a successful spawn is followed by 'close' — one
+    // `proc.exit` per process, whichever event fires first wins.
+    if (done) return
+    done = true
+    const record = { cmd, pid, code, ms }
+    if (ok) procLog[level]('proc.exit', record)
+    else procLog.warn('proc.exit', record)
+  }
+}
 
 /** Features every environment gets (adapters are npm packages). */
 const BASE_FEATURES = { 'ghcr.io/devcontainers/features/node:1': {} }
@@ -35,28 +86,74 @@ function devcontainerCliPath(): string {
 
 export type LogSink = (line: string) => void
 
+/**
+ * Line-buffer a child's output before it reaches a sink. Redaction runs per
+ * line, so a chunk boundary must never split a line on its way out: half a
+ * secret in one record and half in the next would defeat it. `flush` emits the
+ * unterminated remainder when the process ends.
+ */
+export function lineBuffer(sink: LogSink): { push: (chunk: Buffer) => void; flush: () => void } {
+  // A chunk boundary can land mid multi-byte UTF-8 sequence; decoding each
+  // chunk on its own would turn both halves into U+FFFD. The decoder carries
+  // the partial sequence across chunks, the same way `rest` carries the
+  // partial line.
+  const utf8 = new StringDecoder('utf8')
+  let rest = ''
+  return {
+    push(chunk) {
+      rest += utf8.write(chunk)
+      const lines = rest.split('\n')
+      rest = lines.pop() ?? ''
+      for (const line of lines) if (line.trim()) sink(line)
+      // A line-less stream must not buffer forever: flush the remainder as a
+      // partial line once it passes the cap, and start over.
+      if (rest.length > MAX_LINE_BUFFER) {
+        sink(rest)
+        rest = ''
+      }
+    },
+    flush() {
+      const last = rest + utf8.end()
+      rest = ''
+      if (last.trim()) sink(last)
+    }
+  }
+}
+
 interface RunResult {
   code: number
   stdout: string
 }
 
 /** Runs the CLI under Electron's own binary in Node mode — no system node needed. */
-function runNodeCli(args: string[], log: LogSink): Promise<RunResult> {
-  log(`$ devcontainer ${args.join(' ')}`)
+function runNodeCli(args: string[], sink: LogSink): Promise<RunResult> {
+  sink(`$ devcontainer ${args.join(' ')}`)
   return new Promise((resolve, reject) => {
+    const started = Date.now()
     const child = spawn(process.execPath, [devcontainerCliPath(), ...args], {
       env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }
     })
+    const exited = traceProc('info', 'devcontainer', args, child.pid)
+    const out = lineBuffer(sink)
+    const err = lineBuffer(sink)
     let stdout = ''
     child.stdout.on('data', (d: Buffer) => {
       stdout += d.toString()
-      for (const line of d.toString().split('\n')) if (line.trim()) log(line)
+      out.push(d)
     })
-    child.stderr.on('data', (d: Buffer) => {
-      for (const line of d.toString().split('\n')) if (line.trim()) log(line)
+    child.stderr.on('data', (d: Buffer) => err.push(d))
+    child.on('error', (e) => {
+      out.flush()
+      err.flush()
+      exited(null, Date.now() - started, false)
+      reject(e)
     })
-    child.on('error', reject)
-    child.on('close', (code) => resolve({ code: code ?? -1, stdout }))
+    child.on('close', (code) => {
+      out.flush()
+      err.flush()
+      exited(code, Date.now() - started, code === 0)
+      resolve({ code: code ?? -1, stdout })
+    })
   })
 }
 
@@ -67,13 +164,19 @@ interface RunOpts {
   timeoutMs?: number
   /** Exit codes to treat as success (default [0]) — e.g. `git diff` exits 1 on differences. */
   okCodes?: number[]
+  /** This argv carries prose (a commit message, …) — `proc.spawn` traces an
+   *  argument count instead of the values. See `traceProc`. */
+  opaqueArgv?: boolean
 }
 
 /** Resolves with the child's stdout; exported for host-git modules (changes.ts). */
-export function run(cmd: string, args: string[], log: LogSink, opts: RunOpts = {}): Promise<string> {
+export function run(cmd: string, args: string[], sink: LogSink, opts: RunOpts = {}): Promise<string> {
   return new Promise((resolve, reject) => {
+    const started = Date.now()
     const child = spawn(cmd, args, { cwd: opts.cwd, env: opts.env })
-    const lines: string[] = []
+    const exited = traceProc('debug', cmd, args, child.pid, opts.opaqueArgv)
+    // The last few lines are what a failure message quotes.
+    const tail: string[] = []
     let stdout = ''
     const timer = opts.timeoutMs
       ? setTimeout(() => {
@@ -81,26 +184,33 @@ export function run(cmd: string, args: string[], log: LogSink, opts: RunOpts = {
           reject(new Error(`${cmd} ${args[0]} timed out after ${opts.timeoutMs}ms`))
         }, opts.timeoutMs)
       : undefined
-    const onData = (d: Buffer) => {
-      for (const line of d.toString().split('\n'))
-        if (line.trim()) {
-          lines.push(line)
-          log(line)
-        }
+    const emit = (line: string): void => {
+      tail.push(line)
+      if (tail.length > 3) tail.shift()
+      sink(line)
     }
+    const out = lineBuffer(emit)
+    const err = lineBuffer(emit)
     child.stdout.on('data', (d: Buffer) => {
       stdout += d.toString()
-      onData(d)
+      out.push(d)
     })
-    child.stderr.on('data', onData)
+    child.stderr.on('data', (d: Buffer) => err.push(d))
     child.on('error', (e) => {
       if (timer) clearTimeout(timer)
+      out.flush()
+      err.flush()
+      exited(null, Date.now() - started, false)
       reject(e)
     })
     child.on('close', (code) => {
       if (timer) clearTimeout(timer)
-      if ((opts.okCodes ?? [0]).includes(code ?? -1)) resolve(stdout)
-      else reject(new Error(`${cmd} ${args[0]} failed (${code}): ${lines.slice(-3).join(' | ')}`))
+      out.flush()
+      err.flush()
+      const ok = (opts.okCodes ?? [0]).includes(code ?? -1)
+      exited(code, Date.now() - started, ok)
+      if (ok) resolve(stdout)
+      else reject(new Error(`${cmd} ${args[0]} failed (${code}): ${tail.join(' | ')}`))
     })
   })
 }
@@ -718,6 +828,30 @@ export function dockerSessionContainers(): Promise<Map<string, string> | null> {
         if (session && id) map.set(session, id)
       }
       resolve(map)
+    })
+  })
+}
+
+/** `docker --version`, or null when docker is not reachable — best-effort, for
+ *  the startup banner (the single most useful line when a start later fails).
+ *  Bounded: a hung docker binary (a half-dead Docker Desktop) must not hold the
+ *  `app.start` record hostage — that record is the whole point of the probe. */
+export function dockerVersion(timeoutMs = 3000): Promise<string | null> {
+  return new Promise((resolve) => {
+    const child = spawn('docker', ['--version'])
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL')
+      resolve(null)
+    }, timeoutMs)
+    let out = ''
+    child.stdout.on('data', (d: Buffer) => (out += d.toString()))
+    child.on('error', () => {
+      clearTimeout(timer)
+      resolve(null)
+    })
+    child.on('close', (code) => {
+      clearTimeout(timer)
+      resolve(code === 0 ? out.trim() || null : null)
     })
   })
 }

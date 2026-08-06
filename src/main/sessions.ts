@@ -27,9 +27,30 @@ import type { AgentDef } from '../shared/agents'
 import type { CreateAction } from '../shared/api'
 import { taskKey } from '../shared/keys'
 import type { Bus } from './bus'
+import type { ContainerStatusReason, SessionStateReason } from '../shared/events'
 import type { LaunchContext } from './containers'
-import { spawnAcpAdapter } from './provision'
+import { lineBuffer, spawnAcpAdapter } from './provision'
 import { JsonRpcPeer } from './jsonrpc'
+import { createLogger, errCtx } from './log'
+
+const log = createLogger('sessions')
+
+/** A signal-killed child reports `code: null`; keep the exit code non-zero and
+ *  shell-conventional (128 + signum) so "it died" is never read as "it exited
+ *  cleanly" — `kill -9` on an adapter must show up as 137 in `agent.exit` and
+ *  `session.end`, not as a missing field. Unlisted signals fall back to 128.
+ *  Pure and unit-tested (scripts/turn-contract.test.mjs). */
+const SIGNUM: Record<string, number> = {
+  SIGHUP: 1,
+  SIGINT: 2,
+  SIGQUIT: 3,
+  SIGABRT: 6,
+  SIGKILL: 9,
+  SIGSEGV: 11,
+  SIGTERM: 15
+}
+export const adapterExitCode = (code: number | null, signal: NodeJS.Signals | null): number =>
+  code ?? (signal ? 128 + (SIGNUM[signal] ?? 0) : -1)
 
 /**
  * Normalize ACP `SessionConfigOption[]` into our flat shape. `select` options may be
@@ -128,6 +149,12 @@ interface Session {
   loading: boolean
   /** Last failure that put the session back to draft. */
   startError?: string
+  /** Wall clock of the current run's start, and the turns it has served — the
+   *  two numbers `session.end` reports when the adapter goes away. */
+  startedAt?: number
+  turns: number
+  /** `stopReason` of the last finished turn, for the same record. */
+  lastStopReason?: string
   /** entry id -> resolver of a pending permission request. */
   pendingPermissions: Map<number, (outcome: unknown) => void>
 }
@@ -161,7 +188,7 @@ export interface SessionEvents {
   stopGurtServer: (sessionId: string) => void
   /** Destroy the container this session owns, if any — on delete, or when a
    *  draft is re-pointed at another repo/env. The clone stays. */
-  releaseContainer: (sessionId: string) => void
+  releaseContainer: (sessionId: string, reason: ContainerStatusReason) => void
   persist: (ws: string, task: string, records: PersistedSession[]) => void
   /** Persist the refreshed config surface for an agent instance (cache). */
   saveAgentConfig: (agentId: string, cfg: AgentConfig) => void
@@ -228,14 +255,22 @@ export class SessionManager {
   private agentConfigs = new Map<string, AgentConfig>()
   /** Serialized form of the last cache write per agent — skips redundant saves. */
   private agentConfigWritten = new Map<string, string>()
+  /** Last logged "why still queued" per session id (see `noteQueued`). */
+  private queuedReasons = new Map<string, string>()
 
   constructor(
     private events: SessionEvents,
     private bus: Bus
   ) {}
 
-  private emitState(s: Session): void {
-    this.bus.emit('session.state', { sessionId: s.info.id, ref: s.ref, state: s.info.state })
+  private emitState(s: Session, reason?: SessionStateReason, err?: unknown): void {
+    this.bus.emit('session.state', {
+      sessionId: s.info.id,
+      ref: s.ref,
+      state: s.info.state,
+      reason,
+      ...(err === undefined ? {} : { err: errCtx(err) })
+    })
   }
 
   /** Load sessions persisted by a previous run; they reattach lazily on prompt. */
@@ -257,6 +292,7 @@ export class SessionManager {
         nextEntryId: Math.max(0, ...entries.map((e) => e.id)) + 1,
         busy: false,
         turnComplete: false,
+        turns: 0,
         attached: false,
         loading: false,
         pendingPermissions: new Map()
@@ -388,15 +424,16 @@ export class SessionManager {
       nextEntryId: 1,
       busy: false,
       turnComplete: false,
+      turns: 0,
       attached: false,
       loading: false,
       pendingPermissions: new Map()
     })
     this.bus.emit('tree.changed', undefined)
-    this.emitState(this.sessions.get(info.id)!)
+    this.emitState(this.sessions.get(info.id)!, 'created')
     this.schedulePersist(ref)
     if (action === 'queue') this.enqueue(info.id)
-    else if (action === 'run') void this.startSession(info.id)
+    else if (action === 'run') void this.startSession(info.id, 'user')
     return info
   }
 
@@ -405,7 +442,7 @@ export class SessionManager {
     const s = this.sessions.get(sessionId)
     if (!s || s.info.state === 'starting' || s.info.state === 'started') return
     if (!s.info.repo) throw new Error('session has no repository')
-    void this.startSession(sessionId)
+    void this.startSession(sessionId, 'user')
   }
 
   enqueue(sessionId: string): void {
@@ -416,7 +453,7 @@ export class SessionManager {
     s.info.queuedAt = new Date().toISOString()
     s.startError = undefined
     this.bus.emit('tree.changed', undefined)
-    this.emitState(s)
+    this.emitState(s, 'user')
     this.schedulePersist(s.ref)
     this.schedule()
   }
@@ -428,7 +465,7 @@ export class SessionManager {
     s.info.state = 'draft'
     s.info.queuedAt = undefined
     this.bus.emit('tree.changed', undefined)
-    this.emitState(s)
+    this.emitState(s, 'user')
     this.schedulePersist(s.ref)
   }
 
@@ -472,11 +509,11 @@ export class SessionManager {
     // the env. Re-pointing repo or env releases the draft's container if a
     // failed start left one — it was provisioned for the old target.
     if (patch.repo !== undefined && (patch.repo ?? undefined) !== s.info.repo) {
-      this.events.releaseContainer(s.info.id)
+      this.events.releaseContainer(s.info.id, 'user')
       s.info.repo = patch.repo ?? undefined
     }
     if (patch.env !== undefined && patch.env !== s.info.env) {
-      this.events.releaseContainer(s.info.id)
+      this.events.releaseContainer(s.info.id, 'user')
       s.info.env = patch.env
       s.ref = { ...s.ref, env: patch.env }
     }
@@ -494,7 +531,7 @@ export class SessionManager {
     // Before the record goes: the container manager finds the container through
     // this map, so a session dropped first would leave its container orphaned
     // until the next boot reconcile.
-    this.events.releaseContainer(sessionId)
+    this.events.releaseContainer(sessionId, 'session-deleted')
     this.sessions.delete(sessionId)
     this.events.deleteLog(s.ref.workspace, s.ref.task, sessionId)
     this.events.stopGurtServer(sessionId)
@@ -522,13 +559,46 @@ export class SessionManager {
     // A pass may start several items; claim each started item's repo so a later
     // item over the same clone stays queued.
     const claimed = new Set<string>()
+    const still = new Set<string>()
     for (const s of queued) {
       const rkey = this.repoKey(s)
-      if (!rkey || claimed.has(rkey)) continue
-      if (!this.canStart(s)) continue
+      if (!rkey) {
+        // Still waiting too — kept in `still` so the cleanup below doesn't
+        // erase the reason and re-log it on every schedule() pass.
+        still.add(s.info.id)
+        this.noteQueued(s, 'no-repo')
+        continue
+      }
+      if (claimed.has(rkey)) {
+        still.add(s.info.id)
+        this.noteQueued(s, 'repo-claimed-this-pass')
+        continue
+      }
+      const holder = this.repoHolder(s)
+      if (holder) {
+        still.add(s.info.id)
+        this.noteQueued(s, 'repo-held', holder.info.id)
+        continue
+      }
       claimed.add(rkey)
-      void this.startSession(s.info.id)
+      this.queuedReasons.delete(s.info.id)
+      void this.startSession(s.info.id, 'scheduler')
     }
+    // Forget the reason of anything no longer waiting, so a session that queues
+    // again later reports why from scratch.
+    for (const id of [...this.queuedReasons.keys()]) if (!still.has(id)) this.queuedReasons.delete(id)
+  }
+
+  /**
+   * "Why is this still queued" — logged at INF, but only when the answer
+   * changes: `schedule()` runs on every container transition, and repeating an
+   * unchanged reason would bury the transitions themselves.
+   */
+  private noteQueued(s: Session, reason: string, by?: string): void {
+    const key = `${reason}:${by ?? ''}`
+    if (this.queuedReasons.get(s.info.id) === key) return
+    this.queuedReasons.set(s.info.id, key)
+    log.info('session.queued', { s: s.info.id, reason, by })
   }
 
   /** The clone a session works in — `(task, repo)`, shared by every session of
@@ -569,15 +639,17 @@ export class SessionManager {
   }
 
   /** Provision (if needed), open the ACP session, and send the start prompt. */
-  private async startSession(sessionId: string): Promise<void> {
+  private async startSession(sessionId: string, by: 'user' | 'scheduler'): Promise<void> {
     const s = this.sessions.get(sessionId)
     if (!s || s.info.state === 'starting' || s.info.state === 'started') return
     this.bus.emit('session.activity', { sessionId: s.info.id })
     s.info.state = 'starting'
     s.info.queuedAt = undefined
     s.startError = undefined
+    s.startedAt = Date.now()
+    s.turns = 0
     this.bus.emit('tree.changed', undefined)
-    this.emitState(s)
+    this.emitState(s, by)
     this.bus.emit('session.changed', { sessionId })
     try {
       // Every start path funnels here, so the gate is checked once, here: the
@@ -617,7 +689,7 @@ export class SessionManager {
       this.cacheAgentConfig(s)
       await this.applyAutoAllow(s, conn)
       this.bus.emit('tree.changed', undefined)
-      this.emitState(s)
+      this.emitState(s, by)
       this.schedulePersist(s.ref)
       await this.runPrompt(s, s.info.startPrompt)
     } catch (e) {
@@ -627,7 +699,7 @@ export class SessionManager {
       s.startError = message
       this.push(s, { kind: 'system', text: `start failed: ${message}` })
       this.bus.emit('tree.changed', undefined)
-      this.emitState(s)
+      this.emitState(s, 'start-failed', e)
       this.schedulePersist(s.ref)
       // A failed start must not block the queue — let the next item try.
       this.schedule()
@@ -769,7 +841,7 @@ export class SessionManager {
         () => {
           s.flushedSeq = upTo
         },
-        (e) => console.error('session-log append failed:', e)
+        (e) => log.error('internal.fail', { site: 'session-log-append', s: s.info.id, err: e })
       )
       .then(() => {
         s.flushInFlight = false
@@ -804,18 +876,46 @@ export class SessionManager {
       ctx.env,
       ctx.gitBrokerEnv
     )
-    // The adapter's own diagnostics: the reason a start fails is almost always
-    // here, so it is mirrored into the session's provisioning log rather than
-    // only the main-process console.
-    const tag = `acp ${key}`
-    child.stderr.on('data', (d: Buffer) => {
-      const line = d.toString().trim()
-      if (!line) return
-      console.error(`[${tag}]`, line)
-      this.bus.emit('provision.log', { key, line: `[agent] ${line}` })
+    const spawnedAt = Date.now()
+    log.info('agent.spawn', {
+      s: key,
+      cmd: ctx.agent.bin,
+      pid: child.pid,
+      c: ctx.containerId,
+      // Names only — the adapter's argv and env carry the agent's secret, and
+      // "which variables were injected" is the whole diagnostic value anyway.
+      env: [
+        ...(ctx.secret ? [ctx.secretEnv] : []),
+        ...Object.keys(ctx.env ?? {}),
+        ...Object.keys(ctx.gitBrokerEnv ?? {})
+      ]
     })
-    const peer = new JsonRpcPeer(child, (err) => console.error(`[${tag}]`, err))
-    child.on('close', () => {
+    // The adapter's own diagnostics: the reason a start fails is almost always
+    // here, so it goes to the session's provisioning log — which the bus tap
+    // routes to `logs/session-<id>.log`, line-buffered and redacted per line.
+    // Same `lineBuffer` provision.ts's own child processes use, so a secret
+    // split across two `data` chunks is never forwarded in halves here either.
+    const stderrBuf = lineBuffer((line) =>
+      this.bus.emit('provision.log', { key, line: `[agent] ${line}` })
+    )
+    child.stderr.on('data', (d: Buffer) => stderrBuf.push(d))
+    const peer = new JsonRpcPeer(
+      child,
+      (err) => log.error('internal.fail', { site: 'agent-process', s: key, pid: child.pid, err }),
+      key
+    )
+    child.on('close', (code, signal) => {
+      // The last line is often the one that explains the exit — an unterminated
+      // remainder must not be dropped just because no further '\n' is coming.
+      stderrBuf.flush()
+      const ms = Date.now() - spawnedAt
+      log.info('agent.exit', {
+        s: key,
+        pid: child.pid,
+        code: adapterExitCode(code, signal),
+        signal: signal ?? undefined,
+        ms
+      })
       // Only clear the slot if it still holds *this* process — a replaced
       // container's adapter must not evict its successor on its way out.
       if (this.connections.get(key)?.peer === peer) this.connections.delete(key)
@@ -838,6 +938,15 @@ export class SessionManager {
         }
         // The in-flight `session/prompt` of a busy session rejects with the peer,
         // so its runPrompt still emits the `session.turn` ended the idle policy needs.
+        // The adapter is what makes a session live: its exit ends this run, and
+        // the record carries the run's shape (turns, wall time, how it died).
+        log.info('session.end', {
+          s: key,
+          turns: dead.turns,
+          ms: dead.startedAt ? Date.now() - dead.startedAt : ms,
+          stopReason: dead.lastStopReason,
+          exitCode: adapterExitCode(code, signal)
+        })
       }
       // Covers a session that was NOT busy: the auto-stop policy re-evaluates it
       // on adapter death even when no turn end will ever fire.
@@ -977,6 +1086,7 @@ export class SessionManager {
     s.turnComplete = false
     s.info.incomplete = undefined
     s.busy = true
+    s.turns++
     this.bus.emit('session.changed', { sessionId: s.info.id })
     this.bus.emit('session.turn', { sessionId: s.info.id, ref: s.ref, phase: 'started' })
     try {
@@ -986,10 +1096,13 @@ export class SessionManager {
         prompt: this.promptBlocks(s, text, context, images)
       })
       const reason = result?.stopReason
+      s.lastStopReason = reason
       if (reason && reason !== 'end_turn')
         this.push(s, { kind: 'system', text: `stopped: ${reason}` })
       return { stopReason: reason, threw: false }
     } catch (e) {
+      s.lastStopReason = 'error'
+      log.warn('turn failed', { s: s.info.id, err: e })
       this.push(s, { kind: 'system', text: `error: ${e instanceof Error ? e.message : e}` })
       return { threw: true }
     } finally {
