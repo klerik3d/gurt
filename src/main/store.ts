@@ -20,8 +20,11 @@ import type {
 import { agentDef } from '../shared/agents'
 import { defaultAgentConfig } from '../shared/agentConfig'
 import { validateEnvConfig } from '../shared/envConfig'
+import { createLogger } from './log'
 
 const pexecFile = promisify(execFile)
+
+const log = createLogger('store')
 
 /**
  * Recursively remove a directory tree. Node's `fs.rm` walks entries then
@@ -74,10 +77,29 @@ function validateName(kind: string, name: string): void {
     throw new Error(`"${n}" is reserved — pick another ${kind} name`)
 }
 
+/** `JSON.parse`'s `SyntaxError` embeds a snippet of the offending content in
+ *  `message` (Node 20+) — unsafe to log here, since a store file may hold
+ *  session timeline content the log must never contain. Keep only the name,
+ *  code, and — when the message happens to carry one — the numeric position. */
+function jsonParseErrCtx(e: unknown): { name: string; code?: string | number; pos?: number } {
+  const err = e as { name?: unknown; code?: unknown; message?: unknown }
+  const message = typeof err.message === 'string' ? err.message : ''
+  const pos = /position (\d+)/.exec(message)
+  return {
+    name: typeof err.name === 'string' ? err.name : 'Error',
+    ...(typeof err.code === 'string' || typeof err.code === 'number' ? { code: err.code } : {}),
+    ...(pos ? { pos: Number(pos[1]) } : {})
+  }
+}
+
 async function readJson<T>(file: string, fallback: T): Promise<T> {
   try {
     return JSON.parse(await fs.readFile(file, 'utf8')) as T
-  } catch {
+  } catch (e) {
+    // A missing file is the normal "nothing stored yet" path; anything else is
+    // a file we are about to silently replace with the fallback — say so.
+    if ((e as NodeJS.ErrnoException)?.code !== 'ENOENT')
+      log.warn('unreadable json — falling back to defaults', { file, err: jsonParseErrCtx(e) })
     return fallback
   }
 }

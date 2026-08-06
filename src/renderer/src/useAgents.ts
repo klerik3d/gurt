@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { AgentsFile } from '../../shared/types'
+import { logErr } from './log'
 
 // Shared agents cache: session chips resolve an agent instance id to its
 // user-facing name (label), not the raw id/kind. One fetch is shared across
@@ -15,7 +16,7 @@ function load(): void {
       cache = a
       subscribers.forEach((fn) => fn(a))
     })
-    .catch(console.error)
+    .catch(logErr('getAgents'))
 }
 
 /** Re-fetch agents and notify every mounted chip (call after saving edits). */

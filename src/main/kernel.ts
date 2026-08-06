@@ -13,6 +13,17 @@ import * as changes from './changes'
 import { createBus, type Bus } from './bus'
 import { ContainerManager } from './containers'
 import { SessionManager, type RestoredSession } from './sessions'
+import { createLogger, dropSessionLog, sessionLogLine } from './log'
+
+const log = createLogger('kernel')
+// Same scope as sessions.ts/containers.ts's own loggers (`sessions`,
+// `containers`) — these bus-tap records are the other half of the same
+// subsystems' lifecycle (session.queued/end, agent.spawn/exit; container.stop/
+// remove, provision.*, reconcile.done), and docs/logging.md's one worked
+// example ([sessions] agent.spawn) assumes a single canonical scope per
+// subsystem, not one split across [session]/[sessions] or [container]/[containers].
+const sessionLog = createLogger('sessions')
+const containerLog = createLogger('containers')
 
 export interface Kernel {
   bus: Bus
@@ -55,8 +66,10 @@ export function createKernel(): Kernel {
   sessions = new SessionManager(
     {
       resolveLaunch: (sessionId) => containers.resolveLaunch(sessionId),
-      releaseContainer: (sessionId) => {
-        containers.release(sessionId).catch((e) => console.error('container release failed:', e))
+      releaseContainer: (sessionId, reason) => {
+        containers
+          .release(sessionId, reason)
+          .catch((e) => log.error('internal.fail', { site: 'container-release', s: sessionId, reason, err: e }))
       },
       installAdapter: (ctx) => containers.installAdapter(ctx),
       resolveMcpServers,
@@ -64,23 +77,53 @@ export function createKernel(): Kernel {
       resolveGurtServer: ensureGurtServer,
       stopGurtServer,
       persist: (ws, task, records) => {
-        store.writeSessions(ws, task, records).catch((e) => console.error('persist failed:', e))
+        store
+          .writeSessions(ws, task, records)
+          .catch((e) => log.error('internal.fail', { site: 'session-persist', ws, task, err: e }))
       },
       saveAgentConfig: (agentId, cfg) => {
         store
           .setAgentConfig(agentId, cfg)
-          .catch((e) => console.error('agent-config persist failed:', e))
+          .catch((e) => log.error('internal.fail', { site: 'agent-config-persist', agent: agentId, err: e }))
       },
       appendLog: (ws, task, sessionId, records) =>
         store.appendSessionLog(ws, task, sessionId, records),
       deleteLog: (ws, task, sessionId) => {
         store
           .deleteSessionLog(ws, task, sessionId)
-          .catch((e) => console.error('session-log delete failed:', e))
+          .catch((e) => log.error('internal.fail', { site: 'session-log-delete', s: sessionId, err: e }))
+        // The session's diagnostic file goes with its timeline.
+        dropSessionLog(sessionId)
       }
     },
     bus
   )
+
+  // --- log tap ------------------------------------------------------------
+  // The lifecycle *is* the bus, so one subscription per event is the whole
+  // "what happened" trail — no logging calls sprinkled through the emitters.
+  // Deliberately not tapped: session.log, session.changed, tree.changed and
+  // session.activity — high-frequency, and the first two carry chat content.
+  bus.on('session.state', ({ sessionId, ref, state, reason, err }) => {
+    sessionLog.info('session.state', { s: sessionId, task: ref.task, state, reason, err })
+  })
+  bus.on('session.turn', ({ sessionId, phase }) => sessionLog.info('session.turn', { s: sessionId, phase }))
+  bus.on('session.awaiting', ({ sessionId, awaiting }) =>
+    sessionLog.info('session.awaiting', { s: sessionId, awaiting })
+  )
+  bus.on('session.adapterExited', ({ sessionId }) =>
+    sessionLog.info('session.adapterExited', { s: sessionId })
+  )
+  bus.on('container.status', ({ sessionId, status, reason }) =>
+    containerLog.info('container.status', { s: sessionId, status, reason })
+  )
+  // The proposal carries the agent's commit/PR prose — only the fact is logged.
+  bus.on('session.proposal', ({ sessionId }) =>
+    sessionLog.info('session.proposal', { s: sessionId, repo: sessions.sessionInfo(sessionId)?.repo })
+  )
+  // Provisioning output is volume, and per session: it goes to that session's
+  // own file and never to the app log.
+  bus.on('provision.log', ({ key, line }) => sessionLogLine(key, line))
 
   // Idle auto-stop policy: a session's container is stopped after it has sat
   // idle for a grace period; any activity cancels the pending stop. `noteIdle`
@@ -131,11 +174,11 @@ export function createKernel(): Kernel {
       }
     // Docker is the registry: correct the restored container records against it
     // (and reap orphans) before anything tries to exec into one.
-    await containers.reconcile().catch((e) => console.error('container reconcile failed:', e))
+    await containers.reconcile().catch((e) => log.error('internal.fail', { site: 'container-reconcile', err: e }))
     // Resume the queue once, after everything is restored.
     sessions.schedule()
   }
-  restoreSessions().catch((e) => console.error('session restore failed:', e))
+  restoreSessions().catch((e) => log.error('internal.fail', { site: 'session-restore', err: e }))
 
   return {
     bus,

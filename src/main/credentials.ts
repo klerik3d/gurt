@@ -12,6 +12,7 @@ import { credentialIdentity } from '../shared/credentials'
 import { canonicalRepoId } from '../shared/repoId'
 import { gurtRoot, getWorkspace, listWorkspaces, getAgents, setAgents } from './store'
 import { agentDef } from '../shared/agents'
+import { addSecrets } from './log'
 import { providerForHost, type ForgeProvider } from './git/providers'
 
 const credentialsFile = (): string => path.join(gurtRoot, 'credentials.json')
@@ -19,10 +20,31 @@ const credentialsFile = (): string => path.join(gurtRoot, 'credentials.json')
 async function read(): Promise<CredentialsFile> {
   try {
     const raw = JSON.parse(await fs.readFile(credentialsFile(), 'utf8'))
-    return { credentials: Array.isArray(raw?.credentials) ? raw.credentials : [] }
+    const credentials = Array.isArray(raw?.credentials) ? raw.credentials : []
+    // Every read feeds the log redactor, so a value that entered the store
+    // through any path (save, migration, hand-edited file) is redacted from
+    // then on — no call site has to remember that a string was a secret.
+    feedRedactor(credentials)
+    return { credentials }
   } catch {
     return { credentials: [] }
   }
+}
+
+/** Hand every stored secret to the log redactor (value-based redaction). */
+function feedRedactor(credentials: CredentialEntry[]): void {
+  const values: string[] = []
+  for (const entry of credentials) {
+    const secret = (entry as { data?: { secret?: unknown } }).data?.secret
+    if (typeof secret === 'string' && secret) values.push(secret)
+  }
+  addSecrets(values)
+}
+
+/** Load the credential store once at startup so redaction is armed before the
+ *  first session (and thus the first token-bearing subprocess) exists. */
+export async function loadSecrets(): Promise<void> {
+  await read()
 }
 
 async function write(data: CredentialsFile): Promise<void> {
@@ -103,6 +125,8 @@ export async function setCredentials(data: CredentialsFile): Promise<void> {
   }
   await verifyTokens(data.credentials, before.credentials)
   await write(data)
+  // Refresh the redaction set with whatever was just stored.
+  feedRedactor(data.credentials)
 }
 
 /** Convenience for the broker/host paths: the raw entry list. */
@@ -170,5 +194,6 @@ export async function migrateAgentSecrets(): Promise<void> {
   }
 
   await write(store)
+  feedRedactor(store.credentials)
   await setAgents(nextAgents)
 }
