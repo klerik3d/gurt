@@ -54,7 +54,7 @@ function Header({ snapshot }: { snapshot: SessionSnapshot }) {
       <span className="tag">{info.state}</span>
       <span className="spacer" />
       <span className="chat-pill">
-        <EnvRepoMarks env={info.env} repo={info.repo} />
+        <EnvRepoMarks env={info.env} repo={info.repo} task={info.task} />
         {/* Own element, not a bare string: adjacent text nodes collapse into one
             flex item and lose the row's gap. */}
         {info.agent && (
