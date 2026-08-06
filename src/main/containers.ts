@@ -129,6 +129,11 @@ export class ContainerManager {
    * `vscode://` URI handler (`shell.openExternal`), which reuses whatever
    * window is already focused instead of opening one per session. Throws if
    * the container isn't up — the header button gates on `running`.
+   *
+   * `--disable-workspace-trust`: the folder URI is keyed on the container id,
+   * which changes on every recreate, so VS Code would otherwise treat each
+   * attach as a brand-new untrusted workspace and prompt every time. The
+   * container is already gurt's own sandbox, so there's nothing to gate here.
    */
   openVscode(sessionId: string): Promise<void> {
     const c = this.container(sessionId)
@@ -137,10 +142,11 @@ export class ContainerManager {
     const hex = Buffer.from(c.id).toString('hex')
     const folderUri = `vscode-remote://attached-container+${hex}${c.remoteWorkspaceFolder}`
     return new Promise((resolve, reject) => {
-      const child = spawn('code', ['--new-window', '--folder-uri', folderUri], {
-        stdio: 'ignore',
-        detached: true
-      })
+      const child = spawn(
+        'code',
+        ['--new-window', '--disable-workspace-trust', '--folder-uri', folderUri],
+        { stdio: 'ignore', detached: true }
+      )
       child.on('error', () =>
         reject(new Error('could not launch "code" — install the VS Code shell command'))
       )
