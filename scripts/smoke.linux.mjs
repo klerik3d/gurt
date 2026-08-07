@@ -8,14 +8,18 @@ const APP_DIR = path.resolve(fileURLToPath(new URL('..', import.meta.url)))
 const SHOT_DIR = path.join(process.env.SCRATCH ?? '/tmp/gurt-smoke', 'shots')
 const GURT_ROOT = path.join(process.env.SCRATCH ?? '/tmp/gurt-smoke', 'gurt-root')
 fs.mkdirSync(SHOT_DIR, { recursive: true })
+fs.rmSync(GURT_ROOT, { recursive: true, force: true })
 fs.mkdirSync(GURT_ROOT, { recursive: true })
 
 const require = createRequire(path.join(APP_DIR, 'package.json'))
 const { _electron } = require('playwright-core')
 const electronPath = require('electron') // path string to the electron binary on linux
 
-const env = { ...process.env, GURT_ROOT, DISPLAY: process.env.DISPLAY ?? ':99' }
+const env = { ...process.env, GURT_ROOT, GURT_FORCE_PLAINTEXT: '1', DISPLAY: process.env.DISPLAY ?? ':99' }
 delete env.ELECTRON_RUN_AS_NODE
+// Inherited from a dev-server shell it would make the app load that server's
+// (different) renderer instead of out/renderer — smoke the built one.
+delete env.ELECTRON_RENDERER_URL
 
 const app = await _electron.launch({
   executablePath: electronPath,
@@ -34,46 +38,46 @@ await page.waitForSelector('.sidebar', { timeout: 15000 })
 await page.screenshot({ path: path.join(SHOT_DIR, '01-initial.png') })
 console.log('initial render OK')
 
-// The agent registry now starts empty (no seeded kinds). Confirm the modal
-// opens with no rows.
-await page.click('button[title="agents"]')
-await page.waitForSelector('.modal', { timeout: 5000 })
-await page.waitForSelector('.agent-block', { state: 'attached', timeout: 500 }).catch(() => {})
-assert.equal(await page.locator('.agent-block').count(), 0, 'agent registry starts empty')
-await page.screenshot({ path: path.join(SHOT_DIR, '02-agents-empty.png') })
-await page.click('.modal .modal-header .icon-btn') // close
-await page.waitForSelector('.modal', { state: 'detached', timeout: 5000 })
+// The client registry (Settings → Clients) starts empty — no seeded kinds.
+await page.click('.activitybar .ab-item[title="Settings"]')
+await page.click('.set-nav-item:has-text("Clients")')
+await page.waitForSelector('.tp-dashed:has-text("no clients yet")', { timeout: 5000 })
+assert.equal(await page.locator('.set-row').count(), 0, 'client registry starts empty')
+await page.screenshot({ path: path.join(SHOT_DIR, '02-clients-empty.png') })
 
-// The agent secret lives in the credential store now. Add an `agent-token`
-// credential (🔑) it will link to.
-await page.click('button[title="credentials"]')
-await page.waitForSelector('.modal', { timeout: 5000 })
-await page.click('text=+ add credential')
-const credRow = page.locator('.agent-block').last()
-await credRow.locator('.agent-label').fill('claude token')
-await credRow.locator('select').selectOption('agent-token')
-await credRow.locator('input[type="password"]').fill('tok-work')
-await page.click('button:has-text("Save")')
-await page.waitForSelector('.modal', { state: 'detached', timeout: 5000 })
+// The agent secret lives in the credential store. Add an `agent-token`
+// credential through the real UI (Settings → Credentials) it will link to.
+await page.click('.set-nav-item:has-text("Credentials")')
+await page.click('button:has-text("+ New credential")')
+await page.waitForSelector('.set-card')
+await page.click('.cred-type .pick-row')
+await page.click('.pick-menu .menu-item:has-text("agent token")')
+await page.fill('.set-card input[placeholder="GITHUB_TOKEN"]', 'claude token')
+await page.fill('.set-card input[type="password"]', 'tok-work')
+await page.click('.set-card button:has-text("Save")')
+await page.waitForSelector('.set-row:has-text("claude token")', { timeout: 5000 })
+// Secrets are masked over IPC (T3): 8 chars → bare mask, no tail.
+const preview = (await page.textContent('.set-row:has-text("claude token") .cred-preview'))?.trim()
+assert.equal(preview, '••••••', 'secret comes back masked over IPC')
 console.log('agent-token credential saved OK')
 
-// Add an agent and link it to that credential (mapping, not storing the secret).
-await page.click('button[title="agents"]')
-await page.waitForSelector('.modal', { timeout: 5000 })
-await page.click('button.link:has-text("add agent")')
-const row = page.locator('.agent-block').last()
-await row.locator('.agent-label').fill('claude code work')
-await row.locator('.agent-fields select').selectOption({ label: 'claude token' })
-await page.screenshot({ path: path.join(SHOT_DIR, '03-agents-added.png') })
-await page.click('button:has-text("Save")')
-await page.waitForSelector('.modal', { state: 'detached', timeout: 5000 })
+// Add a client and link it to that credential (mapping, not storing the secret).
+await page.click('.set-nav-item:has-text("Clients")')
+await page.click('button:has-text("+ New client")')
+await page.waitForSelector('.set-card')
+await page.fill('.set-card input[placeholder="claude · personal"]', 'claude code work')
+await page.click('.set-card button:has-text("none — adapter")')
+await page.click('.pick-menu .menu-item:has-text("claude token")')
+await page.screenshot({ path: path.join(SHOT_DIR, '03-client-added.png') })
+await page.click('.set-card button:has-text("Save")')
+await page.waitForSelector('.set-row:has-text("claude code work")', { timeout: 5000 })
 
 // Reopen to confirm it round-tripped through agents.json.
-await page.click('button[title="agents"]')
-await page.waitForSelector('.agent-block', { timeout: 5000 })
-const labels = await page.$$eval('.agent-block .agent-label', (els) => els.map((e) => e.value))
-console.log('labels after save+reopen:', JSON.stringify(labels))
-await page.screenshot({ path: path.join(SHOT_DIR, '04-agents-persisted.png') })
+await page.click('.set-row:has-text("claude code work")')
+await page.waitForSelector('.set-card input[placeholder="claude · personal"]')
+const label = await page.inputValue('.set-card input[placeholder="claude · personal"]')
+console.log('label after save+reopen:', JSON.stringify(label))
+await page.screenshot({ path: path.join(SHOT_DIR, '04-client-persisted.png') })
 
 const agents = JSON.parse(fs.readFileSync(path.join(GURT_ROOT, 'agents.json'), 'utf8'))
 const creds = JSON.parse(fs.readFileSync(path.join(GURT_ROOT, 'credentials.json'), 'utf8'))
@@ -81,12 +85,12 @@ console.log('--- agents.json on disk ---')
 console.log(JSON.stringify(agents, null, 2))
 
 const inst = Object.values(agents).find((a) => a.label === 'claude code work')
-assert.ok(inst, 'the linked agent persisted')
-assert.ok(!('secret' in inst), 'agent carries no inline secret')
+assert.ok(inst, 'the linked client persisted')
+assert.ok(!('secret' in inst), 'client carries no inline secret')
 const token = creds.credentials.find((c) => c.kind === 'agent-token')
 assert.ok(token && token.data.secret === 'tok-work', 'the secret lives in the credential store')
-assert.equal(inst.credentialId, token.id, 'agent maps to the credential by id')
-console.log('agent maps to credential OK:', inst.credentialId)
+assert.equal(inst.credentialId, token.id, 'client maps to the credential by id')
+console.log('client maps to credential OK:', inst.credentialId)
 
 await app.close()
 console.log('DONE')

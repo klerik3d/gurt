@@ -22,6 +22,9 @@ export interface CredentialEntry {
 
 export interface CredentialsFile {
   credentials: CredentialEntry[]
+  /** True when secrets are stored unencrypted — no OS keystore available (or
+   *  GURT_FORCE_PLAINTEXT=1). Main-computed, renderer-facing warning only. */
+  plaintext?: boolean
 }
 
 /** Default HTTP-basic username for token credentials (GitHub App / PAT convention). */
