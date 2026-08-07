@@ -32,6 +32,7 @@ import {
   type ConfigPair
 } from './config'
 import { ensureHostCredHelper } from './shims'
+import { ensureHostCredBroker } from './broker'
 
 export type HostGitMode = 'managed' | 'ambient' | 'blocked'
 
@@ -83,13 +84,14 @@ export async function hostGitAccess(
     return { mode: 'ambient', env: baseEnv(), gitArgs: [], host, resolution: res }
   if (res.entry && res.kind === 'git-token') {
     // Point credential.helper at the host helper, run through Electron-in-node
-    // (no system node is assumed). The resolved entry id + host ride in the env;
-    // the secret is read from credentials.json by the helper (and only for
-    // requests to that host), never placed in env. Ambient ssh is blocked —
+    // (no system node is assumed). The resolved entry id + host ride in the
+    // env, forwarded as headers to the host-local broker; the helper itself
+    // never touches credentials.json or the keystore. Ambient ssh is blocked —
     // the rewrite rules carry the repo host to https; any other host must
     // resolve its own credential, not fall through to host keys.
     const helper = await ensureHostCredHelper()
     const helperCmd = `!ELECTRON_RUN_AS_NODE=1 "${process.execPath}" "${helper}"`
+    const broker = await ensureHostCredBroker()
     // Identity is guaranteed by resolution (§3.2: unverified entries error out
     // above) — commits are authored by the token owner, never ambient identity.
     const pairs: ConfigPair[] = [
@@ -104,6 +106,7 @@ export async function hostGitAccess(
         ...baseEnv(),
         GURT_CRED_ID: res.entry.id,
         GURT_CRED_HOST: host,
+        GURT_CRED_BROKER: broker.url,
         GIT_SSH_COMMAND: BLOCKED_SSH_COMMAND
       },
       gitArgs: gitConfigArgs(pairs),

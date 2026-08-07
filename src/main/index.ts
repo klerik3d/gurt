@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, nativeImage, shell } from 'electron'
 import path from 'node:path'
 import { registerIpc } from './ipc'
-import { loadSecrets, migrateAgentSecrets } from './credentials'
+import { loadSecrets, migrateAgentSecrets, sealPlaintextSecrets } from './credentials'
 import { createLogger, flushSync, logDir, logLevel } from './log'
 import { dockerVersion } from './provision'
 import { gurtRoot } from './store'
@@ -82,6 +82,10 @@ app.whenReady().then(async () => {
   // before the IPC surface (and thus getAgents) serves the renderer.
   await loadSecrets().catch((e) => log.error('internal.fail', { site: 'credential-load', err: e }))
   await migrateAgentSecrets().catch((e) => log.error('internal.fail', { site: 'agent-secret-migrate', err: e }))
+  // Reseal any plaintext secret-flagged field left over from before this
+  // feature existed (or from a GURT_FORCE_PLAINTEXT run) now that the
+  // keystore may be available. Idempotent, so safe to run every start.
+  await sealPlaintextSecrets().catch((e) => log.error('internal.fail', { site: 'credential-seal', err: e }))
   registerIpc()
   createWindow()
   app.on('activate', () => {

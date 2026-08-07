@@ -31,7 +31,7 @@ fs.mkdirSync(REPO_ROOT, { recursive: true })
 const require = createRequire(path.join(APP_DIR, 'package.json'))
 const { _electron } = require('playwright-core')
 
-const env = { ...process.env, GURT_ROOT }
+const env = { ...process.env, GURT_ROOT, GURT_FORCE_PLAINTEXT: '1' }
 delete env.ELECTRON_RUN_AS_NODE
 
 const EXE = path.join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron')
