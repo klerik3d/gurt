@@ -32,9 +32,9 @@ interface Running {
 /** One broker per session, keyed by session id. */
 const running = new Map<string, Running>()
 
-function listen(server: Server): Promise<number> {
+function listen(server: Server, host: string): Promise<number> {
   return new Promise((resolve, reject) => {
-    server.listen(0, '0.0.0.0', () => resolve((server.address() as AddressInfo).port))
+    server.listen(0, host, () => resolve((server.address() as AddressInfo).port))
     server.on('error', reject)
   })
 }
@@ -134,7 +134,7 @@ export async function resolveGitBroker(
   if (existing) return existing.descriptor
   const token = randomUUID()
   const http = buildServer(repo, token)
-  const port = await listen(http)
+  const port = await listen(http, '0.0.0.0')
   // The URL carries the broker's bearer token in its path — the port is the
   // only part of it that may be logged.
   log.info('gitbroker.start', { s: sessionId, port })
@@ -150,4 +150,81 @@ export function stopGitBroker(sessionId: string): void {
   rec.http.close()
   log.info('gitbroker.stop', { s: sessionId, port: rec.port })
   running.delete(sessionId)
+}
+
+// --- host credential broker (§8) --------------------------------------------
+//
+// One process-lifetime singleton, bound to 127.0.0.1 only (never
+// 0.0.0.0 — this one is not container-reachable, it answers the host git
+// credential helper, which now knows nothing about credentials.json or the
+// keystore). The resolved credential id + host ride in headers, set by
+// env.ts from a save-time resolution the helper cannot forge its way around
+// (it never sees the id for any host but the one it was handed).
+
+/** The in-flight (or completed) startup, not the result — two concurrent first
+ *  callers must share one server, so the cache is set before the first await. */
+let hostBroker: Promise<{ url: string }> | null = null
+
+/** POST /host/<token>/credential — answer the host helper's git credential
+ *  fill for https/http only, scoped to the header-carried entry id + host. */
+async function handleHostCredential(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const fields = parseFields(await readBody(req))
+  if (fields.protocol !== 'https' && fields.protocol !== 'http') {
+    res.writeHead(204).end()
+    return
+  }
+  const credId = req.headers['x-gurt-cred-id']
+  const credHost = req.headers['x-gurt-cred-host']
+  if (typeof credId !== 'string' || typeof credHost !== 'string' || fields.host !== credHost) {
+    res.writeHead(204).end()
+    return
+  }
+  const entry = (await listCredentials()).find((c) => c.id === credId)
+  if (!entry || entry.kind !== 'git-token' || !entry.data.secret) {
+    res.writeHead(204).end()
+    return
+  }
+  const user = entry.data.username || DEFAULT_TOKEN_USER
+  const payload = `username=${user}\npassword=${entry.data.secret}\n`
+  res.writeHead(200, { 'content-type': 'text/plain' }).end(payload)
+}
+
+function buildHostServer(token: string): Server {
+  const prefix = `/host/${token}`
+  return createServer(async (req, res) => {
+    try {
+      const url = req.url ?? ''
+      if (!url.startsWith(prefix)) {
+        res.writeHead(404).end()
+        return
+      }
+      const sub = url.slice(prefix.length)
+      if (sub === '/credential' && req.method === 'POST') return await handleHostCredential(req, res)
+      res.writeHead(404).end()
+    } catch (e) {
+      // Port only — never the request itself (headers/fields/payload carry a
+      // credential id and, on success, a secret).
+      log.error('internal.fail', { site: 'hostcredbroker-request', err: e })
+      if (!res.headersSent) res.writeHead(500).end()
+    }
+  })
+}
+
+/** Ensure the host-local credential broker is running and return its URL.
+ *  Lazy: started on first use, lives until the app exits (no per-session
+ *  teardown — it serves every session's host git access). */
+export function ensureHostCredBroker(): Promise<{ url: string }> {
+  if (!hostBroker) {
+    hostBroker = (async () => {
+      const token = randomUUID()
+      const http = buildHostServer(token)
+      const port = await listen(http, '127.0.0.1')
+      log.info('hostcredbroker.start', { port })
+      return { url: `http://127.0.0.1:${port}/host/${token}` }
+    })().catch((e) => {
+      hostBroker = null // a failed start must not poison every later call
+      throw e
+    })
+  }
+  return hostBroker
 }

@@ -122,39 +122,46 @@ export function shimInstallScript(names: string[]): string {
 // --- host credential helper -------------------------------------------------
 
 /**
- * Host git credential helper (§8). Returns the pre-resolved credential's token
- * for https; the entry id arrives in GURT_CRED_ID and the secret is read from
- * credentials.json — never through env or argv. Answers only for the host the
- * credential was resolved for (GURT_CRED_HOST): a fetch that wanders to another
- * host (submodule, redirect) must not receive this token, and must not fall
- * through to ambient auth either. Runs under Electron-in-node, so it is a
+ * Host git credential helper (§8): a pure HTTP forwarder to the host-local
+ * credential broker (git/broker.ts's ensureHostCredBroker), the same shape as
+ * GURT_GIT_CREDENTIAL above. The resolved entry id + host ride in env
+ * (GURT_CRED_ID / GURT_CRED_HOST) as headers on the request; the broker
+ * resolves the secret from credentials.json (decrypting it if sealed) and
+ * answers only for the host the credential was resolved for — a fetch that
+ * wanders to another host (submodule, redirect) gets nothing, and does not
+ * fall through to ambient auth either. This helper has no filesystem or
+ * keystore access of its own. Runs under Electron-in-node, so it is a
  * CommonJS `.cjs` regardless of any ambient package.json.
  */
 export const HOST_CRED_HELPER = `'use strict'
-const fs = require('fs')
-const path = require('path')
-const os = require('os')
+const http = require('http')
 if (process.argv[2] !== 'get') process.exit(0)
 let input = ''
 process.stdin.on('data', (d) => (input += d))
 process.stdin.on('end', () => {
+  const broker = process.env.GURT_CRED_BROKER
   const id = process.env.GURT_CRED_ID
   const credHost = process.env.GURT_CRED_HOST
-  if (!id || !credHost) process.exit(0)
-  const fields = {}
-  for (const line of input.split('\\n')) {
-    const i = line.indexOf('=')
-    if (i > 0) fields[line.slice(0, i).trim()] = line.slice(i + 1).trim()
-  }
-  if (fields.host !== credHost) process.exit(0)
-  const root = process.env.GURT_ROOT || path.join(os.homedir(), '.gurt')
-  let file
-  try { file = JSON.parse(fs.readFileSync(path.join(root, 'credentials.json'), 'utf8')) } catch (e) { process.exit(0) }
-  const entry = (file.credentials || []).find((c) => c.id === id)
-  if (!entry || entry.kind !== 'git-token' || !entry.data || !entry.data.secret) process.exit(0)
-  const user = entry.data.username || 'x-access-token'
-  process.stdout.write('username=' + user + '\\n' + 'password=' + entry.data.secret + '\\n')
-  process.exit(0)
+  if (!broker || !id || !credHost) process.exit(0)
+  let url
+  try { url = new URL(broker.replace(/\\/$/, '') + '/credential') } catch (e) { process.exit(0) }
+  const body = Buffer.from(input)
+  const req = http.request(url, {
+    method: 'POST',
+    headers: {
+      'content-type': 'text/plain',
+      'content-length': body.length,
+      'x-gurt-cred-id': id,
+      'x-gurt-cred-host': credHost
+    }
+  }, (res) => {
+    if (res.statusCode !== 200) { res.resume(); process.exit(0) }
+    let out = ''
+    res.on('data', (d) => (out += d))
+    res.on('end', () => { process.stdout.write(out); process.exit(0) })
+  })
+  req.on('error', () => process.exit(0))
+  req.end(body)
 })
 `
 

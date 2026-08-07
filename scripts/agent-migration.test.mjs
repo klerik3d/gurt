@@ -17,6 +17,9 @@ const S = (rel) => JSON.stringify(path.join(ROOT, rel))
 // gurtRoot is read from GURT_ROOT at module load — set it before the import.
 const GURT_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'gurt-migration-'))
 process.env.GURT_ROOT = GURT_ROOT
+// This harness runs outside real Electron (no safeStorage/keystore) — force
+// plaintext so migrateAgentSecrets()'s write() doesn't attempt to seal.
+process.env.GURT_FORCE_PLAINTEXT = '1'
 
 const entry = `
 export { migrateAgentSecrets, getCredentials } from ${S('src/main/credentials.ts')}
