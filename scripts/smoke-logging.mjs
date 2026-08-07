@@ -35,7 +35,7 @@ const require = createRequire(path.join(APP_DIR, 'package.json'))
 const { _electron } = require('playwright-core')
 const electronPath = require('electron')
 
-const env = { ...process.env, GURT_ROOT, DISPLAY: process.env.DISPLAY ?? ':99' }
+const env = { ...process.env, GURT_ROOT, GURT_FORCE_PLAINTEXT: '1', DISPLAY: process.env.DISPLAY ?? ':99' }
 delete env.ELECTRON_RUN_AS_NODE
 
 const app = await _electron.launch({

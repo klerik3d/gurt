@@ -1230,12 +1230,17 @@ function CredentialPick({
 const hostsToText = (hosts: string[]) => hosts.join(', ')
 const textToHosts = (text: string) => text.split(',').map((h) => h.trim()).filter(Boolean)
 
-/** Masked preview of an entry's secret-ish field for the collapsed row. */
+/** Preview of an entry's secret-ish field for the collapsed row. `data.secret`
+ *  is already masked server-side (getCredentials() never serves plaintext) —
+ *  used as-is. `keyPath` is not secret-flagged and still masked here, purely
+ *  for display brevity. */
 function maskedPreview(c: CredentialEntry): string {
-  const secret = c.data.secret ?? c.data.keyPath ?? ''
-  if (!secret) return c.kind === 'git-host' ? 'ambient host auth' : '—'
-  const tail = secret.length > 8 ? secret.slice(-4) : ''
-  return `••••••${tail}`
+  if (c.data.secret) return c.data.secret
+  if (c.data.keyPath) {
+    const tail = c.data.keyPath.length > 8 ? c.data.keyPath.slice(-4) : ''
+    return `••••••${tail}`
+  }
+  return c.kind === 'git-host' ? 'ambient host auth' : '—'
 }
 
 const KIND_TAG: Record<CredentialKind, string> = {
@@ -1251,21 +1256,32 @@ function CredentialsSection() {
   const [open, setOpen] = useState<string | null>(null)
   const [draft, setDraft] = useState<CredentialEntry | null>(null)
   const [draftHosts, setDraftHosts] = useState('')
-  const [reveal, setReveal] = useState<Set<string>>(new Set())
+  const [plaintext, setPlaintext] = useState(false)
   const [error, setError] = useState('')
+  // Entries created this session: their secret must be typed in before the
+  // first save. For anything already stored, an empty secret field means
+  // "keep the stored one" — so only fresh entries get the required check.
+  const freshIds = useRef(new Set<string>())
 
   useEffect(() => {
     window.gurt
       .getCredentials()
-      .then((f) => setEntries(f.credentials))
+      .then((f) => {
+        setEntries(f.credentials)
+        setPlaintext(!!f.plaintext)
+      })
       .catch((e) => setError(String(e)))
   }, [])
 
   const expand = (c: CredentialEntry) => {
     setOpen(c.id)
-    setDraft({ ...c, data: { ...c.data } })
+    // Secret fields open empty — the served value is only ever a mask, and an
+    // empty field on save means "keep what's stored" (main's sentinel
+    // resolution). The mask shows up as the input's placeholder instead.
+    const data = { ...c.data }
+    for (const f of kindDef(c.kind).fields) if (f.secret) data[f.key] = ''
+    setDraft({ ...c, data })
     setDraftHosts(hostsToText(c.hosts))
-    setReveal(new Set())
     setError('')
   }
 
@@ -1284,6 +1300,7 @@ function CredentialsSection() {
       hosts: [],
       data: {}
     }
+    freshIds.current.add(e.id)
     setEntries((prev) => [...(prev ?? []), e])
     expand(e)
   }
@@ -1293,6 +1310,7 @@ function CredentialsSection() {
     // Re-read: save-time verification may stamp identity fields.
     const f = await window.gurt.getCredentials()
     setEntries(f.credentials)
+    setPlaintext(!!f.plaintext)
   }
 
   const save = async () => {
@@ -1300,6 +1318,15 @@ function CredentialsSection() {
     if (!draft.label.trim()) {
       setError('name must not be empty')
       return
+    }
+    if (freshIds.current.has(draft.id)) {
+      const missing = kindDef(draft.kind).fields.find(
+        (f) => f.secret && !(draft.data[f.key] ?? '').trim()
+      )
+      if (missing) {
+        setError(`${missing.label} must not be empty`)
+        return
+      }
     }
     const cleaned: CredentialEntry = {
       ...draft,
@@ -1312,6 +1339,7 @@ function CredentialsSection() {
     setError('')
     try {
       await persist(out)
+      freshIds.current.delete(draft.id)
       setOpen(null)
       setDraft(null)
     } catch (e) {
@@ -1356,7 +1384,7 @@ function CredentialsSection() {
         <div className="set-title-wrap">
           <span className="set-title">Credentials</span>
           <span className="set-count mono">
-            {count} stored · <Icon name="lock" size={10} /> stored locally, never sent anywhere
+            {count} stored · <Icon name="lock" size={10} /> stored locally, plaintext never sent
           </span>
         </div>
         <span className="spacer" />
@@ -1364,6 +1392,11 @@ function CredentialsSection() {
           + New credential
         </button>
       </div>
+      {plaintext && (
+        <div className="error">
+          secrets are stored unencrypted — no system keystore available
+        </div>
+      )}
       <div className="set-list">
         {(entries ?? []).map((c) => {
           if (open !== c.id) {
@@ -1389,7 +1422,7 @@ function CredentialsSection() {
                 <span className="cred-tag">
                   <span className="tag">{KIND_TAG[draft?.kind ?? c.kind]}</span>
                 </span>
-                <span className="cred-preview mono">{draft ? maskedPreview(draft) : ''}</span>
+                <span className="cred-preview mono">{maskedPreview(c)}</span>
                 <Icon name="chevron" size={12} className="faint" />
               </div>
               {draft && def && (
@@ -1420,32 +1453,15 @@ function CredentialsSection() {
                   {def.fields.map((f) => (
                     <label key={f.key} className="fld">
                       <span className="seclabel">{f.label.toUpperCase()}</span>
-                      <div className="input-eye">
-                        <input
-                          className="input mono"
-                          type={f.secret && !reveal.has(f.key) ? 'password' : 'text'}
-                          placeholder={f.placeholder}
-                          value={draft.data[f.key] ?? ''}
-                          onChange={(e) =>
-                            setDraft({ ...draft, data: { ...draft.data, [f.key]: e.target.value } })
-                          }
-                        />
-                        {f.secret && (
-                          <button
-                            className="icon-sq eye-btn"
-                            title={reveal.has(f.key) ? 'hide' : 'reveal'}
-                            onClick={() =>
-                              setReveal((prev) => {
-                                const next = new Set(prev)
-                                next.has(f.key) ? next.delete(f.key) : next.add(f.key)
-                                return next
-                              })
-                            }
-                          >
-                            <Icon name="eye" size={13} />
-                          </button>
-                        )}
-                      </div>
+                      <input
+                        className="input mono"
+                        type={f.secret ? 'password' : 'text'}
+                        placeholder={f.secret ? c.data[f.key] || f.placeholder : f.placeholder}
+                        value={draft.data[f.key] ?? ''}
+                        onChange={(e) =>
+                          setDraft({ ...draft, data: { ...draft.data, [f.key]: e.target.value } })
+                        }
+                      />
                     </label>
                   ))}
                   {draft.kind === 'git-token' && draft.data.gitEmail && (
