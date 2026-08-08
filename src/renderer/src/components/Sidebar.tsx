@@ -14,6 +14,7 @@ import { isActionable, isDelivered, sessionStatus } from '../../../shared/types'
 import type { CredentialEntry } from '../../../shared/credentials'
 import { hasManagedCredential, resolveForRepo } from '../../../shared/credentials'
 import type { McpDef } from '../../../shared/mcp'
+import { resolveModelValue } from '../../../shared/agentConfig'
 import type { Selection } from '../App'
 import { agentKind, agentName, useAgents } from '../useAgents'
 import { useOutsideClose } from '../hooks'
@@ -745,7 +746,12 @@ export function NewSessionModal({
   const setConfig = (opt: SessionConfigOption, value: string | boolean) =>
     setConfigValues((prev) => ({ ...prev, [opt.id]: value }))
   // Effective value of an option: the user's pick, else the agent's current.
-  const effective = (opt: SessionConfigOption) => configValues[opt.id] ?? opt.currentValue
+  // For the model select, resolve the "default" alias to the concrete model it
+  // maps to so the chip/highlight/note show the real model, never "Default".
+  const effective = (opt: SessionConfigOption): string | boolean => {
+    const v = configValues[opt.id] ?? opt.currentValue
+    return opt.category === 'model' ? resolveModelValue({ ...opt, currentValue: v }) : v
+  }
   // Model/effort/fast — rendered inside Harness config, alongside Mode/Git
   // access/MCP/Skills; they're all part of the same "how does this session run"
   // surface. Mode itself is expressed via the auto/manual toggle, not this list.
