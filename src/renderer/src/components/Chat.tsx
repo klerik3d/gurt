@@ -16,6 +16,7 @@ import type {
   SessionSnapshot
 } from '../../../shared/types'
 import { sessionStatus } from '../../../shared/types'
+import { resolveModelValue } from '../../../shared/agentConfig'
 import { agentKind, agentName, useAgents } from '../useAgents'
 import { alertDialog } from '../dialog'
 import { createLogger, logErr } from '../log'
@@ -1107,16 +1108,25 @@ function GearPopup({
             <div key={opt.id} className="gear-group">
               <div className="seclabel">{sectionTitle(opt)}</div>
               <div className="chip-row">
-                {(opt.options ?? []).map((o) => (
-                  <button
-                    key={o.value}
-                    className={`chip-btn ${o.value === opt.currentValue ? 'on' : ''}`}
-                    title={o.description ?? undefined}
-                    onClick={() => setConfig(opt, o.value)}
-                  >
-                    {o.name}
-                  </button>
-                ))}
+                {/* "default" isn't a real choice — it's the absence of one (and
+                    the adapter never resolves it to a concrete model). Hide the
+                    chip; `resolveModelValue` highlights the model it maps to. */}
+                {(opt.options ?? [])
+                  .filter((o) => o.value !== 'default')
+                  .map((o) => {
+                    const active =
+                      opt.category === 'model' ? resolveModelValue(opt) : opt.currentValue
+                    return (
+                      <button
+                        key={o.value}
+                        className={`chip-btn ${o.value === active ? 'on' : ''}`}
+                        title={o.description ?? undefined}
+                        onClick={() => setConfig(opt, o.value)}
+                      >
+                        {o.name}
+                      </button>
+                    )
+                  })}
               </div>
             </div>
           ) : (
