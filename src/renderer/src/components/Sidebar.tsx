@@ -14,7 +14,7 @@ import { isActionable, isDelivered, sessionStatus } from '../../../shared/types'
 import type { CredentialEntry } from '../../../shared/credentials'
 import { hasManagedCredential, resolveForRepo } from '../../../shared/credentials'
 import type { McpDef } from '../../../shared/mcp'
-import { resolveModelValue } from '../../../shared/agentConfig'
+import { agentOptionView } from '../../../shared/agentConfig'
 import type { Selection } from '../App'
 import { agentKind, agentName, useAgents } from '../useAgents'
 import { useOutsideClose } from '../hooks'
@@ -745,13 +745,13 @@ export function NewSessionModal({
 
   const setConfig = (opt: SessionConfigOption, value: string | boolean) =>
     setConfigValues((prev) => ({ ...prev, [opt.id]: value }))
-  // Effective value of an option: the user's pick, else the agent's current.
-  // For the model select, resolve the "default" alias to the concrete model it
-  // maps to so the chip/highlight/note show the real model, never "Default".
-  const effective = (opt: SessionConfigOption): string | boolean => {
-    const v = configValues[opt.id] ?? opt.currentValue
-    return opt.category === 'model' ? resolveModelValue({ ...opt, currentValue: v }) : v
-  }
+  // Kind-specific presentation quirks (which chips, what's active) — e.g.
+  // claude-code's "default" entry mapping to the concrete model it names.
+  const optionView = agentOptionView(agentKind(agents ?? {}, agent))
+  // Effective value of an option: the user's pick, else the agent's current,
+  // both through the view so the chip/highlight/note show the real model.
+  const effective = (opt: SessionConfigOption): string | boolean =>
+    optionView.activeValue({ ...opt, currentValue: configValues[opt.id] ?? opt.currentValue })
   // Model/effort/fast — rendered inside Harness config, alongside Mode/Git
   // access/MCP/Skills; they're all part of the same "how does this session run"
   // surface. Mode itself is expressed via the auto/manual toggle, not this list.
@@ -1046,16 +1046,16 @@ export function NewSessionModal({
             </button>
             {harnessOpen && (
               <div className="hc-body">
-                {/* model / effort / fast — from the agent's cached config surface. The
-                    agent's "default" entry (e.g. effort's unlabeled "Default") isn't a
-                    real choice, it's the absence of one — omitted here so "nothing
-                    selected" reads as itself instead of a mystery option. */}
+                {/* model / effort / fast — from the agent's cached config surface,
+                    presented through the kind's option view (e.g. claude-code
+                    omits its "default" entries: they're the absence of a choice,
+                    not one). */}
                 {cfgOptions.map((opt) =>
                   opt.type === 'select' ? (
                     <div key={opt.id} className="hc-block">
                       <span className="seclabel">{cfgLabel(opt)}</span>
                       <div className="chip-row">
-                        {(opt.options ?? []).filter((o) => o.value !== 'default').map((o) => (
+                        {optionView.selectOptions(opt).map((o) => (
                           <button
                             key={o.value}
                             type="button"
