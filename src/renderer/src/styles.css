@@ -1429,7 +1429,13 @@ textarea.input {
   cursor: pointer;
 }
 
-/* Composer popup menus. */
+/* Composer popup menus. Each pops up directly over the button that opened it:
+   the button sits in a position:relative anchor span and the menu is absolutely
+   positioned against that span, not the composer. */
+.pop-anchor {
+  position: relative;
+  display: inline-flex;
+}
 .cmp-menu {
   position: absolute;
   bottom: calc(100% + 8px);
