@@ -16,7 +16,7 @@ import type {
   SessionSnapshot
 } from '../../../shared/types'
 import { sessionStatus } from '../../../shared/types'
-import { resolveModelValue } from '../../../shared/agentConfig'
+import { agentOptionView } from '../../../shared/agentConfig'
 import { agentKind, agentName, useAgents } from '../useAgents'
 import { alertDialog } from '../dialog'
 import { createLogger, logErr } from '../log'
@@ -274,6 +274,7 @@ export function Chat({
       <Composer
         key={sessionId}
         sessionId={sessionId}
+        agentKind={agentKind(agents, info.agent)}
         busy={busy}
         flush={!hasPlan}
         modes={modes}
@@ -580,6 +581,7 @@ function fileToBase64(file: File): Promise<string> {
 
 function Composer({
   sessionId,
+  agentKind,
   busy,
   flush,
   modes,
@@ -588,6 +590,8 @@ function Composer({
   promptCaps
 }: {
   sessionId: string
+  /** The session agent's kind (`AgentDef.id`) — scopes agent-specific UI fixups. */
+  agentKind?: string
   busy: boolean
   /** No plan bar above — the composer sits flush against the feed. */
   flush: boolean
@@ -1078,6 +1082,7 @@ function Composer({
               {gearOpen && (
                 <GearPopup
                   sessionId={sessionId}
+                  agentKind={agentKind}
                   modes={modes}
                   configOptions={configOptions}
                   commands={commands}
@@ -1104,12 +1109,15 @@ function Composer({
 /** ⚙ popup (#1b): model / effort / mode chip groups + quick commands. */
 function GearPopup({
   sessionId,
+  agentKind,
   modes,
   configOptions,
   commands,
   onPickCommand
 }: {
   sessionId: string
+  /** The session agent's kind — passed to the kind-scoped model resolver. */
+  agentKind?: string
   modes?: SessionModes
   configOptions: SessionConfigOption[]
   commands: CommandInfo[]
@@ -1123,6 +1131,9 @@ function GearPopup({
   // The agent may surface Mode as a config option too; the dedicated mode group
   // already renders it, so drop the duplicate control.
   const cfg = configOptions.filter((o) => o.category !== 'mode')
+  // Kind-specific presentation quirks (which chips, what's active) live behind
+  // the view — this component renders whatever it hands back.
+  const view = agentOptionView(agentKind)
   const sectionTitle = (o: SessionConfigOption) =>
     o.category === 'model' ? 'MODEL' : o.category === 'thought_level' ? 'EFFORT' : o.name.toUpperCase()
 
@@ -1134,25 +1145,16 @@ function GearPopup({
             <div key={opt.id} className="gear-group">
               <div className="seclabel">{sectionTitle(opt)}</div>
               <div className="chip-row">
-                {/* "default" isn't a real choice — it's the absence of one (and
-                    the adapter never resolves it to a concrete model). Hide the
-                    chip; `resolveModelValue` highlights the model it maps to. */}
-                {(opt.options ?? [])
-                  .filter((o) => o.value !== 'default')
-                  .map((o) => {
-                    const active =
-                      opt.category === 'model' ? resolveModelValue(opt) : opt.currentValue
-                    return (
-                      <button
-                        key={o.value}
-                        className={`chip-btn ${o.value === active ? 'on' : ''}`}
-                        title={o.description ?? undefined}
-                        onClick={() => setConfig(opt, o.value)}
-                      >
-                        {o.name}
-                      </button>
-                    )
-                  })}
+                {view.selectOptions(opt).map((o) => (
+                  <button
+                    key={o.value}
+                    className={`chip-btn ${o.value === view.activeValue(opt) ? 'on' : ''}`}
+                    title={o.description ?? undefined}
+                    onClick={() => setConfig(opt, o.value)}
+                  >
+                    {o.name}
+                  </button>
+                ))}
               </div>
             </div>
           ) : (

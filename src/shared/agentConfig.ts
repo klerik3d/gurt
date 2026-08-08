@@ -5,38 +5,81 @@
 // hardcoded guess here would drift from (and could misrepresent) what the
 // agent actually offers. The New Session modal simply shows no config picker
 // until the agent has run at least once and populated the cache.
-import type { AgentConfig, SessionConfigOption } from './types'
+import type { AgentConfig, ConfigSelectOption, SessionConfigOption } from './types'
 
 export function defaultAgentConfig(_kind: string): AgentConfig {
   return { configOptions: [], commands: [] }
 }
 
 /**
- * The concrete model a `model` option is really on, for highlighting the picker.
- *
- * The claude-code ACP adapter reports the model option's `currentValue` as the
- * literal alias `"default"` and never rewrites it to the model that actually
- * ran (`currentModelId` stays `"default"` across a turn) — the sole hint is the
- * `default` entry's own description, e.g. "Use the default model (currently
- * Opus 5 (1M context)) · …". We hide the `default` chip (it's the absence of a
- * choice, not one), so without this the picker would highlight nothing even
- * while a concrete model is running. Map the alias back to a concrete option by
- * the family word after "currently". Best-effort and display-only: returns the
- * value unchanged when nothing resolves, so it can never break selection.
+ * How an agent kind's config options are *presented* — which select entries
+ * become chips and which value reads as active. Pure display: nothing here may
+ * change what is sent back to the agent. Kinds with reporting quirks register
+ * an entry in `VIEWS`; everyone else gets the neutral pass-through, so callers
+ * dispatch by kind without knowing any kind exists.
  */
-export function resolveModelValue(opt: SessionConfigOption): string | boolean {
+export interface AgentOptionView {
+  /** The entries to render as chips for a select option. */
+  selectOptions(opt: SessionConfigOption): ConfigSelectOption[]
+  /** The value to highlight as active. */
+  activeValue(opt: SessionConfigOption): string | boolean
+}
+
+const neutral: AgentOptionView = {
+  selectOptions: (opt) => opt.options ?? [],
+  activeValue: (opt) => opt.currentValue
+}
+
+/**
+ * claude-code's adapter reports a literal `"default"` select entry — the
+ * absence of a choice, not one — and for the model option never rewrites
+ * `currentValue` to the model that actually ran (`currentModelId` stays
+ * `"default"` across a turn). The default entry's own description is the sole
+ * hint: "Use the default model (currently Opus 5 (1M context)) · …". So: hide
+ * the `default` chip, and highlight the concrete model the description names.
+ */
+const claudeCode: AgentOptionView = {
+  selectOptions: (opt) => (opt.options ?? []).filter((o) => o.value !== 'default'),
+  activeValue: (opt) => (opt.category === 'model' ? resolveClaudeModel(opt) : opt.currentValue)
+}
+
+const VIEWS: Record<string, AgentOptionView> = { 'claude-code': claudeCode }
+
+/** The option view for an agent kind — neutral pass-through when none registered. */
+export const agentOptionView = (kind?: string): AgentOptionView =>
+  (kind && VIEWS[kind]) || neutral
+
+/**
+ * Map claude-code's `"default"` model alias to the concrete option its
+ * description names. Matching is on family *and* version ("Opus 5", not just
+ * "Opus"): an account can offer several models of one family (e.g. Opus 5
+ * alongside Opus 4.8), and a family-only match would highlight whichever
+ * happens to be listed first. Best-effort and display-only: returns the value
+ * unchanged when nothing resolves unambiguously, so it can never break
+ * selection.
+ */
+function resolveClaudeModel(opt: SessionConfigOption): string | boolean {
   const cur = opt.currentValue
   if (typeof cur !== 'string') return cur
   const opts = opt.options ?? []
   // An explicit concrete pick already lines up with a visible chip.
   if (opts.some((o) => o.value === cur && o.value !== 'default')) return cur
-  // Resolve the "default" alias via its description's "(currently <Family> …)".
-  const family = opts.find((o) => o.value === cur)?.description?.match(/currently\s+([A-Za-z]+)/i)?.[1]
-  if (family) {
-    const hit = opts.find(
-      (o) => o.value !== 'default' && o.name.toLowerCase().startsWith(family.toLowerCase())
-    )
-    if (hit) return hit.value
-  }
-  return cur
+  // "…(currently Opus 5 (1M context))…" → family "opus", version "5".
+  const target = opts
+    .find((o) => o.value === cur)
+    ?.description?.match(/currently\s+([A-Za-z]+)\s*([\d.]+)?/i)
+  if (!target) return cur
+  const [, family, version] = target
+  // A candidate must agree on family and, when the default names one, version —
+  // read from the candidate's own name/description ("Opus (1M context)" carries
+  // its version only in "Opus 5 with 1M context").
+  const candidates = opts.filter((o) => {
+    if (o.value === 'default') return false
+    const text = `${o.name} ${o.description ?? ''}`.toLowerCase()
+    if (!text.includes(family.toLowerCase())) return false
+    if (!version) return true
+    return new RegExp(`${family}\\s*${version.replace('.', '\\.')}\\b`, 'i').test(text)
+  })
+  // Ambiguity is worse than no highlight — it would assert the wrong model.
+  return candidates.length === 1 ? candidates[0].value : cur
 }
