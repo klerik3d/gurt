@@ -613,7 +613,12 @@ function Composer({
   const [micError, setMicError] = useState<string | null>(null)
   const taRef = useRef<HTMLTextAreaElement>(null)
   const cmdRef = useRef<HTMLInputElement>(null)
-  const rootRef = useRef<HTMLDivElement>(null)
+  /** Anchor spans wrapping each popup trigger button — the popup renders inside
+   *  its anchor so it pops up over that button, and outside-click detection
+   *  checks containment against the anchor (popup + button) alone. */
+  const addAnchorRef = useRef<HTMLSpanElement>(null)
+  const slashAnchorRef = useRef<HTMLSpanElement>(null)
+  const gearAnchorRef = useRef<HTMLSpanElement>(null)
   const imgRef = useRef<HTMLInputElement>(null)
   const recogRef = useRef<{ stop: () => void } | null>(null)
   const lastActivityPingRef = useRef(0)
@@ -635,13 +640,17 @@ function Composer({
   // Re-fit whenever the value changes (send clears it, pickCommand extends it).
   useEffect(autoGrow, [text])
 
-  // Close every popup on an outside click or Esc. The textarea/slash input
-  // handle their own Esc; this document listener covers the rest (e.g. focus
-  // left on the button that opened the menu).
+  // Close the open popup on any click outside it (mousedown on the trigger
+  // button lands inside the anchor, so it falls through to the button's own
+  // toggle instead of double-closing) and on Esc. The textarea/slash input
+  // also handle their own Esc; this document listener covers the rest (e.g.
+  // focus left on the button that opened the menu).
   useEffect(() => {
     if (!slashOpen && !addOpen && !gearOpen) return
+    const anchorRef = slashOpen ? slashAnchorRef : addOpen ? addAnchorRef : gearAnchorRef
     const onDown = (e: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) closeMenus()
+      const anchor = anchorRef.current
+      if (anchor && !anchor.contains(e.target as Node)) closeMenus()
     }
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') closeMenus()
@@ -657,12 +666,24 @@ function Composer({
   // Stop any live dictation when the composer unmounts (session switch).
   useEffect(() => () => recogRef.current?.stop(), [])
 
+  // Name matches outrank description matches (and prefix outranks substring),
+  // so "clea" surfaces /clean before commands that only mention it in their
+  // description. Ties keep the agent's original order — sort() is stable.
   const filteredCmds = (() => {
     const q = cmdQuery.trim().toLowerCase().replace(/^\//, '')
     if (!q) return commands
-    return commands.filter(
-      (c) => c.name.toLowerCase().includes(q) || (c.description ?? '').toLowerCase().includes(q)
-    )
+    const rank = (c: CommandInfo): number => {
+      const name = c.name.toLowerCase()
+      if (name.startsWith(q)) return 0
+      if (name.includes(q)) return 1
+      if ((c.description ?? '').toLowerCase().includes(q)) return 2
+      return 3
+    }
+    return commands
+      .map((c) => ({ c, r: rank(c) }))
+      .filter(({ r }) => r < 3)
+      .sort((a, b) => a.r - b.r)
+      .map(({ c }) => c)
   })()
   const showSlash = slashOpen && commands.length > 0
 
@@ -771,7 +792,9 @@ function Composer({
     } else if (e.key === 'ArrowUp') {
       e.preventDefault()
       setCmdIdx((i) => Math.max(i - 1, 0))
-    } else if (e.key === 'Enter') {
+    } else if (e.key === 'Enter' || e.key === 'Tab') {
+      // Tab completes like Enter: both drop the highlighted command into the
+      // composer (with a trailing space for arguments) and return focus there.
       e.preventDefault()
       const c = filteredCmds[cmdIdx]
       if (c) pickCommand(c.name)
@@ -841,132 +864,7 @@ function Composer({
 
   return (
     <div className={`composer-wrap ${flush ? 'flush' : ''}`}>
-      <div ref={rootRef} className={`composer ${busy ? 'disabled' : ''} ${focused && !busy ? 'focused' : ''}`}>
-        {showSlash && (
-          <div className="cmp-menu slash-menu">
-            <div className="slash-filter-row">
-              <Icon name="search" size={13} className="faint" />
-              <input
-                ref={cmdRef}
-                className="cmp-input"
-                placeholder="Filter commands…"
-                value={cmdQuery}
-                onChange={(e) => {
-                  setCmdQuery(e.target.value)
-                  setCmdIdx(0)
-                }}
-                onKeyDown={onCmdKey}
-              />
-            </div>
-            <div className="slash-list">
-              {filteredCmds.length === 0 ? (
-                <div className="cmp-menu-empty">No matching commands</div>
-              ) : (
-                filteredCmds.map((c, i) => (
-                  <div
-                    key={c.name}
-                    className={`menu-item ${i === cmdIdx ? 'active' : ''}`}
-                    onMouseEnter={() => setCmdIdx(i)}
-                    onMouseDown={(e) => {
-                      e.preventDefault()
-                      pickCommand(c.name)
-                    }}
-                  >
-                    <span className="cmd-name mono">/{c.name}</span>
-                    {c.description && <span className="cmd-desc">{c.description}</span>}
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-        )}
-
-        {addOpen && (
-          <div className="cmp-menu add-menu">
-            {addKind === null ? (
-              <>
-                <div className="cmp-menu-head seclabel">ADD CONTEXT</div>
-                <div
-                  className="menu-item"
-                  onMouseDown={(e) => {
-                    e.preventDefault()
-                    setAddKind('file')
-                  }}
-                >
-                  <Icon name="file" size={14} className="code" />
-                  <span>File…</span>
-                </div>
-                <div
-                  className="menu-item"
-                  onMouseDown={(e) => {
-                    e.preventDefault()
-                    setAddKind('folder')
-                  }}
-                >
-                  <Icon name="folder" size={14} className="code" />
-                  <span>Folder…</span>
-                </div>
-                <div
-                  className="menu-item"
-                  onMouseDown={(e) => {
-                    e.preventDefault()
-                    addChip({ name: 'git diff', path: 'git:diff' })
-                  }}
-                >
-                  <Icon name="branch" size={14} className="code" />
-                  <span>Git diff</span>
-                </div>
-                {promptCaps?.image && (
-                  <div
-                    className="menu-item"
-                    onMouseDown={(e) => {
-                      e.preventDefault()
-                      imgRef.current?.click()
-                    }}
-                  >
-                    <Icon name="image" size={14} className="code" />
-                    <span>Image…</span>
-                  </div>
-                )}
-              </>
-            ) : (
-              <>
-                <div className="cmp-menu-head seclabel">
-                  {addKind === 'file' ? 'ADD FILE' : 'ADD FOLDER'}
-                </div>
-                <input
-                  autoFocus
-                  className="cmp-input add-path-input"
-                  placeholder="path relative to repo root…"
-                  value={addPath}
-                  onChange={(e) => setAddPath(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault()
-                      commitAddPath()
-                    } else if (e.key === 'Escape') {
-                      e.preventDefault()
-                      setAddKind(null)
-                      setAddPath('')
-                    }
-                  }}
-                />
-                <div className="add-path-hint">Enter to add · Esc to cancel</div>
-              </>
-            )}
-          </div>
-        )}
-
-        {gearOpen && (
-          <GearPopup
-            sessionId={sessionId}
-            modes={modes}
-            configOptions={configOptions}
-            commands={commands}
-            onPickCommand={pickCommand}
-          />
-        )}
-
+      <div className={`composer ${busy ? 'disabled' : ''} ${focused && !busy ? 'focused' : ''}`}>
         <input
           ref={imgRef}
           type="file"
@@ -1010,22 +908,139 @@ function Composer({
         </div>
 
         <div className="composer-bar">
-          <button
-            className={`icon-sq ${addOpen ? 'active' : ''}`}
-            title="Add context"
-            disabled={busy}
-            onClick={() => openAdd(!addOpen)}
-          >
-            <Icon name="plus" size={14} />
-          </button>
-          <button
-            className={`icon-sq ${showSlash ? 'active' : ''}`}
-            title="Commands"
-            disabled={busy || commands.length === 0}
-            onClick={() => openSlash(!slashOpen)}
-          >
-            <Icon name="slash" size={14} />
-          </button>
+          <span className="pop-anchor" ref={addAnchorRef}>
+            <button
+              className={`icon-sq ${addOpen ? 'active' : ''}`}
+              title="Add context"
+              disabled={busy}
+              onClick={() => openAdd(!addOpen)}
+            >
+              <Icon name="plus" size={14} />
+            </button>
+            {addOpen && (
+              <div className="cmp-menu add-menu">
+                {addKind === null ? (
+                  <>
+                    <div className="cmp-menu-head seclabel">ADD CONTEXT</div>
+                    <div
+                      className="menu-item"
+                      onMouseDown={(e) => {
+                        e.preventDefault()
+                        setAddKind('file')
+                      }}
+                    >
+                      <Icon name="file" size={14} className="code" />
+                      <span>File…</span>
+                    </div>
+                    <div
+                      className="menu-item"
+                      onMouseDown={(e) => {
+                        e.preventDefault()
+                        setAddKind('folder')
+                      }}
+                    >
+                      <Icon name="folder" size={14} className="code" />
+                      <span>Folder…</span>
+                    </div>
+                    <div
+                      className="menu-item"
+                      onMouseDown={(e) => {
+                        e.preventDefault()
+                        addChip({ name: 'git diff', path: 'git:diff' })
+                      }}
+                    >
+                      <Icon name="branch" size={14} className="code" />
+                      <span>Git diff</span>
+                    </div>
+                    {promptCaps?.image && (
+                      <div
+                        className="menu-item"
+                        onMouseDown={(e) => {
+                          e.preventDefault()
+                          imgRef.current?.click()
+                        }}
+                      >
+                        <Icon name="image" size={14} className="code" />
+                        <span>Image…</span>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <div className="cmp-menu-head seclabel">
+                      {addKind === 'file' ? 'ADD FILE' : 'ADD FOLDER'}
+                    </div>
+                    <input
+                      autoFocus
+                      className="cmp-input add-path-input"
+                      placeholder="path relative to repo root…"
+                      value={addPath}
+                      onChange={(e) => setAddPath(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault()
+                          commitAddPath()
+                        } else if (e.key === 'Escape') {
+                          e.preventDefault()
+                          setAddKind(null)
+                          setAddPath('')
+                        }
+                      }}
+                    />
+                    <div className="add-path-hint">Enter to add · Esc to cancel</div>
+                  </>
+                )}
+              </div>
+            )}
+          </span>
+          <span className="pop-anchor" ref={slashAnchorRef}>
+            <button
+              className={`icon-sq ${showSlash ? 'active' : ''}`}
+              title="Commands"
+              disabled={busy || commands.length === 0}
+              onClick={() => openSlash(!slashOpen)}
+            >
+              <Icon name="slash" size={14} />
+            </button>
+            {showSlash && (
+              <div className="cmp-menu slash-menu">
+                <div className="slash-filter-row">
+                  <Icon name="search" size={13} className="faint" />
+                  <input
+                    ref={cmdRef}
+                    className="cmp-input"
+                    placeholder="Filter commands…"
+                    value={cmdQuery}
+                    onChange={(e) => {
+                      setCmdQuery(e.target.value)
+                      setCmdIdx(0)
+                    }}
+                    onKeyDown={onCmdKey}
+                  />
+                </div>
+                <div className="slash-list">
+                  {filteredCmds.length === 0 ? (
+                    <div className="cmp-menu-empty">No matching commands</div>
+                  ) : (
+                    filteredCmds.map((c, i) => (
+                      <div
+                        key={c.name}
+                        className={`menu-item ${i === cmdIdx ? 'active' : ''}`}
+                        onMouseEnter={() => setCmdIdx(i)}
+                        onMouseDown={(e) => {
+                          e.preventDefault()
+                          pickCommand(c.name)
+                        }}
+                      >
+                        <span className="cmd-name mono">/{c.name}</span>
+                        {c.description && <span className="cmd-desc">{c.description}</span>}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            )}
+          </span>
           {chips.map((c, i) => (
             <button
               key={`${c.path}-${i}`}
@@ -1048,17 +1063,28 @@ function Composer({
           ))}
           <span className="spacer" />
           {hasGearContent && (
-            <button
-              className={`icon-sq ${gearOpen ? 'active' : ''}`}
-              title="Session settings"
-              onClick={() => {
-                setSlashOpen(false)
-                setAddOpen(false)
-                setGearOpen((o) => !o)
-              }}
-            >
-              <Icon name="gear" size={14} />
-            </button>
+            <span className="pop-anchor" ref={gearAnchorRef}>
+              <button
+                className={`icon-sq ${gearOpen ? 'active' : ''}`}
+                title="Session settings"
+                onClick={() => {
+                  setSlashOpen(false)
+                  setAddOpen(false)
+                  setGearOpen((o) => !o)
+                }}
+              >
+                <Icon name="gear" size={14} />
+              </button>
+              {gearOpen && (
+                <GearPopup
+                  sessionId={sessionId}
+                  modes={modes}
+                  configOptions={configOptions}
+                  commands={commands}
+                  onPickCommand={pickCommand}
+                />
+              )}
+            </span>
           )}
           <button className="send-btn" disabled={!canSend} onClick={send} title="Send">
             <Icon name="send" size={12} />
