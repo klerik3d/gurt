@@ -763,8 +763,11 @@ export function NewSessionModal({
   // itself reports for that entry).
   const selectedDescription = (opt: SessionConfigOption): string | undefined =>
     opt.options?.find((o) => o.value === effective(opt))?.description ?? undefined
+  // Only among the view's own chips — a raw "default" entry the view couldn't
+  // resolve (e.g. claude-code's alias) isn't a real selection and shouldn't
+  // read as one in the collapsed summary.
   const selectedName = (opt: SessionConfigOption): string | undefined =>
-    opt.options?.find((o) => o.value === effective(opt))?.name
+    optionView.selectOptions(opt).find((o) => o.value === effective(opt))?.name
 
   const repoCfg = repo ? repos.find((r) => r.name === repo) : undefined
   const gitResolution = repoCfg ? resolveForRepo(credentials, repoCfg) : null
