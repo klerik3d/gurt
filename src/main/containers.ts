@@ -22,6 +22,7 @@ import { containerGitEnv } from './git/config'
 import * as store from './store'
 import { cloneDir } from './store'
 import {
+  adapterPresent,
   devcontainerUp,
   dockerRemove,
   dockerRunning,
@@ -87,6 +88,12 @@ export class ContainerManager {
   private shimmed = new Set<string>()
   /** Container ids the agent's adapter packages are installed in. */
   private adapterInstalled = new Set<string>()
+  /** In-flight adapter install per container id. npm rewrites a global package
+   *  non-atomically (delete, then re-extract), so two overlapping `npm install
+   *  -g` into one filesystem leave a window where an adapter spawned after the
+   *  first install imports the second one's half-written files. Concurrent
+   *  callers must share one install, the way `ensureInFlight` shares one up. */
+  private installsInFlight = new Map<string, Promise<void>>()
   /** Container is stopped after its session sits idle this long. */
   private readonly IDLE_STOP_MS = 10 * 60_000
   private idleTimers = new Map<string, NodeJS.Timeout>()
@@ -332,17 +339,24 @@ export class ContainerManager {
 
   /** Install the agent's adapter packages in the session's container, once per
    *  container. Idempotent: a stop/start keeps the same container (and its
-   *  filesystem), a replacement gets a new id and so reinstalls. */
-  async installAdapter(ctx: LaunchContext): Promise<void> {
-    if (this.adapterInstalled.has(ctx.containerId)) return
-    await installAcpAdapter(
-      ctx.session,
-      ctx.agent,
-      ctx.configArgs,
-      ctx.hostWorkspaceFolder,
-      this.logFor(ctx.session)
-    )
-    this.adapterInstalled.add(ctx.containerId)
+   *  filesystem), a replacement gets a new id and so reinstalls. The in-memory
+   *  set only fast-paths that answer within one app process — a fresh process
+   *  probes the container itself before reinstalling into it. */
+  installAdapter(ctx: LaunchContext): Promise<void> {
+    if (this.adapterInstalled.has(ctx.containerId)) return Promise.resolve()
+    const inflight = this.installsInFlight.get(ctx.containerId)
+    if (inflight) return inflight
+    const p = (async () => {
+      const log = this.logFor(ctx.session)
+      if (await adapterPresent(ctx.session, ctx.agent, ctx.configArgs, ctx.hostWorkspaceFolder))
+        log(`${ctx.agent.bin} already installed in container`)
+      else
+        await installAcpAdapter(ctx.session, ctx.agent, ctx.configArgs, ctx.hostWorkspaceFolder, log)
+      this.adapterInstalled.add(ctx.containerId)
+    })()
+    this.installsInFlight.set(ctx.containerId, p)
+    p.finally(() => this.installsInFlight.delete(ctx.containerId)).catch(() => {})
+    return p
   }
 
   // --- teardown -----------------------------------------------------------
