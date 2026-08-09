@@ -1338,9 +1338,8 @@ textarea.input {
   border-color: var(--accent);
   box-shadow: var(--glow);
 }
-.composer.disabled {
-  opacity: 0.8;
-}
+/* No blanket opacity while busy: it washed out the popup menus anchored inside
+   the composer. Disabled controls already dim themselves. */
 
 .composer-top {
   display: flex;
@@ -1491,13 +1490,17 @@ textarea.input {
   max-height: 220px;
   overflow-y: auto;
 }
+/* The keyboard cursor — what Tab/Enter completes — outranks plain hover, so it
+   stays readable while the pointer rests on some other row. */
+.slash-list .menu-item.active {
+  background: var(--hover);
+  color: var(--text);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
 .cmd-name {
   font-size: 12px;
   color: var(--accent);
   min-width: 84px;
-}
-.cmd-name.code {
-  color: var(--code);
 }
 .cmd-desc {
   font-size: 12px;
@@ -1506,12 +1509,6 @@ textarea.input {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.cmd-desc.right {
-  flex: none;
-  margin-left: auto;
-  font-size: 11px;
-  color: var(--faint);
 }
 .add-path-input {
   padding: 7px 9px 3px;
@@ -1540,22 +1537,6 @@ textarea.input {
 }
 .gear-group .seclabel {
   letter-spacing: 0.14em;
-}
-.gear-cmds {
-  border-top: 1px solid var(--border);
-  padding: 12px 8px 10px;
-}
-.gear-cmds .seclabel {
-  display: block;
-  letter-spacing: 0.14em;
-  padding: 0 6px 8px;
-}
-.gear-cmd-list {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  max-height: 190px;
-  overflow-y: auto;
 }
 
 /* ---- quiet select rows (new session, settings) ---- */
