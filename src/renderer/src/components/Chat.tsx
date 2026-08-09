@@ -1156,6 +1156,15 @@ function GearPopup({
                   </button>
                 ))}
               </div>
+              {/* No chip claims the live value (a hidden "default" the view could
+                  not resolve to a concrete entry) — state the truth in text
+                  rather than showing nothing selected. */}
+              {!view.selectOptions(opt).some((o) => o.value === view.activeValue(opt)) && (
+                <div className="hc-note">
+                  {(opt.options ?? []).find((o) => o.value === opt.currentValue)?.description ??
+                    `current: ${String(opt.currentValue)}`}
+                </div>
+              )}
             </div>
           ) : (
             <div key={opt.id} className="gear-group">
