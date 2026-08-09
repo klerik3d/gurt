@@ -617,6 +617,8 @@ function Composer({
   const [micError, setMicError] = useState<string | null>(null)
   const taRef = useRef<HTMLTextAreaElement>(null)
   const cmdRef = useRef<HTMLInputElement>(null)
+  /** The keyboard-highlighted command row — kept scrolled into view. */
+  const cmdActiveRef = useRef<HTMLDivElement>(null)
   /** Anchor spans wrapping each popup trigger button — the popup renders inside
    *  its anchor so it pops up over that button, and outside-click detection
    *  checks containment against the anchor (popup + button) alone. */
@@ -695,6 +697,12 @@ function Composer({
   useEffect(() => {
     if (cmdIdx >= filteredCmds.length) setCmdIdx(0)
   }, [filteredCmds.length, cmdIdx])
+
+  // Arrow keys can walk past the visible slice of the scrolling list — follow
+  // the highlight so it is always the row the user can see.
+  useEffect(() => {
+    cmdActiveRef.current?.scrollIntoView({ block: 'nearest' })
+  }, [cmdIdx, showSlash])
 
   const closeMenus = () => {
     setSlashOpen(false)
@@ -863,8 +871,7 @@ function Composer({
   }
 
   const canSend = !busy && (text.trim().length > 0 || images.length > 0)
-  const hasGearContent =
-    (!!modes && modes.availableModes.length > 0) || configOptions.length > 0 || commands.length > 0
+  const hasGearContent = (!!modes && modes.availableModes.length > 0) || configOptions.length > 0
 
   return (
     <div className={`composer-wrap ${flush ? 'flush' : ''}`}>
@@ -1029,8 +1036,11 @@ function Composer({
                     filteredCmds.map((c, i) => (
                       <div
                         key={c.name}
+                        // Hover deliberately does not move the keyboard cursor:
+                        // the pointer drifting over the list must not change
+                        // which command Tab/Enter completes.
+                        ref={i === cmdIdx ? cmdActiveRef : undefined}
                         className={`menu-item ${i === cmdIdx ? 'active' : ''}`}
-                        onMouseEnter={() => setCmdIdx(i)}
                         onMouseDown={(e) => {
                           e.preventDefault()
                           pickCommand(c.name)
@@ -1085,8 +1095,6 @@ function Composer({
                   agentKind={agentKind}
                   modes={modes}
                   configOptions={configOptions}
-                  commands={commands}
-                  onPickCommand={pickCommand}
                 />
               )}
             </span>
@@ -1106,22 +1114,19 @@ function Composer({
   )
 }
 
-/** ⚙ popup (#1b): model / effort / mode chip groups + quick commands. */
+/** ⚙ popup (#1b): model / effort / mode chip groups. Commands live in the
+ *  slash menu alone — this popup is for session settings. */
 function GearPopup({
   sessionId,
   agentKind,
   modes,
-  configOptions,
-  commands,
-  onPickCommand
+  configOptions
 }: {
   sessionId: string
   /** The session agent's kind — passed to the kind-scoped model resolver. */
   agentKind?: string
   modes?: SessionModes
   configOptions: SessionConfigOption[]
-  commands: CommandInfo[]
-  onPickCommand: (name: string) => void
 }) {
   const setMode = (id: string) =>
     window.gurt.sessionSetMode(sessionId, id).catch((e) => alertDialog(String(e)))
@@ -1156,6 +1161,15 @@ function GearPopup({
                   </button>
                 ))}
               </div>
+              {/* No chip claims the live value (a hidden "default" the view could
+                  not resolve to a concrete entry) — state the truth in text
+                  rather than showing nothing selected. */}
+              {!view.selectOptions(opt).some((o) => o.value === view.activeValue(opt)) && (
+                <div className="hc-note">
+                  {(opt.options ?? []).find((o) => o.value === opt.currentValue)?.description ??
+                    `current: ${String(opt.currentValue)}`}
+                </div>
+              )}
             </div>
           ) : (
             <div key={opt.id} className="gear-group">
@@ -1196,26 +1210,6 @@ function GearPopup({
           </div>
         )}
       </div>
-      {commands.length > 0 && (
-        <div className="gear-cmds">
-          <div className="seclabel">QUICK COMMANDS</div>
-          <div className="gear-cmd-list">
-            {commands.map((c) => (
-              <div
-                key={c.name}
-                className="menu-item"
-                onMouseDown={(e) => {
-                  e.preventDefault()
-                  onPickCommand(c.name)
-                }}
-              >
-                <span className="cmd-name mono code">/{c.name}</span>
-                {c.description && <span className="cmd-desc right">{c.description}</span>}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
     </div>
   )
 }
