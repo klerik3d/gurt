@@ -1351,10 +1351,22 @@ export class SessionManager {
   async setConfigOption(sessionId: string, configId: string, value: string | boolean): Promise<void> {
     const s = this.sessions.get(sessionId)
     if (!s) throw new Error('unknown session')
-    const conn = this.connections.get(s.info.id)
-    if (!conn) throw new Error('agent is not running — send a prompt first')
+    // A sleeping session is woken first — attach brings the container up and
+    // session/loads, with the usual "resuming…" indicator and repo-clone gate —
+    // so the change applies to the live agent and is validated by it right now,
+    // exactly like a change on a running session.
+    const conn = await this.attach(s)
     await this.pushConfigOption(s, conn, configId, value)
     s.info.configValues = { ...s.info.configValues, [configId]: value }
+    // Confirm the change in the timeline. Failures already leave system entries
+    // ("could not set …"); a success was only visible as the popup's highlight,
+    // which is gone the moment the popup closes — and the switch itself is
+    // history: it changes how everything below it in the feed should be read.
+    // Read names from the post-push option set — the agent may have rewritten it.
+    const opt = s.configOptions?.find((o) => o.id === configId)
+    const picked = opt?.options?.find((o) => o.value === value)?.name
+    const shown = picked ?? (typeof value === 'boolean' ? (value ? 'on' : 'off') : value)
+    this.push(s, { kind: 'system', text: `${opt?.name ?? configId} → ${shown}` })
     this.cacheAgentConfig(s)
     this.bus.emit('session.changed', { sessionId })
     this.schedulePersist(s.ref)
