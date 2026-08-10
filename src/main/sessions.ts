@@ -812,6 +812,25 @@ export class SessionManager {
     this.bus.emit('tree.changed', undefined)
   }
 
+  /** Same as {@link dropTaskSessions}, scaled up to every task in the
+   *  workspace — the whole workspace directory is about to go. */
+  dropWorkspaceSessions(ws: string): void {
+    const prefix = `${ws}/`
+    for (const [key, timer] of this.persistTimers) {
+      if (!key.startsWith(prefix)) continue
+      clearTimeout(timer)
+      this.persistTimers.delete(key)
+    }
+    for (const [id, s] of this.sessions) {
+      if (s.ref.workspace !== ws) continue
+      this.detach(id)
+      this.events.stopGurtServer(id)
+      this.sessions.delete(id)
+      this.bus.emit('session.deleted', { sessionId: id })
+    }
+    this.bus.emit('tree.changed', undefined)
+  }
+
   /** Live sessions of the task, projected to their persisted shape. */
   private recordsFor(ws: string, task: string): PersistedSession[] {
     return this.sessionsFor(ws, task).map((s) => {

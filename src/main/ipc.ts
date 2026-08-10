@@ -87,6 +87,7 @@ export function registerIpc(): void {
       await store.createWorkspace(name)
       kernel.bus.emit('tree.changed', undefined)
     },
+    removeWorkspace: (name) => kernel.deleteWorkspace(name),
     addRepo: async (ws, repo) => {
       await store.addRepo(ws, repo)
       kernel.bus.emit('tree.changed', undefined)

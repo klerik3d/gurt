@@ -42,6 +42,8 @@ export interface Kernel {
   /** store.buildTree + session overlay. */
   tree(): Promise<Tree>
   deleteTask(ws: string, task: string): Promise<void>
+  /** Delete a whole workspace: every task, clone and session goes with it. */
+  deleteWorkspace(ws: string): Promise<void>
   /** Rename a task: stops its envs (a running container's bind mount is
    *  pinned to the old directory), moves the directory, and best-effort
    *  renames its branch in every clone. */
@@ -264,6 +266,13 @@ export function createKernel(): Kernel {
       await containers.teardownTask(ws, task)
       sessions.dropTaskSessions(ws, task)
       await store.removeTaskDir(ws, task)
+      bus.emit('tree.changed', undefined)
+    },
+
+    async deleteWorkspace(ws: string): Promise<void> {
+      await containers.teardownWorkspace(ws)
+      sessions.dropWorkspaceSessions(ws)
+      await store.removeWorkspaceDir(ws)
       bus.emit('tree.changed', undefined)
     },
 

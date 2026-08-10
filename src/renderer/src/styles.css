@@ -197,6 +197,16 @@ button:disabled {
   background: #66b1ff;
   border-color: #66b1ff;
 }
+.btn-danger {
+  background: var(--red);
+  border-color: var(--red);
+  color: #fff;
+  font-weight: 600;
+}
+.btn-danger:hover:not(:disabled) {
+  background: #ec6a62;
+  border-color: #ec6a62;
+}
 .btn-sm {
   padding: 5px 12px;
   font-size: 12px;
@@ -674,6 +684,20 @@ textarea.input {
   top: calc(100% + 4px);
   left: 0;
   min-width: 180px;
+}
+.sb-ws-menu .menu-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.sb-ws-menu .menu-item .sb-act {
+  visibility: hidden;
+  width: 22px;
+  height: 22px;
+  margin: -4px -6px -4px 0;
+}
+.sb-ws-menu .menu-item:hover .sb-act {
+  visibility: visible;
 }
 .sb-newtask {
   position: relative;
