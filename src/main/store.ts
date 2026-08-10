@@ -405,6 +405,15 @@ export async function removeTaskDir(ws: string, task: string): Promise<void> {
   await rmTree(dir)
 }
 
+/** Remove the whole workspace directory — every task, clone and session log
+ *  with it. Same append-drain reasoning as `removeTaskDir`, scaled to the
+ *  workspace root (which is every task's parent, so one drain covers them all). */
+export async function removeWorkspaceDir(ws: string): Promise<void> {
+  const dir = wsDir(ws)
+  await drainAppends(dir)
+  await rmTree(dir)
+}
+
 const sessionsFile = (ws: string, task: string) => path.join(taskDir(ws, task), 'sessions.json')
 
 export async function readSessions(ws: string, task: string): Promise<PersistedSession[]> {

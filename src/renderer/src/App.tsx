@@ -7,7 +7,7 @@ import { NOTIFICATION_RING_CAP } from '../../shared/notifications'
 import { SESSION_DOT, containerDot } from './status'
 import { Icon } from './components/icons'
 import { EnvRepoMarks } from './components/tags'
-import { Sidebar, NameModal, NewSessionModal } from './components/Sidebar'
+import { Sidebar, NameModal, DeleteWorkspaceModal, NewSessionModal } from './components/Sidebar'
 import { SessionPane } from './components/SessionPane'
 import { TaskPane } from './components/TaskPane'
 import { SettingsPage, type SettingsSection } from './components/SettingsPage'
@@ -62,6 +62,7 @@ export default function App() {
   const [newSession, setNewSession] = useState<{ ws: string; task: string } | null>(null)
   const [newTask, setNewTask] = useState<string | null>(null)
   const [newWorkspace, setNewWorkspace] = useState(false)
+  const [deletingWorkspace, setDeletingWorkspace] = useState<string | null>(null)
   const [curWs, setCurWs] = useState<string | null>(null)
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     const saved = Number(localStorage.getItem(SIDEBAR_WIDTH_KEY))
@@ -443,6 +444,7 @@ export default function App() {
               activity={activity}
               onPickWorkspace={setCurWs}
               onNewWorkspace={() => setNewWorkspace(true)}
+              onDeleteWorkspace={setDeletingWorkspace}
               onNewSession={(w, t) => setNewSession({ ws: w, task: t })}
               onSelectTask={selectTask}
               onSelectSession={selectSession}
@@ -584,6 +586,13 @@ export default function App() {
               void alertDialog(e instanceof Error ? e.message : String(e))
             }
           }}
+        />
+      )}
+      {deletingWorkspace && (
+        <DeleteWorkspaceModal
+          ws={deletingWorkspace}
+          onClose={() => setDeletingWorkspace(null)}
+          onDeleted={() => setDeletingWorkspace(null)}
         />
       )}
       <DialogHost />

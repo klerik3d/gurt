@@ -430,6 +430,13 @@ export class ContainerManager {
     for (const info of this.sessionsOf(ws, task)) await this.release(info.id, 'task-deleted')
   }
 
+  /** Destroy every container of every task in a workspace — the workspace is
+   *  going away in full, clones included. */
+  async teardownWorkspace(ws: string): Promise<void> {
+    for (const info of this.deps.sessions().filter((s) => s.workspace === ws))
+      await this.release(info.id, 'workspace-deleted')
+  }
+
   private sessionsOf(ws: string, task: string): SessionInfo[] {
     return this.deps.sessions().filter((s) => s.workspace === ws && s.task === task)
   }

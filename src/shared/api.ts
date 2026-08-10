@@ -67,6 +67,8 @@ export interface GurtApi {
   /** Repos (as `ws/repo`) linking to a credential id — for delete-blocking. */
   credentialUsedBy(id: string): Promise<string[]>
   createWorkspace(name: string): Promise<void>
+  /** Delete a whole workspace: every task, environment, clone and session goes with it. */
+  removeWorkspace(name: string): Promise<void>
   addRepo(ws: string, repo: RepoConfig): Promise<void>
   /** Resolves credentials the same way session clones do (by registered repo,
    *  honoring a repo-linked credential), so it works for private repos too.
@@ -184,6 +186,7 @@ const METHODS = {
   setCredentials: true,
   credentialUsedBy: true,
   createWorkspace: true,
+  removeWorkspace: true,
   addRepo: true,
   discoverDevcontainer: true,
   discoverDockerfiles: true,

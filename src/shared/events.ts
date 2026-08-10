@@ -19,6 +19,7 @@ export type ContainerStatusReason =
   | 'queue'
   | 'user'
   | 'task-deleted'
+  | 'workspace-deleted'
   | 'session-deleted'
   | 'error'
   | 'reconcile'

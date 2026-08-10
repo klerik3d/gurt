@@ -40,6 +40,7 @@ export function Sidebar({
   activity,
   onPickWorkspace,
   onNewWorkspace,
+  onDeleteWorkspace,
   onNewSession,
   onSelectTask,
   onSelectSession,
@@ -57,6 +58,7 @@ export function Sidebar({
   activity: Record<string, { busy?: boolean; awaitingInput?: boolean }>
   onPickWorkspace: (ws: string) => void
   onNewWorkspace: () => void
+  onDeleteWorkspace: (ws: string) => void
   onNewSession: (ws: string, task: string) => void
   onSelectTask: (ws: string, task: string) => void
   onSelectSession: (id: string) => void
@@ -315,7 +317,19 @@ export function Sidebar({
                     onPickWorkspace(w.name)
                   }}
                 >
-                  {w.name}
+                  <span style={{ flex: 1 }}>{w.name}</span>
+                  <button
+                    className="icon-sq sb-act"
+                    title="delete workspace"
+                    onMouseDown={(e) => {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      setWsMenuOpen(false)
+                      onDeleteWorkspace(w.name)
+                    }}
+                  >
+                    <Icon name="trash" size={13} />
+                  </button>
                 </div>
               ))}
               <div className="menu-sep" />
@@ -559,6 +573,74 @@ export function NameModal({
         </button>
         <button className="btn btn-primary" disabled={!name.trim()} onClick={() => onSubmit(name.trim())}>
           Create
+        </button>
+      </div>
+    </Modal>
+  )
+}
+
+/** Destructive confirm for deleting an entire workspace — every task,
+ *  environment, clone and session in it goes with it, so the delete button
+ *  only unlocks once the user has retyped the workspace's own name, same as
+ *  GitHub's repo-delete pattern. */
+export function DeleteWorkspaceModal({
+  ws,
+  onClose,
+  onDeleted
+}: {
+  ws: string
+  onClose: () => void
+  onDeleted: () => void
+}) {
+  const [name, setName] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const matches = name === ws
+
+  const submit = async () => {
+    if (!matches || busy) return
+    setBusy(true)
+    setError('')
+    try {
+      await window.gurt.removeWorkspace(ws)
+      onDeleted()
+    } catch (e) {
+      setBusy(false)
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  return (
+    <Modal title="Delete workspace" onClose={onClose}>
+      <div className="modal-body">
+        <p>
+          Permanently delete workspace "<strong>{ws}</strong>"? Every task, environment, clone and
+          session in it — including any uncommitted changes — is deleted with it. This cannot be
+          undone.
+        </p>
+        <div>
+          <span className="dim">
+            Type <strong>{ws}</strong> to confirm.
+          </span>
+          <input
+            autoFocus
+            className="input"
+            style={{ marginTop: 6 }}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && submit()}
+            placeholder={ws}
+          />
+        </div>
+        {error && <div className="error">{error}</div>}
+      </div>
+      <div className="modal-foot">
+        <span className="spacer" />
+        <button className="btn" onClick={onClose}>
+          Cancel
+        </button>
+        <button className="btn btn-danger" disabled={!matches || busy} onClick={submit}>
+          Delete workspace
         </button>
       </div>
     </Modal>
