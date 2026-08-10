@@ -20,6 +20,8 @@ import type {
 import { agentDef } from '../shared/agents'
 import { defaultAgentConfig } from '../shared/agentConfig'
 import { validateEnvConfig } from '../shared/envConfig'
+import type { NotificationPrefs } from '../shared/notifications'
+import { NOTIFICATION_DEFAULTS } from '../shared/notifications'
 import { createLogger } from './log'
 
 const pexecFile = promisify(execFile)
@@ -163,6 +165,22 @@ export async function setAgentConfig(agentId: string, cfg: AgentConfig): Promise
   const cache = await getAgentConfigs()
   cache[agentId] = cfg
   await writeJson(agentConfigFile(), cache)
+}
+
+const notificationsFile = () => path.join(gurtRoot, 'notifications.json')
+
+/** A missing key (fresh install, or a type added later) falls back to its
+ *  default — tolerates a partial file the same way `getAgents` does. */
+export async function getNotificationPrefs(): Promise<NotificationPrefs> {
+  const raw = await readJson<Partial<NotificationPrefs>>(notificationsFile(), {})
+  const prefs = {} as NotificationPrefs
+  for (const type of Object.keys(NOTIFICATION_DEFAULTS) as (keyof NotificationPrefs)[])
+    prefs[type] = { ...NOTIFICATION_DEFAULTS[type], ...raw[type] }
+  return prefs
+}
+
+export async function setNotificationPrefs(prefs: NotificationPrefs): Promise<void> {
+  await writeJson(notificationsFile(), prefs)
 }
 
 export async function createWorkspace(name: string): Promise<void> {

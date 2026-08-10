@@ -132,6 +132,7 @@ escaped, and `\n` written as `\\n`, so one record stays one line.
 | `session.awaiting`        | INF   | `s`, `awaiting`                                            |
 | `session.adapterExited`   | INF   | `s`                                                        |
 | `session.proposal`        | INF   | `s`, `repo`                                                |
+| `external.stub`           | INF   | `type`, `s`                                                |
 | `session.end`             | INF   | `s`, `turns`, `ms`, `stopReason`, `exitCode`               |
 | `agent.spawn`             | INF   | `s`, `cmd`, `pid`, `c`, `env` (injected variable *names*)   |
 | `agent.exit`              | INF   | `s`, `pid`, `code`, `signal`, `ms`                         |

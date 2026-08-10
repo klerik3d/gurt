@@ -2574,3 +2574,126 @@ textarea.input {
 .dialog-ok.danger:hover {
   background: #ec6a62 !important;
 }
+
+/* ---- notifications: bell + popover panel (§4.1, §4.2) ---- */
+
+.notif-wrap {
+  position: relative;
+  display: flex;
+}
+.notif-badge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 7px;
+  background: var(--red);
+  color: #fff;
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 14px;
+  text-align: center;
+}
+.notif-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 360px;
+  max-width: 90vw;
+  background: var(--surface);
+  border: 1px solid var(--border2);
+  border-radius: 12px;
+  box-shadow: 0 24px 60px -16px rgba(0, 0, 0, 0.75);
+  display: flex;
+  flex-direction: column;
+  z-index: 60;
+}
+.notif-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.notif-title {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.notif-list {
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: 6px;
+}
+.notif-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 9px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.notif-row:hover,
+.notif-row.active {
+  background: var(--hover);
+}
+.notif-row .dot {
+  margin-top: 5px;
+}
+.notif-row.read {
+  opacity: 0.55;
+}
+.notif-body {
+  flex: 1;
+  min-width: 0;
+}
+.notif-loc {
+  font-size: 11px;
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.notif-detail {
+  font-size: 12.5px;
+  color: var(--text);
+  margin-top: 2px;
+}
+.notif-ts {
+  font-size: 10.5px;
+  color: var(--faint);
+  margin-top: 4px;
+}
+.notif-dismiss {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--faint);
+}
+.notif-dismiss:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+/* ---- Settings → Notifications: per-type on/off matrix (§4.4) ---- */
+
+.notif-prefs-row {
+  display: grid;
+  grid-template-columns: 1fr 72px 72px;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 4px;
+  border-bottom: 1px solid var(--border);
+}
+.notif-prefs-row:last-child {
+  border-bottom: none;
+}
+.notif-prefs-head {
+  padding-bottom: 8px;
+}

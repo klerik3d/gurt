@@ -111,6 +111,13 @@ interface Connection {
   /** Prompt content the agent accepts, from the `initialize` response (agent-level). */
   promptCapabilities?: PromptCapabilities
   kill: () => void
+  /** Set by `detach()` right before it kills *this* adapter process — the
+   *  resulting 'close' is expected, not a crash. Lives on the connection
+   *  (not the session) so a session that has since reconnected to a
+   *  *replacement* adapter can't have its own crash misclassified by a
+   *  flag meant for the old, still-closing one — see the peer identity
+   *  check the close handler already does below. */
+  expectedExit?: boolean
 }
 
 interface Session {
@@ -535,6 +542,7 @@ export class SessionManager {
     this.sessions.delete(sessionId)
     this.events.deleteLog(s.ref.workspace, s.ref.task, sessionId)
     this.events.stopGurtServer(sessionId)
+    this.bus.emit('session.deleted', { sessionId })
     this.schedulePersist(s.ref)
     this.bus.emit('tree.changed', undefined)
     // Its clone may now be free — let the next queued session take it.
@@ -750,9 +758,14 @@ export class SessionManager {
    */
   detach(sessionId: string): void {
     const conn = this.connections.get(sessionId)
-    if (conn) conn.kill()
-    this.events.stopMcpServers(sessionId)
     const s = this.sessions.get(sessionId)
+    // Only a live adapter's death is "expected" here — with no connection,
+    // there is nothing about to close, so this call is not the cause of one.
+    if (conn) {
+      conn.expectedExit = true
+      conn.kill()
+    }
+    this.events.stopMcpServers(sessionId)
     if (s) s.attached = false
   }
 
@@ -794,6 +807,7 @@ export class SessionManager {
       this.detach(id)
       this.events.stopGurtServer(id)
       this.sessions.delete(id)
+      this.bus.emit('session.deleted', { sessionId: id })
     }
     this.bus.emit('tree.changed', undefined)
   }
@@ -944,6 +958,17 @@ export class SessionManager {
       (err) => log.error('internal.fail', { site: 'agent-process', s: key, pid: child.pid, err }),
       key
     )
+    // Built now (not after `initialize` resolves) so the close handler below —
+    // which can fire before `initialize` ever comes back — closes over the
+    // same object `detach()` marks, rather than reading a variable that may
+    // not be assigned yet.
+    const conn: Connection = {
+      peer,
+      sessionId: key,
+      containerId: ctx.containerId,
+      agent: ctx.agent.id,
+      kill: () => child.kill()
+    }
     child.on('close', (code, signal) => {
       // The last line is often the one that explains the exit — an unterminated
       // remainder must not be dropped just because no further '\n' is coming.
@@ -959,7 +984,13 @@ export class SessionManager {
       // Only clear the slot if it still holds *this* process — a replaced
       // container's adapter must not evict its successor on its way out.
       if (this.connections.get(key)?.peer === peer) this.connections.delete(key)
+      const expected = conn.expectedExit === true
       const dead = this.sessions.get(key)
+      // Captured before anything below resets it — "was this session doing
+      // something" at the moment the adapter actually died, for §2's "while
+      // running/waiting" rule (an idle session's container going down
+      // out-of-band is not a crash mid-work).
+      const wasLive = !!dead && (dead.busy || dead.pendingPermissions.size > 0)
       if (dead) {
         dead.attached = false
         const wasAwaiting = dead.pendingPermissions.size > 0
@@ -990,7 +1021,7 @@ export class SessionManager {
       }
       // Covers a session that was NOT busy: the auto-stop policy re-evaluates it
       // on adapter death even when no turn end will ever fire.
-      this.bus.emit('session.adapterExited', { sessionId: key })
+      this.bus.emit('session.adapterExited', { sessionId: key, expected, wasLive })
     })
 
     peer.onNotification('session/update', (params) => this.onSessionUpdate(params))
@@ -1009,14 +1040,7 @@ export class SessionManager {
       }
     })
 
-    const conn: Connection = {
-      peer,
-      sessionId: key,
-      containerId: ctx.containerId,
-      agent: ctx.agent.id,
-      promptCapabilities: init?.agentCapabilities?.promptCapabilities,
-      kill: () => child.kill()
-    }
+    conn.promptCapabilities = init?.agentCapabilities?.promptCapabilities
     this.connections.set(key, conn)
     return conn
   }
@@ -1116,6 +1140,7 @@ export class SessionManager {
     s: Session,
     text: string,
     entryKind: 'user' | 'system',
+    isNudge: boolean,
     context?: PromptContext[],
     images?: PromptImage[]
   ): Promise<{ stopReason?: string; threw: boolean }> {
@@ -1129,6 +1154,9 @@ export class SessionManager {
     s.turns++
     this.bus.emit('session.changed', { sessionId: s.info.id })
     this.bus.emit('session.turn', { sessionId: s.info.id, ref: s.ref, phase: 'started' })
+    // Defaults to "threw" (→ final=true) so an unexpected throw between here and
+    // the assignments below never reports a user-visible turn end as non-final.
+    let outcome: { stopReason?: string; threw: boolean } = { threw: true }
     try {
       const conn = await this.attach(s)
       const result = await conn.peer.request<{ stopReason?: string }>('session/prompt', {
@@ -1139,17 +1167,23 @@ export class SessionManager {
       s.lastStopReason = reason
       if (reason && reason !== 'end_turn')
         this.push(s, { kind: 'system', text: `stopped: ${reason}` })
-      return { stopReason: reason, threw: false }
+      outcome = { stopReason: reason, threw: false }
+      return outcome
     } catch (e) {
       s.lastStopReason = 'error'
       log.warn('turn failed', { s: s.info.id, err: e })
       this.push(s, { kind: 'system', text: `error: ${e instanceof Error ? e.message : e}` })
-      return { threw: true }
+      outcome = { threw: true }
+      return outcome
     } finally {
       s.busy = false
       this.bus.emit('session.changed', { sessionId: s.info.id })
       this.schedulePersist(s.ref)
-      this.bus.emit('session.turn', { sessionId: s.info.id, ref: s.ref, phase: 'ended' })
+      // False only for the nudge turn's own boundary — the healing follow-up
+      // runPrompt is about to send, not the user-visible end of the turn. See
+      // the `final` field on `session.turn` in shared/events.ts.
+      const final = postTurnDecision({ ...outcome, turnComplete: s.turnComplete, isNudge }) !== 'nudge'
+      this.bus.emit('session.turn', { sessionId: s.info.id, ref: s.ref, phase: 'ended', final })
     }
   }
 
@@ -1166,10 +1200,10 @@ export class SessionManager {
     context?: PromptContext[],
     images?: PromptImage[]
   ): Promise<void> {
-    const first = await this.sendTurn(s, text, 'user', context, images)
+    const first = await this.sendTurn(s, text, 'user', false, context, images)
     if (postTurnDecision({ ...first, turnComplete: s.turnComplete, isNudge: false }) !== 'nudge')
       return
-    const second = await this.sendTurn(s, NUDGE_PROMPT, 'system')
+    const second = await this.sendTurn(s, NUDGE_PROMPT, 'system', true)
     if (
       postTurnDecision({ ...second, turnComplete: s.turnComplete, isNudge: true }) === 'incomplete'
     ) {
