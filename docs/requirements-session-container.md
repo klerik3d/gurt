@@ -80,6 +80,16 @@ address a physical resource.
 
 - **Idle auto-stop is per session** (`ContainerManager.noteIdle`), not per env.
   A container coming down re-runs the scheduler: its clone may now be free.
+- **The queue overrides the grace period** (`kernel.ts`'s queue handoff, over
+  `SessionManager.holdersBlockingQueue`). An idle container whose clone a queued
+  session needs is stopped at once (`reason: queue`) rather than after the grace
+  period — otherwise the scheduler, which only advances on a container coming
+  down, would stall the queue for the whole ten minutes. Triggers are the same
+  idle transitions (turn end, awaiting cleared, adapter exit, failed start),
+  plus enqueue and the boot restore. Nothing mid-turn or mid-start is ever
+  reaped, and an empty queue leaves the policy exactly as it was. A stop that
+  fails re-arms the grace period it was cutting short — the handoff degrades to
+  the old timing, never to a queue waiting on a container nothing will retry.
 
 ## 3. Non-goals
 
