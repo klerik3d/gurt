@@ -32,7 +32,9 @@ const api: Record<string, unknown> = {
   onSessionChanged: subscribe('session-changed'),
   onSessionLog: subscribe('session-log'),
   onSessionTurn: subscribe('session-turn'),
-  onProvisionLog: subscribe('provision-log')
+  onProvisionLog: subscribe('provision-log'),
+  onNotification: subscribe('notification'),
+  onNotificationRead: subscribe('notification-read')
 }
 for (const m of API_METHODS) api[m] = (...args: unknown[]) => ipcRenderer.invoke(`api:${m}`, ...args)
 

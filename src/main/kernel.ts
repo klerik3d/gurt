@@ -4,6 +4,7 @@
 // tests).
 import type { Tree } from '../shared/types'
 import type { SessionDraftPatch } from '../shared/api'
+import { NOTIFICATION_DEFAULTS } from '../shared/notifications'
 import { resolveMcpServers, stopMcpServers } from './mcp/manager'
 import { ensureGurtServer, stopGurtServer } from './mcp/gurtServer'
 import { isDirty } from './provision'
@@ -13,6 +14,7 @@ import * as changes from './changes'
 import { createBus, type Bus } from './bus'
 import { ContainerManager } from './containers'
 import { SessionManager, type RestoredSession } from './sessions'
+import { createNotifications, type Notifications } from './notifications'
 import { createLogger, dropSessionLog, sessionLogLine } from './log'
 
 const log = createLogger('kernel')
@@ -29,6 +31,7 @@ export interface Kernel {
   bus: Bus
   containers: ContainerManager
   sessions: SessionManager
+  notifications: Notifications
   /** store.buildTree + session overlay. */
   tree(): Promise<Tree>
   deleteTask(ws: string, task: string): Promise<void>
@@ -125,6 +128,14 @@ export function createKernel(): Kernel {
   // own file and never to the app log.
   bus.on('provision.log', ({ key, line }) => sessionLogLine(key, line))
 
+  // Notifications: turns select bus events into user-facing records (see
+  // docs/requirements-notifications.md). Wired synchronously with the
+  // hardcoded defaults so no early event is missed; the persisted matrix
+  // (if any) swaps in once restoreSessions() has read it.
+  const notifications = createNotifications(bus, NOTIFICATION_DEFAULTS, (id) =>
+    sessions.sessionInfo(id)
+  )
+
   // Idle auto-stop policy: a session's container is stopped after it has sat
   // idle for a grace period; any activity cancels the pending stop. `noteIdle`
   // re-verifies idleness *and* the running status before stopping.
@@ -155,6 +166,7 @@ export function createKernel(): Kernel {
   })
 
   async function restoreSessions(): Promise<void> {
+    notifications.setPrefs(await store.getNotificationPrefs())
     sessions.loadAgentConfigs(await store.getAgentConfigs())
     const t = await store.buildTree()
     for (const ws of t.workspaces)
@@ -184,6 +196,7 @@ export function createKernel(): Kernel {
     bus,
     containers,
     sessions,
+    notifications,
 
     async tree(): Promise<Tree> {
       const t = await store.buildTree()

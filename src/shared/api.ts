@@ -20,6 +20,7 @@ import type {
 import type { CredentialsFile } from './credentials'
 import type { DomainEvents } from './events'
 import type { McpDef } from './mcp'
+import type { NotificationPrefs, NotificationRecord } from './notifications'
 
 export type CreateAction = 'run' | 'queue' | 'draft'
 
@@ -160,6 +161,15 @@ export interface GurtApi {
   sessionActivity(id: string): Promise<void>
   /** Reveal `~/.gurt/logs` in the OS file manager (⌘K → "Open logs folder"). */
   openLogsFolder(): Promise<void>
+  /** In-memory notification history (oldest first) — empty after a relaunch,
+   *  see docs/requirements-notifications.md §6. */
+  getNotifications(): Promise<NotificationRecord[]>
+  markNotificationRead(id: string): Promise<void>
+  markAllRead(): Promise<void>
+  /** Per-item dismiss (§4.2) — removes the record instead of just marking it read. */
+  dismissNotification(id: string): Promise<void>
+  getNotificationPrefs(): Promise<NotificationPrefs>
+  setNotificationPrefs(prefs: NotificationPrefs): Promise<void>
 }
 
 /** Compile-checked to cover `GurtApi` exactly: a missing method fails the
@@ -215,7 +225,13 @@ const METHODS = {
   sessionSetConfigOption: true,
   sessionPermission: true,
   sessionActivity: true,
-  openLogsFolder: true
+  openLogsFolder: true,
+  getNotifications: true,
+  markNotificationRead: true,
+  markAllRead: true,
+  dismissNotification: true,
+  getNotificationPrefs: true,
+  setNotificationPrefs: true
 } as const satisfies Record<keyof GurtApi, true>
 
 /** Runtime method list; `api:<method>` is the IPC channel per entry. */
@@ -229,4 +245,9 @@ export interface GurtEvents {
   'session-log': DomainEvents['session.log']
   'session-turn': DomainEvents['session.turn']
   'provision-log': { key: string; line: string }
+  notification: NotificationRecord
+  /** A session's pending notifications were marked read by something other
+   *  than a panel click (opened from the sidebar, or its `awaiting` cleared)
+   *  — mirrors `DomainEvents['notification.read']`. */
+  'notification-read': DomainEvents['notification.read']
 }

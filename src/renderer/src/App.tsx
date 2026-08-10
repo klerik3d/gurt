@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import type { RepoChanges, SessionInfo, SessionSnapshot, Tree } from '../../shared/types'
 import { applyLog, sessionStatus } from '../../shared/types'
+import type { NotificationRecord } from '../../shared/notifications'
+import { NOTIFICATION_RING_CAP } from '../../shared/notifications'
 import { SESSION_DOT, containerDot } from './status'
 import { Icon } from './components/icons'
 import { EnvRepoMarks } from './components/tags'
@@ -10,6 +12,8 @@ import { SessionPane } from './components/SessionPane'
 import { TaskPane } from './components/TaskPane'
 import { SettingsPage, type SettingsSection } from './components/SettingsPage'
 import { CommandPalette } from './components/CommandPalette'
+import { NotificationsPanel } from './components/NotificationsPanel'
+import { useOutsideClose } from './hooks'
 import { DialogHost, alertDialog } from './dialog'
 import { logErr } from './log'
 
@@ -50,6 +54,10 @@ export default function App() {
   /** Per-task git changes snapshot, keyed `ws/task` — read by TaskPane and the sidebar badge. */
   const [changes, setChanges] = useState<Record<string, RepoChanges[]>>({})
   const [paletteOpen, setPaletteOpen] = useState(false)
+  const [notifications, setNotifications] = useState<NotificationRecord[]>([])
+  const [notifOpen, setNotifOpen] = useState(false)
+  const notifRef = useRef<HTMLDivElement>(null)
+  useOutsideClose(notifOpen, notifRef, () => setNotifOpen(false))
   /** New-session modal context; task empty → the modal's task picker chooses. */
   const [newSession, setNewSession] = useState<{ ws: string; task: string } | null>(null)
   const [newTask, setNewTask] = useState<string | null>(null)
@@ -107,14 +115,41 @@ export default function App() {
     const offLog = window.gurt.onProvisionLog(({ key, line }) => {
       setLogs((prev) => ({ ...prev, [key]: [...(prev[key] ?? []).slice(-500), line] }))
     })
+    const offNotif = window.gurt.onNotification((record) => {
+      // Same cap as main's ring (§6: in-memory, oldest dropped) — otherwise
+      // this array outlives it and the two permanently disagree.
+      setNotifications((prev) => [...prev, record].slice(-NOTIFICATION_RING_CAP))
+    })
+    // Main marking a session's notifications read server-side (its `awaiting`
+    // cleared, or opened some other way) doesn't go through this window's own
+    // markRead/markAllRead calls — mirror it so the badge doesn't go stale.
+    const offNotifRead = window.gurt.onNotificationRead(({ sessionId }) => {
+      setNotifications((prev) =>
+        prev.map((n) => (n.sessionId === sessionId && !n.read ? { ...n, read: true } : n))
+      )
+    })
     return () => {
       offTree()
       offSession()
       offSessionLog()
       offTurn()
       offLog()
+      offNotif()
+      offNotifRead()
     }
   }, [refreshTree, refreshChanges])
+
+  useEffect(() => {
+    window.gurt.getNotifications().then(setNotifications).catch(logErr('getNotifications'))
+  }, [])
+
+  // Resync with main's ring whenever the popover opens — main's ring is
+  // capped independently (§6) and read-state can also change without a push
+  // reaching this window (e.g. another window's panel), so an open is a
+  // convenient, cheap point to reconcile both without polling continuously.
+  useEffect(() => {
+    if (notifOpen) window.gurt.getNotifications().then(setNotifications).catch(logErr('getNotifications'))
+  }, [notifOpen])
 
   // Lazy app-start load: fetch changes once for every task the tree shows,
   // so sidebar badges appear without opening each task pane.
@@ -190,6 +225,12 @@ export default function App() {
       w.tasks.some((t) => t.sessions.some((s) => s.id === id))
     )
     if (owner) setCurWs(owner.name)
+    // The IPC call marks this session's pending notifications read server-side
+    // (§4.2 — opening a session another way, not just a panel click); mirror
+    // that locally so the bell badge updates without waiting on a push event.
+    setNotifications((prev) =>
+      prev.map((n) => (n.sessionId === id && !n.read ? { ...n, read: true } : n))
+    )
     window.gurt
       .sessionSnapshot(id)
       .then((snap) => {
@@ -202,6 +243,21 @@ export default function App() {
     setView('work')
     setSelection({ type: 'task', ws: tws, task })
     setCurWs(tws)
+  }, [])
+
+  const markNotificationRead = useCallback((id: string) => {
+    setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, read: true } : n)))
+    window.gurt.markNotificationRead(id).catch(logErr('markNotificationRead'))
+  }, [])
+
+  const markAllNotificationsRead = useCallback(() => {
+    setNotifications((prev) => prev.map((n) => (n.read ? n : { ...n, read: true })))
+    window.gurt.markAllRead().catch(logErr('markAllRead'))
+  }, [])
+
+  const dismissNotification = useCallback((id: string) => {
+    setNotifications((prev) => prev.filter((n) => n.id !== id))
+    window.gurt.dismissNotification(id).catch(logErr('dismissNotification'))
   }, [])
 
   const openNewSession = useCallback(
@@ -248,6 +304,8 @@ export default function App() {
   }, [ws, openNewSession])
 
   const positions = queuePositions(tree)
+  const unreadCount = notifications.reduce((n, r) => n + (r.read ? 0 : 1), 0)
+  const unreadBadge = unreadCount > 9 ? '9+' : String(unreadCount)
 
   // The tree only refetches on `tree-changed`, which doesn't fire on busy /
   // permission transitions. Overlay the freshest runtime flags from snapshots
@@ -317,6 +375,27 @@ export default function App() {
           <button className="icon-sq tb-btn" title="Search · ⌘K" onClick={() => setPaletteOpen(true)}>
             <Icon name="search" size={16} />
           </button>
+          <div className="notif-wrap" ref={notifRef}>
+            <button
+              className={`icon-sq tb-btn ${notifOpen ? 'active' : ''}`}
+              title="Notifications"
+              onClick={() => setNotifOpen((o) => !o)}
+            >
+              <Icon name="bell" size={16} />
+              {unreadCount > 0 && <span className="notif-badge">{unreadBadge}</span>}
+            </button>
+            {notifOpen && (
+              <NotificationsPanel
+                notifications={notifications}
+                tree={tree}
+                onClose={() => setNotifOpen(false)}
+                onSelectSession={selectSession}
+                onMarkRead={markNotificationRead}
+                onMarkAllRead={markAllNotificationsRead}
+                onDismiss={dismissNotification}
+              />
+            )}
+          </div>
           <button
             className="icon-sq tb-btn"
             title="Settings"
