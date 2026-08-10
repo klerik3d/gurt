@@ -15,6 +15,7 @@ import {
 } from './provision'
 import * as store from './store'
 import * as changes from './changes'
+import { normalizeNotificationPrefs } from '../shared/notifications'
 
 const log = createLogger('ipc')
 
@@ -60,6 +61,8 @@ export function registerIpc(): void {
   kernel.bus.on('session.log', (e) => broadcast('session-log', e))
   kernel.bus.on('session.turn', (e) => broadcast('session-turn', e))
   kernel.bus.on('provision.log', (e) => broadcast('provision-log', e))
+  kernel.bus.on('notification.created', (record) => broadcast('notification', record))
+  kernel.bus.on('notification.read', (e) => broadcast('notification-read', e))
 
   const impl: GurtApi = {
     getTree: () => kernel.tree(),
@@ -182,7 +185,13 @@ export function registerIpc(): void {
     renameSession: async (id, title) => kernel.sessions.renameSession(id, title),
     sessionEditDraft: async (id, patch) => kernel.editDraft(id, patch),
     sessionDelete: async (id) => kernel.sessions.deleteSession(id),
-    sessionSnapshot: async (id) => kernel.sessions.snapshot(id),
+    sessionSnapshot: async (id) => {
+      // Opening a session (sidebar click, palette jump, a notification row)
+      // reads its own awaiting/turn state directly — clears its pending
+      // notifications the same way (§4.2), not just an explicit panel dismiss.
+      kernel.notifications.markSessionRead(id)
+      return kernel.sessions.snapshot(id)
+    },
     sessionPrompt: (id, text, context, images) => kernel.sessions.prompt(id, text, context, images),
     sessionCancel: async (id) => kernel.sessions.cancel(id),
     sessionSetMode: (id, modeId) => kernel.sessions.setMode(id, modeId),
@@ -194,6 +203,20 @@ export function registerIpc(): void {
     openLogsFolder: async () => {
       const err = await shell.openPath(logDir())
       if (err) throw new Error(err)
+    },
+    getNotifications: async () => kernel.notifications.list(),
+    markNotificationRead: async (id) => kernel.notifications.markRead(id),
+    markAllRead: async () => kernel.notifications.markAllRead(),
+    dismissNotification: async (id) => kernel.notifications.dismiss(id),
+    getNotificationPrefs: () => store.getNotificationPrefs(),
+    setNotificationPrefs: async (prefs) => {
+      // The renderer's payload is untrusted at this boundary — normalize
+      // before it ever reaches disk or the live subscriber. Garbage/missing
+      // fields fall back to what's already persisted, not hardcoded
+      // defaults, so a bad write can't silently discard a prior toggle.
+      const normalized = normalizeNotificationPrefs(prefs, await store.getNotificationPrefs())
+      await store.setNotificationPrefs(normalized)
+      kernel.notifications.setPrefs(normalized)
     }
   }
 
