@@ -499,25 +499,6 @@ textarea.input {
   gap: 9px;
   flex: none;
 }
-.logo-dots {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 3px;
-}
-.ld {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--dim);
-}
-/* The four dots are literal session states: done, two idle-grey, one empty. */
-.ld-green {
-  background: var(--green);
-}
-.ld-outline {
-  border: 1.5px solid var(--dim);
-  background: transparent;
-}
 .tb-name {
   font-weight: 700;
   font-size: 15px;

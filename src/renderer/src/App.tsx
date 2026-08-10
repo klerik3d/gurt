@@ -351,12 +351,6 @@ export default function App() {
     <div className="app">
       <div className="titlebar">
         <div className="tb-logo">
-          <div className="logo-dots">
-            <span className="ld ld-green" />
-            <span className="ld" />
-            <span className="ld" />
-            <span className="ld ld-outline" />
-          </div>
           <span className="tb-name">gurt</span>
         </div>
         <div className="tb-center">

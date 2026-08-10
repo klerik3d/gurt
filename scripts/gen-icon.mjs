@@ -27,9 +27,21 @@ const cy = S / 2
 // colors
 const bgTop = [0x26, 0x24, 0x20]
 const bgBot = [0x15, 0x14, 0x11]
-const border = [0x4a, 0x47, 0x40]
 const dim = [0xa3, 0xa0, 0x99]
 const green = [0x6c, 0xc4, 0x7f]
+
+// The flat graphite square reads as a black hole on a dark dock/menu bar.
+// A beveled edge — lit from the upper-left, dark on the lower-right —
+// plus a thin all-around rim keeps the silhouette visible on any background.
+const specular = [0xf0, 0xed, 0xe4]
+const bevelShadow = [0x06, 0x06, 0x05]
+const rimTint = [0xc8, 0xc5, 0xbc]
+const edgeBand = 44 * SS
+const rimBand = 3 * SS
+const gradStep = 2 * SS
+const lightLen = Math.hypot(-0.45, -0.9)
+const Lx = -0.45 / lightLen
+const Ly = -0.9 / lightLen
 
 /** Signed distance to the rounded-square border (<0 inside). */
 const sdRoundRect = (x, y) => {
@@ -39,6 +51,14 @@ const sdRoundRect = (x, y) => {
   const ox = Math.max(qx, 0)
   const oy = Math.max(qy, 0)
   return Math.hypot(ox, oy) + Math.min(Math.max(qx, qy), 0) - radius
+}
+
+/** Outward normal of the rounded-square border, via a numeric SDF gradient. */
+const sdNormal = (x, y) => {
+  const dx = sdRoundRect(x + gradStep, y) - sdRoundRect(x - gradStep, y)
+  const dy = sdRoundRect(x, y + gradStep) - sdRoundRect(x, y - gradStep)
+  const len = Math.hypot(dx, dy) || 1
+  return [dx / len, dy / len]
 }
 
 const dots = [-1, 1].flatMap((gy) =>
@@ -58,12 +78,32 @@ for (let y = 0; y < S; y++) {
     const d = sdRoundRect(x + 0.5, y + 0.5)
     if (d > 0.5) continue // outside — transparent
     let [r, g, b] = bg
-    // faint inner border highlight along the edge
-    if (d > -3 * SS) {
-      const k = 0.35
-      r = r * (1 - k) + border[0] * k
-      g = g * (1 - k) + border[1] * k
-      b = b * (1 - k) + border[2] * k
+    // beveled edge: lit from the upper-left, so the top-left corner catches
+    // a bright glint and the bottom-right corner falls into shadow.
+    if (d > -edgeBand) {
+      const [nx, ny] = sdNormal(x + 0.5, y + 0.5)
+      const dot = nx * Lx + ny * Ly
+      let et = Math.min(1, Math.max(0, 1 + d / edgeBand))
+      et = et * et * (3 - 2 * et)
+      if (dot > 0) {
+        const k = dot * et * 0.55
+        r = r * (1 - k) + specular[0] * k
+        g = g * (1 - k) + specular[1] * k
+        b = b * (1 - k) + specular[2] * k
+      } else {
+        const k = -dot * et * 0.5
+        r = r * (1 - k) + bevelShadow[0] * k
+        g = g * (1 - k) + bevelShadow[1] * k
+        b = b * (1 - k) + bevelShadow[2] * k
+      }
+    }
+    // thin all-around rim so the silhouette separates from any background
+    if (d > -rimBand) {
+      const rt = Math.min(1, Math.max(0, 1 + d / rimBand))
+      const k = rt * 0.22
+      r = r * (1 - k) + rimTint[0] * k
+      g = g * (1 - k) + rimTint[1] * k
+      b = b * (1 - k) + rimTint[2] * k
     }
     for (const dot of dots) {
       const dist = Math.hypot(x + 0.5 - dot.x, y + 0.5 - dot.y)
