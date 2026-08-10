@@ -135,17 +135,26 @@ async function fetchPrune(dir: string, access: HostGitAccess, task: string): Pro
     await git(dir, access, ['update-ref', 'refs/gurt/integrated', before])
 }
 
-/** Commits in `<base>..HEAD`, newest first, each pushed or local. */
+/**
+ * Commits in `<base>..HEAD`, newest first, each pushed or local. A null `base`
+ * means the default branch has no remote ref (a clone of an empty remote): the
+ * whole of HEAD is the thread, and `log` itself fails while HEAD is unborn.
+ */
 async function threadCommits(
   dir: string,
   access: HostGitAccess,
   task: string,
-  base: string
+  base: string | null
 ): Promise<ThreadCommit[]> {
-  const commits = await git(dir, access, ['log', '--format=%H%x00%s', `${base}..HEAD`])
+  const commits = await git(dir, access, [
+    'log',
+    '--format=%H%x00%s',
+    base ? `${base}..HEAD` : 'HEAD'
+  ]).catch(() => '')
+  const remoteRef = `refs/remotes/origin/${branchFor(task)}`
   const pushed = new Set(
     (
-      await git(dir, access, ['rev-list', `${base}..refs/remotes/origin/${branchFor(task)}`]).catch(
+      await git(dir, access, ['rev-list', base ? `${base}..${remoteRef}` : remoteRef]).catch(
         () => ''
       )
     )
@@ -190,14 +199,18 @@ async function repoChanges(
   if (del) deletions = parseInt(del[1], 10)
 
   const def = await defaultBranch(dir, access)
-  const commits = await threadCommits(dir, access, task, `origin/${def}`)
+  // A clone of an empty remote has no `origin/<def>` to compare against, and it
+  // stays that way for the life of the clone — pushes go to `gurt/<task>`, never
+  // to the default branch — so this is resolved on every call, not once.
+  const base = (await revParse(dir, access, `origin/${def}`)) ? `origin/${def}` : null
+  const commits = await threadCommits(dir, access, task, base)
   const marker = await revParse(dir, access, 'refs/gurt/integrated')
   const integrated =
     commits.length === 0 || (!!marker && marker === (await revParse(dir, access, 'HEAD')))
   const url = commits.some((c) => c.pushed) ? await compareUrl(dir, access, task) : null
-  const behindOut = await git(dir, access, ['rev-list', '--count', `HEAD..origin/${def}`]).catch(
-    () => '0'
-  )
+  const behindOut = base
+    ? await git(dir, access, ['rev-list', '--count', `HEAD..${base}`]).catch(() => '0')
+    : '0'
   const behind = parseInt(behindOut.trim(), 10) || 0
   const conflicted = !!(await revParse(dir, access, 'MERGE_HEAD'))
 
@@ -296,6 +309,8 @@ export async function updateFromMain(ws: string, task: string, repo: string): Pr
   const access = await hostGitAccessForRepo(ws, repo)
   await git(dir, access, ['fetch', 'origin'], { timeoutMs: FETCH_TIMEOUT_MS })
   const def = await defaultBranch(dir, access)
+  // Nothing to merge from an empty remote — the default branch has no ref yet.
+  if (!(await revParse(dir, access, `origin/${def}`))) return
   await git(dir, access, ['merge', `origin/${def}`, '--no-edit'], { okCodes: [0, 1] })
 }
 
