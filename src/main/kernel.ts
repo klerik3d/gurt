@@ -31,6 +31,13 @@ export interface Kernel {
   bus: Bus
   containers: ContainerManager
   sessions: SessionManager
+  /** Settles when the boot restore is done — sessions loaded, container records
+   *  reconciled against Docker, queue resumed. The app never waits on it (the UI
+   *  renders the sessions as they land), but anything that stages state *as if*
+   *  it were already booted must: the reconcile rewrites container records, and
+   *  one landing mid-setup looks exactly like a container going away. Never
+   *  rejects — a failed restore is logged, not thrown. */
+  ready: Promise<void>
   notifications: Notifications
   /** store.buildTree + session overlay. */
   tree(): Promise<Tree>
@@ -128,6 +135,41 @@ export function createKernel(): Kernel {
   // own file and never to the app log.
   bus.on('provision.log', ({ key, line }) => sessionLogLine(key, line))
 
+  // Queue handoff: while something waits in the queue, an idle container is not
+  // resting, it is *blocking* — the clone it holds is exactly what the queued
+  // session needs, and the scheduler only ever advances when a container comes
+  // down. Stopping those the moment their session falls idle is what makes the
+  // queue run at turn speed instead of at grace-period speed. Sessions nobody
+  // is waiting on are not touched here: with an empty queue this is a no-op and
+  // the plain idle policy below is the whole behaviour, unchanged.
+  const reaping = new Set<string>()
+  const reapForQueue = (): void => {
+    for (const id of sessions.holdersBlockingQueue()) {
+      // One stop per session at a time: the triggers below fire in bursts (turn
+      // end, then the adapter's exit), and a second stop would race the first.
+      if (reaping.has(id)) continue
+      reaping.add(id)
+      containers
+        .stop(id, 'queue')
+        .catch((e) => {
+          log.error('internal.fail', { site: 'queue-handoff', s: id, err: e })
+          // The stop cancelled this session's pending auto-stop before it went to
+          // Docker, so a failure leaves the container up with nothing left to try
+          // again — and the queue would wait on that clone until the holder
+          // happens to move. Re-arm the grace period: the handoff falls back to
+          // the policy it was cutting short, never to nothing.
+          containers.noteIdle(id)
+        })
+        .finally(() => {
+          reaping.delete(id)
+          // Belt and braces: a stop that succeeded already re-ran the scheduler
+          // through `container.status`, and a failed one leaves the holder
+          // holding, so this pass usually starts nothing.
+          sessions.schedule()
+        })
+    }
+  }
+
   // Notifications: turns select bus events into user-facing records (see
   // docs/requirements-notifications.md). Wired synchronously with the
   // hardcoded defaults so no early event is missed; the persisted matrix
@@ -141,6 +183,9 @@ export function createKernel(): Kernel {
   // re-verifies idleness *and* the running status before stopping.
   const idle = (sessionId: string): void => {
     if (sessions.isSessionIdle(sessionId)) containers.noteIdle(sessionId)
+    // Global by design: this session going idle may free a *different* one's
+    // blocker (a start it was waiting on finished), and the check is cheap.
+    reapForQueue()
   }
   bus.on('session.turn', ({ sessionId, phase }) => {
     if (phase === 'started') containers.noteActive(sessionId)
@@ -157,6 +202,9 @@ export function createKernel(): Kernel {
   // this the container would hold the session's repo indefinitely.
   bus.on('session.state', ({ sessionId, state }) => {
     if (state === 'draft') idle(sessionId)
+    // A fresh queue item may be blocked by an environment that has been sitting
+    // idle for minutes — free it now instead of when its timer happens to fire.
+    else if (state === 'queued') reapForQueue()
   })
   bus.on('session.activity', ({ sessionId }) => containers.noteActive(sessionId))
   // A container that came down released its session's clone — the next queued
@@ -187,15 +235,22 @@ export function createKernel(): Kernel {
     // Docker is the registry: correct the restored container records against it
     // (and reap orphans) before anything tries to exec into one.
     await containers.reconcile().catch((e) => log.error('internal.fail', { site: 'container-reconcile', err: e }))
-    // Resume the queue once, after everything is restored.
+    // Resume the queue once, after everything is restored: start what can start,
+    // then free what the rest is waiting on. Without the second call a queue
+    // restored behind a still-running container would never move — nothing has
+    // armed an idle timer for that container in this process yet.
     sessions.schedule()
+    reapForQueue()
   }
-  restoreSessions().catch((e) => log.error('internal.fail', { site: 'session-restore', err: e }))
+  const ready = restoreSessions().catch((e) =>
+    log.error('internal.fail', { site: 'session-restore', err: e })
+  )
 
   return {
     bus,
     containers,
     sessions,
+    ready,
     notifications,
 
     async tree(): Promise<Tree> {

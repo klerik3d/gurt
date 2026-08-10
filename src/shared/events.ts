@@ -11,9 +11,12 @@ import type { NotificationRecord } from './notifications'
 
 /** Why a container reached its new status — the "who asked for this" a status
  *  alone cannot answer. `user` covers both a user action and the scheduler
- *  acting on one (a start, a manual stop); `idle` is the auto-stop policy. */
+ *  acting on one (a start, a manual stop); `idle` is the auto-stop policy;
+ *  `queue` is that policy cut short because a queued session needs this
+ *  container's clone. */
 export type ContainerStatusReason =
   | 'idle'
+  | 'queue'
   | 'user'
   | 'task-deleted'
   | 'session-deleted'

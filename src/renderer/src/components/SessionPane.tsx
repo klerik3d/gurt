@@ -189,7 +189,10 @@ function NonStartedPane({
           {queuePosition != null && (
             <div className="queue-badge">
               queued — position #{queuePosition}
-              <div className="dim">starts when the environment and its repository are free</div>
+              <div className="dim">
+                starts when its repository is free — the session holding it releases it as
+                soon as its turn ends
+              </div>
             </div>
           )}
           <pre className="draft-prompt readonly">{info.startPrompt}</pre>

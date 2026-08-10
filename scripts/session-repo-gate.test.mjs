@@ -71,6 +71,10 @@ try {
   fs.writeFileSync(path.join(GURT_ROOT, ws, 'agents.json' ), JSON.stringify({}))
 
   const kernel = createKernel()
+  // Wait out the boot reconcile before staging container records: it drops every
+  // record Docker does not confirm, and landing mid-test it would release a clone
+  // the gate is being asked about (see queue-handoff.test.mjs).
+  await kernel.ready
   const ref = { workspace: ws, task, env: 'dev' }
   const mk = (repo, title) => {
     const info = kernel.sessions.createSession(ref, repo, 'a1', 'hi', 'none')

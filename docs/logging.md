@@ -158,8 +158,9 @@ logged at WRN, whichever command it was.
 
 `session.state`'s `reason` names the trigger: `created`, `user`, `scheduler`,
 `start-failed` (with `err`). `container.status`'s `reason` is one of `idle`
-(auto-stop), `user` (a start or stop asked for by the user or the scheduler),
-`task-deleted`, `session-deleted`, `error`, `reconcile`.
+(auto-stop), `queue` (auto-stop cut short — a queued session needs this
+container's clone), `user` (a start or stop asked for by the user or the
+scheduler), `task-deleted`, `session-deleted`, `error`, `reconcile`.
 
 `internal.fail` is the catch-all for a background operation's rejection —
 persistence, reconcile, a bus handler, a subprocess wrapper — anywhere there is

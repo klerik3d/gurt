@@ -30,7 +30,9 @@ there is archived in `archive/`; the model mostly still applies).
   (it holds their uncommitted work). Because it is one working tree, a repo is
   **exclusive**: only one session of the task may hold it at a time — where
   "hold" means mid-start or owning a live container. An idle session whose
-  container has auto-stopped releases it for the next one.
+  container has stopped releases it for the next one — and while something is
+  queued for that repo, the stop happens the moment the holder's turn ends
+  instead of after the idle grace period.
 - **session** — the primary entity: (workspace, task, env, repo, agent,
   startPrompt, state) + its container + chat history + optional ACP session id.
   States: `draft → queued → starting → started`.
@@ -47,9 +49,14 @@ queue** / **Save draft**:
 
 - **draft** never runs until you run/enqueue it.
 - **queued** waits in the queue; the scheduler starts an item when its target
-  (task, repo) is free — i.e. the env is not starting/running. A repo frees only
-  when its env is **stopped** (manual stop today; auto-stop is future work). Two
-  queued sessions for one repo therefore run strictly one after another.
+  (task, repo) is free — i.e. no session is starting or holding a live container
+  on that clone. A repo frees when its holder's container comes down, and with
+  something queued behind it that is immediate: the holder's turn ends, its
+  container is stopped (`reason: queue`), and the next item starts. Two queued
+  sessions for one repo therefore run strictly one after another, back to back.
+  A holder that is mid-turn or mid-start is never cut off — the queue waits for
+  it — and with an empty queue containers stay up for the usual idle grace
+  period, ready for a follow-up prompt.
 - **Run now** bypasses the queue and starts immediately; if another session is
   already working on that repo it confirms first (two agents, one working tree).
 

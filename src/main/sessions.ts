@@ -646,6 +646,39 @@ export class SessionManager {
     return !!this.repoKey(s) && !this.repoHolder(s)
   }
 
+  /**
+   * Sessions whose live container is the only thing keeping a queued session
+   * off its clone, and which are not themselves working — the environments
+   * nobody is claiming right now. The queue handoff (kernel.ts) stops these
+   * immediately rather than letting them sit out the idle grace period, which
+   * is what turns "waiting for a repo" from ten minutes into seconds.
+   *
+   * A holder that is mid-start or mid-turn is doing real work and is never
+   * listed: the queue waits for it exactly as before. Empty queue → empty list,
+   * so with nothing waiting the plain idle policy applies untouched.
+   */
+  holdersBlockingQueue(): string[] {
+    const wanted = new Set<string>()
+    for (const s of this.sessions.values()) {
+      if (s.info.state !== 'queued') continue
+      const rkey = this.repoKey(s)
+      if (rkey) wanted.add(rkey)
+    }
+    if (!wanted.size) return []
+    const out: string[] = []
+    for (const o of this.sessions.values()) {
+      // A queued holder is the scheduler's business, not the reaper's: it owns
+      // a container it is about to start into.
+      if (o.info.state === 'queued' || o.info.state === 'starting' || o.busy) continue
+      const rkey = this.repoKey(o)
+      if (!rkey || !wanted.has(rkey)) continue
+      // Only a fully-up container is stoppable — one still building/post is
+      // mid-provision, and `starting` above already covers its session.
+      if (o.info.container?.status === 'running') out.push(o.info.id)
+    }
+    return out
+  }
+
   /** Provision (if needed), open the ACP session, and send the start prompt. */
   private async startSession(sessionId: string, by: 'user' | 'scheduler'): Promise<void> {
     const s = this.sessions.get(sessionId)
