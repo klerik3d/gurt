@@ -722,6 +722,32 @@ export async function devcontainerUp(
   }
 }
 
+/** True when the agent's adapter binary is already on PATH inside the
+ *  container. Probed through `devcontainer exec` — the same environment the
+ *  install and the adapter spawn resolve, so PATH (nvm's node) reads the same
+ *  way for all three. The host-side installed-cache dies with the app process
+ *  while the install itself lives in the container, and this probe is what
+ *  keeps a fresh process from reinstalling over it — a reinstall skipped is
+ *  also a reinstall that cannot rewrite the package under a live spawn. */
+export async function adapterPresent(
+  session: string,
+  agent: AgentDef,
+  configArgs: string[],
+  workspaceFolder: string
+): Promise<boolean> {
+  const { code } = await runNodeCli(
+    [
+      'exec',
+      '--workspace-folder', workspaceFolder,
+      ...idLabelArgs(session),
+      ...configArgs,
+      'sh', '-c', `command -v ${agent.bin}`
+    ],
+    () => {}
+  )
+  return code === 0
+}
+
 export async function installAcpAdapter(
   session: string,
   agent: AgentDef,
