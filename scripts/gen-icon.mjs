@@ -42,6 +42,12 @@ const gradStep = 2 * SS
 const lightLen = Math.hypot(-0.45, -0.9)
 const Lx = -0.45 / lightLen
 const Ly = -0.9 / lightLen
+// The specular glint is confined to the top-left corner (rather than
+// running the full length of the top and left edges) by fading it out
+// with distance from the corner's arc center.
+const glintCx = inset + radius
+const glintCy = inset + radius
+const glintRadius = S * 0.32
 
 /** Signed distance to the rounded-square border (<0 inside). */
 const sdRoundRect = (x, y) => {
@@ -86,7 +92,10 @@ for (let y = 0; y < S; y++) {
       let et = Math.min(1, Math.max(0, 1 + d / edgeBand))
       et = et * et * (3 - 2 * et)
       if (dot > 0) {
-        const k = dot * et * 0.55
+        const cdist = Math.hypot(x - glintCx, y - glintCy)
+        let ct = Math.min(1, Math.max(0, 1 - cdist / glintRadius))
+        ct = ct * ct * (3 - 2 * ct)
+        const k = dot * et * 0.55 * ct
         r = r * (1 - k) + specular[0] * k
         g = g * (1 - k) + specular[1] * k
         b = b * (1 - k) + specular[2] * k
