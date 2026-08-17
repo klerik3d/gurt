@@ -34,7 +34,15 @@ await build({
 const { postTurnDecision, NUDGE_PROMPT, adapterExitCode } = await import(pathToFileURL(outfile).href)
 
 const decide = (o) =>
-  postTurnDecision({ threw: false, isNudge: false, stopReason: 'end_turn', turnComplete: false, ...o })
+  postTurnDecision({
+    threw: false,
+    isNudge: false,
+    stopReason: 'end_turn',
+    turnComplete: false,
+    // The executor default; the roles without the contract are asserted below.
+    hasContract: true,
+    ...o
+  })
 
 try {
   // end_turn + complete → nothing
@@ -70,6 +78,20 @@ try {
     decide({ threw: true, turnComplete: false, isNudge: true }),
     'none',
     'thrown nudge → none'
+  )
+
+  // A role without the turn contract (researcher / reviewer) is never offered
+  // `complete` at all — nudging it would demand a tool that isn't there, so its
+  // turns just end, nudge-turn bookkeeping included.
+  assert.equal(
+    decide({ hasContract: false, turnComplete: false }),
+    'none',
+    'no contract: end_turn without complete → none'
+  )
+  assert.equal(
+    decide({ hasContract: false, turnComplete: false, isNudge: true }),
+    'none',
+    'no contract: never marks incomplete either'
   )
 
   assert.match(NUDGE_PROMPT, /complete/, 'nudge prompt asks for `complete`')

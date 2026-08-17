@@ -1,5 +1,6 @@
-// Pure-node test for the `gurt` host MCP server (the turn contract, §7.1 of
-// docs/requirements-turn-contract.md). No docker, no electron: it bundles the
+// Pure-node test for the `gurt` host MCP server: the turn contract (§7.1 of
+// docs/requirements-turn-contract.md) and the per-role tool set (§5 of
+// docs/requirements-session-roles.md). No docker, no electron: it bundles the
 // server with esbuild and drives it over real HTTP with MCP JSON-RPC. Harness
 // style of scripts/session-log.test.mjs.
 //
@@ -35,16 +36,37 @@ await build({
 const { buildGurtHttpServer } = await import(pathToFileURL(outfile).href)
 
 const TOKEN = 'test-token'
-/** Payloads the host callback received — the machine-readable outcome. */
+/** Payloads the host callbacks received — the machine-readable outcomes. */
 const received = []
-const server = buildGurtHttpServer(TOKEN, (p) => received.push(p))
-await new Promise((r) => server.listen(0, '127.0.0.1', r))
-const port = server.address().port
-const url = (token = TOKEN) => `http://127.0.0.1:${port}/mcp/${token}`
+const drafted = []
+/** Whatever the next `create_session` should do: return a draft, or throw the
+ *  way a host-side rule (role gating, unknown repo) does. */
+let draftResult = { sessionId: 'sess-1', title: 'fix review findings' }
+
+/** One server per role, all on the same token — a session's role is fixed, so
+ *  each is exactly what one session would be handed. */
+const servers = {}
+const ports = {}
+for (const role of ['executor', 'researcher', 'reviewer']) {
+  const server = buildGurtHttpServer(TOKEN, {
+    role,
+    onComplete: (p) => received.push(p),
+    onCreateSession: async (req) => {
+      drafted.push({ role, req })
+      if (draftResult instanceof Error) throw draftResult
+      return draftResult
+    }
+  })
+  await new Promise((r) => server.listen(0, '127.0.0.1', r))
+  servers[role] = server
+  ports[role] = server.address().port
+}
+
+const url = (role, token = TOKEN) => `http://127.0.0.1:${ports[role]}/mcp/${token}`
 
 /** POST one JSON-RPC message; returns { status, body }. */
-async function post(message, { token, method = 'POST' } = {}) {
-  const res = await fetch(url(token), {
+async function post(message, { role = 'executor', token, method = 'POST' } = {}) {
+  const res = await fetch(url(role, token), {
     method,
     headers: {
       'content-type': 'application/json',
@@ -63,27 +85,27 @@ async function post(message, { token, method = 'POST' } = {}) {
 }
 
 let id = 0
-/** Call the `complete` tool; returns { isError, text }. */
-async function complete(args) {
-  const { body } = await post({
-    jsonrpc: '2.0',
-    id: ++id,
-    method: 'tools/call',
-    params: { name: 'complete', arguments: args }
-  })
+/** Call a tool; returns { isError, text }. */
+async function call(name, args, role = 'executor') {
+  const { body } = await post(
+    { jsonrpc: '2.0', id: ++id, method: 'tools/call', params: { name, arguments: args } },
+    { role }
+  )
   return { isError: body.result?.isError === true, text: body.result?.content?.[0]?.text ?? '' }
+}
+const complete = (args) => call('complete', args, 'executor')
+
+/** tools/list for one role, as name → tool. */
+async function tools(role) {
+  const { body } = await post({ jsonrpc: '2.0', id: ++id, method: 'tools/list', params: {} }, { role })
+  return Object.fromEntries(body.result.tools.map((t) => [t.name, t]))
 }
 
 try {
   // --- tools/list: exactly `complete`, with a real (non-empty, strict) schema ---
-  const list = await post({ jsonrpc: '2.0', id: ++id, method: 'tools/list', params: {} })
-  const tools = list.body.result.tools
-  assert.deepEqual(
-    tools.map((t) => t.name),
-    ['complete'],
-    'tools/list shows exactly `complete`'
-  )
-  const schema = tools[0].inputSchema
+  const executorTools = await tools('executor')
+  assert.deepEqual(Object.keys(executorTools), ['complete'], 'executor gets exactly `complete`')
+  const schema = executorTools.complete.inputSchema
   assert.equal(schema.additionalProperties, false, 'input schema rejects unknown keys')
   assert.deepEqual(
     Object.keys(schema.properties).sort(),
@@ -142,6 +164,89 @@ try {
   assert.equal(received.length, guard, 'no rejected call reached the host callback')
   console.log('invalid calls rejected, callback untouched OK')
 
+  // --- per-role tool sets (roles doc §5) --------------------------------------
+  const researcherTools = await tools('researcher')
+  assert.deepEqual(
+    Object.keys(researcherTools),
+    ['create_session'],
+    'a researcher gets create_session and NO complete'
+  )
+  const reviewerTools = await tools('reviewer')
+  assert.deepEqual(
+    Object.keys(reviewerTools),
+    ['create_session'],
+    'a reviewer gets create_session and NO complete'
+  )
+  // The offered `role` is narrowed per spawner: a reviewer may only draft the
+  // executor that fixes its findings, so the schema itself says so.
+  assert.deepEqual(
+    researcherTools.create_session.inputSchema.properties.role.enum,
+    ['executor', 'reviewer'],
+    'a researcher may draft executors and reviewers'
+  )
+  assert.deepEqual(
+    reviewerTools.create_session.inputSchema.properties.role.enum,
+    ['executor'],
+    'a reviewer may draft executors only'
+  )
+  console.log('per-role tool sets OK')
+
+  // --- create_session: valid call reaches the host, result names the draft ----
+  const draftedBefore = drafted.length
+  const spawn = await call(
+    'create_session',
+    { role: 'executor', repos: ['alpha'], prompt: 'fix the findings below', title: 'fixer' },
+    'reviewer'
+  )
+  assert.equal(spawn.isError, false, 'valid create_session is not an error')
+  assert.equal(drafted.length, draftedBefore + 1, 'it reached the host exactly once')
+  assert.deepEqual(drafted[drafted.length - 1].req, {
+    role: 'executor',
+    repos: ['alpha'],
+    prompt: 'fix the findings below',
+    title: 'fixer'
+  })
+  assert.match(spawn.text, /sess-1/, 'the result carries the draft id')
+  assert.match(spawn.text, /launch/, 'the result says the user still has to launch it')
+  console.log('create_session OK')
+
+  // --- create_session rejections ---------------------------------------------
+  const spawnGuard = drafted.length
+  const badSpawns = [
+    ['role a reviewer may not draft', { role: 'reviewer', repos: ['a'], prompt: 'p' }, 'reviewer'],
+    ['role no one may draft', { role: 'researcher', repos: ['a'], prompt: 'p' }, 'researcher'],
+    ['no repo', { role: 'executor', repos: [], prompt: 'p' }, 'researcher'],
+    ['two repos', { role: 'executor', repos: ['a', 'b'], prompt: 'p' }, 'researcher'],
+    ['empty prompt', { role: 'executor', repos: ['a'], prompt: '' }, 'researcher'],
+    ['unknown key', { role: 'executor', repos: ['a'], prompt: 'p', bogus: 1 }, 'researcher']
+  ]
+  for (const [label, args, role] of badSpawns) {
+    const r = await call('create_session', args, role)
+    assert.equal(r.isError, true, `${label} → isError`)
+  }
+  assert.equal(drafted.length, spawnGuard, 'no rejected spawn reached the host callback')
+
+  // A host-side rule (unknown repo, role gating in the session manager) reads
+  // like a schema failure to the agent: isError + the message, not a crash.
+  draftResult = new Error('repo "nope" is not registered in "w"')
+  const hostReject = await call(
+    'create_session',
+    { role: 'executor', repos: ['nope'], prompt: 'p' },
+    'researcher'
+  )
+  assert.equal(hostReject.isError, true, 'a host-side rejection is an isError result')
+  assert.match(hostReject.text, /not registered/, 'and carries the host message')
+  draftResult = { sessionId: 'sess-1', title: 'fix review findings' }
+
+  // The executor has no create_session at all — calling it is an error, and it
+  // never reaches the host.
+  const notOffered = await call('create_session', { role: 'executor', repos: ['a'], prompt: 'p' })
+  assert.equal(notOffered.isError, true, 'an executor cannot spawn')
+  // …and neither role without the contract can report a proposal.
+  const noComplete = await call('complete', { version: 1, outcome: 'no_changes' }, 'researcher')
+  assert.equal(noComplete.isError, true, 'a researcher has no `complete` tool')
+  console.log('tool gating per role OK')
+
   // --- transport guards -------------------------------------------------------
   assert.equal((await post({ jsonrpc: '2.0', id: ++id, method: 'tools/list' }, { token: 'nope' })).status, 404, 'wrong token → 404')
   assert.equal((await post({}, { method: 'GET' })).status, 405, 'GET → 405')
@@ -149,6 +254,6 @@ try {
 
   console.log('gurt-mcp.test: PASS')
 } finally {
-  server.close()
+  for (const server of Object.values(servers)) server.close()
   fs.rmSync(outfile, { force: true })
 }

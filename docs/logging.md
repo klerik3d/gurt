@@ -131,7 +131,8 @@ escaped, and `\n` written as `\\n`, so one record stays one line.
 | `session.turn`            | INF   | `s`, `phase`                                               |
 | `session.awaiting`        | INF   | `s`, `awaiting`                                            |
 | `session.adapterExited`   | INF   | `s`                                                        |
-| `session.proposal`        | INF   | `s`, `repo`                                                |
+| `session.proposal`        | INF   | `s`, `repos`                                               |
+| `session.drafted`         | INF   | `s` (the new draft), `by` (the session whose agent asked), `role` |
 | `external.stub`           | INF   | `type`, `s`                                                |
 | `session.end`             | INF   | `s`, `turns`, `ms`, `stopReason`, `exitCode`               |
 | `agent.spawn`             | INF   | `s`, `cmd`, `pid`, `c`, `env` (injected variable *names*)   |
@@ -143,7 +144,7 @@ escaped, and `\n` written as `\\n`, so one record stays one line.
 | `container.status`        | INF   | `s`, `status`, `reason`                                    |
 | `container.stop` / `.remove` | INF | `s`, `c`, `reason`, `ms`                                  |
 | `reconcile.done`          | INF   | `fixed`, `orphans`                                         |
-| `mcp.start` / `mcp.stop`  | INF   | `id`, `s`, `mode`, `port`                                  |
+| `mcp.start` / `mcp.stop`  | INF   | `id`, `s`, `mode` (the granted access level, or the session's role for `gurt`), `port` |
 | `gitbroker.start` / `.stop` | INF | `s`, `port`                                                |
 | `ipc.call`                | DBG   | `method`, `ms`, `args`                                     |
 | `ipc.fail`                | ERR   | `method`, `ms`, `err`, `args` (DBG only)                   |

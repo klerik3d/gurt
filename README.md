@@ -29,13 +29,33 @@ there is archived in `archive/`; the model mostly still applies).
   every session of the task that picked that repo, and outliving all of them
   (it holds their uncommitted work). Because it is one working tree, a repo is
   **exclusive**: only one session of the task may hold it at a time — where
-  "hold" means mid-start or owning a live container. An idle session whose
+  "hold" means mid-start or owning a live container, and only for the roles
+  that take the lock (an executor and a reviewer; a researcher mounts the repo
+  read-only and holds nothing). An idle session whose
   container has stopped releases it for the next one — and while something is
   queued for that repo, the stop happens the moment the holder's turn ends
   instead of after the idle grace period.
-- **session** — the primary entity: (workspace, task, env, repo, agent,
+- **session** — the primary entity: (workspace, task, env, role, repo, agent,
   startPrompt, state) + its container + chat history + optional ACP session id.
   States: `draft → queued → starting → started`.
+- **role** — what a session is *for*, chosen at creation (editable while it is
+  still a draft) and driving its mounts, its clone lock and its tool set
+  instead of being inferred from repo count. See
+  [docs/requirements-session-roles.md](docs/requirements-session-roles.md):
+  - **executor** — today's worker: one repo, read-write, holds the clone
+    exclusively, ends every turn with `complete` (the turn contract below).
+  - **researcher** — read-only, locks nothing (so it never blocks and is never
+    blocked), no deliverable and no turn contract; the only role that may hold
+    several repos at once. Answers in chat.
+  - **reviewer** — judges one clone's *uncommitted* changes: read-only, but
+    holding the clone lock so nothing can move under it. Its verdict is plain
+    chat text and gates nothing.
+
+  Read-only means Docker `readonly` bind mounts, not a convention. A researcher
+  and a reviewer are also offered `create_session` instead of `complete`: it
+  **drafts** another session in the same task (a fixer executor, a reviewer),
+  fully configured. A draft never runs by itself — the user reviewing and
+  launching it is the approval step — and nothing flows back to the spawner.
 
 Sidebar: workspace → task → session. A task click opens the **task pane** (the
 containers of its sessions + this task's queued sessions). A session click opens
@@ -204,6 +224,7 @@ SCRATCH=/tmp/gurt-smoke node scripts/smoke8.mjs   # native git access: credentia
 # turn contract end-to-end (docker + a working claude secret; SKIPs without one):
 SCRATCH=/tmp/gurt-smoke GURT_SMOKE_CLAUDE_TOKEN=… node scripts/smoke9.mjs
 node scripts/smoke-delete-row.mjs                 # sidebar Del/⌫: confirm, delete, move the selection, no docker
+node scripts/smoke-roles.mjs                      # session roles: the picker, the repo select it drives, persistence, no docker
 node scripts/smoke-logging.mjs                    # app log: startup banner, IPC wrapper, renderer transport, needs docker
 ```
 
@@ -212,7 +233,8 @@ Docker-free unit tests (pure node, bundled on the fly with esbuild):
 ```bash
 node scripts/git-logic.test.mjs        # git contract: repo identity, credential resolution, rewrites, forge
 node scripts/session-log.test.mjs      # append-only session log + legacy migration
-node scripts/gurt-mcp.test.mjs         # turn contract: the `gurt` MCP server + `complete` tool validation
+node scripts/gurt-mcp.test.mjs         # the `gurt` MCP server: `complete` validation + the per-role tool set
+node scripts/session-roles.test.mjs    # session roles: locks, (role, repos) rules, create_session gating, migration
 node scripts/turn-contract.test.mjs    # turn contract: the post-turn nudge/incomplete decision matrix
 node scripts/proposal-store.test.mjs   # turn contract: proposal restore, latestProposal, Kernel.prUrl params
 node scripts/env-config.test.mjs       # env normal form: JSONC parse/validation, envImageTag identity, migration

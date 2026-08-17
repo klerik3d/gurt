@@ -15,14 +15,14 @@ import type {
   SessionModes,
   SessionSnapshot
 } from '../../../shared/types'
-import { sessionStatus } from '../../../shared/types'
+import { sessionRole, sessionStatus } from '../../../shared/types'
 import { agentOptionView } from '../../../shared/agentConfig'
 import { agentKind, agentName, useAgents } from '../useAgents'
 import { alertDialog } from '../dialog'
 import { createLogger, logErr } from '../log'
 import { SESSION_DOT } from '../status'
 import { Icon, Dot } from './icons'
-import { AgentMark, EnvRepoMarks } from './tags'
+import { AgentMark, EnvRepoMarks, RoleMark } from './tags'
 import { VscodeButton } from './VscodeButton'
 
 const log = createLogger('chat')
@@ -240,6 +240,7 @@ export function Chat({
         <span className="spacer" />
         <span className="chat-pill">{sizeLabel}</span>
         <span className="chat-pill">
+          <RoleMark role={sessionRole(info)} />
           <EnvRepoMarks env={info.env} repos={info.repos} task={info.task} />
           {info.agent && (
             <span>

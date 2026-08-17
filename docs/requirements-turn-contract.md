@@ -73,7 +73,14 @@ export function stopGurtServersForEnv(ref: EnvRef): void
 ```
 
 MCP server name `gurt`, exactly one tool `complete`. Server `instructions`
-(delivered through MCP init — nothing in the clone, invisible in chat):
+(delivered through MCP init — nothing in the clone, invisible in chat).
+
+> Since superseded in shape (not in content) by
+> `requirements-session-roles.md` §5: the server's tool set and instructions
+> are a function of the session's **role**. What is described here is the
+> executor's — the only role offered `complete` — and `ensureGurtServer` /
+> `resolveGurtServer` take a hooks object carrying that role instead of a bare
+> `onComplete` callback.
 
 ```
 Finish EVERY turn by calling the `complete` tool, after all other work:

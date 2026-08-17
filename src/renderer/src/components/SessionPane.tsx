@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react'
 import type { SessionSnapshot, Tree } from '../../../shared/types'
-import { sessionStatus } from '../../../shared/types'
+import { roleLocksClone, sessionRole, sessionStatus } from '../../../shared/types'
 import { agentKind, agentName, useAgents } from '../useAgents'
 import { alertDialog, confirmDialog } from '../dialog'
 import { logErr } from '../log'
 import { SESSION_DOT } from '../status'
 import { Dot } from './icons'
-import { AgentMark, AgentTag, EnvRepoMarks, EnvTag, RepoTag } from './tags'
+import { AgentMark, AgentTag, EnvRepoMarks, EnvTag, RepoTag, RoleMark, RoleTag } from './tags'
 import { Chat } from './Chat'
 import { NewSessionModal } from './Sidebar'
 import { VscodeButton } from './VscodeButton'
@@ -55,6 +55,7 @@ function Header({ snapshot }: { snapshot: SessionSnapshot }) {
       <span className="tag">{info.state}</span>
       <span className="spacer" />
       <span className="chat-pill">
+        <RoleMark role={sessionRole(info)} />
         <EnvRepoMarks env={info.env} repos={info.repos} task={info.task} />
         {/* Own element, not a bare string: adjacent text nodes collapse into one
             flex item and lose the row's gap. */}
@@ -109,6 +110,7 @@ function NonStartedPane({
       {info.state === 'draft' && (
         <div className="draft-body">
           <div className="draft-settings">
+            <RoleTag role={sessionRole(info)} />
             <EnvTag name={info.env} />
             {info.repos.length ? (
               info.repos.map((r) => <RepoTag key={r} name={r} />)
@@ -190,8 +192,9 @@ function NonStartedPane({
             <div className="queue-badge">
               queued — position #{queuePosition}
               <div className="dim">
-                starts when its repository is free — the session holding it releases it as
-                soon as its turn ends
+                {roleLocksClone(sessionRole(info))
+                  ? 'starts when its repository is free — the session holding it releases it as soon as its turn ends'
+                  : 'starts as soon as the queue reaches it — a researcher mounts its repos read-only and waits for no one'}
               </div>
             </div>
           )}

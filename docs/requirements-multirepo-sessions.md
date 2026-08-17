@@ -65,7 +65,9 @@ recorded because the reasoning is easy to re-derive backwards otherwise:
   a discovery session by convention (no git broker, so nothing meaningful can
   be pushed anywhere), not by filesystem-level enforcement — enforcing
   read-only mounts was explicitly deferred to a separate, later task/
-  mechanism rather than folded into this change.
+  mechanism rather than folded into this change. *(That deferral is closed:
+  `requirements-session-roles.md` turns the discovery session into the
+  **researcher** role and mounts its repos `readonly`.)*
 - **Repos are the same shared clones every session of the task uses**, not a
   separate shallow/ephemeral checkout. A discovery session may later grow
   into a review session, at which point it needs to see the *actual* working
@@ -91,7 +93,8 @@ recorded because the reasoning is easy to re-derive backwards otherwise:
 - Write access to more than one repo in a session (needs the git broker to
   become per-request repo-aware, and the scheduler lock to become a set —
   see §2).
-- Enforcing read-only mounts at the filesystem/Docker level.
+- Enforcing read-only mounts at the filesystem/Docker level. *(Since taken:
+  see `requirements-session-roles.md` §4.)*
 - Cleaning up `<task>/.multirepo/<sessionId>/` on session delete — clones
   already outlive their sessions by design, and the wrapper directory holds
   no data (only mount points), so an orphaned empty directory is inert, not a

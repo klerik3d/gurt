@@ -12,6 +12,7 @@
 import { spawn } from 'node:child_process'
 import { promises as fs } from 'node:fs'
 import type { EnvRef, RepoConfig, SessionContainer, SessionInfo } from '../shared/types'
+import { roleIsReadOnly, sessionRole } from '../shared/types'
 import type { ContainerStatusReason } from '../shared/events'
 import type { AgentDef } from '../shared/agents'
 import { agentDef } from '../shared/agents'
@@ -44,6 +45,20 @@ const log = createLogger('containers')
  *  counts as a real change (forces a rebuild) same as adding/removing one. */
 function sameRepos(a: string[] | undefined, b: string[]): boolean {
   return !!a && a.length === b.length && a.every((r, i) => r === b[i])
+}
+
+/**
+ * Does this session mount its repos explicitly, into an empty wrapper directory
+ * used as `--workspace-folder`? Two cases need it: more than one repo (there is
+ * no single clone the workspace folder could be), and every read-only role — the
+ * mount the CLI derives from `--workspace-folder` is always read-write, so a
+ * read-only clone has to be an explicit `--mount` alongside it.
+ *
+ * A plain read-write single-repo session (an executor) is unchanged: the clone
+ * dir *is* the workspace folder, no extra mounts at all.
+ */
+function usesRepoMounts(info: SessionInfo): boolean {
+  return info.repos.length > 1 || roleIsReadOnly(sessionRole(info))
 }
 
 /** Everything needed to (re)spawn the agent process for a session. */
@@ -255,24 +270,26 @@ export class ContainerManager {
         provisionLog
       )
       enter('up')
-      const multi = info.repos.length > 1
-      // Single repo: unchanged — `--workspace-folder` IS the clone, exactly as
-      // before. Discovery session: `--workspace-folder` is an empty wrapper
-      // dir, and every repo (anchor included) is mounted into it explicitly,
-      // so none of them sits at the container's top-level workspace folder.
+      const mounted = usesRepoMounts(info)
+      const readonly = roleIsReadOnly(sessionRole(info))
+      // Read-write single repo (an executor): unchanged — `--workspace-folder`
+      // IS the clone, exactly as before. Otherwise `--workspace-folder` is an
+      // empty wrapper dir and every repo (anchor included) is mounted into it
+      // explicitly, so none of them sits at the container's top-level workspace
+      // folder and each carries its own read-only flag.
       let workspaceFolder = dirs[0]
-      let extraMounts: { hostDir: string; name: string }[] = []
-      if (multi) {
-        workspaceFolder = store.multiRepoWorkspaceDir(info.workspace, info.task, sessionId)
+      let extraMounts: { hostDir: string; name: string; readonly?: boolean }[] = []
+      if (mounted) {
+        workspaceFolder = store.mountedWorkspaceDir(info.workspace, info.task, sessionId)
         await fs.mkdir(workspaceFolder, { recursive: true })
-        extraMounts = repoCfgs.map((r, i) => ({ hostDir: dirs[i], name: r.name }))
+        extraMounts = repoCfgs.map((r, i) => ({ hostDir: dirs[i], name: r.name, readonly }))
       }
       const up = await devcontainerUp(
         sessionId,
         configArgs,
         workspaceFolder,
         provisionLog,
-        multi ? 'repos' : repoCfgs[0].name,
+        mounted ? 'repos' : repoCfgs[0].name,
         canonicalRepoId(repoCfgs[0].url)?.host,
         () =>
           this.setStatus(
@@ -361,12 +378,11 @@ export class ContainerManager {
       containerId: c.id,
       remoteWorkspaceFolder: c.remoteWorkspaceFolder,
       // Must match whatever `ensureUncoalesced` passed as `--workspace-folder`
-      // for this same repo set — the wrapper dir for a discovery session, the
-      // plain clone dir otherwise.
-      hostWorkspaceFolder:
-        info.repos.length > 1
-          ? store.multiRepoWorkspaceDir(info.workspace, info.task, sessionId)
-          : cloneDir(info.workspace, info.task, info.repos[0]),
+      // for this same session — the wrapper dir whenever the repos are mounted
+      // explicitly, the plain clone dir otherwise.
+      hostWorkspaceFolder: usesRepoMounts(info)
+        ? store.mountedWorkspaceDir(info.workspace, info.task, sessionId)
+        : cloneDir(info.workspace, info.task, info.repos[0]),
       // The file behind these args was materialized by ensure's up (and persists
       // across app restarts) — up and every exec resolve the same config.
       configArgs: overrideConfigArgs(this.refOf(info)),
@@ -374,9 +390,11 @@ export class ContainerManager {
       secretEnv: cfg.secretEnv || def.secretEnv,
       env: cfg.env,
       // The git broker is scoped to one repo for its whole container lifetime —
-      // unavailable for a discovery session regardless of `gitAccess`.
+      // unavailable across several repos regardless of `gitAccess`. A read-only
+      // role gets none either: its clone refuses writes at the mount, so native
+      // git would only fail later and more confusingly.
       gitBrokerEnv:
-        info.gitAccess && info.repos.length === 1
+        info.gitAccess && info.repos.length === 1 && !roleIsReadOnly(sessionRole(info))
           ? await this.resolveGitAccess(info, repoCfg, c.id)
           : undefined
     }

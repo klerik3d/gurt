@@ -3,6 +3,7 @@ import type {
   AcpHttpMcpServer,
   AgentConfig,
   AgentConfigCache,
+  AgentSessionRequest,
   ChangeProposal,
   ChatEntry,
   ChatEntryBase,
@@ -18,10 +19,19 @@ import type {
   SessionInfo,
   SessionLogRecord,
   SessionModes,
+  SessionRole,
   SessionSnapshot,
   StoredProposal
 } from '../shared/types'
-import { applyLog } from '../shared/types'
+import {
+  applyLog,
+  roleAllowsMultiRepo,
+  roleHasTurnContract,
+  roleIsReadOnly,
+  roleLocksClone,
+  sessionRole,
+  spawnableRoles
+} from '../shared/types'
 import { defaultAgentConfig } from '../shared/agentConfig'
 import type { AgentDef } from '../shared/agents'
 import type { CreateAction } from '../shared/api'
@@ -184,15 +194,25 @@ export interface SessionEvents {
   ) => Promise<AcpHttpMcpServer[]>
   /** Tear down the session's host MCP servers. */
   stopMcpServers: (sessionId: string) => void
-  /** Ensure the per-session `gurt` server (the turn contract) is up; return its
-   *  ACP descriptor. Attached to every session unconditionally. */
+  /** Ensure the per-session `gurt` server is up; return its ACP descriptor.
+   *  Attached to every session unconditionally — its tool set follows the
+   *  session's role (`complete` for an executor, `create_session` for the
+   *  roles that fan out; see docs/requirements-session-roles.md §5). */
   resolveGurtServer: (
     ref: EnvRef,
     sessionId: string,
-    onComplete: (p: ChangeProposal) => void
+    hooks: {
+      role: SessionRole
+      onComplete: (p: ChangeProposal) => void
+      onCreateSession: (req: AgentSessionRequest) => Promise<{ sessionId: string; title: string }>
+    }
   ) => Promise<AcpHttpMcpServer>
   /** Tear down one session's `gurt` server (session deleted). */
   stopGurtServer: (sessionId: string) => void
+  /** Reject repos/env that are not registered in the workspace — the check
+   *  `Kernel.editDraft` runs at the IPC boundary, reused for the drafts an
+   *  agent asks for through `create_session` (which bypasses that boundary). */
+  checkDraftTarget: (ws: string, repos: string[], env: string) => Promise<void>
   /** Destroy the container this session owns, if any — on delete, or when a
    *  draft is re-pointed at another repo/env. The clone stays. */
   releaseContainer: (sessionId: string, reason: ContainerStatusReason) => void
@@ -229,6 +249,19 @@ export const NUDGE_PROMPT =
   'now with the correct outcome (changes / no_changes / blocked) and do ' +
   'nothing else.'
 
+/**
+ * The one structural rule a role puts on the repo list: more than one repo is a
+ * researcher-only shape (docs/requirements-session-roles.md §2 — the former
+ * discovery session *is* that role). Pure and unit-tested; the message it throws
+ * is what the modal, the IPC boundary and the `create_session` tool all surface.
+ */
+export function assertRoleFitsRepos(role: SessionRole, repos: string[]): void {
+  if (repos.length > 1 && !roleAllowsMultiRepo(role))
+    throw new Error(
+      `a ${role} session takes a single repository — only a researcher may hold more than one`
+    )
+}
+
 export type PostTurnAction = 'none' | 'nudge' | 'incomplete'
 
 /**
@@ -237,13 +270,19 @@ export type PostTurnAction = 'none' | 'nudge' | 'incomplete'
  * skipped `complete` triggers healing — one nudge for a regular turn, an
  * `incomplete` mark for the nudge turn itself. A thrown prompt, a cancel, or any
  * non-`end_turn` stop never nudges.
+ *
+ * `hasContract` is false for the roles that are not offered `complete` at all
+ * (researcher, reviewer): nudging them would demand a tool their `gurt` server
+ * does not expose, so their turns simply end.
  */
 export function postTurnDecision(o: {
   stopReason?: string
   turnComplete: boolean
   threw: boolean
   isNudge: boolean
+  hasContract: boolean
 }): PostTurnAction {
+  if (!o.hasContract) return 'none'
   if (o.threw) return 'none'
   if (o.stopReason !== 'end_turn') return 'none'
   if (o.turnComplete) return 'none'
@@ -398,16 +437,19 @@ export class SessionManager {
     mcp: McpSelection[] = [],
     autoAllow = true,
     gitAccess = false,
-    configValues: Record<string, string | boolean> = {}
+    configValues: Record<string, string | boolean> = {},
+    role: SessionRole = 'executor'
   ): SessionInfo {
     // A session cannot run or enqueue without a repo (the UI disables those, but
     // the IPC boundary enforces it too). A draft with no repo is allowed.
     if ((action === 'run' || action === 'queue') && !repos.length)
       throw new Error('session has no repository')
+    assertRoleFitsRepos(role, repos)
     const n = this.listForTask(ref.workspace, ref.task).length + 1
     const info: SessionInfo = {
       id: randomUUID(),
       env: ref.env,
+      role,
       repos,
       task: ref.task,
       workspace: ref.workspace,
@@ -416,7 +458,9 @@ export class SessionManager {
       autoAllow,
       state: 'draft',
       mcp,
-      gitAccess,
+      // A read-only role cannot use the git broker: its clone is mounted
+      // `readonly`, so native git would fail on the first write anyway.
+      gitAccess: gitAccess && !roleIsReadOnly(role),
       startPrompt,
       configValues: Object.keys(configValues).length ? configValues : undefined
     }
@@ -486,15 +530,17 @@ export class SessionManager {
 
   /**
    * Edit a draft's settings before it starts. A draft has no env or connection
-   * yet, so re-pointing its repo/agent is safe — the (env, agent) adapter is
-   * resolved only at start. Only supplied keys change; unknown ids and
-   * non-draft sessions are ignored.
+   * yet, so re-pointing its repo/agent/role is safe — the (env, agent) adapter
+   * is resolved only at start, and so are the role's mounts and locks. Only
+   * supplied keys change; unknown ids and non-draft sessions are ignored (which
+   * is what makes the role immutable for everything that has run).
    */
   editDraft(
     sessionId: string,
     patch: {
       agent?: string
       env?: string
+      role?: SessionRole
       repos?: string[]
       autoAllow?: boolean
       gitAccess?: boolean
@@ -505,6 +551,10 @@ export class SessionManager {
   ): void {
     const s = this.sessions.get(sessionId)
     if (!s || s.info.state !== 'draft') return
+    // Validate the (role, repos) pair against whichever half the patch changes,
+    // before anything is written — a rejected edit must leave the draft intact.
+    const role = patch.role ?? sessionRole(s.info)
+    assertRoleFitsRepos(role, patch.repos ?? s.info.repos)
     if (patch.agent !== undefined) s.info.agent = patch.agent
     if (patch.autoAllow !== undefined) s.info.autoAllow = patch.autoAllow
     if (patch.gitAccess !== undefined) s.info.gitAccess = patch.gitAccess
@@ -512,9 +562,10 @@ export class SessionManager {
     if (patch.startPrompt !== undefined) s.info.startPrompt = patch.startPrompt
     if (patch.configValues !== undefined)
       s.info.configValues = Object.keys(patch.configValues).length ? patch.configValues : undefined
-    // absent leaves repos unchanged; never touches the env. Re-pointing repos
-    // or env releases the draft's container if a failed start left one — it
-    // was provisioned for the old target.
+    // absent leaves repos unchanged; never touches the env. Re-pointing repos,
+    // env or role releases the draft's container if a failed start left one —
+    // it was provisioned for the old target (the role decides whether the repos
+    // are mounted read-only, so it is as structural as the repo set itself).
     if (
       patch.repos !== undefined &&
       (patch.repos.length !== s.info.repos.length ||
@@ -523,6 +574,12 @@ export class SessionManager {
       this.events.releaseContainer(s.info.id, 'user')
       s.info.repos = patch.repos
     }
+    if (patch.role !== undefined) {
+      if (patch.role !== sessionRole(s.info)) this.events.releaseContainer(s.info.id, 'user')
+      s.info.role = patch.role
+    }
+    // A read-only role has no use for the git broker (see `createSession`).
+    if (roleIsReadOnly(sessionRole(s.info))) s.info.gitAccess = false
     if (patch.env !== undefined && patch.env !== s.info.env) {
       this.events.releaseContainer(s.info.id, 'user')
       s.info.env = patch.env
@@ -573,9 +630,10 @@ export class SessionManager {
     const claimed = new Set<string>()
     const still = new Set<string>()
     for (const s of queued) {
-      // A discovery session (more than one repo) claims no clone — start it
-      // unconditionally, same pass, no FIFO contention to resolve.
-      if (s.info.repos.length > 1) {
+      // A researcher claims no clone (read-only, locks nothing) — start it
+      // unconditionally, same pass, no FIFO contention to resolve. It still
+      // needs a repo to read, so a repo-less one falls through to `no-repo`.
+      if (!roleLocksClone(sessionRole(s.info)) && s.info.repos.length) {
         this.queuedReasons.delete(s.info.id)
         void this.startSession(s.info.id, 'scheduler')
         continue
@@ -620,12 +678,14 @@ export class SessionManager {
     log.info('session.queued', { s: s.info.id, reason, by })
   }
 
-  /** The clone a session exclusively works in — `(task, repo)`, shared by
-   *  every session of the task that picked that repo. Null for a repo-less
-   *  draft, and also for a discovery session (more than one repo): nothing
-   *  in a discovery session ever writes, so no clone needs exclusive access
-   *  and none is claimed. */
+  /** The clone a session exclusively holds — `(task, repo)`, shared by every
+   *  session of the task that picked that repo. Null for a repo-less draft, and
+   *  for a researcher: it mounts every repo read-only and never writes, so no
+   *  clone needs exclusive access and none is claimed. A reviewer *is* keyed
+   *  here — read-only but exclusive, so the tree it judges cannot move under it
+   *  (docs/requirements-session-roles.md §4). */
   private repoKey(s: Session): string | null {
+    if (!roleLocksClone(sessionRole(s.info))) return null
     return s.info.repos.length === 1
       ? `${taskKey(s.ref.workspace, s.ref.task)}/${s.info.repos[0]}`
       : null
@@ -657,11 +717,11 @@ export class SessionManager {
   }
 
   /** Start gate: the session has a repo and nothing else is holding its clone.
-   *  A discovery session (more than one repo) has no clone to hold — it is
-   *  never gated by the scheduler. Future predicates (concurrency, priorities)
+   *  A researcher holds no clone — it is never gated by the scheduler, it only
+   *  needs something to read. Future predicates (concurrency, priorities)
    *  compose here. */
   private canStart(s: Session): boolean {
-    if (s.info.repos.length > 1) return true
+    if (!roleLocksClone(sessionRole(s.info))) return s.info.repos.length > 0
     return !!this.repoKey(s) && !this.repoHolder(s)
   }
 
@@ -725,7 +785,7 @@ export class SessionManager {
       const conn = await this.connection(s, ctx)
       const mcpServers = [
         ...(await this.events.resolveMcpServers(s.ref, s.info.id, s.info.repos[0], s.info.mcp)),
-        await this.events.resolveGurtServer(s.ref, s.info.id, (p) => this.onComplete(s.info.id, p))
+        await this.events.resolveGurtServer(s.ref, s.info.id, this.gurtHooks(s))
       ]
       // Model/effort chosen for the draft ride `_meta` so the very first turn
       // already runs on them (claude-code honors `_meta.claudeCode.options`);
@@ -1114,7 +1174,7 @@ export class SessionManager {
         try {
           const mcpServers = [
             ...(await this.events.resolveMcpServers(s.ref, s.info.id, s.info.repos[0], s.info.mcp)),
-            await this.events.resolveGurtServer(s.ref, s.info.id, (p) => this.onComplete(s.info.id, p))
+            await this.events.resolveGurtServer(s.ref, s.info.id, this.gurtHooks(s))
           ]
           const result = await conn.peer.request<{
             modes?: SessionModes
@@ -1220,9 +1280,25 @@ export class SessionManager {
       // False only for the nudge turn's own boundary — the healing follow-up
       // runPrompt is about to send, not the user-visible end of the turn. See
       // the `final` field on `session.turn` in shared/events.ts.
-      const final = postTurnDecision({ ...outcome, turnComplete: s.turnComplete, isNudge }) !== 'nudge'
+      const final = this.decideTurn(s, outcome, isNudge) !== 'nudge'
       this.bus.emit('session.turn', { sessionId: s.info.id, ref: s.ref, phase: 'ended', final })
     }
+  }
+
+  /** Post-turn decision for this session: `postTurnDecision` with the role's
+   *  contract folded in — a researcher/reviewer is never offered `complete`, so
+   *  it is never nudged for skipping it. */
+  private decideTurn(
+    s: Session,
+    outcome: { stopReason?: string; threw: boolean },
+    isNudge: boolean
+  ): PostTurnAction {
+    return postTurnDecision({
+      ...outcome,
+      turnComplete: s.turnComplete,
+      isNudge,
+      hasContract: roleHasTurnContract(sessionRole(s.info))
+    })
   }
 
   /**
@@ -1230,7 +1306,8 @@ export class SessionManager {
    * without a `complete` call is a protocol violation: because the ACP session is
    * still alive, one automatic follow-up (`NUDGE_PROMPT`) costs seconds and usually
    * heals it. A nudge turn that still skips `complete` marks the session
-   * `incomplete` and gives up — no second nudge.
+   * `incomplete` and gives up — no second nudge. Roles without the contract
+   * (researcher, reviewer) skip all of this: their turns just end.
    */
   private async runPrompt(
     s: Session,
@@ -1239,12 +1316,9 @@ export class SessionManager {
     images?: PromptImage[]
   ): Promise<void> {
     const first = await this.sendTurn(s, text, 'user', false, context, images)
-    if (postTurnDecision({ ...first, turnComplete: s.turnComplete, isNudge: false }) !== 'nudge')
-      return
+    if (this.decideTurn(s, first, false) !== 'nudge') return
     const second = await this.sendTurn(s, NUDGE_PROMPT, 'system', true)
-    if (
-      postTurnDecision({ ...second, turnComplete: s.turnComplete, isNudge: true }) === 'incomplete'
-    ) {
+    if (this.decideTurn(s, second, true) === 'incomplete') {
       this.push(s, { kind: 'system', text: 'turn ended without complete' })
       s.info.incomplete = true
       this.bus.emit('session.changed', { sessionId: s.info.id })
@@ -1276,6 +1350,73 @@ export class SessionManager {
     this.push(s, { kind: 'system', text })
     if (p.outcome === 'changes' && s.proposal)
       this.bus.emit('session.proposal', { sessionId, ref: s.ref, proposal: s.proposal })
+  }
+
+  /** What the session's `gurt` server may do on its behalf: the role (which
+   *  decides its tool set and instructions) plus the callbacks that route into
+   *  this manager. Rebuilt on every start/attach, so a re-ensured server always
+   *  talks to the live session record. */
+  private gurtHooks(s: Session): {
+    role: SessionRole
+    onComplete: (p: ChangeProposal) => void
+    onCreateSession: (req: AgentSessionRequest) => Promise<{ sessionId: string; title: string }>
+  } {
+    return {
+      role: sessionRole(s.info),
+      onComplete: (p) => this.onComplete(s.info.id, p),
+      onCreateSession: (req) => this.createAgentDraft(s.info.id, req)
+    }
+  }
+
+  /**
+   * `create_session` (§3): one session's agent drafts another. The new session
+   * lands in the spawner's own task, inherits everything the request leaves out,
+   * and stays a **draft** — the user reviewing, editing or launching it *is* the
+   * approval step, which is why there is no spawn-graph limit, depth control or
+   * flow management to enforce here. Nothing flows back to the spawner beyond
+   * the id of the draft it just created.
+   */
+  async createAgentDraft(
+    spawnerId: string,
+    req: AgentSessionRequest
+  ): Promise<{ sessionId: string; title: string }> {
+    const spawner = this.sessions.get(spawnerId)
+    if (!spawner) throw new Error('unknown session')
+    const from = sessionRole(spawner.info)
+    const allowed = spawnableRoles(from)
+    if (!allowed.includes(req.role))
+      throw new Error(
+        allowed.length
+          ? `a ${from} session may only draft: ${allowed.join(', ')}`
+          : `a ${from} session may not draft sessions`
+      )
+    assertRoleFitsRepos(req.role, req.repos)
+    const env = req.env ?? spawner.info.env
+    const agent = req.agent ?? spawner.info.agent
+    if (!agent) throw new Error('no agent to draft with — this session has none either')
+    // Repo/env names come from an agent, so they are untrusted the same way the
+    // renderer's are; a draft naming a repo that does not exist would only fail
+    // much later, at the user's launch.
+    await this.events.checkDraftTarget(spawner.ref.workspace, req.repos, env)
+    const info = this.createSession(
+      { workspace: spawner.ref.workspace, task: spawner.ref.task, env },
+      req.repos,
+      agent,
+      req.prompt,
+      'draft',
+      spawner.info.mcp ?? [],
+      req.autoAllow ?? spawner.info.autoAllow ?? true,
+      req.gitAccess ?? false,
+      req.configValues ?? spawner.info.configValues ?? {},
+      req.role
+    )
+    // `renameSession` mutates the same info object createSession stored.
+    if (req.title?.trim()) this.renameSession(info.id, req.title)
+    log.info('session.drafted', { s: info.id, by: spawnerId, role: req.role })
+    // A draft is a to-do for the user, and the spawner's own feed is where they
+    // are looking right now — the tree row alone is easy to miss.
+    this.push(spawner, { kind: 'system', text: `create_session: drafted ${req.role} "${info.title}"` })
+    return { sessionId: info.id, title: info.title }
   }
 
   /** Newest stored proposal among this (task, repo)'s sessions (all outcome=changes). */
@@ -1621,9 +1762,11 @@ export class SessionManager {
     const title = params?.toolCall?.title ?? 'permission request'
     if (!s) return { outcome: { outcome: 'cancelled' } }
 
-    // The gurt turn-contract tool is our own plumbing — every turn must end
-    // with `complete`, so asking the user to approve it is pure friction (and
-    // a walked-away session would hang on it). Always allow, no timeline entry.
+    // The gurt tools are our own plumbing: every turn must end with `complete`,
+    // and `create_session` only ever produces an inert draft the user still has
+    // to launch — that launch *is* the approval step, so a permission prompt
+    // here is pure friction (and a walked-away session would hang on it).
+    // Always allow, no timeline entry.
     if (/^mcp__gurt__/.test(title)) {
       const allow =
         options.find((o) => o.kind === 'allow_once') ??

@@ -54,12 +54,15 @@ export const wsDir = (ws: string) => path.join(gurtRoot, ws)
 export const taskDir = (ws: string, task: string) => path.join(gurtRoot, ws, task)
 export const cloneDir = (ws: string, task: string, repo: string) =>
   path.join(gurtRoot, ws, task, repo)
-/** Host directory used as `--workspace-folder` for a discovery session (more
- *  than one repo): empty except for the repo clones bind-mounted into it
- *  individually — never the task dir itself, which also holds `task.json` /
- *  `sessions.json`. Fixed basename `repos` so the container-side default
- *  (`/workspaces/<basename>`) is predictable. */
-export const multiRepoWorkspaceDir = (ws: string, task: string, sessionId: string) =>
+/** Host directory used as `--workspace-folder` by a session whose repos are
+ *  bind-mounted individually — more than one repo, or a read-only role, see
+ *  `usesRepoMounts` in containers.ts. Empty except for those mount points, and
+ *  never the task dir itself, which also holds `task.json` / `sessions.json`.
+ *  Fixed basename `repos` so the container-side default (`/workspaces/<basename>`)
+ *  is predictable; the `.multirepo` segment predates read-only roles and is kept
+ *  so existing sessions' containers keep pointing at the directory they were
+ *  provisioned against. */
+export const mountedWorkspaceDir = (ws: string, task: string, sessionId: string) =>
   path.join(gurtRoot, ws, task, '.multirepo', sessionId, 'repos')
 /** Host-side file the env's materialized devcontainer config is written to. */
 export const overrideConfigPath = (ws: string, env: string) =>
@@ -469,6 +472,14 @@ export async function readSessions(ws: string, task: string): Promise<PersistedS
       const legacyRepo = info.repo as string | undefined
       info.repos = legacyRepo ? [legacyRepo] : []
       delete info.repo
+      migrated = true
+    }
+    // Pre-roles records inferred the role from the repo count: more than one
+    // repo was a read-only discovery session, anything else a read-write
+    // worker. Write the same fold `sessionRole` applies in memory to disk once,
+    // so the role stops being derived from repo count anywhere.
+    if (!r.info.role) {
+      r.info.role = r.info.repos.length > 1 ? 'researcher' : 'executor'
       migrated = true
     }
     if (!r.info.state) r.info.state = 'started'

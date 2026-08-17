@@ -13,6 +13,7 @@ import type {
   RepoChanges,
   RepoConfig,
   SessionInfo,
+  SessionRole,
   SessionSnapshot,
   StoredProposal,
   Tree
@@ -43,6 +44,9 @@ export interface SessionDraftPatch {
   agent?: string
   /** Re-point the not-yet-started session onto another env definition. */
   env?: string
+  /** What the session is for. Editable only while it is a draft — nothing has
+   *  been mounted or locked yet (see `SessionRole`). */
+  role?: SessionRole
   /** The session's repos (repo names, `repos[0]` is the build anchor); absent
    *  to leave them unchanged. */
   repos?: string[]
@@ -129,9 +133,8 @@ export interface GurtApi {
   changesOpenVscode(ws: string, task: string, repo: string): Promise<void>
   createSession(
     ref: EnvRef,
-    /** The session's repos (repo names); empty for a repo-less draft. A
-     *  single repo is a normal session; more than one is a read-only
-     *  discovery session (see `SessionInfo.repos`). */
+    /** The session's repos (repo names); empty for a repo-less draft. More than
+     *  one is researcher-only (see `SessionInfo.repos`). */
     repos: string[],
     agent: string,
     prompt: string,
@@ -139,7 +142,9 @@ export interface GurtApi {
     mcp: McpSelection[],
     autoAllow: boolean,
     gitAccess: boolean,
-    configValues: Record<string, string | boolean>
+    configValues: Record<string, string | boolean>,
+    /** What the session is for — executor unless told otherwise. */
+    role: SessionRole
   ): Promise<SessionInfo>
   sessionRun(id: string): Promise<void>
   sessionEnqueue(id: string): Promise<void>
