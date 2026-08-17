@@ -61,11 +61,11 @@ function makeBareRepo(name) {
   return bare
 }
 
-/** Clone an origin into the task dir on branch gurt/<task> — what provisioning does. */
+/** Clone an origin into the task dir on branch <task> — what provisioning does. */
 function makeClone(bare, ws, task, repo) {
   const dir = path.join(GURT_ROOT, ws, task, repo)
   git(REPO_ROOT, 'clone', bare, dir)
-  git(dir, 'checkout', '-b', `gurt/${task}`)
+  git(dir, 'checkout', '-b', task)
   return dir
 }
 
@@ -308,7 +308,7 @@ await modalGone(page)
 await waitPanel(page, { groups: 1, states0: 'local', pushEnabled: true })
 s = await panelState(page)
 check(
-  s.groups[0].blocks.length === 1 && s.groups[0].blocks[0] === 'On gurt/t1 · 1 commit not in main',
+  s.groups[0].blocks.length === 1 && s.groups[0].blocks[0] === 'On t1 · 1 commit not in main',
   `branch block header: ${s.groups[0].blocks}`
 )
 check(s.groups[0].commits[0].subject === 'gurt: t1', `commit subject: ${s.groups[0].commits[0].subject}`)
@@ -333,7 +333,7 @@ await modalGone(page)
 check((await clickGroupButton(page, 'alpha', 'Push')) === null, 'Push clickable')
 await waitPanel(page, { groups: 1, states0: 'pushed', badge: 'hollow', pushEnabled: false })
 console.log('OK   pushed commit reads `pushed`, badge hollow, Push disabled')
-const bareLog = git(bareAlpha, 'log', '--oneline', 'gurt/t1')
+const bareLog = git(bareAlpha, 'log', '--oneline', 't1')
 check(bareLog.includes('gurt: t1'), `bare repo has the pushed commit: ${bareLog.trim()}`)
 s = await panelState(page)
 check(!s.groups[0].buttons.some((b) => b.text === 'Create PR'), 'still no Create PR (non-github origin)')
@@ -379,7 +379,7 @@ check(
   alphaGroup.files.some((f) => f.includes('README.md')),
   'alpha still dirty after beta commit/push (independent groups)'
 )
-check(git(bareBeta, 'log', '--oneline', 'gurt/t1').includes('gurt: t1'), 'beta bare got the branch')
+check(git(bareBeta, 'log', '--oneline', 't1').includes('gurt: t1'), 'beta bare got the branch')
 check(s.badge === 'filled', 'badge filled while alpha is dirty')
 
 // deliver alpha's second round too → both repos delivered, badge hollow
@@ -390,7 +390,7 @@ console.log('OK   both repos delivered → hollow badge, thread still rendered')
 await page.screenshot({ path: path.join(SHOT_DIR, 'c8-delivered.png') })
 
 // 8) merge alpha into the remote default → its thread empties by ancestry
-git(bareAlpha, 'update-ref', 'refs/heads/main', git(bareAlpha, 'rev-parse', 'gurt/t1').trim())
+git(bareAlpha, 'update-ref', 'refs/heads/main', git(bareAlpha, 'rev-parse', 't1').trim())
 await clickTitle(page, 'refresh changes')
 await waitPanel(page, { flat: true })
 s = await panelState(page)
@@ -399,8 +399,8 @@ check(s.badge === 'hollow', 'badge still hollow (beta delivered)')
 
 // 9) squash-merge beta + delete the remote branch → integrated via refs/gurt/integrated
 const betaHead = git(betaDir, 'rev-parse', 'HEAD').trim()
-squashOntoDefault(bareBeta, 'beta', 'squashed: gurt/t1')
-git(bareBeta, 'update-ref', '-d', 'refs/heads/gurt/t1')
+squashOntoDefault(bareBeta, 'beta', 'squashed: t1')
+git(bareBeta, 'update-ref', '-d', 'refs/heads/t1')
 await clickTitle(page, 'refresh changes')
 await waitPanel(page, { noChanges: true, badge: null })
 console.log('OK   squash + branch deletion → "No changes", no badge')

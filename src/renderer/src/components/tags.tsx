@@ -113,7 +113,7 @@ export function AgentMark({ kind, name }: { kind?: string; name: string }): JSX.
 /** The same pair unpilled, for the header pills and the footer — the chip around
  *  them already carries the frame, and both lay their children out with a gap.
  *  `task`, when given alongside `repos`, appends the task's branch name — every
- *  clone's task branch is named `gurt/<task>` (see `branchFor` in changes.ts).
+ *  clone's task branch is named `<task>` (see `branchFor` in changes.ts).
  *  More than one repo (a discovery session) shows one branch mark per repo. */
 export function EnvRepoMarks({
   env,
@@ -135,7 +135,7 @@ export function EnvRepoMarks({
           {r}
         </Fragment>
       ))}
-      {list.length > 0 && task && <span className="dim">gurt/{task}</span>}
+      {list.length > 0 && task && <span className="dim">{task}</span>}
     </>
   )
 }

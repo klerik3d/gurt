@@ -57,7 +57,7 @@ try {
   fs.mkdirSync(clone, { recursive: true })
   git(clone, 'init', '-q')
   git(clone, 'remote', 'add', 'origin', 'https://github.com/octo/alpha.git')
-  git(clone, 'checkout', '-q', '-b', `gurt/${task}`)
+  git(clone, 'checkout', '-q', '-b', task)
 
   const mkInfo = (id) => ({
     id,
@@ -118,7 +118,7 @@ try {
 
   // prUrl: no title param when the latest proposal has no PR
   const urlNoPr = await kernel.prUrl(ws, task, repo)
-  assert.match(urlNoPr, /github\.com\/octo\/alpha\/compare\/main\.\.\.gurt\/t/, 'compare URL shape')
+  assert.match(urlNoPr, /github\.com\/octo\/alpha\/compare\/main\.\.\.t/, 'compare URL shape')
   assert.ok(!urlNoPr.includes('title='), 'no title param when the latest proposal has no PR')
 
   // make the PR-bearing proposal the newest, re-check

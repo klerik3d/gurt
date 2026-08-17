@@ -278,7 +278,7 @@ async function operationInProgress(
  *  every env of a task (`~/.gurt/<ws>/<task>/<repo>/`), so two sessions of the
  *  same task starting at once would otherwise race over it: the second sees the
  *  half-written dir as an existing clone, and both run `checkout -b`, the loser
- *  failing with `a branch named 'gurt/<task>' already exists`. Callers queue
+ *  failing with `a branch named '<task>' already exists`. Callers queue
  *  behind each other instead — the body is idempotent, so the follower just
  *  finds the finished clone. */
 const clonesInFlight = new Map<string, Promise<string>>()
@@ -311,7 +311,7 @@ async function provisionClone(
     log(`cloning ${repo.url} ...`)
     await run('git', [...gitArgs, 'clone', '--', repo.url, dir], log, { env })
   }
-  const branch = `gurt/${ref.task}`
+  const branch = ref.task
   // Nothing to check out when we are already on the task branch — and skipping
   // that no-op is what keeps a conflicted clone startable: with unmerged index
   // entries git refuses even a same-branch checkout ("you need to resolve your

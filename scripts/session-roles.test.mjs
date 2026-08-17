@@ -288,6 +288,23 @@ try {
   )
   console.log('create_session gating OK')
 
+  // --- default title: named after the role, index only from the second on ----
+  const task3 = 'naming'
+  fs.mkdirSync(path.join(GURT_ROOT, ws, task3), { recursive: true })
+  fs.writeFileSync(path.join(GURT_ROOT, ws, task3, 'task.json'), JSON.stringify({}))
+  const nameRef = { workspace: ws, task: task3, env: 'dev' }
+  const named = (repos, role) =>
+    kernel.sessions.createSession(nameRef, repos, 'a1', 'hi', 'none', [], true, false, {}, role)
+  assert.equal(named(['alpha'], 'executor').title, 'executor', 'first of a role carries no index')
+  assert.equal(named(['alpha'], 'executor').title, 'executor 2', 'the second is numbered')
+  assert.equal(named([], 'researcher').title, 'researcher', 'a different role starts its own count')
+  assert.equal(
+    named([], 'researcher').title,
+    'researcher 2',
+    'and counts independently of other roles'
+  )
+  console.log('default title follows role OK')
+
   // --- migration: a pre-roles record gets an explicit role, written back once --
   const task2 = 'legacy'
   fs.mkdirSync(path.join(GURT_ROOT, ws, task2), { recursive: true })

@@ -445,7 +445,13 @@ export class SessionManager {
     if ((action === 'run' || action === 'queue') && !repos.length)
       throw new Error('session has no repository')
     assertRoleFitsRepos(role, repos)
-    const n = this.listForTask(ref.workspace, ref.task).length + 1
+    // Named after the role, not a flat "session N" — the role is the one thing
+    // every session now declares. First of its role in the task carries no
+    // index; each further one counts up from there.
+    const sameRole = this.listForTask(ref.workspace, ref.task).filter(
+      (s) => sessionRole(s) === role
+    ).length
+    const title = sameRole === 0 ? role : `${role} ${sameRole + 1}`
     const info: SessionInfo = {
       id: randomUUID(),
       env: ref.env,
@@ -453,7 +459,7 @@ export class SessionManager {
       repos,
       task: ref.task,
       workspace: ref.workspace,
-      title: `session ${n}`,
+      title,
       agent: agentId,
       autoAllow,
       state: 'draft',

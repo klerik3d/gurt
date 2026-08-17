@@ -612,7 +612,7 @@ export interface ThreadCommit {
   /** Full SHA; the UI shows the short prefix. */
   sha: string
   subject: string
-  /** Reachable from `origin/gurt/<task>`. */
+  /** Reachable from `origin/<task>`. */
   pushed: boolean
 }
 

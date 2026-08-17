@@ -1,5 +1,5 @@
 // Integration test for `ensureClone` (real git, no electron, no docker, no
-// network — origin is a local bare repo): the task branch `gurt/<task>` is
+// network — origin is a local bare repo): the task branch `<task>` is
 // created once and switched to afterwards, and two sessions of the same task
 // starting at once share the clone instead of racing over it.
 //
@@ -67,13 +67,13 @@ try {
   const dir = await m.ensureClone(refFor('env-a'), REPO, (l) => lines.push(l))
   assert.equal(dir, path.join(process.env.GURT_ROOT, 'ws', TASK, 'demo'))
   assert.ok(lines.some((l) => l.includes('cloning')), 'first call clones')
-  assert.equal(await branchOf(dir), `gurt/${TASK}`, 'task branch is checked out')
+  assert.equal(await branchOf(dir), TASK, 'task branch is checked out')
   console.log('clone + branch creation OK')
 
   // --- second session on the same task: reuses clone and branch ---
   const again = await m.ensureClone(refFor('env-b'), REPO, () => {})
   assert.equal(again, dir)
-  assert.equal(await branchOf(dir), `gurt/${TASK}`, 'existing branch is switched to, not recreated')
+  assert.equal(await branchOf(dir), TASK, 'existing branch is switched to, not recreated')
   console.log('sequential second session OK')
 
   // --- a commit on the task branch survives the next session's checkout ---
@@ -104,7 +104,7 @@ try {
   const merging = path.join(dir, '.git', 'MERGE_HEAD')
   assert.ok(fs.existsSync(merging), 'clone is mid-merge with conflicts')
   await m.ensureClone(refFor('env-d'), REPO, () => {})
-  assert.equal(await branchOf(dir), `gurt/${TASK}`, 'still on the task branch')
+  assert.equal(await branchOf(dir), TASK, 'still on the task branch')
   assert.ok(fs.existsSync(merging), 'conflict state is left for the agent to resolve')
   console.log('conflicted clone OK')
 
@@ -135,7 +135,7 @@ try {
     m.ensureClone({ ...hot, env: 'env-c' }, REPO, () => {})
   ])
   assert.equal(new Set(results).size, 1, 'all sessions get the same clone')
-  assert.equal(await branchOf(results[0]), 'gurt/task-2')
+  assert.equal(await branchOf(results[0]), 'task-2')
   console.log('concurrent sessions OK')
 
   console.log('clone-branch.test: PASS')
