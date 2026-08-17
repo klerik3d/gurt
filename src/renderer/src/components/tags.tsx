@@ -3,6 +3,7 @@
 // leading icon is what tells them apart. `box` = env, `branch` = repo, the same
 // marks the env/repository pickers use in the new-session sidebar.
 
+import { Fragment } from 'react'
 import { Icon, type IconName } from './icons'
 
 /** kind (an `AgentDef.id`) → glyph. Unmatched/custom kinds fall back to a
@@ -63,28 +64,30 @@ export function AgentMark({ kind, name }: { kind?: string; name: string }): JSX.
 
 /** The same pair unpilled, for the header pills and the footer — the chip around
  *  them already carries the frame, and both lay their children out with a gap.
- *  `task`, when given alongside `repo`, appends the task's branch name — every
- *  clone's task branch is named `gurt/<task>` (see `branchFor` in changes.ts). */
+ *  `task`, when given alongside `repos`, appends the task's branch name — every
+ *  clone's task branch is named `gurt/<task>` (see `branchFor` in changes.ts).
+ *  More than one repo (a discovery session) shows one branch mark per repo. */
 export function EnvRepoMarks({
   env,
-  repo,
+  repos,
   task
 }: {
   env: string
-  repo?: string
+  repos?: string[]
   task?: string
 }): JSX.Element {
+  const list = repos ?? []
   return (
     <>
       <Icon name="box" size={11} className="faint" />
       {env}
-      {repo && (
-        <>
+      {list.map((r) => (
+        <Fragment key={r}>
           <Icon name="branch" size={11} className="faint" />
-          {repo}
-        </>
-      )}
-      {repo && task && <span className="dim">gurt/{task}</span>}
+          {r}
+        </Fragment>
+      ))}
+      {list.length > 0 && task && <span className="dim">gurt/{task}</span>}
     </>
   )
 }

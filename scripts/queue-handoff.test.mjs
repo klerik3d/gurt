@@ -85,7 +85,7 @@ try {
       info: {
         id: holder,
         env: 'dev',
-        repo: 'alpha',
+        repos: ['alpha'],
         task,
         workspace: ws,
         title: 'H',
@@ -101,7 +101,7 @@ try {
       status: 'running',
       id: 'container-h',
       remoteWorkspaceFolder: '/app',
-      repo: 'alpha'
+      repos: ['alpha']
     })
   const containerStatus = () => kernel.sessions.snapshot(holder).info.container?.status
 
@@ -115,7 +115,7 @@ try {
 
   // --- 1. a queue item arriving behind an idle environment frees it now ---
   up()
-  const first = kernel.sessions.createSession(ref, 'alpha', 'a1', 'hi', 'queue')
+  const first = kernel.sessions.createSession(ref, ['alpha'], 'a1', 'hi', 'queue')
   await tick()
   assert.deepEqual(
     stops,
@@ -139,9 +139,9 @@ try {
     status: 'post',
     id: 'container-h',
     remoteWorkspaceFolder: '/app',
-    repo: 'alpha'
+    repos: ['alpha']
   })
-  const second = kernel.sessions.createSession(ref, 'alpha', 'a1', 'hi', 'queue')
+  const second = kernel.sessions.createSession(ref, ['alpha'], 'a1', 'hi', 'queue')
   await tick()
   assert.equal(stops.length, 0, 'a container mid-provision is never reaped')
   assert.equal(
@@ -182,7 +182,7 @@ try {
     throw new Error('docker daemon is not running')
   }
   up()
-  const third = kernel.sessions.createSession(ref, 'alpha', 'a1', 'hi', 'queue')
+  const third = kernel.sessions.createSession(ref, ['alpha'], 'a1', 'hi', 'queue')
   await tick()
   assert.deepEqual(stops, [{ id: holder, reason: 'queue' }], 'the handoff tried to stop it')
   assert.equal(containerStatus(), 'running', 'a failed stop leaves the container up')

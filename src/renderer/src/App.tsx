@@ -505,7 +505,7 @@ export default function App() {
         {activeInfo && activeContainer && (
           <>
             <span className="foot-env">
-              <EnvRepoMarks env={activeInfo.env} repo={activeInfo.repo} task={activeInfo.task} />
+              <EnvRepoMarks env={activeInfo.env} repos={activeInfo.repos} task={activeInfo.task} />
               <span>{containerDot(activeContainer.status).label}</span>
             </span>
           </>

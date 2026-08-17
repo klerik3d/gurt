@@ -131,7 +131,7 @@ export function createKernel(): Kernel {
   )
   // The proposal carries the agent's commit/PR prose — only the fact is logged.
   bus.on('session.proposal', ({ sessionId }) =>
-    sessionLog.info('session.proposal', { s: sessionId, repo: sessions.sessionInfo(sessionId)?.repo })
+    sessionLog.info('session.proposal', { s: sessionId, repos: sessions.sessionInfo(sessionId)?.repos })
   )
   // Provisioning output is volume, and per session: it goes to that session's
   // own file and never to the app log.
@@ -296,8 +296,10 @@ export function createKernel(): Kernel {
       const info = sessions.snapshot(sessionId)?.info
       if (info) {
         const wsData = await store.getWorkspace(info.workspace)
-        if (patch.repo != null && !wsData.repos.some((r) => r.name === patch.repo))
-          throw new Error(`repo "${patch.repo}" is not registered in "${info.workspace}"`)
+        if (patch.repos !== undefined)
+          for (const r of patch.repos)
+            if (!wsData.repos.some((c) => c.name === r))
+              throw new Error(`repo "${r}" is not registered in "${info.workspace}"`)
         if (patch.env !== undefined && !wsData.envs.some((e) => e.name === patch.env))
           throw new Error(`environment "${patch.env}" is not registered in "${info.workspace}"`)
       }

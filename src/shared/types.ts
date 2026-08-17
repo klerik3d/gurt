@@ -132,8 +132,10 @@ export interface SessionContainer {
   id?: string
   /** Workspace folder inside the container — the agent's cwd. */
   remoteWorkspaceFolder?: string
-  /** Repo it was provisioned with (stamped at `up`); drives clone + git access. */
-  repo?: string
+  /** Repos it was provisioned with (stamped at `up`), in the same order as
+   *  `SessionInfo.repos`. `repos[0]` drives the build + git access; the rest
+   *  are additional read/write mounts alongside it. */
+  repos: string[]
   error?: string
 }
 
@@ -171,9 +173,14 @@ export interface SessionInfo {
   id: string
   /** The env this session runs on — an `EnvConfig.name`. */
   env: string
-  /** The session's repo (seeded from the env's default, changeable while a
-   *  draft, fixed at start). Absent on a repo-less draft — it cannot start. */
-  repo?: string
+  /** The session's repos (first entry seeded from the env's default,
+   *  changeable while a draft, fixed at start). Empty on a repo-less draft —
+   *  it cannot start. A single entry is a normal read-write session; more
+   *  than one is a discovery session: `repos[0]` is the build anchor, every
+   *  repo is mounted for reading, no repo is exclusively locked, and the git
+   *  broker is unavailable (native git/gh access does not make sense across
+   *  more than one repo). */
+  repos: string[]
   task: string
   workspace: string
   title: string

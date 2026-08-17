@@ -79,7 +79,9 @@ export function TaskPane({
                     {s.title}
                   </span>
                   <EnvTag name={s.env} />
-                  {c.repo && <RepoTag name={c.repo} />}
+                  {c.repos.map((r) => (
+                    <RepoTag key={r} name={r} />
+                  ))}
                   <span className={`env-status ${c.status === 'error' ? 'red' : 'dim'}`}>
                     {dot.label}
                   </span>
@@ -141,7 +143,9 @@ export function TaskPane({
                 {s.title}
               </span>
               <EnvTag name={s.env} />
-              {s.repo && <RepoTag name={s.repo} />}
+              {s.repos.map((r) => (
+                <RepoTag key={r} name={r} />
+              ))}
               <AgentTag kind={agentKind(agents, s.agent)} name={agentName(agents, s.agent)} />
               <span className="spacer" />
               <button

@@ -126,7 +126,7 @@ try {
       status: 'running',
       id: 'cid1',
       remoteWorkspaceFolder: '/app',
-      repo: 'alpha',
+      repos: ['alpha'],
       error: undefined
     },
     'the container record moved onto the session that owned it'
@@ -171,7 +171,7 @@ try {
   const legacySess = read(sess2Path)
   const [rec] = await m.readSessions(ws, task2)
   assert.equal(rec.info.env, 'alpha', 'env taken from envRepo')
-  assert.equal(rec.info.repo, 'alpha', 'repo taken from envRepo')
+  assert.deepEqual(rec.info.repos, ['alpha'], 'repo taken from envRepo')
   assert.ok(!('envRepo' in rec.info), 'legacy envRepo dropped')
   // write-back happened (legacy key left the disk) … and exactly once
   const migrated2 = read(sess2Path)

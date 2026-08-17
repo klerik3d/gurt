@@ -391,7 +391,7 @@ export class SessionManager {
 
   createSession(
     ref: EnvRef,
-    repo: string | null,
+    repos: string[],
     agentId: string,
     startPrompt: string,
     action: CreateAction,
@@ -402,13 +402,13 @@ export class SessionManager {
   ): SessionInfo {
     // A session cannot run or enqueue without a repo (the UI disables those, but
     // the IPC boundary enforces it too). A draft with no repo is allowed.
-    if ((action === 'run' || action === 'queue') && !repo)
+    if ((action === 'run' || action === 'queue') && !repos.length)
       throw new Error('session has no repository')
     const n = this.listForTask(ref.workspace, ref.task).length + 1
     const info: SessionInfo = {
       id: randomUUID(),
       env: ref.env,
-      repo: repo ?? undefined,
+      repos,
       task: ref.task,
       workspace: ref.workspace,
       title: `session ${n}`,
@@ -448,14 +448,14 @@ export class SessionManager {
   run(sessionId: string): void {
     const s = this.sessions.get(sessionId)
     if (!s || s.info.state === 'starting' || s.info.state === 'started') return
-    if (!s.info.repo) throw new Error('session has no repository')
+    if (!s.info.repos.length) throw new Error('session has no repository')
     void this.startSession(sessionId, 'user')
   }
 
   enqueue(sessionId: string): void {
     const s = this.sessions.get(sessionId)
     if (!s || s.info.state === 'starting' || s.info.state === 'started') return
-    if (!s.info.repo) throw new Error('session has no repository')
+    if (!s.info.repos.length) throw new Error('session has no repository')
     s.info.state = 'queued'
     s.info.queuedAt = new Date().toISOString()
     s.startError = undefined
@@ -495,7 +495,7 @@ export class SessionManager {
     patch: {
       agent?: string
       env?: string
-      repo?: string | null
+      repos?: string[]
       autoAllow?: boolean
       gitAccess?: boolean
       mcp?: McpSelection[]
@@ -512,12 +512,16 @@ export class SessionManager {
     if (patch.startPrompt !== undefined) s.info.startPrompt = patch.startPrompt
     if (patch.configValues !== undefined)
       s.info.configValues = Object.keys(patch.configValues).length ? patch.configValues : undefined
-    // repo: null clears it, a string sets it; absent leaves it. Never touches
-    // the env. Re-pointing repo or env releases the draft's container if a
-    // failed start left one — it was provisioned for the old target.
-    if (patch.repo !== undefined && (patch.repo ?? undefined) !== s.info.repo) {
+    // absent leaves repos unchanged; never touches the env. Re-pointing repos
+    // or env releases the draft's container if a failed start left one — it
+    // was provisioned for the old target.
+    if (
+      patch.repos !== undefined &&
+      (patch.repos.length !== s.info.repos.length ||
+        patch.repos.some((r, i) => r !== s.info.repos[i]))
+    ) {
       this.events.releaseContainer(s.info.id, 'user')
-      s.info.repo = patch.repo ?? undefined
+      s.info.repos = patch.repos
     }
     if (patch.env !== undefined && patch.env !== s.info.env) {
       this.events.releaseContainer(s.info.id, 'user')
@@ -569,6 +573,13 @@ export class SessionManager {
     const claimed = new Set<string>()
     const still = new Set<string>()
     for (const s of queued) {
+      // A discovery session (more than one repo) claims no clone — start it
+      // unconditionally, same pass, no FIFO contention to resolve.
+      if (s.info.repos.length > 1) {
+        this.queuedReasons.delete(s.info.id)
+        void this.startSession(s.info.id, 'scheduler')
+        continue
+      }
       const rkey = this.repoKey(s)
       if (!rkey) {
         // Still waiting too — kept in `still` so the cleanup below doesn't
@@ -609,10 +620,15 @@ export class SessionManager {
     log.info('session.queued', { s: s.info.id, reason, by })
   }
 
-  /** The clone a session works in — `(task, repo)`, shared by every session of
-   *  the task that picked that repo. Null for a repo-less draft. */
+  /** The clone a session exclusively works in — `(task, repo)`, shared by
+   *  every session of the task that picked that repo. Null for a repo-less
+   *  draft, and also for a discovery session (more than one repo): nothing
+   *  in a discovery session ever writes, so no clone needs exclusive access
+   *  and none is claimed. */
   private repoKey(s: Session): string | null {
-    return s.info.repo ? `${taskKey(s.ref.workspace, s.ref.task)}/${s.info.repo}` : null
+    return s.info.repos.length === 1
+      ? `${taskKey(s.ref.workspace, s.ref.task)}/${s.info.repos[0]}`
+      : null
   }
 
   /**
@@ -641,8 +657,11 @@ export class SessionManager {
   }
 
   /** Start gate: the session has a repo and nothing else is holding its clone.
-   *  Future predicates (concurrency, priorities) compose here. */
+   *  A discovery session (more than one repo) has no clone to hold — it is
+   *  never gated by the scheduler. Future predicates (concurrency, priorities)
+   *  compose here. */
   private canStart(s: Session): boolean {
+    if (s.info.repos.length > 1) return true
     return !!this.repoKey(s) && !this.repoHolder(s)
   }
 
@@ -695,17 +714,17 @@ export class SessionManager {
     try {
       // Every start path funnels here, so the gate is checked once, here: the
       // scheduler pre-checks it to pick queue items, "Run now" doesn't need to.
-      if (!s.info.repo) throw new Error('session has no repository')
+      if (!s.info.repos.length) throw new Error('session has no repository')
       const holder = this.repoHolder(s)
       if (holder)
         throw new Error(
-          `repository "${s.info.repo}" is in use by session "${holder.info.title}" — queue this one instead`
+          `repository "${s.info.repos[0]}" is in use by session "${holder.info.title}" — queue this one instead`
         )
       const ctx = await this.events.resolveLaunch(s.info.id)
       s.remoteCwd = ctx.remoteWorkspaceFolder
       const conn = await this.connection(s, ctx)
       const mcpServers = [
-        ...(await this.events.resolveMcpServers(s.ref, s.info.id, s.info.repo, s.info.mcp)),
+        ...(await this.events.resolveMcpServers(s.ref, s.info.id, s.info.repos[0], s.info.mcp)),
         await this.events.resolveGurtServer(s.ref, s.info.id, (p) => this.onComplete(s.info.id, p))
       ]
       // Model/effort chosen for the draft ride `_meta` so the very first turn
@@ -1085,7 +1104,7 @@ export class SessionManager {
       const holder = this.repoHolder(s)
       if (holder)
         throw new Error(
-          `repository "${s.info.repo}" is in use by session "${holder.info.title}" — wait for it to go idle`
+          `repository "${s.info.repos[0]}" is in use by session "${holder.info.title}" — wait for it to go idle`
         )
       const ctx = await this.events.resolveLaunch(s.info.id)
       s.remoteCwd = ctx.remoteWorkspaceFolder
@@ -1094,7 +1113,7 @@ export class SessionManager {
         if (!s.acpSessionId) throw new Error('session was never started')
         try {
           const mcpServers = [
-            ...(await this.events.resolveMcpServers(s.ref, s.info.id, s.info.repo, s.info.mcp)),
+            ...(await this.events.resolveMcpServers(s.ref, s.info.id, s.info.repos[0], s.info.mcp)),
             await this.events.resolveGurtServer(s.ref, s.info.id, (p) => this.onComplete(s.info.id, p))
           ]
           const result = await conn.peer.request<{
@@ -1263,7 +1282,7 @@ export class SessionManager {
   latestProposal(ws: string, task: string, repo: string): StoredProposal | undefined {
     let best: StoredProposal | undefined
     for (const s of this.sessions.values()) {
-      if (s.ref.workspace !== ws || s.ref.task !== task || s.info.repo !== repo) continue
+      if (s.ref.workspace !== ws || s.ref.task !== task || !s.info.repos.includes(repo)) continue
       if (!s.proposal) continue
       if (!best || s.proposal.at > best.at) best = s.proposal
     }
