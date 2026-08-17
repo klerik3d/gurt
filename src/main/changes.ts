@@ -39,7 +39,7 @@ function git(dir: string, access: HostGitAccess, args: string[], opts: GitOpts =
   })
 }
 
-const branchFor = (task: string) => `gurt/${task}`
+const branchFor = (task: string) => task
 
 /** SHA of `ref`, or '' when it does not exist. */
 async function revParse(dir: string, access: HostGitAccess, ref: string): Promise<string> {
@@ -200,7 +200,7 @@ async function repoChanges(
 
   const def = await defaultBranch(dir, access)
   // A clone of an empty remote has no `origin/<def>` to compare against, and it
-  // stays that way for the life of the clone — pushes go to `gurt/<task>`, never
+  // stays that way for the life of the clone — pushes go to `<task>`, never
   // to the default branch — so this is resolved on every call, not once.
   const base = (await revParse(dir, access, `origin/${def}`)) ? `origin/${def}` : null
   const commits = await threadCommits(dir, access, task, base)
@@ -314,7 +314,7 @@ export async function updateFromMain(ws: string, task: string, repo: string): Pr
   await git(dir, access, ['merge', `origin/${def}`, '--no-edit'], { okCodes: [0, 1] })
 }
 
-/** MVP delivery: the forge's compare URL for gurt/<task> (the IPC layer opens it). */
+/** MVP delivery: the forge's compare URL for <task> (the IPC layer opens it). */
 export async function prUrl(ws: string, task: string, repo: string): Promise<string> {
   const dir = cloneDir(ws, task, repo)
   const url = await compareUrl(dir, await hostGitAccessForRepo(ws, repo), task)

@@ -300,7 +300,7 @@ function ChangesSection({
           {!r.integrated && r.commits.length > 0 && (
             <div className="changes-block">
               <div className="block-head">
-                On <span className="branch-name mono">gurt/{task}</span> · {r.commits.length} commit
+                On <span className="branch-name mono">{task}</span> · {r.commits.length} commit
                 {r.commits.length === 1 ? '' : 's'} not in {r.defaultBranch}
               </div>
               <div className="commit-list">
