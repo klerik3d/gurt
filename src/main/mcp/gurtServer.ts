@@ -4,7 +4,14 @@ import type { AddressInfo } from 'node:net'
 import { z } from 'zod'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
-import type { AcpHttpMcpServer, ChangeProposal, EnvRef } from '../../shared/types'
+import type {
+  AcpHttpMcpServer,
+  AgentSessionRequest,
+  ChangeProposal,
+  EnvRef,
+  SessionRole
+} from '../../shared/types'
+import { roleHasTurnContract, spawnableRoles } from '../../shared/types'
 import { createLogger } from '../log'
 
 const log = createLogger('mcp')
@@ -15,7 +22,7 @@ const log = createLogger('mcp')
  * ship / it is blocked). Delivered through MCP init, so nothing is written into
  * the clone or shown to the user in chat.
  */
-const GURT_INSTRUCTIONS =
+const EXECUTOR_INSTRUCTIONS =
   'Finish EVERY turn by calling the `complete` tool, after all other work:\n' +
   '- outcome "changes" — the working tree contains work to ship. Include the\n' +
   '  exact commit message you propose (subject, optional body) and, when a\n' +
@@ -26,6 +33,49 @@ const GURT_INSTRUCTIONS =
   'tree uncommitted and deliver the texts through `complete`; the user\n' +
   'reviews and ships them. (Exception: the user explicitly attached shipping\n' +
   'tools and asked you to use them.)'
+
+/**
+ * A researcher reads and explains; it has no deliverable, so no turn contract
+ * either (docs/requirements-session-roles.md §2). What it *can* do is hand work
+ * to somebody else — as an inert draft the user launches.
+ */
+const RESEARCHER_INSTRUCTIONS =
+  'You are a RESEARCH session. Every repository is mounted read-only and you\n' +
+  'hold no lock on any working tree — chat is your only output format.\n' +
+  'Answer in chat: there is nothing to ship, and no `complete` tool to call.\n' +
+  'Do not try to edit files, commit, push, or open pull requests — the mount\n' +
+  'itself refuses writes.\n' +
+  'Hand work off instead of doing it: `create_session` drafts a fully\n' +
+  'configured executor (to make a change) or reviewer (to judge one) in this\n' +
+  'same task. A draft never runs by itself — the user reviews, edits and\n' +
+  'launches it — so draft freely, and never wait for one: no result comes\n' +
+  'back to you.'
+
+/**
+ * A reviewer judges one clone's uncommitted changes while holding its lock, so
+ * the tree it reads is exactly the tree the user would commit. The verdict is
+ * plain prose on purpose: it gates nothing (§2).
+ */
+const REVIEWER_INSTRUCTIONS =
+  'You are a REVIEW session. The repository is mounted read-only, and while\n' +
+  'you run nothing else may touch its working tree: the uncommitted changes\n' +
+  'you see are exactly what the user would commit.\n' +
+  'Judge those changes against the requirements in your prompt and deliver\n' +
+  'the verdict as your plain chat reply — what is wrong, where, how severe.\n' +
+  'There is no `complete` tool and no structured verdict; nothing is gated on\n' +
+  'you, whether to commit anyway is always the user\'s call.\n' +
+  'Do not edit, commit, push, or open pull requests. When fixes are needed,\n' +
+  'call `create_session` to draft an executor for this same clone with the\n' +
+  'findings spelled out in its prompt. That draft only runs once the user\n' +
+  'launches it, and your session keeps the clone locked until the user stops\n' +
+  'or deletes it — so never wait for the fixer.'
+
+/** Server `instructions` for a session of this role, delivered via MCP init. */
+export function instructionsFor(role: SessionRole): string {
+  if (role === 'researcher') return RESEARCHER_INSTRUCTIONS
+  if (role === 'reviewer') return REVIEWER_INSTRUCTIONS
+  return EXECUTOR_INSTRUCTIONS
+}
 
 /**
  * Strict schema for the `complete` payload. Unknown keys are rejected; the
@@ -70,27 +120,108 @@ const PROPOSAL_SCHEMA = z
     }
   })
 
-/** Build the single-tool MCP server; a valid call fires `onComplete` and reports success. */
-function makeMcpServer(onComplete: (p: ChangeProposal) => void): McpServer {
+/**
+ * Strict schema for `create_session`, with the offered `role` narrowed to what
+ * the *calling* session may draft — a reviewer only ever drafts the executor
+ * that fixes its findings, so `role` is a single-value enum there and the model
+ * cannot even express anything else. Exactly one repo: no role that may be
+ * drafted is allowed more than one (only a researcher is, and no role may draft
+ * a researcher). Everything omitted is inherited from the calling session.
+ */
+function createSessionSchema(roles: SessionRole[]) {
+  return z.strictObject({
+    role: z.enum(roles as [SessionRole, ...SessionRole[]]),
+    repos: z
+      .array(z.string().min(1))
+      .length(1)
+      .describe('exactly one repo name, as registered in the workspace'),
+    prompt: z.string().min(1).describe("the drafted session's start prompt — its whole input"),
+    title: z.string().min(1).max(80).optional().describe('display title, e.g. "fix review findings"'),
+    env: z.string().min(1).optional().describe("env definition name; defaults to this session's"),
+    agent: z.string().min(1).optional().describe("agent instance id; defaults to this session's"),
+    autoAllow: z.boolean().optional().describe('auto-allow the tool calls of the drafted session'),
+    gitAccess: z.boolean().optional().describe('native git/gh in its container (executor only)'),
+    configValues: z
+      .record(z.string(), z.union([z.string(), z.boolean()]))
+      .optional()
+      .describe('agent config picks (model, effort, …) keyed by option id')
+  })
+}
+
+/** The draft `create_session` produced — echoed back so the agent can name it. */
+export interface AgentSessionDraft {
+  sessionId: string
+  title: string
+}
+
+/** What the host does with a tool call; re-resolved on every re-attach so the
+ *  server always routes into the live session manager. */
+export interface GurtHooks {
+  /** Fixed for the life of the session — it decides the tool set below. */
+  role: SessionRole
+  onComplete: (p: ChangeProposal) => void
+  onCreateSession: (req: AgentSessionRequest) => Promise<AgentSessionDraft>
+}
+
+/** Build the MCP server for one role: `complete` for an executor,
+ *  `create_session` for the roles that fan out, and role-matched instructions. */
+function makeMcpServer(hooks: GurtHooks): McpServer {
   const server = new McpServer(
     { name: 'gurt', version: '0.1.0' },
-    { instructions: GURT_INSTRUCTIONS }
+    { instructions: instructionsFor(hooks.role) }
   )
-  server.registerTool(
-    'complete',
-    {
-      description:
-        'Report the outcome of this turn. Call it once, last, after all other work. ' +
-        'With outcome "changes" propose the commit (and optional PR) texts; with ' +
-        '"no_changes" there is nothing to ship; with "blocked" give the reason.',
-      inputSchema: PROPOSAL_SCHEMA
-    },
-    async (input) => {
-      // The SDK has already validated `input` against PROPOSAL_SCHEMA.
-      onComplete(input as ChangeProposal)
-      return { content: [{ type: 'text' as const, text: `complete: ${input.outcome} recorded` }] }
-    }
-  )
+  if (roleHasTurnContract(hooks.role))
+    server.registerTool(
+      'complete',
+      {
+        description:
+          'Report the outcome of this turn. Call it once, last, after all other work. ' +
+          'With outcome "changes" propose the commit (and optional PR) texts; with ' +
+          '"no_changes" there is nothing to ship; with "blocked" give the reason.',
+        inputSchema: PROPOSAL_SCHEMA
+      },
+      async (input) => {
+        // The SDK has already validated `input` against PROPOSAL_SCHEMA.
+        hooks.onComplete(input as ChangeProposal)
+        return { content: [{ type: 'text' as const, text: `complete: ${input.outcome} recorded` }] }
+      }
+    )
+  const roles = spawnableRoles(hooks.role)
+  if (roles.length)
+    server.registerTool(
+      'create_session',
+      {
+        description:
+          'Draft another session in this task, fully configured, to do work you must not do ' +
+          `yourself (allowed roles: ${roles.join(', ')}). The draft does NOT run: the user ` +
+          'reviews, edits or launches it, and that is the approval step. Nothing comes back ' +
+          'to you — never wait for the session you drafted.',
+        inputSchema: createSessionSchema(roles)
+      },
+      async (input) => {
+        try {
+          const draft = await hooks.onCreateSession(input as AgentSessionRequest)
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `create_session: drafted ${input.role} "${draft.title}" (${draft.sessionId}) — waiting for the user to launch it`
+              }
+            ]
+          }
+        } catch (e) {
+          // Host-side rules (role gating, unknown repo/env) are not expressible
+          // in the schema — report them the same way a schema failure reads, so
+          // the agent can correct itself at the tool layer.
+          return {
+            isError: true,
+            content: [
+              { type: 'text' as const, text: e instanceof Error ? e.message : String(e) }
+            ]
+          }
+        }
+      }
+    )
   return server
 }
 
@@ -99,10 +230,7 @@ function makeMcpServer(onComplete: (p: ChangeProposal) => void): McpServer {
  * MCP server + transport per POST. The token guards the endpoint, which binds a
  * container-reachable interface. Mirrors `githubServer.ts`.
  */
-export function buildGurtHttpServer(
-  token: string,
-  onComplete: (p: ChangeProposal) => void
-): Server {
+export function buildGurtHttpServer(token: string, hooks: GurtHooks): Server {
   const prefix = `/mcp/${token}`
   return createServer(async (req, res) => {
     if (!req.url || !req.url.startsWith(prefix)) {
@@ -114,7 +242,7 @@ export function buildGurtHttpServer(
       return
     }
     try {
-      const server = makeMcpServer(onComplete)
+      const server = makeMcpServer(hooks)
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
         enableJsonResponse: true
@@ -140,8 +268,10 @@ interface RunningGurt {
    *  it from the descriptor's URL, which carries the session's bearer token. */
   port?: number
   ref: EnvRef
-  /** Latest callback for this session — updated on re-ensure (re-attach). */
-  onComplete: (p: ChangeProposal) => void
+  /** Latest hooks for this session — replaced on re-ensure (re-attach). The
+   *  role inside them never changes; a role edit (only possible while the
+   *  session is a draft) replaces the whole server instead. */
+  hooks: GurtHooks
 }
 
 /** One `gurt` server per session (not per env), so proposals are attributed to a
@@ -156,29 +286,36 @@ function listen(server: Server): Promise<number> {
   })
 }
 
-/** Ensure the per-session `gurt` server is running; return its ACP descriptor. */
+/** Ensure the per-session `gurt` server is running; return its ACP descriptor.
+ *  The tool set follows `hooks.role`, so a session whose (draft) role has since
+ *  changed gets a fresh server rather than the previous role's tools. */
 export async function ensureGurtServer(
   ref: EnvRef,
   sessionId: string,
-  onComplete: (p: ChangeProposal) => void
+  hooks: GurtHooks
 ): Promise<AcpHttpMcpServer> {
   const existing = running.get(sessionId)
-  if (existing) {
-    // Re-attach hands us a fresh closure; keep the newest so the server routes
+  if (existing && existing.hooks.role === hooks.role) {
+    // Re-attach hands us fresh closures; keep the newest so the server routes
     // to the live session manager.
-    existing.onComplete = onComplete
+    existing.hooks = hooks
     existing.ref = ref
     return existing.ready
   }
+  if (existing) stopGurtServer(sessionId)
   const token = randomUUID()
-  const rec = { ref, onComplete } as RunningGurt
-  rec.http = buildGurtHttpServer(token, (p) => rec.onComplete(p))
+  const rec = { ref, hooks } as RunningGurt
+  rec.http = buildGurtHttpServer(token, {
+    role: hooks.role,
+    onComplete: (p) => rec.hooks.onComplete(p),
+    onCreateSession: (req) => rec.hooks.onCreateSession(req)
+  })
   // The record enters the map before any await, so a concurrent ensure for the
   // same session reuses this server instead of racing a second one into a leak.
   rec.ready = listen(rec.http).then(
     (port): AcpHttpMcpServer => {
       rec.port = port
-      log.info('mcp.start', { id: 'gurt', s: sessionId, mode: 'turn-contract', port })
+      log.info('mcp.start', { id: 'gurt', s: sessionId, mode: hooks.role, port })
       return {
         type: 'http',
         name: 'gurt',
@@ -201,6 +338,6 @@ export function stopGurtServer(sessionId: string): void {
   const rec = running.get(sessionId)
   if (!rec) return
   rec.http.close()
-  log.info('mcp.stop', { id: 'gurt', s: sessionId, mode: 'turn-contract', port: rec.port })
+  log.info('mcp.stop', { id: 'gurt', s: sessionId, mode: rec.hooks.role, port: rec.port })
   running.delete(sessionId)
 }

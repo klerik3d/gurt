@@ -169,17 +169,97 @@ export interface LegacyEnvState {
  */
 export type SessionState = 'draft' | 'queued' | 'starting' | 'started'
 
+/**
+ * What a session is *for* — see docs/requirements-session-roles.md. Chosen at
+ * creation (changeable while it is still a draft, like its repos and env, never
+ * after it has started); mounts, clone locking and the `gurt` tool set follow
+ * from it instead of from the repo count they used to be inferred from.
+ *
+ * executor   — today's worker: one repo, read-write, holds the exclusive clone
+ *              lock, ends every turn with `complete`.
+ * researcher — read-only, locks nothing, has no deliverable and no turn
+ *              contract; the only role that may carry more than one repo (the
+ *              former "discovery session"). Fans work out by drafting sessions.
+ * reviewer   — read-only *and* holding the clone lock: it judges one clone's
+ *              uncommitted changes while nothing may mutate that working tree.
+ *              Its verdict is plain chat text and gates nothing.
+ */
+export type SessionRole = 'executor' | 'researcher' | 'reviewer'
+
+export const SESSION_ROLES: readonly SessionRole[] = ['executor', 'researcher', 'reviewer']
+
+/** Guard for a role arriving from outside the kernel (the renderer over IPC).
+ *  An unknown string must be rejected, not silently treated as some role: every
+ *  predicate below is written as "all but one", so garbage would pass as the
+ *  most restrictive combination instead of failing loudly. */
+export const isSessionRole = (v: unknown): v is SessionRole =>
+  typeof v === 'string' && (SESSION_ROLES as readonly string[]).includes(v)
+
+/** The role of a session record. Absent only on pre-roles records: a discovery
+ *  session (more than one repo) was a read-only researcher by convention, and
+ *  anything else an executor — the same fold `readSessions` writes back to disk
+ *  once. Everything role-dependent reads through this, never `info.role`. */
+export const sessionRole = (s: Pick<SessionInfo, 'role' | 'repos'>): SessionRole =>
+  s.role ?? (s.repos.length > 1 ? 'researcher' : 'executor')
+
+/** Repos are bind-mounted `readonly` (Docker level, not by convention). */
+export const roleIsReadOnly = (role: SessionRole): boolean => role !== 'executor'
+
+/** Takes the scheduler's exclusive clone lock. A researcher never blocks (and
+ *  is never blocked by) another session; a reviewer excludes writers exactly
+ *  the way an executor does. */
+export const roleLocksClone = (role: SessionRole): boolean => role !== 'researcher'
+
+/** Bound by the turn contract — offered `complete`, nudged when a turn ends
+ *  without it (docs/requirements-turn-contract.md). */
+export const roleHasTurnContract = (role: SessionRole): boolean => role === 'executor'
+
+/** May carry more than one repo. */
+export const roleAllowsMultiRepo = (role: SessionRole): boolean => role === 'researcher'
+
+/** Roles this one may draft through `create_session`: a researcher fans out to
+ *  workers and reviewers, a reviewer only to the executor that fixes its
+ *  findings, an executor to nothing (empty = the tool is not offered at all). */
+export const spawnableRoles = (role: SessionRole): SessionRole[] =>
+  role === 'researcher' ? ['executor', 'reviewer'] : role === 'reviewer' ? ['executor'] : []
+
+/**
+ * A draft one session's agent asked for via the `gurt` MCP server's
+ * `create_session` tool. It lands in the spawner's own task and never runs by
+ * itself: the user reviewing and launching it *is* the approval step (§3).
+ * Anything omitted is inherited from the spawning session.
+ */
+export interface AgentSessionRequest {
+  role: SessionRole
+  /** Repo names; exactly one, since only a researcher may hold several and no
+   *  role may draft a researcher. */
+  repos: string[]
+  /** The drafted session's start prompt — its whole input. */
+  prompt: string
+  /** Display title; defaults to the usual `session N`. */
+  title?: string
+  /** Env definition name; defaults to the spawner's. */
+  env?: string
+  /** Agent-instance id; defaults to the spawner's. */
+  agent?: string
+  autoAllow?: boolean
+  gitAccess?: boolean
+  configValues?: Record<string, string | boolean>
+}
+
 export interface SessionInfo {
   id: string
   /** The env this session runs on — an `EnvConfig.name`. */
   env: string
+  /** What this session is for: executor / researcher / reviewer. Absent on
+   *  pre-roles records — read it through {@link sessionRole}, never directly. */
+  role?: SessionRole
   /** The session's repos (first entry seeded from the env's default,
    *  changeable while a draft, fixed at start). Empty on a repo-less draft —
-   *  it cannot start. A single entry is a normal read-write session; more
-   *  than one is a discovery session: `repos[0]` is the build anchor, every
-   *  repo is mounted for reading, no repo is exclusively locked, and the git
-   *  broker is unavailable (native git/gh access does not make sense across
-   *  more than one repo). */
+   *  it cannot start. `repos[0]` is the build anchor. Only a researcher may
+   *  hold more than one; then every repo is mounted as a sibling, no repo is
+   *  exclusively locked, and the git broker is unavailable (native git/gh
+   *  access does not make sense across more than one repo). */
   repos: string[]
   task: string
   workspace: string

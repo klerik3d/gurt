@@ -3,6 +3,7 @@
 // domain-shaped lives in kernel.ts and below.
 import { BrowserWindow, ipcMain, shell } from 'electron'
 import { API_METHODS, type GurtApi } from '../shared/api'
+import { isSessionRole } from '../shared/types'
 import { MCP_DEFS } from '../shared/mcp'
 import { createKernel } from './kernel'
 import { createLogger, dropSessionLog, enabled, logDir, logLevel, logRenderer } from './log'
@@ -159,7 +160,8 @@ export function registerIpc(): void {
       mcp,
       autoAllow,
       gitAccess,
-      configValues
+      configValues,
+      role
     ) => {
       // The session's first persist mkdir -p's its way into the task directory,
       // so a stale or in-flight task name from the renderer would silently
@@ -167,6 +169,8 @@ export function registerIpc(): void {
       // invisible in the tree. The task has to exist *before* the session does.
       if (!store.taskExists(ref.workspace, ref.task))
         throw new Error(`task "${ref.task}" not found in "${ref.workspace}"`)
+      if (role !== undefined && !isSessionRole(role))
+        throw new Error(`unknown session role "${String(role)}"`)
       return kernel.sessions.createSession(
         ref,
         repos,
@@ -176,7 +180,8 @@ export function registerIpc(): void {
         mcp,
         autoAllow,
         gitAccess,
-        configValues
+        configValues,
+        role
       )
     },
     sessionRun: async (id) => kernel.sessions.run(id),

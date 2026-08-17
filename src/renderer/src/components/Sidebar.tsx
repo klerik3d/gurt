@@ -8,9 +8,18 @@ import type {
   RepoChanges,
   SessionConfigOption,
   SessionInfo,
+  SessionRole,
   Tree
 } from '../../../shared/types'
-import { isActionable, isDelivered, sessionStatus } from '../../../shared/types'
+import {
+  SESSION_ROLES,
+  isActionable,
+  isDelivered,
+  roleAllowsMultiRepo,
+  roleIsReadOnly,
+  sessionRole,
+  sessionStatus
+} from '../../../shared/types'
 import type { CredentialEntry } from '../../../shared/credentials'
 import { hasManagedCredential, resolveForRepo } from '../../../shared/credentials'
 import type { McpDef } from '../../../shared/mcp'
@@ -21,7 +30,7 @@ import { useOutsideClose } from '../hooks'
 import { alertDialog, confirmDialog } from '../dialog'
 import { SESSION_DOT } from '../status'
 import { Icon, Dot } from './icons'
-import { AgentMark, agentIcon } from './tags'
+import { AgentMark, ROLE_INFO, agentIcon } from './tags'
 import { Modal } from './Modal'
 
 /** One visible line of the tree — the unit arrow-key navigation moves over. */
@@ -699,8 +708,11 @@ export function NewSessionModal({
   const [taskName, setTaskName] = useState(edit?.task ?? task)
   /** The env definition this session runs on. */
   const [env, setEnv] = useState(edit?.env ?? '')
-  /** The session's repos. Seeded from the picked env's default. A single repo
-   *  is a normal session; more than one is a read-only discovery session. */
+  /** What the session is for — decides its mounts, its clone lock and its gurt
+   *  tool set. Editable here only because the modal edits *drafts*. */
+  const [role, setRole] = useState<SessionRole>(edit ? sessionRole(edit) : 'executor')
+  /** The session's repos. Seeded from the picked env's default. Only a
+   *  researcher may hold more than one. */
   const [repos, setRepos] = useState<string[]>(edit?.repos ?? [])
   const [prompt, setPrompt] = useState(edit?.startPrompt ?? '')
   const [mcpDefs, setMcpDefs] = useState<McpDef[]>([])
@@ -721,7 +733,7 @@ export function NewSessionModal({
   const [credentials, setCredentials] = useState<CredentialEntry[]>([])
   const [harnessOpen, setHarnessOpen] = useState(false)
   /** Which quiet-select menu is open. */
-  const [picker, setPicker] = useState<'task' | 'env' | 'repo' | 'client' | null>(null)
+  const [picker, setPicker] = useState<'task' | 'env' | 'repo' | 'client' | 'role' | null>(null)
   /** Task picker showing its inline "new task" text field instead of the list. */
   const [creatingTask, setCreatingTask] = useState(false)
   /** In-flight inline task creation, awaited before a session is created. */
@@ -775,6 +787,25 @@ export function NewSessionModal({
     const def = envs.find((e) => e.name === name)?.repo
     setRepos(def ? [def] : [])
     setPicker(null)
+  }
+
+  // Only a researcher may hold several repos, so leaving that role drops the
+  // extras rather than letting an invalid pair reach the IPC boundary (which
+  // rejects it). Git access follows the same logic: a read-only role's clone
+  // refuses writes at the mount, so the broker has nothing to offer it.
+  const pickRole = (next: SessionRole) => {
+    setRole(next)
+    if (!roleAllowsMultiRepo(next) && repos.length > 1) setRepos(repos.slice(0, 1))
+    if (roleIsReadOnly(next)) setGitAccess(false)
+    setPicker(null)
+  }
+
+  // Multi-select for a researcher, plain single pick for the roles that work in
+  // exactly one clone.
+  const toggleRepo = (name: string) => {
+    if (repos.includes(name)) setRepos(repos.filter((n) => n !== name))
+    else if (roleAllowsMultiRepo(role)) setRepos([...repos, name])
+    else setRepos([name])
   }
 
   const closeTaskPicker = () => {
@@ -853,8 +884,10 @@ export function NewSessionModal({
   const selectedName = (opt: SessionConfigOption): string | undefined =>
     optionView.selectOptions(opt).find((o) => o.value === effective(opt))?.name
 
-  // Git access only ever applies to a single-repo session — the broker is
-  // scoped to one repo for a container's whole lifetime (§ discovery sessions).
+  // Git access only ever applies to a single-repo read-write session — the
+  // broker is scoped to one repo for a container's whole lifetime, and a
+  // read-only role could not write with it anyway.
+  const gitAccessApplies = repos.length <= 1 && !roleIsReadOnly(role)
   const repoCfg = repos.length === 1 ? allRepos.find((r) => r.name === repos[0]) : undefined
   const gitResolution = repoCfg ? resolveForRepo(credentials, repoCfg) : null
   const gitCredNote = gitResolution
@@ -873,11 +906,12 @@ export function NewSessionModal({
       await window.gurt.sessionEditDraft(edit!.id, {
         agent,
         env,
+        role,
         repos,
         autoAllow,
-        // Never true alongside more than one repo — the git broker is
-        // unavailable for a discovery session regardless of this toggle.
-        gitAccess: repos.length > 1 ? false : gitAccess,
+        // Never true where the broker cannot be wired up: across several repos,
+        // or on a read-only role's clone.
+        gitAccess: gitAccessApplies && gitAccess,
         mcp: mcpSelection(),
         startPrompt: prompt,
         configValues
@@ -902,8 +936,9 @@ export function NewSessionModal({
         action,
         mcpSelection(),
         autoAllow,
-        repos.length > 1 ? false : gitAccess,
-        configValues
+        gitAccessApplies && gitAccess,
+        configValues,
+        role
       )
       onCreated(s)
     } catch (e) {
@@ -998,6 +1033,37 @@ export function NewSessionModal({
           <span className="spacer" />
         </PickRow>
 
+        {/* role — what the session is for. It comes before the repository
+            picker because it governs it: only a researcher may hold more than
+            one clone, and mounts, locking and the gurt tool set follow from the
+            role too (docs/requirements-session-roles.md). */}
+        <div className="ns-section">
+          <span className="seclabel">ROLE</span>
+          <PickRow
+            open={picker === 'role'}
+            onToggle={() => setPicker(picker === 'role' ? null : 'role')}
+            onClose={() => setPicker(null)}
+            menu={SESSION_ROLES.map((r) => (
+              <div
+                key={r}
+                className={`menu-item ${r === role ? 'active' : ''}`}
+                onMouseDown={(e) => {
+                  e.preventDefault()
+                  pickRole(r)
+                }}
+              >
+                <Icon name={ROLE_INFO[r].icon} size={12} className="faint" />
+                {ROLE_INFO[r].label}
+              </div>
+            ))}
+          >
+            <Icon name={ROLE_INFO[role].icon} size={14} className="dim" style={{ flex: 'none' }} />
+            <span className="pick-value strong">{ROLE_INFO[role].label}</span>
+            <span className="spacer" />
+          </PickRow>
+          <div className="hc-note">{ROLE_INFO[role].hint}</div>
+        </div>
+
         {/* environment */}
         <div className="ns-section">
           <span className="seclabel">ENVIRONMENT</span>
@@ -1032,8 +1098,8 @@ export function NewSessionModal({
           </PickRow>
 
           {/* session repositories — seeded from the env's default, changeable
-              here; picking more than one turns this into a read-only
-              discovery session (no git access, no exclusive clone lock). */}
+              here. Multi-select for a researcher only; the other roles work in
+              exactly one clone, so a pick replaces the previous one. */}
           <span className="seclabel">REPOSITORY</span>
           <PickRow
             open={picker === 'repo'}
@@ -1049,7 +1115,7 @@ export function NewSessionModal({
                       className={`menu-item ${active ? 'active' : ''}`}
                       onMouseDown={(e) => {
                         e.preventDefault()
-                        setRepos(active ? repos.filter((n) => n !== r.name) : [...repos, r.name])
+                        toggleRepo(r.name)
                       }}
                     >
                       <Icon name="branch" size={11} className="faint" />
@@ -1082,9 +1148,7 @@ export function NewSessionModal({
             <div className="hc-note">no repository — Run/Queue disabled until you pick one</div>
           )}
           {repos.length > 1 && (
-            <div className="hc-note">
-              {repos.length} repos — read-only discovery session, no git access
-            </div>
+            <div className="hc-note">{repos.length} repos — mounted read-only, no git access</div>
           )}
         </div>
 
@@ -1209,7 +1273,7 @@ export function NewSessionModal({
                     </button>
                   </div>
                 </div>
-                {repos.length <= 1 && (
+                {gitAccessApplies && (
                   <div className="hc-block">
                     <span className="seclabel">GIT ACCESS</span>
                     <div className="chip-row">
@@ -1273,14 +1337,6 @@ export function NewSessionModal({
                 </div>
               </div>
             )}
-          </div>
-
-          <div className="pick-row pick-static" title="agent roles — coming later">
-            <span className="pick-value">Role</span>
-            <span className="tag">optional</span>
-            <span className="spacer" />
-            <span className="pick-meta">No role</span>
-            <Icon name="chevron" size={13} className="faint" style={{ flex: 'none' }} />
           </div>
         </div>
 

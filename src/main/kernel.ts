@@ -3,6 +3,7 @@
 // both. Importable without an Electron app (headless runs, orchestrator,
 // tests).
 import type { Tree } from '../shared/types'
+import { isSessionRole } from '../shared/types'
 import type { SessionDraftPatch } from '../shared/api'
 import { NOTIFICATION_DEFAULTS } from '../shared/notifications'
 import { resolveMcpServers, stopMcpServers } from './mcp/manager'
@@ -58,6 +59,19 @@ export interface Kernel {
   prUrl(ws: string, task: string, repo: string): Promise<string>
 }
 
+/** Reject a draft target that does not exist in the workspace. Shared by the
+ *  IPC edit path and the agent-driven `create_session` one — both take repo/env
+ *  names from outside the kernel, and a draft naming a missing one would only
+ *  fail much later, at its start. */
+async function assertDraftTarget(ws: string, repos: string[], env?: string): Promise<void> {
+  const wsData = await store.getWorkspace(ws)
+  for (const r of repos)
+    if (!wsData.repos.some((c) => c.name === r))
+      throw new Error(`repo "${r}" is not registered in "${ws}"`)
+  if (env !== undefined && !wsData.envs.some((e) => e.name === env))
+    throw new Error(`environment "${env}" is not registered in "${ws}"`)
+}
+
 export function createKernel(): Kernel {
   const bus = createBus()
 
@@ -88,6 +102,7 @@ export function createKernel(): Kernel {
       stopMcpServers,
       resolveGurtServer: ensureGurtServer,
       stopGurtServer,
+      checkDraftTarget: assertDraftTarget,
       persist: (ws, task, records) => {
         store
           .writeSessions(ws, task, records)
@@ -293,16 +308,10 @@ export function createKernel(): Kernel {
     },
 
     async editDraft(sessionId: string, patch: SessionDraftPatch): Promise<void> {
+      if (patch.role !== undefined && !isSessionRole(patch.role))
+        throw new Error(`unknown session role "${String(patch.role)}"`)
       const info = sessions.snapshot(sessionId)?.info
-      if (info) {
-        const wsData = await store.getWorkspace(info.workspace)
-        if (patch.repos !== undefined)
-          for (const r of patch.repos)
-            if (!wsData.repos.some((c) => c.name === r))
-              throw new Error(`repo "${r}" is not registered in "${info.workspace}"`)
-        if (patch.env !== undefined && !wsData.envs.some((e) => e.name === patch.env))
-          throw new Error(`environment "${patch.env}" is not registered in "${info.workspace}"`)
-      }
+      if (info) await assertDraftTarget(info.workspace, patch.repos ?? [], patch.env)
       sessions.editDraft(sessionId, patch)
     },
 

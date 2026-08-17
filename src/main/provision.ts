@@ -686,11 +686,13 @@ export async function devcontainerUp(
   repoHost?: string | null,
   /** Called once, when `up` moves from building the image to post-commands. */
   onPostCommands?: () => void,
-  /** Discovery sessions (more than one repo): every repo beyond the one
-   *  `--workspace-folder` already mounts, bind-mounted as a sibling under the
-   *  same container-side root (`/workspaces/<repoName>/<name>`). Empty for a
-   *  normal single-repo session. */
-  extraMounts: { hostDir: string; name: string }[] = []
+  /** Repos mounted explicitly as siblings under the container-side root
+   *  (`/workspaces/<repoName>/<name>`), instead of through the workspace folder
+   *  itself: every repo of a session whose `--workspace-folder` is the empty
+   *  wrapper directory. That is any session with more than one repo, and any
+   *  read-only role — `readonly` is what the CLI's own workspace mount can never
+   *  be. Empty for a plain read-write single-repo session. */
+  extraMounts: { hostDir: string; name: string; readonly?: boolean }[] = []
 ): Promise<UpResult> {
   // The container is agent-agnostic: only the node feature is injected, plus any
   // forge-CLI features for the repo's host (computed from the host alone, so the
@@ -705,7 +707,10 @@ export async function devcontainerUp(
     ...idLabelArgs(session),
     ...extraMounts.flatMap((m) => [
       '--mount',
-      `type=bind,source=${m.hostDir},target=${remoteRoot}/${m.name}`
+      // `readonly` (docker's own flag-style key) is the filesystem-level
+      // enforcement a read-only role asks for — not a convention the agent
+      // could talk itself out of.
+      `type=bind,source=${m.hostDir},target=${remoteRoot}/${m.name}${m.readonly ? ',readonly' : ''}`
     ]),
     ...configArgs
   ]

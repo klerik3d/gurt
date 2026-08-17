@@ -4,6 +4,7 @@
 // marks the env/repository pickers use in the new-session sidebar.
 
 import { Fragment } from 'react'
+import type { SessionRole } from '../../../shared/types'
 import { Icon, type IconName } from './icons'
 
 /** kind (an `AgentDef.id`) → glyph. Unmatched/custom kinds fall back to a
@@ -30,6 +31,53 @@ export function RepoTag({ name, title }: { name: string; title?: string }): JSX.
     <span className="tag tag-ico" title={title ?? `repository ${name}`}>
       <Icon name="branch" size={10} />
       {name}
+    </span>
+  )
+}
+
+/**
+ * What each session role means, in the UI's own words — the new-session picker,
+ * the draft settings row and the chat header all read from here, so the wording
+ * stays one thing. Glyphs follow the trade-off, not the name: `play` = it does
+ * the work, `eye` = it only looks, `lock` = it only looks but nobody else may
+ * touch the tree while it does. See docs/requirements-session-roles.md.
+ */
+export const ROLE_INFO: Record<SessionRole, { label: string; hint: string; icon: IconName }> = {
+  executor: {
+    label: 'executor',
+    hint: 'writes code: read-write clone, locked while it runs, proposes a commit when done',
+    icon: 'play'
+  },
+  researcher: {
+    label: 'researcher',
+    hint: 'reads only: any number of repos, locks nothing, answers in chat, can draft other sessions',
+    icon: 'eye'
+  },
+  reviewer: {
+    label: 'reviewer',
+    hint: "judges one clone's uncommitted changes: read-only, but holds the lock so nothing moves under it",
+    icon: 'lock'
+  }
+}
+
+/** Session-role tag — same pill as `EnvTag`/`RepoTag`. */
+export function RoleTag({ role }: { role: SessionRole }): JSX.Element {
+  const info = ROLE_INFO[role]
+  return (
+    <span className="tag tag-ico" title={`${role} session — ${info.hint}`}>
+      <Icon name={info.icon} size={10} />
+      {info.label}
+    </span>
+  )
+}
+
+/** Unpilled role mark for the header pills, next to the env/repo marks. */
+export function RoleMark({ role }: { role: SessionRole }): JSX.Element {
+  const info = ROLE_INFO[role]
+  return (
+    <span className="agent-mark" title={`${role} session — ${info.hint}`}>
+      <Icon name={info.icon} size={11} className="faint" />
+      {info.label}
     </span>
   )
 }
