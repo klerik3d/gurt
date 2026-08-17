@@ -351,9 +351,6 @@ export default function App() {
   return (
     <div className="app">
       <div className="titlebar">
-        <div className="tb-logo">
-          <span className="tb-name">gurt</span>
-        </div>
         <div className="tb-center">
           <div className="tb-crumb">
             {crumbDot && (
