@@ -10,6 +10,7 @@
 // record keyed by it cannot survive the thing it describes. That is what makes
 // stale-cache reuse unrepresentable rather than merely avoided.
 import { spawn } from 'node:child_process'
+import { promises as fs } from 'node:fs'
 import type { EnvRef, RepoConfig, SessionContainer, SessionInfo } from '../shared/types'
 import type { ContainerStatusReason } from '../shared/events'
 import type { AgentDef } from '../shared/agents'
@@ -38,6 +39,12 @@ import type { Bus } from './bus'
 import { createLogger, errCtx } from './log'
 
 const log = createLogger('containers')
+
+/** Order-sensitive: a reorder changes which repo is the build anchor, so it
+ *  counts as a real change (forces a rebuild) same as adding/removing one. */
+function sameRepos(a: string[] | undefined, b: string[]): boolean {
+  return !!a && a.length === b.length && a.every((r, i) => r === b[i])
+}
 
 /** Everything needed to (re)spawn the agent process for a session. */
 export interface LaunchContext {
@@ -181,7 +188,7 @@ export class ContainerManager {
   private async ensureUncoalesced(sessionId: string): Promise<SessionContainer> {
     const info = this.deps.session(sessionId)
     if (!info) throw new Error('session no longer exists')
-    if (!info.repo) throw new Error('session has no repository')
+    if (!info.repos.length) throw new Error('session has no repository')
     const provisionLog = this.logFor(sessionId)
 
     // Its own container, still up → just reuse it. (Probe the daemon: a Docker
@@ -191,21 +198,24 @@ export class ContainerManager {
       owned?.status === 'running' &&
       owned.id &&
       owned.remoteWorkspaceFolder &&
-      owned.repo === info.repo &&
+      sameRepos(owned.repos, info.repos) &&
       (await dockerRunning(owned.id))
     )
       return owned
 
     const ws = await store.getWorkspace(info.workspace)
-    const repoCfg = ws.repos.find((r) => r.name === info.repo)
-    if (!repoCfg) throw new Error(`repo "${info.repo}" is not registered in "${info.workspace}"`)
+    const repoCfgs = info.repos.map((name) => {
+      const cfg = ws.repos.find((r) => r.name === name)
+      if (!cfg) throw new Error(`repo "${name}" is not registered in "${info.workspace}"`)
+      return cfg
+    })
     const envCfg = ws.envs.find((e) => e.name === info.env)
     if (!envCfg) throw new Error(`env "${info.env}" is not registered in "${info.workspace}"`)
 
     // A container this session owns but can no longer use — it was built for a
-    // different repo, or it is stopped/errored. `devcontainer up` would restart
-    // a stopped one in place, so only a repo change forces a rebuild.
-    if (owned?.id && owned.repo && owned.repo !== info.repo) {
+    // different repo set, or it is stopped/errored. `devcontainer up` would
+    // restart a stopped one in place, so only a repo change forces a rebuild.
+    if (owned?.id && owned.repos.length && !sameRepos(owned.repos, info.repos)) {
       this.deps.detach(sessionId)
       this.forget(owned.id)
       await dockerRemove(owned.id, provisionLog)
@@ -213,7 +223,11 @@ export class ContainerManager {
 
     // `building` covers the clone and the image (ours or the CLI's); `up` flips
     // it to `post` as soon as the container exists and its hooks start running.
-    this.setStatus(sessionId, { ...(owned ?? {}), status: 'building', error: undefined }, 'user')
+    this.setStatus(
+      sessionId,
+      { repos: info.repos, ...(owned ?? {}), status: 'building', error: undefined },
+      'user'
+    )
     // Each provisioning step is timed on its own — "which phase is slow" is the
     // first question a slow start raises, and the phases have wildly different
     // costs (a cold image build vs. a restart of an existing container).
@@ -227,35 +241,52 @@ export class ContainerManager {
       since = Date.now()
     }
     try {
-      const dir = await ensureClone(this.refOf(info), repoCfg, provisionLog)
+      const dirs = await Promise.all(
+        repoCfgs.map((r) => ensureClone(this.refOf(info), r, provisionLog))
+      )
       enter('image')
+      // repos[0] is the build anchor, same role a normal session's only repo
+      // plays today — every other repo (if any) is a sibling mount only.
       const configArgs = await materializeEnvConfig(
         this.refOf(info),
         envCfg,
-        repoCfg,
-        dir,
+        repoCfgs[0],
+        dirs[0],
         provisionLog
       )
       enter('up')
+      const multi = info.repos.length > 1
+      // Single repo: unchanged — `--workspace-folder` IS the clone, exactly as
+      // before. Discovery session: `--workspace-folder` is an empty wrapper
+      // dir, and every repo (anchor included) is mounted into it explicitly,
+      // so none of them sits at the container's top-level workspace folder.
+      let workspaceFolder = dirs[0]
+      let extraMounts: { hostDir: string; name: string }[] = []
+      if (multi) {
+        workspaceFolder = store.multiRepoWorkspaceDir(info.workspace, info.task, sessionId)
+        await fs.mkdir(workspaceFolder, { recursive: true })
+        extraMounts = repoCfgs.map((r, i) => ({ hostDir: dirs[i], name: r.name }))
+      }
       const up = await devcontainerUp(
         sessionId,
         configArgs,
-        dir,
+        workspaceFolder,
         provisionLog,
-        repoCfg.name,
-        canonicalRepoId(repoCfg.url)?.host,
+        multi ? 'repos' : repoCfgs[0].name,
+        canonicalRepoId(repoCfgs[0].url)?.host,
         () =>
           this.setStatus(
             sessionId,
-            { ...(this.container(sessionId) ?? {}), status: 'post' },
+            { repos: info.repos, ...(this.container(sessionId) ?? {}), status: 'post' },
             'user'
-          )
+          ),
+        extraMounts
       )
       const next: SessionContainer = {
         status: 'running',
         id: up.containerId,
         remoteWorkspaceFolder: up.remoteWorkspaceFolder,
-        repo: info.repo
+        repos: info.repos
       }
       this.setStatus(sessionId, next, 'user')
       enter()
@@ -263,7 +294,11 @@ export class ContainerManager {
       return next
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e)
-      this.setStatus(sessionId, { ...(owned ?? {}), status: 'error', error: message }, 'error')
+      this.setStatus(
+        sessionId,
+        { repos: info.repos, ...(owned ?? {}), status: 'error', error: message },
+        'error'
+      )
       log.error('provision.fail', { s: sessionId, phase, code: errCtx(e).code, err: e })
       provisionLog(`error: ${message}`)
       throw e
@@ -310,10 +345,11 @@ export class ContainerManager {
       cfg.credentialId
     )
     if (credError) throw new Error(`agent "${cfg.label}": ${credError}`)
-    if (!info.repo) throw new Error('session has no repository')
+    if (!info.repos.length) throw new Error('session has no repository')
     const ws = await store.getWorkspace(info.workspace)
-    const repoCfg = ws.repos.find((r) => r.name === info.repo)
-    if (!repoCfg) throw new Error(`repo "${info.repo}" is not registered in "${info.workspace}"`)
+    const repoCfg = ws.repos.find((r) => r.name === info.repos[0])
+    if (!repoCfg)
+      throw new Error(`repo "${info.repos[0]}" is not registered in "${info.workspace}"`)
 
     const c = await this.ensure(sessionId)
     if (c.status !== 'running' || !c.id || !c.remoteWorkspaceFolder)
@@ -324,16 +360,25 @@ export class ContainerManager {
       session: sessionId,
       containerId: c.id,
       remoteWorkspaceFolder: c.remoteWorkspaceFolder,
-      hostWorkspaceFolder: cloneDir(info.workspace, info.task, info.repo),
+      // Must match whatever `ensureUncoalesced` passed as `--workspace-folder`
+      // for this same repo set — the wrapper dir for a discovery session, the
+      // plain clone dir otherwise.
+      hostWorkspaceFolder:
+        info.repos.length > 1
+          ? store.multiRepoWorkspaceDir(info.workspace, info.task, sessionId)
+          : cloneDir(info.workspace, info.task, info.repos[0]),
       // The file behind these args was materialized by ensure's up (and persists
       // across app restarts) — up and every exec resolve the same config.
       configArgs: overrideConfigArgs(this.refOf(info)),
       secret,
       secretEnv: cfg.secretEnv || def.secretEnv,
       env: cfg.env,
-      gitBrokerEnv: info.gitAccess
-        ? await this.resolveGitAccess(info, repoCfg, c.id)
-        : undefined
+      // The git broker is scoped to one repo for its whole container lifetime —
+      // unavailable for a discovery session regardless of `gitAccess`.
+      gitBrokerEnv:
+        info.gitAccess && info.repos.length === 1
+          ? await this.resolveGitAccess(info, repoCfg, c.id)
+          : undefined
     }
   }
 

@@ -55,7 +55,7 @@ function Header({ snapshot }: { snapshot: SessionSnapshot }) {
       <span className="tag">{info.state}</span>
       <span className="spacer" />
       <span className="chat-pill">
-        <EnvRepoMarks env={info.env} repo={info.repo} task={info.task} />
+        <EnvRepoMarks env={info.env} repos={info.repos} task={info.task} />
         {/* Own element, not a bare string: adjacent text nodes collapse into one
             flex item and lose the row's gap. */}
         {info.agent && (
@@ -110,8 +110,8 @@ function NonStartedPane({
         <div className="draft-body">
           <div className="draft-settings">
             <EnvTag name={info.env} />
-            {info.repo ? (
-              <RepoTag name={info.repo} />
+            {info.repos.length ? (
+              info.repos.map((r) => <RepoTag key={r} name={r} />)
             ) : (
               <RepoTag name="no repo" title="no repository — Run/Queue disabled" />
             )}
@@ -146,8 +146,8 @@ function NonStartedPane({
           <div className="row-buttons">
             <button
               className="btn btn-primary"
-              disabled={!text.trim() || !info.repo}
-              title={!info.repo ? 'pick a repository first (Edit settings)' : undefined}
+              disabled={!text.trim() || !info.repos.length}
+              title={!info.repos.length ? 'pick a repository first (Edit settings)' : undefined}
               onClick={async () => {
                 if (text !== info.startPrompt) await window.gurt.sessionEditPrompt(sessionId, text)
                 window.gurt.sessionRun(sessionId).catch((e) => alertDialog(String(e)))
@@ -157,8 +157,8 @@ function NonStartedPane({
             </button>
             <button
               className="btn"
-              disabled={!text.trim() || !info.repo}
-              title={!info.repo ? 'pick a repository first (Edit settings)' : undefined}
+              disabled={!text.trim() || !info.repos.length}
+              title={!info.repos.length ? 'pick a repository first (Edit settings)' : undefined}
               onClick={async () => {
                 if (text !== info.startPrompt) await window.gurt.sessionEditPrompt(sessionId, text)
                 window.gurt.sessionEnqueue(sessionId).catch((e) => alertDialog(String(e)))

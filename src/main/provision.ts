@@ -685,18 +685,28 @@ export async function devcontainerUp(
   repoName: string,
   repoHost?: string | null,
   /** Called once, when `up` moves from building the image to post-commands. */
-  onPostCommands?: () => void
+  onPostCommands?: () => void,
+  /** Discovery sessions (more than one repo): every repo beyond the one
+   *  `--workspace-folder` already mounts, bind-mounted as a sibling under the
+   *  same container-side root (`/workspaces/<repoName>/<name>`). Empty for a
+   *  normal single-repo session. */
+  extraMounts: { hostDir: string; name: string }[] = []
 ): Promise<UpResult> {
   // The container is agent-agnostic: only the node feature is injected, plus any
   // forge-CLI features for the repo's host (computed from the host alone, so the
   // image-level feature set is stable across ups — an installed-but-unused CLI
   // is harmless). Agent adapters are installed lazily via `exec` on connect.
   const features = { ...BASE_FEATURES, ...forgeFeatures(repoHost ?? null) }
+  const remoteRoot = '/workspaces/' + repoName
   const args = [
     'up',
     '--workspace-folder', workspaceFolder,
     '--additional-features', JSON.stringify(features),
     ...idLabelArgs(session),
+    ...extraMounts.flatMap((m) => [
+      '--mount',
+      `type=bind,source=${m.hostDir},target=${remoteRoot}/${m.name}`
+    ]),
     ...configArgs
   ]
   let announced = false
@@ -718,7 +728,7 @@ export async function devcontainerUp(
   }
   return {
     containerId: result.containerId,
-    remoteWorkspaceFolder: result.remoteWorkspaceFolder ?? '/workspaces/' + repoName
+    remoteWorkspaceFolder: result.remoteWorkspaceFolder ?? remoteRoot
   }
 }
 

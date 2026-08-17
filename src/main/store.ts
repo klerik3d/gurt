@@ -54,6 +54,13 @@ export const wsDir = (ws: string) => path.join(gurtRoot, ws)
 export const taskDir = (ws: string, task: string) => path.join(gurtRoot, ws, task)
 export const cloneDir = (ws: string, task: string, repo: string) =>
   path.join(gurtRoot, ws, task, repo)
+/** Host directory used as `--workspace-folder` for a discovery session (more
+ *  than one repo): empty except for the repo clones bind-mounted into it
+ *  individually — never the task dir itself, which also holds `task.json` /
+ *  `sessions.json`. Fixed basename `repos` so the container-side default
+ *  (`/workspaces/<basename>`) is predictable. */
+export const multiRepoWorkspaceDir = (ws: string, task: string, sessionId: string) =>
+  path.join(gurtRoot, ws, task, '.multirepo', sessionId, 'repos')
 /** Host-side file the env's materialized devcontainer config is written to. */
 export const overrideConfigPath = (ws: string, env: string) =>
   path.join(gurtRoot, ws, '.devcontainers', `${env}.json`)
@@ -64,7 +71,7 @@ export const overrideConfigPath = (ws: string, env: string) =>
 const RESERVED_NAMES: Record<string, string[]> = {
   workspace: ['agents.json', 'credentials.json', 'agent-config-cache.json'],
   task: ['workspace.json', '.devcontainers'],
-  repo: ['task.json', 'sessions.json', 'sessions'],
+  repo: ['task.json', 'sessions.json', 'sessions', '.multirepo'],
   // Env names only ever become `.devcontainers/<env>.json` — segment rules only.
   env: []
 }
@@ -433,7 +440,7 @@ export async function readSessions(ws: string, task: string): Promise<PersistedS
         status: e.status,
         id: e.containerId,
         remoteWorkspaceFolder: e.remoteWorkspaceFolder,
-        repo: e.repo,
+        repos: e.repo ? [e.repo] : [],
         error: e.error
       }
     }
@@ -450,10 +457,18 @@ export async function readSessions(ws: string, task: string): Promise<PersistedS
     const fused = info[legacyKey]
     if (info.env === undefined && typeof fused === 'string') {
       info.env = fused
-      info.repo = fused
+      info.repos = [fused]
     }
     if (legacyKey in info) {
       delete info[legacyKey]
+      migrated = true
+    }
+    // Pre-multirepo records carried a single `repo?: string` field; fold it
+    // into the now-plural `repos`.
+    if (!Array.isArray(info.repos)) {
+      const legacyRepo = info.repo as string | undefined
+      info.repos = legacyRepo ? [legacyRepo] : []
+      delete info.repo
       migrated = true
     }
     if (!r.info.state) r.info.state = 'started'
@@ -466,8 +481,16 @@ export async function readSessions(ws: string, task: string): Promise<PersistedS
     // Same for the container's provisioning phases (and the legacy `starting`):
     // nothing is building any more, so the record restores as stopped and the
     // boot reconcile decides from Docker whether it is actually up.
-    const c = r.info.container
-    if (c && c.status !== 'running' && c.status !== 'error') c.status = 'stopped'
+    const c = r.info.container as (SessionInfo['container'] & Record<string, unknown>) | undefined
+    if (c) {
+      if (!Array.isArray(c.repos)) {
+        const legacyContainerRepo = c.repo as string | undefined
+        c.repos = legacyContainerRepo ? [legacyContainerRepo] : []
+        delete c.repo
+        migrated = true
+      }
+      if (c.status !== 'running' && c.status !== 'error') c.status = 'stopped'
+    }
   }
   // Write the env/repo split back once, so the legacy key leaves the disk too.
   if (migrated) await writeSessions(ws, task, records)

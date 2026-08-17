@@ -699,8 +699,9 @@ export function NewSessionModal({
   const [taskName, setTaskName] = useState(edit?.task ?? task)
   /** The env definition this session runs on. */
   const [env, setEnv] = useState(edit?.env ?? '')
-  /** The session's repo (null = none). Seeded from the picked env's default. */
-  const [repo, setRepo] = useState<string | null>(edit?.repo ?? null)
+  /** The session's repos. Seeded from the picked env's default. A single repo
+   *  is a normal session; more than one is a read-only discovery session. */
+  const [repos, setRepos] = useState<string[]>(edit?.repos ?? [])
   const [prompt, setPrompt] = useState(edit?.startPrompt ?? '')
   const [mcpDefs, setMcpDefs] = useState<McpDef[]>([])
   /** MCP id -> granted mode; absent = not attached. */
@@ -749,7 +750,7 @@ export function NewSessionModal({
   const wsData = tree.workspaces.find((w) => w.name === ws)
   const tasks = wsData?.tasks ?? []
   const taskData = tasks.find((t) => t.name === taskName)
-  const repos = wsData?.repos ?? []
+  const allRepos = wsData?.repos ?? []
   const envs = wsData?.envs ?? []
   const agentList = agents
     ? Object.entries(agents).map(([id, a]) => ({ id, label: a.label, kind: a.kind }))
@@ -760,18 +761,19 @@ export function NewSessionModal({
   }, [taskName, tasks])
 
   // Default to the first env; seed the session repo from its default (create mode
-  // only — edit mode keeps the session's saved repo).
+  // only — edit mode keeps the session's saved repos).
   useEffect(() => {
     if (!env && envs.length) {
       setEnv(envs[0].name)
-      if (!editing) setRepo(envs[0].repo ?? null)
+      if (!editing) setRepos(envs[0].repo ? [envs[0].repo] : [])
     }
   }, [env, envs, editing])
 
   // Picking a (different) env re-seeds the session repo from that env's default.
   const pickEnv = (name: string) => {
     setEnv(name)
-    setRepo(envs.find((e) => e.name === name)?.repo ?? null)
+    const def = envs.find((e) => e.name === name)?.repo
+    setRepos(def ? [def] : [])
     setPicker(null)
   }
 
@@ -851,7 +853,9 @@ export function NewSessionModal({
   const selectedName = (opt: SessionConfigOption): string | undefined =>
     optionView.selectOptions(opt).find((o) => o.value === effective(opt))?.name
 
-  const repoCfg = repo ? repos.find((r) => r.name === repo) : undefined
+  // Git access only ever applies to a single-repo session — the broker is
+  // scoped to one repo for a container's whole lifetime (§ discovery sessions).
+  const repoCfg = repos.length === 1 ? allRepos.find((r) => r.name === repos[0]) : undefined
   const gitResolution = repoCfg ? resolveForRepo(credentials, repoCfg) : null
   const gitCredNote = gitResolution
     ? hasManagedCredential(gitResolution)
@@ -869,9 +873,11 @@ export function NewSessionModal({
       await window.gurt.sessionEditDraft(edit!.id, {
         agent,
         env,
-        repo,
+        repos,
         autoAllow,
-        gitAccess,
+        // Never true alongside more than one repo — the git broker is
+        // unavailable for a discovery session regardless of this toggle.
+        gitAccess: repos.length > 1 ? false : gitAccess,
         mcp: mcpSelection(),
         startPrompt: prompt,
         configValues
@@ -890,13 +896,13 @@ export function NewSessionModal({
       await taskCreation.current?.catch(() => {})
       const s = await window.gurt.createSession(
         { workspace: ws, task: taskName, env },
-        repo,
+        repos,
         agent,
         prompt,
         action,
         mcpSelection(),
         autoAllow,
-        gitAccess,
+        repos.length > 1 ? false : gitAccess,
         configValues
       )
       onCreated(s)
@@ -907,7 +913,7 @@ export function NewSessionModal({
 
   // Draft only needs env + agent + prompt; running/queueing also needs a repo.
   const ready = !!taskName && !!env && !!agent && !!prompt.trim()
-  const canRun = ready && !!repo
+  const canRun = ready && repos.length > 0
   const mcpCount = Object.keys(mcp).length
   // Model/effort surface in the summary so they stay legible while the panel's collapsed.
   const modelOpt = cfgOptions.find((o) => o.category === 'model')
@@ -1025,54 +1031,60 @@ export function NewSessionModal({
             <span className="spacer" />
           </PickRow>
 
-          {/* session repository — seeded from the env's default, changeable here */}
+          {/* session repositories — seeded from the env's default, changeable
+              here; picking more than one turns this into a read-only
+              discovery session (no git access, no exclusive clone lock). */}
           <span className="seclabel">REPOSITORY</span>
           <PickRow
             open={picker === 'repo'}
             onToggle={() => setPicker(picker === 'repo' ? null : 'repo')}
             onClose={() => setPicker(null)}
             menu={
-              <>
-                <div
-                  className={`menu-item ${repo == null ? 'active' : ''}`}
-                  onMouseDown={(e) => {
-                    e.preventDefault()
-                    setRepo(null)
-                    setPicker(null)
-                  }}
-                >
-                  no repository
-                </div>
-                {repos.map((r) => (
-                  <div
-                    key={r.name}
-                    className={`menu-item ${r.name === repo ? 'active' : ''}`}
-                    onMouseDown={(e) => {
-                      e.preventDefault()
-                      setRepo(r.name)
-                      setPicker(null)
-                    }}
-                  >
-                    <Icon name="branch" size={11} className="faint" />
-                    {r.name}
-                    <span className="menu-meta mono">{shortRepoUrl(r.url)}</span>
-                  </div>
-                ))}
-              </>
+              allRepos.length ? (
+                allRepos.map((r) => {
+                  const active = repos.includes(r.name)
+                  return (
+                    <div
+                      key={r.name}
+                      className={`menu-item ${active ? 'active' : ''}`}
+                      onMouseDown={(e) => {
+                        e.preventDefault()
+                        setRepos(active ? repos.filter((n) => n !== r.name) : [...repos, r.name])
+                      }}
+                    >
+                      <Icon name="branch" size={11} className="faint" />
+                      {r.name}
+                      <span className="menu-meta mono">{shortRepoUrl(r.url)}</span>
+                    </div>
+                  )
+                })
+              ) : (
+                <div className="menu-empty">no repositories — add one in Settings</div>
+              )
             }
           >
-            {repoCfg ? (
-              <span className="chip-tag">
-                <Icon name="branch" size={11} className="faint" />
-                {shortRepoUrl(repoCfg.url)}
-              </span>
+            {repos.length ? (
+              repos.map((name) => {
+                const cfg = allRepos.find((r) => r.name === name)
+                return (
+                  <span className="chip-tag" key={name}>
+                    <Icon name="branch" size={11} className="faint" />
+                    {cfg ? shortRepoUrl(cfg.url) : name}
+                  </span>
+                )
+              })
             ) : (
               <span className="chip-dashed">no repository</span>
             )}
             <span className="spacer" />
           </PickRow>
-          {!repo && (
+          {!repos.length && (
             <div className="hc-note">no repository — Run/Queue disabled until you pick one</div>
+          )}
+          {repos.length > 1 && (
+            <div className="hc-note">
+              {repos.length} repos — read-only discovery session, no git access
+            </div>
           )}
         </div>
 
@@ -1197,26 +1209,28 @@ export function NewSessionModal({
                     </button>
                   </div>
                 </div>
-                <div className="hc-block">
-                  <span className="seclabel">GIT ACCESS</span>
-                  <div className="chip-row">
-                    <button
-                      className={`chip-btn ${gitAccess ? 'on' : ''}`}
-                      onClick={() => setGitAccess(true)}
-                      title="native git + gh in the container"
-                    >
-                      on
-                    </button>
-                    <button
-                      className={`chip-btn ${!gitAccess ? 'on' : ''}`}
-                      onClick={() => setGitAccess(false)}
-                      title="delegate remote git to the github MCP"
-                    >
-                      off
-                    </button>
+                {repos.length <= 1 && (
+                  <div className="hc-block">
+                    <span className="seclabel">GIT ACCESS</span>
+                    <div className="chip-row">
+                      <button
+                        className={`chip-btn ${gitAccess ? 'on' : ''}`}
+                        onClick={() => setGitAccess(true)}
+                        title="native git + gh in the container"
+                      >
+                        on
+                      </button>
+                      <button
+                        className={`chip-btn ${!gitAccess ? 'on' : ''}`}
+                        onClick={() => setGitAccess(false)}
+                        title="delegate remote git to the github MCP"
+                      >
+                        off
+                      </button>
+                    </div>
+                    {gitCredNote && <div className="hc-note">{gitCredNote}</div>}
                   </div>
-                  {gitCredNote && <div className="hc-note">{gitCredNote}</div>}
-                </div>
+                )}
                 {mcpDefs.length > 0 && (
                   <div className="hc-block">
                     <span className="seclabel">MCP SERVERS</span>
@@ -1316,7 +1330,7 @@ export function NewSessionModal({
             <button
               className="btn"
               disabled={!canRun}
-              title={!repo ? 'pick a repository to queue' : undefined}
+              title={!repos.length ? 'pick a repository to queue' : undefined}
               onClick={() => create('queue')}
             >
               Add to queue
@@ -1324,7 +1338,7 @@ export function NewSessionModal({
             <button
               className="btn btn-primary"
               disabled={!canRun}
-              title={!repo ? 'pick a repository to run' : undefined}
+              title={!repos.length ? 'pick a repository to run' : undefined}
               onClick={() => create('run')}
             >
               <Icon name="play" size={11} />

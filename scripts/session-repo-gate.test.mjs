@@ -77,7 +77,7 @@ try {
   await kernel.ready
   const ref = { workspace: ws, task, env: 'dev' }
   const mk = (repo, title) => {
-    const info = kernel.sessions.createSession(ref, repo, 'a1', 'hi', 'none')
+    const info = kernel.sessions.createSession(ref, [repo], 'a1', 'hi', 'none')
     kernel.sessions.renameSession(info.id, title)
     return info.id
   }
@@ -91,7 +91,7 @@ try {
     status: 'running',
     id: 'container-a',
     remoteWorkspaceFolder: '/app',
-    repo: 'alpha'
+    repos: ['alpha']
   })
 
   kernel.sessions.run(b)
@@ -131,7 +131,7 @@ try {
     status: 'stopped',
     id: 'container-a',
     remoteWorkspaceFolder: '/app',
-    repo: 'alpha'
+    repos: ['alpha']
   })
   kernel.sessions.run(b)
   const released = await settle(kernel, b)
@@ -148,7 +148,7 @@ try {
     status: 'running',
     id: 'container-a',
     remoteWorkspaceFolder: '/app',
-    repo: 'alpha'
+    repos: ['alpha']
   })
   const e = mk('alpha', 'E')
   kernel.sessions.enqueue(e)

@@ -43,8 +43,9 @@ export interface SessionDraftPatch {
   agent?: string
   /** Re-point the not-yet-started session onto another env definition. */
   env?: string
-  /** The session's repo: a repo name, `null` to clear it, absent to leave it. */
-  repo?: string | null
+  /** The session's repos (repo names, `repos[0]` is the build anchor); absent
+   *  to leave them unchanged. */
+  repos?: string[]
   autoAllow?: boolean
   gitAccess?: boolean
   mcp?: McpSelection[]
@@ -128,8 +129,10 @@ export interface GurtApi {
   changesOpenVscode(ws: string, task: string, repo: string): Promise<void>
   createSession(
     ref: EnvRef,
-    /** The session's repo (a repo name), or null for a repo-less draft. */
-    repo: string | null,
+    /** The session's repos (repo names); empty for a repo-less draft. A
+     *  single repo is a normal session; more than one is a read-only
+     *  discovery session (see `SessionInfo.repos`). */
+    repos: string[],
     agent: string,
     prompt: string,
     action: CreateAction,

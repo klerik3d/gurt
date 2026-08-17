@@ -86,14 +86,14 @@ try {
 
   const kernel = createKernel()
   const ref = { workspace: ws, task, env: 'dev' }
-  const info = kernel.sessions.createSession(ref, 'alpha', 'a1', 'hi', 'none')
+  const info = kernel.sessions.createSession(ref, ['alpha'], 'a1', 'hi', 'none')
 
   // Stage a live container the same way the container manager would.
   kernel.sessions.patchContainer(info.id, {
     status: 'running',
     id: 'container-a',
     remoteWorkspaceFolder: '/app',
-    repo: 'alpha'
+    repos: ['alpha']
   })
   assert.equal(
     kernel.sessions.snapshot(info.id).info.container?.id,

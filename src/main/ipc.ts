@@ -152,7 +152,7 @@ export function registerIpc(): void {
     changesOpenVscode: (ws, task, repo) => changes.openInVscode(ws, task, repo),
     createSession: async (
       ref,
-      repo,
+      repos,
       agent,
       prompt,
       action,
@@ -169,7 +169,7 @@ export function registerIpc(): void {
         throw new Error(`task "${ref.task}" not found in "${ref.workspace}"`)
       return kernel.sessions.createSession(
         ref,
-        repo,
+        repos,
         agent,
         prompt,
         action,
