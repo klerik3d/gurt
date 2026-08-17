@@ -60,7 +60,16 @@ recorded because the reasoning is easy to re-derive backwards otherwise:
   <sessionId>/repos` — deliberately not the task directory itself, which also
   holds `task.json`/`sessions.json`); every repo, including the anchor, is
   bind-mounted into it by name via explicit `--mount` flags added to
-  `devcontainerUp` (`provision.ts`).
+  `devcontainerUp` (`provision.ts`). *(Mechanism since changed, 2026-08-17:
+  the CLI validates `--mount` with a strict regex that rejects `,readonly`, so
+  the mounts now ride the `mounts` array of a per-session merged copy of the
+  env config — `.multirepo/<sessionId>/devcontainer.json`, written by
+  `devcontainerUp`, resolved by `up` and every `exec` of a mounted session.
+  Layout too: repos land under the env config's own `workspaceFolder`
+  (`<workspaceFolder>/<repo-name>`) — its untouched `workspaceMount` binds the
+  empty wrapper over the image's baked copy, so the agent starts in the env's
+  configured workspace and sees the repos inside it; `/workspaces/repos` is
+  only the fallback root when the config sets no `workspaceFolder`.)*
 - **Mounts are plain read-write bind mounts, not `readonly`.** The session is
   a discovery session by convention (no git broker, so nothing meaningful can
   be pushed anywhere), not by filesystem-level enforcement — enforcing

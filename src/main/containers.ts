@@ -34,7 +34,8 @@ import {
   installAcpAdapter,
   installGitShims,
   materializeEnvConfig,
-  overrideConfigArgs
+  overrideConfigArgs,
+  mountedConfigPath
 } from './provision'
 import type { Bus } from './bus'
 import { createLogger, errCtx } from './log'
@@ -372,20 +373,26 @@ export class ContainerManager {
     if (c.status !== 'running' || !c.id || !c.remoteWorkspaceFolder)
       throw new Error('container is not running')
 
+    const mounted = usesRepoMounts(info)
+    // Must match whatever `ensureUncoalesced` passed as `--workspace-folder`
+    // for this same session — the wrapper dir whenever the repos are mounted
+    // explicitly, the plain clone dir otherwise.
+    const hostWorkspaceFolder = mounted
+      ? store.mountedWorkspaceDir(info.workspace, info.task, sessionId)
+      : cloneDir(info.workspace, info.task, info.repos[0])
     return {
       agent: def,
       session: sessionId,
       containerId: c.id,
       remoteWorkspaceFolder: c.remoteWorkspaceFolder,
-      // Must match whatever `ensureUncoalesced` passed as `--workspace-folder`
-      // for this same session — the wrapper dir whenever the repos are mounted
-      // explicitly, the plain clone dir otherwise.
-      hostWorkspaceFolder: usesRepoMounts(info)
-        ? store.mountedWorkspaceDir(info.workspace, info.task, sessionId)
-        : cloneDir(info.workspace, info.task, info.repos[0]),
-      // The file behind these args was materialized by ensure's up (and persists
-      // across app restarts) — up and every exec resolve the same config.
-      configArgs: overrideConfigArgs(this.refOf(info)),
+      hostWorkspaceFolder,
+      // The file behind these args was written by ensure's up (and persists
+      // across app restarts) — up and every exec resolve the same config: the
+      // env's materialized file, or the session's merged copy when the repos
+      // are mounted explicitly (extra mounts + wrapper workspaceFolder).
+      configArgs: mounted
+        ? ['--override-config', mountedConfigPath(hostWorkspaceFolder)]
+        : overrideConfigArgs(this.refOf(info)),
       secret,
       secretEnv: cfg.secretEnv || def.secretEnv,
       env: cfg.env,

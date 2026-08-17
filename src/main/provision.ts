@@ -483,10 +483,18 @@ async function writeOverrideConfig(ref: EnvRef, content: string): Promise<void> 
 /** ['--override-config', path] — no content logic; the file was written by
  *  `materializeEnvConfig` at `up` (it persists on disk across app restarts, so
  *  the reattach path needs nothing). The same args must go to `up` and to each
- *  `exec` — exec re-resolves the config. */
+ *  `exec` — exec re-resolves the config. Mounted sessions instead resolve the
+ *  per-session merged copy at `mountedConfigPath` (written by `devcontainerUp`,
+ *  same persistence). */
 export function overrideConfigArgs(ref: EnvRef): string[] {
   return ['--override-config', overrideConfigPath(ref.workspace, ref.env)]
 }
+
+/** The mounted session's merged devcontainer config — sibling of its wrapper
+ *  workspace dir (`.multirepo/<sessionId>/devcontainer.json`), so it is
+ *  per-session and lives exactly as long as the session's wrapper. */
+export const mountedConfigPath = (mountedWorkspaceFolder: string): string =>
+  path.join(path.dirname(mountedWorkspaceFolder), 'devcontainer.json')
 
 /** True if an image with this tag exists in the local Docker image store. */
 export function dockerImageExists(tag: string): Promise<boolean> {
@@ -700,19 +708,51 @@ export async function devcontainerUp(
   // is harmless). Agent adapters are installed lazily via `exec` on connect.
   const features = { ...BASE_FEATURES, ...forgeFeatures(repoHost ?? null) }
   const remoteRoot = '/workspaces/' + repoName
+  // The CLI's `--mount` argument is validated by a strict regex
+  // (`type=,source=,target=[,external=]`) with no `readonly` key, while strings
+  // in the config's `mounts` array go to `docker --mount` verbatim — the only
+  // channel that can express a read-only bind. `readonly` (docker's own
+  // flag-style key) is the filesystem-level enforcement a read-only role asks
+  // for — not a convention the agent could talk itself out of. The env's
+  // materialized config is shared per (workspace, env) while mounts are
+  // per-session, so the merged copy lives beside the session's wrapper dir —
+  // and every `exec` of a mounted session must resolve it too (the config
+  // decides the exec cwd and the reported remoteWorkspaceFolder).
+  let mountConfigArgs = configArgs
+  if (extraMounts.length) {
+    const envConfigPath = configArgs[configArgs.indexOf('--override-config') + 1]
+    const { config, error } = parseEnvDevcontainer(await fs.readFile(envConfigPath, 'utf8'))
+    if (error) throw new Error(`materialized config ${envConfigPath}: ${error}`)
+    // The sibling mounts land under the env's own workspace root: the config's
+    // workspaceFolder/workspaceMount stay untouched, so its workspaceMount
+    // still binds `${localWorkspaceFolder}` — here the empty wrapper dir — over
+    // the image's baked copy at the configured path, and each repo binds inside
+    // it by name (`<workspaceFolder>/<repo>`). Only without a configured
+    // workspaceFolder does the wrapper's CLI-default landing spot
+    // (`/workspaces/<basename>` = remoteRoot) serve as the root.
+    const mountRoot =
+      typeof config!.workspaceFolder === 'string' && config!.workspaceFolder
+        ? (config!.workspaceFolder as string).replace(/\/+$/, '')
+        : remoteRoot
+    const merged: Record<string, unknown> = {
+      ...config,
+      mounts: [
+        ...(Array.isArray(config!.mounts) ? config!.mounts : []),
+        ...extraMounts.map(
+          (m) =>
+            `type=bind,source=${m.hostDir},target=${mountRoot}/${m.name}${m.readonly ? ',readonly' : ''}`
+        )
+      ]
+    }
+    await fs.writeFile(mountedConfigPath(workspaceFolder), JSON.stringify(merged, null, 2))
+    mountConfigArgs = ['--override-config', mountedConfigPath(workspaceFolder)]
+  }
   const args = [
     'up',
     '--workspace-folder', workspaceFolder,
     '--additional-features', JSON.stringify(features),
     ...idLabelArgs(session),
-    ...extraMounts.flatMap((m) => [
-      '--mount',
-      // `readonly` (docker's own flag-style key) is the filesystem-level
-      // enforcement a read-only role asks for — not a convention the agent
-      // could talk itself out of.
-      `type=bind,source=${m.hostDir},target=${remoteRoot}/${m.name}${m.readonly ? ',readonly' : ''}`
-    ]),
-    ...configArgs
+    ...mountConfigArgs
   ]
   let announced = false
   const watch: LogSink = (line) => {

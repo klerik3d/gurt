@@ -172,10 +172,14 @@ otherwise have to re-derive from the diff:
 - **One mount path for "not a plain read-write single repo".** The wrapper
   `--workspace-folder` the multi-repo case introduced is now used whenever the
   repos must be mounted explicitly — more than one, or any read-only role
-  (`usesRepoMounts` in `containers.ts`) — and each `--mount` carries
+  (`usesRepoMounts` in `containers.ts`) — and each mount carries
   `,readonly` for the read-only roles. So a single-repo reviewer's clone lands
-  at `/workspaces/repos/<repo>` rather than at the workspace folder itself, and
-  an executor's path is byte-for-byte what it was. `store.multiRepoWorkspaceDir`
+  at `<workspaceFolder>/<repo>` rather than at the workspace folder itself, and
+  an executor's path is byte-for-byte what it was. *(Delivery since changed,
+  2026-08-17: `--mount` flags → the `mounts` array of the per-session merged
+  config, and the sibling root is the env config's `workspaceFolder`, not
+  `/workspaces/repos` — see the amended mount bullet in
+  `requirements-multirepo-sessions.md` §2.)* `store.multiRepoWorkspaceDir`
   became `mountedWorkspaceDir`; its on-disk path keeps the `.multirepo` segment
   so containers already provisioned against it still resolve. A discovery
   session that already has a live container keeps it — and therefore its
