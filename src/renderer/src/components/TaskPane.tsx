@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { RepoChanges, Tree } from '../../../shared/types'
+import type { DiffTarget, RepoChanges, Tree } from '../../../shared/types'
 import { isActionable, isDelivered } from '../../../shared/types'
 import { agentKind, agentName, useAgents } from '../useAgents'
 import { alertDialog, confirmDialog } from '../dialog'
@@ -7,6 +7,7 @@ import { containerDot } from '../status'
 import { Icon, Dot } from './icons'
 import { AgentTag, EnvTag, RepoTag } from './tags'
 import { Modal } from './Modal'
+import { ReviewModal } from './ReviewModal'
 
 export function TaskPane({
   tree,
@@ -175,9 +176,12 @@ function ChangesSection({
   changes: RepoChanges[] | undefined
   onRefresh: () => void
 }) {
-  const [diffFile, setDiffFile] = useState<{ repo: string; path: string } | null>(null)
-  const [diffCommit, setDiffCommit] = useState<{ repo: string; sha: string } | null>(null)
+  /** The open review surface: a repo plus what it reads (uncommitted, or one commit). */
+  const [review, setReview] = useState<{ repo: string; target: DiffTarget } | null>(null)
   const [commitRepo, setCommitRepo] = useState<string | null>(null)
+  /** Repos held by a manual review — the lock tag and the panel's Review button
+   *  read it; the surface itself owns the toggling. */
+  const [locks, setLocks] = useState<Record<string, boolean>>({})
   /** repo -> last action error, rendered inline in its group. */
   const [errors, setErrors] = useState<Record<string, string>>({})
   /** repo with an action in flight — its buttons are disabled. */
@@ -207,6 +211,19 @@ function ChangesSection({
   const openVscode = (repo: string) =>
     act(repo, () => window.gurt.changesOpenVscode(ws, task, repo))
 
+  // Lock state, refreshed with the panel. Read-only here: the toggle lives in
+  // the review surface, next to what it protects.
+  useEffect(() => {
+    let live = true
+    window.gurt
+      .getReviewLocks(ws, task)
+      .then((l) => live && setLocks(l))
+      .catch(() => {})
+    return () => {
+      live = false
+    }
+  }, [ws, task, changes])
+
   return (
     <div className="tp-section">
       <div className="tp-sec-head">
@@ -215,6 +232,7 @@ function ChangesSection({
         <button className="icon-sq bordered" title="refresh changes" onClick={onRefresh}>
           <Icon name="history" size={13} />
         </button>
+        {flat && locks[rendered[0].repo] && <LockTag />}
         {flat && (
           <button
             className="btn btn-sm"
@@ -231,6 +249,7 @@ function ChangesSection({
           {!flat && (
             <div className="changes-group-head">
               <span className="changes-repo">▾ {r.repo}</span>
+              {locks[r.repo] && <LockTag />}
               <span className="spacer" />
               <button
                 className="btn btn-xs"
@@ -250,7 +269,7 @@ function ChangesSection({
                     <span className={`file-status st-${f.status}`}>{f.status}</span>
                     <span
                       className="file-path clickable"
-                      onClick={() => setDiffFile({ repo: r.repo, path: f.path })}
+                      onClick={() => setReview({ repo: r.repo, target: { kind: 'uncommitted' } })}
                     >
                       {f.path}
                     </span>
@@ -269,6 +288,13 @@ function ChangesSection({
                   onClick={() => setCommitRepo(r.repo)}
                 >
                   Commit
+                </button>
+                <button
+                  className="btn btn-sm"
+                  title="split diff, comments, and the review lock"
+                  onClick={() => setReview({ repo: r.repo, target: { kind: 'uncommitted' } })}
+                >
+                  Review
                 </button>
               </div>
             </div>
@@ -308,7 +334,9 @@ function ChangesSection({
                   <div
                     key={c.sha}
                     className="commit-row clickable"
-                    onClick={() => setDiffCommit({ repo: r.repo, sha: c.sha })}
+                    onClick={() =>
+                      setReview({ repo: r.repo, target: { kind: 'commit', sha: c.sha } })
+                    }
                   >
                     <span className="commit-sha mono">{c.sha.slice(0, 7)}</span>
                     <span className="commit-subject">{c.subject}</span>
@@ -341,20 +369,21 @@ function ChangesSection({
           {errors[r.repo] && <div className="error changes-error">{errors[r.repo]}</div>}
         </div>
       ))}
-      {diffFile && (
-        <DiffModal
-          key={`${diffFile.repo}/${diffFile.path}`}
-          title={`${diffFile.repo}: ${diffFile.path}`}
-          load={() => window.gurt.getFileDiff(ws, task, diffFile.repo, diffFile.path)}
-          onClose={() => setDiffFile(null)}
-        />
-      )}
-      {diffCommit && (
-        <DiffModal
-          key={`${diffCommit.repo}/${diffCommit.sha}`}
-          title={`${diffCommit.repo}: ${diffCommit.sha.slice(0, 7)}`}
-          load={() => window.gurt.getCommitDiff(ws, task, diffCommit.repo, diffCommit.sha)}
-          onClose={() => setDiffCommit(null)}
+      {review && (
+        <ReviewModal
+          // Keyed per target: the surface loads its file list once, on mount.
+          key={`${review.repo}/${
+            review.target.kind === 'commit' ? review.target.sha : 'uncommitted'
+          }`}
+          ws={ws}
+          task={task}
+          repo={review.repo}
+          target={review.target}
+          title={`${review.repo}${
+            review.target.kind === 'commit' ? ` · ${review.target.sha.slice(0, 7)}` : ''
+          }`}
+          onClose={() => setReview(null)}
+          onChanged={onRefresh}
         />
       )}
       {commitRepo && (
@@ -373,53 +402,16 @@ function ChangesSection({
   )
 }
 
-/** Read-only unified diff — one file (`git diff`) or one commit (`git show`). */
-function DiffModal({
-  title,
-  load,
-  onClose
-}: {
-  title: string
-  load: () => Promise<string>
-  onClose: () => void
-}) {
-  const [diff, setDiff] = useState<string | null>(null)
-  const [error, setError] = useState('')
-
-  // Mounted with a key per file/commit, so loading once on mount is the whole story.
-  useEffect(() => {
-    let live = true
-    load()
-      .then((d) => {
-        if (live) setDiff(d)
-      })
-      .catch((e) => {
-        if (live) setError(e instanceof Error ? e.message : String(e))
-      })
-    return () => {
-      live = false
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
-  const lineClass = (line: string) =>
-    line.startsWith('+') ? 'add' : line.startsWith('-') ? 'del' : line.startsWith('@@') ? 'hunk' : ''
-
+/** "A human is reviewing this clone" — agents cannot start against it. */
+function LockTag(): JSX.Element {
   return (
-    <Modal title={title} wide onClose={onClose}>
-      <div className="diff-view mono">
-        {error && <div className="error">{error}</div>}
-        {diff === null && !error && <div className="tp-empty">loading diff…</div>}
-        {diff !== null &&
-          (diff.trim()
-            ? diff.split('\n').map((line, i) => (
-                <div key={i} className={`diffline ${lineClass(line)}`}>
-                  {line || ' '}
-                </div>
-              ))
-            : <div className="tp-empty">no diff</div>)}
-      </div>
-    </Modal>
+    <span
+      className="tag tag-ico tag-accent"
+      title="locked for review — agents cannot start on this repo"
+    >
+      <Icon name="lock" size={11} />
+      locked
+    </span>
   )
 }
 

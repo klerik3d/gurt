@@ -2092,6 +2092,252 @@ textarea.input {
   padding: 0 4px;
 }
 
+/* ---- manual review: split diff, comments, lock ---- */
+
+.review {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.review-body {
+  display: flex;
+  min-height: 0;
+  height: 65vh;
+}
+.review-files {
+  width: 220px;
+  flex: none;
+  border-right: 1px solid var(--border);
+  overflow: auto;
+  padding: 8px 0;
+}
+.review-file {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 12px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.review-file:hover {
+  background: var(--hover);
+}
+.review-file.active {
+  background: var(--hover);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.review-file-path {
+  color: var(--dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.review-count {
+  flex: none;
+  min-width: 15px;
+  text-align: center;
+  border-radius: 7px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 10px;
+  font-weight: 600;
+  padding: 0 4px;
+}
+.review-diff {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.review-diff-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11.5px;
+  color: var(--dim);
+}
+
+/* The split itself: every row is two equal panes, so a line and its
+   counterpart always sit at the same height. */
+.split {
+  flex: 1;
+  overflow: auto;
+  font-size: 12px;
+  line-height: 1.55;
+  padding-bottom: 8px;
+}
+.split-row {
+  display: flex;
+}
+.split-pane {
+  display: flex;
+  width: 50%;
+  min-width: 0;
+}
+.split-pane + .split-pane {
+  border-left: 1px solid var(--border);
+}
+.split-pane.add {
+  background: rgba(108, 196, 127, 0.1);
+}
+.split-pane.del {
+  background: rgba(229, 84, 75, 0.1);
+}
+/* The empty half of a one-sided change — visibly not code, not a blank line. */
+.split-pane.pad {
+  background: repeating-linear-gradient(
+    -45deg,
+    transparent,
+    transparent 5px,
+    rgba(114, 110, 102, 0.07) 5px,
+    rgba(114, 110, 102, 0.07) 10px
+  );
+}
+.split-gutter {
+  flex: none;
+  width: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 3px;
+  padding-right: 6px;
+  color: var(--faint);
+  font-size: 10.5px;
+  user-select: none;
+}
+.split-ln {
+  min-width: 26px;
+  text-align: right;
+}
+.split-add {
+  width: 14px;
+  height: 14px;
+  border: 0;
+  border-radius: 4px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  visibility: hidden;
+}
+.split-row:hover .split-add {
+  visibility: visible;
+}
+.split-code {
+  flex: 1;
+  min-width: 0;
+  white-space: pre;
+  overflow-x: auto;
+  padding: 0 6px;
+  color: var(--text);
+}
+.split-word {
+  background: rgba(77, 163, 255, 0.22);
+  border-radius: 3px;
+}
+.split-pane.add .split-word {
+  background: rgba(108, 196, 127, 0.3);
+}
+.split-pane.del .split-word {
+  background: rgba(229, 84, 75, 0.28);
+}
+.split-fold {
+  padding: 2px 12px;
+  color: var(--faint);
+  font-size: 11px;
+  text-align: center;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+}
+.split-fold:hover {
+  color: var(--accent);
+  background: var(--hover);
+}
+
+/* A comment hangs off the row it anchors to, across both panes. */
+.split-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 3px 10px;
+  padding: 5px 8px;
+  border-left: 2px solid var(--accent);
+  border-radius: 0 6px 6px 0;
+  background: var(--surface);
+  font-family: var(--ui);
+  font-size: 12px;
+}
+.split-note.resolved {
+  border-left-color: var(--faint);
+  opacity: 0.55;
+}
+.split-note.resolved .split-note-text {
+  text-decoration: line-through;
+}
+.split-note-anchor {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--faint);
+  flex: none;
+  padding-top: 1px;
+}
+.split-note-text {
+  white-space: pre-wrap;
+  min-width: 0;
+}
+.split-composer {
+  margin: 3px 10px;
+  padding: 6px 8px;
+  border-left: 2px solid var(--accent);
+  border-radius: 0 6px 6px 0;
+  background: var(--surface);
+  font-family: var(--ui);
+}
+.split-composer-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  padding-top: 6px;
+}
+
+.review-foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+}
+.review-foot-count {
+  flex: none;
+  font-size: 12px;
+  color: var(--dim);
+}
+.review-hint {
+  color: var(--faint);
+}
+.review-prompt {
+  flex: 1;
+  height: 32px;
+}
+.review-error,
+.review-ok {
+  padding: 0 14px 10px;
+  font-size: 12px;
+}
+.review-ok {
+  color: var(--green);
+}
+
 .commit-message {
   font-family: var(--mono);
   font-size: 12px;

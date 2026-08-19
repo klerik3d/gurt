@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process'
 import { promises as fs } from 'node:fs'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
-import type { ChangedFile, RepoChanges, ThreadCommit } from '../shared/types'
+import type { ChangedFile, DiffPair, DiffTarget, RepoChanges, ThreadCommit } from '../shared/types'
 import { run } from './provision'
 import { cloneDir, taskDir } from './store'
 import { hostGitAccessForRepo, type HostGitAccess } from './git/env'
@@ -254,6 +254,128 @@ export async function getTaskChanges(
     }
   }
   return out.sort((a, b) => a.repo.localeCompare(b.repo))
+}
+
+// --- split review: file lists and before/after pairs -----------------------
+// See docs/requirements-manual-review.md. The host returns whole file content
+// and lets the renderer align it; nothing here knows about hunks.
+
+/** Parse `--name-status` output (`M\tpath`, `R100\told\tnew`) into ChangedFile. */
+function parseNameStatus(out: string): ChangedFile[] {
+  const files: ChangedFile[] = []
+  for (const line of out.split('\n')) {
+    if (!line.trim()) continue
+    const parts = line.split('\t')
+    const code = parts[0]?.[0]
+    // A rename/copy line carries both paths; the panel shows the new one.
+    const p = code === 'R' || code === 'C' ? parts[2] : parts[1]
+    if (!code || !p) continue
+    files.push({ path: p, status: code })
+  }
+  return files
+}
+
+/** Files a review target touches — the same list the Changes panel shows for
+ *  `uncommitted`, and the commit's own `--name-status` for `commit`. */
+export async function getDiffFiles(
+  ws: string,
+  task: string,
+  repo: string,
+  target: DiffTarget
+): Promise<ChangedFile[]> {
+  const dir = cloneDir(ws, task, repo)
+  const access = await hostGitAccessForRepo(ws, repo)
+  if (target.kind === 'uncommitted') {
+    const porcelain = await git(dir, access, ['status', '--porcelain', '-uall'])
+    return porcelain
+      .split('\n')
+      .filter((l) => l.trim())
+      .map(parseStatusLine)
+      .filter((f): f is ChangedFile => f !== null)
+  }
+  // `--format=` drops the commit header, leaving only the name-status body.
+  return parseNameStatus(
+    await git(dir, access, ['show', '--name-status', '--format=', assertSha(target.sha)])
+  )
+}
+
+/** A `sha` arriving over IPC becomes argv — accept only what a SHA can look
+ *  like, so nothing can smuggle a leading `-` past git's option parser. */
+function assertSha(sha: string): string {
+  if (!/^[0-9a-f]{4,40}$/i.test(sha)) throw new Error(`not a commit sha: "${sha}"`)
+  return sha
+}
+
+/**
+ * A review path arriving over IPC is used two ways — as `<rev>:<path>` for git
+ * and as a host path under the clone — and `git show` resolves `..` against the
+ * repo root just as the filesystem does. Confine it to the clone before either.
+ */
+function assertRepoPath(file: string): string {
+  const norm = path.normalize(file)
+  if (!file || path.isAbsolute(norm) || norm === '..' || norm.startsWith(`..${path.sep}`))
+    throw new Error(`path escapes the repository: "${file}"`)
+  return norm
+}
+
+/** Content of `<rev>:<file>`, or '' when the path does not exist at that rev
+ *  (a file the target adds, or one it deletes). */
+async function blob(dir: string, access: HostGitAccess, rev: string, file: string): Promise<string> {
+  return git(dir, access, ['show', `${rev}:${file}`]).catch(() => '')
+}
+
+/**
+ * Git's own binary verdict, via `--numstat`: it reports `-` for both counts of a
+ * binary file. Cheaper and more faithful than sniffing the content we would
+ * otherwise have to decode as utf8 first.
+ */
+function isBinaryNumstat(out: string): boolean {
+  const line = out.split('\n').find((l) => l.trim())
+  return !!line && line.startsWith('-\t-')
+}
+
+/** Before/after content of one file of a review target. */
+export async function getDiffPair(
+  ws: string,
+  task: string,
+  repo: string,
+  target: DiffTarget,
+  rawFile: string
+): Promise<DiffPair> {
+  const dir = cloneDir(ws, task, repo)
+  const access = await hostGitAccessForRepo(ws, repo)
+  const file = assertRepoPath(rawFile)
+
+  if (target.kind === 'commit') {
+    const sha = assertSha(target.sha)
+    const numstat = await git(dir, access, [
+      'show', '--numstat', '--format=', sha, '--', file
+    ]).catch(() => '')
+    if (isBinaryNumstat(numstat)) return { binary: true }
+    return {
+      binary: false,
+      // A root commit has no `^`; `blob` folds that into an empty before-side,
+      // which is exactly right — the whole file reads as added.
+      before: await blob(dir, access, `${sha}^`, file),
+      after: await blob(dir, access, sha, file)
+    }
+  }
+
+  const status = await git(dir, access, ['status', '--porcelain', '--', file])
+  const untracked = status.startsWith('??')
+  const numstat = untracked
+    ? // `--no-index` exits 1 when the files differ — the success case here.
+      await git(dir, access, ['diff', '--numstat', '--no-index', '--', '/dev/null', file], {
+        okCodes: [0, 1]
+      }).catch(() => '')
+    : await git(dir, access, ['diff', 'HEAD', '--numstat', '--', file]).catch(() => '')
+  if (isBinaryNumstat(numstat)) return { binary: true }
+  return {
+    binary: false,
+    before: untracked ? '' : await blob(dir, access, 'HEAD', file),
+    // Deleted in the working tree → no file to read → an empty after-side.
+    after: await fs.readFile(path.join(dir, file), 'utf8').catch(() => '')
+  }
 }
 
 /** Read-only unified diff for one file: `diff HEAD` for tracked, whole-file-added for untracked. */

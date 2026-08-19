@@ -5,6 +5,9 @@
 import type {
   AgentConfig,
   AgentsFile,
+  ChangedFile,
+  DiffPair,
+  DiffTarget,
   EnvConfig,
   EnvRef,
   McpSelection,
@@ -12,6 +15,8 @@ import type {
   PromptImage,
   RepoChanges,
   RepoConfig,
+  ReviewComment,
+  ReviewState,
   SessionInfo,
   SessionRole,
   SessionSnapshot,
@@ -122,6 +127,43 @@ export interface GurtApi {
   getFileDiff(ws: string, task: string, repo: string, file: string): Promise<string>
   /** Read-only `git show` of one commit of the thread. */
   getCommitDiff(ws: string, task: string, repo: string, sha: string): Promise<string>
+  /** Files one review target touches (see docs/requirements-manual-review.md). */
+  getDiffFiles(ws: string, task: string, repo: string, target: DiffTarget): Promise<ChangedFile[]>
+  /** Whole before/after content of one file — the split view aligns it renderer-side. */
+  getDiffPair(
+    ws: string,
+    task: string,
+    repo: string,
+    target: DiffTarget,
+    file: string
+  ): Promise<DiffPair>
+  /** Lock + this target's comments; comments whose file left the target are pruned. */
+  getReviewState(ws: string, task: string, repo: string, target: DiffTarget): Promise<ReviewState>
+  /** Locked repos of a task, as `repo → true`. A plain read: unlike
+   *  `getReviewState` it never prunes, so the panel can poll it freely. */
+  getReviewLocks(ws: string, task: string): Promise<Record<string, boolean>>
+  /** Take/release the review lock; taking one rejects while a session holds the clone. */
+  setReviewLock(ws: string, task: string, repo: string, locked: boolean): Promise<void>
+  addReviewComment(
+    ws: string,
+    task: string,
+    repo: string,
+    target: DiffTarget,
+    path: string,
+    side: 'before' | 'after',
+    line: number,
+    text: string
+  ): Promise<ReviewComment>
+  resolveReviewComment(ws: string, task: string, id: string, resolved: boolean): Promise<void>
+  deleteReviewComment(ws: string, task: string, id: string): Promise<void>
+  /** Draft an executor session seeded with this target's open comments plus `prompt`. */
+  launchReviewFix(
+    ws: string,
+    task: string,
+    repo: string,
+    target: DiffTarget,
+    prompt: string
+  ): Promise<{ sessionId: string }>
   changesCommit(ws: string, task: string, repo: string, message: string): Promise<void>
   changesPush(ws: string, task: string, repo: string): Promise<void>
   /** Merge the fetched default branch into the task branch; conflicts surface as `conflicted`. */
@@ -223,6 +265,15 @@ const METHODS = {
   getTaskChanges: true,
   getFileDiff: true,
   getCommitDiff: true,
+  getDiffFiles: true,
+  getDiffPair: true,
+  getReviewState: true,
+  getReviewLocks: true,
+  setReviewLock: true,
+  addReviewComment: true,
+  resolveReviewComment: true,
+  deleteReviewComment: true,
+  launchReviewFix: true,
   changesCommit: true,
   changesPush: true,
   changesUpdateFromMain: true,
