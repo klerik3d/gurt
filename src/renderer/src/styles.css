@@ -3141,14 +3141,6 @@ textarea.input {
   font-size: 11px;
   color: var(--dim);
 }
-/* Two columns while there is room; one below that — the rows are dense and
-   wrap badly under ~900px of pane. */
-.dash-cols {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
-  gap: 26px;
-  align-items: start;
-}
 .dash-cards {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
@@ -3401,7 +3393,7 @@ textarea.input {
   gap: 5px;
 }
 .dash-group + .dash-group {
-  margin-top: 9px;
+  margin-top: 18px;
 }
 .dash-group-head {
   display: flex;
@@ -3425,7 +3417,65 @@ textarea.input {
   font-size: 11px;
   white-space: nowrap;
 }
-/* Nested under a group header, so the rows read as belonging to it. */
-.dash-row-nested {
+
+/* The board: one workspace's three columns. `auto-fit` rather than a fixed
+   three, because this pane is resizable — the columns reflow on their own
+   instead of squeezing past readability at a width no media query can see. */
+.dash-board {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 12px;
+  align-items: start;
   margin-left: 18px;
+}
+.dash-col {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.dash-col-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding-bottom: 2px;
+  border-bottom: 1px solid var(--border);
+}
+.dash-col-head .btn-text {
+  font-size: 10.5px;
+}
+.dash-col-empty {
+  font-size: 11px;
+  color: var(--faint);
+  padding: 2px 0;
+}
+
+/* A session on the board. Two lines: a third of a pane is not enough for one. */
+.dash-card-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 7px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  min-width: 0;
+}
+.dash-card-row:hover {
+  border-color: var(--border2);
+}
+.dash-card-line {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  font-size: 12.5px;
+}
+.dash-card-sub {
+  gap: 6px;
+  font-size: 11px;
+}
+.dash-card-sub .tag {
+  font-size: 9.5px;
+  padding: 0 4px;
 }

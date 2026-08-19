@@ -161,43 +161,57 @@ Cost is aggregated as the **rise** of the adapter's cumulative per-session
 counter inside the window, not as a sum of samples. Context is aggregated as a
 **peak**: it drops on compaction, so summing it would be meaningless.
 
-**SESSIONS** — everything with somewhere left to go: `waiting`, `running`,
-`starting`, `queued` and `draft`, across every workspace, keyed to the same dot
-grammar as the sidebar (`status.ts`). `idle` is deliberately absent: a finished
-session belongs to the review list below, and listing it in both would make
-"needs a human" mean two different things on one screen.
+**SESSIONS** — a board per workspace, three columns wide, keyed to the same dot
+grammar as the sidebar (`status.ts`):
 
-Rows are grouped by **workspace** — the divider the user already thinks in
-(`work`, `personal`) — because a flat list repeated `ws / task` on every row and
-buried the one session that needed an answer. Workspaces fold behind the same
-chevron the sidebar uses, so the gesture reads the same across the app; there
-are few enough of them that folding one is a decision rather than bookkeeping.
-The fold is persisted, which the sidebar's is not — this pane unmounts on every
-switch to Work, and a fold that undoes itself each visit is worse than no fold.
+| Column | Holds | Ordered by |
+|---|---|---|
+| `DRAFT / QUEUE` | `queued`, `draft` | queue position, then task and title |
+| `IN PROGRESS` | `waiting`, `running`, `starting` | urgency, then task and title |
+| `DONE` | `idle`, unreviewed only | newest finish first |
 
-The workspace comes from the group header, so each row carries only its task
-name; clicking that opens the task rather than the session.
+The columns read as a session's own lifecycle left to right: not started yet,
+moving, finished. Inside the first column `queued` sits above `draft` despite
+the label's order — a queued session is next to run and carries a real
+position, a draft has not been launched at all.
 
-Order is by urgency, never by size: within a workspace, `waiting → running →
-starting → queued → draft`; between workspaces, by the best rank each holds, so
-one session waiting on a permission outranks a workspace sitting on five
-drafts. Rows rank across the whole workspace rather than bucketing by task
-first — a task boundary in between would push the session that needs you back
-down the list. Ties fall back to queue position where that is meaningful, then
-task and title, so a re-render cannot shuffle rows and one task's sessions stay
-adjacent. A collapsed group still reports itself ("1 needs you · 2 running"),
+`DONE` is bounded by review, not by time: a finished session appears only while
+it is unreviewed — it ran a turn this install recorded, and that turn ended
+after the session was last opened. Reviewing it is what takes it off the board,
+which keeps the column a to-do list rather than an ever-growing archive. A
+session that never ran a turn here (restored from an older install, or never
+started) is not on the board at all.
+
+Grouping is by **workspace**, and the fold takes the whole band — all three
+columns at once — behind the same chevron the sidebar uses, so the gesture
+reads the same across the app. Column headers live *inside* each band rather
+than once at the top of the section: each workspace is then self-contained,
+which is also what keeps the labels attached to their columns when the grid
+reflows to fewer columns on a narrow pane. The fold is persisted, which the
+sidebar's is not — this pane unmounts on every switch to Work, and a fold that
+undoes itself each visit is worse than no fold.
+
+Bands are ordered by urgency, never by size: a workspace leads on the best rank
+it holds, so one session waiting on a permission outranks a workspace sitting
+on five drafts, and a workspace whose rows have all finished sorts last. Rows
+rank across the whole workspace rather than bucketing by task first — a task
+boundary in between would push the session that needs you back down its column.
+A folded band still reports itself ("1 needs you · 2 running · 1 to review"),
 so folding hides detail and never news.
 
-A running row shows how long it has been in its current turn when that turn
+Cards are two lines, because a third of a pane is not enough for one: title on
+top; task, state and what the session left behind underneath. The workspace
+comes from the band header, so a card carries only its task name, and clicking
+that opens the task rather than the session. In `DONE` a card also shows an
+`incomplete` tag when the turn contract was violated, the failure when the turn
+ended in an error or a limit, and the task's `+n −n` when its clone actually
+holds work — the clone's own state being the honest signal, since a session can
+end a clean turn and leave nothing to review. `reviewed` per card and `all
+reviewed` per column clear rows without opening them.
+
+A running card shows how long it has been in its current turn when that turn
 started while the window was open; main does not persist turn starts, and
 inventing one would misreport.
-
-**DONE — NOT REVIEWED** — sessions sitting `idle` whose last recorded turn
-ended after the last time the session was opened. Each row shows the age of
-that turn, an `incomplete` tag when the turn contract was violated, the failure
-when the turn ended in an error or a limit, and the task's `+n −n` when its
-clone actually holds work. `reviewed` (per row) and `mark all reviewed` clear
-rows without opening them.
 
 ## 6. What "reviewed" means
 
