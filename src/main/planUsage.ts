@@ -55,6 +55,11 @@ export interface PlanUsageDeps {
   now?: () => number
 }
 
+/** A failed poll, with the provider's own "come back later" when it sent one. */
+class FetchUsageError extends Error {
+  retryAfterMs?: number
+}
+
 /** One GET, returning the parsed body or throwing with a short reason. */
 async function fetchUsage(secret: string, doFetch: typeof fetch): Promise<unknown> {
   const res = await doFetch(ENDPOINT, {
@@ -64,17 +69,24 @@ async function fetchUsage(secret: string, doFetch: typeof fetch): Promise<unknow
       // endpoint sits behind the same oauth beta gate as the rest of that surface.
       Authorization: `Bearer ${secret}`,
       'anthropic-beta': 'oauth-2025-04-20',
-      'Content-Type': 'application/json'
+      'Content-Type': 'application/json',
+      // The CLI's own UA, verbatim. This path is unpublished and its edge is
+      // stricter than the API proper — an anonymous client risks the 429 lane
+      // regardless of its token, so the request mirrors the binary's exactly.
+      'User-Agent': 'claude-cli/2.1.235 (external, cli)'
     },
     signal: AbortSignal.timeout(TIMEOUT_MS)
   })
   if (!res.ok) {
     // 429 here is routine, not a fault — word it as the state it is.
-    throw new Error(
+    const err = new FetchUsageError(
       res.status === 429
         ? 'usage endpoint is rate limited — showing the last read'
         : `usage endpoint returned ${res.status}`
     )
+    const retryAfter = Number(res.headers?.get?.('retry-after'))
+    if (Number.isFinite(retryAfter) && retryAfter > 0) err.retryAfterMs = retryAfter * 1000
+    throw err
   }
   return res.json()
 }
@@ -110,6 +122,10 @@ export function createPlanUsage(bus: Bus, deps: PlanUsageDeps): PlanUsageStore {
     } catch (e) {
       const error = e instanceof Error ? e.message : String(e)
       patch(agent, { error })
+      // A named Retry-After outranks the floor: pushing the last-attempt mark
+      // forward keeps every sweep before that instant from re-asking.
+      if (e instanceof FetchUsageError && e.retryAfterMs)
+        lastAttempt.set(agent, started + e.retryAfterMs)
       log.warn('plan usage: fetch failed', { agent, error })
     }
   }

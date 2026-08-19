@@ -85,6 +85,67 @@ for (const [name, body] of [
   assert.equal(w[0].label, 'some new window')
 }
 
+// --- the listed form: `limits[]` of self-describing entries (CLI 2.1.x) -----
+{
+  // The newer bodies report windows as a list, keyed by `kind`, with the old
+  // top-level keys arriving null — and model-scoped weeks exist ONLY here.
+  const w = parsePlanWindows({
+    five_hour: null,
+    seven_day: null,
+    limits: [
+      { kind: 'five_hour', group: 'g', percent: 84, resets_at: '2026-08-19T17:30:00Z' },
+      { kind: 'seven_day', group: 'g', percent: 40, resets_at: '2026-08-20T23:00:00Z' },
+      {
+        kind: 'weekly_scoped',
+        group: 'g',
+        percent: 12,
+        resets_at: '2026-08-20T23:00:00Z',
+        scope: { model: { display_name: 'Fable' } }
+      }
+    ]
+  })
+  assert.deepEqual(
+    w.map((x) => x.id),
+    ['five_hour', 'seven_day', 'weekly_scoped:Fable']
+  )
+  assert.equal(w[0].label, 'Current session')
+  assert.equal(w[0].utilization, 84)
+  assert.equal(w[0].resetsAt, '2026-08-19T17:30:00.000Z')
+  assert.equal(w[1].label, 'Current week (all models)')
+  assert.equal(w[2].label, 'Current week (Fable)', 'the scope name rides into the label')
+  assert.equal(w[2].utilization, 12)
+}
+
+{
+  // Both shapes at once: the keyed window wins its id, the list fills the rest.
+  const w = parsePlanWindows({
+    five_hour: { utilization: 42, resets_at: '2026-08-19T18:00:00Z' },
+    limits: [
+      { kind: 'five_hour', percent: 99 },
+      { kind: 'weekly_scoped', percent: 5, scope: { surface: { display_name: 'apps' } } }
+    ]
+  })
+  assert.equal(w.length, 2, 'the same window never draws twice')
+  assert.equal(w[0].id, 'five_hour')
+  assert.equal(w[0].utilization, 42, 'keyed form wins over the list entry')
+  assert.equal(w[1].id, 'weekly_scoped:apps')
+  assert.equal(w[1].label, 'Current week (apps)', 'a surface scope labels like a model scope')
+}
+
+{
+  // A window the plan has but is not metering arrives with a null figure — it
+  // must be skipped, never drawn as 0%.
+  const w = parsePlanWindows({
+    five_hour: { utilization: null, resets_at: '2026-08-19T18:00:00Z' },
+    limits: [{ kind: 'seven_day', percent: 7, resets_at: null }]
+  })
+  assert.deepEqual(
+    w.map((x) => x.id),
+    ['seven_day']
+  )
+  assert.equal(w[0].resetsAt, undefined, 'a null reset stays absent')
+}
+
 {
   // Clamped for the meter, raw kept for the tooltip: if the field ever turns
   // out to be a 0-1 fraction, `raw` is what makes that visible.

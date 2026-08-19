@@ -74,11 +74,17 @@ The dashboard reads the plan's real utilization from `GET /api/oauth/usage` on
 Key code: `src/shared/planUsage.ts` (parsing), `src/main/planUsage.ts` (polling).
 
 **Provenance.** This endpoint is not part of the published API. The path, the
-window keys (`five_hour`, `seven_day`, `seven_day_opus`, `seven_day_sonnet`),
-the fields (`utilization`, `resets_at`) and the labels were read out of the
-Claude Code binary that `@anthropic-ai/claude-agent-sdk` ships — not guessed.
-The request mirrors what that binary makes: `Authorization: Bearer <token>`,
-`anthropic-beta: oauth-2025-04-20`, a 5-second timeout.
+window keys, the fields and the labels were read out of the Claude Code binary
+that `@anthropic-ai/claude-agent-sdk` ships — not guessed — and re-verified
+against CLI 2.1.235. Two body shapes exist in the wild and may arrive
+together: the keyed form (`five_hour: {utilization, resets_at}`, `seven_day`,
+`seven_day_opus`, …) and the listed form (`limits: [{kind, percent, resets_at,
+scope: {model: {display_name}}}]`), which is the newer one and the only place
+model-scoped weeks ("Current week (Fable)") are reported. The parser reads
+both and dedupes by window. The request mirrors what that binary makes:
+`Authorization: Bearer <token>`, `anthropic-beta: oauth-2025-04-20`, the CLI's
+own `User-Agent` (this path's edge is stricter than the published API's), a
+5-second timeout.
 
 **Why accept the fragility.** §2 is the argument: the ledger can only ever
 count gurt's own turns, and a plan's windows are pooled across every Claude
@@ -97,9 +103,12 @@ windows it has, and the read's age turning yellow (past an hour) is what says
 the numbers have stopped moving:
 
 - **Rate limited (429).** Expected, not exceptional — `/usage` itself falls back
-  to last-known bars. Polling is floored at one attempt per agent per minute,
-  on *attempts* rather than successes, so a rejected token cannot spin. There is
-  deliberately no `refresh()` that bypasses the floor.
+  to last-known bars, and this edge answers even an *unauthenticated* request
+  with 429 rather than 401, so a persistent 429 can also mean the token is not
+  being accepted. Polling is floored at one attempt per agent per minute, on
+  *attempts* rather than successes, so a rejected token cannot spin; a
+  `Retry-After` the response names pushes that agent's next attempt past it.
+  There is deliberately no `refresh()` that bypasses the floor.
 - **A 200 in a shape the parser doesn't recognize.** Treated as a shape change,
   not an empty plan: previous windows stay, an error is recorded. The parser is
   structural rather than schema-bound (it finds windows by key at any depth),
