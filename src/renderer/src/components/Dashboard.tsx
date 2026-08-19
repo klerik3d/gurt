@@ -79,6 +79,110 @@ interface Row {
   status: ReturnType<typeof sessionStatus>
 }
 
+/**
+ * The statuses the session list covers, in the order they earn attention:
+ * blocked on a human first, then moving, then not started. `idle` is absent on
+ * purpose — a finished session belongs to the review list, not here.
+ */
+const STATUS_RANK: Record<string, number> = {
+  waiting: 0,
+  running: 1,
+  starting: 2,
+  queued: 3,
+  draft: 4
+}
+
+/** A workspace with sessions worth showing — the dashboard's grouping unit. */
+interface WorkspaceRows {
+  /** The workspace name, which is also the collapse key. */
+  key: string
+  rows: Row[]
+}
+
+/** "2 running · 1 needs you" — what a group still tells you while collapsed.
+ *  Exported for scripts/dashboard-groups.test.mjs. */
+export function summarize(rows: Row[]): string {
+  const n = (s: string): number => rows.filter((r) => r.status === s).length
+  const parts: string[] = []
+  const waiting = n('waiting')
+  const live = n('running') + n('starting')
+  const queued = n('queued')
+  const draft = n('draft')
+  if (waiting) parts.push(`${waiting} needs you`)
+  if (live) parts.push(`${live} running`)
+  if (queued) parts.push(`${queued} queued`)
+  if (draft) parts.push(`${draft} draft${draft > 1 ? 's' : ''}`)
+  return parts.join(' · ')
+}
+
+/**
+ * Group open sessions by workspace, most urgent workspace first. Ordering is by
+ * the best (lowest) rank a workspace holds rather than by its size: one session
+ * waiting on a permission outranks a workspace sitting on five drafts.
+ *
+ * Rows are ranked by urgency across the whole workspace, not bucketed by task
+ * first — the point of the list is that what needs you is at the top of it, and
+ * a task boundary in between would push it back down.
+ *
+ * Exported for scripts/dashboard-groups.test.mjs.
+ */
+export function groupByWorkspace(
+  rows: Row[],
+  positions: Record<string, number>
+): WorkspaceRows[] {
+  const byKey = new Map<string, WorkspaceRows>()
+  for (const r of rows) {
+    const key = r.info.workspace
+    let g = byKey.get(key)
+    if (!g) byKey.set(key, (g = { key, rows: [] }))
+    g.rows.push(r)
+  }
+  const rank = (r: Row): number => STATUS_RANK[r.status] ?? 99
+  for (const g of byKey.values())
+    g.rows.sort(
+      (a, b) =>
+        rank(a) - rank(b) ||
+        // Queue order is meaningful; everything else falls back to task then
+        // title, so a re-render can't shuffle rows around.
+        (positions[a.info.id] ?? 0) - (positions[b.info.id] ?? 0) ||
+        a.info.task.localeCompare(b.info.task) ||
+        a.info.title.localeCompare(b.info.title)
+    )
+  return [...byKey.values()].sort(
+    (a, b) => rank(a.rows[0]) - rank(b.rows[0]) || a.key.localeCompare(b.key)
+  )
+}
+
+const COLLAPSE_KEY = 'gurt.dashCollapsedWorkspaces'
+
+/**
+ * Which workspace groups are folded shut. Persisted, unlike the sidebar's own
+ * collapse state: this pane unmounts every time the user switches to Work, and
+ * a fold that undoes itself on every visit is worse than no fold at all.
+ */
+function useCollapsedWorkspaces(): { collapsed: Set<string>; toggle: (key: string) => void } {
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem(COLLAPSE_KEY) ?? '[]')
+      return new Set(Array.isArray(raw) ? raw.filter((k) => typeof k === 'string') : [])
+    } catch {
+      return new Set()
+    }
+  })
+  const toggle = (key: string): void =>
+    setCollapsed((prev) => {
+      const next = new Set(prev)
+      if (!next.delete(key)) next.add(key)
+      try {
+        localStorage.setItem(COLLAPSE_KEY, JSON.stringify([...next]))
+      } catch {
+        // a full/blocked store costs the fold, not the view
+      }
+      return next
+    })
+  return { collapsed, toggle }
+}
+
 function allSessions(
   tree: Tree | null,
   activity: Record<string, { busy?: boolean; awaitingInput?: boolean }>
@@ -119,13 +223,14 @@ export function Dashboard({
   const plan = usePlanUsage()
   const seen = useSeen()
   const now = useNow()
+  const { collapsed, toggle: toggleWorkspace } = useCollapsedWorkspaces()
 
   const rows = allSessions(tree, activity)
-  const running = rows.filter((r) => r.status === 'running' || r.status === 'starting')
-  const waiting = rows.filter((r) => r.status === 'waiting')
-  const queued = rows
-    .filter((r) => r.status === 'queued')
-    .sort((a, b) => (positions[a.info.id] ?? 0) - (positions[b.info.id] ?? 0))
+  // Everything with somewhere left to go, grouped by workspace — the divider
+  // the user already thinks in (`work`, `personal`), and few enough of them
+  // that folding one is a decision rather than bookkeeping.
+  const open = rows.filter((r) => r.status in STATUS_RANK)
+  const groups = groupByWorkspace(open, positions)
 
   // Last turn per session — the ledger is append-ordered, so the last match wins.
   const lastTurn = new Map<string, TurnRecord>()
@@ -181,59 +286,27 @@ export function Dashboard({
         <div className="dash-cols">
           <section className="dash-section">
             <div className="dash-sec-head">
-              <span className="seclabel">RUNNING NOW</span>
-              <span className="dash-count">{running.length}</span>
+              <span className="seclabel">SESSIONS</span>
+              <span className="dash-count">{open.length}</span>
+              <span className="dash-sec-hint">{summarize(open) || 'nothing open'}</span>
             </div>
-            {running.length === 0 && <div className="tp-empty">nothing is running</div>}
-            {running.map((r) => (
-              <SessionRow
-                key={r.info.id}
-                row={r}
+            {groups.length === 0 && (
+              <div className="tp-empty">nothing running, queued or drafted</div>
+            )}
+            {groups.map((g) => (
+              <WorkspaceGroup
+                key={g.key}
+                group={g}
                 agents={agents}
-                meta={
-                  turnStarts[r.info.id]
-                    ? `${formatDuration(now - turnStarts[r.info.id])} in this turn`
-                    : undefined
-                }
-                onOpen={() => onSelectSession(r.info.id)}
+                positions={positions}
+                turnStarts={turnStarts}
+                now={now}
+                collapsed={collapsed.has(g.key)}
+                onToggle={() => toggleWorkspace(g.key)}
+                onSelectSession={onSelectSession}
+                onSelectTask={onSelectTask}
               />
             ))}
-
-            {waiting.length > 0 && (
-              <>
-                <div className="dash-sec-head dash-sub">
-                  <span className="seclabel">NEEDS YOU</span>
-                  <span className="dash-count">{waiting.length}</span>
-                </div>
-                {waiting.map((r) => (
-                  <SessionRow
-                    key={r.info.id}
-                    row={r}
-                    agents={agents}
-                    meta="waiting on a permission"
-                    onOpen={() => onSelectSession(r.info.id)}
-                  />
-                ))}
-              </>
-            )}
-
-            {queued.length > 0 && (
-              <>
-                <div className="dash-sec-head dash-sub">
-                  <span className="seclabel">QUEUED</span>
-                  <span className="dash-count">{queued.length}</span>
-                </div>
-                {queued.map((r) => (
-                  <SessionRow
-                    key={r.info.id}
-                    row={r}
-                    agents={agents}
-                    meta={`#${positions[r.info.id] ?? '?'} in queue`}
-                    onOpen={() => onSelectSession(r.info.id)}
-                  />
-                ))}
-              </>
-            )}
           </section>
 
           <section className="dash-section">
@@ -515,24 +588,94 @@ function Rollup({
   )
 }
 
+/** One workspace's open sessions, folded or not. Same chevron and rotation as
+ *  the sidebar's rows, so the gesture reads the same across the app. */
+function WorkspaceGroup({
+  group,
+  agents,
+  positions,
+  turnStarts,
+  now,
+  collapsed,
+  onToggle,
+  onSelectSession,
+  onSelectTask
+}: {
+  group: WorkspaceRows
+  agents: Record<string, { label: string; kind: string }>
+  positions: Record<string, number>
+  turnStarts: Record<string, number>
+  now: number
+  collapsed: boolean
+  onToggle: () => void
+  onSelectSession: (id: string) => void
+  onSelectTask: (ws: string, task: string) => void
+}): JSX.Element {
+  /** What each row says about itself beyond its dot. */
+  const meta = (r: Row): string | undefined => {
+    if (r.status === 'waiting') return 'waiting on a permission'
+    if (r.status === 'queued') return `#${positions[r.info.id] ?? '?'} in queue`
+    if (r.status === 'draft') return 'not started'
+    const started = turnStarts[r.info.id]
+    return started ? `${formatDuration(now - started)} in this turn` : undefined
+  }
+  return (
+    <div className="dash-group">
+      <div className="dash-group-head" onClick={onToggle}>
+        <span className="sb-chev">
+          <Icon
+            name="chevron"
+            size={11}
+            style={collapsed ? { transform: 'rotate(-90deg)' } : undefined}
+          />
+        </span>
+        <span className="dash-group-name">{group.key}</span>
+        <span className="spacer" />
+        <span className="dash-group-sum faint">{summarize(group.rows)}</span>
+      </div>
+      {!collapsed &&
+        group.rows.map((r) => (
+          <SessionRow
+            key={r.info.id}
+            row={r}
+            agents={agents}
+            meta={meta(r)}
+            onOpen={() => onSelectSession(r.info.id)}
+            onTask={() => onSelectTask(r.info.workspace, r.info.task)}
+          />
+        ))}
+    </div>
+  )
+}
+
 function SessionRow({
   row,
   agents,
   meta,
-  onOpen
+  onOpen,
+  onTask
 }: {
   row: Row
   agents: Record<string, { label: string; kind: string }>
   meta?: string
   onOpen: () => void
+  onTask: () => void
 }): JSX.Element {
   const dot = SESSION_DOT[row.status]
   return (
-    <div className="dash-row clickable" onClick={onOpen}>
+    // The workspace comes from the group header; the task does not, so it rides
+    // here — and clicking it opens that task rather than the session.
+    <div className="dash-row dash-row-nested clickable" onClick={onOpen} title={dot.label}>
       <Dot tone={dot.tone} pulse={dot.pulse} />
       <span className="dash-row-title">{row.info.title}</span>
-      <span className="dash-row-where dim">
-        {row.info.workspace} / {row.info.task}
+      <span
+        className="dash-row-where dim clickable"
+        onClick={(e) => {
+          e.stopPropagation()
+          onTask()
+        }}
+      >
+        {row.info.task}
       </span>
       <span className="spacer" />
       {row.info.agent && (
