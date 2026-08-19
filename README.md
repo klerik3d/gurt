@@ -61,6 +61,22 @@ Sidebar: workspace → task → session. A task click opens the **task pane** (t
 containers of its sessions + this task's queued sessions). A session click opens
 its pane: chat when `started`, otherwise the start prompt + actions.
 
+### Duplicate / delete
+
+A session set up wrong is usually noticed once it is already running, so both
+ways out are offered in every state — from the sidebar row (hover), from the
+draft/queued/starting pane, and from the ⋯ menu in the pane header (the only one
+a chat has):
+
+- **duplicate** copies the session into a new **draft** of the same task, named
+  `<title> (copy)`: role, env, repos, agent, MCP/git/auto-allow, config picks
+  and the first prompt all come along, nothing runtime-derived does. Fix the
+  setting that was wrong, then run it.
+- **delete** removes the session in any state — running or mid-start included —
+  and everything it owns: its container, its adapter, its host servers, its chat
+  log. The clone and its uncommitted work stay, since a clone outlives every
+  session of its task.
+
 ### Sessions, queue, serialization
 
 Concurrent access to one working tree is serialized through a **global FIFO
@@ -224,6 +240,7 @@ SCRATCH=/tmp/gurt-smoke node scripts/smoke8.mjs   # native git access: credentia
 # turn contract end-to-end (docker + a working claude secret; SKIPs without one):
 SCRATCH=/tmp/gurt-smoke GURT_SMOKE_CLAUDE_TOKEN=… node scripts/smoke9.mjs
 node scripts/smoke-delete-row.mjs                 # sidebar Del/⌫: confirm, delete, move the selection, no docker
+node scripts/smoke-session-copy.mjs               # duplicate/delete from the row actions and the pane menu, no docker
 node scripts/smoke-roles.mjs                      # session roles: the picker, the repo select it drives, persistence, no docker
 node scripts/smoke-logging.mjs                    # app log: startup banner, IPC wrapper, renderer transport, needs docker
 ```
@@ -239,6 +256,7 @@ node scripts/turn-contract.test.mjs    # turn contract: the post-turn nudge/inco
 node scripts/proposal-store.test.mjs   # turn contract: proposal restore, latestProposal, Kernel.prUrl params
 node scripts/env-config.test.mjs       # env normal form: JSONC parse/validation, envImageTag identity, migration
 node scripts/session-delete-container.test.mjs  # deleting a session takes its container down with it
+node scripts/session-duplicate.test.mjs # duplicating a session: what a copy carries, and what it never does
 node scripts/log.test.mjs              # app log: writer, rotation, sanitization, redaction, drop accounting
 ```
 

@@ -23,6 +23,7 @@ import { createLogger, logErr } from '../log'
 import { SESSION_DOT } from '../status'
 import { Icon, Dot } from './icons'
 import { AgentMark, EnvRepoMarks, RoleMark } from './tags'
+import { SessionMenu } from './SessionActions'
 import { VscodeButton } from './VscodeButton'
 
 const log = createLogger('chat')
@@ -55,10 +56,15 @@ const PIN_BAR_CLEARANCE = 36
 
 export function Chat({
   snapshot,
-  sessionId
+  sessionId,
+  onSelect,
+  onDeleted
 }: {
   snapshot?: SessionSnapshot
   sessionId: string
+  /** Select another session — where a duplicate's fresh draft is handed to. */
+  onSelect: (id: string) => void
+  onDeleted: () => void
 }) {
   const feedRef = useRef<HTMLDivElement>(null)
   const innerRef = useRef<HTMLDivElement>(null)
@@ -249,6 +255,10 @@ export function Chat({
           )}
         </span>
         <VscodeButton info={info} />
+        {/* A session already running is exactly where "this was set up wrong"
+            is noticed — duplicate/delete belong on this header, not only on the
+            draft pane the session has left behind. */}
+        <SessionMenu info={info} onSelect={onSelect} onDeleted={onDeleted} />
         {busy && <span className="chat-hint mono">esc to stop</span>}
       </div>
 
