@@ -219,6 +219,9 @@ export interface SessionEvents {
    *  `Kernel.editDraft` runs at the IPC boundary, reused for the drafts an
    *  agent asks for through `create_session` (which bypasses that boundary). */
   checkDraftTarget: (ws: string, repos: string[], env: string) => Promise<void>
+  /** Is this clone held by a manual review? Synchronous by contract: the
+   *  scheduler asks on every pass and cannot await a disk read (see review.ts). */
+  isRepoLockedForReview: (ws: string, task: string, repo: string) => boolean
   /** Destroy the container this session owns, if any — on delete, or when a
    *  draft is re-pointed at another repo/env. The clone stays. */
   releaseContainer: (sessionId: string, reason: ContainerStatusReason) => void
@@ -685,6 +688,13 @@ export class SessionManager {
         this.noteQueued(s, 'repo-held', holder.info.id)
         continue
       }
+      // A locked clone is not a transient conflict the queue can outwait on its
+      // own: it stays queued until the user unlocks, which re-runs the pass.
+      if (this.reviewLocked(s)) {
+        still.add(s.info.id)
+        this.noteQueued(s, 'repo-locked-for-review')
+        continue
+      }
       claimed.add(rkey)
       this.queuedReasons.delete(s.info.id)
       void this.startSession(s.info.id, 'scheduler')
@@ -744,13 +754,43 @@ export class SessionManager {
     return undefined
   }
 
+  /**
+   * The clone is held by a manual review (docs/requirements-manual-review.md).
+   *
+   * The review lock is the second kind of holder of the same registry as
+   * {@link repoHolder} — so it gates exactly the roles that participate in it.
+   * A researcher's clone is mounted `readonly` and claims no key, so a review
+   * never blocks one: it cannot be what the lock exists to stop.
+   */
+  private reviewLocked(s: Session): boolean {
+    if (!this.repoKey(s)) return false
+    return this.events.isRepoLockedForReview(s.ref.workspace, s.ref.task, s.info.repos[0])
+  }
+
   /** Start gate: the session has a repo and nothing else is holding its clone.
    *  A researcher holds no clone — it is never gated by the scheduler, it only
    *  needs something to read. Future predicates (concurrency, priorities)
    *  compose here. */
   private canStart(s: Session): boolean {
     if (!roleLocksClone(sessionRole(s.info))) return s.info.repos.length > 0
-    return !!this.repoKey(s) && !this.repoHolder(s)
+    return !!this.repoKey(s) && !this.repoHolder(s) && !this.reviewLocked(s)
+  }
+
+  /**
+   * The session currently holding this clone, addressed by (task, repo) rather
+   * than by another session — what the review lock needs before it can claim
+   * the same clone. Same "able to touch it" rule as {@link repoHolder}: an idle
+   * session whose container is down holds nothing and is not reported.
+   */
+  repoHolderFor(ws: string, task: string, repo: string): SessionInfo | undefined {
+    const want = `${taskKey(ws, task)}/${repo}`
+    for (const o of this.sessions.values()) {
+      if (this.repoKey(o) !== want) continue
+      const live = o.info.container?.status
+      const busyContainer = live === 'building' || live === 'post' || live === 'running'
+      if (o.info.state === 'starting' || busyContainer) return o.info
+    }
+    return undefined
   }
 
   /**
@@ -807,6 +847,12 @@ export class SessionManager {
       if (holder)
         throw new Error(
           `repository "${s.info.repos[0]}" is in use by session "${holder.info.title}" — queue this one instead`
+        )
+      // A hard block, unlike the holder conflict above: "Run now" cannot confirm
+      // its way past a review, because not writing is the whole point of one.
+      if (this.reviewLocked(s))
+        throw new Error(
+          `repository "${s.info.repos[0]}" is locked for review — unlock it to run agents against it`
         )
       const ctx = await this.events.resolveLaunch(s.info.id)
       s.remoteCwd = ctx.remoteWorkspaceFolder

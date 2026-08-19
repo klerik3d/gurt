@@ -3,7 +3,7 @@
 // domain-shaped lives in kernel.ts and below.
 import { BrowserWindow, ipcMain, shell } from 'electron'
 import { API_METHODS, type GurtApi } from '../shared/api'
-import { isSessionRole } from '../shared/types'
+import { isSessionRole, targetKey } from '../shared/types'
 import { MCP_DEFS } from '../shared/mcp'
 import { createKernel } from './kernel'
 import { createLogger, dropSessionLog, enabled, logDir, logLevel, logRenderer } from './log'
@@ -37,6 +37,9 @@ const OPAQUE_ARGS = new Set<keyof GurtApi>([
   'sessionEditDraft',
   'renameSession',
   'changesCommit',
+  // Review prose: the note itself, and the fix prompt built out of the notes.
+  'addReviewComment',
+  'launchReviewFix',
   'setCredentials',
   'setAgents',
   'addEnv',
@@ -146,6 +149,30 @@ export function registerIpc(): void {
     getTaskChanges: (ws, task, opts) => changes.getTaskChanges(ws, task, opts ?? {}),
     getFileDiff: (ws, task, repo, file) => changes.getFileDiff(ws, task, repo, file),
     getCommitDiff: (ws, task, repo, sha) => changes.getCommitDiff(ws, task, repo, sha),
+    getDiffFiles: (ws, task, repo, target) => changes.getDiffFiles(ws, task, repo, target),
+    getDiffPair: (ws, task, repo, target, file) =>
+      changes.getDiffPair(ws, task, repo, target, file),
+    getReviewState: (ws, task, repo, target) => kernel.reviewState(ws, task, repo, target),
+    getReviewLocks: (ws, task) => kernel.review.locks(ws, task),
+    setReviewLock: (ws, task, repo, locked) => kernel.setReviewLock(ws, task, repo, !!locked),
+    addReviewComment: (ws, task, repo, target, path, side, line, text) => {
+      // Straight off the wire and straight onto disk — the anchor has to be a
+      // real anchor, and an empty note is a UI slip, not a comment.
+      if (side !== 'before' && side !== 'after') throw new Error(`unknown diff side "${side}"`)
+      if (!Number.isInteger(line) || line < 1) throw new Error(`not a line number: ${line}`)
+      if (!text.trim()) throw new Error('comment is empty')
+      return kernel.review.addComment(ws, task, repo, targetKey(target), {
+        path,
+        side,
+        line,
+        text: text.trim()
+      })
+    },
+    resolveReviewComment: (ws, task, id, resolved) =>
+      kernel.review.resolveComment(ws, task, id, !!resolved),
+    deleteReviewComment: (ws, task, id) => kernel.review.deleteComment(ws, task, id),
+    launchReviewFix: (ws, task, repo, target, prompt) =>
+      kernel.launchReviewFix(ws, task, repo, target, prompt),
     changesCommit: (ws, task, repo, message) => changes.commit(ws, task, repo, message),
     changesPush: (ws, task, repo) => changes.push(ws, task, repo),
     changesUpdateFromMain: (ws, task, repo) => changes.updateFromMain(ws, task, repo),
