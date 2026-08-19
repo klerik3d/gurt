@@ -209,6 +209,7 @@ const FILLED = new Set<IconName>([
  *  the whole point is at-a-glance recognition. opencode has no signature
  *  color in its own branding, so it's absent here and stays currentColor. */
 const BRAND_COLOR: Partial<Record<IconName, string>> = {
+  vscode: '#0098FF',
   'agent-claude': '#D97757',
   'agent-codex': '#7A9DFF'
 }
