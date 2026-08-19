@@ -1,14 +1,54 @@
 // Seed config surface per agent *kind* (see `AgentDef.id`) — used only until a
-// live session reports its own configOptions/commands. Deliberately empty: the
-// real claude-code ACP adapter builds its `model`/`effort`/`fast` options from
-// the account's live model list and the SDK's per-model effort support, so a
-// hardcoded guess here would drift from (and could misrepresent) what the
-// agent actually offers. The New Session modal simply shows no config picker
-// until the agent has run at least once and populated the cache.
+// live session reports its own configOptions/commands. claude-code gets a
+// hardcoded model row (see `CLAUDE_MODELS`) so the New Session modal and the
+// composer offer a model pick before the agent has ever run and populated the
+// cache; every other kind still gets nothing; a hardcoded guess for those
+// would drift from (and could misrepresent) what the agent actually offers.
 import type { AgentConfig, ConfigSelectOption, SessionConfigOption } from './types'
 
-export function defaultAgentConfig(_kind: string): AgentConfig {
-  return { configOptions: [], commands: [] }
+/**
+ * claude-code's model families, as bare aliases (no version numbers — those
+ * churn as new models ship; the alias resolves to whatever's current). This
+ * is the seed chip row shown before a live session has reported its own list
+ * — and, via `withFable`, `fable` stays force-merged into the live list too,
+ * since accounts have shipped `session/new` reports that silently drop it.
+ */
+const CLAUDE_MODELS: ConfigSelectOption[] = [
+  { value: 'fable', name: 'Fable' },
+  { value: 'opus', name: 'Opus' },
+  { value: 'sonnet', name: 'Sonnet' },
+  { value: 'haiku', name: 'Haiku' }
+]
+
+const FABLE_OPTION = CLAUDE_MODELS[0]
+const isFable = (o: ConfigSelectOption): boolean =>
+  o.value === FABLE_OPTION.value || /\bfable\b/i.test(o.name)
+
+/** Force `fable` into a live-reported model select's options wherever the
+ *  account's own report leaves it out — see module doc above. */
+export function withFable(options: ConfigSelectOption[]): ConfigSelectOption[] {
+  return options.some(isFable) ? options : [FABLE_OPTION, ...options]
+}
+
+export function defaultAgentConfig(kind: string): AgentConfig {
+  if (kind !== 'claude-code') return { configOptions: [], commands: [] }
+  return {
+    configOptions: [
+      {
+        id: 'model',
+        name: 'Model',
+        category: 'model',
+        type: 'select',
+        // A concrete default (not '') so a chip reads as selected right away
+        // instead of the gear popup falling into its "no chip claims the
+        // live value" note. Display only — actually starting a session never
+        // sends `model` unless the user touches the chip (see `startMeta`).
+        currentValue: 'opus',
+        options: CLAUDE_MODELS
+      }
+    ],
+    commands: []
+  }
 }
 
 /**

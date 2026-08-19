@@ -233,6 +233,7 @@ export function createKernel(): Kernel {
   async function restoreSessions(): Promise<void> {
     notifications.setPrefs(await store.getNotificationPrefs())
     sessions.loadAgentConfigs(await store.getAgentConfigs())
+    sessions.loadAgentKinds(await store.getAgents())
     const t = await store.buildTree()
     for (const ws of t.workspaces)
       for (const task of ws.tasks) {

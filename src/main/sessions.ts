@@ -32,7 +32,7 @@ import {
   sessionRole,
   spawnableRoles
 } from '../shared/types'
-import { defaultAgentConfig } from '../shared/agentConfig'
+import { defaultAgentConfig, withFable } from '../shared/agentConfig'
 import type { AgentDef } from '../shared/agents'
 import type { CreateAction } from '../shared/api'
 import { taskKey } from '../shared/keys'
@@ -68,7 +68,13 @@ export const adapterExitCode = (code: number | null, signal: NodeJS.Signals | nu
  * with its group name) so the renderer sees one flat option list. Malformed entries are
  * skipped. Returns undefined when the agent reports no config options at all.
  */
-function normalizeConfigOptions(raw: unknown[] | undefined): SessionConfigOption[] | undefined {
+/** `kind` gates the `fable` force-merge to claude-code alone — the model
+ *  select of any other adapter (codex, opencode, …) is left exactly as
+ *  reported. */
+function normalizeConfigOptions(
+  raw: unknown[] | undefined,
+  kind?: string
+): SessionConfigOption[] | undefined {
   if (!Array.isArray(raw)) return undefined
   const out: SessionConfigOption[] = []
   for (const o of raw as any[]) {
@@ -100,7 +106,7 @@ function normalizeConfigOptions(raw: unknown[] | undefined): SessionConfigOption
         category: o.category ?? undefined,
         type: 'select',
         currentValue: typeof o.currentValue === 'string' ? o.currentValue : '',
-        options: flat
+        options: o.category === 'model' && kind === 'claude-code' ? withFable(flat) : flat
       })
     }
   }
@@ -303,6 +309,10 @@ export class SessionManager {
   private agentConfigWritten = new Map<string, string>()
   /** Last logged "why still queued" per session id (see `noteQueued`). */
   private queuedReasons = new Map<string, string>()
+  /** Per agent-instance id, its kind (`AgentDef.id`) — mirrors agents.json so
+   *  a hardcoded default/the `fable` force-merge can resolve without a live
+   *  container's launch context (see `loadAgentKinds`). */
+  private agentKinds = new Map<string, string>()
 
   constructor(
     private events: SessionEvents,
@@ -352,6 +362,13 @@ export class SessionManager {
       this.agentConfigs.set(id, cfg)
       this.agentConfigWritten.set(id, JSON.stringify(cfg))
     }
+  }
+
+  /** Refresh the agent-instance→kind lookup — called once at boot and again
+   *  whenever agents.json is saved, so it never goes stale. */
+  loadAgentKinds(agents: Record<string, { kind: string }>): void {
+    this.agentKinds.clear()
+    for (const [id, a] of Object.entries(agents)) this.agentKinds.set(id, a.kind)
   }
 
   /** Cached config for an agent instance, or its kind's hardcoded default. */
@@ -409,6 +426,10 @@ export class SessionManager {
     // that auto-stopped) has no live surface yet — fall back to the agent cache
     // so the composer still shows its commands/modes and running one wakes it.
     const cached = s.info.agent ? this.agentConfigs.get(s.info.agent) : undefined
+    // Never-run agent instance: no live surface AND no cache either — fall
+    // back one step further, to the kind's hardcoded seed (e.g. claude-code's
+    // model row), so the composer offers a model pick from the first draft on.
+    const kind = s.info.agent ? this.agentKinds.get(s.info.agent) : undefined
     return {
       info: this.infoWithRuntime(s),
       entries: s.entries,
@@ -417,7 +438,8 @@ export class SessionManager {
       modes: s.modes ?? cached?.modes,
       plan: s.plan,
       commands: s.commands ?? cached?.commands,
-      configOptions: s.configOptions ?? cached?.configOptions,
+      configOptions:
+        s.configOptions ?? cached?.configOptions ?? (kind ? defaultAgentConfig(kind).configOptions : undefined),
       promptCapabilities: this.connections.get(sessionId)?.promptCapabilities,
       startError: s.startError,
       queuePosition: this.queuePosition(sessionId),
@@ -808,7 +830,7 @@ export class SessionManager {
       })
       s.acpSessionId = result.sessionId
       s.modes = result.modes ?? s.modes
-      s.configOptions = normalizeConfigOptions(result.configOptions)
+      s.configOptions = normalizeConfigOptions(result.configOptions, ctx.agent.id)
       s.attached = true
       s.info.state = 'started'
       await this.applyStartConfig(s, conn)
@@ -1191,7 +1213,7 @@ export class SessionManager {
             mcpServers
           })
           s.modes = result?.modes ?? s.modes
-          s.configOptions = normalizeConfigOptions(result?.configOptions) ?? s.configOptions
+          s.configOptions = normalizeConfigOptions(result?.configOptions, ctx.agent.id) ?? s.configOptions
           s.attached = true
           this.cacheAgentConfig(s)
           await this.applyAutoAllow(s, conn)
@@ -1592,7 +1614,7 @@ export class SessionManager {
       'session/set_config_option',
       params
     )
-    const next = normalizeConfigOptions(res?.configOptions)
+    const next = normalizeConfigOptions(res?.configOptions, this.agentKinds.get(s.info.agent ?? ''))
     if (next) s.configOptions = next
   }
 
@@ -1743,7 +1765,9 @@ export class SessionManager {
         this.bus.emit('session.changed', { sessionId: s.info.id })
         break
       case 'config_option_update':
-        s.configOptions = normalizeConfigOptions(u.configOptions) ?? s.configOptions
+        s.configOptions =
+          normalizeConfigOptions(u.configOptions, this.agentKinds.get(s.info.agent ?? '')) ??
+          s.configOptions
         this.cacheAgentConfig(s)
         this.bus.emit('session.changed', { sessionId: s.info.id })
         break

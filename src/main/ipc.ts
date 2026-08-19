@@ -69,7 +69,10 @@ export function registerIpc(): void {
     getTree: () => kernel.tree(),
     getMcpDefs: async () => MCP_DEFS,
     getAgents: () => store.getAgents(),
-    setAgents: (agents) => store.setAgents(agents),
+    setAgents: async (agents) => {
+      await store.setAgents(agents)
+      kernel.sessions.loadAgentKinds(agents)
+    },
     getAgentConfig: async (agentId) => {
       // Prefer the live in-memory cache (freshest); fall back to the persisted
       // file / hardcoded default when no session has refreshed it this run.
