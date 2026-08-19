@@ -464,11 +464,25 @@ textarea.input {
   background: var(--border);
   margin: 5px 8px;
 }
+.menu-item.danger,
+.menu-item.danger:hover {
+  color: var(--red);
+}
 .menu-item-input {
   padding: 3px;
 }
 .menu-item-input .input {
   width: 100%;
+}
+/* Session actions (duplicate / delete), anchored under the ⋯ in a pane header. */
+.session-menu {
+  position: relative;
+  flex: none;
+}
+.session-menu-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
 }
 .menu-empty {
   padding: 10px 9px;
@@ -813,6 +827,25 @@ textarea.input {
   font-size: 10.5px;
   color: var(--faint);
   flex: none;
+}
+/* Row actions take the agent mark's place on hover rather than reserving space
+   next to it — the tree is narrow, and the title should keep every pixel it can
+   while nobody is pointing at the row. */
+.sb-session-acts {
+  display: none;
+  margin-left: auto;
+  flex: none;
+  align-items: center;
+}
+.sb-session:hover .sb-session-acts {
+  display: flex;
+}
+.sb-session:hover .sb-session-client {
+  display: none;
+}
+.sb-session-acts .sb-act {
+  width: 22px;
+  height: 22px;
 }
 .sb-empty {
   padding: 4px 18px 4px 34px;

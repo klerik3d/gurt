@@ -224,8 +224,10 @@ export interface SessionEvents {
    *  `create_session` materializes its target first. */
   ensureTask: (ws: string, task: string) => Promise<void>
   /** Destroy the container this session owns, if any — on delete, or when a
-   *  draft is re-pointed at another repo/env. The clone stays. */
-  releaseContainer: (sessionId: string, reason: ContainerStatusReason) => void
+   *  draft is re-pointed at another repo/env. The clone stays. Resolves once
+   *  the container is actually gone: the delete path waits for that before
+   *  removing the directories it was mounted on. Never rejects. */
+  releaseContainer: (sessionId: string, reason: ContainerStatusReason) => Promise<void>
   persist: (ws: string, task: string, records: PersistedSession[]) => void
   /** Persist the refreshed config surface for an agent instance (cache). */
   saveAgentConfig: (agentId: string, cfg: AgentConfig) => void
@@ -234,6 +236,10 @@ export interface SessionEvents {
   appendLog: (ws: string, task: string, sessionId: string, records: SessionLogRecord[]) => Promise<void>
   /** Remove the session's JSONL log (session deleted). */
   deleteLog: (ws: string, task: string, sessionId: string) => void
+  /** Remove the host scratch directory a session's mounts were staged in
+   *  (`.multirepo/<id>`), once its container is down. Only sessions with
+   *  explicit repo mounts ever had one; removing a missing one is a no-op. */
+  deleteScratch: (ws: string, task: string, sessionId: string) => void
 }
 
 /** A persisted session plus its read (or just-migrated) JSONL log. */
@@ -603,17 +609,17 @@ export class SessionManager {
       (patch.repos.length !== s.info.repos.length ||
         patch.repos.some((r, i) => r !== s.info.repos[i]))
     ) {
-      this.events.releaseContainer(s.info.id, 'user')
+      void this.events.releaseContainer(s.info.id, 'user')
       s.info.repos = patch.repos
     }
     if (patch.role !== undefined) {
-      if (patch.role !== sessionRole(s.info)) this.events.releaseContainer(s.info.id, 'user')
+      if (patch.role !== sessionRole(s.info)) void this.events.releaseContainer(s.info.id, 'user')
       s.info.role = patch.role
     }
     // A read-only role has no use for the git broker (see `createSession`).
     if (roleIsReadOnly(sessionRole(s.info))) s.info.gitAccess = false
     if (patch.env !== undefined && patch.env !== s.info.env) {
-      this.events.releaseContainer(s.info.id, 'user')
+      void this.events.releaseContainer(s.info.id, 'user')
       s.info.env = patch.env
       s.ref = { ...s.ref, env: patch.env }
     }
@@ -622,6 +628,45 @@ export class SessionManager {
     this.schedulePersist(s.ref)
   }
 
+  /**
+   * Copy a session into a fresh **draft** of the same task. Everything the user
+   * configured comes along — role, env, repos, agent, MCP/git/auto-allow, the
+   * config picks and the first prompt — and nothing runtime-derived does: a
+   * draft has no container, no chat, no ACP session and no queue slot, whatever
+   * state the source is in. That is what makes this the fix for a session
+   * configured wrong: correct the copy, then delete the original (or leave it,
+   * they share nothing but the clone every session of the task shares anyway).
+   */
+  duplicateSession(sessionId: string): SessionInfo {
+    const source = this.sessions.get(sessionId)?.info
+    if (!source) throw new Error('unknown session')
+    const info = this.createSession(
+      { workspace: source.workspace, task: source.task, env: source.env },
+      [...source.repos],
+      source.agent ?? '',
+      source.startPrompt,
+      'draft',
+      source.mcp ? [...source.mcp] : [],
+      source.autoAllow ?? true,
+      source.gitAccess ?? false,
+      { ...(source.configValues ?? {}) },
+      sessionRole(source)
+    )
+    // The copy is recognisable as one instead of taking the next free
+    // role-index name — the source is usually still in the tree right above it.
+    this.renameSession(info.id, `${source.title} (copy)`)
+    log.info('session.duplicated', { s: info.id, from: sessionId })
+    return info
+  }
+
+  /**
+   * Delete a session in any state — including one that is running or still
+   * starting, which is the whole point: a session configured wrong is usually
+   * noticed after it has begun. Everything the session owns goes with it (its
+   * container, its adapter, its host servers, its chat log, its mount scratch);
+   * the clone and the uncommitted work in it deliberately stay, since a clone
+   * outlives every session of its task.
+   */
   deleteSession(sessionId: string): void {
     const s = this.sessions.get(sessionId)
     if (!s) return
@@ -631,7 +676,12 @@ export class SessionManager {
     // Before the record goes: the container manager finds the container through
     // this map, so a session dropped first would leave its container orphaned
     // until the next boot reconcile.
-    this.events.releaseContainer(sessionId, 'session-deleted')
+    const { workspace, task } = s.ref
+    void this.events
+      .releaseContainer(sessionId, 'session-deleted')
+      // Only once the container is gone: its bind mounts are staged inside that
+      // directory, so removing it any earlier races the daemon.
+      .then(() => this.events.deleteScratch(workspace, task, sessionId))
     this.sessions.delete(sessionId)
     this.events.deleteLog(s.ref.workspace, s.ref.task, sessionId)
     this.events.stopGurtServer(sessionId)
@@ -845,6 +895,12 @@ export class SessionManager {
       this.schedulePersist(s.ref)
       await this.runPrompt(s, s.info.startPrompt)
     } catch (e) {
+      // Deleted while the start was in flight (the user saw the misconfigured
+      // session go up and pulled it). The delete already took down everything
+      // that existed by then, and the container manager removes one that came
+      // up after it — so there is no state left to fail into, and nothing to
+      // announce about a session the tree no longer has.
+      if (this.sessions.get(sessionId) !== s) return
       const message = e instanceof Error ? e.message : String(e)
       s.info.state = 'draft'
       s.info.queuedAt = undefined
@@ -1171,6 +1227,15 @@ export class SessionManager {
     })
 
     conn.promptCapabilities = init?.agentCapabilities?.promptCapabilities
+    // The session may have been deleted while the adapter was coming up. Its
+    // `detach` found no connection to kill (this one did not exist yet), so
+    // this process is the one thing that would outlive it — and caching it
+    // would leak a connection nobody can reach.
+    if (this.sessions.get(key) !== s) {
+      conn.expectedExit = true
+      conn.kill()
+      throw new Error('session no longer exists')
+    }
     this.connections.set(key, conn)
     return conn
   }

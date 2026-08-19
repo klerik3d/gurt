@@ -193,6 +193,7 @@ export function registerIpc(): void {
     sessionEditPrompt: async (id, text) => kernel.sessions.editPrompt(id, text),
     renameSession: async (id, title) => kernel.sessions.renameSession(id, title),
     sessionEditDraft: async (id, patch) => kernel.editDraft(id, patch),
+    sessionDuplicate: async (id) => kernel.sessions.duplicateSession(id),
     sessionDelete: async (id) => kernel.sessions.deleteSession(id),
     sessionSnapshot: async (id) => {
       // Opening a session (sidebar click, palette jump, a notification row)

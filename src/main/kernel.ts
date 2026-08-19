@@ -92,11 +92,13 @@ export function createKernel(): Kernel {
   sessions = new SessionManager(
     {
       resolveLaunch: (sessionId) => containers.resolveLaunch(sessionId),
-      releaseContainer: (sessionId, reason) => {
+      // Never rejects: the session record is gone by the time this settles, so
+      // a failure has nowhere to surface — it is logged, and the delete's own
+      // follow-up (the scratch dir) still runs.
+      releaseContainer: (sessionId, reason) =>
         containers
           .release(sessionId, reason)
-          .catch((e) => log.error('internal.fail', { site: 'container-release', s: sessionId, reason, err: e }))
-      },
+          .catch((e) => log.error('internal.fail', { site: 'container-release', s: sessionId, reason, err: e })),
       installAdapter: (ctx) => containers.installAdapter(ctx),
       resolveMcpServers,
       stopMcpServers,
@@ -128,6 +130,11 @@ export function createKernel(): Kernel {
           .catch((e) => log.error('internal.fail', { site: 'session-log-delete', s: sessionId, err: e }))
         // The session's diagnostic file goes with its timeline.
         dropSessionLog(sessionId)
+      },
+      deleteScratch: (ws, task, sessionId) => {
+        store
+          .deleteSessionScratch(ws, task, sessionId)
+          .catch((e) => log.error('internal.fail', { site: 'session-scratch-delete', s: sessionId, err: e }))
       }
     },
     bus
