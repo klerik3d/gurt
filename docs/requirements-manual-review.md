@@ -6,16 +6,19 @@ This document is a work order for an implementing agent. Read `README.md`
 first. Follow-up to `docs/requirements-changes-thread.md` (the Changes
 panel this replaces the diff modal of) and `docs/requirements-session-roles.md`
 (the reviewer role's clone lock, which this reuses for a human reviewer).
-Key code: `src/main/changes.ts`, `src/main/sessions.ts` (§709-767 lock
-mechanics), `src/main/store.ts` (`RESERVED_NAMES`, `readJson`/`writeJson`),
-`src/renderer/src/components/TaskPane.tsx` (`ChangesSection`, `DiffModal`).
+Key code: `src/main/review.ts`, `src/main/changes.ts` (`getDiffFiles`,
+`getDiffPair`), `src/main/sessions.ts` (`repoKey`/`repoHolder`/`canStart` —
+the lock registry), `src/main/store.ts` (`RESERVED_NAMES`, `readReview`),
+`src/renderer/src/splitDiff.ts`, and
+`src/renderer/src/components/{ReviewModal,TaskPane}.tsx`.
 Do not change the contract described here without asking the owner.
 
 ## 1. Motivation
 
-The Changes panel's diff modal (`DiffModal`, `TaskPane.tsx:377-424`) dumps
-a raw unified diff as text — no alignment between old and new lines, no
-folding of unchanged code, no way to react to what you're looking at. It
+The Changes panel's diff modal (`DiffModal` in `TaskPane.tsx`, removed by
+this change) dumped a raw unified diff as text — no alignment between old
+and new lines, no folding of unchanged code, no way to react to what you
+are looking at. It
 is fine for a last glance before Commit/Push, not for actually reviewing
 an agent's work. Today reviewing is either an ad-hoc read of that dump, or
 spinning up a `reviewer`-role agent session (`requirements-session-roles.md`)
@@ -116,15 +119,21 @@ reviewed, not from every note on the clone.
 ### 2.4 Review lock — one holder per (task, repo), same registry sessions use
 
 The lock is the reviewer role's clone lock (`roleLocksClone`,
-`sessions.ts:709-767`: `repoKey`/`repoHolder`/`canStart`) generalized to
+`repoKey`/`repoHolder`/`canStart` in `sessions.ts`) generalized to
 a second kind of holder that isn't a session. Concretely: `repoHolder(key)`
 must also report the manual review lock when `review.json` has `locked[repo]`
 set, and `canStart` stays "free iff no holder" — so a locked repo refuses
-every session start against it (`Run now`, queued, and the scheduler alike),
-surfaced as the existing inline action-error style ("repo is locked for
-review"), not a confirm-and-proceed dialog like the same-repo warning
+`Run now`, the queue, and the scheduler alike, surfaced as the existing
+inline action-error style ("repo is locked for review"), not a
+confirm-and-proceed dialog like the same-repo warning
 `requirements-session-queue.md` §2.2 describes for `Run now` — this one is
 a hard block, because the whole point is that nothing writes.
+
+Being the same registry decides who is gated: a role that claims no clone
+(`roleLocksClone` — i.e. a researcher, read-only mounts, blocks nobody and
+is blocked by nobody) starts against a locked repo unchanged. It cannot
+write, so it is not what the lock exists to stop. Executors and agent
+reviewers are gated. See §7.
 
 Symmetrically, acquiring the lock fails if a session currently holds that
 key (live container, or mid-start) — error: "a session is running against
@@ -212,8 +221,8 @@ internal/auth/refresh.go:40
 <free-text prompt, if any>
 ```
 
-and calls the existing session-creation path (`sessions.ts:453-514`,
-`ipc.ts:196-221`) with `role: 'executor'`, `repos: [repo]`, `action:
+and calls the existing session-creation path (`SessionManager.createSession`,
+reached over IPC as `createSession`) with `role: 'executor'`, `repos: [repo]`, `action:
 'draft'` — landing in the task's session list exactly like a `create_session`
 draft from an agent reviewer, so the user reviews/edits/launches it the
 same way (`requirements-session-roles.md` §3, "the user reviewing and
@@ -300,14 +309,12 @@ is a separate cleanup, not required for this feature to ship.
 Decisions taken while implementing the above — the parts a reader would
 otherwise have to re-derive from the diff:
 
-- **A researcher is not gated by the review lock.** §2.4 says the lock is
-  a second kind of holder in the *same* registry sessions use, and that
-  registry is `repoKey` — which a researcher opts out of entirely
-  (`roleLocksClone`). So the lock excludes exactly executors and agent
-  reviewers, and a researcher, whose clone is mounted `readonly` and which
-  claims nothing, starts regardless. This is narrower than the draft's "every
-  session start", and it is the right reading of the ask: a session that
-  cannot write is not what a write-lock exists to stop.
+- **A researcher is not gated by the review lock** (§2.4, second paragraph —
+  amended from the draft's flat "every session start"). The lock is a second
+  kind of holder in the *same* registry sessions use, and that registry is
+  `repoKey`, which a researcher opts out of entirely. Following the registry
+  rather than overriding it is both the smaller change and the right reading
+  of the ask: a session that cannot write is not what a write-lock stops.
 - **The lock set lives in memory, seeded from disk at boot.** The scheduler
   asks "is this locked?" synchronously on every pass and cannot await a read,
   so `review.ts` keeps a `Set` of `<ws>/<task>/<repo>` and every mutation goes

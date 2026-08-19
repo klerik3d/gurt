@@ -47,9 +47,11 @@ const RESEARCHER_INSTRUCTIONS =
   'itself refuses writes.\n' +
   'Hand work off instead of doing it: `create_session` drafts a fully\n' +
   'configured executor (to make a change) or reviewer (to judge one) in this\n' +
-  'same task. A draft never runs by itself — the user reviews, edits and\n' +
-  'launches it — so draft freely, and never wait for one: no result comes\n' +
-  'back to you.'
+  'same task — or, when something surfaces that is beyond this task\'s scope,\n' +
+  'in a separate task named via `task` (created on the spot if missing), so\n' +
+  'the current discussion stays on topic. A draft never runs by itself — the\n' +
+  'user reviews, edits and launches it — so draft freely, and never wait for\n' +
+  'one: no result comes back to you.'
 
 /**
  * A reviewer judges one clone's uncommitted changes while holding its lock, so
@@ -126,9 +128,11 @@ const PROPOSAL_SCHEMA = z
  * that fixes its findings, so `role` is a single-value enum there and the model
  * cannot even express anything else. Exactly one repo: no role that may be
  * drafted is allowed more than one (only a researcher is, and no role may draft
- * a researcher). Everything omitted is inherited from the calling session.
+ * a researcher). Only a researcher's schema carries `task` — a reviewer's draft
+ * must fix the clone it holds, and that clone lives in the reviewer's own task.
+ * Everything omitted is inherited from the calling session.
  */
-function createSessionSchema(roles: SessionRole[]) {
+function createSessionSchema(roles: SessionRole[], crossTask: boolean) {
   return z.strictObject({
     role: z.enum(roles as [SessionRole, ...SessionRole[]]),
     repos: z
@@ -136,6 +140,18 @@ function createSessionSchema(roles: SessionRole[]) {
       .length(1)
       .describe('exactly one repo name, as registered in the workspace'),
     prompt: z.string().min(1).describe("the drafted session's start prompt — its whole input"),
+    ...(crossTask
+      ? {
+          task: z
+            .string()
+            .min(1)
+            .optional()
+            .describe(
+              "task to draft into, created if missing; defaults to this session's task — " +
+                "use it to spin work outside this task's scope into its own task"
+            )
+        }
+      : {}),
     title: z.string().min(1).max(80).optional().describe('display title, e.g. "fix review findings"'),
     env: z.string().min(1).optional().describe("env definition name; defaults to this session's"),
     agent: z.string().min(1).optional().describe("agent instance id; defaults to this session's"),
@@ -187,25 +203,31 @@ function makeMcpServer(hooks: GurtHooks): McpServer {
       }
     )
   const roles = spawnableRoles(hooks.role)
+  // Cross-task drafting is the researcher's fan-out only: it locks no clone and
+  // may spin out-of-scope work into a task of its own (created if missing).
+  const crossTask = hooks.role === 'researcher'
   if (roles.length)
     server.registerTool(
       'create_session',
       {
         description:
-          'Draft another session in this task, fully configured, to do work you must not do ' +
+          'Draft another session in this task' +
+          (crossTask ? ' (or another task, via `task` — created if missing)' : '') +
+          ', fully configured, to do work you must not do ' +
           `yourself (allowed roles: ${roles.join(', ')}). The draft does NOT run: the user ` +
           'reviews, edits or launches it, and that is the approval step. Nothing comes back ' +
           'to you — never wait for the session you drafted.',
-        inputSchema: createSessionSchema(roles)
+        inputSchema: createSessionSchema(roles, crossTask)
       },
       async (input) => {
         try {
           const draft = await hooks.onCreateSession(input as AgentSessionRequest)
+          const where = input.task ? ` in task "${input.task}"` : ''
           return {
             content: [
               {
                 type: 'text' as const,
-                text: `create_session: drafted ${input.role} "${draft.title}" (${draft.sessionId}) — waiting for the user to launch it`
+                text: `create_session: drafted ${input.role} "${draft.title}" (${draft.sessionId})${where} — waiting for the user to launch it`
               }
             ]
           }

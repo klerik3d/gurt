@@ -610,6 +610,22 @@ export async function readSessionLog(
   return out
 }
 
+/** Remove the scratch directory a session's explicit repo mounts were staged
+ *  in (`.multirepo/<id>`, see {@link mountedWorkspaceDir}) — it is gurt's own,
+ *  holds only mount points, and has no owner once the session is deleted. Only
+ *  sessions with explicit mounts ever had one; the rest hit a missing path,
+ *  which `force` makes a no-op. */
+export async function deleteSessionScratch(
+  ws: string,
+  task: string,
+  sessionId: string
+): Promise<void> {
+  await fs.rm(path.dirname(mountedWorkspaceDir(ws, task, sessionId)), {
+    recursive: true,
+    force: true
+  })
+}
+
 export async function deleteSessionLog(ws: string, task: string, sessionId: string): Promise<void> {
   const file = sessionLogFile(ws, task, sessionId)
   // Let an in-flight append settle first so it can't recreate the file after

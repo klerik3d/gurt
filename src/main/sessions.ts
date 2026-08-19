@@ -222,9 +222,15 @@ export interface SessionEvents {
   /** Is this clone held by a manual review? Synchronous by contract: the
    *  scheduler asks on every pass and cannot await a disk read (see review.ts). */
   isRepoLockedForReview: (ws: string, task: string, repo: string) => boolean
+  /** Make sure the task exists (create it if missing) — a draft may not land in
+   *  a task directory without its `task.json` marker, so a cross-task
+   *  `create_session` materializes its target first. */
+  ensureTask: (ws: string, task: string) => Promise<void>
   /** Destroy the container this session owns, if any — on delete, or when a
-   *  draft is re-pointed at another repo/env. The clone stays. */
-  releaseContainer: (sessionId: string, reason: ContainerStatusReason) => void
+   *  draft is re-pointed at another repo/env. The clone stays. Resolves once
+   *  the container is actually gone: the delete path waits for that before
+   *  removing the directories it was mounted on. Never rejects. */
+  releaseContainer: (sessionId: string, reason: ContainerStatusReason) => Promise<void>
   persist: (ws: string, task: string, records: PersistedSession[]) => void
   /** Persist the refreshed config surface for an agent instance (cache). */
   saveAgentConfig: (agentId: string, cfg: AgentConfig) => void
@@ -233,6 +239,10 @@ export interface SessionEvents {
   appendLog: (ws: string, task: string, sessionId: string, records: SessionLogRecord[]) => Promise<void>
   /** Remove the session's JSONL log (session deleted). */
   deleteLog: (ws: string, task: string, sessionId: string) => void
+  /** Remove the host scratch directory a session's mounts were staged in
+   *  (`.multirepo/<id>`), once its container is down. Only sessions with
+   *  explicit repo mounts ever had one; removing a missing one is a no-op. */
+  deleteScratch: (ws: string, task: string, sessionId: string) => void
 }
 
 /** A persisted session plus its read (or just-migrated) JSONL log. */
@@ -602,17 +612,17 @@ export class SessionManager {
       (patch.repos.length !== s.info.repos.length ||
         patch.repos.some((r, i) => r !== s.info.repos[i]))
     ) {
-      this.events.releaseContainer(s.info.id, 'user')
+      void this.events.releaseContainer(s.info.id, 'user')
       s.info.repos = patch.repos
     }
     if (patch.role !== undefined) {
-      if (patch.role !== sessionRole(s.info)) this.events.releaseContainer(s.info.id, 'user')
+      if (patch.role !== sessionRole(s.info)) void this.events.releaseContainer(s.info.id, 'user')
       s.info.role = patch.role
     }
     // A read-only role has no use for the git broker (see `createSession`).
     if (roleIsReadOnly(sessionRole(s.info))) s.info.gitAccess = false
     if (patch.env !== undefined && patch.env !== s.info.env) {
-      this.events.releaseContainer(s.info.id, 'user')
+      void this.events.releaseContainer(s.info.id, 'user')
       s.info.env = patch.env
       s.ref = { ...s.ref, env: patch.env }
     }
@@ -621,6 +631,45 @@ export class SessionManager {
     this.schedulePersist(s.ref)
   }
 
+  /**
+   * Copy a session into a fresh **draft** of the same task. Everything the user
+   * configured comes along — role, env, repos, agent, MCP/git/auto-allow, the
+   * config picks and the first prompt — and nothing runtime-derived does: a
+   * draft has no container, no chat, no ACP session and no queue slot, whatever
+   * state the source is in. That is what makes this the fix for a session
+   * configured wrong: correct the copy, then delete the original (or leave it,
+   * they share nothing but the clone every session of the task shares anyway).
+   */
+  duplicateSession(sessionId: string): SessionInfo {
+    const source = this.sessions.get(sessionId)?.info
+    if (!source) throw new Error('unknown session')
+    const info = this.createSession(
+      { workspace: source.workspace, task: source.task, env: source.env },
+      [...source.repos],
+      source.agent ?? '',
+      source.startPrompt,
+      'draft',
+      source.mcp ? [...source.mcp] : [],
+      source.autoAllow ?? true,
+      source.gitAccess ?? false,
+      { ...(source.configValues ?? {}) },
+      sessionRole(source)
+    )
+    // The copy is recognisable as one instead of taking the next free
+    // role-index name — the source is usually still in the tree right above it.
+    this.renameSession(info.id, `${source.title} (copy)`)
+    log.info('session.duplicated', { s: info.id, from: sessionId })
+    return info
+  }
+
+  /**
+   * Delete a session in any state — including one that is running or still
+   * starting, which is the whole point: a session configured wrong is usually
+   * noticed after it has begun. Everything the session owns goes with it (its
+   * container, its adapter, its host servers, its chat log, its mount scratch);
+   * the clone and the uncommitted work in it deliberately stay, since a clone
+   * outlives every session of its task.
+   */
   deleteSession(sessionId: string): void {
     const s = this.sessions.get(sessionId)
     if (!s) return
@@ -630,7 +679,12 @@ export class SessionManager {
     // Before the record goes: the container manager finds the container through
     // this map, so a session dropped first would leave its container orphaned
     // until the next boot reconcile.
-    this.events.releaseContainer(sessionId, 'session-deleted')
+    const { workspace, task } = s.ref
+    void this.events
+      .releaseContainer(sessionId, 'session-deleted')
+      // Only once the container is gone: its bind mounts are staged inside that
+      // directory, so removing it any earlier races the daemon.
+      .then(() => this.events.deleteScratch(workspace, task, sessionId))
     this.sessions.delete(sessionId)
     this.events.deleteLog(s.ref.workspace, s.ref.task, sessionId)
     this.events.stopGurtServer(sessionId)
@@ -887,6 +941,12 @@ export class SessionManager {
       this.schedulePersist(s.ref)
       await this.runPrompt(s, s.info.startPrompt)
     } catch (e) {
+      // Deleted while the start was in flight (the user saw the misconfigured
+      // session go up and pulled it). The delete already took down everything
+      // that existed by then, and the container manager removes one that came
+      // up after it — so there is no state left to fail into, and nothing to
+      // announce about a session the tree no longer has.
+      if (this.sessions.get(sessionId) !== s) return
       const message = e instanceof Error ? e.message : String(e)
       s.info.state = 'draft'
       s.info.queuedAt = undefined
@@ -1213,6 +1273,15 @@ export class SessionManager {
     })
 
     conn.promptCapabilities = init?.agentCapabilities?.promptCapabilities
+    // The session may have been deleted while the adapter was coming up. Its
+    // `detach` found no connection to kill (this one did not exist yet), so
+    // this process is the one thing that would outlive it — and caching it
+    // would leak a connection nobody can reach.
+    if (this.sessions.get(key) !== s) {
+      conn.expectedExit = true
+      conn.kill()
+      throw new Error('session no longer exists')
+    }
     this.connections.set(key, conn)
     return conn
   }
@@ -1465,6 +1534,14 @@ export class SessionManager {
           : `a ${from} session may not draft sessions`
       )
     assertRoleFitsRepos(req.role, req.repos)
+    const task = req.task?.trim() || spawner.ref.task
+    if (task !== spawner.ref.task) {
+      // Only a researcher fans out across tasks — it holds no clone lock, so
+      // "elsewhere" costs nothing. A reviewer's draft exists to fix the clone
+      // the reviewer holds, and that clone lives in the reviewer's own task.
+      if (from !== 'researcher')
+        throw new Error(`a ${from} session may only draft into its own task`)
+    }
     const env = req.env ?? spawner.info.env
     const agent = req.agent ?? spawner.info.agent
     if (!agent) throw new Error('no agent to draft with — this session has none either')
@@ -1472,8 +1549,13 @@ export class SessionManager {
     // renderer's are; a draft naming a repo that does not exist would only fail
     // much later, at the user's launch.
     await this.events.checkDraftTarget(spawner.ref.workspace, req.repos, env)
+    // The task name is agent-input too: `ensureTask` validates it and creates
+    // the `task.json` marker if missing — the session's first persist would
+    // otherwise mkdir its way into a directory that is not a task (invisible
+    // in the tree; see the same invariant at the IPC create boundary).
+    if (task !== spawner.ref.task) await this.events.ensureTask(spawner.ref.workspace, task)
     const info = this.createSession(
-      { workspace: spawner.ref.workspace, task: spawner.ref.task, env },
+      { workspace: spawner.ref.workspace, task, env },
       req.repos,
       agent,
       req.prompt,
@@ -1486,10 +1568,12 @@ export class SessionManager {
     )
     // `renameSession` mutates the same info object createSession stored.
     if (req.title?.trim()) this.renameSession(info.id, req.title)
-    log.info('session.drafted', { s: info.id, by: spawnerId, role: req.role })
+    log.info('session.drafted', { s: info.id, by: spawnerId, role: req.role, task })
     // A draft is a to-do for the user, and the spawner's own feed is where they
-    // are looking right now — the tree row alone is easy to miss.
-    this.push(spawner, { kind: 'system', text: `create_session: drafted ${req.role} "${info.title}"` })
+    // are looking right now — the tree row alone is easy to miss. A cross-task
+    // draft names its task, since the row is not even in this task's subtree.
+    const where = task !== spawner.ref.task ? ` in task "${task}"` : ''
+    this.push(spawner, { kind: 'system', text: `create_session: drafted ${req.role} "${info.title}"${where}` })
     return { sessionId: info.id, title: info.title }
   }
 

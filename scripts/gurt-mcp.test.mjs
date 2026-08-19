@@ -189,6 +189,16 @@ try {
     ['executor'],
     'a reviewer may draft executors only'
   )
+  // Cross-task drafting is researcher-only, and the schema itself says so: a
+  // reviewer's tool cannot even express a `task`.
+  assert.ok(
+    'task' in researcherTools.create_session.inputSchema.properties,
+    'a researcher may aim a draft at another task'
+  )
+  assert.ok(
+    !('task' in reviewerTools.create_session.inputSchema.properties),
+    'a reviewer has no `task` field at all'
+  )
   console.log('per-role tool sets OK')
 
   // --- create_session: valid call reaches the host, result names the draft ----
@@ -208,6 +218,24 @@ try {
   })
   assert.match(spawn.text, /sess-1/, 'the result carries the draft id')
   assert.match(spawn.text, /launch/, 'the result says the user still has to launch it')
+
+  // A researcher aiming the draft at another task: the name reaches the host
+  // verbatim and the result names the destination.
+  const crossSpawn = await call(
+    'create_session',
+    { role: 'executor', repos: ['alpha'], prompt: 'p', task: 'spinoff' },
+    'researcher'
+  )
+  assert.equal(crossSpawn.isError, false, 'a researcher cross-task spawn is not an error')
+  assert.equal(drafted[drafted.length - 1].req.task, 'spinoff', 'the task name reaches the host')
+  assert.match(crossSpawn.text, /in task "spinoff"/, 'the result names the target task')
+  // The reviewer's schema has no `task`, so the same call is a schema error.
+  const reviewerCross = await call(
+    'create_session',
+    { role: 'executor', repos: ['alpha'], prompt: 'p', task: 'spinoff' },
+    'reviewer'
+  )
+  assert.equal(reviewerCross.isError, true, 'a reviewer cannot express a cross-task draft')
   console.log('create_session OK')
 
   // --- create_session rejections ---------------------------------------------

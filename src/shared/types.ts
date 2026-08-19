@@ -236,6 +236,10 @@ export interface AgentSessionRequest {
   repos: string[]
   /** The drafted session's start prompt — its whole input. */
   prompt: string
+  /** Task to draft into, created if missing; defaults to the spawner's own.
+   *  Researcher-only: a reviewer's draft must fix the clone it holds, and that
+   *  clone lives in the reviewer's task. */
+  task?: string
   /** Display title; defaults to the usual `session N`. */
   title?: string
   /** Env definition name; defaults to the spawner's. */

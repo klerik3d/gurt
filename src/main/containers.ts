@@ -300,6 +300,15 @@ export class ContainerManager {
           ),
         extraMounts
       )
+      // Deleted mid-start: this container was born after its session's delete
+      // had already looked for one to take down, so nothing owns it and nothing
+      // records it (`patchContainer` on a gone session is a no-op). Remove it
+      // here rather than leaving an orphan for the next boot reconcile.
+      if (!this.deps.session(sessionId)) {
+        this.forget(up.containerId)
+        await dockerRemove(up.containerId, provisionLog)
+        throw new Error('session no longer exists')
+      }
       const next: SessionContainer = {
         status: 'running',
         id: up.containerId,

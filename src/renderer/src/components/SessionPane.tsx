@@ -2,12 +2,13 @@ import { useEffect, useState } from 'react'
 import type { SessionSnapshot, Tree } from '../../../shared/types'
 import { roleLocksClone, sessionRole, sessionStatus } from '../../../shared/types'
 import { agentKind, agentName, useAgents } from '../useAgents'
-import { alertDialog, confirmDialog } from '../dialog'
+import { alertDialog } from '../dialog'
 import { logErr } from '../log'
 import { SESSION_DOT } from '../status'
 import { Dot } from './icons'
 import { AgentMark, AgentTag, EnvRepoMarks, EnvTag, RepoTag, RoleMark, RoleTag } from './tags'
 import { Chat } from './Chat'
+import { SessionMenu, deleteSession, duplicateSession } from './SessionActions'
 import { NewSessionModal } from './Sidebar'
 import { VscodeButton } from './VscodeButton'
 
@@ -17,6 +18,7 @@ export function SessionPane({
   sessionId,
   queuePosition,
   log,
+  onSelect,
   onDeleted
 }: {
   tree: Tree | null
@@ -24,11 +26,13 @@ export function SessionPane({
   sessionId: string
   queuePosition?: number
   log: string[]
+  /** Select another session — where a duplicate's fresh draft is handed to. */
+  onSelect: (id: string) => void
   onDeleted: () => void
 }) {
   if (!snapshot) return <div className="placeholder">loading session…</div>
   if (snapshot.info.state === 'started')
-    return <Chat snapshot={snapshot} sessionId={sessionId} />
+    return <Chat snapshot={snapshot} sessionId={sessionId} onSelect={onSelect} onDeleted={onDeleted} />
 
   return (
     <NonStartedPane
@@ -37,12 +41,21 @@ export function SessionPane({
       sessionId={sessionId}
       queuePosition={queuePosition}
       log={log}
+      onSelect={onSelect}
       onDeleted={onDeleted}
     />
   )
 }
 
-function Header({ snapshot }: { snapshot: SessionSnapshot }) {
+function Header({
+  snapshot,
+  onSelect,
+  onDeleted
+}: {
+  snapshot: SessionSnapshot
+  onSelect: (id: string) => void
+  onDeleted: () => void
+}) {
   const { info } = snapshot
   const agents = useAgents()
   const dot = SESSION_DOT[sessionStatus(info)]
@@ -66,6 +79,7 @@ function Header({ snapshot }: { snapshot: SessionSnapshot }) {
         )}
       </span>
       <VscodeButton info={info} />
+      <SessionMenu info={info} onSelect={onSelect} onDeleted={onDeleted} />
     </div>
   )
 }
@@ -76,6 +90,7 @@ function NonStartedPane({
   sessionId,
   queuePosition,
   log,
+  onSelect,
   onDeleted
 }: {
   tree: Tree | null
@@ -83,6 +98,7 @@ function NonStartedPane({
   sessionId: string
   queuePosition?: number
   log: string[]
+  onSelect: (id: string) => void
   onDeleted: () => void
 }) {
   const { info } = snapshot
@@ -96,13 +112,13 @@ function NonStartedPane({
   }, [info.startPrompt, sessionId])
 
   const del = async () => {
-    if (await confirmDialog(`Delete session "${info.title}"?`, { title: 'Delete session', confirmText: 'Delete', danger: true }))
-      window.gurt.sessionDelete(sessionId).then(onDeleted).catch((e) => alertDialog(String(e)))
+    if (await deleteSession(info)) onDeleted()
   }
+  const copy = () => duplicateSession(sessionId, (c) => onSelect(c.id))
 
   return (
     <div className="session-pane">
-      <Header snapshot={snapshot} />
+      <Header snapshot={snapshot} onSelect={onSelect} onDeleted={onDeleted} />
       {snapshot.startError && (
         <div className="error env-error">start failed: {snapshot.startError}</div>
       )}
@@ -169,6 +185,9 @@ function NonStartedPane({
               Add to queue
             </button>
             <span className="spacer" />
+            <button className="btn" onClick={copy} title="copy these settings and prompt into a new draft">
+              Duplicate
+            </button>
             <button className="btn btn-danger-text" onClick={del}>
               Delete
             </button>
@@ -207,6 +226,9 @@ function NonStartedPane({
               Cancel
             </button>
             <span className="spacer" />
+            <button className="btn" onClick={copy} title="copy these settings and prompt into a new draft">
+              Duplicate
+            </button>
             <button className="btn btn-danger-text" onClick={del}>
               Delete
             </button>
@@ -219,6 +241,19 @@ function NonStartedPane({
           <div className="queue-badge">starting…</div>
           <pre className="draft-prompt readonly">{info.startPrompt}</pre>
           <pre className="env-log">{log.length ? log.join('\n') : 'launching…'}</pre>
+          {/* A start is exactly when a misconfigured session shows itself, and
+              it can take minutes — the way out is offered here, not only after
+              it finishes. Deleting mid-start takes down whatever the start has
+              already provisioned. */}
+          <div className="row-buttons">
+            <span className="spacer" />
+            <button className="btn" onClick={copy} title="copy these settings and prompt into a new draft">
+              Duplicate
+            </button>
+            <button className="btn btn-danger-text" onClick={del}>
+              Delete
+            </button>
+          </div>
         </div>
       )}
     </div>

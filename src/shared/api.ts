@@ -196,6 +196,14 @@ export interface GurtApi {
   renameSession(id: string, title: string): Promise<void>
   /** Change a draft's settings (agent, repo, mode, git, MCP, prompt) before it starts. */
   sessionEditDraft(id: string, patch: SessionDraftPatch): Promise<void>
+  /** Copy a session into a fresh **draft** of the same task: its role, env,
+   *  repos, agent, MCP/git/auto-allow picks, config values and first prompt come
+   *  along; nothing runtime-derived does (no container, no chat, no queue slot).
+   *  The answer to "this one was configured wrong" — correct the copy, drop the
+   *  original. Works whatever state the source is in. */
+  sessionDuplicate(id: string): Promise<SessionInfo>
+  /** Delete a session: its container is destroyed with it, its chat log removed.
+   *  The clone (and any uncommitted work in it) stays. */
   sessionDelete(id: string): Promise<void>
   sessionSnapshot(id: string): Promise<SessionSnapshot | undefined>
   sessionPrompt(
@@ -279,6 +287,7 @@ const METHODS = {
   sessionEditPrompt: true,
   renameSession: true,
   sessionEditDraft: true,
+  sessionDuplicate: true,
   sessionDelete: true,
   sessionSnapshot: true,
   sessionPrompt: true,
