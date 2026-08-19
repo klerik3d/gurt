@@ -6,7 +6,8 @@ Key code: `src/shared/usage.ts` (the pure accounting model), `src/main/usage.ts`
 (ledger subscriber), `src/main/store.ts` (`usage.jsonl`), `src/shared/events.ts`
 (`agent.turn`, `usage.changed`), `src/renderer/src/components/Dashboard.tsx`,
 `src/renderer/src/reviewed.ts`. Tests: `scripts/usage.test.mjs`,
-`scripts/usage-ledger.test.mjs`.
+`scripts/usage-ledger.test.mjs`, `scripts/plan-usage.test.mjs`,
+`scripts/dashboard-groups.test.mjs`.
 
 ## 1. Motivation
 
@@ -146,7 +147,7 @@ Everything else gets rollups and an explicit note rather than a guessed window:
 `opencode` (per-token API key, no window at all), `codex` (plan windows never
 verified against a published source), and anything hand-added to `agents.json`.
 
-## 5. The three sections
+## 5. The sections
 
 **AGENTS** — one card per agent *instance* (`agents.json`), plus one per agent
 id that only the ledger still knows, marked `removed`: turns of a deleted
@@ -160,11 +161,36 @@ Cost is aggregated as the **rise** of the adapter's cumulative per-session
 counter inside the window, not as a sum of samples. Context is aggregated as a
 **peak**: it drops on compaction, so summing it would be meaningless.
 
-**RUNNING NOW**, with `NEEDS YOU` and `QUEUED` beneath it — every session in
-flight, across workspaces, keyed to the same dot grammar as the sidebar
-(`status.ts`). A running row shows how long it has been in its current turn
-when that turn started while the window was open; main does not persist turn
-starts, and inventing one would misreport.
+**SESSIONS** — everything with somewhere left to go: `waiting`, `running`,
+`starting`, `queued` and `draft`, across every workspace, keyed to the same dot
+grammar as the sidebar (`status.ts`). `idle` is deliberately absent: a finished
+session belongs to the review list below, and listing it in both would make
+"needs a human" mean two different things on one screen.
+
+Rows are grouped by **workspace** — the divider the user already thinks in
+(`work`, `personal`) — because a flat list repeated `ws / task` on every row and
+buried the one session that needed an answer. Workspaces fold behind the same
+chevron the sidebar uses, so the gesture reads the same across the app; there
+are few enough of them that folding one is a decision rather than bookkeeping.
+The fold is persisted, which the sidebar's is not — this pane unmounts on every
+switch to Work, and a fold that undoes itself each visit is worse than no fold.
+
+The workspace comes from the group header, so each row carries only its task
+name; clicking that opens the task rather than the session.
+
+Order is by urgency, never by size: within a workspace, `waiting → running →
+starting → queued → draft`; between workspaces, by the best rank each holds, so
+one session waiting on a permission outranks a workspace sitting on five
+drafts. Rows rank across the whole workspace rather than bucketing by task
+first — a task boundary in between would push the session that needs you back
+down the list. Ties fall back to queue position where that is meaningful, then
+task and title, so a re-render cannot shuffle rows and one task's sessions stay
+adjacent. A collapsed group still reports itself ("1 needs you · 2 running"),
+so folding hides detail and never news.
+
+A running row shows how long it has been in its current turn when that turn
+started while the window was open; main does not persist turn starts, and
+inventing one would misreport.
 
 **DONE — NOT REVIEWED** — sessions sitting `idle` whose last recorded turn
 ended after the last time the session was opened. Each row shows the age of
