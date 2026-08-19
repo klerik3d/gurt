@@ -50,11 +50,15 @@ const clone = path.join(GURT_ROOT, WS, TASK, REPO)
 fs.mkdirSync(path.dirname(clone), { recursive: true })
 git(REPO_ROOT, 'clone', '-q', bare, clone)
 git(clone, 'checkout', '-q', '-b', TASK)
-// One rewritten line (word-level highlight), one inserted line (padding), and
-// an untracked file — the three shapes the split view has to render.
+// One rewritten line (word-level highlight), one inserted line (padding), a
+// two-line rewrite (a multi-row block, for the block-comment affordance), and
+// an untracked file — the shapes the split view has to render.
 fs.writeFileSync(
   path.join(clone, 'app.ts'),
-  base.replace('const v5 = 5', 'const v5 = 500').replace('const v35 = 35', 'const extra = 1\nconst v35 = 35')
+  base
+    .replace('const v5 = 5', 'const v5 = 500')
+    .replace('const v35 = 35', 'const extra = 1\nconst v35 = 35')
+    .replace('const v20 = 20\nconst v21 = 21', 'const v20 = 2000\nconst v21 = 2100')
 )
 fs.writeFileSync(path.join(clone, 'fresh.ts'), 'export const fresh = true\n')
 
@@ -146,6 +150,13 @@ try {
   )
   // An inserted line pads the other side rather than shifting it.
   check((await page.locator('.split-pane.pad').count()) > 0, 'an insertion pads the before-side')
+  // app.ts is a real language: keyword/number tokens are syntax-colored, not
+  // just the word-diff highlight.
+  check((await page.locator('[class*="hljs-"]').count()) > 0, 'syntax highlighting classes are present')
+  check(
+    (await page.locator('.split-word[class*="hljs-"]').count()) > 0,
+    'a changed word keeps its syntax color alongside the diff highlight'
+  )
   await page.screenshot({ path: path.join(SHOT_DIR, '02-split.png') })
 
   const rowsFolded = await page.locator('.split-row').count()
@@ -204,6 +215,57 @@ try {
   await page.click('.split-note input[type="checkbox"]')
   await page.waitForSelector('.split-note:not(.resolved)', { timeout: 5000 })
   console.log('comments OK')
+
+  // --- range and block comments --------------------------------------------
+  const paneOf = (row, side) => row.locator('.split-pane').nth(side === 'before' ? 0 : 1)
+
+  // Drag-select across two context rows anchors a range comment, not a single line.
+  const rowA = page.locator('.split-row.equal', { hasText: 'v3 = 3' }).first()
+  const rowB = page.locator('.split-row.equal', { hasText: 'v4 = 4' }).first()
+  const lnA = paneOf(rowA, 'after').locator('.split-ln')
+  const lnB = paneOf(rowB, 'after').locator('.split-ln')
+  const lineA = Number(await lnA.textContent())
+  const lineB = Number(await lnB.textContent())
+  const boxA = await lnA.boundingBox()
+  const boxB = await lnB.boundingBox()
+  await page.mouse.move(boxA.x + boxA.width / 2, boxA.y + boxA.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(boxB.x + boxB.width / 2, boxB.y + boxB.height / 2, { steps: 10 })
+  await page.mouse.up()
+  await page.waitForSelector('.split-composer textarea', { timeout: 5000 })
+  await page.fill('.split-composer textarea', 'both these lines look suspicious')
+  await page.click('.split-composer button:has-text("Comment")')
+  await page.waitForSelector('.split-note:has-text("both these lines look suspicious")', { timeout: 5000 })
+  const rangeComment = reviewJson().comments.find((c) => c.text === 'both these lines look suspicious')
+  check(!!rangeComment, 'the dragged range persisted as a comment')
+  check(
+    rangeComment?.line === Math.min(lineA, lineB) && rangeComment?.endLine === Math.max(lineA, lineB),
+    'it spans exactly the dragged lines'
+  )
+  const anchorText = await page
+    .locator('.split-note', { hasText: 'both these lines look suspicious' })
+    .locator('.split-note-anchor')
+    .textContent()
+  check(
+    anchorText?.includes(`${Math.min(lineA, lineB)}-${Math.max(lineA, lineB)}`),
+    'the note shows the range, not one line'
+  )
+  const paneClass = await paneOf(rowA, 'after').getAttribute('class')
+  check(paneClass?.includes('in-range'), 'a covered row is marked in-range')
+
+  // The "+ block" affordance anchors to the whole two-line rewrite at once.
+  const block = page.locator('.split-block', { hasText: 'v20' }).first()
+  await block.hover()
+  await block.locator('.split-block-add').click()
+  await page.waitForSelector('.split-composer textarea', { timeout: 5000 })
+  await page.fill('.split-composer textarea', 'both v20 and v21 changed together')
+  await page.click('.split-composer button:has-text("Comment")')
+  await page.waitForSelector('.split-note:has-text("both v20 and v21 changed together")', { timeout: 5000 })
+  const blockComment = reviewJson().comments.find((c) => c.text === 'both v20 and v21 changed together')
+  check(!!blockComment, 'the block affordance persisted a comment')
+  check(blockComment?.side === 'after', 'anchored on the after side — a rewrite, not a pure deletion')
+  check((blockComment?.endLine ?? 0) > (blockComment?.line ?? 0), 'it spans the whole block, not one line')
+  console.log('range and block comments OK')
 
   // --- the lock blocks an agent -------------------------------------------
   await page.click('.modal-head .icon-sq')

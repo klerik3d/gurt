@@ -9,7 +9,8 @@ panel this replaces the diff modal of) and `docs/requirements-session-roles.md`
 Key code: `src/main/review.ts`, `src/main/changes.ts` (`getDiffFiles`,
 `getDiffPair`), `src/main/sessions.ts` (`repoKey`/`repoHolder`/`canStart` —
 the lock registry), `src/main/store.ts` (`RESERVED_NAMES`, `readReview`),
-`src/renderer/src/splitDiff.ts`, and
+`src/renderer/src/splitDiff.ts`, `src/renderer/src/syntaxHighlight.ts` +
+`syntaxLang.ts` (v2, §7), and
 `src/renderer/src/components/{ReviewModal,TaskPane}.tsx`.
 Do not change the contract described here without asking the owner.
 
@@ -88,7 +89,8 @@ interface ReviewComment {
   target: string        // `targetKey`: 'uncommitted' | `commit:<sha>`
   path: string
   side: 'before' | 'after'
-  line: number          // 1-based, within that side's content
+  line: number          // 1-based, within that side's content — anchor start
+  endLine?: number       // 1-based, inclusive; a range or whole-block anchor (v2, §7)
   text: string
   createdAt: string      // ISO
   resolved?: boolean
@@ -194,8 +196,13 @@ that commit's files).
   anchored to that side/line. Existing comments render under the line
   they anchor to (both sides collapse into one thread strip so a comment
   on `before` doesn't get lost off-screen from the paired `after` row),
-  with a resolve checkbox and delete.
+  with a resolve checkbox and delete. Comments can also anchor to a
+  dragged range of lines or a whole change block — see §7 (v2).
 - `Comments (N open)` — flat list, click jumps to that file/line.
+- Each column scrolls horizontally on its own — one scrollbar for the
+  whole `before` side, one for `after`, not one per row (v2, §7).
+- Code is syntax-colored per the file's extension, layered under the
+  word-diff highlight (v2, §7).
 - `Prompt` — free-text box, optional. `Launch fix` is disabled with no
   unresolved comments and an empty prompt (nothing to send); otherwise it
   builds a start prompt (§3.3) and is enabled regardless of lock state —
@@ -262,10 +269,12 @@ is a separate cleanup, not required for this feature to ship.
 
 ## 5. Non-goals (explicitly out of scope)
 
-- Re-anchoring comments across a changed diff; multi-line comment ranges
-  (one line per comment); comment replies/threads (flat, single author —
-  there is exactly one human reviewer, no multi-user review here).
-- Syntax highlighting in the split view (monospace plain text, as today).
+- Re-anchoring comments across a changed diff (a comment's anchor — line,
+  range, or block — is still captured once, against the diff pair as it
+  looked when it was written; multi-line ranges shipped in v2, §7, but
+  re-anchoring across an edit did not); comment replies/threads (flat,
+  single author — there is exactly one human reviewer, no multi-user review
+  here).
 - Editing code from the review surface — stays read-only.
 - Auto-stopping a running session to acquire the lock; auto-releasing the
   lock on launch-fix, on resolve-all, or on unrelated Commit/Push.
@@ -350,24 +359,96 @@ otherwise have to re-derive from the diff:
   commit row) now open the review surface. `getFileDiff`/`getCommitDiff` stay
   on the API surface unused, per §4.
 
+### v2: syntax highlighting, per-side scroll, range/block comments
+
+Three follow-ups, landed together: `.split-code` used to give every row its
+own `overflow-x: auto` — one scrollbar per line; comments could only anchor
+one line at a time; the split view was plain monospace text.
+
+- **Horizontal scroll is two synced tracks, not per-row native scroll.**
+  `.split` clips overflow-x; each side's rows are translated by a shared
+  `scrollX.before` / `scrollX.after` (React state in `SplitDiff`), driven by
+  two real `overflow-x: auto` tracks pinned `position: sticky; bottom: 0`
+  (sized to that side's longest rendered line via a `<canvas>`
+  `measureText`), plus a native (non-passive) `wheel` listener on the root
+  that routes trackpad/shift-wheel deltas to whichever side the pointer is
+  over — React's synthetic `onWheel` is passive and can't `preventDefault`.
+- **`endLine` is additive, not a migration.** A `review.json` written before
+  v2 has no `endLine` on any comment; reading it back treats a missing
+  `endLine` as "same as `line`" everywhere (`fixPrompt`, the anchor render,
+  the in-range check) — no on-disk version bump, no upgrade pass.
+- **Three ways to start a comment draft, one `Draft` shape.** The existing
+  per-line `[+]` still sets `{side, line}`; a mousedown-drag across the
+  gutter's line numbers (any rows, not just changed ones) sets
+  `{side, line: min, endLine: max}` on `mouseup`; a block's `+ block`
+  affordance (from `groupBlocks` in `splitDiff.ts`, on the *shown*,
+  post-fold row list) does the same, deriving the range from every cell in
+  the block on the `after` side, falling back to `before` only when the
+  block has no `after` cells at all (a pure deletion). A range/block
+  comment's `Note` and its `.split-pane.in-range` marker attach to the row
+  at `max(line, endLine)` — the same "hangs off the last line" rule a
+  single-line comment already followed.
+- **Syntax spans are always present, word-diff spans are merged into them,
+  not replacing them.** `Cell.spans` used to be `undefined` outside a
+  rewritten pair; every cell now carries syntax spans (`cls: null` with no
+  `lang`), and a rewritten pair's word-diff boundaries (`wordDiff`, the
+  renamed `intraline`) are merged against them by `mergeSpans` — a
+  two-pointer walk over two partitions of the same string
+  (`syntaxHighlight.ts`) — so a changed word keeps its syntax color under
+  the `.split-word` background instead of one replacing the other.
+- **hljs output is parsed with a small hand-rolled scanner, not `DOMParser`
+  or an HTML-parser dependency.** hljs's own `escapeHTML` only ever emits 5
+  known entities and every scope is exactly one (possibly multi-class, for
+  tiered scopes like `title.function_`) `<span class="...">`, arbitrarily
+  nested — regular enough for a regex-plus-stack walk in `syntaxHighlight.ts`
+  that runs identically in Node (`syntax-highlight.test.mjs`, no browser)
+  and the renderer, and needs no jsdom/`DOMParser` shim either place.
+- **Colors are a hand-picked mapping onto the existing palette, not a stock
+  hljs theme.** The app is dark-only (no light-theme variables to speak of),
+  so importing an hljs theme stylesheet would fight the existing look —
+  `styles.css` maps a fixed set of `hljs-*` classes onto `--accent`,
+  `--green`, `--yellow`, `--code`, `--faint`, `--dim`, `--red` instead.
+- **Language is chosen from the file extension only** (`syntaxLang.ts`), not
+  content sniffing or a user setting — an unregistered/unknown extension
+  renders exactly as before (plain), which is why this is safe to ship as a
+  fixed, curated language list rather than "whatever hljs autodetects."
+
 ## 8. Verification
 
 - `npm run typecheck` — clean, both projects.
 - `node scripts/split-diff.test.mjs` — alignment (padding, rewrite pairing,
   unequal rewrite blocks, line numbering per side), intraline spans
   reconstructing each line exactly, and the folding rules including the
-  leading/trailing runs and expand-in-place.
+  leading/trailing runs and expand-in-place; `groupBlocks` grouping and
+  splitting on non-change rows; `alignRows`'s `lang` param — no-lang parity
+  with the old default, a real language tokenizing every cell (not just
+  rewritten ones), merged spans still reconstructing the line exactly and
+  preserving the word-diff `changed` boundary, and an unregistered language
+  falling back to plain.
+- `node scripts/syntax-highlight.test.mjs` — `tokenize` (no-lang and
+  unregistered-lang fallback, several real languages each reconstructing
+  their input exactly and producing at least one scoped token, HTML-entity
+  round-tripping) and `mergeSpans` (a syntax span split by diff boundaries,
+  a diff span split by syntax boundaries, uneven boundaries on both sides
+  still reconstructing exactly) — pure, no DOM, runs under plain Node.
 - `node scripts/review.test.mjs` — over the real kernel, no Docker: the diff
   targets against a real git clone (including the root-commit and untracked
-  cases and both argv guards), comment persistence/pruning/target-scoping, the
-  lock against "Run now", the queue, a researcher, an agent reviewer and a live
-  session holder, `fixPrompt`'s exact shape, and a lock surviving a restart.
+  cases and both argv guards), comment persistence/pruning/target-scoping
+  (including a ranged comment's `endLine` round-tripping and a plain one
+  carrying no `endLine` key at all), the lock against "Run now", the queue,
+  a researcher, an agent reviewer and a live session holder, `fixPrompt`'s
+  exact shape (including a range rendering as `path:start-end`), and a lock
+  surviving a restart.
 - `npm run build && node scripts/smoke-review.mjs` — the real UI, offline
   against a local bare origin: the split view's folds/word-highlight/padding,
   hover-only comment affordance, lock → `review.json` → a Run-now start
   refused with "locked for review", comment persistence and the open count,
-  and `Launch fix` drafting a session whose `startPrompt` carries the open
-  comment (and neither unlocking nor resolving anything).
+  `Launch fix` drafting a session whose `startPrompt` carries the open
+  comment (and neither unlocking nor resolving anything), syntax-highlight
+  classes present (including on a changed word, alongside `.split-word`), a
+  dragged gutter range persisting with the right `line`/`endLine` and
+  showing `.split-pane.in-range`, and the `+ block` affordance anchoring to
+  a whole two-line rewrite at once.
 - The rest of `scripts/*.test.mjs` passes unmodified.
 
 Mind the README gotchas: strip `ELECTRON_RUN_AS_NODE`, unique `GURT_ROOT`

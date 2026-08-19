@@ -2163,13 +2163,16 @@ textarea.input {
 }
 
 /* The split itself: every row is two equal panes, so a line and its
-   counterpart always sit at the same height. */
+   counterpart always sit at the same height. Horizontal scrolling does not
+   happen here — it's owned by the two synced tracks in .split-hscroll-row,
+   one per side, so every row shares exactly one scrollbar per column
+   instead of getting its own. */
 .split {
   flex: 1;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
   font-size: 12px;
   line-height: 1.55;
-  padding-bottom: 8px;
 }
 .split-row {
   display: flex;
@@ -2198,6 +2201,14 @@ textarea.input {
     rgba(114, 110, 102, 0.07) 10px
   );
 }
+/* A line currently under a gutter drag-select. */
+.split-pane.selecting {
+  background: rgba(77, 163, 255, 0.16);
+}
+/* A line an existing comment's range covers. */
+.split-pane.in-range {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
 .split-gutter {
   flex: none;
   width: 52px;
@@ -2213,6 +2224,9 @@ textarea.input {
 .split-ln {
   min-width: 26px;
   text-align: right;
+}
+.split-gutter.commentable .split-ln {
+  cursor: pointer;
 }
 .split-add {
   width: 14px;
@@ -2232,20 +2246,104 @@ textarea.input {
 .split-code {
   flex: 1;
   min-width: 0;
-  white-space: pre;
-  overflow-x: auto;
+  overflow: hidden;
   padding: 0 6px;
   color: var(--text);
+}
+/* Translated by the shared scrollX of its side — see .split-hscroll-row. */
+.split-code-inner {
+  display: inline-block;
+  white-space: pre;
+  will-change: transform;
 }
 .split-word {
   background: rgba(77, 163, 255, 0.22);
   border-radius: 3px;
+}
+
+/* Syntax coloring (syntaxHighlight.ts): the app is dark-only, so this is a
+   small hand-picked mapping onto the existing palette rather than a stock
+   hljs theme, which would clash. */
+.split-code .hljs-comment,
+.split-code .hljs-quote {
+  color: var(--faint);
+  font-style: italic;
+}
+.split-code .hljs-keyword,
+.split-code .hljs-selector-tag,
+.split-code .hljs-literal,
+.split-code .hljs-section,
+.split-code .hljs-link {
+  color: var(--accent);
+}
+.split-code .hljs-string,
+.split-code .hljs-attr,
+.split-code .hljs-regexp,
+.split-code .hljs-addition,
+.split-code .hljs-meta-string {
+  color: var(--green);
+}
+.split-code .hljs-number,
+.split-code .hljs-symbol,
+.split-code .hljs-bullet {
+  color: var(--yellow);
+}
+.split-code .hljs-title,
+.split-code .hljs-name,
+.split-code .hljs-type,
+.split-code .hljs-built_in {
+  color: var(--code);
+}
+.split-code .hljs-meta {
+  color: var(--dim);
+}
+.split-code .hljs-deletion {
+  color: var(--red);
+}
+.split-code .hljs-emphasis {
+  font-style: italic;
+}
+.split-code .hljs-strong {
+  font-weight: 600;
 }
 .split-pane.add .split-word {
   background: rgba(108, 196, 127, 0.3);
 }
 .split-pane.del .split-word {
   background: rgba(229, 84, 75, 0.28);
+}
+
+/* One shared horizontal scrollbar per side, pinned to the bottom of the
+   split rather than one per row. Mirrors the gutter/code widths of a
+   .split-row exactly so each track sits under its own column. */
+.split-hscroll-row {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+}
+.split-hscroll-pane {
+  display: flex;
+  width: 50%;
+  min-width: 0;
+}
+.split-hscroll-pane + .split-hscroll-pane {
+  border-left: 1px solid var(--border);
+}
+.split-hscroll-gutter {
+  flex: none;
+  width: 52px;
+}
+.split-hscroll {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  height: 11px;
+}
+.split-hscroll-spacer {
+  height: 1px;
 }
 .split-fold {
   padding: 2px 12px;
@@ -2260,6 +2358,30 @@ textarea.input {
 .split-fold:hover {
   color: var(--accent);
   background: var(--hover);
+}
+
+/* Wraps a maximal run of changed rows — one hover affordance comments on the
+   whole block instead of one line. */
+.split-block {
+  position: relative;
+}
+.split-block-add {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  z-index: 1;
+  padding: 1px 6px;
+  border: 0;
+  border-radius: 4px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 10px;
+  line-height: 1.4;
+  cursor: pointer;
+  visibility: hidden;
+}
+.split-block:hover .split-block-add {
+  visibility: visible;
 }
 
 /* A comment hangs off the row it anchors to, across both panes. */
