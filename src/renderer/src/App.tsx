@@ -11,9 +11,11 @@ import { Sidebar, NameModal, DeleteWorkspaceModal, NewSessionModal } from './com
 import { SessionPane } from './components/SessionPane'
 import { TaskPane } from './components/TaskPane'
 import { SettingsPage, type SettingsSection } from './components/SettingsPage'
+import { Dashboard } from './components/Dashboard'
 import { CommandPalette } from './components/CommandPalette'
 import { NotificationsPanel } from './components/NotificationsPanel'
 import { useOutsideClose } from './hooks'
+import { markSeen } from './reviewed'
 import { DialogHost, alertDialog } from './dialog'
 import { logErr } from './log'
 
@@ -53,6 +55,10 @@ export default function App() {
   const [logs, setLogs] = useState<Record<string, string[]>>({})
   /** Per-task git changes snapshot, keyed `ws/task` — read by TaskPane and the sidebar badge. */
   const [changes, setChanges] = useState<Record<string, RepoChanges[]>>({})
+  /** Epoch ms of the turn each busy session is in — the dashboard's "N in this
+   *  turn" readout. Only turns that started while this window was open are here;
+   *  main does not persist turn starts, and inventing one would misreport. */
+  const [turnStarts, setTurnStarts] = useState<Record<string, number>>({})
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [notifications, setNotifications] = useState<NotificationRecord[]>([])
   const [notifOpen, setNotifOpen] = useState(false)
@@ -110,7 +116,13 @@ export default function App() {
       })
     })
     // End of an agent turn — recompute the task's git state, but never fetch.
-    const offTurn = window.gurt.onSessionTurn(({ ref, phase }) => {
+    const offTurn = window.gurt.onSessionTurn(({ sessionId, ref, phase }) => {
+      setTurnStarts((prev) => {
+        if (phase === 'started') return { ...prev, [sessionId]: Date.now() }
+        if (!(sessionId in prev)) return prev
+        const { [sessionId]: _gone, ...rest } = prev
+        return rest
+      })
       if (phase === 'ended') refreshChanges(ref.workspace, ref.task)
     })
     const offLog = window.gurt.onProvisionLog(({ key, line }) => {
@@ -219,6 +231,9 @@ export default function App() {
   const selectSession = useCallback((id: string) => {
     setView('work')
     setSelection({ type: 'session', id })
+    // Opening a session is what "reviewed" means on the dashboard — the same
+    // act that clears its notifications (§4.2) clears it from the review list.
+    markSeen(id)
     // Keep curWs in step with whatever workspace actually owns this session —
     // otherwise a cross-workspace jump (e.g. via the palette) leaves curWs
     // pointing at the old workspace, and the next ⌘N/⌘⇧N silently targets it.
@@ -478,7 +493,15 @@ export default function App() {
 
         {view === 'dashboard' && (
           <main className="main">
-            <div className="placeholder">dashboard — coming soon</div>
+            <Dashboard
+              tree={tree}
+              activity={activity}
+              changes={changes}
+              positions={positions}
+              turnStarts={turnStarts}
+              onSelectSession={selectSession}
+              onSelectTask={selectTask}
+            />
           </main>
         )}
 

@@ -4,6 +4,7 @@ import type { NotificationRecord, NotificationType } from '../../../shared/notif
 import type { Tree } from '../../../shared/types'
 import type { Tone } from '../status'
 import { Icon, Dot } from './icons'
+import { relativeTime } from '../time'
 
 /** Same tone grammar as `status.ts` (§4.2): awaiting -> yellow, proposal ->
  *  green, error -> red. `turn-ended` is off by default and carries no
@@ -13,17 +14,6 @@ const NOTIF_DOT: Record<NotificationType, Tone> = {
   proposal: 'green',
   error: 'red',
   'turn-ended': 'outline'
-}
-
-function relativeTime(iso: string): string {
-  const s = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000))
-  if (s < 45) return 'just now'
-  const m = Math.round(s / 60)
-  if (m < 60) return `${m}m ago`
-  const h = Math.round(m / 60)
-  if (h < 24) return `${h}h ago`
-  const d = Math.round(h / 24)
-  return `${d}d ago`
 }
 
 /** Every session id the tree currently knows about — a notification for one

@@ -26,6 +26,8 @@ import type {
 import type { CredentialsFile } from './credentials'
 import type { DomainEvents } from './events'
 import type { McpDef } from './mcp'
+import type { TurnRecord } from './usage'
+import type { PlanUsage } from './planUsage'
 import type { NotificationPrefs, NotificationRecord } from './notifications'
 
 export type CreateAction = 'run' | 'queue' | 'draft'
@@ -230,6 +232,14 @@ export interface GurtApi {
   dismissNotification(id: string): Promise<void>
   getNotificationPrefs(): Promise<NotificationPrefs>
   setNotificationPrefs(prefs: NotificationPrefs): Promise<void>
+  /** The retained usage ledger, oldest first — one record per agent turn.
+   *  Survives relaunches (unlike the notification ring): it is the dashboard's
+   *  whole history, and the limit windows it draws span days. */
+  getUsage(): Promise<TurnRecord[]>
+  /** Provider-reported plan limits per agent instance, cached and rate-floored
+   *  in main. Calling this may poll the network; it never rejects for a failed
+   *  poll — the record carries `error` and the previous windows. */
+  getPlanUsage(): Promise<Record<string, PlanUsage>>
 }
 
 /** Compile-checked to cover `GurtApi` exactly: a missing method fails the
@@ -302,7 +312,9 @@ const METHODS = {
   markAllRead: true,
   dismissNotification: true,
   getNotificationPrefs: true,
-  setNotificationPrefs: true
+  setNotificationPrefs: true,
+  getUsage: true,
+  getPlanUsage: true
 } as const satisfies Record<keyof GurtApi, true>
 
 /** Runtime method list; `api:<method>` is the IPC channel per entry. */
@@ -321,4 +333,6 @@ export interface GurtEvents {
    *  than a panel click (opened from the sidebar, or its `awaiting` cleared)
    *  — mirrors `DomainEvents['notification.read']`. */
   'notification-read': DomainEvents['notification.read']
+  /** A turn was filed (or the ledger pruned) — the dashboard refetches. */
+  'usage-changed': DomainEvents['usage.changed']
 }

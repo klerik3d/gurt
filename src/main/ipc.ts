@@ -67,6 +67,7 @@ export function registerIpc(): void {
   kernel.bus.on('provision.log', (e) => broadcast('provision-log', e))
   kernel.bus.on('notification.created', (record) => broadcast('notification', record))
   kernel.bus.on('notification.read', (e) => broadcast('notification-read', e))
+  kernel.bus.on('usage.changed', () => broadcast('usage-changed'))
 
   const impl: GurtApi = {
     getTree: () => kernel.tree(),
@@ -254,7 +255,14 @@ export function registerIpc(): void {
       const normalized = normalizeNotificationPrefs(prefs, await store.getNotificationPrefs())
       await store.setNotificationPrefs(normalized)
       kernel.notifications.setPrefs(normalized)
-    }
+    },
+    getUsage: async () => {
+      // The first read can beat the ledger's own load off disk; waiting on it
+      // costs one tick and keeps the dashboard from rendering empty cards.
+      await kernel.usage.ready
+      return kernel.usage.list()
+    },
+    getPlanUsage: () => kernel.planUsage.get()
   }
 
   // Renderer records: validated, rate-limited and truncated inside `logRenderer`
