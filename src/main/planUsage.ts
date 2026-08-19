@@ -24,6 +24,13 @@ const TIMEOUT_MS = 5_000
  * dashboard being open must not become a request per render.
  */
 const MIN_INTERVAL_MS = 60_000
+/**
+ * The background cadence: the app polls every claude-code instance on this
+ * clock (wired in ipc.ts, not here, so tests that build the store directly
+ * don't inherit a live timer). Three minutes keeps the meters within one
+ * dashboard glance of current while staying far above the floor.
+ */
+export const POLL_INTERVAL_MS = 3 * 60_000
 
 export interface PlanUsageStore {
   /**

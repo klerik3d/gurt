@@ -3150,9 +3150,7 @@ textarea.input {
 .dash-card {
   display: flex;
   flex-direction: column;
-  /* Wider than the 6px inside a window block, so a window's own history strip
-     reads as part of it rather than as a header for the next one. */
-  gap: 18px;
+  gap: 14px;
   padding: 14px 16px 12px;
   background: var(--surface);
   border: 1px solid var(--border2);
@@ -3174,39 +3172,7 @@ textarea.input {
   font-size: 11px;
   color: var(--green);
 }
-.dash-note {
-  font-size: 11.5px;
-  color: var(--faint);
-}
-
-.dash-window {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.dash-window-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 10px;
-  font-size: 11.5px;
-}
-.dash-window-label {
-  font-family: var(--mono);
-  font-size: 11px;
-  letter-spacing: 0.06em;
-  color: var(--text);
-  white-space: nowrap;
-}
-.dash-window-foot {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 11px;
-  flex-wrap: wrap;
-}
-
-/* Fill = elapsed window time, not consumed quota (see Dashboard.tsx). */
+/* Fill = the provider's reported utilization of the window. */
 .dash-meter {
   position: relative;
   height: 6px;
@@ -3214,69 +3180,12 @@ textarea.input {
   background: var(--hover);
   overflow: hidden;
 }
-.dash-meter-idle {
-  opacity: 0.5;
-}
 .dash-meter-fill {
   position: absolute;
   inset: 0 auto 0 0;
   background: var(--accent);
   opacity: 0.55;
   border-radius: 3px;
-}
-/* Where the provider refused a turn inside this window. */
-.dash-meter-hit {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 2px;
-  margin-left: -1px;
-  background: var(--red);
-}
-
-.dash-hist {
-  display: flex;
-  align-items: flex-end;
-  gap: 3px;
-  /* Fixed-width bars, left-aligned: four windows stretched across the card
-     read as blocks, not as a strip you can compare at a glance. */
-  height: 22px;
-  margin-top: 4px;
-}
-.dash-hist-bar {
-  flex: none;
-  width: 13px;
-  border-radius: 2px 2px 0 0;
-  background: var(--border2);
-}
-.dash-hist-bar.open {
-  background: var(--accent);
-  opacity: 0.7;
-}
-.dash-hist-bar.limited {
-  background: var(--red);
-  opacity: 0.8;
-}
-
-.dash-rollups {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  flex-wrap: wrap;
-  padding-top: 10px;
-  border-top: 1px solid var(--border);
-  font-size: 11px;
-}
-.dash-rollup {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-}
-.dash-rollup-label {
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: 0.1em;
-  color: var(--faint);
 }
 
 .dash-row {
@@ -3326,18 +3235,11 @@ textarea.input {
   flex: none;
 }
 
-/* Plan meters: the provider's own utilization, not gurt's estimate. Visually
-   heavier than the derived window meter above them — they are the real number. */
+/* Plan meters: the provider's own utilization, not gurt's estimate. */
 .dash-plan {
   display: flex;
   flex-direction: column;
   gap: 7px;
-}
-.dash-plan-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 11px;
 }
 .dash-plan-row {
   display: flex;
@@ -3347,7 +3249,7 @@ textarea.input {
 }
 .dash-plan-label {
   flex: none;
-  width: 148px;
+  width: 168px;
   color: var(--dim);
   white-space: nowrap;
   overflow: hidden;
@@ -3360,16 +3262,23 @@ textarea.input {
 }
 .dash-plan-pct {
   flex: none;
-  width: 34px;
+  width: 64px;
   text-align: right;
   font-family: var(--mono);
   font-size: 11px;
 }
 .dash-plan-reset {
   flex: none;
-  width: 92px;
+  /* "resets Aug 20 at 12am" — the longest form this renders. */
+  width: 136px;
   font-size: 11px;
   white-space: nowrap;
+}
+.dash-plan-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10.5px;
 }
 /* Fill tone tracks how close the window is to its limit. */
 .dash-meter-fill.fill-accent {

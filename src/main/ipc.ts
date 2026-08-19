@@ -6,6 +6,7 @@ import { API_METHODS, type GurtApi } from '../shared/api'
 import { isSessionRole, targetKey } from '../shared/types'
 import { MCP_DEFS } from '../shared/mcp'
 import { createKernel } from './kernel'
+import { POLL_INTERVAL_MS } from './planUsage'
 import { createLogger, dropSessionLog, enabled, logDir, logLevel, logRenderer } from './log'
 import { getCredentials, setCredentials, credentialUsedBy } from './credentials'
 import {
@@ -68,6 +69,13 @@ export function registerIpc(): void {
   kernel.bus.on('notification.created', (record) => broadcast('notification', record))
   kernel.bus.on('notification.read', (e) => broadcast('notification-read', e))
   kernel.bus.on('usage.changed', () => broadcast('usage-changed'))
+
+  // Plan limits move with usage from every Claude surface, not just gurt's own
+  // turns — so keep them fresh in the background instead of waiting for the
+  // dashboard to be open. Each completed sweep announces itself over
+  // `usage.changed`, which the renderer answers with a cache read.
+  void kernel.planUsage.get()
+  setInterval(() => void kernel.planUsage.get(), POLL_INTERVAL_MS)
 
   const impl: GurtApi = {
     getTree: () => kernel.tree(),

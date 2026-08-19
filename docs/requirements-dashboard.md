@@ -2,7 +2,7 @@
 
 Status: implemented · Owner: klerik3d · Target: gurt Electron MVP (this repo)
 
-Key code: `src/shared/usage.ts` (the pure accounting model), `src/main/usage.ts`
+Key code: `src/shared/usage.ts` (the turn-ledger model), `src/main/usage.ts`
 (ledger subscriber), `src/main/store.ts` (`usage.jsonl`), `src/shared/events.ts`
 (`agent.turn`, `usage.changed`), `src/renderer/src/components/Dashboard.tsx`,
 `src/renderer/src/reviewed.ts`. Tests: `scripts/usage.test.mjs`,
@@ -26,22 +26,18 @@ has to answer, in the order a user asks them:
 The adapters gurt drives (`@agentclientprotocol/*`, see `shared/agents.ts`)
 report per-session context usage (ACP `usage_update`) and, sometimes, a cost
 figure. **None of them report the provider's remaining plan quota** — which is
-why §3 goes outside the protocol for it. Within the ledger, then:
-
-- Nothing derived from the turn stream is ever drawn as "% of limit consumed" —
-  that number has exactly one honest source, and it is not this one.
-- The ledger draws a published window *shape* filled with gurt's own
-  observations: turns run, agent-busy time, sessions touched, and turns the
-  provider refused.
-- That meter's fill is **elapsed window time**, i.e. how much of the window is
-  behind you. It is the fallback shown only for agents with no plan reading;
-  where §3 has real utilization, the real utilization replaces it.
+why §3 goes outside the protocol for it, and why the agent cards draw *only*
+§3's numbers: nothing derived from the turn stream is ever drawn as "% of
+limit consumed", and an agent whose provider reports nothing gets no
+substitute meter. (An earlier iteration drew the published window shapes
+filled with gurt's own turn counts; those read as quota without measuring it,
+and were dropped.)
 
 A refusal is the one hard signal about the actual limit, and it is treated as
 such: `shared/usage.ts` matches the adapter's stop/error text against a set of
 limit signatures, files that turn as `limited`, and (when the message carried a
-machine-readable reset stamp) keeps it. Those turns are what makes a window
-read as an overrun — in the meter, in the history strip, and in the rollups.
+machine-readable reset stamp) keeps it. Those turns are what marks a finished
+session's card on the board as having hit a limit.
 
 Matching is deliberately loose, and seeded with Claude Code's own wording:
 "You've hit your session limit" (the 5-hour window), "…your weekly limit",
@@ -86,12 +82,19 @@ The request mirrors what that binary makes: `Authorization: Bearer <token>`,
 
 **Why accept the fragility.** §2 is the argument: the ledger can only ever
 count gurt's own turns, and a plan's windows are pooled across every Claude
-surface and machine. Utilization from here is the actual number. It supersedes
-the derived session window on the card; the ledger keeps the half this endpoint
-has no view of — turns, active time, and per-session attribution.
+surface and machine. Utilization from here is the actual number, and the only
+one the card draws.
 
-**How it degrades.** Every failure mode resolves to *keep the last good read and
-say so*, never to a confident zero:
+**Cadence.** Main polls every claude-code instance in the background every 3
+minutes (`POLL_INTERVAL_MS`, wired in `ipc.ts` so a kernel built by a test
+never inherits the timer) and announces each sweep over `usage.changed`; the
+renderer answers with a cache read. The meters are current whether or not the
+dashboard is open.
+
+**How it degrades.** Every failure mode resolves to *keep the last good read*,
+never a confident zero. The card does not print the failure — it shows the
+windows it has, and the read's age turning yellow (past an hour) is what says
+the numbers have stopped moving:
 
 - **Rate limited (429).** Expected, not exceptional — `/usage` itself falls back
   to last-known bars. Polling is floored at one attempt per agent per minute,
@@ -101,10 +104,13 @@ say so*, never to a confident zero:
   not an empty plan: previous windows stay, an error is recorded. The parser is
   structural rather than schema-bound (it finds windows by key at any depth),
   because the exact nesting is the one detail the binary did not yield.
-- **An API-key agent.** Skipped outright with a reason — a console key has no
-  plan window, and asking would just collect 401s. Gated on the `sk-ant-oat`
-  prefix, not attempted-and-caught.
-- **Any non-claude-code kind.** Never polled; these windows belong to that plan.
+- **An API-key agent.** Skipped outright — a console key has no plan window,
+  and asking would just collect 401s. Gated on the `sk-ant-oat` prefix, not
+  attempted-and-caught. Its card shows no meters at all: per-agent, the
+  dashboard shows what that agent's provider reports and nothing in its place.
+- **Any non-claude-code kind.** Never polled; these windows belong to that
+  plan. When codex (or another kind) grows a usage surface of its own, its
+  card gets *that*, on the same principle.
 
 **Unverified detail.** `utilization` is read as a percent (0–100), which is how
 it reads in the CLI's string table but could not be confirmed without a live
@@ -129,37 +135,26 @@ per finished `session/prompt` round-trip (`TurnRecord`), append-only.
   every turn.
 - **Lifetime.** Records outlive the session that produced them: deleting a
   session does not delete its turns, because the quota was spent either way.
-  Unlike the notification ring, the ledger survives a relaunch — the windows it
-  draws span days.
+  Unlike the notification ring, the ledger survives a relaunch.
 
-A window is modelled only when gurt can locate its start. The **5-hour session
-window** qualifies: it is session-based — it opens with a turn and resets five
-hours later — so the first turn not covered by the previous window anchors it
-exactly. The **weekly window does not** and is deliberately absent from the
-model: a plan's weekly limit resets "at a fixed time each week that is assigned
-to your account", unchanged by when you started using Claude, and that anchor is
-not derivable from anything gurt observes. Rolling 7 days from the first turn
-would drift from the real cycle and report a confidently wrong reset time, so
-the dashboard shows a trailing 7-day rollup and says in the tooltip that the
-plan's own window is elsewhere.
-
-Everything else gets rollups and an explicit note rather than a guessed window:
-`opencode` (per-token API key, no window at all), `codex` (plan windows never
-verified against a published source), and anything hand-added to `agents.json`.
+What the ledger feeds today: the DONE column (a session appears when its last
+recorded turn ended after it was last opened), the failure badges on board
+cards (`errored`, `hit a limit`, `incomplete`), and the removed-agent cards of
+§5. Its records keep `ctx` and cumulative `cost` for any per-agent view a card
+grows later, but no meter is derived from them — see §2.
 
 ## 5. The sections
 
 **AGENTS** — one card per agent *instance* (`agents.json`), plus one per agent
-id that only the ledger still knows, marked `removed`: turns of a deleted
-instance are spent quota, and dropping them would quietly under-count the
-window they landed in. Each card carries, per limit window: the window's
-bounds and reset countdown, the meter, turns / active time / context peak /
-cost / limit hits, and an eight-window history strip (bar height = turns, red =
-a refusal landed there). Below that, 24h and 7d rollups and the last-turn age.
-
-Cost is aggregated as the **rise** of the adapter's cumulative per-session
-counter inside the window, not as a sum of samples. Context is aggregated as a
-**peak**: it drops on compaction, so summing it would be meaningless.
+id that only the ledger still knows, marked `removed`. Each card shows what
+that agent's own provider reports and nothing else. For a claude-code instance
+on a subscription that is the plan meters (§3): "Current session" (the 5-hour
+window), "Current week (all models)", and any model-specific week the endpoint
+reports, each with % used and its reset time in the machine's timezone
+("resets 6:30pm" today, "resets Aug 20 at 12am" otherwise — the wording
+Claude Code's own `/usage` uses). Under the meters, the timezone and the
+read's age. An instance with no such source — an API key, codex, opencode —
+shows just its header; no derived numbers stand in.
 
 **SESSIONS** — a board per workspace, three columns wide, keyed to the same dot
 grammar as the sidebar (`status.ts`):
