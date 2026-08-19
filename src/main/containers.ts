@@ -28,6 +28,7 @@ import {
   devcontainerUp,
   dockerRemove,
   dockerRunning,
+  dockerSessionContainerIds,
   dockerSessionContainers,
   dockerStop,
   ensureClone,
@@ -450,6 +451,15 @@ export class ContainerManager {
    * The single teardown path. `stop` keeps the container (and everything in its
    * filesystem) so the session can resume into it; `remove` destroys it. Both
    * detach first — nothing derived from a container may outlive it.
+   *
+   * `remove` is deliberately record-independent. `up` stamps the `gurt.session`
+   * id-label at `docker run`, but the container id only reaches the session
+   * record once `up` *returns*: a start that fails in between (a post-command
+   * that exits non-zero is the common one) leaves a live container the record
+   * knows nothing about. Removing what the record names would leak exactly
+   * those, until a boot reconcile hours later swept them as orphans. So this
+   * asks the daemon — the actual registry — which containers carry the
+   * session's label, and removes those together with any recorded id.
    */
   private async teardown(
     sessionId: string,
@@ -459,26 +469,53 @@ export class ContainerManager {
     this.noteActive(sessionId)
     this.deps.detach(sessionId)
     stopGitBroker(sessionId)
+    // A start already in flight is creating a container that neither the record
+    // nor the daemon can name yet. Let it settle first — it either records its
+    // container (which the sweep below then finds) or fails having left one
+    // behind (which the sweep finds too). Stop does not wait: it is the idle
+    // path, and a session that is starting is by definition not idle.
+    if (mode === 'remove') await this.ensureInFlight.get(sessionId)?.catch(() => {})
     const c = this.container(sessionId)
-    if (!c?.id) {
-      if (mode === 'remove') this.deps.patchContainer(sessionId, undefined)
-      return
-    }
-    this.forget(c.id)
-    const provisionLog = this.logFor(sessionId)
-    const started = Date.now()
     if (mode === 'stop') {
+      if (!c?.id) return
+      this.forget(c.id)
+      const provisionLog = this.logFor(sessionId)
+      const started = Date.now()
       await dockerStop(c.id, provisionLog)
       this.setStatus(sessionId, { ...c, status: 'stopped', error: undefined }, reason)
       log.info('container.stop', { s: sessionId, c: c.id, reason, ms: Date.now() - started })
       provisionLog('container stopped')
-    } else {
-      await dockerRemove(c.id, provisionLog)
-      this.deps.patchContainer(sessionId, undefined)
-      this.deps.bus.emit('tree.changed', undefined)
-      log.info('container.remove', { s: sessionId, c: c.id, reason, ms: Date.now() - started })
-      provisionLog('container removed')
+      return
     }
+    const provisionLog = this.logFor(sessionId)
+    const started = Date.now()
+    // `null` (docker unreachable) is not `[]`: fall back to the recorded id
+    // rather than read the daemon's silence as "this session owns nothing".
+    const swept = (await dockerSessionContainerIds(sessionId)) ?? []
+    const recorded = c?.id
+    // Prefix, not equality: `docker ps` and the devcontainer CLI disagree on
+    // whether a container id is the short or the full form, and the same
+    // container named both ways must not be removed (or counted) twice.
+    const isRecorded = (id: string): boolean =>
+      !!recorded && (id.startsWith(recorded) || recorded.startsWith(id))
+    const ids = recorded && !swept.some(isRecorded) ? [...swept, recorded] : swept
+    for (const id of ids) {
+      this.forget(id)
+      await dockerRemove(id, provisionLog)
+    }
+    this.deps.patchContainer(sessionId, undefined)
+    this.deps.bus.emit('tree.changed', undefined)
+    if (!ids.length) return
+    log.info('container.remove', {
+      s: sessionId,
+      c: ids.join(','),
+      // Containers the record never named: this teardown is the only thing that
+      // would ever have removed them. Worth seeing in the log when it happens.
+      unrecorded: swept.filter((id) => !isRecorded(id)).length,
+      reason,
+      ms: Date.now() - started
+    })
+    provisionLog(ids.length > 1 ? `${ids.length} containers removed` : 'container removed')
   }
 
   /** Stop the session's container; it keeps its filesystem and can resume. */

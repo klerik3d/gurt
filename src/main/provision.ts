@@ -1021,3 +1021,29 @@ export async function dockerStop(containerId: string, log: LogSink): Promise<voi
 export async function dockerRemove(containerId: string, log: LogSink): Promise<void> {
   await run('docker', ['rm', '-f', containerId], log).catch(() => {})
 }
+
+/**
+ * Every container carrying *this* session's id-label, running or not. The same
+ * registry {@link dockerSessionContainers} reads, narrowed to one session — the
+ * teardown path needs it because a container can exist without any record of it
+ * pointing at it: `up` stamps the label at `docker run`, but its id is only
+ * written to the session once `up` returns, so a start that fails (or is
+ * deleted) in between leaves a container findable here and nowhere else.
+ */
+export function dockerSessionContainerIds(session: string): Promise<string[] | null> {
+  return new Promise((resolve) => {
+    const child = spawn('docker', [
+      'ps', '-a', '--no-trunc',
+      '--filter', `label=gurt.session=${session}`,
+      '--format', '{{.ID}}'
+    ])
+    let out = ''
+    child.stdout.on('data', (d: Buffer) => (out += d.toString()))
+    // null vs. [] carries the same distinction as in `dockerSessionContainers`:
+    // "the daemon says none" must not read like "we could not ask".
+    child.on('error', () => resolve(null))
+    child.on('close', (code) =>
+      resolve(code === 0 ? out.split('\n').map((l) => l.trim()).filter(Boolean) : null)
+    )
+  })
+}
