@@ -156,16 +156,19 @@ export function registerIpc(): void {
     getReviewState: (ws, task, repo, target) => kernel.reviewState(ws, task, repo, target),
     getReviewLocks: (ws, task) => kernel.review.locks(ws, task),
     setReviewLock: (ws, task, repo, locked) => kernel.setReviewLock(ws, task, repo, !!locked),
-    addReviewComment: (ws, task, repo, target, path, side, line, text) => {
+    addReviewComment: (ws, task, repo, target, path, side, line, text, endLine) => {
       // Straight off the wire and straight onto disk — the anchor has to be a
       // real anchor, and an empty note is a UI slip, not a comment.
       if (side !== 'before' && side !== 'after') throw new Error(`unknown diff side "${side}"`)
       if (!Number.isInteger(line) || line < 1) throw new Error(`not a line number: ${line}`)
+      if (endLine !== undefined && (!Number.isInteger(endLine) || endLine < line))
+        throw new Error(`not a valid range end: ${endLine}`)
       if (!text.trim()) throw new Error('comment is empty')
       return kernel.review.addComment(ws, task, repo, targetKey(target), {
         path,
         side,
         line,
+        ...(endLine !== undefined && endLine > line ? { endLine } : {}),
         text: text.trim()
       })
     },

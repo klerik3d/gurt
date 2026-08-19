@@ -176,6 +176,27 @@ try {
 
   await kernel.review.deleteComment(ws, task, c1.id)
   assert.equal(reviewJson().comments.length, 0, 'delete removes it')
+
+  // A range comment carries endLine; a plain one still doesn't (no migration
+  // needed for comments written before endLine existed).
+  const ranged = await kernel.review.addComment(ws, task, repo, 'uncommitted', {
+    path: 'a.txt',
+    side: 'after',
+    line: 3,
+    endLine: 7,
+    text: 'this whole block'
+  })
+  assert.equal(ranged.endLine, 7, 'the range end is stored')
+  state = await kernel.reviewState(ws, task, repo, un)
+  assert.equal(
+    state.comments.find((c) => c.id === ranged.id)?.endLine,
+    7,
+    'and reads back'
+  )
+  const plain = await add('uncommitted', 'a.txt', 9, 'single line again')
+  assert.equal('endLine' in plain, false, 'a plain comment has no endLine key at all')
+  await kernel.review.deleteComment(ws, task, ranged.id)
+  await kernel.review.deleteComment(ws, task, plain.id)
   console.log('comments OK')
 
   // --- the lock ------------------------------------------------------------
@@ -291,6 +312,18 @@ try {
   )
   assert.equal(fixPrompt('r', [], 'just this'), 'just this', 'no comments — the prompt stands alone')
   assert.equal(fixPrompt('r', [], '   '), '', 'nothing to send reads as empty')
+
+  // A ranged comment renders as path:line-endLine; a single-line one is unchanged.
+  assert.equal(
+    fixPrompt('r', [{ ...c('a.ts', 3, 'block'), endLine: 7 }], ''),
+    'Review comments on r:\n\na.ts:3-7\n  block',
+    'a range renders as start-end'
+  )
+  assert.equal(
+    fixPrompt('r', [{ ...c('a.ts', 3, 'same line twice'), endLine: 3 }], ''),
+    'Review comments on r:\n\na.ts:3\n  same line twice',
+    'endLine equal to line is still a single line'
+  )
   console.log('fixPrompt OK')
 
   // --- the lock survives a restart -----------------------------------------

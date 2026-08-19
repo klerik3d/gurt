@@ -7,6 +7,7 @@
  * about hunks, alignment and folding is decided here.
  */
 import { diffLines, diffWordsWithSpace } from 'diff'
+import { mergeSpans, tokenize } from './syntaxHighlight'
 
 /** Unchanged lines kept either side of a change before folding starts. */
 export const CONTEXT = 3
@@ -14,10 +15,12 @@ export const CONTEXT = 3
 /** Below this a fold row would hide less than it costs to show. */
 const MIN_FOLD = 2
 
-/** One intraline span; `changed` spans are the highlighted ones. */
+/** One rendered run of a line: syntax color (`cls`, `null` = unhighlighted)
+ *  and whether a rewrite's word-diff marked it changed. */
 export interface Span {
   text: string
   changed: boolean
+  cls: string | null
 }
 
 /** One line of one side of the split. */
@@ -25,8 +28,8 @@ export interface Cell {
   /** 1-based line number within that side's content. */
   line: number
   text: string
-  /** Word-level split, present only where a line was paired with its rewrite. */
-  spans?: Span[]
+  /** Always covers `text` exactly — syntax-only outside a rewritten pair. */
+  spans: Span[]
 }
 
 /**
@@ -47,11 +50,12 @@ function lines(text: string): string[] {
   return out
 }
 
-/** Word-level spans of a rewritten line pair, one array per side. */
-function intraline(before: string, after: string): [Span[], Span[]] {
+/** Word-level diff of a rewritten line pair, one array per side — not yet
+ *  syntax-colored, {@link cellSpans} merges the two. */
+function wordDiff(before: string, after: string): [{ text: string; changed: boolean }[], { text: string; changed: boolean }[]] {
   const parts = diffWordsWithSpace(before, after)
-  const b: Span[] = []
-  const a: Span[] = []
+  const b: { text: string; changed: boolean }[] = []
+  const a: { text: string; changed: boolean }[] = []
   for (const p of parts) {
     if (p.added) a.push({ text: p.value, changed: true })
     else if (p.removed) b.push({ text: p.value, changed: true })
@@ -63,14 +67,25 @@ function intraline(before: string, after: string): [Span[], Span[]] {
   return [b, a]
 }
 
+/** A cell's rendered spans: syntax-tokenized, and — for a rewritten pair —
+ *  merged with the word-diff boundaries. */
+function cellSpans(text: string, lang: string | null, wordSpans?: { text: string; changed: boolean }[]): Span[] {
+  const syntax = tokenize(text, lang)
+  if (wordSpans) return mergeSpans(syntax, wordSpans)
+  return syntax.map((s) => ({ text: s.text, cls: s.cls, changed: false }))
+}
+
 /**
  * Align the two sides into rows. A block present on one side only pads the
  * other with a missing cell, so matching content always shares a row; a
  * removal block immediately followed by an addition block is a rewrite, and
  * its lines are paired off (and word-diffed) as far as the shorter of the two
  * reaches — the surplus stays as one-sided rows.
+ *
+ * `lang` is an `hljs` language id (or `null` to skip highlighting) — every
+ * cell is syntax-tokenized, not just rewritten ones.
  */
-export function alignRows(before: string, after: string): Row[] {
+export function alignRows(before: string, after: string, lang: string | null = null): Row[] {
   const parts = diffLines(before, after)
   const rows: Row[] = []
   let bn = 0
@@ -79,12 +94,15 @@ export function alignRows(before: string, after: string): Row[] {
   for (let i = 0; i < parts.length; i++) {
     const part = parts[i]
     if (!part.added && !part.removed) {
-      for (const text of lines(part.value))
-        rows.push({ kind: 'equal', before: { line: ++bn, text }, after: { line: ++an, text } })
+      for (const text of lines(part.value)) {
+        const spans = cellSpans(text, lang)
+        rows.push({ kind: 'equal', before: { line: ++bn, text, spans }, after: { line: ++an, text, spans } })
+      }
       continue
     }
     if (part.added) {
-      for (const text of lines(part.value)) rows.push({ kind: 'change', after: { line: ++an, text } })
+      for (const text of lines(part.value))
+        rows.push({ kind: 'change', after: { line: ++an, text, spans: cellSpans(text, lang) } })
       continue
     }
     // Removed. Peek at the next part: an addition right behind it rewrites
@@ -95,17 +113,17 @@ export function alignRows(before: string, after: string): Row[] {
     if (added.length) i++
     const paired = Math.min(removed.length, added.length)
     for (let k = 0; k < paired; k++) {
-      const [bs, as] = intraline(removed[k], added[k])
+      const [bs, as] = wordDiff(removed[k], added[k])
       rows.push({
         kind: 'change',
-        before: { line: ++bn, text: removed[k], spans: bs },
-        after: { line: ++an, text: added[k], spans: as }
+        before: { line: ++bn, text: removed[k], spans: cellSpans(removed[k], lang, bs) },
+        after: { line: ++an, text: added[k], spans: cellSpans(added[k], lang, as) }
       })
     }
     for (let k = paired; k < removed.length; k++)
-      rows.push({ kind: 'change', before: { line: ++bn, text: removed[k] } })
+      rows.push({ kind: 'change', before: { line: ++bn, text: removed[k], spans: cellSpans(removed[k], lang) } })
     for (let k = paired; k < added.length; k++)
-      rows.push({ kind: 'change', after: { line: ++an, text: added[k] } })
+      rows.push({ kind: 'change', after: { line: ++an, text: added[k], spans: cellSpans(added[k], lang) } })
   }
   return rows
 }
@@ -142,4 +160,29 @@ export function foldRows(rows: Row[], expanded: ReadonlySet<number> = new Set())
     i = end
   }
   return out
+}
+
+/**
+ * Maximal runs of consecutive `change` rows in a (shown, post-fold) row
+ * list — what "comment on this block" anchors to. Indices into that same
+ * list, so callers can look the block's rows straight back up in it.
+ */
+export interface Block {
+  startIndex: number
+  endIndex: number
+}
+
+export function groupBlocks(rows: Row[]): Block[] {
+  const blocks: Block[] = []
+  let start = -1
+  for (let i = 0; i < rows.length; i++) {
+    if (rows[i].kind === 'change') {
+      if (start === -1) start = i
+    } else if (start !== -1) {
+      blocks.push({ startIndex: start, endIndex: i - 1 })
+      start = -1
+    }
+  }
+  if (start !== -1) blocks.push({ startIndex: start, endIndex: rows.length - 1 })
+  return blocks
 }

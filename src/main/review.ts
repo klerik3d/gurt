@@ -39,7 +39,7 @@ export interface ReviewManager {
     task: string,
     repo: string,
     target: string,
-    c: Pick<ReviewComment, 'path' | 'side' | 'line' | 'text'>
+    c: Pick<ReviewComment, 'path' | 'side' | 'line' | 'text'> & Pick<Partial<ReviewComment>, 'endLine'>
   ): Promise<ReviewComment>
   resolveComment(ws: string, task: string, id: string, resolved: boolean): Promise<void>
   deleteComment(ws: string, task: string, id: string): Promise<void>
@@ -134,6 +134,7 @@ export function createReview(): ReviewManager {
         path: c.path,
         side: c.side,
         line: c.line,
+        ...(c.endLine !== undefined ? { endLine: c.endLine } : {}),
         text: c.text,
         createdAt: new Date().toISOString()
       }
@@ -194,7 +195,10 @@ export function fixPrompt(repo: string, comments: ReviewComment[], prompt: strin
       .map(([path, cs]) =>
         cs
           .sort((a, b) => a.line - b.line)
-          .map((c) => `${path}:${c.line}\n${indent(c.text)}`)
+          .map((c) => {
+            const at = c.endLine && c.endLine > c.line ? `${c.line}-${c.endLine}` : `${c.line}`
+            return `${path}:${at}\n${indent(c.text)}`
+          })
           .join('\n\n')
       )
     parts.push(`Review comments on ${repo}:\n\n${blocks.join('\n\n')}`)

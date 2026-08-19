@@ -703,8 +703,11 @@ export interface ReviewComment {
   path: string
   /** Which pane the note hangs off — `before` = HEAD/parent, `after` = the new content. */
   side: 'before' | 'after'
-  /** 1-based line number within that side's content. */
+  /** 1-based line number within that side's content — the start of the anchor. */
   line: number
+  /** 1-based, inclusive; present only when the anchor covers more than one
+   *  line (a dragged range, or a whole change block). Absent = single line. */
+  endLine?: number
   text: string
   /** ISO timestamp. */
   createdAt: string

@@ -23,7 +23,7 @@ await build({
   logLevel: 'silent'
 })
 
-const { alignRows, foldRows, CONTEXT } = await import(pathToFileURL(outfile).href)
+const { alignRows, foldRows, groupBlocks, CONTEXT } = await import(pathToFileURL(outfile).href)
 
 /** Compact row rendering: `<before>|<after>`, '~' for a missing side. */
 const show = (rows) =>
@@ -89,8 +89,13 @@ try {
     after.spans.filter((s) => s.changed).map((s) => s.text),
     ['err']
   )
-  // A one-sided line was never paired, so there is nothing to highlight against.
-  assert.equal(alignRows('', lines('a'))[0].after.spans, undefined, 'no spans without a pair')
+  // A one-sided line was never paired, so it carries no word-diff highlight —
+  // but still gets (unhighlighted, with no lang) syntax spans, always present.
+  assert.deepEqual(
+    alignRows('', lines('a'))[0].after.spans,
+    [{ text: 'a', cls: null, changed: false }],
+    'no word-diff spans without a pair, but spans itself is never absent'
+  )
 
   console.log('intraline OK')
 
@@ -138,6 +143,76 @@ try {
   assert.deepEqual(show(folded), ['fold(10)'], 'an unchanged file collapses entirely')
 
   console.log('folding OK')
+
+  // --- blocks ---------------------------------------------------------------
+
+  // Two separate change runs, split by an unchanged line, are two blocks.
+  rows = alignRows(lines('a', 'x', 'b', 'y', 'c'), lines('a', 'X', 'b', 'Y', 'c'))
+  let blocks = groupBlocks(rows)
+  assert.equal(blocks.length, 2, 'a non-change row splits the run into two blocks')
+  assert.deepEqual(blocks[0], { startIndex: 1, endIndex: 1 })
+  assert.deepEqual(blocks[1], { startIndex: 3, endIndex: 3 })
+
+  // A rewrite followed immediately by a pure addition is one contiguous block.
+  rows = alignRows(lines('a', 'old', 'b'), lines('a', 'new', 'extra', 'b'))
+  blocks = groupBlocks(rows)
+  assert.equal(blocks.length, 1, 'adjacent change rows are one block')
+  assert.deepEqual(blocks[0], { startIndex: 1, endIndex: 2 })
+
+  // A file with no changes has no blocks.
+  rows = alignRows(lines('a', 'b'), lines('a', 'b'))
+  assert.deepEqual(groupBlocks(rows), [], 'nothing changed, nothing to block')
+
+  // Folding doesn't merge blocks across a collapsed run — groupBlocks just
+  // reads whatever row list (folded or not) it's handed.
+  rows = alignRows(lines(...pad(20, 'a'), 'x', ...pad(20, 'b')), lines(...pad(20, 'a'), 'y', ...pad(20, 'b')))
+  blocks = groupBlocks(foldRows(rows))
+  assert.equal(blocks.length, 1, 'one block survives folding around it')
+
+  console.log('blocks OK')
+
+  // --- syntax highlighting wiring -------------------------------------------
+
+  // A lang is optional and defaults to none: same output as before.
+  rows = alignRows(lines('const a = 1'), lines('const a = 1'), null)
+  assert.deepEqual(
+    rows[0].before.spans,
+    [{ text: 'const a = 1', cls: null, changed: false }],
+    'no lang — one unhighlighted span, exactly as the no-arg default'
+  )
+
+  // A real lang tokenizes every cell, not just rewritten ones.
+  rows = alignRows(lines('const a = 1'), lines('const a = 1'), 'typescript')
+  const kw = rows[0].before.spans.find((s) => s.text === 'const')
+  assert.ok(kw?.cls?.includes('keyword'), 'an equal line still gets syntax spans')
+  assert.equal(
+    rows[0].before.spans.map((s) => s.text).join(''),
+    'const a = 1',
+    'syntax spans still reconstruct the line exactly'
+  )
+
+  // A rewritten pair keeps its word-diff boundaries — merging in syntax
+  // classes must not blur which words actually changed.
+  rows = alignRows(lines('const a = 1'), lines('const a = 2'), 'typescript')
+  const rewriteBefore = rows[0].before
+  const rewriteAfter = rows[0].after
+  assert.deepEqual(
+    rewriteBefore.spans.filter((s) => s.changed).map((s) => s.text),
+    ['1'],
+    'only the changed token is marked changed, syntax color or not'
+  )
+  assert.deepEqual(rewriteAfter.spans.filter((s) => s.changed).map((s) => s.text), ['2'])
+  assert.equal(
+    rewriteBefore.spans.map((s) => s.text).join(''),
+    'const a = 1',
+    'merged spans still reconstruct the line exactly'
+  )
+
+  // An unregistered/unknown lang id falls back to unhighlighted, not a crash.
+  rows = alignRows(lines('const a = 1'), lines('const a = 1'), 'not-a-real-language')
+  assert.deepEqual(rows[0].before.spans, [{ text: 'const a = 1', cls: null, changed: false }])
+
+  console.log('syntax highlighting OK')
 
   console.log('split-diff.test: PASS')
 } catch (e) {

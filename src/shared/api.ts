@@ -154,7 +154,9 @@ export interface GurtApi {
     path: string,
     side: 'before' | 'after',
     line: number,
-    text: string
+    text: string,
+    /** 1-based, inclusive; omit for a single-line anchor. */
+    endLine?: number
   ): Promise<ReviewComment>
   resolveReviewComment(ws: string, task: string, id: string, resolved: boolean): Promise<void>
   deleteReviewComment(ws: string, task: string, id: string): Promise<void>
