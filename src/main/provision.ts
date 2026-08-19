@@ -685,6 +685,10 @@ export interface UpResult {
  */
 const LIFECYCLE_BANNER = /Running (?:the \w+|'[^']*') from /
 
+/** Docker Desktop (macOS) reports a host path it has stale-cached as missing,
+ *  prefixed with the VM's /host_mnt root. */
+const STALE_BIND_RE = /bind source path does not exist: (?:\/host_mnt)?(\/\S+)/
+
 export async function devcontainerUp(
   session: string,
   configArgs: string[],
@@ -755,25 +759,37 @@ export async function devcontainerUp(
     ...mountConfigArgs
   ]
   let announced = false
-  const watch: LogSink = (line) => {
-    if (!announced && LIFECYCLE_BANNER.test(line)) {
-      announced = true
-      onPostCommands?.()
+  const MAX_ATTEMPTS = 3
+  for (let attempt = 1; ; attempt++) {
+    let stalePath: string | undefined
+    const watch: LogSink = (line) => {
+      if (!announced && LIFECYCLE_BANNER.test(line)) {
+        announced = true
+        onPostCommands?.()
+      }
+      const staleMatch = STALE_BIND_RE.exec(line)
+      if (staleMatch) stalePath = staleMatch[1]
+      log(line)
     }
-    log(line)
-  }
-  const { code, stdout } = await runNodeCli(args, watch)
-  const jsonLine = stdout
-    .split('\n')
-    .reverse()
-    .find((l) => l.trim().startsWith('{'))
-  const result = jsonLine ? JSON.parse(jsonLine) : undefined
-  if (code !== 0 || result?.outcome !== 'success') {
-    throw new Error(result?.message ?? `devcontainer up failed (exit ${code})`)
-  }
-  return {
-    containerId: result.containerId,
-    remoteWorkspaceFolder: result.remoteWorkspaceFolder ?? remoteRoot
+    const { code, stdout } = await runNodeCli(args, watch)
+    const jsonLine = stdout
+      .split('\n')
+      .reverse()
+      .find((l) => l.trim().startsWith('{'))
+    const result = jsonLine ? JSON.parse(jsonLine) : undefined
+    if (code !== 0 || result?.outcome !== 'success') {
+      if (attempt < MAX_ATTEMPTS && stalePath && existsSync(stalePath)) {
+        await fs.rename(stalePath, stalePath + '.cache-refresh')
+        await fs.rename(stalePath + '.cache-refresh', stalePath)
+        log(`refreshed Docker Desktop's stale path cache for ${stalePath}`)
+        continue
+      }
+      throw new Error(result?.message ?? `devcontainer up failed (exit ${code})`)
+    }
+    return {
+      containerId: result.containerId,
+      remoteWorkspaceFolder: result.remoteWorkspaceFolder ?? remoteRoot
+    }
   }
 }
 
