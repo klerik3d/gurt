@@ -4,7 +4,8 @@
 // (zlib + CRC32). No image dependencies.
 //
 // The dots are literal session states, in the same colors the UI uses:
-// top-left done (green), two idle (grey), bottom-right empty (outline).
+// top-left done (green), the two on the counter-diagonal queued (blue),
+// bottom-right draft (grey outline).
 import fs from 'node:fs'
 import path from 'node:path'
 import zlib from 'node:zlib'
@@ -29,6 +30,7 @@ const bgTop = [0x26, 0x24, 0x20]
 const bgBot = [0x15, 0x14, 0x11]
 const dim = [0xa3, 0xa0, 0x99]
 const green = [0x6c, 0xc4, 0x7f]
+const accent = [0x4d, 0xa3, 0xff]
 
 // The flat graphite square reads as a black hole on a dark dock/menu bar.
 // A beveled edge — lit from the upper-left, dark on the lower-right —
@@ -71,7 +73,7 @@ const dots = [-1, 1].flatMap((gy) =>
   [-1, 1].map((gx) => ({
     x: cx + (gx * dotD) / 2,
     y: cy + (gy * dotD) / 2,
-    color: gx === -1 && gy === -1 ? green : dim,
+    color: gx === -1 && gy === -1 ? green : gx === gy ? dim : accent,
     ring: gx === 1 && gy === 1
   }))
 )
