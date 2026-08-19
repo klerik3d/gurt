@@ -235,8 +235,8 @@ export interface GurtApi {
   getNotificationPrefs(): Promise<NotificationPrefs>
   setNotificationPrefs(prefs: NotificationPrefs): Promise<void>
   /** The retained usage ledger, oldest first — one record per agent turn.
-   *  Survives relaunches (unlike the notification ring): it is the dashboard's
-   *  whole history, and the limit windows it draws span days. */
+   *  Survives relaunches (unlike the notification ring): it is what puts a
+   *  finished session on the dashboard's DONE column and marks its failures. */
   getUsage(): Promise<TurnRecord[]>
   /** Provider-reported plan limits per agent instance, cached and rate-floored
    *  in main. Calling this may poll the network; it never rejects for a failed

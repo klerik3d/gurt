@@ -1,12 +1,11 @@
-// Agent usage accounting — the pure model behind the dashboard's agent cards.
+// The turn ledger's pure model: what one recorded turn is, how a refusal is
+// recognized as a limit hit, and the small formatters the UI shares.
 //
 // What this can and cannot know. gurt observes only the turns it ran itself:
 // how many, how long, what the adapter reported, and whether the provider
-// refused one because a limit was reached. The *remaining* quota of a plan is
-// not exposed over ACP by any adapter we drive, so nothing here pretends to
-// know a percentage of a limit. The windows below are the provider's published
-// window *shapes*, filled with gurt's own observations — the dashboard labels
-// them that way.
+// refused one because a limit was reached. How much of a plan is *used* has
+// exactly one honest source — the provider's own usage endpoint (see
+// shared/planUsage.ts) — so nothing here derives a quota from turn counts.
 import type { SessionUsage } from './types'
 
 export const MINUTE = 60_000
@@ -27,7 +26,7 @@ export interface TurnRecord {
   ts: string
   /** Agent instance id (a key of `AgentsFile`); '' when the session had none. */
   agent: string
-  /** Agent kind (an `AgentDef.id`) — what {@link agentLimits} keys on. */
+  /** Agent kind (an `AgentDef.id`). */
   kind: string
   sessionId: string
   workspace: string
@@ -35,11 +34,10 @@ export interface TurnRecord {
   /** Wall-clock duration of the turn, ms. */
   ms: number
   outcome: TurnOutcome
-  /** Context-window occupancy at the turn's end, when the adapter reports usage.
-   *  NOT cumulative: it drops on compaction, so it is aggregated as a peak. */
+  /** Context-window occupancy at the turn's end, when the adapter reports
+   *  usage. NOT cumulative: it drops on compaction. */
   ctx?: number
-  /** Session-cumulative cost at the turn's end, when reported. Cumulative, so a
-   *  window's own cost is the rise of this counter inside it (see `aggregate`). */
+  /** Session-cumulative cost at the turn's end, when reported. */
   cost?: number
   currency?: string
   /** stopReason / error text — what the limit detector read, kept for the UI. */
@@ -47,58 +45,6 @@ export interface TurnRecord {
   /** Provider-stated reset time, when the refusal named one (ISO). */
   resetAt?: string
 }
-
-/** A provider limit window shape: the published period, not a quota. */
-export interface LimitWindowDef {
-  id: string
-  label: string
-  /** Window length, ms. */
-  ms: number
-  /** One line under the meter — what the window is, in the provider's terms. */
-  hint: string
-}
-
-/**
- * Limit windows gurt can actually anchor, per agent kind. A kind with no entry
- * gets the trailing rollups only — better than asserting a window shape we
- * would be guessing at.
- *
- * Only the session window is modelled, and only for claude-code. The rule that
- * decides this is *can gurt locate the window's start?*:
- *
- * - The **5-hour session window** is session-based — it opens with a turn and
- *   resets five hours later — so the first turn not covered by the previous
- *   window locates it exactly. That is what {@link windowsOf} computes.
- * - The **weekly window is deliberately absent.** A plan's weekly limit resets
- *   "at a fixed time each week that is assigned to your account", unchanged by
- *   when you started using Claude. That anchor lives on the account and is not
- *   discoverable from anything gurt observes, so a 7-day window rolled from the
- *   first turn would drift from the real cycle and quietly report the wrong
- *   reset. The dashboard shows a trailing 7-day rollup instead and says so.
- * - **codex** has no entry: its plan windows were never verified against a
- *   published source, and an unverified window is exactly what this comment
- *   exists to keep out.
- * - **opencode** fronts whatever provider its instance points at, usually a
- *   per-token API key with no window at all.
- *
- * Note that even the session window is a lower bound: plan usage is pooled
- * across every Claude surface (claude.ai, Claude Code, Claude Desktop) and
- * across machines, and gurt sees only the turns it ran itself.
- */
-const LIMITS: Record<string, LimitWindowDef[]> = {
-  'claude-code': [
-    {
-      id: 'session',
-      label: '5-hour window',
-      ms: 5 * HOUR,
-      hint: 'session limit — opens with the first turn after the last one closed'
-    }
-  ],
-  codex: [],
-  opencode: []
-}
-
-export const agentLimits = (kind: string): LimitWindowDef[] => LIMITS[kind] ?? []
 
 /**
  * Signatures of "the provider stopped this turn, not the code". Loose on
@@ -148,141 +94,6 @@ export function turnOutcome(o: {
   return o.stopReason === 'end_turn' || !o.stopReason ? 'ok' : 'error'
 }
 
-/** What one window (or trailing span) of turns adds up to. */
-export interface UsageWindow {
-  /** Epoch ms bounds. `end` is exclusive and may lie in the future (open window). */
-  start: number
-  end: number
-  turns: number
-  /** Agent-busy time inside the window, ms — the closest proxy to "consumed"
-   *  gurt can actually measure. */
-  ms: number
-  /** Distinct sessions that ran a turn here. */
-  sessions: number
-  errors: number
-  /** Turns the provider refused for a limit. */
-  limited: number
-  /** ISO of the first such refusal, when there was one. */
-  limitedAt?: string
-  /** Provider-stated reset time from that refusal, when it carried one. */
-  resetAt?: string
-  /** Cost accrued inside the window: the rise of each session's cumulative
-   *  counter, summed. Undefined when no turn here reported cost. */
-  cost?: number
-  currency?: string
-  /** Highest context occupancy seen; `ctx` is not cumulative, so it cannot be summed. */
-  peakCtx?: number
-}
-
-/** Aggregate an already-bounded slice of turns. `records` need not be sorted. */
-export function aggregate(records: TurnRecord[], start: number, end: number): UsageWindow {
-  const w: UsageWindow = { start, end, turns: 0, ms: 0, sessions: 0, errors: 0, limited: 0 }
-  const sessions = new Set<string>()
-  /** Per session: the lowest and highest cumulative cost seen inside the window. */
-  const cost = new Map<string, { lo: number; hi: number }>()
-  for (const r of records) {
-    w.turns++
-    w.ms += r.ms
-    sessions.add(r.sessionId)
-    if (r.outcome === 'error') w.errors++
-    if (r.outcome === 'limited') {
-      w.limited++
-      if (!w.limitedAt || r.ts < w.limitedAt) {
-        w.limitedAt = r.ts
-        w.resetAt = r.resetAt
-      }
-    }
-    if (r.ctx != null) w.peakCtx = Math.max(w.peakCtx ?? 0, r.ctx)
-    if (r.cost != null) {
-      const cur = cost.get(r.sessionId)
-      if (!cur) cost.set(r.sessionId, { lo: r.cost, hi: r.cost })
-      else {
-        cur.lo = Math.min(cur.lo, r.cost)
-        cur.hi = Math.max(cur.hi, r.cost)
-      }
-      w.currency ??= r.currency
-    }
-  }
-  w.sessions = sessions.size
-  // A session whose first turn in this window already carried cost accrued
-  // earlier contributes only its rise here — which is exactly hi - lo.
-  if (cost.size) w.cost = [...cost.values()].reduce((sum, c) => sum + (c.hi - c.lo), 0)
-  return w
-}
-
-/**
- * Slice turns into provider-shaped windows. A window opens with the first turn
- * not covered by the previous one and closes `ms` later — the same "the window
- * starts when you start using it" rule the providers document, which is why the
- * anchor is a turn and never the clock or a calendar boundary.
- *
- * Oldest first. The last window is the live one iff its `end` is still ahead of
- * `now`; when it isn't, no window is open and the next turn will start one.
- */
-export function windowsOf(records: TurnRecord[], ms: number): UsageWindow[] {
-  const sorted = [...records].sort((a, b) => a.ts.localeCompare(b.ts))
-  const out: UsageWindow[] = []
-  let bucket: TurnRecord[] = []
-  let start = 0
-  const flush = (): void => {
-    if (bucket.length) out.push(aggregate(bucket, start, start + ms))
-    bucket = []
-  }
-  for (const r of sorted) {
-    const t = Date.parse(r.ts)
-    if (!Number.isFinite(t)) continue
-    if (!bucket.length) start = t
-    else if (t >= start + ms) {
-      flush()
-      start = t
-    }
-    bucket.push(r)
-  }
-  flush()
-  return out
-}
-
-/** Everything one agent instance's card renders. */
-export interface AgentUsage {
-  /** Agent instance id (a key of `AgentsFile`). */
-  agent: string
-  kind: string
-  /** One entry per published window shape of the kind; empty for kinds with none. */
-  limits: {
-    def: LimitWindowDef
-    /** Oldest first, capped by the caller's retention. */
-    history: UsageWindow[]
-    /** The window still open right now, if any — always the last of `history`. */
-    open?: UsageWindow
-  }[]
-  /** Trailing spans, independent of any window model. */
-  day: UsageWindow
-  week: UsageWindow
-  /** ISO of the most recent turn, when there is one. */
-  lastAt?: string
-}
-
-/** Build one agent instance's view. `records` must already be that agent's. */
-export function agentUsage(records: TurnRecord[], kind: string, now: number): AgentUsage {
-  const since = (span: number): TurnRecord[] =>
-    records.filter((r) => Date.parse(r.ts) >= now - span)
-  const limits = agentLimits(kind).map((def) => {
-    const history = windowsOf(records, def.ms)
-    const last = history[history.length - 1]
-    return { def, history, open: last && last.end > now ? last : undefined }
-  })
-  let lastAt: string | undefined
-  for (const r of records) if (!lastAt || r.ts > lastAt) lastAt = r.ts
-  return {
-    agent: records[0]?.agent ?? '',
-    kind,
-    limits,
-    day: aggregate(since(DAY), now - DAY, now),
-    week: aggregate(since(7 * DAY), now - 7 * DAY, now),
-    lastAt
-  }
-}
-
 /** Compact duration for meters and rows: `4h 12m`, `12m`, `48s`, `—` for zero. */
 export function formatDuration(ms: number): string {
   if (ms <= 0) return '—'
@@ -295,16 +106,6 @@ export function formatDuration(ms: number): string {
   if (h < 24) return rest ? `${h}h ${rest}m` : `${h}h`
   const d = Math.floor(h / 24)
   return h % 24 ? `${d}d ${h % 24}h` : `${d}d`
-}
-
-/** `in 2h 14m` / `now` — for a window's remaining time. */
-export const formatIn = (ms: number): string => (ms <= 0 ? 'now' : `in ${formatDuration(ms)}`)
-
-/** `1.2M` / `84k` / `912` — the token-ish counters. */
-export function formatCount(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
-  if (n >= 1_000) return `${Math.round(n / 1_000)}k`
-  return String(Math.round(n))
 }
 
 /** The turn record fields an adapter's usage report contributes. */

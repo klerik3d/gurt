@@ -250,9 +250,10 @@ export function createKernel(): Kernel {
   // are pure bus subscribers that must exist before the first event fires.
   const usage = createUsageLedger(bus)
 
-  // Plan limits, straight from the provider. Lazy by construction — nothing is
-  // polled until something asks, so a workspace with no dashboard open never
-  // touches the network.
+  // Plan limits, straight from the provider. The store itself is pull-only —
+  // nothing is polled until something asks — and the background clock that
+  // does the asking lives in ipc.ts, so a kernel built by a test never
+  // touches the network on its own.
   const planUsage = createPlanUsage(bus, {
     agents: () => store.getAgents(),
     credentials: () => listCredentials()

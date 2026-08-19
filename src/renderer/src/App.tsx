@@ -403,31 +403,24 @@ export default function App() {
               />
             )}
           </div>
-          <button
-            className="icon-sq tb-btn"
-            title="Settings"
-            onClick={() => setView((v) => (v === 'settings' ? 'work' : 'settings'))}
-          >
-            <Icon name="gear" size={16} />
-          </button>
         </div>
       </div>
 
       <div className="workbench">
         <div className="activitybar">
           <button
-            className={`ab-item ${view === 'work' ? 'active' : ''}`}
-            title="Tasks & sessions"
-            onClick={() => setView('work')}
-          >
-            <Icon name="message" size={17} />
-          </button>
-          <button
             className={`ab-item ${view === 'dashboard' ? 'active' : ''}`}
             title="Dashboard"
             onClick={() => setView('dashboard')}
           >
             <Icon name="grid" size={17} />
+          </button>
+          <button
+            className={`ab-item ${view === 'work' ? 'active' : ''}`}
+            title="Tasks & sessions"
+            onClick={() => setView('work')}
+          >
+            <Icon name="message" size={17} />
           </button>
           <span className="spacer" />
           <button
