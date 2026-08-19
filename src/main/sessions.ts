@@ -219,6 +219,10 @@ export interface SessionEvents {
    *  `Kernel.editDraft` runs at the IPC boundary, reused for the drafts an
    *  agent asks for through `create_session` (which bypasses that boundary). */
   checkDraftTarget: (ws: string, repos: string[], env: string) => Promise<void>
+  /** Make sure the task exists (create it if missing) — a draft may not land in
+   *  a task directory without its `task.json` marker, so a cross-task
+   *  `create_session` materializes its target first. */
+  ensureTask: (ws: string, task: string) => Promise<void>
   /** Destroy the container this session owns, if any — on delete, or when a
    *  draft is re-pointed at another repo/env. The clone stays. */
   releaseContainer: (sessionId: string, reason: ContainerStatusReason) => void
@@ -1419,6 +1423,14 @@ export class SessionManager {
           : `a ${from} session may not draft sessions`
       )
     assertRoleFitsRepos(req.role, req.repos)
+    const task = req.task?.trim() || spawner.ref.task
+    if (task !== spawner.ref.task) {
+      // Only a researcher fans out across tasks — it holds no clone lock, so
+      // "elsewhere" costs nothing. A reviewer's draft exists to fix the clone
+      // the reviewer holds, and that clone lives in the reviewer's own task.
+      if (from !== 'researcher')
+        throw new Error(`a ${from} session may only draft into its own task`)
+    }
     const env = req.env ?? spawner.info.env
     const agent = req.agent ?? spawner.info.agent
     if (!agent) throw new Error('no agent to draft with — this session has none either')
@@ -1426,8 +1438,13 @@ export class SessionManager {
     // renderer's are; a draft naming a repo that does not exist would only fail
     // much later, at the user's launch.
     await this.events.checkDraftTarget(spawner.ref.workspace, req.repos, env)
+    // The task name is agent-input too: `ensureTask` validates it and creates
+    // the `task.json` marker if missing — the session's first persist would
+    // otherwise mkdir its way into a directory that is not a task (invisible
+    // in the tree; see the same invariant at the IPC create boundary).
+    if (task !== spawner.ref.task) await this.events.ensureTask(spawner.ref.workspace, task)
     const info = this.createSession(
-      { workspace: spawner.ref.workspace, task: spawner.ref.task, env },
+      { workspace: spawner.ref.workspace, task, env },
       req.repos,
       agent,
       req.prompt,
@@ -1440,10 +1457,12 @@ export class SessionManager {
     )
     // `renameSession` mutates the same info object createSession stored.
     if (req.title?.trim()) this.renameSession(info.id, req.title)
-    log.info('session.drafted', { s: info.id, by: spawnerId, role: req.role })
+    log.info('session.drafted', { s: info.id, by: spawnerId, role: req.role, task })
     // A draft is a to-do for the user, and the spawner's own feed is where they
-    // are looking right now — the tree row alone is easy to miss.
-    this.push(spawner, { kind: 'system', text: `create_session: drafted ${req.role} "${info.title}"` })
+    // are looking right now — the tree row alone is easy to miss. A cross-task
+    // draft names its task, since the row is not even in this task's subtree.
+    const where = task !== spawner.ref.task ? ` in task "${task}"` : ''
+    this.push(spawner, { kind: 'system', text: `create_session: drafted ${req.role} "${info.title}"${where}` })
     return { sessionId: info.id, title: info.title }
   }
 

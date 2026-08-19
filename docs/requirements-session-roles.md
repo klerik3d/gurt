@@ -95,6 +95,13 @@ modal takes, everything editable afterward. The draft never runs by itself:
 the user reviewing and launching (or editing, or deleting) the draft *is* the
 approval step. A different approval mechanism may replace drafts later.
 
+A **researcher** (only) may aim the draft at another task via the optional
+`task` field, created on the spot if missing. This serves the "that's out of
+scope — spin it into its own task" moment mid-research: the tangent becomes a
+task with a fully drafted session, and the current conversation stays on
+topic. A reviewer has no `task` field at all — its draft exists to fix the
+clone it holds, and that clone lives in the reviewer's own task.
+
 No spawn-graph limits, no depth control, no flow management: since every
 spawn is an inert draft, the user interrupts the flow at any moment by simply
 not launching. Provenance ("created by session X") is not surfaced in the UI
@@ -206,6 +213,16 @@ otherwise have to re-derive from the diff:
   draft later. The spawn is also pushed into the spawner's own timeline
   (`create_session: drafted <role> "<title>"`): the draft is a to-do for the
   user, and that feed is where they are looking.
+- **Cross-task drafting narrows the same way.** The `task` field exists only in
+  the researcher's schema (a reviewer cannot even express it), and the host
+  gates it again in `createAgentDraft` — belt and braces, like the role enum.
+  The target task materializes through the kernel's `ensureTask` *before* the
+  draft is created: the session's first persist mkdir-p's its way into the task
+  directory, so a missing `task.json` marker would leave a task invisible in
+  the tree (the same invariant the IPC create boundary enforces). The name is
+  agent input, so `createTask`'s `validateName` runs on it; an existing task is
+  simply drafted into. The timeline line appends `in task "<name>"` for a
+  cross-task draft — the row it points at is not in this task's subtree.
 - **Read-only is about the clone, not about the network.** An MCP server the
   user attaches (`github` in full mode, say) is untouched by the role: the
   instructions tell a researcher and a reviewer to ship nothing, but no mount

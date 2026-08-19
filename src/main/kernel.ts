@@ -103,6 +103,13 @@ export function createKernel(): Kernel {
       resolveGurtServer: ensureGurtServer,
       stopGurtServer,
       checkDraftTarget: assertDraftTarget,
+      // Cross-task `create_session`: the target task materializes (with its
+      // `task.json` marker) before the draft's first persist can mkdir into it.
+      // `createTask` validates the agent-supplied name; an existing task is
+      // simply drafted into.
+      ensureTask: async (ws, task) => {
+        if (!store.taskExists(ws, task)) await store.createTask(ws, task)
+      },
       persist: (ws, task, records) => {
         store
           .writeSessions(ws, task, records)
