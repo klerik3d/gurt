@@ -801,6 +801,9 @@ textarea.input {
   align-items: center;
   gap: 9px;
   padding: 7px 18px 7px 34px;
+  /* Hold the row at the height of the 22px hover actions so revealing them
+     doesn't grow the row and nudge the rest of the tree down. */
+  min-height: 36px;
   cursor: pointer;
 }
 .sb-session:hover {
