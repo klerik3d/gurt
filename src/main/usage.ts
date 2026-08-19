@@ -1,6 +1,6 @@
-// Usage ledger: the append-only record of every agent turn gurt ran, and the
-// only source the dashboard's agent cards read. A plain bus subscriber, same
-// shape as the notifications one in notifications.ts.
+// Usage ledger: the append-only record of every agent turn gurt ran — what
+// the dashboard's sessions board reads for finishes and failures. A plain bus
+// subscriber, same shape as the notifications one in notifications.ts.
 //
 // Scope note: a turn is filed against the *agent instance* that served it, not
 // the session, and records outlive the session that produced them — the quota
@@ -14,8 +14,8 @@ import { createLogger } from './log'
 
 const log = createLogger('usage')
 
-/** How far back the ledger is kept. Nine weeks: the weekly meter draws eight
- *  past windows, and one spare keeps the oldest bar from vanishing mid-week. */
+/** How far back the ledger is kept. Nine weeks — enough history for any
+ *  per-window view a card may grow, while keeping the file bounded. */
 export const USAGE_RETENTION_MS = 63 * DAY
 
 /** Prune only when the ledger has drifted a full day past retention, so a busy

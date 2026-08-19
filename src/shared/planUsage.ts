@@ -14,16 +14,19 @@
 // the local detail behind it.
 
 /** How the provider keys its windows. Unknown keys are kept, not dropped —
- *  a window we have no label for still has a real number on it. */
+ *  a window we have no label for still has a real number on it, and a
+ *  model-specific window for a model this table predates (the fable entry is
+ *  exactly that bet) still renders under its humanized key. */
 export const PLAN_WINDOW_LABELS: Record<string, string> = {
-  five_hour: 'current session',
-  seven_day: 'current week — all models',
-  seven_day_opus: 'current week — Opus',
-  seven_day_sonnet: 'current week — Sonnet'
+  five_hour: 'Current session',
+  seven_day: 'Current week (all models)',
+  seven_day_fable: 'Current week (Fable)',
+  seven_day_opus: 'Current week (Opus)',
+  seven_day_sonnet: 'Current week (Sonnet)'
 }
 
 /** Order the meters render in; anything else follows, in reported order. */
-const ORDER = ['five_hour', 'seven_day', 'seven_day_opus', 'seven_day_sonnet']
+const ORDER = ['five_hour', 'seven_day', 'seven_day_fable', 'seven_day_opus', 'seven_day_sonnet']
 
 /** One plan window, as reported. */
 export interface PlanWindow {

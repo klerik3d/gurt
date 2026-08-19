@@ -56,7 +56,7 @@ for (const [name, body] of [
   assert.equal(w.length, 2, `${name}: found both windows`)
   assert.equal(w[0].id, 'five_hour', `${name}: session window first`)
   assert.equal(w[0].utilization, 42)
-  assert.equal(w[0].label, 'current session')
+  assert.equal(w[0].label, 'Current session')
   assert.equal(w[0].resetsAt, '2026-08-19T18:00:00.000Z')
   assert.equal(w[1].id, 'seven_day')
 }

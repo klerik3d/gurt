@@ -6,27 +6,22 @@ import type { RepoChanges, SessionInfo, Tree } from '../../../shared/types'
 import { sessionStatus } from '../../../shared/types'
 import type { PlanUsage, PlanWindow } from '../../../shared/planUsage'
 import { STALE_AFTER_MS } from '../../../shared/planUsage'
-import type { AgentUsage, TurnRecord, UsageWindow } from '../../../shared/usage'
-import {
-  DAY,
-  agentLimits,
-  agentUsage,
-  formatCount,
-  formatDuration,
-  formatIn
-} from '../../../shared/usage'
+import type { TurnRecord } from '../../../shared/usage'
+import { formatDuration } from '../../../shared/usage'
 import { SESSION_DOT } from '../status'
 import { agentKind, agentName, useAgents } from '../useAgents'
 import { markAllSeen, markSeen, useSeen } from '../reviewed'
-import { relativeTime, dateClockTime, dayClockTime } from '../time'
+import { relativeTime, resetClock } from '../time'
 import { logErr } from '../log'
 import { Dot, Icon } from './icons'
 import { agentIcon } from './tags'
 
-/** How many past windows the history strip draws. */
-const HISTORY_BARS = 8
 /** Cards a column shows before collapsing the rest into a "+N more" line. */
 const COLUMN_ROWS = 12
+
+/** The reset clocks render in this machine's timezone — named once next to
+ *  them so the reader doesn't have to guess whose 6:30pm it is. */
+const TIME_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone
 
 /** A clock that only advances as fast as the meters need — windows are hours
  *  and days long, so a minute of drift on a countdown is invisible. */
@@ -40,9 +35,10 @@ function useNow(everyMs = 30_000): number {
 }
 
 /**
- * Provider-reported plan limits. Polled on a slow cadence of its own: main
- * floors the endpoint at one call a minute per agent, and this is the only
- * number on the page that costs a network round-trip.
+ * Provider-reported plan limits. Main polls the endpoint in the background
+ * (every 3 minutes per claude-code instance, rate-floored — see
+ * main/planUsage.ts) and announces each sweep over `usage.changed`, so this
+ * only reads the cache: once on mount, then on that signal.
  */
 function usePlanUsage(): Record<string, PlanUsage> {
   const [plan, setPlan] = useState<Record<string, PlanUsage>>({})
@@ -51,8 +47,7 @@ function usePlanUsage(): Record<string, PlanUsage> {
       window.gurt.getPlanUsage().then(setPlan).catch(logErr('getPlanUsage'))
     }
     load()
-    const t = setInterval(load, 2 * 60_000)
-    return () => clearInterval(t)
+    return window.gurt.onUsageChanged(load)
   }, [])
   return plan
 }
@@ -69,9 +64,6 @@ function useUsage(): TurnRecord[] {
   }, [])
   return usage
 }
-
-const formatMoney = (amount: number, currency?: string): string =>
-  currency === 'USD' || !currency ? `$${amount.toFixed(2)}` : `${amount.toFixed(2)} ${currency}`
 
 /** Every session in the tree, with the live overlay folded into its status. */
 interface Row {
@@ -290,10 +282,6 @@ export function Dashboard({
         <section className="dash-section">
           <div className="dash-sec-head">
             <span className="seclabel">AGENTS</span>
-            <span className="dash-sec-hint">
-              plan limits come from the provider; turn counts are gurt's own. Plan usage is
-              pooled across every Claude surface and machine, so the two never match
-            </span>
           </div>
           {cards.length === 0 && (
             <div className="tp-dashed">no agents yet — add one in Settings → Agents</div>
@@ -306,7 +294,6 @@ export function Dashboard({
                 label={agents[id] ? agentName(agents, id) : id || 'unassigned'}
                 kind={agentKind(agents, id) ?? usage.find((r) => r.agent === id)?.kind ?? ''}
                 known={!!agents[id]}
-                records={usage.filter((r) => r.agent === id)}
                 plan={plan[id]}
                 live={rows.filter((r) => r.info.agent === id && r.status === 'running').length}
                 now={now}
@@ -346,13 +333,18 @@ export function Dashboard({
   )
 }
 
-/** One agent instance: its limit windows, then the trailing rollups. */
+/**
+ * One agent instance: whatever usage its own provider actually reports. A
+ * claude-code instance on a subscription gets the plan meters; an instance
+ * whose provider reports nothing (an API key, a kind with no usage surface
+ * yet) gets no substitute — gurt's own turn counts measure something else,
+ * and here they read as noise.
+ */
 function AgentCard({
   id,
   label,
   kind,
   known,
-  records,
   plan,
   live,
   now
@@ -362,18 +354,11 @@ function AgentCard({
   kind: string
   /** The instance still exists in agents.json — a ledger-only one is history. */
   known: boolean
-  records: TurnRecord[]
   /** Provider-reported limits, when this instance has a subscription token. */
   plan: PlanUsage | undefined
   live: number
   now: number
 }) {
-  const usage: AgentUsage = agentUsage(records, kind, now)
-  const limits = agentLimits(kind)
-  // The plan's own windows supersede gurt's derived one: both measure the same
-  // thing and only one of them is measured. What the ledger keeps contributing
-  // is the half the endpoint has no view of — turns, active time, attribution.
-  const planned = plan?.windows.length ? plan : undefined
   return (
     <div className="dash-card">
       <div className="dash-card-head">
@@ -393,96 +378,35 @@ function AgentCard({
           </span>
         )}
       </div>
-
-      {planned && <PlanMeters plan={planned} now={now} />}
-      {!planned && plan?.error && (
-        <div className="dash-note">plan limits unavailable — {plan.error}</div>
-      )}
-      {!planned && limits.length === 0 && (
-        <div className="dash-note">
-          no window gurt can anchor for this kind — the rollups below are the whole picture
-        </div>
-      )}
-      {!planned && usage.limits.map(({ def, history, open }) => {
-        // A weekday alone can't tell a 7-day window's two ends apart — they
-        // land on the same one.
-        const bound = def.ms >= DAY ? dateClockTime : dayClockTime
-        return (
-        <div key={def.id} className="dash-window">
-          <div className="dash-window-head">
-            <span className="dash-window-label">{def.label}</span>
-            {open ? (
-              <span className="dim">
-                {bound(open.start)} → {bound(open.end)} · resets {formatIn(open.end - now)}
-              </span>
-            ) : (
-              <span className="faint">closed — the next turn opens a new one</span>
-            )}
-          </div>
-          <WindowMeter window={open} now={now} />
-          <div className="dash-window-foot">
-            <span>{open ? `${open.turns} turns` : '0 turns'}</span>
-            <span className="dim">{formatDuration(open?.ms ?? 0)} active</span>
-            {!!open?.peakCtx && <span className="dim">{formatCount(open.peakCtx)} ctx peak</span>}
-            {open?.cost != null && <span className="dim">{formatMoney(open.cost, open.currency)}</span>}
-            {!!open?.limited && (
-              <span className="red" title={open.resetAt ? `provider reset: ${open.resetAt}` : undefined}>
-                limit hit {relativeTime(open.limitedAt!)}
-              </span>
-            )}
-            <span className="spacer" />
-            <span className="faint">{def.hint}</span>
-          </div>
-          <History windows={history} open={open} bound={bound} />
-        </div>
-        )
-      })}
-
-      <div className="dash-rollups">
-        <Rollup label="24h" w={usage.day} />
-        <Rollup
-          label="7d"
-          w={usage.week}
-          // Trailing, NOT the plan's weekly window: that one resets at a fixed
-          // time assigned to the account, which nothing gurt can see reveals.
-          title="trailing 7 days — your plan's own weekly window resets at a fixed time assigned to your account, which gurt cannot see"
-        />
-        <span className="spacer" />
-        <span className="faint">
-          {usage.lastAt ? `last turn ${relativeTime(usage.lastAt)}` : 'no turns recorded yet'}
-        </span>
-      </div>
+      {!!plan?.windows.length && <PlanMeters plan={plan} now={now} />}
     </div>
   )
 }
 
 /**
- * The provider's own numbers: how much of each window is gone, and when it
- * comes back. Unlike everything else on this card these are not gurt's — they
- * cover usage from claude.ai and other machines too, which is exactly why they
- * are worth a network call.
+ * The provider's own numbers: how much of each window is used, and when it
+ * resets. They cover usage from claude.ai and other machines too, which is
+ * exactly why they are worth a network call. A failed poll is not announced
+ * here — the last good read stays up, and only its age going yellow says the
+ * numbers have stopped moving.
  */
 function PlanMeters({ plan, now }: { plan: PlanUsage; now: number }): JSX.Element {
   const age = plan.fetchedAt ? now - Date.parse(plan.fetchedAt) : undefined
   const stale = age !== undefined && age > STALE_AFTER_MS
   return (
     <div className="dash-plan">
-      <div className="dash-plan-head">
-        <span className="seclabel">PLAN</span>
-        <span className="spacer" />
-        {plan.error ? (
-          <span className="yellow" title={plan.error}>
-            {plan.fetchedAt ? `last read ${relativeTime(plan.fetchedAt)}` : plan.error}
-          </span>
-        ) : (
-          <span className={stale ? 'yellow' : 'faint'}>
-            {plan.fetchedAt ? relativeTime(plan.fetchedAt) : ''}
-          </span>
-        )}
-      </div>
       {plan.windows.map((w) => (
         <PlanMeter key={w.id} w={w} now={now} />
       ))}
+      <div className="dash-plan-foot">
+        <span className="faint">{TIME_ZONE}</span>
+        <span className="spacer" />
+        {plan.fetchedAt && (
+          <span className={stale ? 'yellow' : 'faint'}>
+            updated {relativeTime(plan.fetchedAt)}
+          </span>
+        )}
+      </div>
     </div>
   )
 }
@@ -507,83 +431,12 @@ function PlanMeter({ w, now }: { w: PlanWindow; now: number }): JSX.Element {
         // rather than silently drawn as 1% — see PlanWindow.utilization.
         title={`reported utilization: ${w.raw}`}
       >
-        {Math.round(w.utilization)}%
+        {Math.round(w.utilization)}% used
       </span>
       <span className="dash-plan-reset faint">
-        {left !== undefined && left > 0 ? `resets ${formatIn(left)}` : ''}
+        {w.resetsAt && left !== undefined && left > 0 ? `resets ${resetClock(w.resetsAt)}` : ''}
       </span>
     </div>
-  )
-}
-
-/**
- * Fallback for kinds with no plan reading: fills with *elapsed window time*,
- * not consumed quota, since gurt cannot see the quota. A window that was
- * refused mid-flight is drawn red from the refusal onward, so "where the
- * overrun was" is visible without reading the numbers.
- */
-function WindowMeter({ window: w, now }: { window?: UsageWindow; now: number }): JSX.Element {
-  if (!w) return <div className="dash-meter dash-meter-idle" />
-  const span = w.end - w.start
-  const pct = (ms: number): number => Math.max(0, Math.min(100, (ms / span) * 100))
-  const elapsed = pct(now - w.start)
-  const hit = w.limitedAt ? pct(Date.parse(w.limitedAt) - w.start) : null
-  return (
-    <div className="dash-meter" title={`${w.turns} turns since ${dayClockTime(w.start)}`}>
-      <span className="dash-meter-fill" style={{ width: `${elapsed}%` }} />
-      {hit != null && <span className="dash-meter-hit" style={{ left: `${hit}%` }} />}
-    </div>
-  )
-}
-
-/** Past windows as bars, tallest = busiest. Red bars are the ones a limit
- *  refusal landed in — the "where did I overrun" strip. */
-function History({
-  windows,
-  open,
-  bound
-}: {
-  windows: UsageWindow[]
-  open?: UsageWindow
-  bound: (ms: number) => string
-}): JSX.Element | null {
-  const bars = windows.slice(-HISTORY_BARS)
-  if (bars.length < 2) return null
-  const max = Math.max(...bars.map((w) => w.turns), 1)
-  return (
-    <div className="dash-hist">
-      {bars.map((w) => (
-        <span
-          key={w.start}
-          className={`dash-hist-bar${w.limited ? ' limited' : ''}${w === open ? ' open' : ''}`}
-          style={{ height: `${Math.max(8, (w.turns / max) * 100)}%` }}
-          title={`${bound(w.start)} — ${w.turns} turns, ${formatDuration(w.ms)} active${
-            w.limited ? `, ${w.limited} refused for a limit` : ''
-          }`}
-        />
-      ))}
-    </div>
-  )
-}
-
-function Rollup({
-  label,
-  w,
-  title
-}: {
-  label: string
-  w: UsageWindow
-  title?: string
-}): JSX.Element {
-  return (
-    <span className="dash-rollup" title={title}>
-      <span className="dash-rollup-label">{label}</span>
-      <span>{w.turns} turns</span>
-      <span className="dim">{formatDuration(w.ms)}</span>
-      {w.cost != null && <span className="dim">{formatMoney(w.cost, w.currency)}</span>}
-      {!!w.limited && <span className="red">{w.limited} limited</span>}
-      {!!w.errors && <span className="yellow">{w.errors} failed</span>}
-    </span>
   )
 }
 
