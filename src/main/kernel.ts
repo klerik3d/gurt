@@ -2,8 +2,8 @@
 // SessionManager over the domain bus and exposes the operations that span
 // both. Importable without an Electron app (headless runs, orchestrator,
 // tests).
-import type { Tree } from '../shared/types'
-import { isSessionRole } from '../shared/types'
+import type { DiffTarget, ReviewState, Tree } from '../shared/types'
+import { isSessionRole, targetKey } from '../shared/types'
 import type { SessionDraftPatch } from '../shared/api'
 import { NOTIFICATION_DEFAULTS } from '../shared/notifications'
 import { resolveMcpServers, stopMcpServers } from './mcp/manager'
@@ -15,6 +15,7 @@ import * as changes from './changes'
 import { createBus, type Bus } from './bus'
 import { ContainerManager } from './containers'
 import { SessionManager, type RestoredSession } from './sessions'
+import { createReview, fixPrompt, type ReviewManager } from './review'
 import { createNotifications, type Notifications } from './notifications'
 import { createUsageLedger, type UsageLedger } from './usage'
 import { createPlanUsage, type PlanUsageStore } from './planUsage'
@@ -35,6 +36,8 @@ export interface Kernel {
   bus: Bus
   containers: ContainerManager
   sessions: SessionManager
+  /** Manual review state — comments and the per-clone review lock. */
+  review: ReviewManager
   /** Settles when the boot restore is done — sessions loaded, container records
    *  reconciled against Docker, queue resumed. The app never waits on it (the UI
    *  renders the sessions as they land), but anything that stages state *as if*
@@ -65,6 +68,20 @@ export interface Kernel {
    *  its title/body ride along as url-encoded query params (the compare page picks
    *  them up). */
   prUrl(ws: string, task: string, repo: string): Promise<string>
+  /** Review state of a clone, with comments pruned against the files the target
+   *  still has (see `ReviewManager.state`). */
+  reviewState(ws: string, task: string, repo: string, target: DiffTarget): Promise<ReviewState>
+  /** Take or release the review lock. Taking one fails while a session holds
+   *  the clone — the two are the same exclusion, so they cannot both hold it. */
+  setReviewLock(ws: string, task: string, repo: string, locked: boolean): Promise<void>
+  /** Draft an executor session that fixes the target's open comments. */
+  launchReviewFix(
+    ws: string,
+    task: string,
+    repo: string,
+    target: DiffTarget,
+    prompt: string
+  ): Promise<{ sessionId: string }>
 }
 
 /** Reject a draft target that does not exist in the workspace. Shared by the
@@ -88,6 +105,10 @@ export function createKernel(): Kernel {
   // dependency, so one lazy getter breaks the construction-order knot.
   let sessions: SessionManager
 
+  // Review state is standalone (no dependency back into sessions — the kernel
+  // itself joins the two where they meet, at lock acquisition).
+  const review = createReview()
+
   const containers = new ContainerManager({
     bus,
     session: (id) => sessions.sessionInfo(id),
@@ -100,17 +121,27 @@ export function createKernel(): Kernel {
   sessions = new SessionManager(
     {
       resolveLaunch: (sessionId) => containers.resolveLaunch(sessionId),
-      releaseContainer: (sessionId, reason) => {
+      // Never rejects: the session record is gone by the time this settles, so
+      // a failure has nowhere to surface — it is logged, and the delete's own
+      // follow-up (the scratch dir) still runs.
+      releaseContainer: (sessionId, reason) =>
         containers
           .release(sessionId, reason)
-          .catch((e) => log.error('internal.fail', { site: 'container-release', s: sessionId, reason, err: e }))
-      },
+          .catch((e) => log.error('internal.fail', { site: 'container-release', s: sessionId, reason, err: e })),
       installAdapter: (ctx) => containers.installAdapter(ctx),
       resolveMcpServers,
       stopMcpServers,
       resolveGurtServer: ensureGurtServer,
       stopGurtServer,
       checkDraftTarget: assertDraftTarget,
+      isRepoLockedForReview: (ws, task, repo) => review.isLocked(ws, task, repo),
+      // Cross-task `create_session`: the target task materializes (with its
+      // `task.json` marker) before the draft's first persist can mkdir into it.
+      // `createTask` validates the agent-supplied name; an existing task is
+      // simply drafted into.
+      ensureTask: async (ws, task) => {
+        if (!store.taskExists(ws, task)) await store.createTask(ws, task)
+      },
       persist: (ws, task, records) => {
         store
           .writeSessions(ws, task, records)
@@ -129,6 +160,11 @@ export function createKernel(): Kernel {
           .catch((e) => log.error('internal.fail', { site: 'session-log-delete', s: sessionId, err: e }))
         // The session's diagnostic file goes with its timeline.
         dropSessionLog(sessionId)
+      },
+      deleteScratch: (ws, task, sessionId) => {
+        store
+          .deleteSessionScratch(ws, task, sessionId)
+          .catch((e) => log.error('internal.fail', { site: 'session-scratch-delete', s: sessionId, err: e }))
       }
     },
     bus
@@ -259,6 +295,9 @@ export function createKernel(): Kernel {
 
   async function restoreSessions(): Promise<void> {
     notifications.setPrefs(await store.getNotificationPrefs())
+    // Before the scheduler's first pass: a lock taken in a previous run still
+    // holds, and a queue resumed past it would start exactly what it excludes.
+    await review.load()
     sessions.loadAgentConfigs(await store.getAgentConfigs())
     sessions.loadAgentKinds(await store.getAgents())
     const t = await store.buildTree()
@@ -295,6 +334,7 @@ export function createKernel(): Kernel {
     bus,
     containers,
     sessions,
+    review,
     ready,
     notifications,
     usage,
@@ -310,6 +350,7 @@ export function createKernel(): Kernel {
     async deleteTask(ws: string, task: string): Promise<void> {
       await containers.teardownTask(ws, task)
       sessions.dropTaskSessions(ws, task)
+      review.dropTask(ws, task)
       await store.removeTaskDir(ws, task)
       bus.emit('tree.changed', undefined)
     },
@@ -317,6 +358,7 @@ export function createKernel(): Kernel {
     async deleteWorkspace(ws: string): Promise<void> {
       await containers.teardownWorkspace(ws)
       sessions.dropWorkspaceSessions(ws)
+      review.dropWorkspace(ws)
       await store.removeWorkspaceDir(ws)
       bus.emit('tree.changed', undefined)
     },
@@ -327,6 +369,7 @@ export function createKernel(): Kernel {
       await store.renameTask(ws, task, newName)
       await changes.renameTaskBranches(ws, newName, task)
       sessions.renameTask(ws, task, newName)
+      review.renameTask(ws, task, newName)
       bus.emit('tree.changed', undefined)
     },
 
@@ -343,6 +386,77 @@ export function createKernel(): Kernel {
       const info = sessions.snapshot(sessionId)?.info
       if (info) await assertDraftTarget(info.workspace, patch.repos ?? [], patch.env)
       sessions.editDraft(sessionId, patch)
+    },
+
+    async reviewState(
+      ws: string,
+      task: string,
+      repo: string,
+      target: DiffTarget
+    ): Promise<ReviewState> {
+      // The live file list is what prunes comments whose file left the diff. A
+      // git failure (clone gone, unborn HEAD) must not lose comments: with no
+      // list to prune against, the state is read as-is.
+      const files = await changes
+        .getDiffFiles(ws, task, repo, target)
+        .then((f) => f.map((x) => x.path))
+        .catch(() => undefined)
+      return review.state(ws, task, repo, targetKey(target), files)
+    },
+
+    async setReviewLock(ws: string, task: string, repo: string, locked: boolean): Promise<void> {
+      if (locked) {
+        const holder = sessions.repoHolderFor(ws, task, repo)
+        if (holder)
+          throw new Error(
+            `session "${holder.title}" is running against "${repo}" — stop it before locking for review`
+          )
+      }
+      await review.setLock(ws, task, repo, locked)
+      // Unlocking frees the clone for whatever has been waiting on it; locking
+      // re-runs the pass too, so a queue item's reason updates immediately.
+      sessions.schedule()
+      bus.emit('tree.changed', undefined)
+    },
+
+    async launchReviewFix(
+      ws: string,
+      task: string,
+      repo: string,
+      target: DiffTarget,
+      prompt: string
+    ): Promise<{ sessionId: string }> {
+      const state = await review.state(ws, task, repo, targetKey(target))
+      const text = fixPrompt(repo, state.comments, prompt)
+      if (!text) throw new Error('nothing to send — leave a comment or write a prompt')
+      // Inherit the way `create_session` inherits from its spawner: the newest
+      // session that already worked this clone knows the env, agent and
+      // settings this task runs on. With none, fall back to the workspace's
+      // first env and the only agent — the same two things the New Session
+      // modal would preselect.
+      const prior = sessions
+        .listForTask(ws, task)
+        .filter((s) => s.repos.includes(repo))
+        .pop()
+      const wsData = await store.getWorkspace(ws)
+      const env = prior?.env ?? wsData.envs[0]?.name
+      if (!env) throw new Error(`no environment is registered in "${ws}"`)
+      const agents = Object.keys(await store.getAgents())
+      const agent = prior?.agent ?? agents[0]
+      if (!agent) throw new Error('no agent is configured — add one in Settings')
+      const info = sessions.createSession(
+        { workspace: ws, task, env },
+        [repo],
+        agent,
+        text,
+        'draft',
+        prior?.mcp ?? [],
+        prior?.autoAllow ?? true,
+        prior?.gitAccess ?? false,
+        prior?.configValues ?? {},
+        'executor'
+      )
+      return { sessionId: info.id }
     },
 
     async prUrl(ws: string, task: string, repo: string): Promise<string> {

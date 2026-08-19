@@ -31,6 +31,7 @@ import { alertDialog, confirmDialog } from '../dialog'
 import { SESSION_DOT } from '../status'
 import { Icon, Dot } from './icons'
 import { AgentMark, ROLE_INFO, agentIcon } from './tags'
+import { deleteSession, duplicateSession } from './SessionActions'
 import { Modal } from './Modal'
 
 /** One visible line of the tree — the unit arrow-key navigation moves over. */
@@ -142,25 +143,9 @@ export function Sidebar({
   }
 
   /** Resolves true once the delete has been confirmed and sent. */
-  const deleteSession = async (id: string): Promise<boolean> => {
+  const deleteRow = async (id: string): Promise<boolean> => {
     const s = wsData?.tasks.flatMap((t) => t.sessions).find((x) => x.id === id)
-    if (!s) return false
-    // A session owns its container, so deleting it takes the container down —
-    // say so, and say what survives: the clone and whatever is uncommitted in it.
-    const warning =
-      s.container && s.container.status !== 'stopped'
-        ? `Delete session "${s.title}"? Its container goes down with it; the clone and any uncommitted changes stay.`
-        : `Delete session "${s.title}"?`
-    if (
-      !(await confirmDialog(warning, {
-        title: 'Delete session',
-        confirmText: 'Delete',
-        danger: true
-      }))
-    )
-      return false
-    window.gurt.sessionDelete(id).catch((e) => alertDialog(String(e)))
-    return true
+    return s ? deleteSession(s) : false
   }
 
   // Creates the task right from the header "+", no modal round-trip — click,
@@ -294,7 +279,7 @@ export function Sidebar({
         // cancelled dialog would still have moved the cursor. Either neighbour
         // outlives this session: a sibling, or the task row that must be above it.
         const next = rows[cursor + 1] ?? rows[cursor - 1]
-        deleteSession(cur.id).then((deleted) => {
+        deleteRow(cur.id).then((deleted) => {
           if (deleted && next) selectRow(next)
           treeRef.current?.focus()
         })
@@ -479,10 +464,36 @@ export function Sidebar({
                       ) : (
                         <>
                           <span className="sb-session-name">{s.title}</span>
+                          {/* Agent mark and row actions share the right edge:
+                              hovering swaps one for the other, so the actions
+                              cost the title no width when nobody is reaching
+                              for them. */}
                           <span className="sb-session-client">
                             {s.agent && (
                               <AgentMark kind={agentKind(agents, s.agent)} name={agentName(agents, s.agent)} />
                             )}
+                          </span>
+                          <span className="sb-session-acts">
+                            <button
+                              className="icon-sq sb-act"
+                              title="duplicate as draft"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                void duplicateSession(s.id, (copy) => onSelectSession(copy.id))
+                              }}
+                            >
+                              <Icon name="copy" size={13} />
+                            </button>
+                            <button
+                              className="icon-sq sb-act"
+                              title="delete session"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                void deleteSession(s)
+                              }}
+                            >
+                              <Icon name="trash" size={13} />
+                            </button>
                           </span>
                         </>
                       )}

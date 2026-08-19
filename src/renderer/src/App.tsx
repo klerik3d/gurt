@@ -465,6 +465,7 @@ export default function App() {
                   sessionId={selection.id}
                   queuePosition={positions[selection.id]}
                   log={logs[selection.id] ?? []}
+                  onSelect={selectSession}
                   onDeleted={() => setSelection(null)}
                 />
               )}

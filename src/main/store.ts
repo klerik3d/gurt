@@ -11,6 +11,7 @@ import type {
   EnvConfig,
   PersistedSession,
   RepoConfig,
+  ReviewFile,
   SessionInfo,
   SessionLogRecord,
   TaskFile,
@@ -75,7 +76,7 @@ export const overrideConfigPath = (ws: string, env: string) =>
 const RESERVED_NAMES: Record<string, string[]> = {
   workspace: ['agents.json', 'credentials.json', 'agent-config-cache.json'],
   task: ['workspace.json', '.devcontainers'],
-  repo: ['task.json', 'sessions.json', 'sessions', '.multirepo'],
+  repo: ['task.json', 'sessions.json', 'review.json', 'sessions', '.multirepo'],
   // Env names only ever become `.devcontainers/<env>.json` — segment rules only.
   env: []
 }
@@ -517,6 +518,34 @@ export async function writeSessions(
   await writeJson(sessionsFile(ws, task), records)
 }
 
+// --- manual review state: <ws>/<task>/review.json ---------------------------
+
+const reviewFile = (ws: string, task: string) => path.join(taskDir(ws, task), 'review.json')
+
+/** Read review.json, tolerating a partial or hand-edited file the way
+ *  `getNotificationPrefs` does — a missing half is an empty one, never a throw. */
+export async function readReview(ws: string, task: string): Promise<ReviewFile> {
+  const raw = await readJson<Partial<ReviewFile>>(reviewFile(ws, task), {})
+  return {
+    locked: raw.locked && typeof raw.locked === 'object' ? raw.locked : {},
+    comments: Array.isArray(raw.comments) ? raw.comments : []
+  }
+}
+
+export async function writeReview(ws: string, task: string, data: ReviewFile): Promise<void> {
+  await writeJson(reviewFile(ws, task), data)
+}
+
+/** Every task that has a review.json, as `[ws, task]` pairs — the boot scan
+ *  that seeds the in-memory lock set (see review.ts). */
+export async function tasksWithReview(): Promise<[string, string][]> {
+  const out: [string, string][] = []
+  for (const ws of await listWorkspaces())
+    for (const task of await listTasks(ws))
+      if (existsSync(reviewFile(ws, task))) out.push([ws, task])
+  return out
+}
+
 // --- per-session append-only log: <ws>/<task>/sessions/<sessionId>.jsonl ----
 
 const sessionLogFile = (ws: string, task: string, sessionId: string) =>
@@ -601,6 +630,22 @@ export async function readSessionLog(
     }
   }
   return out
+}
+
+/** Remove the scratch directory a session's explicit repo mounts were staged
+ *  in (`.multirepo/<id>`, see {@link mountedWorkspaceDir}) — it is gurt's own,
+ *  holds only mount points, and has no owner once the session is deleted. Only
+ *  sessions with explicit mounts ever had one; the rest hit a missing path,
+ *  which `force` makes a no-op. */
+export async function deleteSessionScratch(
+  ws: string,
+  task: string,
+  sessionId: string
+): Promise<void> {
+  await fs.rm(path.dirname(mountedWorkspaceDir(ws, task, sessionId)), {
+    recursive: true,
+    force: true
+  })
 }
 
 export async function deleteSessionLog(ws: string, task: string, sessionId: string): Promise<void> {

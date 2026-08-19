@@ -236,6 +236,10 @@ export interface AgentSessionRequest {
   repos: string[]
   /** The drafted session's start prompt — its whole input. */
   prompt: string
+  /** Task to draft into, created if missing; defaults to the spawner's own.
+   *  Researcher-only: a reviewer's draft must fix the clone it holds, and that
+   *  clone lives in the reviewer's task. */
+  task?: string
   /** Display title; defaults to the usual `session N`. */
   title?: string
   /** Env definition name; defaults to the spawner's. */
@@ -651,3 +655,74 @@ export const isActionable = (r: RepoChanges): boolean =>
 /** Pushed and waiting for the remote to merge it — nothing left to do here. */
 export const isDelivered = (r: RepoChanges): boolean =>
   !isActionable(r) && !r.integrated && r.commits.some((c) => c.pushed)
+
+// Manual review: split diff, inline comments, review lock —
+// see docs/requirements-manual-review.md.
+
+/**
+ * What a review reads. `uncommitted` is the working tree against HEAD (the
+ * Changes panel's Uncommitted block); `commit` is one thread commit against its
+ * parent. Nothing else is reviewable — these are exactly the two things the
+ * panel already renders.
+ */
+export type DiffTarget = { kind: 'uncommitted' } | { kind: 'commit'; sha: string }
+
+/**
+ * A target as one string, for keying comments to the diff they were written
+ * against. Without it the working tree and a commit would share one comment
+ * set: a note on a commit's file would then be pruned the moment that file is
+ * clean in the working tree, which it usually is.
+ */
+export const targetKey = (t: DiffTarget): string =>
+  t.kind === 'commit' ? `commit:${t.sha}` : 'uncommitted'
+
+/**
+ * The two sides of one file, as whole content. Line alignment, folding and
+ * intraline highlighting are computed in the renderer — the host stays out of
+ * the diff business and returns what git has. An added file's `before` (and a
+ * deleted file's `after`) is '', not a missing key: the split view renders it
+ * as an empty pane rather than a special case.
+ */
+export type DiffPair =
+  | { binary: false; before: string; after: string }
+  | { binary: true }
+
+/**
+ * One review note, anchored to a line of one side of one file's diff pair.
+ *
+ * The anchor is captured against the pair as it looked when the note was
+ * written and is never re-anchored: a comment can only be left while the repo
+ * is locked for review, so the tree it points into cannot move underneath it.
+ */
+export interface ReviewComment {
+  id: string
+  repo: string
+  /** Which diff this note was written against — see {@link targetKey}. */
+  target: string
+  /** Path relative to the repo root, as it appears in the diff's file list. */
+  path: string
+  /** Which pane the note hangs off — `before` = HEAD/parent, `after` = the new content. */
+  side: 'before' | 'after'
+  /** 1-based line number within that side's content. */
+  line: number
+  text: string
+  /** ISO timestamp. */
+  createdAt: string
+  resolved?: boolean
+}
+
+/** <workspace>/<task>/review.json — review state of every repo of the task. */
+export interface ReviewFile {
+  /** repo → ISO time the review lock was taken; absent key = unlocked. */
+  locked: Record<string, string>
+  comments: ReviewComment[]
+}
+
+/** Review state of one clone, as the review surface reads it. */
+export interface ReviewState {
+  locked: boolean
+  /** ISO time the lock was taken; present only while locked. */
+  lockedAt?: string
+  /** This repo's comments; ones whose file left the diff are pruned on read. */
+  comments: ReviewComment[]
+}

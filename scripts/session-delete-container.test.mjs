@@ -101,6 +101,11 @@ try {
     'the staged container survives the boot reconcile'
   )
 
+  // The scratch dir a mounted session's repos are staged in (`.multirepo/<id>`)
+  // — gurt's own, and ownerless once the session is gone.
+  const scratch = path.join(GURT_ROOT, ws, task, '.multirepo', info.id, 'repos')
+  fs.mkdirSync(scratch, { recursive: true })
+
   kernel.sessions.deleteSession(info.id)
 
   assert.ok(
@@ -109,6 +114,15 @@ try {
   )
   assert.equal(kernel.sessions.snapshot(info.id), undefined, 'the session itself is gone')
   console.log('session delete takes its container down OK')
+
+  // Only after the container is down — the mounts live inside that directory.
+  for (let i = 0; i < 200 && fs.existsSync(scratch); i++)
+    await new Promise((r) => setTimeout(r, 25))
+  assert.ok(
+    !fs.existsSync(path.join(GURT_ROOT, ws, task, '.multirepo', info.id)),
+    'the mount scratch dir goes with the session'
+  )
+  console.log('session delete removes its mount scratch OK')
 
   console.log('session-delete-container.test: PASS')
 } catch (e) {
