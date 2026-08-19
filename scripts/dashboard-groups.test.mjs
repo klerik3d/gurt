@@ -1,5 +1,5 @@
-// Ordering rules for the dashboard's session list (src/renderer/src/components/
-// Dashboard.tsx). Pure functions only — nothing is rendered.
+// Layout rules for the dashboard's per-workspace board (src/renderer/src/
+// components/Dashboard.tsx). Pure functions only — nothing is rendered.
 //
 // These are worth pinning because they fail silently: a wrong comparator still
 // draws a plausible list, just one where the session waiting on you is not the
@@ -18,7 +18,7 @@ const S = (rel) => JSON.stringify(path.join(ROOT, rel))
 
 await build({
   stdin: {
-    contents: `export { groupByWorkspace, summarize } from ${S('src/renderer/src/components/Dashboard.tsx')}`,
+    contents: `export { boardByWorkspace, summarize, COLUMNS } from ${S('src/renderer/src/components/Dashboard.tsx')}`,
     resolveDir: ROOT,
     loader: 'ts',
     sourcefile: 'entry.ts'
@@ -31,75 +31,90 @@ await build({
   logLevel: 'silent'
 })
 
-const { groupByWorkspace, summarize } = await import(pathToFileURL(outfile).href)
+const { boardByWorkspace, summarize, COLUMNS } = await import(pathToFileURL(outfile).href)
 
 /** A row as `allSessions` builds them. */
-const row = (id, status, workspace, task, title = id) => ({
+const row = (id, status, workspace, task, extra = {}) => ({
   status,
-  info: { id, title, workspace, task }
+  info: { id, title: extra.title ?? id, workspace, task, incomplete: extra.incomplete },
+  finishedAt: extra.finishedAt
 })
 
-// --- rows inside a group: urgency first --------------------------------------
+const QUEUE = COLUMNS.findIndex((c) => c.id === 'queue')
+const ACTIVE = COLUMNS.findIndex((c) => c.id === 'active')
+const DONE = COLUMNS.findIndex((c) => c.id === 'done')
+const ids = (rows) => rows.map((r) => r.info.id)
+
+// --- every status lands in exactly one column --------------------------------
 {
   const rows = [
     row('d', 'draft', 'w', 't'),
     row('q', 'queued', 'w', 't'),
     row('r', 'running', 'w', 't'),
     row('a', 'waiting', 'w', 't'),
-    row('s', 'starting', 'w', 't')
+    row('s', 'starting', 'w', 't'),
+    row('f', 'idle', 'w', 't', { finishedAt: '2026-08-19T10:00:00Z' })
   ]
-  const [g] = groupByWorkspace(rows, {})
-  assert.deepEqual(
-    g.rows.map((r) => r.info.id),
-    ['a', 'r', 's', 'q', 'd'],
-    'waiting → running → starting → queued → draft'
+  const [b] = boardByWorkspace(rows, {})
+  assert.equal(b.key, 'w')
+  assert.equal(b.total, 6)
+  assert.deepEqual(ids(b.columns[QUEUE]), ['q', 'd'], 'queued sits above draft — it is next to run')
+  assert.deepEqual(ids(b.columns[ACTIVE]), ['a', 'r', 's'], 'waiting → running → starting')
+  assert.deepEqual(ids(b.columns[DONE]), ['f'])
+  assert.equal(
+    b.columns.flat().length,
+    rows.length,
+    'no row is dropped and none is counted twice'
   )
-  assert.equal(g.key, 'w')
 }
 
 {
   // Urgency ranks across the whole workspace: a task boundary must not push the
-  // session that needs you below one that doesn't.
-  const rows = [
-    row('d', 'draft', 'w', 'alpha'),
-    row('a', 'waiting', 'w', 'zeta'),
-    row('r', 'running', 'w', 'alpha')
-  ]
-  const [g] = groupByWorkspace(rows, {})
-  assert.deepEqual(
-    g.rows.map((r) => r.info.id),
-    ['a', 'r', 'd'],
-    'sorted by status, not bucketed by task'
+  // session that needs you below one that does not.
+  const [b] = boardByWorkspace(
+    [row('r', 'running', 'w', 'alpha'), row('a', 'waiting', 'w', 'zeta')],
+    {}
   )
+  assert.deepEqual(ids(b.columns[ACTIVE]), ['a', 'r'], 'sorted by status, not bucketed by task')
 }
 
 {
   // Queue order is real order, not alphabetical.
-  const rows = [row('z', 'queued', 'w', 't'), row('a', 'queued', 'w', 't')]
-  const [g] = groupByWorkspace(rows, { z: 1, a: 2 })
-  assert.deepEqual(
-    g.rows.map((r) => r.info.id),
-    ['z', 'a'],
-    'a queued session keeps its position in the global queue'
+  const [b] = boardByWorkspace(
+    [row('z', 'queued', 'w', 't'), row('a', 'queued', 'w', 't')],
+    { z: 1, a: 2 }
   )
+  assert.deepEqual(ids(b.columns[QUEUE]), ['z', 'a'], 'a queued session keeps its queue position')
 }
 
 {
   // Same rank, no queue position: task then title, so re-renders can't shuffle
   // rows and one task's sessions stay adjacent.
-  const rows = [
-    row('2', 'draft', 'w', 'b', 'beta'),
-    row('1', 'draft', 'w', 'a', 'alpha'),
-    row('3', 'draft', 'w', 'a', 'zulu')
-  ]
-  const [g] = groupByWorkspace(rows, {})
-  assert.deepEqual(
-    g.rows.map((r) => r.info.title),
-    ['alpha', 'zulu', 'beta']
+  const [b] = boardByWorkspace(
+    [
+      row('2', 'draft', 'w', 'b', { title: 'beta' }),
+      row('1', 'draft', 'w', 'a', { title: 'alpha' }),
+      row('3', 'draft', 'w', 'a', { title: 'zulu' })
+    ],
+    {}
   )
+  assert.deepEqual(ids(b.columns[QUEUE]), ['1', '3', '2'])
 }
 
-// --- groups: most urgent workspace first, regardless of size ------------------
+{
+  // DONE reads newest-first, regardless of what the rows arrived in.
+  const [b] = boardByWorkspace(
+    [
+      row('old', 'idle', 'w', 't', { finishedAt: '2026-08-19T08:00:00Z' }),
+      row('new', 'idle', 'w', 't', { finishedAt: '2026-08-19T12:00:00Z' }),
+      row('mid', 'idle', 'w', 't', { finishedAt: '2026-08-19T10:00:00Z' })
+    ],
+    {}
+  )
+  assert.deepEqual(ids(b.columns[DONE]), ['new', 'mid', 'old'])
+}
+
+// --- boards: most urgent workspace first, regardless of size ------------------
 {
   const rows = [
     row('d1', 'draft', 'drafty', 't'),
@@ -108,43 +123,54 @@ const row = (id, status, workspace, task, title = id) => ({
     row('w1', 'waiting', 'blocked', 't'),
     row('r1', 'running', 'busy', 't')
   ]
-  const groups = groupByWorkspace(rows, {})
   assert.deepEqual(
-    groups.map((g) => g.key),
+    boardByWorkspace(rows, {}).map((b) => b.key),
     ['blocked', 'busy', 'drafty'],
     'one session needing you outranks a workspace holding three drafts'
   )
 }
 
 {
-  // Workspaces that tie on urgency are ordered by name, so the list is stable
-  // and the same workspace always sits in the same place.
-  const groups = groupByWorkspace(
-    [row('a', 'running', 'zeta', 't'), row('b', 'running', 'alpha', 't')],
-    {}
-  )
+  // A workspace whose only rows are finished sorts last — nothing there is moving.
   assert.deepEqual(
-    groups.map((g) => g.key),
+    boardByWorkspace(
+      [
+        row('f', 'idle', 'aaa', 't', { finishedAt: '2026-08-19T10:00:00Z' }),
+        row('q', 'queued', 'zzz', 't')
+      ],
+      {}
+    ).map((b) => b.key),
+    ['zzz', 'aaa']
+  )
+}
+
+{
+  // Workspaces that tie on urgency are ordered by name, so the board is stable.
+  assert.deepEqual(
+    boardByWorkspace(
+      [row('a', 'running', 'zeta', 't'), row('b', 'running', 'alpha', 't')],
+      {}
+    ).map((b) => b.key),
     ['alpha', 'zeta']
   )
 }
 
 {
-  // Same task name in two workspaces stays in two groups, never merged.
-  const groups = groupByWorkspace(
+  // Same task name in two workspaces stays in two boards, never merged.
+  const boards = boardByWorkspace(
     [row('a', 'running', 'work', 'api'), row('b', 'running', 'personal', 'api')],
     {}
   )
   assert.deepEqual(
-    groups.map((g) => g.key),
+    boards.map((b) => b.key),
     ['personal', 'work']
   )
-  assert.equal(groups[0].rows.length, 1)
+  assert.equal(boards[0].total, 1)
 }
 
-assert.deepEqual(groupByWorkspace([], {}), [])
+assert.deepEqual(boardByWorkspace([], {}), [])
 
-// --- the collapsed summary ---------------------------------------------------
+// --- the folded summary ------------------------------------------------------
 assert.equal(summarize([]), '')
 assert.equal(summarize([row('a', 'waiting', 'w', 't')]), '1 needs you')
 assert.equal(
@@ -159,10 +185,11 @@ assert.equal(
     row('a', 'draft', 'w', 't'),
     row('b', 'waiting', 'w', 't'),
     row('c', 'queued', 'w', 't'),
-    row('d', 'running', 'w', 't')
+    row('d', 'running', 'w', 't'),
+    row('e', 'idle', 'w', 't')
   ]),
-  '1 needs you · 1 running · 1 queued · 1 draft',
-  'summary reads in the same urgency order the rows do'
+  '1 needs you · 1 running · 1 queued · 1 draft · 1 to review',
+  'summary reads left-to-right the way the board does'
 )
 
 console.log('dashboard-groups: ok')

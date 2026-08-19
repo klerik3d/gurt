@@ -25,8 +25,8 @@ import { agentIcon } from './tags'
 
 /** How many past windows the history strip draws. */
 const HISTORY_BARS = 8
-/** Rows before the review list collapses into a "+N more" line. */
-const REVIEW_ROWS = 12
+/** Cards a column shows before collapsing the rest into a "+N more" line. */
+const COLUMN_ROWS = 12
 
 /** A clock that only advances as fast as the meters need — windows are hours
  *  and days long, so a minute of drift on a countdown is invisible. */
@@ -77,29 +77,50 @@ const formatMoney = (amount: number, currency?: string): string =>
 interface Row {
   info: SessionInfo
   status: ReturnType<typeof sessionStatus>
+  /** ISO end of the session's last recorded turn — set only on `idle` rows, and
+   *  the order the DONE column reads in. */
+  finishedAt?: string
 }
 
 /**
- * The statuses the session list covers, in the order they earn attention:
- * blocked on a human first, then moving, then not started. `idle` is absent on
- * purpose — a finished session belongs to the review list, not here.
+ * Every status the board shows, in the order it earns attention: blocked on a
+ * human first, then moving, then not started, then finished. Used both to sort
+ * within a column and to decide which workspace band leads.
  */
 const STATUS_RANK: Record<string, number> = {
   waiting: 0,
   running: 1,
   starting: 2,
   queued: 3,
-  draft: 4
+  draft: 4,
+  idle: 5
 }
 
-/** A workspace with sessions worth showing — the dashboard's grouping unit. */
-interface WorkspaceRows {
+/**
+ * The board's three columns, left to right, and the statuses each holds — a
+ * session's own lifecycle read as a flow: not started yet, moving, finished.
+ *
+ * `queued` sits above `draft` inside the first column rather than following the
+ * label's order: a queued session is next to run and carries a real position,
+ * a draft has not been launched at all.
+ */
+export const COLUMNS = [
+  { id: 'queue', label: 'DRAFT / QUEUE', statuses: ['queued', 'draft'] },
+  { id: 'active', label: 'IN PROGRESS', statuses: ['waiting', 'running', 'starting'] },
+  { id: 'done', label: 'DONE', statuses: ['idle'] }
+] as const
+
+/** A workspace's own board — the unit that folds. */
+interface WorkspaceBoard {
   /** The workspace name, which is also the collapse key. */
   key: string
-  rows: Row[]
+  /** One list per {@link COLUMNS} entry, in the same order. */
+  columns: Row[][]
+  /** Rows across all three, for the header count. */
+  total: number
 }
 
-/** "2 running · 1 needs you" — what a group still tells you while collapsed.
+/** "2 running · 1 to review" — what a band still tells you while folded shut.
  *  Exported for scripts/dashboard-groups.test.mjs. */
 export function summarize(rows: Row[]): string {
   const n = (s: string): number => rows.filter((r) => r.status === s).length
@@ -108,49 +129,62 @@ export function summarize(rows: Row[]): string {
   const live = n('running') + n('starting')
   const queued = n('queued')
   const draft = n('draft')
+  const done = n('idle')
   if (waiting) parts.push(`${waiting} needs you`)
   if (live) parts.push(`${live} running`)
   if (queued) parts.push(`${queued} queued`)
   if (draft) parts.push(`${draft} draft${draft > 1 ? 's' : ''}`)
+  if (done) parts.push(`${done} to review`)
   return parts.join(' · ')
 }
 
 /**
- * Group open sessions by workspace, most urgent workspace first. Ordering is by
- * the best (lowest) rank a workspace holds rather than by its size: one session
- * waiting on a permission outranks a workspace sitting on five drafts.
+ * Lay every session out as one board per workspace, most urgent workspace
+ * first. A workspace leads on the best (lowest) rank it holds rather than on
+ * its size: one session waiting on a permission outranks a workspace sitting on
+ * five drafts.
  *
- * Rows are ranked by urgency across the whole workspace, not bucketed by task
- * first — the point of the list is that what needs you is at the top of it, and
- * a task boundary in between would push it back down.
+ * Rows rank by status across the whole workspace rather than bucketing by task
+ * first — a task boundary in between would push the session that needs you back
+ * down its column.
  *
  * Exported for scripts/dashboard-groups.test.mjs.
  */
-export function groupByWorkspace(
+export function boardByWorkspace(
   rows: Row[],
   positions: Record<string, number>
-): WorkspaceRows[] {
-  const byKey = new Map<string, WorkspaceRows>()
-  for (const r of rows) {
-    const key = r.info.workspace
-    let g = byKey.get(key)
-    if (!g) byKey.set(key, (g = { key, rows: [] }))
-    g.rows.push(r)
-  }
+): WorkspaceBoard[] {
   const rank = (r: Row): number => STATUS_RANK[r.status] ?? 99
-  for (const g of byKey.values())
-    g.rows.sort(
-      (a, b) =>
-        rank(a) - rank(b) ||
-        // Queue order is meaningful; everything else falls back to task then
-        // title, so a re-render can't shuffle rows around.
-        (positions[a.info.id] ?? 0) - (positions[b.info.id] ?? 0) ||
-        a.info.task.localeCompare(b.info.task) ||
-        a.info.title.localeCompare(b.info.title)
+  const byKey = new Map<string, Row[]>()
+  for (const r of rows) {
+    const list = byKey.get(r.info.workspace)
+    if (list) list.push(r)
+    else byKey.set(r.info.workspace, [r])
+  }
+  const boards: WorkspaceBoard[] = []
+  for (const [key, all] of byKey) {
+    const columns = COLUMNS.map((col) =>
+      all
+        .filter((r) => (col.statuses as readonly string[]).includes(r.status))
+        .sort((a, b) => {
+          // Done reads newest-first: the thing that just landed is the thing
+          // you are most likely to be looking for.
+          if (col.id === 'done') return (b.finishedAt ?? '').localeCompare(a.finishedAt ?? '')
+          return (
+            rank(a) - rank(b) ||
+            // Queue order is real order; everything else falls back to task then
+            // title, so a re-render can't shuffle rows around.
+            (positions[a.info.id] ?? 0) - (positions[b.info.id] ?? 0) ||
+            a.info.task.localeCompare(b.info.task) ||
+            a.info.title.localeCompare(b.info.title)
+          )
+        })
     )
-  return [...byKey.values()].sort(
-    (a, b) => rank(a.rows[0]) - rank(b.rows[0]) || a.key.localeCompare(b.key)
-  )
+    boards.push({ key, columns, total: all.length })
+  }
+  const best = (b: WorkspaceBoard): number =>
+    Math.min(...b.columns.flat().map(rank))
+  return boards.sort((a, b) => best(a) - best(b) || a.key.localeCompare(b.key))
 }
 
 const COLLAPSE_KEY = 'gurt.dashCollapsedWorkspaces'
@@ -226,25 +260,23 @@ export function Dashboard({
   const { collapsed, toggle: toggleWorkspace } = useCollapsedWorkspaces()
 
   const rows = allSessions(tree, activity)
-  // Everything with somewhere left to go, grouped by workspace — the divider
-  // the user already thinks in (`work`, `personal`), and few enough of them
-  // that folding one is a decision rather than bookkeeping.
-  const open = rows.filter((r) => r.status in STATUS_RANK)
-  const groups = groupByWorkspace(open, positions)
 
   // Last turn per session — the ledger is append-ordered, so the last match wins.
   const lastTurn = new Map<string, TurnRecord>()
   for (const r of usage) lastTurn.set(r.sessionId, r)
 
-  // Finished and unreviewed: the session is sitting idle, it has run at least
-  // one turn this install knows about, and that turn ended after the last time
-  // the session was opened. A session that never ran a turn here (restored from
-  // an older install, or never started) is simply not part of this list.
-  const unreviewed = rows
-    .filter((r) => r.status === 'idle')
-    .map((r) => ({ ...r, turn: lastTurn.get(r.info.id) }))
-    .filter((r) => !!r.turn && (!seen[r.info.id] || seen[r.info.id] < r.turn!.ts))
-    .sort((a, b) => b.turn!.ts.localeCompare(a.turn!.ts))
+  // What the board holds. Everything unfinished goes on as-is; an `idle`
+  // session earns a place in DONE only while it is unreviewed — it has run a
+  // turn this install recorded, and that turn ended after the session was last
+  // opened. Reviewing it is what takes it off the board, so DONE stays a
+  // to-do list rather than an ever-growing archive.
+  const boardRows: Row[] = rows.flatMap((r) => {
+    if (r.status !== 'idle') return r.status in STATUS_RANK ? [r] : []
+    const turn = lastTurn.get(r.info.id)
+    if (!turn || (seen[r.info.id] && seen[r.info.id] >= turn.ts)) return []
+    return [{ ...r, finishedAt: turn.ts }]
+  })
+  const boards = boardByWorkspace(boardRows, positions)
 
   // One card per agent instance, plus one per agent id that only the ledger
   // still knows — turns of a since-deleted instance are spent quota, and
@@ -283,65 +315,32 @@ export function Dashboard({
           </div>
         </section>
 
-        <div className="dash-cols">
-          <section className="dash-section">
-            <div className="dash-sec-head">
-              <span className="seclabel">SESSIONS</span>
-              <span className="dash-count">{open.length}</span>
-              <span className="dash-sec-hint">{summarize(open) || 'nothing open'}</span>
-            </div>
-            {groups.length === 0 && (
-              <div className="tp-empty">nothing running, queued or drafted</div>
-            )}
-            {groups.map((g) => (
-              <WorkspaceGroup
-                key={g.key}
-                group={g}
-                agents={agents}
-                positions={positions}
-                turnStarts={turnStarts}
-                now={now}
-                collapsed={collapsed.has(g.key)}
-                onToggle={() => toggleWorkspace(g.key)}
-                onSelectSession={onSelectSession}
-                onSelectTask={onSelectTask}
-              />
-            ))}
-          </section>
-
-          <section className="dash-section">
-            <div className="dash-sec-head">
-              <span className="seclabel">DONE — NOT REVIEWED</span>
-              <span className="dash-count">{unreviewed.length}</span>
-              <span className="spacer" />
-              {unreviewed.length > 0 && (
-                <button
-                  className="btn-text"
-                  onClick={() => markAllSeen(unreviewed.map((r) => r.info.id))}
-                >
-                  mark all reviewed
-                </button>
-              )}
-            </div>
-            {unreviewed.length === 0 && (
-              <div className="tp-empty">nothing waiting — every finished turn has been seen</div>
-            )}
-            {unreviewed.slice(0, REVIEW_ROWS).map((r) => (
-              <ReviewRow
-                key={r.info.id}
-                row={r}
-                turn={r.turn!}
-                agents={agents}
-                changes={changes[`${r.info.workspace}/${r.info.task}`]}
-                onOpen={() => onSelectSession(r.info.id)}
-                onTask={() => onSelectTask(r.info.workspace, r.info.task)}
-              />
-            ))}
-            {unreviewed.length > REVIEW_ROWS && (
-              <div className="tp-empty">+{unreviewed.length - REVIEW_ROWS} more</div>
-            )}
-          </section>
-        </div>
+        <section className="dash-section">
+          <div className="dash-sec-head">
+            <span className="seclabel">SESSIONS</span>
+            <span className="dash-count">{boardRows.length}</span>
+            <span className="dash-sec-hint">{summarize(boardRows) || 'nothing open'}</span>
+          </div>
+          {boards.length === 0 && (
+            <div className="tp-empty">nothing drafted, running or waiting to be reviewed</div>
+          )}
+          {boards.map((b) => (
+            <WorkspaceBoardView
+              key={b.key}
+              board={b}
+              agents={agents}
+              changes={changes}
+              lastTurn={lastTurn}
+              positions={positions}
+              turnStarts={turnStarts}
+              now={now}
+              collapsed={collapsed.has(b.key)}
+              onToggle={() => toggleWorkspace(b.key)}
+              onSelectSession={onSelectSession}
+              onSelectTask={onSelectTask}
+            />
+          ))}
+        </section>
       </div>
     </div>
   )
@@ -588,11 +587,17 @@ function Rollup({
   )
 }
 
-/** One workspace's open sessions, folded or not. Same chevron and rotation as
- *  the sidebar's rows, so the gesture reads the same across the app. */
-function WorkspaceGroup({
-  group,
+/**
+ * One workspace's board: a header that folds the whole thing, and the three
+ * columns beneath it. The columns live inside the band rather than once at the
+ * top of the section, so each workspace is self-contained — which is also what
+ * keeps them readable when the grid drops to a single column on a narrow pane.
+ */
+function WorkspaceBoardView({
+  board,
   agents,
+  changes,
+  lastTurn,
   positions,
   turnStarts,
   now,
@@ -601,8 +606,10 @@ function WorkspaceGroup({
   onSelectSession,
   onSelectTask
 }: {
-  group: WorkspaceRows
+  board: WorkspaceBoard
   agents: Record<string, { label: string; kind: string }>
+  changes: Record<string, RepoChanges[]>
+  lastTurn: Map<string, TurnRecord>
   positions: Record<string, number>
   turnStarts: Record<string, number>
   now: number
@@ -611,11 +618,12 @@ function WorkspaceGroup({
   onSelectSession: (id: string) => void
   onSelectTask: (ws: string, task: string) => void
 }): JSX.Element {
-  /** What each row says about itself beyond its dot. */
+  /** What each card says about itself beyond its dot. */
   const meta = (r: Row): string | undefined => {
     if (r.status === 'waiting') return 'waiting on a permission'
     if (r.status === 'queued') return `#${positions[r.info.id] ?? '?'} in queue`
     if (r.status === 'draft') return 'not started'
+    if (r.status === 'idle') return r.finishedAt ? relativeTime(r.finishedAt) : undefined
     const started = turnStarts[r.info.id]
     return started ? `${formatDuration(now - started)} in this turn` : undefined
   }
@@ -629,127 +637,148 @@ function WorkspaceGroup({
             style={collapsed ? { transform: 'rotate(-90deg)' } : undefined}
           />
         </span>
-        <span className="dash-group-name">{group.key}</span>
+        <span className="dash-group-name">{board.key}</span>
+        <span className="dash-count">{board.total}</span>
         <span className="spacer" />
-        <span className="dash-group-sum faint">{summarize(group.rows)}</span>
+        <span className="dash-group-sum faint">{summarize(board.columns.flat())}</span>
       </div>
-      {!collapsed &&
-        group.rows.map((r) => (
-          <SessionRow
-            key={r.info.id}
-            row={r}
-            agents={agents}
-            meta={meta(r)}
-            onOpen={() => onSelectSession(r.info.id)}
-            onTask={() => onSelectTask(r.info.workspace, r.info.task)}
-          />
-        ))}
+      {!collapsed && (
+        <div className="dash-board">
+          {COLUMNS.map((col, i) => {
+            const rows = board.columns[i]
+            const shown = rows.slice(0, COLUMN_ROWS)
+            return (
+              <div key={col.id} className="dash-col">
+                <div className="dash-col-head">
+                  <span className="seclabel">{col.label}</span>
+                  {rows.length > 0 && <span className="dash-count">{rows.length}</span>}
+                  <span className="spacer" />
+                  {col.id === 'done' && rows.length > 0 && (
+                    <button
+                      className="btn-text"
+                      title="clear this workspace's reviewed column"
+                      onClick={() => markAllSeen(rows.map((r) => r.info.id))}
+                    >
+                      all reviewed
+                    </button>
+                  )}
+                </div>
+                {rows.length === 0 && <div className="dash-col-empty">—</div>}
+                {shown.map((r) => (
+                  <BoardCard
+                    key={r.info.id}
+                    row={r}
+                    agents={agents}
+                    meta={meta(r)}
+                    turn={r.status === 'idle' ? lastTurn.get(r.info.id) : undefined}
+                    changes={
+                      r.status === 'idle'
+                        ? changes[`${r.info.workspace}/${r.info.task}`]
+                        : undefined
+                    }
+                    onOpen={() => onSelectSession(r.info.id)}
+                    onTask={() => onSelectTask(r.info.workspace, r.info.task)}
+                  />
+                ))}
+                {rows.length > shown.length && (
+                  <div className="dash-col-empty">+{rows.length - shown.length} more</div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }
 
-function SessionRow({
+/**
+ * One session on the board. Two lines, because a third of a pane is not enough
+ * for one: the title on top, and everything that qualifies it — task, state,
+ * what it left behind — underneath.
+ *
+ * `turn` and `changes` are passed only for the DONE column, where the question
+ * is "is this worth opening" rather than "what is it doing".
+ */
+function BoardCard({
   row,
   agents,
   meta,
+  turn,
+  changes,
   onOpen,
   onTask
 }: {
   row: Row
   agents: Record<string, { label: string; kind: string }>
   meta?: string
+  turn?: TurnRecord
+  changes?: RepoChanges[]
   onOpen: () => void
   onTask: () => void
 }): JSX.Element {
   const dot = SESSION_DOT[row.status]
-  return (
-    // The workspace comes from the group header; the task does not, so it rides
-    // here — and clicking it opens that task rather than the session.
-    <div className="dash-row dash-row-nested clickable" onClick={onOpen} title={dot.label}>
-      <Dot tone={dot.tone} pulse={dot.pulse} />
-      <span className="dash-row-title">{row.info.title}</span>
-      <span
-        className="dash-row-where dim clickable"
-        onClick={(e) => {
-          e.stopPropagation()
-          onTask()
-        }}
-      >
-        {row.info.task}
-      </span>
-      <span className="spacer" />
-      {row.info.agent && (
-        <span className="agent-mark">
-          <Icon name={agentIcon(agents[row.info.agent]?.kind)} size={11} className="faint" />
-          {agentName(agents, row.info.agent)}
-        </span>
-      )}
-      {meta && <span className="dash-row-meta faint">{meta}</span>}
-    </div>
-  )
-}
-
-/** A finished session waiting to be looked at, with why it is worth looking. */
-function ReviewRow({
-  row,
-  turn,
-  agents,
-  changes,
-  onOpen,
-  onTask
-}: {
-  row: Row
-  turn: TurnRecord
-  agents: Record<string, { label: string; kind: string }>
-  changes: RepoChanges[] | undefined
-  onOpen: () => void
-  onTask: () => void
-}): JSX.Element {
-  const failed = turn.outcome === 'error' || turn.outcome === 'limited'
+  const failed = turn?.outcome === 'error' || turn?.outcome === 'limited'
   // The clone's own state is the honest "is there work here" signal: a session
   // can end a clean turn and still leave nothing to review.
   const dirty = (changes ?? []).filter((c) => c.dirty || c.commits.length > 0)
   const ins = dirty.reduce((n, c) => n + c.insertions, 0)
   const del = dirty.reduce((n, c) => n + c.deletions, 0)
   return (
-    <div className="dash-row">
-      <Dot tone={failed ? 'red' : 'green'} />
-      <span className="dash-row-title clickable" onClick={onOpen}>
-        {row.info.title}
-      </span>
-      <span className="dash-row-where dim clickable" onClick={onTask}>
-        {row.info.workspace} / {row.info.task}
-      </span>
-      {row.info.incomplete && (
-        <span className="tag tag-red" title="the turn ended without a `complete` call">
-          incomplete
+    <div className="dash-card-row clickable" onClick={onOpen} title={dot.label}>
+      <div className="dash-card-line">
+        <Dot tone={failed ? 'red' : dot.tone} pulse={dot.pulse} />
+        <span className="dash-row-title">{row.info.title}</span>
+        {row.info.agent && (
+          <Icon
+            name={agentIcon(agents[row.info.agent]?.kind)}
+            size={11}
+            className="faint"
+            // The name would not survive the column width; the mark and its
+            // tooltip carry the same fact in the space there is.
+          />
+        )}
+      </div>
+      <div className="dash-card-line dash-card-sub">
+        <span
+          className="dash-row-where dim clickable"
+          onClick={(e) => {
+            e.stopPropagation()
+            onTask()
+          }}
+        >
+          {row.info.task}
         </span>
-      )}
-      {failed && (
-        <span className={turn.outcome === 'limited' ? 'red' : 'yellow'} title={turn.detail}>
-          {turn.outcome === 'limited' ? 'stopped by a limit' : 'ended with an error'}
-        </span>
-      )}
-      {(ins > 0 || del > 0) && (
-        <span className="changes-counts" title={`${dirty.length} repo(s) with work`}>
-          <span className="ins">+{ins}</span> <span className="del">−{del}</span>
-        </span>
-      )}
-      <span className="spacer" />
-      {row.info.agent && (
-        <span className="agent-mark">
-          <Icon name={agentIcon(agents[row.info.agent]?.kind)} size={11} className="faint" />
-          {agentName(agents, row.info.agent)}
-        </span>
-      )}
-      <span className="dash-row-meta faint">{relativeTime(turn.ts)}</span>
-      <button
-        className="btn-text dash-row-act"
-        title="stop listing this session here until its next turn"
-        onClick={() => markSeen(row.info.id)}
-      >
-        reviewed
-      </button>
+        {meta && <span className="faint">{meta}</span>}
+        {row.info.incomplete && (
+          <span className="tag tag-red" title="the turn ended without a `complete` call">
+            incomplete
+          </span>
+        )}
+        {failed && (
+          <span className={turn?.outcome === 'limited' ? 'red' : 'yellow'} title={turn?.detail}>
+            {turn?.outcome === 'limited' ? 'hit a limit' : 'errored'}
+          </span>
+        )}
+        {(ins > 0 || del > 0) && (
+          <span className="changes-counts" title={`${dirty.length} repo(s) with work`}>
+            <span className="ins">+{ins}</span> <span className="del">−{del}</span>
+          </span>
+        )}
+        <span className="spacer" />
+        {row.status === 'idle' && (
+          <button
+            className="btn-text dash-row-act"
+            title="stop listing this session here until its next turn"
+            onClick={(e) => {
+              e.stopPropagation()
+              markSeen(row.info.id)
+            }}
+          >
+            reviewed
+          </button>
+        )}
+      </div>
     </div>
   )
 }
