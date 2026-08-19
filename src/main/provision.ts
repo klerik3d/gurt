@@ -9,7 +9,7 @@ import type { EnvConfig, EnvRef, RepoConfig } from '../shared/types'
 import type { AgentDef } from '../shared/agents'
 import { envImageTag, parseEnvDevcontainer, validateEnvConfig } from '../shared/envConfig'
 import type { EnvImageStatus } from '../shared/api'
-import { cloneDir, getWorkspace, overrideConfigPath, taskDir } from './store'
+import { cloneDir, getWorkspace, gurtRoot, overrideConfigPath, taskDir } from './store'
 import { listCredentials } from './credentials'
 import { hostGitAccess } from './git/env'
 import { forgeFeatures, forgeWrappers } from './git/providers'
@@ -689,6 +689,30 @@ const LIFECYCLE_BANNER = /Running (?:the \w+|'[^']*') from /
  *  prefixed with the VM's /host_mnt root. */
 const STALE_BIND_RE = /bind source path does not exist: (?:\/host_mnt)?(\/\S+)/
 
+/**
+ * Docker Desktop's VM caches path lookups per bind source and can keep a stale
+ * "missing" entry for a path that exists on the host, failing every `docker run`
+ * that binds it for tens of minutes. A host-side rename does not clear it;
+ * re-reading the paths from INSIDE the VM does. One container, all paths, ~1s.
+ */
+async function warmBindPaths(paths: string[], log: LogSink): Promise<void> {
+  const inside = paths
+    .filter((p) => p.startsWith(gurtRoot) && existsSync(p))
+    .map((p) => '/probe' + p.slice(gurtRoot.length))
+  if (!inside.length) return
+  // `ls -d` on each: cheap, forces the VM to traverse the full chain.
+  await run(
+    'docker',
+    [
+      'run', '--rm',
+      '--mount', `type=bind,source=${gurtRoot},target=/probe,readonly`,
+      'alpine', 'sh', '-c', `ls -d ${inside.map((p) => `'${p}'`).join(' ')}`
+    ],
+    log
+  ).catch(() => {}) // best-effort: never turn a warm-up failure into a start failure
+  log(`warmed Docker's path cache for ${inside.length} bind source(s)`)
+}
+
 export async function devcontainerUp(
   session: string,
   configArgs: string[],
@@ -760,15 +784,26 @@ export async function devcontainerUp(
   ]
   let announced = false
   const MAX_ATTEMPTS = 3
+  /** Waits before attempt 2 and 3. The stale window is time-sensitive and
+   *  self-heals on its own eventually — back-to-back retries seconds apart all
+   *  failed, so give the VM a moment after each warm-up. */
+  const BACKOFF_MS = [2_000, 5_000]
+  /** Every path this run has reported as missing. One `up` can report several
+   *  (the whole subtree goes stale together), and only the last attempt's
+   *  wording reaches the user, so accumulate across attempts. */
+  const stalePaths = new Set<string>()
   for (let attempt = 1; ; attempt++) {
-    let stalePath: string | undefined
+    let sawStale = false
     const watch: LogSink = (line) => {
       if (!announced && LIFECYCLE_BANNER.test(line)) {
         announced = true
         onPostCommands?.()
       }
       const staleMatch = STALE_BIND_RE.exec(line)
-      if (staleMatch) stalePath = staleMatch[1]
+      if (staleMatch) {
+        sawStale = true
+        stalePaths.add(staleMatch[1])
+      }
       log(line)
     }
     const { code, stdout } = await runNodeCli(args, watch)
@@ -778,13 +813,27 @@ export async function devcontainerUp(
       .find((l) => l.trim().startsWith('{'))
     const result = jsonLine ? JSON.parse(jsonLine) : undefined
     if (code !== 0 || result?.outcome !== 'success') {
-      if (attempt < MAX_ATTEMPTS && stalePath && existsSync(stalePath)) {
-        await fs.rename(stalePath, stalePath + '.cache-refresh')
-        await fs.rename(stalePath + '.cache-refresh', stalePath)
-        log(`refreshed Docker Desktop's stale path cache for ${stalePath}`)
+      // Anything that is not the stale-bind condition fails on the first
+      // attempt, exactly as it did before the retry existed.
+      if (!sawStale) throw new Error(result?.message ?? `devcontainer up failed (exit ${code})`)
+      if (attempt < MAX_ATTEMPTS) {
+        // Warm every bind source of this `up`, not just the reported one: the
+        // staleness covers a whole subtree, so the next path would fail next.
+        await warmBindPaths(
+          [workspaceFolder, ...extraMounts.map((m) => m.hostDir), ...stalePaths],
+          log
+        )
+        await new Promise((r) => setTimeout(r, BACKOFF_MS[attempt - 1] ?? 5_000))
         continue
       }
-      throw new Error(result?.message ?? `devcontainer up failed (exit ${code})`)
+      // The raw `docker run ...` command line the CLI reports says nothing
+      // about why it failed; lead with the cause and the way out instead.
+      throw new Error(
+        `container start failed: Docker could not see ${[...stalePaths].join(', ')} even ` +
+          `though it exists on the host (Docker Desktop's stale path cache). Retried ` +
+          `${MAX_ATTEMPTS}× with a cache warm-up. If this keeps happening, restart ` +
+          `Docker Desktop, or switch Settings → Resources → File sharing to gRPC FUSE.`
+      )
     }
     return {
       containerId: result.containerId,
