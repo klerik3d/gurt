@@ -16,6 +16,9 @@ import { createBus, type Bus } from './bus'
 import { ContainerManager } from './containers'
 import { SessionManager, type RestoredSession } from './sessions'
 import { createNotifications, type Notifications } from './notifications'
+import { createUsageLedger, type UsageLedger } from './usage'
+import { createPlanUsage, type PlanUsageStore } from './planUsage'
+import { listCredentials } from './credentials'
 import { createLogger, dropSessionLog, sessionLogLine } from './log'
 
 const log = createLogger('kernel')
@@ -40,6 +43,11 @@ export interface Kernel {
    *  rejects — a failed restore is logged, not thrown. */
   ready: Promise<void>
   notifications: Notifications
+  /** Per-turn agent accounting — what the dashboard's agent cards read. */
+  usage: UsageLedger
+  /** Provider-reported plan limits, cached. The one source that knows what is
+   *  *left*; `usage` only knows what gurt itself spent. */
+  planUsage: PlanUsageStore
   /** store.buildTree + session overlay. */
   tree(): Promise<Tree>
   deleteTask(ws: string, task: string): Promise<void>
@@ -148,6 +156,12 @@ export function createKernel(): Kernel {
   bus.on('session.proposal', ({ sessionId }) =>
     sessionLog.info('session.proposal', { s: sessionId, repos: sessions.sessionInfo(sessionId)?.repos })
   )
+  // Accounting, not content: `detail` carries the adapter's own stop/error
+  // prose and is deliberately left out — the failure itself is already logged
+  // by the turn that threw it.
+  bus.on('agent.turn', ({ sessionId, agent, kind, ms, outcome }) =>
+    sessionLog.info('agent.turn', { s: sessionId, agent, kind, ms, outcome })
+  )
   // Provisioning output is volume, and per session: it goes to that session's
   // own file and never to the app log.
   bus.on('provision.log', ({ key, line }) => sessionLogLine(key, line))
@@ -194,6 +208,19 @@ export function createKernel(): Kernel {
   const notifications = createNotifications(bus, NOTIFICATION_DEFAULTS, (id) =>
     sessions.sessionInfo(id)
   )
+
+  // Usage ledger: files every finished turn against the agent instance that
+  // served it. Wired here, next to notifications, for the same reason — both
+  // are pure bus subscribers that must exist before the first event fires.
+  const usage = createUsageLedger(bus)
+
+  // Plan limits, straight from the provider. Lazy by construction — nothing is
+  // polled until something asks, so a workspace with no dashboard open never
+  // touches the network.
+  const planUsage = createPlanUsage(bus, {
+    agents: () => store.getAgents(),
+    credentials: () => listCredentials()
+  })
 
   // Idle auto-stop policy: a session's container is stopped after it has sat
   // idle for a grace period; any activity cancels the pending stop. `noteIdle`
@@ -270,6 +297,8 @@ export function createKernel(): Kernel {
     sessions,
     ready,
     notifications,
+    usage,
+    planUsage,
 
     async tree(): Promise<Tree> {
       const t = await store.buildTree()

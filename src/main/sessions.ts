@@ -36,6 +36,7 @@ import { defaultAgentConfig, withFable } from '../shared/agentConfig'
 import type { AgentDef } from '../shared/agents'
 import type { CreateAction } from '../shared/api'
 import { taskKey } from '../shared/keys'
+import { limitResetAt, turnOutcome, usageFields } from '../shared/usage'
 import type { Bus } from './bus'
 import type { ContainerStatusReason, SessionStateReason } from '../shared/events'
 import type { LaunchContext } from './containers'
@@ -1280,9 +1281,14 @@ export class SessionManager {
     s.turns++
     this.bus.emit('session.changed', { sessionId: s.info.id })
     this.bus.emit('session.turn', { sessionId: s.info.id, ref: s.ref, phase: 'started' })
+    const startedAt = Date.now()
     // Defaults to "threw" (→ final=true) so an unexpected throw between here and
     // the assignments below never reports a user-visible turn end as non-final.
     let outcome: { stopReason?: string; threw: boolean } = { threw: true }
+    // What the accounting record reports as the turn's ending — a non-`end_turn`
+    // stop or the thrown error's message, i.e. exactly the text the limit
+    // detector needs to tell "the plan said no" from "the code broke".
+    let detail: string | undefined
     try {
       const conn = await this.attach(s)
       const result = await conn.peer.request<{ stopReason?: string }>('session/prompt', {
@@ -1291,26 +1297,59 @@ export class SessionManager {
       })
       const reason = result?.stopReason
       s.lastStopReason = reason
-      if (reason && reason !== 'end_turn')
+      if (reason && reason !== 'end_turn') {
         this.push(s, { kind: 'system', text: `stopped: ${reason}` })
+        detail = reason
+      }
       outcome = { stopReason: reason, threw: false }
       return outcome
     } catch (e) {
       s.lastStopReason = 'error'
       log.warn('turn failed', { s: s.info.id, err: e })
-      this.push(s, { kind: 'system', text: `error: ${e instanceof Error ? e.message : e}` })
+      detail = e instanceof Error ? e.message : String(e)
+      this.push(s, { kind: 'system', text: `error: ${detail}` })
       outcome = { threw: true }
       return outcome
     } finally {
       s.busy = false
       this.bus.emit('session.changed', { sessionId: s.info.id })
       this.schedulePersist(s.ref)
+      this.reportTurn(s, startedAt, outcome, detail)
       // False only for the nudge turn's own boundary — the healing follow-up
       // runPrompt is about to send, not the user-visible end of the turn. See
       // the `final` field on `session.turn` in shared/events.ts.
       const final = this.decideTurn(s, outcome, isNudge) !== 'nudge'
       this.bus.emit('session.turn', { sessionId: s.info.id, ref: s.ref, phase: 'ended', final })
     }
+  }
+
+  /**
+   * File one finished round-trip with the usage ledger. Accounting only: it
+   * never touches session state, and a kind it cannot resolve (an agent deleted
+   * from the registry mid-run) is recorded with an empty kind rather than
+   * dropped — the turn happened either way, and a card that shows it under
+   * "unknown agent" beats a window that silently under-counts.
+   */
+  private reportTurn(
+    s: Session,
+    startedAt: number,
+    outcome: { stopReason?: string; threw: boolean },
+    detail?: string
+  ): void {
+    const agent = s.info.agent ?? ''
+    this.bus.emit('agent.turn', {
+      ts: new Date().toISOString(),
+      agent,
+      kind: this.agentKinds.get(agent) ?? '',
+      sessionId: s.info.id,
+      workspace: s.ref.workspace,
+      task: s.ref.task,
+      ms: Date.now() - startedAt,
+      outcome: turnOutcome({ ...outcome, detail }),
+      ...usageFields(s.usage),
+      detail,
+      resetAt: limitResetAt(detail)
+    })
   }
 
   /** Post-turn decision for this session: `postTurnDecision` with the role's

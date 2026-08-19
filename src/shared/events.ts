@@ -7,6 +7,7 @@ import type {
   SessionState,
   StoredProposal
 } from './types'
+import type { TurnRecord } from './usage'
 import type { NotificationRecord } from './notifications'
 
 /** Why a container reached its new status — the "who asked for this" a status
@@ -80,6 +81,14 @@ export interface DomainEvents {
   /** A `complete` call with outcome=changes stored a proposal — the seam the
    *  committer stage will consume. */
   'session.proposal': { sessionId: string; ref: EnvRef; proposal: StoredProposal }
+  /** One `session/prompt` round-trip finished, as accounting: which agent
+   *  instance served it, how long it took, what the adapter reported, and how
+   *  it ended. Emitted for every turn including the turn-contract nudge — that
+   *  one is a round-trip of its own and costs the same quota. The usage ledger
+   *  is the only consumer; `session.turn` stays the lifecycle signal. */
+  'agent.turn': TurnRecord
+  /** The usage ledger grew or was pruned — the dashboard refetches. */
+  'usage.changed': void
   /** Provisioning output of one session's container; `key` is the session id. */
   'provision.log': { key: string; line: string }
   /** A bus event resolved into a user-facing notification (see

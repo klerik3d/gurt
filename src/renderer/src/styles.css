@@ -2691,3 +2691,300 @@ textarea.input {
 .notif-prefs-head {
   padding-bottom: 8px;
 }
+
+/* ---- dashboard ---------------------------------------------------------- */
+/* Same visual grammar as the task pane: seclabel headers, surface rows, the
+   status-dot tones from status.ts. The only new primitive is the window meter. */
+
+.dash {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.dash-body {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+  padding: 20px 20px 24px;
+}
+.dash-section {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  min-width: 0;
+}
+.dash-sec-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.dash-sec-head .seclabel {
+  letter-spacing: 0.14em;
+}
+.dash-sec-head.dash-sub {
+  margin-top: 10px;
+}
+.dash-sec-hint {
+  font-size: 11px;
+  color: var(--faint);
+}
+.dash-count {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--dim);
+}
+/* Two columns while there is room; one below that — the rows are dense and
+   wrap badly under ~900px of pane. */
+.dash-cols {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+  gap: 26px;
+  align-items: start;
+}
+.dash-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: 12px;
+}
+
+.dash-card {
+  display: flex;
+  flex-direction: column;
+  /* Wider than the 6px inside a window block, so a window's own history strip
+     reads as part of it rather than as a header for the next one. */
+  gap: 18px;
+  padding: 14px 16px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border2);
+  border-radius: 10px;
+}
+.dash-card-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 12.5px;
+}
+.dash-card-name {
+  font-weight: 500;
+}
+.dash-live {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--green);
+}
+.dash-note {
+  font-size: 11.5px;
+  color: var(--faint);
+}
+
+.dash-window {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.dash-window-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 11.5px;
+}
+.dash-window-label {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--text);
+  white-space: nowrap;
+}
+.dash-window-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+  flex-wrap: wrap;
+}
+
+/* Fill = elapsed window time, not consumed quota (see Dashboard.tsx). */
+.dash-meter {
+  position: relative;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--hover);
+  overflow: hidden;
+}
+.dash-meter-idle {
+  opacity: 0.5;
+}
+.dash-meter-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--accent);
+  opacity: 0.55;
+  border-radius: 3px;
+}
+/* Where the provider refused a turn inside this window. */
+.dash-meter-hit {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--red);
+}
+
+.dash-hist {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  /* Fixed-width bars, left-aligned: four windows stretched across the card
+     read as blocks, not as a strip you can compare at a glance. */
+  height: 22px;
+  margin-top: 4px;
+}
+.dash-hist-bar {
+  flex: none;
+  width: 13px;
+  border-radius: 2px 2px 0 0;
+  background: var(--border2);
+}
+.dash-hist-bar.open {
+  background: var(--accent);
+  opacity: 0.7;
+}
+.dash-hist-bar.limited {
+  background: var(--red);
+  opacity: 0.8;
+}
+
+.dash-rollups {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+}
+.dash-rollup {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.dash-rollup-label {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  color: var(--faint);
+}
+
+.dash-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  /* Wraps rather than squeezes: in the two-column layout a row can get narrow
+     enough that ellipsing the title *and* the task leaves neither readable. */
+  flex-wrap: wrap;
+  row-gap: 4px;
+  padding: 8px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  font-size: 12.5px;
+  min-width: 0;
+}
+.dash-row.clickable:hover,
+.dash-row:hover {
+  border-color: var(--border2);
+}
+.dash-row-title {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 0 1 auto;
+  min-width: 110px;
+}
+.dash-row-where {
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 0 1 auto;
+}
+.dash-row .agent-mark {
+  flex: none;
+  white-space: nowrap;
+}
+.dash-row-meta {
+  font-size: 11px;
+  white-space: nowrap;
+}
+.dash-row-act {
+  font-size: 11px;
+  flex: none;
+}
+
+/* Plan meters: the provider's own utilization, not gurt's estimate. Visually
+   heavier than the derived window meter above them — they are the real number. */
+.dash-plan {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.dash-plan-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+}
+.dash-plan-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11.5px;
+}
+.dash-plan-label {
+  flex: none;
+  width: 148px;
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dash-plan-meter {
+  display: block;
+  flex: 1;
+  min-width: 60px;
+}
+.dash-plan-pct {
+  flex: none;
+  width: 34px;
+  text-align: right;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.dash-plan-reset {
+  flex: none;
+  width: 92px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+/* Fill tone tracks how close the window is to its limit. */
+.dash-meter-fill.fill-accent {
+  background: var(--accent);
+  opacity: 0.7;
+}
+.dash-meter-fill.fill-yellow {
+  background: var(--yellow);
+  opacity: 0.8;
+}
+.dash-meter-fill.fill-red {
+  background: var(--red);
+  opacity: 0.85;
+}

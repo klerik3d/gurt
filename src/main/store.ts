@@ -21,6 +21,7 @@ import { agentDef } from '../shared/agents'
 import { defaultAgentConfig } from '../shared/agentConfig'
 import { validateEnvConfig } from '../shared/envConfig'
 import type { NotificationPrefs } from '../shared/notifications'
+import type { TurnRecord } from '../shared/usage'
 import { NOTIFICATION_DEFAULTS } from '../shared/notifications'
 import { createLogger } from './log'
 
@@ -535,14 +536,10 @@ async function drainAppends(dir: string): Promise<void> {
   }
 }
 
-/** Append records as JSONL lines. The file is only ever appended to, never rewritten. */
-export function appendSessionLog(
-  ws: string,
-  task: string,
-  sessionId: string,
-  records: SessionLogRecord[]
-): Promise<void> {
-  const file = sessionLogFile(ws, task, sessionId)
+/** Append records as JSONL lines, serialized per file so overlapping flushes
+ *  never interleave. The file is only ever appended to — a rewrite (the usage
+ *  ledger's prune) has to go through `rewriteJsonl`, which takes the same chain. */
+function appendJsonl(file: string, records: unknown[]): Promise<void> {
   const prev = appendChains.get(file) ?? Promise.resolve()
   const next = prev.then(async () => {
     await fs.mkdir(path.dirname(file), { recursive: true })
@@ -554,6 +551,31 @@ export function appendSessionLog(
     next.catch(() => {})
   )
   return next
+}
+
+/** Replace a JSONL file's contents, waiting for pending appends first so a
+ *  rewrite can never land between an append's mkdir and its write. */
+function rewriteJsonl(file: string, records: unknown[]): Promise<void> {
+  const prev = appendChains.get(file) ?? Promise.resolve()
+  const next = prev.then(async () => {
+    await fs.mkdir(path.dirname(file), { recursive: true })
+    await fs.writeFile(file, records.map((r) => JSON.stringify(r) + '\n').join(''))
+  })
+  appendChains.set(
+    file,
+    next.catch(() => {})
+  )
+  return next
+}
+
+/** Append records as JSONL lines. The file is only ever appended to, never rewritten. */
+export function appendSessionLog(
+  ws: string,
+  task: string,
+  sessionId: string,
+  records: SessionLogRecord[]
+): Promise<void> {
+  return appendJsonl(sessionLogFile(ws, task, sessionId), records)
 }
 
 /** Read a session's log; a missing file is an empty log, torn lines are skipped. */
@@ -588,6 +610,39 @@ export async function deleteSessionLog(ws: string, task: string, sessionId: stri
   await appendChains.get(file)
   appendChains.delete(file)
   await fs.rm(file, { force: true })
+}
+
+// --- usage ledger: ~/.gurt/usage.jsonl -------------------------------------
+// One line per finished agent turn, host-wide rather than per workspace: the
+// limits it accounts for belong to the agent's credential, which every
+// workspace shares.
+
+const usageFile = () => path.join(gurtRoot, 'usage.jsonl')
+
+export function appendUsage(records: TurnRecord[]): Promise<void> {
+  return appendJsonl(usageFile(), records)
+}
+
+/** The whole ledger, oldest first. A missing file is an empty ledger; a torn
+ *  trailing line from a crash mid-append is skipped, as in `readSessionLog`. */
+export async function readUsage(): Promise<TurnRecord[]> {
+  const raw = await fs.readFile(usageFile(), 'utf8').catch(() => '')
+  const out: TurnRecord[] = []
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue
+    try {
+      const rec = JSON.parse(line) as TurnRecord
+      if (typeof rec?.ts === 'string' && typeof rec?.ms === 'number') out.push(rec)
+    } catch {
+      // torn line — drop it
+    }
+  }
+  return out
+}
+
+/** Rewrite the ledger with exactly `records` — the prune's only writer. */
+export function writeUsage(records: TurnRecord[]): Promise<void> {
+  return rewriteJsonl(usageFile(), records)
 }
 
 /** Tree without sessions; the session manager overlays those. */
