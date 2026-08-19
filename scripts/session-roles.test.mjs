@@ -288,6 +288,53 @@ try {
   )
   console.log('create_session gating OK')
 
+  // --- create_session across tasks: researcher-only, task created if missing --
+  const spun = await kernel.sessions.createAgentDraft(spawner.id, {
+    role: 'executor',
+    repos: ['alpha'],
+    prompt: 'the out-of-scope work, spelled out',
+    task: 'spinoff'
+  })
+  const spunInfo = kernel.sessions.snapshot(spun.sessionId).info
+  assert.equal(spunInfo.task, 'spinoff', 'the draft lands in the named task')
+  assert.equal(spunInfo.state, 'draft', 'and is still a draft')
+  assert.ok(
+    fs.existsSync(path.join(GURT_ROOT, ws, 'spinoff', 'task.json')),
+    'the missing task was created on disk, marker and all'
+  )
+  assert.ok(
+    kernel.sessions
+      .snapshot(spawner.id)
+      .entries.some((e) => e.kind === 'system' && /drafted executor .* in task "spinoff"/.test(e.text)),
+    'the spawner’s timeline names the destination task'
+  )
+  // Drafting into a task that already exists just lands there — no "exists" error.
+  assert.equal(
+    kernel.sessions.snapshot(
+      (
+        await kernel.sessions.createAgentDraft(spawner.id, {
+          role: 'executor',
+          repos: ['alpha'],
+          prompt: 'p',
+          task: 'spinoff'
+        })
+      ).sessionId
+    ).info.task,
+    'spinoff',
+    'an existing task is drafted into as-is'
+  )
+  await rejects(
+    () => kernel.sessions.createAgentDraft(reviewer.id, { role: 'executor', repos: ['alpha'], prompt: 'p', task: 'spinoff' }),
+    /may only draft into its own task/,
+    'a reviewer never drafts across tasks — its fixer must hold this task’s clone'
+  )
+  await rejects(
+    () => kernel.sessions.createAgentDraft(spawner.id, { role: 'executor', repos: ['alpha'], prompt: 'p', task: 'a/b' }),
+    /must not contain/,
+    'an invalid task name is rejected, not written to disk'
+  )
+  console.log('create_session across tasks OK')
+
   // --- default title: named after the role, index only from the second on ----
   const task3 = 'naming'
   fs.mkdirSync(path.join(GURT_ROOT, ws, task3), { recursive: true })
