@@ -9,7 +9,8 @@ there is archived in `archive/`; the model mostly still applies).
 - **workspace** — top-level divider, a directory in `~/.gurt/<ws>/`
 - **repo** — registered per workspace: git URL + optional credential link;
   add/edit/delete via Settings → Repos
-- **agent** — an instance of a built-in kind (claude code / codex / opencode).
+- **agent** — an instance of a built-in kind (claude code / codex / gemini /
+  opencode).
   The registry starts empty; add instances as needed via ⚙ in the sidebar. Each
   maps to its secret by linking an `agent-token` credential (never storing it
   inline, like a repo's credential link); env var name + extra env are per-agent
@@ -118,6 +119,7 @@ session back to draft with the error shown, and does not block the queue.
 4. on the first connection into a container, the session's ACP adapter is
    npm-installed globally via `devcontainer exec` (claude:
    `@agentclientprotocol/claude-agent-acp`, codex: `@agentclientprotocol/codex-acp`,
+   gemini: `@google/gemini-cli` (run as `gemini --experimental-acp`),
    opencode: `opencode-ai`) — cached per **container id**, so a container that is
    stopped and restarted keeps its install and a replaced one reinstalls.
 5. ACP `session/new`, then the session's `startPrompt` is sent as the first

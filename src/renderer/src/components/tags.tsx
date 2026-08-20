@@ -12,6 +12,7 @@ import { Icon, type IconName } from './icons'
 const AGENT_ICONS: Record<string, IconName> = {
   'claude-code': 'agent-claude',
   codex: 'agent-codex',
+  gemini: 'agent-gemini',
   opencode: 'agent-opencode'
 }
 
