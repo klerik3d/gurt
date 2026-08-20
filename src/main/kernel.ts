@@ -26,6 +26,7 @@ import { createUsageLedger, type UsageLedger } from './usage'
 import { createPlanUsage, type PlanUsageStore } from './planUsage'
 import { listCredentials } from './credentials'
 import { resolveOAuthAccess } from './oauth'
+import { createPiiMask, type PiiManager } from './pii'
 import { createLogger, dropSessionLog, sessionLogLine } from './log'
 
 const log = createLogger('kernel')
@@ -61,6 +62,9 @@ export interface Kernel {
   /** Provider-reported plan limits, cached. The one source that knows what is
    *  *left*; `usage` only knows what gurt itself spent. */
   planUsage: PlanUsageStore
+  /** PII/secret masking of the ACP seam, plus the settings that configure it
+   *  (docs/requirements-pii-mask.md). */
+  pii: PiiManager
   /** store.buildTree + session overlay. */
   tree(): Promise<Tree>
   deleteTask(ws: string, task: string): Promise<void>
@@ -151,6 +155,11 @@ export function createKernel(): Kernel {
   // §8.2). The reason travels; the environment never does (§7).
   onMcpFailures((f) => bus.emit('mcp.fail', f))
 
+  // Masking sits under the session manager and is otherwise standalone: it owns
+  // its own settings file, its own pattern cache and the per-session keys, and
+  // nothing else in the kernel reads them.
+  const pii = createPiiMask({ credentials: () => listCredentials() })
+
   // Review state is standalone (no dependency back into sessions — the kernel
   // itself joins the two where they meet, at lock acquisition).
   const review = createReview()
@@ -229,7 +238,8 @@ export function createKernel(): Kernel {
       materializeSkills: (ws, task, sessionId, selection) =>
         store.materializeSessionSkills(ws, task, sessionId, selection)
     },
-    bus
+    bus,
+    pii
   )
 
   // --- log tap ------------------------------------------------------------
@@ -379,6 +389,11 @@ export function createKernel(): Kernel {
   async function restoreSessions(): Promise<void> {
     progress(0, 'loading settings')
     notifications.setPrefs(await store.getNotificationPrefs())
+    // Before any session can be started by the resumed queue: a session whose
+    // first prompt goes out before the backend has loaded would send it in the
+    // clear. `load` never rejects for a bad configuration — it records the
+    // reason and stays not-ready.
+    await pii.load().catch((e: unknown) => log.error('internal.fail', { site: 'pii-load', err: e }))
     // Before the scheduler's first pass: a lock taken in a previous run still
     // holds, and a queue resumed past it would start exactly what it excludes.
     await review.load()
@@ -443,6 +458,7 @@ export function createKernel(): Kernel {
     notifications,
     usage,
     planUsage,
+    pii,
 
     async tree(): Promise<Tree> {
       const t = await store.buildTree()

@@ -39,6 +39,7 @@ import {
 } from '../shared/skills'
 import type { NotificationPrefs } from '../shared/notifications'
 import { normalizeGcSettings, type GcSettings } from '../shared/gc'
+import type { PiiPatternCache, PiiSettings } from '../shared/pii'
 import type { TurnRecord } from '../shared/usage'
 import { NOTIFICATION_DEFAULTS } from '../shared/notifications'
 import type { HotkeyMap } from '../shared/hotkeys'
@@ -665,6 +666,41 @@ export async function getHotkeys(): Promise<HotkeyMap> {
 
 export async function setHotkeys(map: HotkeyMap): Promise<void> {
   await writeJson(hotkeysFile(), map)
+}
+
+// --- PII masking: settings + the fetched pattern cache (§4.1/§5.1) ----------
+
+const piiFile = () => path.join(gurtRoot, 'pii.json')
+const piiPatternsDir = () => path.join(gurtRoot, 'pii-patterns')
+const piiPatternFile = (source: string) => path.join(piiPatternsDir(), `${source}.json`)
+
+/** Masking settings; `{}` (nothing selected) is the honest "off" default. */
+export async function getPiiSettings(): Promise<PiiSettings> {
+  const raw = await readJson<PiiSettings>(piiFile(), {})
+  return raw && typeof raw === 'object' ? raw : {}
+}
+
+export async function setPiiSettings(settings: PiiSettings): Promise<void> {
+  await writeJson(piiFile(), settings)
+}
+
+/**
+ * Every cached pattern set on disk, by source id. Read once at boot: the
+ * network is only touched on first selection or an explicit refresh (§4.1), so
+ * this is what the built-in detector actually runs on.
+ */
+export async function readPiiPatterns(): Promise<Record<string, PiiPatternCache>> {
+  const out: Record<string, PiiPatternCache> = {}
+  for (const entry of await fs.readdir(piiPatternsDir(), { withFileTypes: true }).catch(() => [])) {
+    if (!entry.isFile() || !entry.name.endsWith('.json')) continue
+    const cache = await readJson<PiiPatternCache | null>(piiPatternFile(entry.name.slice(0, -5)), null)
+    if (cache?.source && Array.isArray(cache.patterns)) out[cache.source] = cache
+  }
+  return out
+}
+
+export async function writePiiPatterns(cache: PiiPatternCache): Promise<void> {
+  await writeJson(piiPatternFile(cache.source), cache)
 }
 
 export async function createWorkspace(name: string): Promise<void> {

@@ -217,6 +217,13 @@ function createSessionSchema(roles: SessionRole[], crossTask: boolean) {
           "OMIT IT to inherit this session's own skills, which is usually right. Pass a " +
           'list to narrow or replace them; pass [] for none.'
       ),
+    piiMask: z
+      .boolean()
+      .optional()
+      .describe(
+        'mask PII/secrets on the drafted session\'s own chat seam; forced on when this ' +
+          'session is masked, so it can only ever be raised here, never lowered'
+      ),
     configValues: z
       .record(z.string(), z.union([z.string(), z.boolean()]))
       .optional()

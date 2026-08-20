@@ -38,6 +38,7 @@ import {
   sessionRole,
   spawnableRoles
 } from '../shared/types'
+import { splitPendingToken } from '../shared/pii'
 import { defaultAgentConfig, withFable } from '../shared/agentConfig'
 import type { AgentDef } from '../shared/agents'
 import type { CreateAction } from '../shared/api'
@@ -49,6 +50,7 @@ import type { Bus } from './bus'
 import type { AdminHooks } from './mcp/gurtServer'
 import type { ContainerStatusReason, SessionStateReason } from '../shared/events'
 import type { LaunchContext } from './containers'
+import type { PiiMask } from './pii'
 import { lineBuffer, spawnAcpAdapter } from './provision'
 import { resolveProxyPlan } from './proxy/config'
 import type { ProxyConfig } from '../shared/proxy'
@@ -336,6 +338,10 @@ interface Session {
   turns: number
   /** `stopReason` of the last finished turn, for the same record. */
   lastStopReason?: string | undefined
+  /** Tail of the current agent/thought stream held back because it may be the
+   *  first half of a masking token (see `flushMask`). Only ever set for a
+   *  session that asked for masking. */
+  maskPending?: { kind: 'agent' | 'thought'; text: string } | undefined
   /** entry id -> resolver of a pending permission request. */
   pendingPermissions: Map<number, (outcome: unknown) => void>
 }
@@ -561,7 +567,11 @@ export class SessionManager {
 
   constructor(
     private events: SessionEvents,
-    private bus: Bus
+    private bus: Bus,
+    /** The ACP seam's masking layer (docs/requirements-pii-mask.md). Encodes the
+     *  outbound prompt, decodes everything arriving over `session/update` —
+     *  nothing else in this file touches real values differently. */
+    private mask: PiiMask
   ) {}
 
   private emitState(s: Session, reason?: SessionStateReason, err?: unknown): void {
@@ -736,7 +746,8 @@ export class SessionManager {
      *  seeding keys on; `[]` = chosen to be none, which it must not overwrite
      *  (docs/requirements-skills.md §4.3). */
     skills: SkillSelection[] | undefined = undefined,
-    network?: SessionNetwork
+    network?: SessionNetwork,
+    piiMask = false
   ): SessionInfo {
     const clean = sanitizeSessionNetwork(network)
     // Gate 1 of four (docs/requirements-session-operator.md §2.1): a session
@@ -774,6 +785,10 @@ export class SessionManager {
       // session created before this existed and one created with the default
       // read the same way everywhere downstream.
       ...(clean ? { network: clean } : {}),
+      // Stored as asked for, not as currently resolvable: configuring a
+      // detector backend later must switch masking on for the sessions that
+      // already asked for it, exactly the way `PiiMask.ready` gates it at use.
+      piiMask,
       startPrompt,
       ...(Object.keys(configValues).length ? { configValues } : {})
     }
@@ -883,6 +898,7 @@ export class SessionManager {
       role?: SessionRole
       repos?: string[]
       autoAllow?: boolean
+      piiMask?: boolean
       mcp?: McpSelection[]
       skills?: SkillSelection[]
       network?: SessionNetwork
@@ -917,6 +933,7 @@ export class SessionManager {
       // chip it was just given and come back up in the old mode.
       s.info.modeId = undefined
     }
+    if (patch.piiMask !== undefined) s.info.piiMask = patch.piiMask
     if (patch.mcp !== undefined) s.info.mcp = patch.mcp
     // Takes effect at the next start: the network flag decides how the session's
     // own network is created, and a live one cannot be edited in place (§7.2).
@@ -1054,7 +1071,8 @@ export class SessionManager {
       source.skills?.map((k) => ({ ...k })),
       // Through the sanitizer, which is also the deep copy: the two sessions
       // must not share a policy's domain array.
-      sanitizeSessionNetwork(source.network)
+      sanitizeSessionNetwork(source.network),
+      source.piiMask ?? false
     )
   }
 
@@ -1082,6 +1100,8 @@ export class SessionManager {
       // directory, so removing it any earlier races the daemon.
       .then(() => this.events.deleteScratch(workspace, task, sessionId))
     this.sessions.delete(sessionId)
+    // Its masking key goes with it — nothing else can decode what it produced.
+    this.mask.drop(sessionId)
     this.events.deleteLog(s.ref.workspace, s.ref.task, sessionId)
     this.events.stopGurtServer(sessionId)
     this.bus.emit('session.deleted', { sessionId })
@@ -1584,6 +1604,7 @@ export class SessionManager {
       if (s.ref.workspace !== ws || s.ref.task !== task) continue
       this.detach(id)
       this.events.stopGurtServer(id)
+      this.mask.drop(id)
       this.sessions.delete(id)
       this.bus.emit('session.deleted', { sessionId: id })
     }
@@ -1603,6 +1624,7 @@ export class SessionManager {
       if (s.ref.workspace !== ws) continue
       this.detach(id)
       this.events.stopGurtServer(id)
+      this.mask.drop(id)
       this.sessions.delete(id)
       this.bus.emit('session.deleted', { sessionId: id })
     }
@@ -1976,6 +1998,37 @@ export class SessionManager {
     }
   }
 
+  /**
+   * Whether this session's prompts are masked right now: the session asked for
+   * it *and* a detector backend resolves (§5.1's "nothing is masked while no
+   * backend is selected"). Decoding is deliberately not gated on this — see
+   * `PiiMask.decode`.
+   *
+   * Scope note (§7): this covers the ACP seam only. Tool calls the agent makes
+   * through its MCP servers — including gurt's own `complete`/`create_session`
+   * — still carry whatever the agent wrote, tokens included; masking that seam
+   * is a separate task.
+   */
+  private maskEnabled(s: Session): boolean {
+    return !!s.info.piiMask && this.mask.ready()
+  }
+
+  /**
+   * Emit whatever the stream decoder is holding back. Called when the stream
+   * ends (turn over) or is interrupted by anything that is not a chunk of the
+   * same kind — the held fragment has to land in its own entry, in order,
+   * rather than reappear after a tool call.
+   */
+  private flushMask(s: Session): void {
+    const pending = s.maskPending
+    if (!pending) return
+    s.maskPending = undefined
+    const text = this.mask.decode(s.info.id, pending.text)
+    const last = s.entries[s.entries.length - 1]
+    if (last && last.kind === pending.kind) this.append(s, { type: 'append', id: last.id, text })
+    else this.push(s, { kind: pending.kind, text })
+  }
+
   /** Build the ACP prompt content blocks: the message text, a `resource_link` for
    *  every attached context item, and an `image` block per attached image (only sent
    *  when the agent advertised `promptCapabilities.image`). Context paths are resolved
@@ -2032,11 +2085,15 @@ export class SessionManager {
     let detail: string | undefined
     try {
       const conn = await this.attach(s)
+      // The one outbound seam (§2.1): from here on the agent only ever sees
+      // tokens. Inside the try on purpose — a detector that is down must end
+      // the turn with a visible error, never silently send the cleartext.
+      const outbound = this.maskEnabled(s) ? await this.mask.encode(s.info.id, text) : text
       const result = await conn.peer.request(
         'session/prompt',
         {
           sessionId: s.acpSessionId,
-          prompt: this.promptBlocks(s, text, context, images)
+          prompt: this.promptBlocks(s, outbound, context, images)
         },
         PROMPT_RESULT
       )
@@ -2056,6 +2113,8 @@ export class SessionManager {
       outcome = { threw: true }
       return outcome
     } finally {
+      // The stream is over: nothing more is coming to complete a half-token.
+      this.flushMask(s)
       s.busy = false
       this.bus.emit('session.changed', { sessionId: s.info.id })
       this.schedulePersist(s.ref)
@@ -2266,7 +2325,11 @@ export class SessionManager {
       // Inherited, never chosen: a session running internal cannot draft one
       // with open egress (§6.2), and `AgentSessionRequest` has no field to ask
       // with — a rule the agent cannot express is one it cannot argue about.
-      sanitizeSessionNetwork(spawner.info.network)
+      sanitizeSessionNetwork(spawner.info.network),
+      // A masked session may not draft an unmasked one: the prompt it is
+      // handing over is its own text, and letting it opt the draft out would
+      // be a way around the seam that masked the spawner in the first place.
+      spawner.info.piiMask || (req.piiMask ?? false)
     )
     // `renameSession` mutates the same info object createSession stored.
     if (req.title?.trim()) this.renameSession(info.id, req.title)
@@ -2694,8 +2757,9 @@ export class SessionManager {
     }
   }
 
-  /** Flatten ACP tool-call content blocks into a plain-text preview. */
-  private toolDetail(content: AcpToolContent | undefined): string | undefined {
+  /** Flatten ACP tool-call content blocks into a plain-text preview — decoded,
+   *  like every other inbound field, before it reaches the timeline (§6). */
+  private toolDetail(s: Session, content: AcpToolContent | undefined): string | undefined {
     if (!content?.length) return undefined
     const parts: string[] = []
     for (const c of content) {
@@ -2705,7 +2769,7 @@ export class SessionManager {
         parts.push((c.content.text ?? '').slice(0, 2000))
       }
     }
-    return parts.length ? parts.join('\n') : undefined
+    return parts.length ? this.mask.decode(s.info.id, parts.join('\n')) : undefined
   }
 
   /**
@@ -2720,13 +2784,34 @@ export class SessionManager {
     const s = this.bySessionId(p.sessionId)
     if (!s || s.loading) return
     const raw = p.update
+    // Anything that is not more of the same stream ends it — flush first so a
+    // held fragment cannot jump ahead of a tool call.
+    if (
+      s.maskPending &&
+      raw.sessionUpdate !== 'agent_message_chunk' &&
+      raw.sessionUpdate !== 'agent_thought_chunk'
+    )
+      this.flushMask(s)
     switch (raw.sessionUpdate) {
       case 'agent_message_chunk':
       case 'agent_thought_chunk': {
         const u = parseOrDrop(TEXT_CHUNK, raw, raw.sessionUpdate)
         const kind = raw.sessionUpdate === 'agent_message_chunk' ? 'agent' : 'thought'
-        const text = u?.content?.type === 'text' ? (u.content.text ?? '') : ''
-        if (!text) return
+        const received = u?.content?.type === 'text' ? (u.content.text ?? '') : ''
+        if (!received) return
+        if (s.maskPending && s.maskPending.kind !== kind) this.flushMask(s)
+        let chunk: string = received
+        // Only a masked session buffers: for every other one this branch is
+        // skipped entirely and chunks reach the timeline byte for byte.
+        if (s.info.piiMask) {
+          const [ready, pending] = splitPendingToken((s.maskPending?.text ?? '') + received)
+          s.maskPending = pending ? { kind, text: pending } : undefined
+          if (!ready) return
+          chunk = ready
+        }
+        // Inbound seam (§2.1): the timeline — and therefore the chat view, the
+        // JSONL log and every notification built off it — only ever holds reals.
+        const text = this.mask.decode(s.info.id, chunk)
         const last = s.entries[s.entries.length - 1]
         if (last && last.kind === kind) {
           this.append(s, { type: 'append', id: last.id, text, at: Date.now() })
@@ -2738,11 +2823,11 @@ export class SessionManager {
       case 'tool_call': {
         const u = parseOrDrop(TOOL_CALL, raw, 'tool_call')
         if (!u) return
-        const detail = this.toolDetail(u.content)
+        const detail = this.toolDetail(s, u.content)
         this.push(s, {
           kind: 'tool',
           toolCallId: u.toolCallId,
-          title: u.title ?? u.kind ?? 'tool call',
+          title: this.mask.decode(s.info.id, u.title ?? u.kind ?? 'tool call'),
           status: u.status ?? 'pending',
           ...(u.kind ? { toolKind: u.kind } : {}),
           ...(detail ? { detail } : {}),
@@ -2755,13 +2840,13 @@ export class SessionManager {
         if (!u) return
         const entry = s.entries.find((e) => e.kind === 'tool' && e.toolCallId === u.toolCallId)
         if (entry && entry.kind === 'tool') {
-          const detail = this.toolDetail(u.content)
+          const detail = this.toolDetail(s, u.content)
           this.append(s, {
             type: 'patch',
             id: entry.id,
             patch: {
               ...(u.status ? { status: u.status } : {}),
-              ...(u.title ? { title: u.title } : {}),
+              ...(u.title ? { title: this.mask.decode(s.info.id, u.title) } : {}),
               ...(detail ? { detail } : {}),
               ...(isTerminalToolStatus(u.status) && entry.endAt == null ? { endAt: Date.now() } : {})
             }

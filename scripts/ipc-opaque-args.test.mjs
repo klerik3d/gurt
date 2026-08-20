@@ -193,7 +193,10 @@ const SAFE_ARGS = new Set([
   // A map of action id -> key code/booleans; no prose ever passes through it.
   'getHotkeys',
   'setHotkeys',
-  'setGcSettings'
+  'setGcSettings',
+  // No args, and a pattern-source id from a fixed registry.
+  'getPiiStatus',
+  'refreshPiiSource'
 ])
 
 /**

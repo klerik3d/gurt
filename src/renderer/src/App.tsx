@@ -486,26 +486,35 @@ export default function App() {
   // cannot exist outside one (the IPC boundary requires it, ipc.ts).
   const createDraft = useCallback(
     (wsName: string, task: string) => {
+      // A new draft follows the global masking setting: on whenever a detector
+      // backend resolves (docs/requirements-pii-mask.md §5.2). An unreadable
+      // status is "not ready", never a reason to fail the draft.
       window.gurt
-        .createSession(
-          { workspace: wsName, task, env: '' },
-          [],
-          '',
-          '',
-          'draft',
-          [],
-          true,
-          {},
-          'executor',
-          // Nothing picked yet, not "none picked": the config tab seeds the
-          // workspace's `defaultSkills` into a draft that has never chosen
-          // (docs/requirements-skills.md §4.2).
-          [],
-          // Internal by default: the mode that actually enforces the allow list
-          // is the one a session gets without asking for it. A draft that needs
-          // its own route out (SSH git, a process that ignores HTTP_PROXY)
-          // turns it off on the Config tab's Network toggle.
-          { internal: true }
+        .getPiiStatus()
+        .then((st) => st.ready)
+        .catch(() => false)
+        .then((piiMask) =>
+          window.gurt.createSession(
+            { workspace: wsName, task, env: '' },
+            [],
+            '',
+            '',
+            'draft',
+            [],
+            true,
+            {},
+            'executor',
+            // Nothing picked yet, not "none picked": the config tab seeds the
+            // workspace's `defaultSkills` into a draft that has never chosen
+            // (docs/requirements-skills.md §4.2).
+            [],
+            // Internal by default: the mode that actually enforces the allow list
+            // is the one a session gets without asking for it. A draft that needs
+            // its own route out (SSH git, a process that ignores HTTP_PROXY)
+            // turns it off on the Config tab's Network toggle.
+            { internal: true },
+            piiMask
+          )
         )
         .then((s) => selectSession(s.id))
         .catch((e: unknown) => alertDialog(e instanceof Error ? e.message : String(e)))
