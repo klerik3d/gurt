@@ -44,6 +44,7 @@ export function rewriteRules(host: string, kind: CredentialKind): ConfigPair[] {
       return [[`url.ssh://git@${host}/.insteadOf`, `https://${host}/`]]
     case 'git-host':
     case 'agent-token':
+    case 'pii-detector':
       // Not a git transport — the broker never resolves to it (§6.1).
       return []
   }

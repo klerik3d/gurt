@@ -26,6 +26,7 @@ import type {
 import type { CredentialsFile } from './credentials'
 import type { DomainEvents } from './events'
 import type { McpDef } from './mcp'
+import type { PiiSettings, PiiStatus } from './pii'
 import type { TurnRecord } from './usage'
 import type { PlanUsage } from './planUsage'
 import type { NotificationPrefs, NotificationRecord } from './notifications'
@@ -59,6 +60,8 @@ export interface SessionDraftPatch {
   repos?: string[]
   autoAllow?: boolean
   gitAccess?: boolean
+  /** Mask this draft's ACP seam (docs/requirements-pii-mask.md). */
+  piiMask?: boolean
   mcp?: McpSelection[]
   startPrompt?: string
   /** Config-option picks (model, effort, …), keyed by option id. */
@@ -190,7 +193,10 @@ export interface GurtApi {
     gitAccess: boolean,
     configValues: Record<string, string | boolean>,
     /** What the session is for — executor unless told otherwise. */
-    role: SessionRole
+    role: SessionRole,
+    /** Mask PII/secrets on this session's ACP seam; only effective while a
+     *  detector backend is configured (see `getPiiStatus`). */
+    piiMask: boolean
   ): Promise<SessionInfo>
   sessionRun(id: string): Promise<void>
   sessionEnqueue(id: string): Promise<void>
@@ -242,6 +248,15 @@ export interface GurtApi {
    *  in main. Calling this may poll the network; it never rejects for a failed
    *  poll — the record carries `error` and the previous windows. */
   getPlanUsage(): Promise<Record<string, PlanUsage>>
+  /** Masking settings + whether masking can actually run (Settings → Masking,
+   *  and the New Session chip's enabled/disabled state). Never polls. */
+  getPiiStatus(): Promise<PiiStatus>
+  /** Save the masking settings; fetches a newly-picked pattern source and, for
+   *  a local presidio backend, brings its sidecar up. Returns the new status. */
+  setPiiSettings(settings: PiiSettings): Promise<PiiStatus>
+  /** Re-fetch one pattern source at its pinned ref and re-adapt it (§4.1) —
+   *  the "check for updates" action. Rejects when the fetch fails. */
+  refreshPiiSource(sourceId: string): Promise<PiiStatus>
 }
 
 /** Compile-checked to cover `GurtApi` exactly: a missing method fails the
@@ -316,7 +331,10 @@ const METHODS = {
   getNotificationPrefs: true,
   setNotificationPrefs: true,
   getUsage: true,
-  getPlanUsage: true
+  getPlanUsage: true,
+  getPiiStatus: true,
+  setPiiSettings: true,
+  refreshPiiSource: true
 } as const satisfies Record<keyof GurtApi, true>
 
 /** Runtime method list; `api:<method>` is the IPC channel per entry. */

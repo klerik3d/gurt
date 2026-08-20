@@ -23,6 +23,7 @@ import {
 import type { CredentialEntry } from '../../../shared/credentials'
 import { hasManagedCredential, resolveForRepo } from '../../../shared/credentials'
 import type { McpDef } from '../../../shared/mcp'
+import type { PiiStatus } from '../../../shared/pii'
 import { agentOptionView } from '../../../shared/agentConfig'
 import type { Selection } from '../App'
 import { agentKind, agentName, useAgents } from '../useAgents'
@@ -735,6 +736,13 @@ export function NewSessionModal({
   const [autoAllow, setAutoAllow] = useState(edit?.autoAllow ?? true)
   /** Native git access injection — off by default; the user opts in per session. */
   const [gitAccess, setGitAccess] = useState(edit?.gitAccess ?? false)
+  /** Mask PII/secrets across this session's ACP seam. Unlike git access this
+   *  defaults *on* once a detector backend resolves — same "on when it
+   *  resolves" precedent, applied to the safer side. */
+  const [piiMask, setPiiMask] = useState(edit?.piiMask ?? false)
+  /** Global masking config; null until it loads. `ready` is what makes the chip
+   *  usable at all (docs/requirements-pii-mask.md §5.2). */
+  const [piiStatus, setPiiStatus] = useState<PiiStatus | null>(null)
   /** The selected agent's cached config surface (models/effort/commands). */
   const [agentConfig, setAgentConfig] = useState<AgentConfig | null>(null)
   /** Config-option picks keyed by option id; empty = agent defaults. */
@@ -764,6 +772,15 @@ export function NewSessionModal({
     })
     window.gurt.getMcpDefs().then(setMcpDefs)
     window.gurt.getCredentials().then((f) => setCredentials(f.credentials)).catch(() => {})
+    window.gurt
+      .getPiiStatus()
+      .then((st) => {
+        setPiiStatus(st)
+        // A new session follows the global setting; an existing draft keeps
+        // whatever it was saved with.
+        if (!editing) setPiiMask(st.ready)
+      })
+      .catch(() => {})
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -899,6 +916,15 @@ export function NewSessionModal({
   // broker is scoped to one repo for a container's whole lifetime, and a
   // read-only role could not write with it anyway.
   const gitAccessApplies = repos.length <= 1 && !roleIsReadOnly(role)
+  // The chip is offered on every session — masking is about the ACP seam, which
+  // every role has — but is *disabled* (not merely unchecked) until a detector
+  // backend is configured, with the reason shown inline (§5.2).
+  const piiMaskApplies = !!piiStatus?.ready
+  const piiNote = piiMaskApplies
+    ? piiMask
+      ? 'the agent sees <TYPE:…> tokens; your chat always shows the real values'
+      : 'the agent sees everything you type, as you typed it'
+    : (piiStatus?.reason ?? 'reading masking settings…')
   const repoCfg = repos.length === 1 ? allRepos.find((r) => r.name === repos[0]) : undefined
   const gitResolution = repoCfg ? resolveForRepo(credentials, repoCfg) : null
   const gitCredNote = gitResolution
@@ -923,6 +949,9 @@ export function NewSessionModal({
         // Never true where the broker cannot be wired up: across several repos,
         // or on a read-only role's clone.
         gitAccess: gitAccessApplies && gitAccess,
+        // Never on where nothing could mask: the setting would read as a
+        // guarantee the session cannot keep.
+        piiMask: piiMaskApplies && piiMask,
         mcp: mcpSelection(),
         startPrompt: prompt,
         configValues
@@ -949,7 +978,8 @@ export function NewSessionModal({
         autoAllow,
         gitAccessApplies && gitAccess,
         configValues,
-        role
+        role,
+        piiMaskApplies && piiMask
       )
       onCreated(s)
     } catch (e) {
@@ -968,6 +998,7 @@ export function NewSessionModal({
     modelOpt && selectedName(modelOpt),
     effortOpt && selectedName(effortOpt),
     autoAllow ? 'auto' : 'manual',
+    piiMaskApplies && piiMask ? 'masked' : null,
     `${mcpCount} mcp`
   ]
     .filter(Boolean)
@@ -1306,6 +1337,28 @@ export function NewSessionModal({
                     {gitCredNote && <div className="hc-note">{gitCredNote}</div>}
                   </div>
                 )}
+                <div className="hc-block">
+                  <span className="seclabel">PII MASK</span>
+                  <div className="chip-row">
+                    <button
+                      className={`chip-btn ${piiMask && piiMaskApplies ? 'on' : ''}`}
+                      disabled={!piiMaskApplies}
+                      onClick={() => setPiiMask(true)}
+                      title="replace detected PII/secrets with tokens before the agent sees them"
+                    >
+                      on
+                    </button>
+                    <button
+                      className={`chip-btn ${!piiMask || !piiMaskApplies ? 'on' : ''}`}
+                      disabled={!piiMaskApplies}
+                      onClick={() => setPiiMask(false)}
+                      title="send what you type, unchanged"
+                    >
+                      off
+                    </button>
+                  </div>
+                  <div className="hc-note">{piiNote}</div>
+                </div>
                 {mcpDefs.length > 0 && (
                   <div className="hc-block">
                     <span className="seclabel">MCP SERVERS</span>

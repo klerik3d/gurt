@@ -248,6 +248,9 @@ export interface AgentSessionRequest {
   agent?: string
   autoAllow?: boolean
   gitAccess?: boolean
+  /** Mask PII/secrets on this draft's own ACP seam. A masked spawner's drafts
+   *  are always masked whatever this says — see `createAgentDraft`. */
+  piiMask?: boolean
   configValues?: Record<string, string | boolean>
 }
 
@@ -282,6 +285,18 @@ export interface SessionInfo {
    * first start of the (env, agent) adapter this session shares (§6).
    */
   gitAccess?: boolean
+  /**
+   * Mask PII and secrets across this session's ACP seam
+   * (docs/requirements-pii-mask.md): the prompt text reaching the agent carries
+   * `<TYPE:ciphertext>` tokens instead of the real values, and everything the
+   * agent says back is decoded before it enters the timeline. The user's chat
+   * view therefore always shows reals; the agent's context never does.
+   *
+   * Only effective while a detector backend is configured in Settings →
+   * Masking — the two are resolved together (`PiiMask.ready`), the same way
+   * `gitAccess` only means anything once a credential resolves.
+   */
+  piiMask?: boolean
   /** First prompt, sent automatically when the session starts. */
   startPrompt: string
   /**

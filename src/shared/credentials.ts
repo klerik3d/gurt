@@ -7,7 +7,13 @@
 import type { RepoConfig } from './types'
 import { canonicalRepoId } from './repoId'
 
-export type CredentialKind = 'git-token' | 'git-ssh-key' | 'git-app' | 'git-host' | 'agent-token'
+export type CredentialKind =
+  | 'git-token'
+  | 'git-ssh-key'
+  | 'git-app'
+  | 'git-host'
+  | 'agent-token'
+  | 'pii-detector'
 
 export interface CredentialEntry {
   /** uuid, stable — configs link by this. */
@@ -113,6 +119,18 @@ export const CREDENTIAL_KINDS: CredentialKindDef[] = [
     implemented: false
   },
   {
+    kind: 'pii-detector',
+    label: 'pii detector',
+    hint:
+      'URL + api key of an external PII detector (a Presidio analyzer you run). ' +
+      'Linked from ⚙ Masking; not a git host, so it needs no hosts.',
+    fields: [
+      { key: 'url', label: 'analyzer url', placeholder: 'https://presidio.internal:3000' },
+      { key: 'apiKey', label: 'api key (optional)', secret: true, placeholder: '' }
+    ],
+    implemented: true
+  },
+  {
     kind: 'agent-token',
     label: 'agent token',
     hint:
@@ -126,7 +144,12 @@ export const CREDENTIAL_KINDS: CredentialKindDef[] = [
 ]
 
 /** Whether a kind matches a git host (auto-match, forge verification, hosts field). */
-export const isGitKind = (kind: CredentialKind): boolean => kind !== 'agent-token'
+export const isGitKind = (kind: CredentialKind): boolean =>
+  kind !== 'agent-token' && kind !== 'pii-detector'
+
+/** pii-detector entries — the pool Settings → Masking links against (§5.3). */
+export const piiCredentials = (credentials: CredentialEntry[]): CredentialEntry[] =>
+  credentials.filter((c) => c.kind === 'pii-detector')
 
 /** Agent-token entries — the pool the Agents editor links against. */
 export const agentCredentials = (credentials: CredentialEntry[]): CredentialEntry[] =>

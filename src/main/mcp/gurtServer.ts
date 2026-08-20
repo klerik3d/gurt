@@ -157,6 +157,13 @@ function createSessionSchema(roles: SessionRole[], crossTask: boolean) {
     agent: z.string().min(1).optional().describe("agent instance id; defaults to this session's"),
     autoAllow: z.boolean().optional().describe('auto-allow the tool calls of the drafted session'),
     gitAccess: z.boolean().optional().describe('native git/gh in its container (executor only)'),
+    piiMask: z
+      .boolean()
+      .optional()
+      .describe(
+        'mask PII/secrets on the drafted session\'s own chat seam; forced on when this ' +
+          'session is masked, so it can only ever be raised here, never lowered'
+      ),
     configValues: z
       .record(z.string(), z.union([z.string(), z.boolean()]))
       .optional()

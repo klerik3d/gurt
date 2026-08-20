@@ -203,7 +203,8 @@ export function registerIpc(): void {
       autoAllow,
       gitAccess,
       configValues,
-      role
+      role,
+      piiMask
     ) => {
       // The session's first persist mkdir -p's its way into the task directory,
       // so a stale or in-flight task name from the renderer would silently
@@ -223,7 +224,8 @@ export function registerIpc(): void {
         autoAllow,
         gitAccess,
         configValues,
-        role
+        role,
+        !!piiMask
       )
     },
     sessionRun: async (id) => kernel.sessions.run(id),
@@ -273,7 +275,10 @@ export function registerIpc(): void {
       await kernel.usage.ready
       return kernel.usage.list()
     },
-    getPlanUsage: () => kernel.planUsage.get()
+    getPlanUsage: () => kernel.planUsage.get(),
+    getPiiStatus: async () => kernel.pii.status(),
+    setPiiSettings: (settings) => kernel.pii.setSettings(settings),
+    refreshPiiSource: (sourceId) => kernel.pii.refreshSource(sourceId)
   }
 
   // Renderer records: validated, rate-limited and truncated inside `logRenderer`

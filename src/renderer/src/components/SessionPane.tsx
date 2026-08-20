@@ -140,6 +140,11 @@ function NonStartedPane({
             )}
             <span className="tag">{info.autoAllow === false ? 'manual' : 'auto'}</span>
             {info.gitAccess && <span className="tag tag-green">git</span>}
+            {info.piiMask && (
+              <span className="tag" title="PII/secrets are masked on the way to the agent">
+                masked
+              </span>
+            )}
             {info.mcp?.map((m) => (
               <span key={m.id} className="tag tag-accent" title={`MCP ${m.id} · ${m.mode}`}>
                 {m.id}

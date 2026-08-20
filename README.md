@@ -188,6 +188,36 @@ SSH keys (phase 2) and GitHub App tokens + agent-secret migration (phase 3) reus
 the same broker/shim/provider seams; their credential kinds appear in the modal but
 are not wired to the runtime yet.
 
+## PII / secret masking
+
+Optional per-session (`pii mask` chip in the composer; default on once a
+detector backend is configured, disabled outright while none is). It sits on the
+**ACP seam** and nowhere else: the prompt text going out to the agent is scanned
+and every entity found is replaced with a `<TYPE:ciphertext>` token, and
+everything coming back — message and thought chunks, tool titles and details —
+is decoded before it enters the timeline. So the agent's context only ever holds
+tokens while your chat view only ever holds the real values. See
+[docs/requirements-pii-mask.md](docs/requirements-pii-mask.md).
+
+- **Key policy**: gurt generates the AES-256-GCM key itself, per session, on the
+  host, and never accepts one from anywhere else. It lives in memory only — a
+  token from a finished session stops being decodable once the app exits, which
+  is the intended auto-expiry, not a bug.
+- **Detection** is pluggable behind one `detect(text) -> spans` interface.
+  Settings → Masking picks the backend: `built-in` (regex + checksum, in
+  process) or `presidio` (a local docker sidecar gurt runs, or a remote analyzer
+  linked to a `pii-detector` credential). No backend selected *is* off.
+- **Patterns are not vendored.** The built-in detector runs whichever public
+  collection you pick — CommonRegex, Presidio's own recognizers, gitleaks' rules
+  — fetched at runtime from a **pinned commit/tag** (never a branch), adapted by
+  a small per-source parser, and cached under `~/.gurt/pii-patterns/`. The
+  network is only touched on first selection or an explicit "check for updates".
+
+Out of scope in this pass: the agent ↔ MCP tool seam (tool calls still carry
+whatever the agent wrote, tokens included), free-text NER in the built-in
+detector, and PII in repository files the agent reads with its own in-container
+tools.
+
 ## Run
 
 ```bash

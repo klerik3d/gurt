@@ -32,6 +32,7 @@ import {
   sessionRole,
   spawnableRoles
 } from '../shared/types'
+import { splitPendingToken } from '../shared/pii'
 import { defaultAgentConfig, withFable } from '../shared/agentConfig'
 import type { AgentDef } from '../shared/agents'
 import type { CreateAction } from '../shared/api'
@@ -40,6 +41,7 @@ import { limitResetAt, turnOutcome, usageFields } from '../shared/usage'
 import type { Bus } from './bus'
 import type { ContainerStatusReason, SessionStateReason } from '../shared/events'
 import type { LaunchContext } from './containers'
+import type { PiiMask } from './pii'
 import { lineBuffer, spawnAcpAdapter } from './provision'
 import { JsonRpcPeer } from './jsonrpc'
 import { createLogger, errCtx } from './log'
@@ -179,6 +181,10 @@ interface Session {
   turns: number
   /** `stopReason` of the last finished turn, for the same record. */
   lastStopReason?: string
+  /** Tail of the current agent/thought stream held back because it may be the
+   *  first half of a masking token (see `flushMask`). Only ever set for a
+   *  session that asked for masking. */
+  maskPending?: { kind: 'agent' | 'thought'; text: string }
   /** entry id -> resolver of a pending permission request. */
   pendingPermissions: Map<number, (outcome: unknown) => void>
 }
@@ -330,7 +336,11 @@ export class SessionManager {
 
   constructor(
     private events: SessionEvents,
-    private bus: Bus
+    private bus: Bus,
+    /** The ACP seam's masking layer (docs/requirements-pii-mask.md). Encodes the
+     *  outbound prompt, decodes everything arriving over `session/update` —
+     *  nothing else in this file touches real values differently. */
+    private mask: PiiMask
   ) {}
 
   private emitState(s: Session, reason?: SessionStateReason, err?: unknown): void {
@@ -474,7 +484,8 @@ export class SessionManager {
     autoAllow = true,
     gitAccess = false,
     configValues: Record<string, string | boolean> = {},
-    role: SessionRole = 'executor'
+    role: SessionRole = 'executor',
+    piiMask = false
   ): SessionInfo {
     // A session cannot run or enqueue without a repo (the UI disables those, but
     // the IPC boundary enforces it too). A draft with no repo is allowed.
@@ -503,6 +514,10 @@ export class SessionManager {
       // A read-only role cannot use the git broker: its clone is mounted
       // `readonly`, so native git would fail on the first write anyway.
       gitAccess: gitAccess && !roleIsReadOnly(role),
+      // Stored as asked for, not as currently resolvable: configuring a
+      // detector backend later must switch masking on for the sessions that
+      // already asked for it, exactly the way `PiiMask.ready` gates it at use.
+      piiMask,
       startPrompt,
       configValues: Object.keys(configValues).length ? configValues : undefined
     }
@@ -586,6 +601,7 @@ export class SessionManager {
       repos?: string[]
       autoAllow?: boolean
       gitAccess?: boolean
+      piiMask?: boolean
       mcp?: McpSelection[]
       startPrompt?: string
       configValues?: Record<string, string | boolean>
@@ -600,6 +616,7 @@ export class SessionManager {
     if (patch.agent !== undefined) s.info.agent = patch.agent
     if (patch.autoAllow !== undefined) s.info.autoAllow = patch.autoAllow
     if (patch.gitAccess !== undefined) s.info.gitAccess = patch.gitAccess
+    if (patch.piiMask !== undefined) s.info.piiMask = patch.piiMask
     if (patch.mcp !== undefined) s.info.mcp = patch.mcp
     if (patch.startPrompt !== undefined) s.info.startPrompt = patch.startPrompt
     if (patch.configValues !== undefined)
@@ -654,7 +671,8 @@ export class SessionManager {
       source.autoAllow ?? true,
       source.gitAccess ?? false,
       { ...(source.configValues ?? {}) },
-      sessionRole(source)
+      sessionRole(source),
+      source.piiMask ?? false
     )
     // The copy is recognisable as one instead of taking the next free
     // role-index name — the source is usually still in the tree right above it.
@@ -687,6 +705,8 @@ export class SessionManager {
       // directory, so removing it any earlier races the daemon.
       .then(() => this.events.deleteScratch(workspace, task, sessionId))
     this.sessions.delete(sessionId)
+    // Its masking key goes with it — nothing else can decode what it produced.
+    this.mask.drop(sessionId)
     this.events.deleteLog(s.ref.workspace, s.ref.task, sessionId)
     this.events.stopGurtServer(sessionId)
     this.bus.emit('session.deleted', { sessionId })
@@ -1020,6 +1040,7 @@ export class SessionManager {
       if (s.ref.workspace !== ws || s.ref.task !== task) continue
       this.detach(id)
       this.events.stopGurtServer(id)
+      this.mask.drop(id)
       this.sessions.delete(id)
       this.bus.emit('session.deleted', { sessionId: id })
     }
@@ -1039,6 +1060,7 @@ export class SessionManager {
       if (s.ref.workspace !== ws) continue
       this.detach(id)
       this.events.stopGurtServer(id)
+      this.mask.drop(id)
       this.sessions.delete(id)
       this.bus.emit('session.deleted', { sessionId: id })
     }
@@ -1350,6 +1372,37 @@ export class SessionManager {
     }
   }
 
+  /**
+   * Whether this session's prompts are masked right now: the session asked for
+   * it *and* a detector backend resolves (§5.1's "nothing is masked while no
+   * backend is selected"). Decoding is deliberately not gated on this — see
+   * `PiiMask.decode`.
+   *
+   * Scope note (§7): this covers the ACP seam only. Tool calls the agent makes
+   * through its MCP servers — including gurt's own `complete`/`create_session`
+   * — still carry whatever the agent wrote, tokens included; masking that seam
+   * is a separate task.
+   */
+  private maskEnabled(s: Session): boolean {
+    return !!s.info.piiMask && this.mask.ready()
+  }
+
+  /**
+   * Emit whatever the stream decoder is holding back. Called when the stream
+   * ends (turn over) or is interrupted by anything that is not a chunk of the
+   * same kind — the held fragment has to land in its own entry, in order,
+   * rather than reappear after a tool call.
+   */
+  private flushMask(s: Session): void {
+    const pending = s.maskPending
+    if (!pending) return
+    s.maskPending = undefined
+    const text = this.mask.decode(s.info.id, pending.text)
+    const last = s.entries[s.entries.length - 1]
+    if (last && last.kind === pending.kind) this.append(s, { type: 'append', id: last.id, text })
+    else this.push(s, { kind: pending.kind, text })
+  }
+
   /** Build the ACP prompt content blocks: the message text, a `resource_link` for
    *  every attached context item, and an `image` block per attached image (only sent
    *  when the agent advertised `promptCapabilities.image`). Context paths are resolved
@@ -1406,9 +1459,13 @@ export class SessionManager {
     let detail: string | undefined
     try {
       const conn = await this.attach(s)
+      // The one outbound seam (§2.1): from here on the agent only ever sees
+      // tokens. Inside the try on purpose — a detector that is down must end
+      // the turn with a visible error, never silently send the cleartext.
+      const outbound = this.maskEnabled(s) ? await this.mask.encode(s.info.id, text) : text
       const result = await conn.peer.request<{ stopReason?: string }>('session/prompt', {
         sessionId: s.acpSessionId,
-        prompt: this.promptBlocks(s, text, context, images)
+        prompt: this.promptBlocks(s, outbound, context, images)
       })
       const reason = result?.stopReason
       s.lastStopReason = reason
@@ -1426,6 +1483,8 @@ export class SessionManager {
       outcome = { threw: true }
       return outcome
     } finally {
+      // The stream is over: nothing more is coming to complete a half-token.
+      this.flushMask(s)
       s.busy = false
       this.bus.emit('session.changed', { sessionId: s.info.id })
       this.schedulePersist(s.ref)
@@ -1603,7 +1662,11 @@ export class SessionManager {
       req.autoAllow ?? spawner.info.autoAllow ?? true,
       req.gitAccess ?? false,
       req.configValues ?? spawner.info.configValues ?? {},
-      req.role
+      req.role,
+      // A masked session may not draft an unmasked one: the prompt it is
+      // handing over is its own text, and letting it opt the draft out would
+      // be a way around the seam that masked the spawner in the first place.
+      spawner.info.piiMask || (req.piiMask ?? false)
     )
     // `renameSession` mutates the same info object createSession stored.
     if (req.title?.trim()) this.renameSession(info.id, req.title)
@@ -1853,8 +1916,9 @@ export class SessionManager {
     }
   }
 
-  /** Flatten ACP tool-call content blocks into a plain-text preview. */
-  private toolDetail(content: any[] | undefined): string | undefined {
+  /** Flatten ACP tool-call content blocks into a plain-text preview — decoded,
+   *  like every other inbound field, before it reaches the timeline (§6). */
+  private toolDetail(s: Session, content: any[] | undefined): string | undefined {
     if (!content?.length) return undefined
     const parts: string[] = []
     for (const c of content) {
@@ -1864,19 +1928,36 @@ export class SessionManager {
         parts.push(String(c.content.text).slice(0, 2000))
       }
     }
-    return parts.length ? parts.join('\n') : undefined
+    return parts.length ? this.mask.decode(s.info.id, parts.join('\n')) : undefined
   }
 
   private onSessionUpdate(params: any): void {
     const s = this.bySessionId(params?.sessionId)
     if (!s || s.loading) return
     const u = params.update ?? {}
+    // Anything that is not more of the same stream ends it — flush first so a
+    // held fragment cannot jump ahead of a tool call.
+    if (u.sessionUpdate !== 'agent_message_chunk' && u.sessionUpdate !== 'agent_thought_chunk')
+      this.flushMask(s)
     switch (u.sessionUpdate) {
       case 'agent_message_chunk':
       case 'agent_thought_chunk': {
         const kind = u.sessionUpdate === 'agent_message_chunk' ? 'agent' : 'thought'
-        const text = u.content?.type === 'text' ? u.content.text : ''
-        if (!text) return
+        const raw = u.content?.type === 'text' ? u.content.text : ''
+        if (!raw) return
+        if (s.maskPending && s.maskPending.kind !== kind) this.flushMask(s)
+        let chunk: string = raw
+        // Only a masked session buffers: for every other one this branch is
+        // skipped entirely and chunks reach the timeline byte for byte.
+        if (s.info.piiMask) {
+          const [ready, pending] = splitPendingToken((s.maskPending?.text ?? '') + raw)
+          s.maskPending = pending ? { kind, text: pending } : undefined
+          if (!ready) return
+          chunk = ready
+        }
+        // Inbound seam (§2.1): the timeline — and therefore the chat view, the
+        // JSONL log and every notification built off it — only ever holds reals.
+        const text = this.mask.decode(s.info.id, chunk)
         const last = s.entries[s.entries.length - 1]
         if (last && last.kind === kind) {
           this.append(s, { type: 'append', id: last.id, text })
@@ -1889,22 +1970,22 @@ export class SessionManager {
         this.push(s, {
           kind: 'tool',
           toolCallId: u.toolCallId,
-          title: u.title ?? u.kind ?? 'tool call',
+          title: this.mask.decode(s.info.id, u.title ?? u.kind ?? 'tool call'),
           status: u.status ?? 'pending',
           toolKind: u.kind,
-          detail: this.toolDetail(u.content)
+          detail: this.toolDetail(s, u.content)
         })
         break
       case 'tool_call_update': {
         const entry = s.entries.find((e) => e.kind === 'tool' && e.toolCallId === u.toolCallId)
         if (entry && entry.kind === 'tool') {
-          const detail = this.toolDetail(u.content)
+          const detail = this.toolDetail(s, u.content)
           this.append(s, {
             type: 'patch',
             id: entry.id,
             patch: {
               ...(u.status ? { status: u.status } : {}),
-              ...(u.title ? { title: u.title } : {}),
+              ...(u.title ? { title: this.mask.decode(s.info.id, u.title) } : {}),
               ...(detail ? { detail } : {})
             }
           })
