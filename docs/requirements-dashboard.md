@@ -162,7 +162,7 @@ window), "Current week (all models)", and any model-specific week the endpoint
 reports, each with % used and its reset time in the machine's timezone
 ("resets 6:30pm" today, "resets Aug 20 at 12am" otherwise — the wording
 Claude Code's own `/usage` uses). Under the meters, the timezone and the
-read's age. An instance with no such source — an API key, codex, opencode —
+read's age. An instance with no such source — an API key, codex, gemini, opencode —
 shows just its header; no derived numbers stand in.
 
 **SESSIONS** — a board per workspace, three columns wide, keyed to the same dot

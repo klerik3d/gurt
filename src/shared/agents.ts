@@ -37,6 +37,16 @@ export const AGENT_DEFS: AgentDef[] = [
     secretEnv: 'OPENAI_API_KEY'
   },
   {
+    id: 'gemini',
+    label: 'gemini',
+    // gemini cli speaks ACP itself (`--experimental-acp`) — no adapter package
+    // besides the CLI, so `bin` is the CLI and the flag rides in `binArgs`.
+    adapterPackages: ['@google/gemini-cli'],
+    bin: 'gemini',
+    binArgs: ['--experimental-acp'],
+    secretEnv: 'GEMINI_API_KEY'
+  },
+  {
     id: 'opencode',
     label: 'opencode',
     adapterPackages: ['opencode-ai'],

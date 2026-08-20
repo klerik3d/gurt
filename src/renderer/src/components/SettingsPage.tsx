@@ -32,6 +32,7 @@ export type SettingsSection =
 const PROVIDER_VENDOR: Record<string, string> = {
   'claude-code': 'Anthropic',
   codex: 'OpenAI',
+  gemini: 'Google',
   opencode: 'local'
 }
 
