@@ -8,7 +8,18 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "dist": "npm run build && electron-builder --mac --publish never",
-    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json"
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "setup": "npm ci && npx allow-scripts"
+  },
+  "lavamoat": {
+    "allowScripts": {
+      "electron": true,
+      "esbuild#0.25.12": true,
+      "vite>esbuild#0.28.2": true,
+      "electron-builder>app-builder-lib>electron-builder-squirrel-windows>electron-winstaller": false,
+      "rollup>fsevents": false,
+      "vite>fsevents": false
+    }
   },
   "dependencies": {
     "@devcontainers/cli": "0.88.0",
@@ -22,6 +33,7 @@
   "devDependencies": {
     "@fontsource/ibm-plex-mono": "^5.3.0",
     "@fontsource/ibm-plex-sans": "^5.3.0",
+    "@lavamoat/allow-scripts": "^5.1.0",
     "@types/node": "^24.13.3",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
