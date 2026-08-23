@@ -13,8 +13,9 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const APP_DIR = '/Users/klerik3d/workspace/personal/gurt'
+const APP_DIR = path.resolve(fileURLToPath(new URL('..', import.meta.url)))
 const SHOT_DIR = path.join(process.env.SCRATCH ?? '/tmp', 'shots')
 // unique per run: Docker Desktop caches deleted paths in virtiofs.
 const GURT_ROOT = path.join(os.homedir(), `.gurt-smoke-${Date.now()}`)
@@ -25,14 +26,12 @@ fs.mkdirSync(REPO_ROOT, { recursive: true })
 
 const require = createRequire(path.join(APP_DIR, 'package.json'))
 const { _electron } = require('playwright-core')
+const electronPath = require('electron') // path string to the electron binary
 
 const env = { ...process.env, GURT_ROOT }
 delete env.ELECTRON_RUN_AS_NODE
 
-const EXE = path.join(
-  APP_DIR,
-  'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron'
-)
+const EXE = electronPath
 
 let failures = 0
 const check = (cond, msg) => {
@@ -340,7 +339,7 @@ check(!s.groups[0].buttons.some((b) => b.text === 'Create PR'), 'still no Create
 await page.screenshot({ path: path.join(SHOT_DIR, 'c5-pushed.png') })
 
 // 6) github-style origin → Create PR; unreachable host must not break the panel
-git(alphaDir, 'remote', 'set-url', 'origin', 'git@github.invalid:klerik3d/alpha.git')
+git(alphaDir, 'remote', 'set-url', 'origin', 'git@github.invalid:example/alpha.git')
 await clickTitle(page, 'refresh changes')
 await waitPanel(page, { groups: 1, hasPr: true })
 s = await panelState(page)

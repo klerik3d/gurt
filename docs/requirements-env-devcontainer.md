@@ -1,6 +1,6 @@
 # Requirements: env devcontainer normal form
 
-Status: draft for review · Owner: klerik3d · Target: gurt Electron MVP (this repo)
+Status: draft for review · Target: gurt Electron MVP (this repo)
 
 This document is a work order for an implementing agent. Read `README.md`
 first. Key code: `src/shared/types.ts`, `src/shared/api.ts`,

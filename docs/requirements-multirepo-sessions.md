@@ -1,6 +1,6 @@
 # Requirements: discovery sessions (more than one repo per session)
 
-Status: implemented · Owner: klerik3d · Target: gurt Electron MVP (this repo)
+Status: implemented · Target: gurt Electron MVP (this repo)
 
 Key code: `src/shared/types.ts`, `src/shared/api.ts`, `src/main/sessions.ts`,
 `src/main/containers.ts`, `src/main/provision.ts`, `src/main/store.ts`,

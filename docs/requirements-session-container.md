@@ -1,6 +1,6 @@
 # Requirements: one container per session
 
-Status: implemented · Owner: klerik3d · Target: gurt Electron MVP (this repo)
+Status: implemented · Target: gurt Electron MVP (this repo)
 
 Key code: `src/main/containers.ts`, `src/main/sessions.ts`,
 `src/main/kernel.ts`, `src/main/store.ts`, `src/shared/types.ts`,

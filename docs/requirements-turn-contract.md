@@ -1,6 +1,6 @@
 # Requirements: turn contract — `complete` tool and change proposals
 
-Status: draft for review · Owner: klerik3d · Target: gurt Electron MVP (this repo)
+Status: draft for review · Target: gurt Electron MVP (this repo)
 
 This document is a work order for an implementing agent. Read `README.md`
 first. Key code: `src/main/mcp/{manager,githubServer}.ts`,
@@ -188,7 +188,7 @@ last one wins.
    end_turn without complete → exactly one nudge; nudge turn without
    complete → `incomplete` + system entry, no second nudge; complete during
    the nudge turn → clean; stopReason `cancelled` → no nudge.
-3. Smoke (built app, offline local bare origins, pattern of `smoke7.mjs`):
+3. Smoke (built app, offline local bare origins, pattern of `smoke-changes.mjs`):
    a trivial-edit session ends with `sessions.json` holding a proposal
    (outcome changes, non-empty subject), the `complete: changes — …` system
    entry in the JSONL, `latestProposal` returning it, and `Kernel.prUrl`

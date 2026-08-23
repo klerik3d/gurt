@@ -1,6 +1,6 @@
 # Requirements: kernel extraction + typed IPC
 
-Status: draft for review · Owner: klerik3d · Target: gurt Electron MVP (this repo)
+Status: draft for review · Target: gurt Electron MVP (this repo)
 
 This document is a work order for an implementing agent. Read `README.md`
 first. Key code: `src/main/ipc.ts` (everything moves out of here),
@@ -139,7 +139,7 @@ Target ≤ ~100 lines.
 
 ## 7. Acceptance
 
-1. Full smoke suite passes unchanged (`smoke.mjs` … `smoke8.mjs`,
+1. Full smoke suite passes unchanged (all `scripts/smoke*.mjs`,
    `git-logic.test.mjs`).
 2. `grep -rln "from 'electron'" src/main` → `index.ts`, `ipc.ts` only.
 3. `ipc.ts` no longer contains env-lifecycle state or logic.

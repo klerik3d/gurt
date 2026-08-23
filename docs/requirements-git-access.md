@@ -1,6 +1,6 @@
 # Requirements: native git access & credential management
 
-Status: draft for review · Owner: klerik3d · Target: gurt Electron MVP (this repo)
+Status: draft for review · Target: gurt Electron MVP (this repo)
 
 This document is a work order for an implementing agent. Read `README.md`
 first. Key code: `src/main/provision.ts` (clone, `spawnAcpAdapter`

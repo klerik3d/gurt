@@ -8,8 +8,9 @@ import { createRequire } from 'node:module'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const APP_DIR = '/Users/klerik3d/workspace/personal/gurt'
+const APP_DIR = path.resolve(fileURLToPath(new URL('..', import.meta.url)))
 const SHOT_DIR = path.join(process.env.SCRATCH ?? '/tmp', 'shots')
 // unique per run: Docker Desktop caches deleted paths in virtiofs.
 const GURT_ROOT = path.join(os.homedir(), `.gurt-smoke-${Date.now()}`)
@@ -18,6 +19,7 @@ fs.mkdirSync(SHOT_DIR, { recursive: true })
 
 const require = createRequire(path.join(APP_DIR, 'package.json'))
 const { _electron } = require('playwright-core')
+const electronPath = require('electron') // path string to the electron binary
 
 const env = { ...process.env, GURT_ROOT }
 delete env.ELECTRON_RUN_AS_NODE
@@ -29,10 +31,7 @@ fs.writeFileSync(
   JSON.stringify({ 'claude-code': { kind: 'claude-code', label: 'claude code' } })
 )
 
-const EXE = path.join(
-  APP_DIR,
-  'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron'
-)
+const EXE = electronPath
 
 function launch() {
   return _electron.launch({ executablePath: EXE, args: [APP_DIR], env, timeout: 30000 })

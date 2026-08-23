@@ -1,6 +1,6 @@
 # Requirements: centralized entity keys
 
-Status: draft for review · Owner: klerik3d · Target: gurt Electron MVP (this repo)
+Status: draft for review · Target: gurt Electron MVP (this repo)
 
 This document is a work order for an implementing agent. Read `README.md`
 first. Key code: `src/main/sessions.ts`, `src/main/ipc.ts`,
@@ -49,6 +49,6 @@ name→id migration a one-file change instead of a codebase sweep.
 ## 4. Acceptance
 
 1. Behavior identical; no persisted-format change.
-2. `node scripts/git-logic.test.mjs` passes; `smoke.mjs` and `smoke7.mjs`
+2. `node scripts/git-logic.test.mjs` passes; `smoke.mjs` and `smoke-changes.mjs`
    pass (no docker needed).
 3. The grep rule above holds.

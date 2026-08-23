@@ -1,6 +1,6 @@
 # Requirements: dashboard
 
-Status: implemented · Owner: klerik3d · Target: gurt Electron MVP (this repo)
+Status: implemented · Target: gurt Electron MVP (this repo)
 
 Key code: `src/shared/usage.ts` (the turn-ledger model), `src/main/usage.ts`
 (ledger subscriber), `src/main/store.ts` (`usage.jsonl`), `src/shared/events.ts`

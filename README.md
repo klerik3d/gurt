@@ -1,8 +1,14 @@
 # gurt
 
-Electron MVP: a local-first manager for dev environments and coding agents.
-Concept background lives in [CONCEPT.md](CONCEPT.md) (the Go stack described
-there is archived in `archive/`; the model mostly still applies).
+A local-first manager for dev environments and coding agents, built as an
+Electron app. The name "gurt" is a transcription of the Ukrainian word «гурт»
+("group").
+
+Platforms: **macOS and Linux are the primary platforms; Windows is a candidate
+(untested)**. Development happens in the devcontainer (see below).
+
+Concept background lives in [CONCEPT.md](CONCEPT.md) (it describes an earlier
+Go-based stack, but the model mostly still applies).
 
 ## Model
 
@@ -232,15 +238,15 @@ The full docker-provisioning smokes are heavy nested-in-nested; the UI-only
 ```bash
 npm run build
 SCRATCH=/tmp/gurt-smoke node scripts/smoke.mjs    # UI only, no docker
-SCRATCH=/tmp/gurt-smoke node scripts/smoke2.mjs   # provisioning + ACP session
-SCRATCH=/tmp/gurt-smoke node scripts/smoke3.mjs   # session persistence across restart
-SCRATCH=/tmp/gurt-smoke node scripts/smoke4.mjs   # CRUD + stop/delete + codex handshake
-SCRATCH=/tmp/gurt-smoke node scripts/smoke5.mjs   # codex-in-gurt handshake
-SCRATCH=/tmp/gurt-smoke node scripts/smoke6.mjs   # session queue: draft/serialization/restart
-SCRATCH=/tmp/gurt-smoke node scripts/smoke7.mjs   # Changes panel delivery thread, no docker (local bare repos)
-SCRATCH=/tmp/gurt-smoke node scripts/smoke8.mjs   # native git access: credentials CRUD + resolution + composer toggle, no docker
+SCRATCH=/tmp/gurt-smoke node scripts/smoke-provisioning.mjs   # provisioning + ACP session
+SCRATCH=/tmp/gurt-smoke node scripts/smoke-persistence.mjs    # session persistence across restart
+SCRATCH=/tmp/gurt-smoke node scripts/smoke-crud.mjs           # CRUD + stop/delete + codex handshake
+SCRATCH=/tmp/gurt-smoke node scripts/smoke-codex.mjs          # codex-in-gurt handshake
+SCRATCH=/tmp/gurt-smoke node scripts/smoke-queue.mjs          # session queue: draft/serialization/restart
+SCRATCH=/tmp/gurt-smoke node scripts/smoke-changes.mjs        # Changes panel delivery thread, no docker (local bare repos)
+SCRATCH=/tmp/gurt-smoke node scripts/smoke-git-access.mjs     # native git access: credentials CRUD + resolution + composer toggle, no docker
 # turn contract end-to-end (docker + a working claude secret; SKIPs without one):
-SCRATCH=/tmp/gurt-smoke GURT_SMOKE_CLAUDE_TOKEN=… node scripts/smoke9.mjs
+SCRATCH=/tmp/gurt-smoke GURT_SMOKE_CLAUDE_TOKEN=… node scripts/smoke-turn-contract.mjs
 node scripts/smoke-delete-row.mjs                 # sidebar Del/⌫: confirm, delete, move the selection, no docker
 node scripts/smoke-session-copy.mjs               # duplicate/delete from the row actions and the pane menu, no docker
 node scripts/smoke-roles.mjs                      # session roles: the picker, the repo select it drives, persistence, no docker
