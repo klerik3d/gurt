@@ -426,28 +426,37 @@ function resolveSentinels(entry: CredentialEntry, prior: CredentialEntry | undef
   return { ...entry, data }
 }
 
+/** Serializes saves: `setCredentials` is read → (network) verify → write, and
+ *  two overlapping saves would each read the same `before` and last-write-wins
+ *  away the other's entries. */
+let saveChain: Promise<unknown> = Promise.resolve()
+
 /**
  * Replace the whole credential set. Refuses to drop an entry a repo still links
  * to (§9: delete blocked while linked) — unlink in repo settings first — and
  * refuses to store an unverified git-token (§3.2).
  */
-export async function setCredentials(data: CredentialsFile): Promise<void> {
-  const keptIds = new Set(data.credentials.map((c) => c.id))
-  const before = await read()
-  for (const entry of before.credentials) {
-    if (keptIds.has(entry.id)) continue
-    const users = await credentialUsedBy(entry.id)
-    if (users.length)
-      throw new Error(
-        `credential "${entry.label || entry.id}" is linked by ${users.join(', ')} — unlink it (repo settings / ⚙ Agents) first`
-      )
-  }
-  const beforeById = new Map(before.credentials.map((c) => [c.id, c]))
-  const resolved = data.credentials.map((entry) => resolveSentinels(entry, beforeById.get(entry.id)))
-  await verifyTokens(resolved, before.credentials)
-  await write({ credentials: resolved })
-  // Refresh the redaction set with whatever was just stored.
-  feedRedactor(resolved)
+export function setCredentials(data: CredentialsFile): Promise<void> {
+  const next = saveChain.catch(() => {}).then(async () => {
+    const keptIds = new Set(data.credentials.map((c) => c.id))
+    const before = await read()
+    for (const entry of before.credentials) {
+      if (keptIds.has(entry.id)) continue
+      const users = await credentialUsedBy(entry.id)
+      if (users.length)
+        throw new Error(
+          `credential "${entry.label || entry.id}" is linked by ${users.join(', ')} — unlink it (repo settings / ⚙ Agents) first`
+        )
+    }
+    const beforeById = new Map(before.credentials.map((c) => [c.id, c]))
+    const resolved = data.credentials.map((entry) => resolveSentinels(entry, beforeById.get(entry.id)))
+    await verifyTokens(resolved, before.credentials)
+    await write({ credentials: resolved })
+    // Refresh the redaction set with whatever was just stored.
+    feedRedactor(resolved)
+  })
+  saveChain = next.catch(() => {})
+  return next
 }
 
 /** Convenience for the broker/host paths: the raw entry list. */

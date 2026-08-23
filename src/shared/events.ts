@@ -37,6 +37,10 @@ export interface EventError {
 }
 
 export interface DomainEvents {
+  /** Boot restore progress (settings, session restore, container reconcile).
+   *  Mutating IPC waits on the kernel's `ready`, so the wait is surfaced: the
+   *  renderer's footer mirrors these until `done`. `percent` is coarse. */
+  'boot.progress': { percent: number; label: string; done: boolean }
   /** Tree-shape change: ws/task/repo CRUD, container status, session list/state. */
   'tree.changed': void
   /** The session's own container changed state. */

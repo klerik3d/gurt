@@ -32,6 +32,12 @@ function withHostPath(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return { ...env, PATH: path }
 }
 
+/** Bounds every tool subprocess: `GIT_TERMINAL_PROMPT=0` stops a *prompt*, not
+ *  a TCP stall against an unreachable forge — without this the MCP call (and
+ *  the agent's turn behind it) would hang forever. Generous, matching the push
+ *  bound in changes.ts. */
+const TOOL_TIMEOUT_MS = 120_000
+
 /** Run a host command in the clone and flatten stdout+stderr into a tool result. */
 async function runTool(
   cmd: string,
@@ -43,7 +49,9 @@ async function runTool(
     const { stdout, stderr } = await pexec(cmd, args, {
       cwd,
       env: withHostPath(env),
-      maxBuffer: 10 * 1024 * 1024
+      maxBuffer: 10 * 1024 * 1024,
+      timeout: TOOL_TIMEOUT_MS,
+      killSignal: 'SIGKILL'
     })
     const text = [stdout, stderr].map((s) => s.trim()).filter(Boolean).join('\n') || `${cmd} ok`
     return { content: [{ type: 'text', text }] }
@@ -215,16 +223,20 @@ export function buildGithubHttpServer(
       // No `sessionIdGenerator` = stateless, which is what a fresh server per
       // POST wants (the SDK reads an absent generator exactly that way).
       const transport = new StreamableHTTPServerTransport({ enableJsonResponse: true })
-      res.on('close', () => {
-        void transport.close()
-        void server.close()
-      })
       // The SDK's transport class does not satisfy its own `Transport`
       // interface under exactOptionalPropertyTypes — it declares `onclose?:
       // () => void`, which reads back as `(() => void) | undefined`. The two
       // types are otherwise identical; this is the flag's cost at a
       // third-party boundary, not a widening of ours.
       await server.connect(transport as Transport)
+      // Registered only after connect: a client aborting mid-connect would
+      // otherwise close the transport under `handleRequest`'s feet. The close
+      // promises are caught — a rejection here has nowhere better to go than
+      // the log, never the global unhandled-rejection hook.
+      res.on('close', () => {
+        transport.close().catch(() => {})
+        server.close().catch(() => {})
+      })
       await transport.handleRequest(req, res)
     } catch (e) {
       log.error('internal.fail', { site: 'mcp-handler', id: 'github', err: e })

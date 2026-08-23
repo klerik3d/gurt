@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
 import { StringDecoder } from 'node:string_decoder'
 import { promises as fs } from 'node:fs'
 import { existsSync } from 'node:fs'
@@ -156,6 +156,28 @@ interface RunResult {
   stdout: string
 }
 
+/** Bounds every docker/git probe below: a wedged daemon must surface as the
+ *  probe's own failure value (false / null), not as an await that never
+ *  settles — dockerVersion's comment states the hazard; this applies its
+ *  answer to the rest. */
+const PROBE_TIMEOUT_MS = 30_000
+
+/** SIGKILL `child` after `ms`. The caller's own 'close' handler then resolves
+ *  through its failure path (a killed child never exits 0), so every probe
+ *  keeps its "could not ask" semantics without new plumbing. */
+function killAfter(child: ChildProcess, ms: number): void {
+  const timer = setTimeout(() => child.kill('SIGKILL'), ms)
+  timer.unref?.()
+  child.on('close', () => clearTimeout(timer))
+  child.on('error', () => clearTimeout(timer))
+}
+
+/** devcontainer CLI inactivity bound. A cold image build legitimately runs for
+ *  many minutes — but it keeps printing; total silence this long means a
+ *  wedged daemon or a stalled pull, and the await would otherwise never
+ *  settle (the session would sit in `starting` forever). */
+const CLI_SILENCE_TIMEOUT_MS = 5 * 60_000
+
 /** Runs the CLI under Electron's own binary in Node mode — no system node needed. */
 function runNodeCli(args: string[], sink: LogSink): Promise<RunResult> {
   sink(`$ devcontainer ${args.join(' ')}`)
@@ -165,25 +187,52 @@ function runNodeCli(args: string[], sink: LogSink): Promise<RunResult> {
       env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }
     })
     const exited = traceProc('info', 'devcontainer', args, child.pid)
+    // Silence watchdog: re-armed by every output line, so a long build that
+    // keeps talking never trips it. No auto-retry — the caller surfaces the
+    // error and the user decides.
+    let silenced = false
+    let watchdog: NodeJS.Timeout | undefined
+    const rearm = (): void => {
+      clearTimeout(watchdog)
+      watchdog = setTimeout(() => {
+        silenced = true
+        child.kill('SIGKILL')
+      }, CLI_SILENCE_TIMEOUT_MS)
+      watchdog.unref?.()
+    }
+    rearm()
     const out = lineBuffer(sink)
     const err = lineBuffer(sink)
     let stdout = ''
     child.stdout.on('data', (d: Buffer) => {
+      rearm()
       stdout += d.toString()
       out.push(d)
     })
-    child.stderr.on('data', (d: Buffer) => err.push(d))
+    child.stderr.on('data', (d: Buffer) => {
+      rearm()
+      err.push(d)
+    })
     child.on('error', (e) => {
+      clearTimeout(watchdog)
       out.flush()
       err.flush()
       exited(null, Date.now() - started, false)
       reject(e)
     })
     child.on('close', (code) => {
+      clearTimeout(watchdog)
       out.flush()
       err.flush()
       exited(code, Date.now() - started, code === 0)
-      resolve({ code: code ?? -1, stdout })
+      if (silenced)
+        reject(
+          new Error(
+            `devcontainer CLI produced no output for ${CLI_SILENCE_TIMEOUT_MS / 60_000} minutes — ` +
+              'assuming it is stuck. Check that Docker is responsive, then run the session again.'
+          )
+        )
+      else resolve({ code: code ?? -1, stdout })
     })
   })
 }
@@ -368,6 +417,7 @@ async function provisionClone(
 export function isDirty(dir: string): Promise<boolean> {
   return new Promise((resolve) => {
     const child = spawn('git', ['-C', dir, 'status', '--porcelain'])
+    killAfter(child, PROBE_TIMEOUT_MS)
     let out = ''
     child.stdout.on('data', (d: Buffer) => (out += d.toString()))
     child.on('error', () => resolve(false))
@@ -504,11 +554,29 @@ export async function discoverDockerfiles(
   })
 }
 
-/** Writes `content` as the env's materialized devcontainer.json. */
-async function writeOverrideConfig(ref: EnvRef, content: string): Promise<void> {
+/** In-flight write per override path: the file is shared by every session of
+ *  the `(workspace, env)` pair, and one session's `up` reads it while another
+ *  may be rewriting it. */
+const overrideWrites = new Map<string, Promise<void>>()
+
+/** Writes `content` as the env's materialized devcontainer.json. Serialized
+ *  per path and atomic (tmp + rename), so a concurrent reader — our own
+ *  `devcontainerUp`, or the CLI resolving `--override-config` — can never see
+ *  a truncated file. */
+function writeOverrideConfig(ref: EnvRef, content: string): Promise<void> {
   const override = overrideConfigPath(ref.workspace, ref.env)
-  await fs.mkdir(path.dirname(override), { recursive: true })
-  await fs.writeFile(override, content)
+  const prev = overrideWrites.get(override) ?? Promise.resolve()
+  const next = prev.catch(() => {}).then(async () => {
+    await fs.mkdir(path.dirname(override), { recursive: true })
+    const tmp = `${override}.tmp`
+    await fs.writeFile(tmp, content)
+    await fs.rename(tmp, override)
+  })
+  overrideWrites.set(
+    override,
+    next.catch(() => {})
+  )
+  return next
 }
 
 /** ['--override-config', path] — no content logic; the file was written by
@@ -531,6 +599,7 @@ export const mountedConfigPath = (mountedWorkspaceFolder: string): string =>
 export function dockerImageExists(tag: string): Promise<boolean> {
   return new Promise((resolve) => {
     const child = spawn('docker', ['image', 'inspect', '-f', '{{.Id}}', tag])
+    killAfter(child, PROBE_TIMEOUT_MS)
     child.on('error', () => resolve(false))
     child.on('close', (code) => resolve(code === 0))
   })
@@ -916,8 +985,16 @@ export async function devcontainerUp(
       .reverse()
       .find((l) => l.trim().startsWith('{'))
     // The CLI's own result object, straight off a subprocess' stdout: read
-    // through a schema, not by field access on a JSON.parse.
-    const result = jsonLine ? UP_RESULT.safeParse(JSON.parse(jsonLine)).data : undefined
+    // through a schema, not by field access on a JSON.parse. A `{`-line that
+    // does not parse (truncated by a killed pipe) is no result, not a throw —
+    // the failure handling below must run, not be bypassed.
+    let parsedLine: unknown
+    try {
+      parsedLine = jsonLine ? JSON.parse(jsonLine) : undefined
+    } catch {
+      parsedLine = undefined
+    }
+    const result = UP_RESULT.safeParse(parsedLine).data
     if (code !== 0 || result?.outcome !== 'success') {
       if (sawStale) {
         staleAttempts++
@@ -1092,6 +1169,7 @@ export function dockerSessionContainers(): Promise<Map<string, string> | null> {
       '--filter', 'label=gurt.session',
       '--format', '{{.Label "gurt.session"}} {{.ID}}'
     ])
+    killAfter(child, PROBE_TIMEOUT_MS)
     let out = ''
     child.stdout.on('data', (d: Buffer) => (out += d.toString()))
     // null, not an empty map: "the daemon says there are none" and "we could not
@@ -1139,6 +1217,7 @@ export function dockerVersion(timeoutMs = 3000): Promise<string | null> {
 export function dockerRunning(containerId: string): Promise<boolean> {
   return new Promise((resolve) => {
     const child = spawn('docker', ['inspect', '-f', '{{.State.Running}}', containerId])
+    killAfter(child, PROBE_TIMEOUT_MS)
     let out = ''
     child.stdout.on('data', (d: Buffer) => (out += d.toString()))
     child.on('error', () => resolve(false))
@@ -1147,11 +1226,12 @@ export function dockerRunning(containerId: string): Promise<boolean> {
 }
 
 export async function dockerStop(containerId: string, log: LogSink): Promise<void> {
-  await run('docker', ['stop', containerId], log)
+  // Well above `docker stop`'s own ~10s SIGTERM grace, far below forever.
+  await run('docker', ['stop', containerId], log, { timeoutMs: PROBE_TIMEOUT_MS })
 }
 
 export async function dockerRemove(containerId: string, log: LogSink): Promise<void> {
-  await run('docker', ['rm', '-f', containerId], log).catch(() => {})
+  await run('docker', ['rm', '-f', containerId], log, { timeoutMs: PROBE_TIMEOUT_MS }).catch(() => {})
 }
 
 /**
@@ -1169,6 +1249,7 @@ export function dockerSessionContainerIds(session: string): Promise<string[] | n
       '--filter', `label=gurt.session=${session}`,
       '--format', '{{.ID}}'
     ])
+    killAfter(child, PROBE_TIMEOUT_MS)
     let out = ''
     child.stdout.on('data', (d: Buffer) => (out += d.toString()))
     // null vs. [] carries the same distinction as in `dockerSessionContainers`:

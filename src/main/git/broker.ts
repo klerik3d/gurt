@@ -26,8 +26,11 @@ const log = createLogger('gitbroker')
 
 interface Running {
   http: Server
-  port: number
-  descriptor: { url: string }
+  /** Resolves once the server is listening. */
+  ready: Promise<{ url: string }>
+  /** Set once `ready` resolves — the stop log needs the port without the URL
+   *  (which carries the broker's bearer token). */
+  port?: number
 }
 
 /** One broker per session, keyed by session id. */
@@ -35,17 +38,40 @@ const running = new Map<string, Running>()
 
 function listen(server: Server, host: string): Promise<number> {
   return new Promise((resolve, reject) => {
-    server.listen(0, host, () => resolve((server.address() as AddressInfo).port))
-    server.on('error', reject)
+    server.once('error', reject)
+    server.listen(0, host, () => {
+      // The startup reject is done its job; a *runtime* server error after this
+      // would otherwise call a settled promise's reject and vanish.
+      server.removeListener('error', reject)
+      server.on('error', (e) => log.error('internal.fail', { site: 'gitbroker-server', err: e }))
+      resolve((server.address() as AddressInfo).port)
+    })
   })
 }
+
+/** A credential fill is a handful of `key=value` lines — anything bigger, or a
+ *  client that never ends its body, is a bad client, and this broker binds a
+ *  container-reachable interface: the handler must not be holdable open. */
+const BODY_MAX_BYTES = 64 * 1024
+const BODY_TIMEOUT_MS = 10_000
 
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve) => {
     let body = ''
-    req.on('data', (d) => (body += d))
-    req.on('end', () => resolve(body))
-    req.on('error', () => resolve(body))
+    const timer = setTimeout(() => req.destroy(), BODY_TIMEOUT_MS)
+    timer.unref?.()
+    const done = (): void => {
+      clearTimeout(timer)
+      resolve(body)
+    }
+    req.on('data', (d) => {
+      body += d
+      if (body.length > BODY_MAX_BYTES) req.destroy()
+    })
+    req.on('end', done)
+    req.on('error', done)
+    // `destroy()` may surface as 'close' without 'error'; resolving twice is a no-op.
+    req.on('close', done)
   })
 }
 
@@ -142,22 +168,35 @@ function buildServer(repo: RepoConfig, token: string): Server {
   return createServer((req, res) => void handle(req, res))
 }
 
-/** Ensure the session's broker is running and return its container-reachable URL. */
-export async function resolveGitBroker(
+/** Ensure the session's broker is running and return its container-reachable
+ *  URL. The record enters the map before any await — two concurrent resolves
+ *  for one session must share one server, not race a second one into a leak
+ *  (same shape as gurtServer.ts's ensure). */
+export function resolveGitBroker(
   sessionId: string,
   repo: RepoConfig
 ): Promise<{ url: string }> {
   const existing = running.get(sessionId)
-  if (existing) return existing.descriptor
+  if (existing) return existing.ready
   const token = randomUUID()
-  const http = buildServer(repo, token)
-  const port = await listen(http, '0.0.0.0')
-  // The URL carries the broker's bearer token in its path — the port is the
-  // only part of it that may be logged.
-  log.info('gitbroker.start', { s: sessionId, port })
-  const descriptor = { url: `http://host.docker.internal:${port}/git/${token}` }
-  running.set(sessionId, { http, port, descriptor })
-  return descriptor
+  const rec = {} as Running
+  rec.http = buildServer(repo, token)
+  rec.ready = listen(rec.http, '0.0.0.0').then(
+    (port) => {
+      rec.port = port
+      // The URL carries the broker's bearer token in its path — the port is the
+      // only part of it that may be logged.
+      log.info('gitbroker.start', { s: sessionId, port })
+      return { url: `http://host.docker.internal:${port}/git/${token}` }
+    },
+    (e) => {
+      rec.http.close()
+      if (running.get(sessionId) === rec) running.delete(sessionId)
+      throw e
+    }
+  )
+  running.set(sessionId, rec)
+  return rec.ready
 }
 
 /** Tear down a session's broker (its container is stopping or going away). */
@@ -165,6 +204,9 @@ export function stopGitBroker(sessionId: string): void {
   const rec = running.get(sessionId)
   if (!rec) return
   rec.http.close()
+  // `close()` only stops new connections — a shim holding a keep-alive socket
+  // would keep a credential-serving listener alive for a session that is gone.
+  rec.http.closeAllConnections()
   log.info('gitbroker.stop', { s: sessionId, port: rec.port })
   running.delete(sessionId)
 }
