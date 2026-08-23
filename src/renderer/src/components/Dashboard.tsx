@@ -2,6 +2,7 @@
 // while you were elsewhere. Read-only over state the rest of the app already
 // owns — the one thing it adds is the usage ledger (see shared/usage.ts).
 import { useEffect, useState } from 'react'
+import type { JSX } from 'react'
 import type { RepoChanges, SessionInfo, Tree } from '../../../shared/types'
 import { sessionStatus } from '../../../shared/types'
 import type { PlanUsage, PlanWindow } from '../../../shared/planUsage'

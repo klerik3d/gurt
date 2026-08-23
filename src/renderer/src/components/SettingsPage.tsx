@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import type { JSX } from 'react'
 import type { AgentInstance, AgentsFile, EnvConfig, RepoConfig, Tree } from '../../../shared/types'
 import type { EnvImageStatus } from '../../../shared/api'
 import { parseEnvDevcontainer, validateEnvConfig } from '../../../shared/envConfig'

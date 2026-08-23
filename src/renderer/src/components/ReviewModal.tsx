@@ -2,6 +2,7 @@
 // comments anchored to it, and the fix session those comments seed.
 // See docs/requirements-manual-review.md.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { JSX } from 'react'
 import type { ChangedFile, DiffPair, DiffTarget, ReviewComment, ReviewState } from '../../../shared/types'
 import { alignRows, foldRows, groupBlocks, type Block, type Cell, type Row, type Span } from '../splitDiff'
 import { langOf } from '../syntaxLang'

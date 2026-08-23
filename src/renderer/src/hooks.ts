@@ -4,7 +4,7 @@ import type { RefObject } from 'react'
 /** Close a popup on an outside mousedown or Escape while `open`. */
 export function useOutsideClose(
   open: boolean,
-  ref: RefObject<HTMLElement>,
+  ref: RefObject<HTMLElement | null>,
   close: () => void
 ): void {
   useEffect(() => {
