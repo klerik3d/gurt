@@ -78,6 +78,21 @@ address a physical resource.
   the daemon cannot be reached, so "could not ask" never reads as "there are
   none" and wipes every record.
 
+- **A half-provisioned container is never adopted.** The devcontainer CLI runs
+  the create-time hooks (`onCreate`/`updateContent`/`postCreateCommand`) only
+  when it creates the container. One that fails — a flaky `npm install` is the
+  common one — leaves a container behind, and the next `up` finds it by
+  id-label, skips those hooks as already run and reports success: the session
+  starts against a workspace whose install never finished, and the user reads it
+  as "it works on the second try". So `devcontainerUp` removes the container a
+  failed create-time hook leaves, retries once in a fresh one (the fault is
+  usually a transient registry error), and otherwise fails naming the hook and
+  quoting its output — the CLI's own message is only the shell line it ran
+  (`Command failed: /bin/sh -c npm install`). For the same reason `ensure`
+  removes any container carrying the session's id-label that its record cannot
+  name before calling `up`: a start killed mid-hook (app quit, machine slept)
+  leaves exactly such a container, and it is a rebuild, not an inheritance.
+
 - **Idle auto-stop is per session** (`ContainerManager.noteIdle`), not per env.
   A container coming down re-runs the scheduler: its clone may now be free.
 - **The queue overrides the grace period** (`kernel.ts`'s queue handoff, over
@@ -116,7 +131,12 @@ discovers them on disk, since the directory *is* the fact.
    when it does.
 3. `node scripts/env-split-migration.test.mjs` passes: legacy container records
    land on their owning session, orphans are dropped, write-back happens once.
-4. The rest of `scripts/*.test.mjs` still passes; `npm run typecheck` and
+4. `node scripts/provision-hook-retry.test.mjs` passes: a create-time hook that
+   fails once is retried in a *fresh* container (the failed one is removed, not
+   adopted), one that keeps failing fails the start with the hook named and its
+   output quoted, and any other failure is untouched — one attempt, the CLI's
+   own message, nothing removed.
+5. The rest of `scripts/*.test.mjs` still passes; `npm run typecheck` and
    `npm run build` are clean.
-5. No entity key outside `keys.ts`, and nothing container-bound keyed by a name:
+6. No entity key outside `keys.ts`, and nothing container-bound keyed by a name:
    `grep -rn 'envKey\|connKey' src` returns nothing.
