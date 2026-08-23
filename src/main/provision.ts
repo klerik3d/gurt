@@ -755,7 +755,7 @@ const HOOK_WINDOW_LINES = 40
 export function hookOutputTail(lines: string[], max = HOOK_TAIL_LINES): string[] {
   let start = 0
   for (let i = lines.length - 1; i >= 0; i--)
-    if (LIFECYCLE_BANNER.test(lines[i])) {
+    if (LIFECYCLE_BANNER.test(lines[i] ?? '')) {
       start = i
       break
     }
@@ -937,7 +937,8 @@ export async function devcontainerUp(
       // it half-provisioned has to go — see CREATE_HOOK_RE for what reusing it
       // would silently do on the next start. The clone it was installing into
       // is a host bind mount, so nothing diagnostic dies with it.
-      const description: string = typeof result?.description === 'string' ? result.description : ''
+      const description: string =
+        typeof result?.['description'] === 'string' ? result['description'] : ''
       if (CREATE_HOOK_RE.test(description) && typeof result?.containerId === 'string') {
         await dockerRemove(result.containerId, log)
         if (hookRetries < MAX_HOOK_RETRIES) {
