@@ -62,21 +62,18 @@ surrounding code; correctness is held by the TypeScript compiler and ESLint.
 
 ## Tests
 
-> **TODO:** унифицировать запуск тестов (`npm test`) и починить падающий
-> тест — см. открытую задачу. This section describes the current, temporary
-> state.
+```bash
+npm test
+```
 
-There is no single `npm test` yet. Tests are self-contained node scripts:
+This runs every `scripts/*.test.mjs` (docker-free unit tests, each a
+self-contained node script) via `scripts/run-tests.mjs` — the same command CI
+uses. To run a single test: `node scripts/<name>.test.mjs`.
 
-- `scripts/*.test.mjs` — docker-free unit tests, each run as
-  `node scripts/<name>.test.mjs`;
-- `scripts/smoke*.mjs` — end-to-end smoke tests driving the built app with
-  Playwright (run `npm run build` first; some need Docker).
-
-CI runs every `scripts/*.test.mjs` in a shell loop
-(`.github/workflows/ci.yml`); `session-delete-container.test.mjs` is
-currently excluded there as a known failure. The README's "Smoke tests"
-section lists each script and what it covers.
+Smoke tests (`scripts/smoke*.mjs`) are separate: they drive the built app
+end-to-end with Playwright (run `npm run build` first; some need Docker) and
+are not part of `npm test` or CI. The README's "Smoke tests" section lists
+each script and what it covers.
 
 ## Pull requests
 
@@ -87,7 +84,7 @@ every push and pull request; a PR should be green on all of it:
 - `npm audit signatures`
 - `npm run typecheck`
 - `npm run lint`
-- the test loop over `scripts/*.test.mjs` (minus the excluded one above)
+- `npm test`
 
-Running `npm run typecheck` and `npm run lint` locally before pushing covers
-most of it.
+Running `npm run typecheck`, `npm run lint` and `npm test` locally before
+pushing covers most of it.
