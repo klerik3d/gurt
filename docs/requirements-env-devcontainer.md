@@ -270,7 +270,6 @@ fills the editor (detect seeds it). No auto-discovery at start.
   via `--override-config` to `up` and every `exec`.
 - Delete the stale either-or comments on `EnvConfig` in
   `src/shared/types.ts` (rewritten in §2).
-- `CONCEPT.md` untouched (archived Go-stack vision).
 
 ## 9. Non-goals
 

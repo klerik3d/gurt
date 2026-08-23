@@ -7,10 +7,38 @@ Electron app. The name "gurt" is a transcription of the Ukrainian word «гур�
 Platforms: **macOS and Linux are the primary platforms; Windows is a candidate
 (untested)**. Development happens in the devcontainer (see below).
 
-Concept background lives in [CONCEPT.md](CONCEPT.md) (it describes an earlier
-Go-based stack, but the model mostly still applies).
+## Project layout
+
+Where to look in the code (the domain model itself is described below):
+
+- `src/main/` — the Electron main process, the app's core (Node side):
+  provisioning, ACP, git access, the MCP servers, persistence.
+- `src/preload/` — the preload bridge: derives `window.gurt` from the shared
+  API definition and exposes it to the renderer.
+- `src/renderer/` — the React UI (renderer process).
+- `src/shared/` — types shared by main and renderer, including the IPC
+  contract.
+
+```
+renderer (React)  ⇄  preload (window.gurt)  ⇄  main (kernel)
+        src/renderer/       src/preload/         src/main/
+                    └── src/shared/api.ts ──┘
+```
+
+Entry point and main flow: `package.json` `"main": "out/main/index.js"` is the
+build of `src/main/index.ts`, which calls `registerIpc()` (`src/main/ipc.ts`);
+that in turn builds the app core via `createKernel()` (`src/main/kernel.ts`).
+`src/shared/api.ts` is the single source of truth for IPC — adding a method
+there is the whole wiring, main and preload both derive from it.
+`src/main/sessions.ts` is the heart of the session lifecycle
+(start/stop/queue/persistence).
+
+Historical specs and design notes live in [docs/](docs/README.md).
 
 ## Model
+
+All gurt metadata lives outside the repositories, under `~/.gurt/` — a working
+tree is never polluted with gurt files.
 
 - **workspace** — top-level divider, a directory in `~/.gurt/<ws>/`
 - **repo** — registered per workspace: git URL + optional credential link;
@@ -108,6 +136,12 @@ scheduler runs once after sessions are restored. A failed start drops the
 session back to draft with the error shown, and does not block the queue.
 
 ## How a session starts
+
+Provisioning wraps the official `@devcontainers/cli` rather than driving Docker
+itself: features are injected via `--additional-features`, the stored env config
+via `--override-config`, identity labels via `--id-label`, secrets via
+`--remote-env`. Only container discovery and stop go through the docker CLI —
+with the Docker labels as the source of truth (hence the reconcile at boot).
 
 1. clone repo into `~/.gurt/<ws>/<task>/<repo>/` (if missing), branch `gurt/<task>`
 2. when the env's devcontainer has a `build` section, the image is built first:
