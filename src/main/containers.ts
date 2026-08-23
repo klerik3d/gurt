@@ -238,6 +238,25 @@ export class ContainerManager {
       await dockerRemove(owned.id, provisionLog)
     }
 
+    // Containers carrying this session's id-label that its record cannot name.
+    // `up` stamps the label at `docker run` but the id only reaches the record
+    // once `up` returns, so a start that died in between — the app quit, the
+    // machine slept, Docker restarted — leaves one behind, possibly stopped
+    // part-way through its create-time hooks. The next `up` would find it by
+    // that label and adopt it, skipping every hook as already run (see
+    // CREATE_HOOK_RE in provision.ts); the session would then come up against a
+    // workspace those hooks never finished preparing. Nothing may adopt them.
+    const recorded = owned?.id
+    const labeled = (await dockerSessionContainerIds(sessionId)) ?? []
+    for (const id of labeled) {
+      // Prefix, not equality — `docker ps` and the CLI disagree on short vs.
+      // full ids, the same way `teardown` has to allow for.
+      if (recorded && (id.startsWith(recorded) || recorded.startsWith(id))) continue
+      provisionLog(`removing container ${id.slice(0, 12)} left by an unfinished start`)
+      this.forget(id)
+      await dockerRemove(id, provisionLog)
+    }
+
     // `building` covers the clone and the image (ours or the CLI's); `up` flips
     // it to `post` as soon as the container exists and its hooks start running.
     this.setStatus(
