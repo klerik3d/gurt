@@ -18,6 +18,28 @@ const log = createLogger('changes')
 /** Bounds a fetch against an unreachable origin; failure is non-fatal anyway. */
 const FETCH_TIMEOUT_MS = 30_000
 
+/** Bounds a push — fatal (unlike a fetch) and legitimately slower on a thin
+ *  uplink, so generous; a dead network must still surface as an error rather
+ *  than an await that never settles. */
+const PUSH_TIMEOUT_MS = 120_000
+
+/** Per-clone chain for the *mutating* git operations (fetch/commit/push/merge):
+ *  interleaved they fight over `.git/index.lock` at best, and at worst a
+ *  `commit` runs `add -A` in the middle of `updateFromMain`'s merge and stages
+ *  its conflict markers. Reads stay unchained — git serves them concurrently. */
+const cloneChains = new Map<string, Promise<unknown>>()
+
+function serialized<T>(dir: string, fn: () => Promise<T>): Promise<T> {
+  const next = Promise.resolve(cloneChains.get(dir))
+    .catch(() => {})
+    .then(fn)
+  cloneChains.set(
+    dir,
+    next.catch(() => {})
+  )
+  return next
+}
+
 interface GitOpts {
   /** Exit codes to treat as success (default [0]). */
   okCodes?: number[]
@@ -122,20 +144,22 @@ async function compareUrl(dir: string, access: HostGitAccess, task: string): Pro
  *
  * Failure is non-fatal — the caller renders last-known refs, with no error UI.
  */
-async function fetchPrune(dir: string, access: HostGitAccess, task: string): Promise<void> {
-  const remoteRef = `refs/remotes/origin/${branchFor(task)}`
-  const before = await revParse(dir, access, remoteRef)
-  try {
-    await git(dir, access, ['fetch', '--prune', 'origin'], { timeoutMs: FETCH_TIMEOUT_MS })
-  } catch (e) {
-    // Non-fatal: the panel renders the refs as they are (WRN, not ERR).
-    log.warn('fetch failed', { dir, err: e })
-    return
-  }
-  // Pruned while it pointed at HEAD → the thread landed on the remote.
-  if (!before || (await revParse(dir, access, remoteRef))) return
-  if (before === (await revParse(dir, access, 'HEAD')))
-    await git(dir, access, ['update-ref', 'refs/gurt/integrated', before])
+function fetchPrune(dir: string, access: HostGitAccess, task: string): Promise<void> {
+  return serialized(dir, async () => {
+    const remoteRef = `refs/remotes/origin/${branchFor(task)}`
+    const before = await revParse(dir, access, remoteRef)
+    try {
+      await git(dir, access, ['fetch', '--prune', 'origin'], { timeoutMs: FETCH_TIMEOUT_MS })
+    } catch (e) {
+      // Non-fatal: the panel renders the refs as they are (WRN, not ERR).
+      log.warn('fetch failed', { dir, err: e })
+      return
+    }
+    // Pruned while it pointed at HEAD → the thread landed on the remote.
+    if (!before || (await revParse(dir, access, remoteRef))) return
+    if (before === (await revParse(dir, access, 'HEAD')))
+      await git(dir, access, ['update-ref', 'refs/gurt/integrated', before])
+  })
 }
 
 /**
@@ -413,16 +437,20 @@ export async function getCommitDiff(
 export async function commit(ws: string, task: string, repo: string, message: string): Promise<void> {
   const dir = cloneDir(ws, task, repo)
   const access = await hostGitAccessForRepo(ws, repo)
-  await git(dir, access, ['add', '-A'])
-  // The message is user/agent prose — never logged, matching ipc.ts's
-  // OPAQUE_ARGS treatment of `changesCommit` at the IPC boundary.
-  await git(dir, access, ['commit', '-m', message], { opaqueArgv: true })
+  await serialized(dir, async () => {
+    await git(dir, access, ['add', '-A'])
+    // The message is user/agent prose — never logged, matching ipc.ts's
+    // OPAQUE_ARGS treatment of `changesCommit` at the IPC boundary.
+    await git(dir, access, ['commit', '-m', message], { opaqueArgv: true })
+  })
 }
 
 export async function push(ws: string, task: string, repo: string): Promise<void> {
-  await git(cloneDir(ws, task, repo), await hostGitAccessForRepo(ws, repo), [
-    'push', '-u', 'origin', branchFor(task)
-  ])
+  const dir = cloneDir(ws, task, repo)
+  const access = await hostGitAccessForRepo(ws, repo)
+  await serialized(dir, () =>
+    git(dir, access, ['push', '-u', 'origin', branchFor(task)], { timeoutMs: PUSH_TIMEOUT_MS })
+  )
 }
 
 /**
@@ -434,11 +462,13 @@ export async function push(ws: string, task: string, repo: string): Promise<void
 export async function updateFromMain(ws: string, task: string, repo: string): Promise<void> {
   const dir = cloneDir(ws, task, repo)
   const access = await hostGitAccessForRepo(ws, repo)
-  await git(dir, access, ['fetch', 'origin'], { timeoutMs: FETCH_TIMEOUT_MS })
-  const def = await defaultBranch(dir, access)
-  // Nothing to merge from an empty remote — the default branch has no ref yet.
-  if (!(await revParse(dir, access, `origin/${def}`))) return
-  await git(dir, access, ['merge', `origin/${def}`, '--no-edit'], { okCodes: [0, 1] })
+  await serialized(dir, async () => {
+    await git(dir, access, ['fetch', 'origin'], { timeoutMs: FETCH_TIMEOUT_MS })
+    const def = await defaultBranch(dir, access)
+    // Nothing to merge from an empty remote — the default branch has no ref yet.
+    if (!(await revParse(dir, access, `origin/${def}`))) return
+    await git(dir, access, ['merge', `origin/${def}`, '--no-edit'], { okCodes: [0, 1] })
+  })
 }
 
 /** MVP delivery: the forge's compare URL for <task> (the IPC layer opens it). */

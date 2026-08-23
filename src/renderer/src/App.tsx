@@ -7,6 +7,7 @@ import type {
   SessionSnapshot,
   Tree
 } from '../../shared/types'
+import type { BootProgress } from '../../shared/api'
 import { applyLog, sessionStatus } from '../../shared/types'
 import type { NotificationRecord } from '../../shared/notifications'
 import { NOTIFICATION_RING_CAP } from '../../shared/notifications'
@@ -67,7 +68,37 @@ export default function App() {
    *  main does not persist turn starts, and inventing one would misreport. */
   const [turnStarts, setTurnStarts] = useState<Record<string, number>>({})
   const [paletteOpen, setPaletteOpen] = useState(false)
+  /** Boot restore progress — the footer bar while main is still restoring
+   *  sessions / reconciling containers. Null until first heard from; hidden
+   *  once `done`. */
+  const [boot, setBoot] = useState<BootProgress | null>(null)
+  useEffect(() => {
+    const off = window.gurt.onBootProgress((p) =>
+      setBoot((prev) => (prev && prev.percent > p.percent ? prev : p))
+    )
+    // Pull the current value too — this window may have opened after some (or
+    // all) of the pushes fired. Monotonic guard: a pushed update that beat this
+    // reply is newer and must not be rolled back.
+    window.gurt
+      .getBootProgress()
+      .then((p) => setBoot((prev) => (prev && prev.percent > p.percent ? prev : p)))
+      .catch(logErr('getBootProgress'))
+    return off
+  }, [])
   const [notifications, setNotifications] = useState<NotificationRecord[]>([])
+  /** Invalidates in-flight notification resyncs: a push (created/read) that
+   *  lands while a `getNotifications` reply is in flight makes that reply
+   *  stale — letting it land would revert the pushed record. */
+  const notifSyncSeq = useRef(0)
+  const syncNotifications = useCallback(() => {
+    const seq = ++notifSyncSeq.current
+    window.gurt
+      .getNotifications()
+      .then((list) => {
+        if (seq === notifSyncSeq.current) setNotifications(list)
+      })
+      .catch(logErr('getNotifications'))
+  }, [])
   const [notifOpen, setNotifOpen] = useState(false)
   const notifRef = useRef<HTMLDivElement>(null)
   useOutsideClose(notifOpen, notifRef, () => setNotifOpen(false))
@@ -146,6 +177,9 @@ export default function App() {
       setLogs((prev) => ({ ...prev, [key]: [...(prev[key] ?? []).slice(-500), line] }))
     })
     const offNotif = window.gurt.onNotification((record) => {
+      // A push supersedes any resync still in flight — its reply predates this
+      // record and would clobber it.
+      notifSyncSeq.current++
       // Same cap as main's ring (§6: in-memory, oldest dropped) — otherwise
       // this array outlives it and the two permanently disagree.
       setNotifications((prev) => [...prev, record].slice(-NOTIFICATION_RING_CAP))
@@ -154,6 +188,7 @@ export default function App() {
     // cleared, or opened some other way) doesn't go through this window's own
     // markRead/markAllRead calls — mirror it so the badge doesn't go stale.
     const offNotifRead = window.gurt.onNotificationRead(({ sessionId }) => {
+      notifSyncSeq.current++
       setNotifications((prev) =>
         prev.map((n) => (n.sessionId === sessionId && !n.read ? { ...n, read: true } : n))
       )
@@ -170,16 +205,16 @@ export default function App() {
   }, [refreshTree, refreshChanges])
 
   useEffect(() => {
-    window.gurt.getNotifications().then(setNotifications).catch(logErr('getNotifications'))
-  }, [])
+    syncNotifications()
+  }, [syncNotifications])
 
   // Resync with main's ring whenever the popover opens — main's ring is
   // capped independently (§6) and read-state can also change without a push
   // reaching this window (e.g. another window's panel), so an open is a
   // convenient, cheap point to reconcile both without polling continuously.
   useEffect(() => {
-    if (notifOpen) window.gurt.getNotifications().then(setNotifications).catch(logErr('getNotifications'))
-  }, [notifOpen])
+    if (notifOpen) syncNotifications()
+  }, [notifOpen, syncNotifications])
 
   // Lazy app-start load: fetch changes once for every task the tree shows,
   // so sidebar badges appear without opening each task pane.
@@ -232,6 +267,7 @@ export default function App() {
     const onUp = () => {
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
+      window.removeEventListener('blur', onUp)
       document.body.style.cursor = ''
       document.body.style.userSelect = ''
     }
@@ -239,6 +275,10 @@ export default function App() {
     document.body.style.userSelect = 'none'
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
+    // A mouseup this window never sees (released over devtools, a native menu,
+    // another window) would leave the drag armed forever — losing focus is the
+    // reliable signal that the drag is over.
+    window.addEventListener('blur', onUp)
   }, [])
 
   useEffect(() => {
@@ -535,6 +575,14 @@ export default function App() {
           )}
           {runningCount} running · {needYouCount} need you
         </span>
+        {boot && !boot.done && (
+          <span className="foot-boot">
+            <span className="foot-boot-track">
+              <span className="foot-boot-fill" style={{ width: `${boot.percent}%` }} />
+            </span>
+            starting up · {boot.label} · {boot.percent}%
+          </span>
+        )}
         <span className="spacer" />
         {activeInfo && activeContainer && (
           <>

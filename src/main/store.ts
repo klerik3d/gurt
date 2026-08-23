@@ -191,6 +191,22 @@ export async function setAgents(agents: AgentsFile): Promise<void> {
   await writeJson(agentsFile(), agents)
 }
 
+/** Per-key promise chain for read-modify-write cycles on one JSON file — two
+ *  overlapping mutations would otherwise both read, then last-write-wins away
+ *  one of them. Same shape as review.ts's `edit()`. */
+const rmwChains = new Map<string, Promise<unknown>>()
+
+function chained<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const next = Promise.resolve(rmwChains.get(key))
+    .catch(() => {})
+    .then(fn)
+  rmwChains.set(
+    key,
+    next.catch(() => {})
+  )
+  return next
+}
+
 const agentConfigFile = () => path.join(gurtRoot, 'agent-config-cache.json')
 
 /** The whole per-agent config cache (empty object when the file is absent). */
@@ -213,10 +229,14 @@ export async function getAgentConfig(agentId: string): Promise<AgentConfig> {
   return defaultAgentConfig(agents[agentId]?.kind ?? agentId)
 }
 
-export async function setAgentConfig(agentId: string, cfg: AgentConfig): Promise<void> {
-  const cache = await getAgentConfigs()
-  cache[agentId] = cfg
-  await writeJson(agentConfigFile(), cache)
+export function setAgentConfig(agentId: string, cfg: AgentConfig): Promise<void> {
+  // Serialized: two sessions starting at once each cache their own agent's
+  // config, and unchained read-modify-writes would drop one of the entries.
+  return chained('agent-config', async () => {
+    const cache = await getAgentConfigs()
+    cache[agentId] = cfg
+    await writeJson(agentConfigFile(), cache)
+  })
 }
 
 const notificationsFile = () => path.join(gurtRoot, 'notifications.json')
@@ -299,21 +319,32 @@ async function saveWorkspace(ws: string, data: WorkspaceFile): Promise<void> {
   await writeJson(path.join(wsDir(ws), 'workspace.json'), data)
 }
 
-export async function addRepo(ws: string, repo: RepoConfig): Promise<void> {
-  validateName('repo', repo.name)
-  const data = await getWorkspace(ws)
-  if (data.repos.some((r) => r.name === repo.name))
-    throw new Error(`repo "${repo.name}" already exists in "${ws}"`)
-  data.repos.push(repo)
-  await saveWorkspace(ws, data)
+/** Serialize one workspace.json read-modify-write against its siblings — every
+ *  mutator below goes through this, so concurrent IPC calls cannot lose each
+ *  other's edits. Reads (`getWorkspace`) stay unchained. */
+function editWorkspace<T>(ws: string, fn: () => Promise<T>): Promise<T> {
+  return chained(`workspace:${ws}`, fn)
 }
 
-export async function updateRepo(ws: string, repo: RepoConfig): Promise<void> {
-  const data = await getWorkspace(ws)
-  const i = data.repos.findIndex((r) => r.name === repo.name)
-  if (i < 0) throw new Error(`repo "${repo.name}" not found in "${ws}"`)
-  data.repos[i] = repo
-  await saveWorkspace(ws, data)
+export function addRepo(ws: string, repo: RepoConfig): Promise<void> {
+  return editWorkspace(ws, async () => {
+    validateName('repo', repo.name)
+    const data = await getWorkspace(ws)
+    if (data.repos.some((r) => r.name === repo.name))
+      throw new Error(`repo "${repo.name}" already exists in "${ws}"`)
+    data.repos.push(repo)
+    await saveWorkspace(ws, data)
+  })
+}
+
+export function updateRepo(ws: string, repo: RepoConfig): Promise<void> {
+  return editWorkspace(ws, async () => {
+    const data = await getWorkspace(ws)
+    const i = data.repos.findIndex((r) => r.name === repo.name)
+    if (i < 0) throw new Error(`repo "${repo.name}" not found in "${ws}"`)
+    data.repos[i] = repo
+    await saveWorkspace(ws, data)
+  })
 }
 
 /** Task names holding a clone of this repo — the work that would be destroyed. */
@@ -334,55 +365,63 @@ export async function tasksUsingEnv(ws: string, env: string): Promise<string[]> 
   return used
 }
 
-export async function removeRepo(ws: string, repo: string): Promise<void> {
-  const data = await getWorkspace(ws)
-  const defaultOf = data.envs.filter((e) => e.repo === repo).map((e) => e.name)
-  if (defaultOf.length)
-    throw new Error(
-      `repo "${repo}" is the default of env(s): ${defaultOf.join(', ')} — change those first`
-    )
-  const used = await tasksUsingRepo(ws, repo)
-  if (used.length)
-    throw new Error(`repo "${repo}" has a clone in task(s): ${used.join(', ')} — delete those tasks first`)
-  data.repos = data.repos.filter((r) => r.name !== repo)
-  await saveWorkspace(ws, data)
+export function removeRepo(ws: string, repo: string): Promise<void> {
+  return editWorkspace(ws, async () => {
+    const data = await getWorkspace(ws)
+    const defaultOf = data.envs.filter((e) => e.repo === repo).map((e) => e.name)
+    if (defaultOf.length)
+      throw new Error(
+        `repo "${repo}" is the default of env(s): ${defaultOf.join(', ')} — change those first`
+      )
+    const used = await tasksUsingRepo(ws, repo)
+    if (used.length)
+      throw new Error(`repo "${repo}" has a clone in task(s): ${used.join(', ')} — delete those tasks first`)
+    data.repos = data.repos.filter((r) => r.name !== repo)
+    await saveWorkspace(ws, data)
+  })
 }
 
 // --- env definitions (workspace registry) -------------------------------
 
-export async function addEnv(ws: string, env: EnvConfig): Promise<void> {
-  validateName('env', env.name)
-  const invalid = validateEnvConfig(env)
-  if (invalid) throw new Error(`env "${env.name}": ${invalid}`)
-  const data = await getWorkspace(ws)
-  if (data.envs.some((e) => e.name === env.name))
-    throw new Error(`env "${env.name}" already exists in "${ws}"`)
-  data.envs.push(env)
-  await saveWorkspace(ws, data)
+export function addEnv(ws: string, env: EnvConfig): Promise<void> {
+  return editWorkspace(ws, async () => {
+    validateName('env', env.name)
+    const invalid = validateEnvConfig(env)
+    if (invalid) throw new Error(`env "${env.name}": ${invalid}`)
+    const data = await getWorkspace(ws)
+    if (data.envs.some((e) => e.name === env.name))
+      throw new Error(`env "${env.name}" already exists in "${ws}"`)
+    data.envs.push(env)
+    await saveWorkspace(ws, data)
+  })
 }
 
 /** Update an env definition. The name is immutable — it only matches an
  *  existing env; renaming is not supported. */
-export async function updateEnv(ws: string, env: EnvConfig): Promise<void> {
-  const invalid = validateEnvConfig(env)
-  if (invalid) throw new Error(`env "${env.name}": ${invalid}`)
-  const data = await getWorkspace(ws)
-  const i = data.envs.findIndex((e) => e.name === env.name)
-  if (i < 0) throw new Error(`env "${env.name}" not found in "${ws}"`)
-  data.envs[i] = env
-  await saveWorkspace(ws, data)
+export function updateEnv(ws: string, env: EnvConfig): Promise<void> {
+  return editWorkspace(ws, async () => {
+    const invalid = validateEnvConfig(env)
+    if (invalid) throw new Error(`env "${env.name}": ${invalid}`)
+    const data = await getWorkspace(ws)
+    const i = data.envs.findIndex((e) => e.name === env.name)
+    if (i < 0) throw new Error(`env "${env.name}" not found in "${ws}"`)
+    data.envs[i] = env
+    await saveWorkspace(ws, data)
+  })
 }
 
-export async function removeEnv(ws: string, name: string): Promise<void> {
-  const used = await tasksUsingEnv(ws, name)
-  if (used.length)
-    throw new Error(
-      `env "${name}" is used by session(s) in task(s): ${used.join(', ')} — delete those first`
-    )
-  const data = await getWorkspace(ws)
-  data.envs = data.envs.filter((e) => e.name !== name)
-  await saveWorkspace(ws, data)
-  await fs.rm(overrideConfigPath(ws, name), { force: true })
+export function removeEnv(ws: string, name: string): Promise<void> {
+  return editWorkspace(ws, async () => {
+    const used = await tasksUsingEnv(ws, name)
+    if (used.length)
+      throw new Error(
+        `env "${name}" is used by session(s) in task(s): ${used.join(', ')} — delete those first`
+      )
+    const data = await getWorkspace(ws)
+    data.envs = data.envs.filter((e) => e.name !== name)
+    await saveWorkspace(ws, data)
+    await fs.rm(overrideConfigPath(ws, name), { force: true })
+  })
 }
 
 /** Whether the task exists: `task.json` is the fact, a bare directory is not
