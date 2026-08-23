@@ -1,9 +1,10 @@
-import { createServer, type Server } from 'node:http'
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { z } from 'zod'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
+import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import type { EnvRef, McpMode } from '../../shared/types'
 import { hostGitAccessForRepo, type HostGitAccess } from '../git/env'
 import { providerForHost } from '../git/providers'
@@ -27,7 +28,7 @@ const errorResult = (text: string): ToolResult => ({
  */
 function withHostPath(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const extra = ['/opt/homebrew/bin', '/usr/local/bin']
-  const path = [env.PATH, ...extra].filter(Boolean).join(':')
+  const path = [env['PATH'], ...extra].filter(Boolean).join(':')
   return { ...env, PATH: path }
 }
 
@@ -198,7 +199,9 @@ export function buildGithubHttpServer(
   token: string
 ): Server {
   const prefix = `/mcp/${token}`
-  return createServer(async (req, res) => {
+  // Sync listener, async handler: node discards a request handler's return
+  // value, so an async listener would drop a rejection instead of reporting it.
+  const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     if (!req.url || !req.url.startsWith(prefix)) {
       res.writeHead(404).end()
       return
@@ -209,19 +212,24 @@ export function buildGithubHttpServer(
     }
     try {
       const server = makeMcpServer(ref, repo, dir, mode)
-      const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: undefined,
-        enableJsonResponse: true
-      })
+      // No `sessionIdGenerator` = stateless, which is what a fresh server per
+      // POST wants (the SDK reads an absent generator exactly that way).
+      const transport = new StreamableHTTPServerTransport({ enableJsonResponse: true })
       res.on('close', () => {
         void transport.close()
         void server.close()
       })
-      await server.connect(transport)
+      // The SDK's transport class does not satisfy its own `Transport`
+      // interface under exactOptionalPropertyTypes — it declares `onclose?:
+      // () => void`, which reads back as `(() => void) | undefined`. The two
+      // types are otherwise identical; this is the flag's cost at a
+      // third-party boundary, not a widening of ours.
+      await server.connect(transport as Transport)
       await transport.handleRequest(req, res)
     } catch (e) {
       log.error('internal.fail', { site: 'mcp-handler', id: 'github', err: e })
       if (!res.headersSent) res.writeHead(500).end()
     }
-  })
+  }
+  return createServer((req, res) => void handle(req, res))
 }

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react'
 import type {
   AgentConfig,
@@ -6,6 +6,7 @@ import type {
   McpMode,
   McpSelection,
   RepoChanges,
+  SessionActivity,
   SessionConfigOption,
   SessionInfo,
   SessionRole,
@@ -33,6 +34,7 @@ import { Icon, Dot } from './icons'
 import { AgentMark, ROLE_INFO, agentIcon } from './tags'
 import { deleteSession, duplicateSession } from './SessionActions'
 import { Modal } from './Modal'
+import { fire, run } from '../async'
 
 /** One visible line of the tree — the unit arrow-key navigation moves over. */
 type Row =
@@ -65,7 +67,7 @@ export function Sidebar({
   /** Per-task git changes keyed `ws/task` — drives the actionable badge. */
   changes: Record<string, RepoChanges[]>
   /** Live runtime overlay per session id — splits `started` into running/waiting/idle. */
-  activity: Record<string, { busy?: boolean; awaitingInput?: boolean }>
+  activity: Record<string, SessionActivity>
   onPickWorkspace: (ws: string) => void
   onNewWorkspace: () => void
   onDeleteWorkspace: (ws: string) => void
@@ -121,7 +123,8 @@ export function Sidebar({
   const setCollapse = (ws2: string, task: string, on: boolean) => {
     setCollapsed((prev) => {
       const next = new Set(prev)
-      on ? next.add(`${ws2}/${task}`) : next.delete(`${ws2}/${task}`)
+      if (on) next.add(`${ws2}/${task}`)
+      else next.delete(`${ws2}/${task}`)
       return next
     })
     // Collapsing hides the selected session — move the selection up to the task
@@ -139,7 +142,7 @@ export function Sidebar({
       ? `Task "${taskName}" has uncommitted changes in: ${dirty.join(', ')}. Delete anyway and permanently lose them, along with all environments and sessions?`
       : `Delete task "${taskName}" with all its environments, clones and sessions?`
     if (await confirmDialog(warning, { title: 'Delete task', confirmText: 'Delete', danger: true }))
-      window.gurt.removeTask(ws, taskName).catch((e) => alertDialog(String(e)))
+      window.gurt.removeTask(ws, taskName).catch((e: unknown) => alertDialog(String(e)))
   }
 
   /** Resolves true once the delete has been confirmed and sent. */
@@ -177,8 +180,13 @@ export function Sidebar({
       ? selection?.type === 'task' && selection.ws === r.ws && selection.task === r.task
       : selection?.type === 'session' && selection.id === r.id
   const cursor = rows.findIndex(isSelected)
-  const selectRow = (r: Row) =>
-    r.kind === 'task' ? onSelectTask(r.ws, r.task) : onSelectSession(r.id)
+  /** Select a row by reference. Undefined is a no-op: the callers below step the
+   *  cursor with clamped arithmetic, so it only happens on an empty tree. */
+  const selectRow = (r: Row | undefined): void => {
+    if (!r) return
+    if (r.kind === 'task') onSelectTask(r.ws, r.task)
+    else onSelectSession(r.id)
+  }
 
   const startRename = (r: Row) => {
     renameSettled.current = false
@@ -271,7 +279,7 @@ export function Sidebar({
         // The dialog takes the caret and never hands it back — the tree needs it
         // to go on navigating, whichever way the answer went.
         if (cur.kind === 'task') {
-          deleteTask(cur.task).then(() => treeRef.current?.focus())
+          fire(() => deleteTask(cur.task).then(() => treeRef.current?.focus()))
           break
         }
         // A selection left on the deleted session would sit on an empty pane, so
@@ -279,10 +287,12 @@ export function Sidebar({
         // cancelled dialog would still have moved the cursor. Either neighbour
         // outlives this session: a sibling, or the task row that must be above it.
         const next = rows[cursor + 1] ?? rows[cursor - 1]
-        deleteRow(cur.id).then((deleted) => {
-          if (deleted && next) selectRow(next)
-          treeRef.current?.focus()
-        })
+        fire(() =>
+          deleteRow(cur.id).then((deleted) => {
+            if (deleted && next) selectRow(next)
+            treeRef.current?.focus()
+          })
+        )
         break
       }
       default:
@@ -361,7 +371,7 @@ export function Sidebar({
                   placeholder="task name"
                   value={taskDraftName}
                   onChange={(e) => setTaskDraftName(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && submitNewTask()}
+                  onKeyDown={run((e) => e.key === 'Enter' && submitNewTask())}
                 />
               </div>
             </div>
@@ -404,7 +414,7 @@ export function Sidebar({
                   <RenameInput
                     value={renameDraft}
                     onChange={setRenameDraft}
-                    onCommit={commitRename}
+                    onCommit={run(commitRename)}
                     onCancel={cancelRename}
                   />
                 ) : (
@@ -427,7 +437,7 @@ export function Sidebar({
                       title="delete task"
                       onClick={(e) => {
                         e.stopPropagation()
-                        deleteTask(task.name)
+                        fire(() => deleteTask(task.name))
                       }}
                     >
                       <Icon name="trash" size={13} />
@@ -458,7 +468,7 @@ export function Sidebar({
                         <RenameInput
                           value={renameDraft}
                           onChange={setRenameDraft}
-                          onCommit={commitRename}
+                          onCommit={run(commitRename)}
                           onCancel={cancelRename}
                         />
                       ) : (
@@ -648,7 +658,7 @@ export function DeleteWorkspaceModal({
             style={{ marginTop: 6 }}
             value={name}
             onChange={(e) => setName(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && submit()}
+            onKeyDown={run((e) => e.key === 'Enter' && submit())}
             placeholder={ws}
           />
         </div>
@@ -659,7 +669,7 @@ export function DeleteWorkspaceModal({
         <button className="btn" onClick={onClose}>
           Cancel
         </button>
-        <button className="btn btn-danger" disabled={!matches || busy} onClick={submit}>
+        <button className="btn btn-danger" disabled={!matches || busy} onClick={run(submit)}>
           Delete workspace
         </button>
       </div>
@@ -754,16 +764,21 @@ export function NewSessionModal({
   const taRef = useRef<HTMLTextAreaElement>(null)
 
   useEffect(() => {
-    window.gurt.getAgents().then((a) => {
-      setAgents(a)
-      // Create mode picks the first agent; edit mode keeps the draft's.
-      if (!editing) {
-        const first = Object.keys(a)[0]
-        if (first) setAgent(first)
-      }
-    })
-    window.gurt.getMcpDefs().then(setMcpDefs)
-    window.gurt.getCredentials().then((f) => setCredentials(f.credentials)).catch(() => {})
+    fire(() =>
+      window.gurt.getAgents().then((a) => {
+        setAgents(a)
+        // Create mode picks the first agent; edit mode keeps the draft's.
+        if (!editing) {
+          const first = Object.keys(a)[0]
+          if (first) setAgent(first)
+        }
+      })
+    )
+    fire(() => window.gurt.getMcpDefs().then(setMcpDefs))
+    fire(() => window.gurt.getCredentials().then((f) => setCredentials(f.credentials)))
+    // Mount-only on purpose: this seeds the *initial* pick of a modal that is
+    // remounted per open, and `editing` decides that seed. Re-running it when
+    // the flag flips mid-edit would overwrite the choice the user is making.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -771,24 +786,29 @@ export function NewSessionModal({
     Object.entries(mcp).map(([id, mode]) => ({ id, mode }))
 
   const wsData = tree.workspaces.find((w) => w.name === ws)
-  const tasks = wsData?.tasks ?? []
+  // Memoized because both feed effect dependency lists below: the `?? []`
+  // fallback is a fresh array on every render, which would re-run those effects
+  // every render for a workspace that has no tasks (or no envs) yet.
+  const tasks = useMemo(() => wsData?.tasks ?? [], [wsData])
+  const envs = useMemo(() => wsData?.envs ?? [], [wsData])
   const taskData = tasks.find((t) => t.name === taskName)
   const allRepos = wsData?.repos ?? []
-  const envs = wsData?.envs ?? []
   const agentList = agents
     ? Object.entries(agents).map(([id, a]) => ({ id, label: a.label, kind: a.kind }))
     : []
 
   useEffect(() => {
-    if (!taskName && tasks.length) setTaskName(tasks[0].name)
+    const first = tasks[0]
+    if (!taskName && first) setTaskName(first.name)
   }, [taskName, tasks])
 
   // Default to the first env; seed the session repo from its default (create mode
   // only — edit mode keeps the session's saved repos).
   useEffect(() => {
-    if (!env && envs.length) {
-      setEnv(envs[0].name)
-      if (!editing) setRepos(envs[0].repo ? [envs[0].repo] : [])
+    const first = envs[0]
+    if (!env && first) {
+      setEnv(first.name)
+      if (!editing) setRepos(first.repo ? [first.repo] : [])
     }
   }, [env, envs, editing])
 
@@ -998,7 +1018,7 @@ export function NewSessionModal({
                   placeholder="task name"
                   value={newTaskName}
                   onChange={(e) => setNewTaskName(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && createTaskInline()}
+                  onKeyDown={run((e) => e.key === 'Enter' && createTaskInline())}
                 />
               </div>
             ) : (
@@ -1364,8 +1384,8 @@ export function NewSessionModal({
               if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
                 e.preventDefault()
                 if (editing) {
-                  if (ready) saveEdit()
-                } else if (canRun) create('run')
+                  if (ready) fire(saveEdit)
+                } else if (canRun) fire(() => create('run'))
               }
             }}
           />
@@ -1384,13 +1404,13 @@ export function NewSessionModal({
             <button className="btn" onClick={onClose}>
               Cancel
             </button>
-            <button className="btn btn-primary" disabled={!ready} onClick={saveEdit}>
+            <button className="btn btn-primary" disabled={!ready} onClick={run(saveEdit)}>
               Save
             </button>
           </>
         ) : (
           <>
-            <button className="btn btn-text" disabled={!ready} onClick={() => create('draft')}>
+            <button className="btn btn-text" disabled={!ready} onClick={run(() => create('draft'))}>
               Save draft
             </button>
             <span className="spacer" />
@@ -1398,7 +1418,7 @@ export function NewSessionModal({
               className="btn"
               disabled={!canRun}
               title={!repos.length ? 'pick a repository to queue' : undefined}
-              onClick={() => create('queue')}
+              onClick={run(() => create('queue'))}
             >
               Add to queue
             </button>
@@ -1406,7 +1426,7 @@ export function NewSessionModal({
               className="btn btn-primary"
               disabled={!canRun}
               title={!repos.length ? 'pick a repository to run' : undefined}
-              onClick={() => create('run')}
+              onClick={run(() => create('run'))}
             >
               <Icon name="play" size={11} />
               Run now
@@ -1474,6 +1494,5 @@ function McpRow({
 /** `https://github.com/acme/checkout-web.git` → `acme/checkout-web`. */
 function shortRepoUrl(url: string): string {
   const cleaned = url.replace(/\.git$/, '').replace(/\/+$/, '')
-  const m = cleaned.match(/[:/]([^:/]+\/[^:/]+)$/)
-  return m ? m[1] : cleaned
+  return /[:/]([^:/]+\/[^:/]+)$/.exec(cleaned)?.[1] ?? cleaned
 }

@@ -19,6 +19,7 @@ jobs:
       - run: npx allow-scripts
       - run: npm audit signatures
       - run: npm run typecheck
+      - run: npm run lint
       - name: tests
         run: |
           # Each scripts/*.test.mjs is a self-contained test run as `node <file>`.

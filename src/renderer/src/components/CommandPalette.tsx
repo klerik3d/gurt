@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { SessionStatus, Tree } from '../../../shared/types'
+import type { SessionActivity, SessionStatus, Tree } from '../../../shared/types'
 import { sessionStatus } from '../../../shared/types'
 import { agentKind, agentName, useAgents } from '../useAgents'
 import { logErr } from '../log'
@@ -13,7 +13,7 @@ interface SessionItem {
   id: string
   title: string
   client: string
-  clientKind?: string
+  clientKind?: string | undefined
   status: SessionStatus
 }
 
@@ -62,7 +62,7 @@ export function CommandPalette({
   onSelectTask
 }: {
   tree: Tree
-  activity: Record<string, { busy?: boolean; awaitingInput?: boolean }>
+  activity: Record<string, SessionActivity>
   onClose: () => void
   onNewSession: () => void
   onNewTask: () => void

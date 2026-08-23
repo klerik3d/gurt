@@ -25,6 +25,7 @@ import { Icon, Dot } from './icons'
 import { AgentMark, EnvRepoMarks, RoleMark } from './tags'
 import { SessionMenu } from './SessionActions'
 import { VscodeButton } from './VscodeButton'
+import { run } from '../async'
 
 const log = createLogger('chat')
 
@@ -60,7 +61,7 @@ export function Chat({
   onSelect,
   onDeleted
 }: {
-  snapshot?: SessionSnapshot
+  snapshot?: SessionSnapshot | undefined
   sessionId: string
   /** Select another session — where a duplicate's fresh draft is handed to. */
   onSelect: (id: string) => void
@@ -101,7 +102,8 @@ export function Chat({
   const userEntries = entries.filter(
     (e): e is ChatEntry & { kind: 'user' } => e.kind === 'user' && !!e.text.trim()
   )
-  const lastUserId = userEntries[userEntries.length - 1]?.id
+  const lastUserEntry = userEntries[userEntries.length - 1]
+  const lastUserId = lastUserEntry?.id
   const pinnedEntry = userEntries.find((e) => e.id === pinnedId)
   if (pinnedEntry) pinnedTextRef.current = pinnedEntry.text
 
@@ -177,6 +179,11 @@ export function Chat({
       feed.removeEventListener('scroll', recompute)
       ro.disconnect()
     }
+    // `userEntries` is a fresh array on every render — including it would tear
+    // down and re-attach the scroll listener on every streamed chunk. The set of
+    // user messages it reads only grows, and it grows exactly when `lastUserId`
+    // changes, which is the dependency standing in for it here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, hasSnapshot, lastUserId])
 
   // Clicking the pinned bar jumps straight to the real message it's echoing,
@@ -263,9 +270,9 @@ export function Chat({
       </div>
 
       <div className="feed-wrap">
-        {userEntries.length > 0 && (
+        {lastUserEntry && (
           <PinnedRequest
-            text={pinnedTextRef.current || userEntries[userEntries.length - 1].text}
+            text={pinnedTextRef.current || lastUserEntry.text}
             visible={pinnedId !== undefined}
             onNavigate={scrollToPinned}
           />
@@ -280,7 +287,7 @@ export function Chat({
         </div>
       </div>
 
-      {hasPlan && <PlanPinned plan={plan!} />}
+      {plan && plan.length > 0 && <PlanPinned plan={plan} />}
 
       <Composer
         key={sessionId}
@@ -361,7 +368,7 @@ function Msg({
 }: {
   entry: ChatEntry
   sessionId: string
-  live?: boolean
+  live?: boolean | undefined
 }) {
   switch (entry.kind) {
     case 'user':
@@ -397,7 +404,7 @@ function Msg({
   }
 }
 
-function ThoughtMsg({ text, live }: { text: string; live?: boolean }) {
+function ThoughtMsg({ text, live }: { text: string; live?: boolean | undefined }) {
   const [open, setOpen] = useState(false)
   return (
     <div className="msg">
@@ -468,7 +475,7 @@ function ToolMsg({ entry }: { entry: ChatToolCall }) {
 }
 
 /** Expanded tool output. Diff-looking lines get the +/− tinted treatment. */
-function ToolDetail({ detail, kind }: { detail: string; kind?: string }) {
+function ToolDetail({ detail, kind }: { detail: string; kind?: string | undefined }) {
   const lines = detail.replace(/\n+$/, '').split('\n')
   const isDiff = kind === 'edit' || lines.some((l) => /^[+-](?![+-])/.test(l))
   if (!isDiff) return <pre className="tool-out mono">{detail}</pre>
@@ -516,9 +523,9 @@ function PermissionMsg({
               <button
                 key={o.optionId}
                 className={o.kind?.startsWith('allow') ? 'btn btn-sm btn-primary' : 'btn btn-sm'}
-                onClick={() =>
+                onClick={run(() =>
                   window.gurt.sessionPermission(sessionId, entry.id, o.optionId).catch(logErr('sessionPermission'))
-                }
+                )}
               >
                 {o.name}
               </button>
@@ -584,8 +591,13 @@ const chipIcon = (path: string): 'branch' | 'folder' | 'file' =>
 function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const r = new FileReader()
-    r.onload = () => resolve(String(r.result).replace(/^data:[^,]*,/, ''))
-    r.onerror = () => reject(r.error)
+    // readAsDataURL always yields a string; anything else is a reader that did
+    // not do what was asked, not a file to attach.
+    r.onload = () =>
+      typeof r.result === 'string'
+        ? resolve(r.result.replace(/^data:[^,]*,/, ''))
+        : reject(new Error(`could not read "${file.name}"`))
+    r.onerror = () => reject(r.error ?? new Error(`could not read "${file.name}"`))
     r.readAsDataURL(file)
   })
 }
@@ -602,14 +614,14 @@ function Composer({
 }: {
   sessionId: string
   /** The session agent's kind (`AgentDef.id`) — scopes agent-specific UI fixups. */
-  agentKind?: string
+  agentKind?: string | undefined
   busy: boolean
   /** No plan bar above — the composer sits flush against the feed. */
   flush: boolean
-  modes?: SessionModes
+  modes?: SessionModes | undefined
   commands: CommandInfo[]
   configOptions: SessionConfigOption[]
-  promptCaps?: PromptCapabilities
+  promptCaps?: PromptCapabilities | undefined
 }) {
   const [text, setText] = useState('')
   const [focused, setFocused] = useState(false)
@@ -856,8 +868,10 @@ function Composer({
     r.continuous = true
     r.onresult = (e: SpeechResultEvent) => {
       let add = ''
-      for (let i = e.resultIndex; i < e.results.length; i++)
-        if (e.results[i].isFinal) add += e.results[i][0].transcript
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const res = e.results[i]
+        if (res?.isFinal) add += res[0]?.transcript ?? ''
+      }
       add = add.trim()
       if (add) setText((t) => (t && !t.endsWith(' ') ? `${t} ${add}` : `${t}${add}`))
     }
@@ -1135,14 +1149,14 @@ function GearPopup({
 }: {
   sessionId: string
   /** The session agent's kind — passed to the kind-scoped model resolver. */
-  agentKind?: string
-  modes?: SessionModes
+  agentKind?: string | undefined
+  modes?: SessionModes | undefined
   configOptions: SessionConfigOption[]
 }) {
   const setMode = (id: string) =>
-    window.gurt.sessionSetMode(sessionId, id).catch((e) => alertDialog(String(e)))
+    window.gurt.sessionSetMode(sessionId, id).catch((e: unknown) => alertDialog(String(e)))
   const setConfig = (opt: SessionConfigOption, value: string | boolean) =>
-    window.gurt.sessionSetConfigOption(sessionId, opt.id, value).catch((e) => alertDialog(String(e)))
+    window.gurt.sessionSetConfigOption(sessionId, opt.id, value).catch((e: unknown) => alertDialog(String(e)))
 
   // The agent may surface Mode as a config option too; the dedicated mode group
   // already renders it, so drop the duplicate control.
@@ -1166,7 +1180,7 @@ function GearPopup({
                     key={o.value}
                     className={`chip-btn ${o.value === view.activeValue(opt) ? 'on' : ''}`}
                     title={o.description ?? undefined}
-                    onClick={() => setConfig(opt, o.value)}
+                    onClick={run(() => setConfig(opt, o.value))}
                   >
                     {o.name}
                   </button>
@@ -1188,13 +1202,13 @@ function GearPopup({
               <div className="chip-row">
                 <button
                   className={`chip-btn ${opt.currentValue === true ? 'on' : ''}`}
-                  onClick={() => setConfig(opt, true)}
+                  onClick={run(() => setConfig(opt, true))}
                 >
                   on
                 </button>
                 <button
                   className={`chip-btn ${opt.currentValue === false ? 'on' : ''}`}
-                  onClick={() => setConfig(opt, false)}
+                  onClick={run(() => setConfig(opt, false))}
                 >
                   off
                 </button>
@@ -1212,7 +1226,7 @@ function GearPopup({
                   <button
                     key={m.id}
                     className={`chip-btn ${m.id === modes.currentModeId ? 'on' : ''}`}
-                    onClick={() => setMode(m.id)}
+                    onClick={run(() => setMode(m.id))}
                   >
                     {m.name}
                   </button>

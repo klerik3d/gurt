@@ -20,7 +20,7 @@ const CLAUDE_MODELS: ConfigSelectOption[] = [
   { value: 'haiku', name: 'Haiku' }
 ]
 
-const FABLE_OPTION = CLAUDE_MODELS[0]
+const FABLE_OPTION: ConfigSelectOption = { value: 'fable', name: 'Fable' }
 const isFable = (o: ConfigSelectOption): boolean =>
   o.value === FABLE_OPTION.value || /\bfable\b/i.test(o.name)
 
@@ -110,6 +110,7 @@ function resolveClaudeModel(opt: SessionConfigOption): string | boolean {
     ?.description?.match(/currently\s+([A-Za-z]+)\s*([\d.]+)?/i)
   if (!target) return cur
   const [, family, version] = target
+  if (!family) return cur
   // A candidate must agree on family and, when the default names one, version —
   // read from the candidate's own name/description ("Opus (1M context)" carries
   // its version only in "Opus 5 with 1M context").
@@ -121,5 +122,5 @@ function resolveClaudeModel(opt: SessionConfigOption): string | boolean {
     return new RegExp(`${family}\\s*${version.replace('.', '\\.')}\\b`, 'i').test(text)
   })
   // Ambiguity is worse than no highlight — it would assert the wrong model.
-  return candidates.length === 1 ? candidates[0].value : cur
+  return candidates.length === 1 ? (candidates[0]?.value ?? cur) : cur
 }

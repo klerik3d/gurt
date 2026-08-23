@@ -29,8 +29,8 @@ export function createBus(): Bus {
     on(type, fn) {
       let set = handlers.get(type)
       if (!set) handlers.set(type, (set = new Set()))
-      set.add(fn as Handler)
-      return () => set.delete(fn as Handler)
+      set.add(fn)
+      return () => set.delete(fn)
     }
   }
 }

@@ -25,19 +25,20 @@ export interface ParsedEnvConfig {
 export function parseEnvDevcontainer(text: string): ParsedEnvConfig {
   const errors: ParseError[] = []
   const config = parse(text, errors, { allowTrailingComma: true }) as unknown
-  if (errors.length) {
-    const e = errors[0]
-    return { error: `devcontainer: ${printParseErrorCode(e.error)} at offset ${e.offset}` }
-  }
+  const [first] = errors
+  if (first)
+    return {
+      error: `devcontainer: ${printParseErrorCode(first.error)} at offset ${first.offset}`
+    }
   if (!config || typeof config !== 'object' || Array.isArray(config))
     return { error: 'devcontainer must be a JSON object' }
   const cfg = config as Record<string, unknown>
-  const rawBuild = cfg.build
+  const rawBuild = cfg['build']
   const build =
     rawBuild && typeof rawBuild === 'object' && !Array.isArray(rawBuild)
       ? (rawBuild as DevcontainerBuild)
       : undefined
-  return { config: cfg, build }
+  return { config: cfg, ...(build ? { build } : {}) }
 }
 
 /** null = ok. The devcontainer is mandatory; a `build` section requires the
@@ -104,9 +105,19 @@ const K = [
 
 const rotr = (x: number, n: number): number => (x >>> n) | (x << (32 - n))
 
+/**
+ * Read one word of a fixed-size scratch array. Every index below is a loop
+ * variable bounded by a literal (0..63, and `i - 15`.. for i >= 16), so the
+ * fallback is unreachable — it exists because `noUncheckedIndexedAccess` cannot
+ * see that bound, and it says so once here instead of `!` on forty lines. A
+ * fallback that ever fired would change the digest, which env-config.test.mjs
+ * checks against node:crypto.
+ */
+const at = (a: ArrayLike<number>, i: number): number => a[i] ?? 0
+
 function sha256Hex(text: string): string {
   const bytes = new TextEncoder().encode(text)
-  const H = [
+  const H: [number, number, number, number, number, number, number, number] = [
     0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
   ]
   const l = bytes.length
@@ -120,13 +131,15 @@ function sha256Hex(text: string): string {
   for (let off = 0; off < padded.length; off += 64) {
     for (let i = 0; i < 16; i++) w[i] = dv.getUint32(off + i * 4)
     for (let i = 16; i < 64; i++) {
-      const s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >>> 3)
-      const s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >>> 10)
-      w[i] = (w[i - 16] + s0 + w[i - 7] + s1) >>> 0
+      const s0 = rotr(at(w, i - 15), 7) ^ rotr(at(w, i - 15), 18) ^ (at(w, i - 15) >>> 3)
+      const s1 = rotr(at(w, i - 2), 17) ^ rotr(at(w, i - 2), 19) ^ (at(w, i - 2) >>> 10)
+      w[i] = (at(w, i - 16) + s0 + at(w, i - 7) + s1) >>> 0
     }
     let [a, b, c, d, e, f, g, h] = H
     for (let i = 0; i < 64; i++) {
-      const t1 = (h + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + ((e & f) ^ (~e & g)) + K[i] + w[i]) >>> 0
+      const t1 =
+        (h + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + ((e & f) ^ (~e & g)) + at(K, i) + at(w, i)) >>>
+        0
       const t2 = ((rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) + ((a & b) ^ (a & c) ^ (b & c))) >>> 0
       h = g; g = f; f = e
       e = (d + t1) >>> 0

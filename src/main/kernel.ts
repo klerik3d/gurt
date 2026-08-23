@@ -100,15 +100,17 @@ async function assertDraftTarget(ws: string, repos: string[], env?: string): Pro
 export function createKernel(): Kernel {
   const bus = createBus()
 
-  // The container manager reads and writes container state that lives *on* the
-  // session, and the session manager asks it to provision — a genuine mutual
-  // dependency, so one lazy getter breaks the construction-order knot.
-  let sessions: SessionManager
-
   // Review state is standalone (no dependency back into sessions — the kernel
   // itself joins the two where they meet, at lock acquisition).
   const review = createReview()
 
+  // The container manager reads and writes container state that lives *on* the
+  // session, and the session manager asks it to provision — a genuine mutual
+  // dependency. The knot unties because every reference below is inside a
+  // closure: `sessions` is read when the callback runs, long after both
+  // managers exist, never while this constructor is still running. `sessions`
+  // carries its type explicitly for the same reason: read from its own
+  // initializer, inference would otherwise fall back to `any`.
   const containers = new ContainerManager({
     bus,
     session: (id) => sessions.sessionInfo(id),
@@ -118,7 +120,7 @@ export function createKernel(): Kernel {
     detach: (id) => sessions.detach(id)
   })
 
-  sessions = new SessionManager(
+  const sessions: SessionManager = new SessionManager(
     {
       resolveLaunch: (sessionId) => containers.resolveLaunch(sessionId),
       // Never rejects: the session record is gone by the time this settles, so
@@ -127,7 +129,7 @@ export function createKernel(): Kernel {
       releaseContainer: (sessionId, reason) =>
         containers
           .release(sessionId, reason)
-          .catch((e) => log.error('internal.fail', { site: 'container-release', s: sessionId, reason, err: e })),
+          .catch((e: unknown) => log.error('internal.fail', { site: 'container-release', s: sessionId, reason, err: e })),
       installAdapter: (ctx) => containers.installAdapter(ctx),
       resolveMcpServers,
       stopMcpServers,
@@ -145,26 +147,26 @@ export function createKernel(): Kernel {
       persist: (ws, task, records) => {
         store
           .writeSessions(ws, task, records)
-          .catch((e) => log.error('internal.fail', { site: 'session-persist', ws, task, err: e }))
+          .catch((e: unknown) => log.error('internal.fail', { site: 'session-persist', ws, task, err: e }))
       },
       saveAgentConfig: (agentId, cfg) => {
         store
           .setAgentConfig(agentId, cfg)
-          .catch((e) => log.error('internal.fail', { site: 'agent-config-persist', agent: agentId, err: e }))
+          .catch((e: unknown) => log.error('internal.fail', { site: 'agent-config-persist', agent: agentId, err: e }))
       },
       appendLog: (ws, task, sessionId, records) =>
         store.appendSessionLog(ws, task, sessionId, records),
       deleteLog: (ws, task, sessionId) => {
         store
           .deleteSessionLog(ws, task, sessionId)
-          .catch((e) => log.error('internal.fail', { site: 'session-log-delete', s: sessionId, err: e }))
+          .catch((e: unknown) => log.error('internal.fail', { site: 'session-log-delete', s: sessionId, err: e }))
         // The session's diagnostic file goes with its timeline.
         dropSessionLog(sessionId)
       },
       deleteScratch: (ws, task, sessionId) => {
         store
           .deleteSessionScratch(ws, task, sessionId)
-          .catch((e) => log.error('internal.fail', { site: 'session-scratch-delete', s: sessionId, err: e }))
+          .catch((e: unknown) => log.error('internal.fail', { site: 'session-scratch-delete', s: sessionId, err: e }))
       }
     },
     bus
@@ -218,7 +220,7 @@ export function createKernel(): Kernel {
       reaping.add(id)
       containers
         .stop(id, 'queue')
-        .catch((e) => {
+        .catch((e: unknown) => {
           log.error('internal.fail', { site: 'queue-handoff', s: id, err: e })
           // The stop cancelled this session's pending auto-stop before it went to
           // Docker, so a failure leaves the container up with nothing left to try
@@ -319,7 +321,7 @@ export function createKernel(): Kernel {
       }
     // Docker is the registry: correct the restored container records against it
     // (and reap orphans) before anything tries to exec into one.
-    await containers.reconcile().catch((e) => log.error('internal.fail', { site: 'container-reconcile', err: e }))
+    await containers.reconcile().catch((e: unknown) => log.error('internal.fail', { site: 'container-reconcile', err: e }))
     // Resume the queue once, after everything is restored: start what can start,
     // then free what the rest is waiting on. Without the second call a queue
     // restored behind a still-running container would never move — nothing has
@@ -327,7 +329,7 @@ export function createKernel(): Kernel {
     sessions.schedule()
     reapForQueue()
   }
-  const ready = restoreSessions().catch((e) =>
+  const ready = restoreSessions().catch((e: unknown) =>
     log.error('internal.fail', { site: 'session-restore', err: e })
   )
 

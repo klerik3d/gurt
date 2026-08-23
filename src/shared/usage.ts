@@ -73,11 +73,10 @@ export const isLimitMessage = (text?: string): boolean =>
  *  value (ISO or a unix stamp). Prose forms ("resets at 3pm") are left alone —
  *  parsing those needs the provider's timezone, which the message doesn't carry. */
 export function limitResetAt(text?: string): string | undefined {
-  const m = text?.match(
-    /reset\w*(?:\s+at)?[\s:="']*(\d{4}-\d{2}-\d{2}T[\d:.]+Z?|\d{10}(?:\d{3})?)\b/i
-  )
-  if (!m) return undefined
-  const raw = m[1]
+  const raw = /reset\w*(?:\s+at)?[\s:="']*(\d{4}-\d{2}-\d{2}T[\d:.]+Z?|\d{10}(?:\d{3})?)\b/i.exec(
+    text ?? ''
+  )?.[1]
+  if (!raw) return undefined
   const at = /^\d+$/.test(raw) ? new Date(Number(raw) * (raw.length === 10 ? 1000 : 1)) : new Date(raw)
   return Number.isNaN(at.getTime()) ? undefined : at.toISOString()
 }
@@ -85,8 +84,8 @@ export function limitResetAt(text?: string): string | undefined {
 /** Fold a turn's raw ending into the recorded outcome. */
 export function turnOutcome(o: {
   threw: boolean
-  stopReason?: string
-  detail?: string
+  stopReason?: string | undefined
+  detail?: string | undefined
 }): TurnOutcome {
   if (isLimitMessage(o.detail)) return 'limited'
   if (o.threw) return 'error'
@@ -110,4 +109,4 @@ export function formatDuration(ms: number): string {
 
 /** The turn record fields an adapter's usage report contributes. */
 export const usageFields = (u?: SessionUsage): Pick<TurnRecord, 'ctx' | 'cost' | 'currency'> =>
-  u ? { ctx: u.used, cost: u.cost?.amount, currency: u.cost?.currency } : {}
+  u ? { ctx: u.used, ...(u.cost ? { cost: u.cost.amount, currency: u.cost.currency } : {}) } : {}

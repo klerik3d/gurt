@@ -9,6 +9,7 @@ import { Icon, Dot } from './icons'
 import { AgentTag, EnvTag, RepoTag } from './tags'
 import { Modal } from './Modal'
 import { ReviewModal } from './ReviewModal'
+import { run } from '../async'
 
 export function TaskPane({
   tree,
@@ -33,11 +34,12 @@ export function TaskPane({
   const [openLog, setOpenLog] = useState<string | null>(null)
   const agents = useAgents()
 
-  // Opening the task pane is a refresh trigger.
+  // Opening the task pane is a refresh trigger. `onRefreshChanges` is stable
+  // per (ws, task) — App memoizes it on the selection — so this fires when the
+  // pane opens or switches task, not on every parent render.
   useEffect(() => {
     onRefreshChanges()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ws, task])
+  }, [ws, task, onRefreshChanges])
 
   const taskData = tree?.workspaces.find((w) => w.name === ws)?.tasks.find((t) => t.name === task)
   if (!taskData) return <div className="placeholder">task not found</div>
@@ -92,24 +94,24 @@ export function TaskPane({
                   {c.status !== 'stopped' && c.status !== 'error' && (
                     <button
                       className="btn btn-xs"
-                      onClick={() =>
-                        window.gurt.stopContainer(s.id).catch((e) => alertDialog(String(e)))
-                      }
+                      onClick={run(() =>
+                        window.gurt.stopContainer(s.id).catch((e: unknown) => alertDialog(String(e)))
+                      )}
                     >
                       Stop
                     </button>
                   )}
                   <button
                     className="btn btn-xs"
-                    onClick={async () => {
+                    onClick={run(async () => {
                       if (
                         await confirmDialog(
                           `Delete the container of "${s.title}"? The session and its clone are kept — it re-provisions on the next run.`,
                           { title: 'Delete container', confirmText: 'Delete', danger: true }
                         )
                       )
-                        window.gurt.releaseContainer(s.id).catch((e) => alertDialog(String(e)))
-                    }}
+                        window.gurt.releaseContainer(s.id).catch((e: unknown) => alertDialog(String(e)))
+                    })}
                   >
                     Delete
                   </button>
@@ -152,7 +154,7 @@ export function TaskPane({
               <span className="spacer" />
               <button
                 className="btn btn-xs"
-                onClick={() => window.gurt.sessionCancelQueue(s.id).catch((e) => alertDialog(String(e)))}
+                onClick={run(() => window.gurt.sessionCancelQueue(s.id).catch((e: unknown) => alertDialog(String(e))))}
               >
                 Cancel
               </button>
@@ -194,7 +196,9 @@ function ChangesSection({
   const rendered = (changes ?? []).filter(
     (r) => isActionable(r) || isDelivered(r) || r.behind > 0
   )
-  const flat = rendered.length === 1
+  /** The single rendered repo, when there is exactly one — the header then
+   *  carries its actions instead of repeating them per row. */
+  const only = rendered.length === 1 ? rendered[0] : undefined
 
   const act = async (repo: string, fn: () => Promise<void>) => {
     setBusyRepo(repo)
@@ -233,12 +237,12 @@ function ChangesSection({
         <button className="icon-sq bordered" title="refresh changes" onClick={onRefresh}>
           <Icon name="history" size={13} />
         </button>
-        {flat && locks[rendered[0].repo] && <LockTag />}
-        {flat && (
+        {only && locks[only.repo] && <LockTag />}
+        {only && (
           <button
             className="btn btn-sm"
-            disabled={busyRepo === rendered[0].repo}
-            onClick={() => openVscode(rendered[0].repo)}
+            disabled={busyRepo === only.repo}
+            onClick={run(() => openVscode(only.repo))}
           >
             Open in VS Code
           </button>
@@ -247,7 +251,7 @@ function ChangesSection({
       {rendered.length === 0 && <div className="tp-empty">No changes</div>}
       {rendered.map((r) => (
         <div key={r.repo} className="changes-group">
-          {!flat && (
+          {!only && (
             <div className="changes-group-head">
               <span className="changes-repo">▾ {r.repo}</span>
               {locks[r.repo] && <LockTag />}
@@ -255,7 +259,7 @@ function ChangesSection({
               <button
                 className="btn btn-xs"
                 disabled={busyRepo === r.repo}
-                onClick={() => openVscode(r.repo)}
+                onClick={run(() => openVscode(r.repo))}
               >
                 Open in VS Code
               </button>
@@ -315,9 +319,9 @@ function ChangesSection({
                   className="btn btn-sm"
                   disabled={busyRepo === r.repo || r.conflicted}
                   title={r.conflicted ? 'resolve the conflicts below, then commit' : undefined}
-                  onClick={() =>
+                  onClick={run(() =>
                     act(r.repo, () => window.gurt.changesUpdateFromMain(ws, task, r.repo))
-                  }
+                  )}
                 >
                   Update from {r.defaultBranch}
                 </button>
@@ -351,7 +355,7 @@ function ChangesSection({
                 <button
                   className="btn btn-sm"
                   disabled={!r.commits.some((c) => !c.pushed) || busyRepo === r.repo}
-                  onClick={() => act(r.repo, () => window.gurt.changesPush(ws, task, r.repo))}
+                  onClick={run(() => act(r.repo, () => window.gurt.changesPush(ws, task, r.repo)))}
                 >
                   Push
                 </button>
@@ -359,7 +363,7 @@ function ChangesSection({
                   <button
                     className="btn btn-sm"
                     disabled={busyRepo === r.repo}
-                    onClick={() => act(r.repo, () => window.gurt.changesOpenPr(ws, task, r.repo))}
+                    onClick={run(() => act(r.repo, () => window.gurt.changesOpenPr(ws, task, r.repo)))}
                   >
                     Create PR
                   </button>
@@ -395,7 +399,8 @@ function ChangesSection({
           onClose={() => setCommitRepo(null)}
           onCommit={(message) => {
             setCommitRepo(null)
-            act(commitRepo, () => window.gurt.changesCommit(ws, task, commitRepo, message))
+            // `act` reports its own failures on the repo row; nothing here waits.
+            void act(commitRepo, () => window.gurt.changesCommit(ws, task, commitRepo, message))
           }}
         />
       )}
@@ -449,8 +454,11 @@ function CommitModal({
     return () => {
       live = false
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+    // The modal is mounted for one (ws, task, repo) and unmounted on close, so
+    // this loads once; naming the props anyway means a future reuse that *does*
+    // change them re-reads the proposal instead of showing the old one. The
+    // `touched` guard is what keeps a reload from clobbering user edits.
+  }, [ws, task, repo])
 
   const edit = (v: string) => {
     touched.current = true

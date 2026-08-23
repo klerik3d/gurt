@@ -3,7 +3,7 @@
 // owns — the one thing it adds is the usage ledger (see shared/usage.ts).
 import { useEffect, useState } from 'react'
 import type { JSX } from 'react'
-import type { RepoChanges, SessionInfo, Tree } from '../../../shared/types'
+import type { RepoChanges, SessionActivity, SessionInfo, Tree } from '../../../shared/types'
 import { sessionStatus } from '../../../shared/types'
 import type { PlanUsage, PlanWindow } from '../../../shared/planUsage'
 import { STALE_AFTER_MS } from '../../../shared/planUsage'
@@ -190,8 +190,8 @@ const COLLAPSE_KEY = 'gurt.dashCollapsedWorkspaces'
 function useCollapsedWorkspaces(): { collapsed: Set<string>; toggle: (key: string) => void } {
   const [collapsed, setCollapsed] = useState<Set<string>>(() => {
     try {
-      const raw = JSON.parse(localStorage.getItem(COLLAPSE_KEY) ?? '[]')
-      return new Set(Array.isArray(raw) ? raw.filter((k) => typeof k === 'string') : [])
+      const raw: unknown = JSON.parse(localStorage.getItem(COLLAPSE_KEY) ?? '[]')
+      return new Set(Array.isArray(raw) ? raw.filter((k): k is string => typeof k === 'string') : [])
     } catch {
       return new Set()
     }
@@ -212,7 +212,7 @@ function useCollapsedWorkspaces(): { collapsed: Set<string>; toggle: (key: strin
 
 function allSessions(
   tree: Tree | null,
-  activity: Record<string, { busy?: boolean; awaitingInput?: boolean }>
+  activity: Record<string, SessionActivity>
 ): Row[] {
   const rows: Row[] = []
   for (const ws of tree?.workspaces ?? [])
@@ -234,7 +234,7 @@ export function Dashboard({
   onSelectTask
 }: {
   tree: Tree | null
-  activity: Record<string, { busy?: boolean; awaitingInput?: boolean }>
+  activity: Record<string, SessionActivity>
   /** Per-task git state, keyed `ws/task` — the review list's "how much work is
    *  sitting there" badge, already loaded by App for the sidebar. */
   changes: Record<string, RepoChanges[]>
@@ -266,7 +266,8 @@ export function Dashboard({
   const boardRows: Row[] = rows.flatMap((r) => {
     if (r.status !== 'idle') return r.status in STATUS_RANK ? [r] : []
     const turn = lastTurn.get(r.info.id)
-    if (!turn || (seen[r.info.id] && seen[r.info.id] >= turn.ts)) return []
+    const seenAt = seen[r.info.id]
+    if (!turn || (seenAt && seenAt >= turn.ts)) return []
     return [{ ...r, finishedAt: turn.ts }]
   })
   const boards = boardByWorkspace(boardRows, positions)
@@ -499,7 +500,8 @@ function WorkspaceBoardView({
       {!collapsed && (
         <div className="dash-board">
           {COLUMNS.map((col, i) => {
-            const rows = board.columns[i]
+            // One entry per COLUMNS element, built together in boardByWorkspace.
+            const rows = board.columns[i] ?? []
             const shown = rows.slice(0, COLUMN_ROWS)
             return (
               <div key={col.id} className="dash-col">
@@ -565,9 +567,9 @@ function BoardCard({
 }: {
   row: Row
   agents: Record<string, { label: string; kind: string }>
-  meta?: string
-  turn?: TurnRecord
-  changes?: RepoChanges[]
+  meta?: string | undefined
+  turn?: TurnRecord | undefined
+  changes?: RepoChanges[] | undefined
   onOpen: () => void
   onTask: () => void
 }): JSX.Element {

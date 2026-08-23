@@ -13,6 +13,7 @@
 import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
+import { z } from 'zod'
 import type { RepoConfig } from '../../shared/types'
 import { resolveCredential } from '../../shared/credentials'
 import { DEFAULT_TOKEN_USER } from '../../shared/credentials'
@@ -48,14 +49,26 @@ function readBody(req: IncomingMessage): Promise<string> {
   })
 }
 
-/** Parse git credential fill lines (`key=value`) into a map. */
-function parseFields(body: string): Record<string, string> {
+/**
+ * The only two fields of git's credential protocol this broker answers on.
+ * A plain object, not an index signature: everything else git may send in a
+ * fill — `path`, `wwwauth[]`, and the `username`/`password` of a store/erase —
+ * is dropped at the parse below instead of travelling any further into the
+ * process. Nothing parsed here is ever logged.
+ */
+const CREDENTIAL_FIELDS = z.object({
+  protocol: z.string().optional(),
+  host: z.string().optional()
+})
+
+/** Parse git credential fill lines (`key=value`) into the fields we serve. */
+function parseFields(body: string): z.infer<typeof CREDENTIAL_FIELDS> {
   const out: Record<string, string> = {}
   for (const line of body.split('\n')) {
     const i = line.indexOf('=')
     if (i > 0) out[line.slice(0, i).trim()] = line.slice(i + 1).trim()
   }
-  return out
+  return CREDENTIAL_FIELDS.parse(out)
 }
 
 /** POST /credential — answer git's credential fill for https/http only. */
@@ -72,9 +85,9 @@ async function handleCredential(
   }
   const resolved = resolveCredential(await listCredentials(), repo, fields.host)
   // An errored resolution (e.g. unverified entry, §3.2) serves nothing.
-  if (!resolved.error && resolved.entry?.kind === 'git-token' && resolved.entry.data.secret) {
-    const user = resolved.entry.data.username || DEFAULT_TOKEN_USER
-    const payload = `username=${user}\npassword=${resolved.entry.data.secret}\n`
+  if (!resolved.error && resolved.entry?.kind === 'git-token' && resolved.entry.data['secret']) {
+    const user = resolved.entry.data['username'] || DEFAULT_TOKEN_USER
+    const payload = `username=${user}\npassword=${resolved.entry.data['secret']}\n`
     res.writeHead(200, { 'content-type': 'text/plain' }).end(payload)
     return
   }
@@ -106,7 +119,10 @@ async function handleForgeEnv(repo: RepoConfig, res: ServerResponse): Promise<vo
 
 function buildServer(repo: RepoConfig, token: string): Server {
   const prefix = `/git/${token}`
-  return createServer(async (req, res) => {
+  // The listener itself is sync: node ignores whatever a request handler
+  // returns, so an async one would drop a rejection on the floor. Everything
+  // below already answers inside the try, and `void` is the explicit hand-off.
+  const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
       const url = req.url ?? ''
       if (!url.startsWith(prefix)) {
@@ -122,7 +138,8 @@ function buildServer(repo: RepoConfig, token: string): Server {
       log.error('internal.fail', { site: 'gitbroker-request', err: e })
       if (!res.headersSent) res.writeHead(500).end()
     }
-  })
+  }
+  return createServer((req, res) => void handle(req, res))
 }
 
 /** Ensure the session's broker is running and return its container-reachable URL. */
@@ -180,18 +197,19 @@ async function handleHostCredential(req: IncomingMessage, res: ServerResponse): 
     return
   }
   const entry = (await listCredentials()).find((c) => c.id === credId)
-  if (!entry || entry.kind !== 'git-token' || !entry.data.secret) {
+  if (!entry || entry.kind !== 'git-token' || !entry.data['secret']) {
     res.writeHead(204).end()
     return
   }
-  const user = entry.data.username || DEFAULT_TOKEN_USER
-  const payload = `username=${user}\npassword=${entry.data.secret}\n`
+  const user = entry.data['username'] || DEFAULT_TOKEN_USER
+  const payload = `username=${user}\npassword=${entry.data['secret']}\n`
   res.writeHead(200, { 'content-type': 'text/plain' }).end(payload)
 }
 
 function buildHostServer(token: string): Server {
   const prefix = `/host/${token}`
-  return createServer(async (req, res) => {
+  // Sync listener, async handler — see buildServer.
+  const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
       const url = req.url ?? ''
       if (!url.startsWith(prefix)) {
@@ -207,7 +225,8 @@ function buildHostServer(token: string): Server {
       log.error('internal.fail', { site: 'hostcredbroker-request', err: e })
       if (!res.headersSent) res.writeHead(500).end()
     }
-  })
+  }
+  return createServer((req, res) => void handle(req, res))
 }
 
 /** Ensure the host-local credential broker is running and return its URL.
@@ -221,7 +240,7 @@ export function ensureHostCredBroker(): Promise<{ url: string }> {
       const port = await listen(http, '127.0.0.1')
       log.info('hostcredbroker.start', { port })
       return { url: `http://127.0.0.1:${port}/host/${token}` }
-    })().catch((e) => {
+    })().catch((e: unknown) => {
       hostBroker = null // a failed start must not poison every later call
       throw e
     })

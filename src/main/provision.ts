@@ -5,6 +5,7 @@ import { existsSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { createRequire } from 'node:module'
+import { z } from 'zod'
 import type { EnvConfig, EnvRef, RepoConfig } from '../shared/types'
 import type { AgentDef } from '../shared/agents'
 import { envImageTag, parseEnvDevcontainer, validateEnvConfig } from '../shared/envConfig'
@@ -21,6 +22,26 @@ const require = createRequire(import.meta.url)
 
 // Named `procLog` because most functions here take a `log: LogSink` sink.
 const procLog = createLogger('proc')
+
+/**
+ * What `devcontainer up` reports on stdout. It is a subprocess we shell out to,
+ * so the JSON line it prints is parsed, not trusted: an outcome that is not
+ * "success" (or a body that carries no container id) fails the start with a
+ * readable error instead of returning an undefined id downstream.
+ */
+const UP_RESULT = z.looseObject({
+  outcome: z.string().optional().catch(undefined),
+  message: z.string().optional().catch(undefined),
+  containerId: z.string().optional().catch(undefined),
+  remoteWorkspaceFolder: z.string().optional().catch(undefined)
+})
+
+/** The members of a materialized devcontainer config that the sibling-mount
+ *  merge reads. Everything else in the file rides through untouched. */
+const MOUNT_MERGE_FIELDS = z.looseObject({
+  workspaceFolder: z.string().optional().catch(undefined),
+  mounts: z.array(z.unknown()).catch([])
+})
 
 /** Cap on the unterminated remainder buffered between chunks in `lineBuffer`. A
  *  process that never emits '\n' must not grow it without bound — matches the
@@ -609,7 +630,7 @@ export async function materializeEnvConfig(
     const commit = (await run('git', ['-C', cloneDir, 'rev-parse', 'HEAD'], () => {})).trim()
     const tag = await buildEnvImage(repo, envCfg, srcDir, commit, log)
     const materialized: Record<string, unknown> = { ...config!, image: tag }
-    delete materialized.build
+    delete materialized['build']
     await writeOverrideConfig(ref, JSON.stringify(materialized, null, 2))
     return overrideConfigArgs(ref)
   } finally {
@@ -758,9 +779,14 @@ export async function devcontainerUp(
   // decides the exec cwd and the reported remoteWorkspaceFolder).
   let mountConfigArgs = configArgs
   if (extraMounts.length) {
-    const envConfigPath = configArgs[configArgs.indexOf('--override-config') + 1]
+    // `configArgs` is always the ['--override-config', path] pair built by
+    // materializeEnvConfig — the flag is there, and so is its value.
+    const envConfigPath = configArgs[configArgs.indexOf('--override-config') + 1] ?? ''
     const { config, error } = parseEnvDevcontainer(await fs.readFile(envConfigPath, 'utf8'))
     if (error) throw new Error(`materialized config ${envConfigPath}: ${error}`)
+    // Only the two members the merge below reads; everything else is copied
+    // through verbatim by the spread.
+    const read = MOUNT_MERGE_FIELDS.parse(config ?? {})
     // The sibling mounts land under the env's own workspace root: the config's
     // workspaceFolder/workspaceMount stay untouched, so its workspaceMount
     // still binds `${localWorkspaceFolder}` — here the empty wrapper dir — over
@@ -768,14 +794,13 @@ export async function devcontainerUp(
     // it by name (`<workspaceFolder>/<repo>`). Only without a configured
     // workspaceFolder does the wrapper's CLI-default landing spot
     // (`/workspaces/<basename>` = remoteRoot) serve as the root.
-    const mountRoot =
-      typeof config!.workspaceFolder === 'string' && config!.workspaceFolder
-        ? (config!.workspaceFolder as string).replace(/\/+$/, '')
-        : remoteRoot
+    const mountRoot = read.workspaceFolder
+      ? read.workspaceFolder.replace(/\/+$/, '')
+      : remoteRoot
     const merged: Record<string, unknown> = {
       ...config,
       mounts: [
-        ...(Array.isArray(config!.mounts) ? config!.mounts : []),
+        ...read.mounts,
         ...extraMounts.map(
           (m) =>
             `type=bind,source=${m.hostDir},target=${mountRoot}/${m.name}${m.readonly ? ',readonly' : ''}`
@@ -809,10 +834,10 @@ export async function devcontainerUp(
         announced = true
         onPostCommands?.()
       }
-      const staleMatch = STALE_BIND_RE.exec(line)
-      if (staleMatch) {
+      const stalePath = STALE_BIND_RE.exec(line)?.[1]
+      if (stalePath) {
         sawStale = true
-        stalePaths.add(staleMatch[1])
+        stalePaths.add(stalePath)
       }
       log(line)
     }
@@ -821,7 +846,9 @@ export async function devcontainerUp(
       .split('\n')
       .reverse()
       .find((l) => l.trim().startsWith('{'))
-    const result = jsonLine ? JSON.parse(jsonLine) : undefined
+    // The CLI's own result object, straight off a subprocess' stdout: read
+    // through a schema, not by field access on a JSON.parse.
+    const result = jsonLine ? UP_RESULT.safeParse(JSON.parse(jsonLine)).data : undefined
     if (code !== 0 || result?.outcome !== 'success') {
       // Anything that is not the stale-bind condition fails on the first
       // attempt, exactly as it did before the retry existed.
@@ -845,6 +872,9 @@ export async function devcontainerUp(
           `Docker Desktop, or switch Settings → Resources → File sharing to gRPC FUSE.`
       )
     }
+    // A success without a container id is not a success: everything after this
+    // addresses the container by that id.
+    if (!result.containerId) throw new Error('devcontainer up reported success without a container id')
     return {
       containerId: result.containerId,
       remoteWorkspaceFolder: result.remoteWorkspaceFolder ?? remoteRoot
@@ -919,7 +949,9 @@ export async function installGitShims(
   try {
     await run('docker', ['exec', '-u', 'root', containerId, 'sh', '-c', shimInstallScript(names)], log)
   } catch (e) {
-    throw new Error(`git shim install failed: ${e instanceof Error ? e.message : String(e)}`)
+    throw new Error(`git shim install failed: ${e instanceof Error ? e.message : String(e)}`, {
+      cause: e
+    })
   }
 }
 

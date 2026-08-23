@@ -3,17 +3,145 @@
 // See shared/planUsage.ts for what the endpoint is and why it is worth using
 // despite being unpublished. This module is the network half: one poll per
 // agent instance, rate-limited hard, with the last good read kept and served
-// while a later attempt is failing.
+// while a later attempt is failing — plus the parse of what comes back, which
+// lives here rather than in shared because the renderer never runs it (and
+// would otherwise carry zod for it).
+import { z } from 'zod'
 import type { CredentialEntry } from '../shared/credentials'
 import { resolveAgentSecret } from '../shared/credentials'
 import type { AgentsFile } from '../shared/types'
-import type { PlanUsage } from '../shared/planUsage'
-import { isOauthToken, parsePlanWindows } from '../shared/planUsage'
+import type { PlanUsage, PlanWindow } from '../shared/planUsage'
+import { isOauthToken, PLAN_WINDOW_LABELS } from '../shared/planUsage'
 export { STALE_AFTER_MS } from '../shared/planUsage'
 import type { Bus } from './bus'
 import { createLogger } from './log'
 
 const log = createLogger('plan-usage')
+
+/** Order the meters render in; anything else — the model-scoped weeks among
+ *  them, whose ids are dynamic — follows in reported order. */
+const ORDER = ['five_hour', 'seven_day', 'seven_day_opus', 'seven_day_sonnet']
+
+const isRecord = (v: unknown): v is Record<string, unknown> =>
+  !!v && typeof v === 'object' && !Array.isArray(v)
+
+/**
+ * One node of the response, read through the field spellings this endpoint is
+ * known to use. Every member is optional and `.catch`es back to "absent", which
+ * is what keeps the parser as tolerant as the hand-rolled reads it replaces: an
+ * incomplete body, a window the plan is not metering (fields arrive `null`), or
+ * a spelling that changes again all degrade to "no data" for that node, never
+ * to a thrown parse. Loose: unknown members are what the walk below recurses
+ * into.
+ */
+const USAGE_NODE = z.looseObject({
+  // Reset instant. Three spellings in the wild, and either an ISO string or an
+  // epoch number.
+  resets_at: z.union([z.string(), z.number()]).nullish().catch(undefined),
+  resetsAt: z.union([z.string(), z.number()]).nullish().catch(undefined),
+  reset: z.union([z.string(), z.number()]).nullish().catch(undefined),
+  // `percent` is the `limits[]` spelling, `utilization` the keyed one.
+  utilization: z.number().nullish().catch(undefined),
+  percent: z.number().nullish().catch(undefined),
+  kind: z.string().nullish().catch(undefined),
+  scope: z
+    .looseObject({
+      model: z.looseObject({ display_name: z.string().nullish().catch(undefined) }).nullish().catch(undefined),
+      surface: z.looseObject({ display_name: z.string().nullish().catch(undefined) }).nullish().catch(undefined)
+    })
+    .nullish()
+    .catch(undefined)
+})
+type UsageNode = z.infer<typeof USAGE_NODE>
+
+/** The reset instant of one window object, in whatever form it arrived. */
+function resetOf(o: UsageNode): string | undefined {
+  const v = o.resets_at ?? o.resetsAt ?? o.reset
+  if (typeof v === 'number') {
+    // Seconds or milliseconds since the epoch — 1e12 is 2001 in ms, and no
+    // plausible reset is 30,000 years out in seconds.
+    const at = new Date(v < 1e12 ? v * 1000 : v)
+    return Number.isNaN(at.getTime()) ? undefined : at.toISOString()
+  }
+  if (typeof v !== 'string') return undefined
+  const at = new Date(v)
+  return Number.isNaN(at.getTime()) ? undefined : at.toISOString()
+}
+
+/** The utilization of one window object, or undefined if it carries none.
+ *  (Both spellings arrive null on a window the plan has but is not metering.) */
+function utilizationOf(o: UsageNode): number | undefined {
+  const v = o.utilization ?? o.percent
+  return typeof v === 'number' && Number.isFinite(v) ? v : undefined
+}
+
+/** The display name a `limits[]` entry is scoped to, if any — a model
+ *  ("Fable") or a surface, whichever the entry carries. */
+function scopeNameOf(o: UsageNode): string | undefined {
+  for (const target of [o.scope?.model, o.scope?.surface]) {
+    if (target?.display_name) return target.display_name
+  }
+  return undefined
+}
+
+/**
+ * Pull the windows out of a `/api/oauth/usage` body.
+ *
+ * Two shapes exist in the wild, and a body may carry both at once:
+ * - keyed: `{ five_hour: {utilization, resets_at}, seven_day: {…} }`
+ * - listed: `{ limits: [{kind, percent, resets_at, scope: {model: {display_name}}}] }`
+ *   — the newer form (CLI 2.1.x), and the only place model-scoped weeks
+ *   ("Current week (Fable)") are reported.
+ *
+ * Structural in its walk, schema-bound per node: it descends the response
+ * looking for objects that carry a utilization — keyed by name or describing
+ * themselves via `kind` — at any depth, and reads each candidate through
+ * {@link USAGE_NODE}. The exact nesting is the one thing that could not be read
+ * off the binary, so the walk stays shape-agnostic; getting it wrong still
+ * costs nothing — an unrecognized body yields an empty list, which every caller
+ * already renders as "no data". Where both shapes report the same window the
+ * keyed one wins (first found), so nothing draws twice.
+ */
+export function parsePlanWindows(body: unknown): PlanWindow[] {
+  const found = new Map<string, PlanWindow>()
+  const put = (id: string, label: string, util: number, resetsAt?: string): void => {
+    if (!found.has(id))
+      found.set(id, {
+        id,
+        label,
+        utilization: Math.max(0, Math.min(100, util)),
+        raw: util,
+        ...(resetsAt ? { resetsAt } : {})
+      })
+  }
+  const visit = (node: unknown, key: string | null, depth: number): void => {
+    if (depth > 5) return
+    if (Array.isArray(node)) {
+      for (const el of node) visit(el, null, depth + 1)
+      return
+    }
+    if (!isRecord(node)) return
+    const parsed = USAGE_NODE.safeParse(node)
+    if (!parsed.success) return
+    const util = utilizationOf(parsed.data)
+    const kind = parsed.data.kind ?? undefined
+    if (kind && util !== undefined) {
+      const base = PLAN_WINDOW_LABELS[kind] ?? kind.replace(/_/g, ' ')
+      const name = scopeNameOf(parsed.data)
+      put(name ? `${kind}:${name}` : kind, name ? `${base} (${name})` : base, util, resetOf(parsed.data))
+      return
+    }
+    if (key !== null && util !== undefined) {
+      put(key, PLAN_WINDOW_LABELS[key] ?? key.replace(/_/g, ' '), util, resetOf(parsed.data))
+      return
+    }
+    for (const [k, v] of Object.entries(node)) visit(v, k, depth + 1)
+  }
+  visit(body, null, 0)
+  const known = ORDER.filter((id) => found.has(id)).map((id) => found.get(id)!)
+  const rest = [...found.values()].filter((w) => !ORDER.includes(w.id))
+  return [...known, ...rest]
+}
 
 const ENDPOINT = 'https://api.anthropic.com/api/oauth/usage'
 /** The CLI's own timeout for this call. */
@@ -133,8 +261,8 @@ export function createPlanUsage(bus: Bus, deps: PlanUsageDeps): PlanUsageStore {
   /** Poll every claude-code instance whose linked secret is a subscription
    *  token and whose last attempt is past the floor. */
   async function refreshAll(): Promise<Record<string, PlanUsage>> {
-    const agents = await deps.agents().catch(() => ({}) as AgentsFile)
-    const creds = await deps.credentials().catch(() => [] as CredentialEntry[])
+    const agents = await deps.agents().catch(() => ({}))
+    const creds = await deps.credentials().catch(() => [])
     const work: Promise<void>[] = []
     for (const [id, a] of Object.entries(agents)) {
       // claude-code only: these windows belong to that plan, and every other

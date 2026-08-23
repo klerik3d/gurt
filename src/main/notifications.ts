@@ -76,7 +76,7 @@ export function createNotifications(
       bus.emit('notification.created', record)
     }
     if (p.external)
-      sendExternal(type, record).catch((e) =>
+      sendExternal(type, record).catch((e: unknown) =>
         log.error('internal.fail', { site: 'send-external', type, s: sessionId, err: e })
       )
   }
@@ -159,7 +159,8 @@ export function createNotifications(
   })
 
   bus.on('session.deleted', ({ sessionId }) => {
-    for (let i = ring.length - 1; i >= 0; i--) if (ring[i].sessionId === sessionId) ring.splice(i, 1)
+    for (let i = ring.length - 1; i >= 0; i--)
+      if (ring[i]?.sessionId === sessionId) ring.splice(i, 1)
     turnOutcome.delete(sessionId)
     turnOpen.delete(sessionId)
     awaitingOpen.delete(sessionId)

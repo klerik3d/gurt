@@ -17,19 +17,27 @@ export interface AcpHttpMcpServer {
   headers: { name: string; value: string }[]
 }
 
-/** Terminal turn report, submitted via the `gurt` MCP server's `complete` tool. */
+/**
+ * Terminal turn report, submitted via the `gurt` MCP server's `complete` tool.
+ *
+ * The optional members carry `| undefined` because this is what the tool's zod
+ * schema produces: it arrives as JSON, is validated, and is stored as JSON —
+ * "absent" and "present but undefined" are the same value on both sides of that
+ * trip, and the schema in mcp/gurtServer.ts is what actually enforces which
+ * combinations are legal.
+ */
 export interface ChangeProposal {
   version: 1
   /** changes — working tree holds work to ship; no_changes — nothing to ship
    *  (answer, analysis, no-op); blocked — cannot finish, see reason. */
   outcome: 'changes' | 'no_changes' | 'blocked'
   /** Only with outcome=changes (required then). */
-  commit?: { subject: string; body?: string }
+  commit?: { subject: string; body?: string | undefined } | undefined
   /** Only with outcome=changes (optional). */
-  pr?: { title: string; body?: string }
+  pr?: { title: string; body?: string | undefined } | undefined
   /** Only with outcome=blocked (required then). */
-  reason?: string
-  notes?: string
+  reason?: string | undefined
+  notes?: string | undefined
 }
 
 /** Stored proposal: the artifact + host receipt time (ISO). */
@@ -51,8 +59,10 @@ export interface AgentInstance {
    * Link into credentials.json (a `CredentialEntry.id` of an `agent-token`),
    * never a secret — mirrors how a repo links its credential. Absent = the
    * adapter runs with no injected secret (it reports its own auth error).
+   * Carries `| undefined` because unpicking a credential in Settings clears it
+   * by assignment.
    */
-  credentialId?: string
+  credentialId?: string | undefined
   /** Env var name receiving the secret; defaults to the kind's default. */
   secretEnv?: string
   /** Extra env vars injected into the adapter (base URL, provider, ...). */
@@ -136,7 +146,9 @@ export interface SessionContainer {
    *  `SessionInfo.repos`. `repos[0]` drives the build + git access; the rest
    *  are additional read/write mounts alongside it. */
   repos: string[]
-  error?: string
+  /** Last provisioning failure. Cleared by assignment on the next transition —
+   *  every status change either sets it or resets it. */
+  error?: string | undefined
 }
 
 /**
@@ -251,6 +263,12 @@ export interface AgentSessionRequest {
   configValues?: Record<string, string | boolean>
 }
 
+/**
+ * One session's record: persisted (minus the runtime overlays) and broadcast to
+ * the renderer. A few members spell out `| undefined` — those are the ones the
+ * session manager *clears* on a live record (`queuedAt` when the queue lets go,
+ * the overlays when a turn ends). Everything else is absent-or-set.
+ */
 export interface SessionInfo {
   id: string
   /** The env this session runs on — an `EnvConfig.name`. */
@@ -290,20 +308,31 @@ export interface SessionInfo {
    * `_meta.claudeCode.options` on `session/new`, the rest are reconciled via
    * `session/set_config_option` before the first prompt. Picked from the agent's
    * cached option set (see {@link AgentConfig}); an empty/absent map means "let
-   * the agent choose its defaults".
+   * the agent choose its defaults". Cleared by assignment when an edit empties
+   * the map.
    */
-  configValues?: Record<string, string | boolean>
+  configValues?: Record<string, string | boolean> | undefined
   /** The devcontainer this session owns, 1:1. Absent until its first start. */
   container?: SessionContainer
   /** ISO timestamp, present while queued — defines global FIFO order. */
-  queuedAt?: string
+  queuedAt?: string | undefined
   /** Runtime overlay (never persisted): the agent is processing a prompt right now. */
-  busy?: boolean
+  busy?: boolean | undefined
   /** Runtime overlay (never persisted): a permission request awaits the user's decision. */
-  awaitingInput?: boolean
+  awaitingInput?: boolean | undefined
   /** Runtime overlay (never persisted): the turn ended without a `complete` call and the
    *  automatic nudge did not heal it — a protocol violation surfaced in the snapshot. */
-  incomplete?: boolean
+  incomplete?: boolean | undefined
+}
+
+/**
+ * The live overlay the renderer keeps per session id, outside the tree snapshot:
+ * both members carry `| undefined` because they are read off a
+ * {@link SessionSnapshot}, which reports "not busy" as an unset field.
+ */
+export interface SessionActivity {
+  busy?: boolean | undefined
+  awaitingInput?: boolean | undefined
 }
 
 /**
@@ -425,14 +454,15 @@ export function applyLog(entries: ChatEntry[], records: SessionLogRecord[]): Cha
       const i = index.get(r.id)
       if (i == null) continue
       const e = out[i]
-      if ('text' in e) out[i] = { ...e, text: e.text + r.text }
+      if (e && 'text' in e) out[i] = { ...e, text: e.text + r.text }
     } else if (r.type === 'patch') {
       const i = index.get(r.id)
-      if (i == null) continue
+      const target = i == null ? undefined : out[i]
+      if (i == null || !target) continue
       const defined = Object.fromEntries(
         Object.entries(r.patch).filter(([, v]) => v !== undefined)
       )
-      out[i] = { ...out[i], ...defined } as ChatEntry
+      out[i] = { ...target, ...defined }
     }
     // other record types: ignored
   }
@@ -466,9 +496,9 @@ export interface CommandInfo {
  * composer gates the matching affordances (e.g. image attach) on them.
  */
 export interface PromptCapabilities {
-  image?: boolean
-  audio?: boolean
-  embeddedContext?: boolean
+  image?: boolean | undefined
+  audio?: boolean | undefined
+  embeddedContext?: boolean | undefined
 }
 
 /** One selectable value of a `select` config option. */
@@ -548,30 +578,37 @@ export interface SessionUsage {
   cost?: { amount: number; currency: string }
 }
 
+/**
+ * A session projected for the renderer. Transport only: built in one place from
+ * the live record and sent over IPC, never persisted. Its optional members
+ * spell out `| undefined` because that is how they are produced — an unset
+ * field is "known to be nothing" here, not "missing" — and because
+ * `session-changed` deliberately clears `entries` by assigning undefined.
+ */
 export interface SessionSnapshot {
   info: SessionInfo
   /** Full folded timeline — present from `session:snapshot` only; the per-change
    *  `session-changed` broadcast omits it (deltas ride the `session-log` event). */
-  entries?: ChatEntry[]
+  entries?: ChatEntry[] | undefined
   /** Agent is processing a prompt right now. */
   busy: boolean
   /** `session/load` in flight — the UI shows a live "resuming" indicator. */
-  resuming?: boolean
-  modes?: SessionModes
-  plan?: PlanEntry[]
-  commands?: CommandInfo[]
+  resuming?: boolean | undefined
+  modes?: SessionModes | undefined
+  plan?: PlanEntry[] | undefined
+  commands?: CommandInfo[] | undefined
   /** Live agent-reported config selectors (model, effort, …). */
-  configOptions?: SessionConfigOption[]
+  configOptions?: SessionConfigOption[] | undefined
   /** What content the agent accepts in prompts, for gating composer affordances. */
-  promptCapabilities?: PromptCapabilities
+  promptCapabilities?: PromptCapabilities | undefined
   /** Last failure that put the session back to draft. */
-  startError?: string
+  startError?: string | undefined
   /** 1-based position in the global queue, present while queued. */
-  queuePosition?: number
+  queuePosition?: number | undefined
   /** Latest change proposal from a `complete` call (outcome=changes), if any. */
-  proposal?: StoredProposal
+  proposal?: StoredProposal | undefined
   /** Latest context-window usage reported by the agent, if the adapter sends it. */
-  usage?: SessionUsage
+  usage?: SessionUsage | undefined
 }
 
 /**
@@ -581,11 +618,11 @@ export interface SessionSnapshot {
  */
 export interface PersistedSession {
   info: SessionInfo
-  acpSessionId?: string
+  acpSessionId?: string | undefined
   /** Latest change proposal (outcome=changes) submitted via `complete`; last one wins. */
-  proposal?: StoredProposal
+  proposal?: StoredProposal | undefined
   /** Legacy pre-log format; migrated to the JSONL log on restore. */
-  entries?: ChatEntry[]
+  entries?: ChatEntry[] | undefined
 }
 
 /**
@@ -711,7 +748,8 @@ export interface ReviewComment {
   text: string
   /** ISO timestamp. */
   createdAt: string
-  resolved?: boolean
+  /** Cleared by assignment when a comment is re-opened. */
+  resolved?: boolean | undefined
 }
 
 /** <workspace>/<task>/review.json — review state of every repo of the task. */

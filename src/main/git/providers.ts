@@ -2,8 +2,21 @@
 // (forge CLI wrappers + API tokens). Adding a forge (gitlab, gitea, …) is one
 // new provider plus optional wrapper shims — the git-native contract in
 // config.ts never changes. Providers extend it, they never replace it (§7).
+import { z } from 'zod'
 import type { CredentialEntry, GitIdentity } from '../../shared/credentials'
-import { DEFAULT_TOKEN_USER } from '../../shared/credentials'
+
+/**
+ * The slice of GitHub's `/user` this reads. It is a network response and the
+ * name/email end up stamped on the credential as its commit identity, so it is
+ * parsed, not asserted — a body that does not carry a login and a numeric id is
+ * rejected by the caller below as "not a verifiable token".
+ */
+const GITHUB_USER = z.looseObject({
+  login: z.string().optional().catch(undefined),
+  id: z.number().optional().catch(undefined),
+  name: z.string().nullish().catch(undefined),
+  email: z.string().nullish().catch(undefined)
+})
 
 export interface ForgeProvider {
   id: string
@@ -37,10 +50,10 @@ const github: ForgeProvider = {
   matches: (host) => host.includes('github'),
   async forgeEnv(cred, host) {
     if (cred.kind === 'git-token') {
-      const env: Record<string, string> = { GH_TOKEN: cred.data.secret ?? '' }
+      const env: Record<string, string> = { GH_TOKEN: cred.data['secret'] ?? '' }
       // gh defaults to github.com; only GitHub Enterprise hosts need GH_HOST.
-      if (host !== 'github.com') env.GH_HOST = host
-      return env.GH_TOKEN ? env : null
+      if (host !== 'github.com') env['GH_HOST'] = host
+      return env['GH_TOKEN'] ? env : null
     }
     // git-app minting lands in phase 3 behind this same seam.
     return null
@@ -48,26 +61,27 @@ const github: ForgeProvider = {
   async identity(cred, host) {
     if (cred.kind !== 'git-token')
       throw new Error(`cannot verify a ${cred.kind} credential against github`)
-    if (!cred.data.secret) throw new Error(`credential "${cred.label}": token is empty`)
+    if (!cred.data['secret']) throw new Error(`credential "${cred.label}": token is empty`)
     const url =
       host === 'github.com' ? 'https://api.github.com/user' : `https://${host}/api/v3/user`
     let res: Response
     try {
       res = await fetch(url, {
         headers: {
-          Authorization: `Bearer ${cred.data.secret}`,
+          Authorization: `Bearer ${cred.data['secret']}`,
           Accept: 'application/vnd.github+json',
           'User-Agent': 'gurt'
         }
       })
     } catch (e) {
       throw new Error(
-        `credential "${cred.label}": could not reach ${url} — ${e instanceof Error ? e.message : String(e)}`
+        `credential "${cred.label}": could not reach ${url} — ${e instanceof Error ? e.message : String(e)}`,
+        { cause: e }
       )
     }
     if (!res.ok)
       throw new Error(`credential "${cred.label}": github rejected the token (HTTP ${res.status})`)
-    const u = (await res.json()) as { login?: string; id?: number; name?: string; email?: string }
+    const u = GITHUB_USER.parse(await res.json())
     if (!u.login || typeof u.id !== 'number')
       throw new Error(`credential "${cred.label}": github returned no user for the token`)
     // The noreply form github attributes to the account regardless of the

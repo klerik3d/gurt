@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
-import type { RepoChanges, SessionInfo, SessionSnapshot, Tree } from '../../shared/types'
+import type {
+  RepoChanges,
+  SessionActivity,
+  SessionInfo,
+  SessionSnapshot,
+  Tree
+} from '../../shared/types'
 import { applyLog, sessionStatus } from '../../shared/types'
 import type { NotificationRecord } from '../../shared/notifications'
 import { NOTIFICATION_RING_CAP } from '../../shared/notifications'
@@ -18,6 +24,7 @@ import { useOutsideClose } from './hooks'
 import { markSeen } from './reviewed'
 import { DialogHost, alertDialog } from './dialog'
 import { logErr } from './log'
+import { run } from './async'
 
 export type Selection =
   | { type: 'session'; id: string }
@@ -94,6 +101,16 @@ export default function App() {
       .then((c) => setChanges((prev) => ({ ...prev, [key]: c })))
       .catch(logErr('getTaskChanges'))
   }, [])
+
+  /** The task pane's own refresh trigger, bound to the current selection. Stable
+   *  per selection: the pane refreshes when it opens or switches task, not on
+   *  every render of this component. */
+  const selWs = selection?.type === 'task' ? selection.ws : ''
+  const selTask = selection?.type === 'task' ? selection.task : ''
+  const refreshSelectionChanges = useCallback(
+    () => refreshChanges(selWs, selTask, true),
+    [refreshChanges, selWs, selTask]
+  )
 
   useEffect(() => {
     refreshTree()
@@ -326,7 +343,7 @@ export default function App() {
   // The tree only refetches on `tree-changed`, which doesn't fire on busy /
   // permission transitions. Overlay the freshest runtime flags from snapshots
   // (pushed on every session change) so the sidebar's run/wait/idle marks stay live.
-  const activity: Record<string, { busy?: boolean; awaitingInput?: boolean }> = {}
+  const activity: Record<string, SessionActivity> = {}
   for (const [id, snap] of Object.entries(snapshots))
     activity[id] = { busy: snap.info.busy, awaitingInput: snap.info.awaitingInput }
 
@@ -470,7 +487,7 @@ export default function App() {
                   logs={logs}
                   positions={positions}
                   changes={changes[`${selection.ws}/${selection.task}`]}
-                  onRefreshChanges={() => refreshChanges(selection.ws, selection.task, true)}
+                  onRefreshChanges={refreshSelectionChanges}
                   onSelectSession={selectSession}
                 />
               )}
@@ -569,7 +586,7 @@ export default function App() {
           title={`New task in ${newTask}`}
           placeholder="task name"
           onClose={() => setNewTask(null)}
-          onSubmit={async (name) => {
+          onSubmit={run(async (name) => {
             try {
               await window.gurt.createTask(newTask, name)
               setNewTask(null)
@@ -577,7 +594,7 @@ export default function App() {
             } catch (e) {
               void alertDialog(e instanceof Error ? e.message : String(e))
             }
-          }}
+          })}
         />
       )}
       {newWorkspace && (
@@ -585,7 +602,7 @@ export default function App() {
           title="New workspace"
           placeholder="workspace name"
           onClose={() => setNewWorkspace(false)}
-          onSubmit={async (name) => {
+          onSubmit={run(async (name) => {
             try {
               await window.gurt.createWorkspace(name)
               setNewWorkspace(false)
@@ -593,7 +610,7 @@ export default function App() {
             } catch (e) {
               void alertDialog(e instanceof Error ? e.message : String(e))
             }
-          }}
+          })}
         />
       )}
       {deletingWorkspace && (

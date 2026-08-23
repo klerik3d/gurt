@@ -167,7 +167,11 @@ export function registerIpc(): void {
     addReviewComment: (ws, task, repo, target, path, side, line, text, endLine) => {
       // Straight off the wire and straight onto disk — the anchor has to be a
       // real anchor, and an empty note is a UI slip, not a comment.
-      if (side !== 'before' && side !== 'after') throw new Error(`unknown diff side "${side}"`)
+      if (side !== 'before' && side !== 'after')
+        // `side` is typed, but this is the wire: what arrives is whatever the
+        // renderer sent, so the message has to be able to name a value the
+        // type says cannot exist.
+        throw new Error(`unknown diff side "${String(side)}"`)
       if (!Number.isInteger(line) || line < 1) throw new Error(`not a line number: ${line}`)
       if (endLine !== undefined && (!Number.isInteger(endLine) || endLine < line))
         throw new Error(`not a valid range end: ${endLine}`)
@@ -293,7 +297,7 @@ export function registerIpc(): void {
   // is recorded once — here, at the boundary — and then rethrown unchanged so
   // the renderer still sees the original error.
   for (const m of API_METHODS)
-    ipcMain.handle(`api:${m}`, async (_e, ...args) => {
+    ipcMain.handle(`api:${m}`, async (_e, ...args: unknown[]) => {
       const started = Date.now()
       try {
         const result = await (impl[m] as (...a: unknown[]) => unknown)(...args)

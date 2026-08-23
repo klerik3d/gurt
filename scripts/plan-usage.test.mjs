@@ -20,7 +20,7 @@ await build({
   stdin: {
     contents: [
       `export * from ${S('src/shared/planUsage.ts')}`,
-      `export { createPlanUsage } from ${S('src/main/planUsage.ts')}`,
+      `export { createPlanUsage, parsePlanWindows } from ${S('src/main/planUsage.ts')}`,
       `export { createBus } from ${S('src/main/bus.ts')}`
     ].join('\n'),
     resolveDir: ROOT,

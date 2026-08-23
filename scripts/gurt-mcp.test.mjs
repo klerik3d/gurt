@@ -41,6 +41,8 @@ const received = []
 const drafted = []
 /** Whatever the next `create_session` should do: return a draft, or throw the
  *  way a host-side rule (role gating, unknown repo) does. */
+/** What the host callback answers with — a draft, or the rejection it throws.
+ *  @type {{ sessionId: string, title: string } | Error} */
 let draftResult = { sessionId: 'sess-1', title: 'fix review findings' }
 
 /** One server per role, all on the same token — a session's role is fixed, so
@@ -64,7 +66,11 @@ for (const role of ['executor', 'researcher', 'reviewer']) {
 
 const url = (role, token = TOKEN) => `http://127.0.0.1:${ports[role]}/mcp/${token}`
 
-/** POST one JSON-RPC message; returns { status, body }. */
+/**
+ * POST one JSON-RPC message; returns { status, body }.
+ * @param {unknown} message
+ * @param {{ role?: string, token?: string, method?: string }} [opts]
+ */
 async function post(message, { role = 'executor', token, method = 'POST' } = {}) {
   const res = await fetch(url(role, token), {
     method,
@@ -240,6 +246,7 @@ try {
 
   // --- create_session rejections ---------------------------------------------
   const spawnGuard = drafted.length
+  /** @type {[label: string, args: object, role: string][]} */
   const badSpawns = [
     ['role a reviewer may not draft', { role: 'reviewer', repos: ['a'], prompt: 'p' }, 'reviewer'],
     ['role no one may draft', { role: 'researcher', repos: ['a'], prompt: 'p' }, 'researcher'],

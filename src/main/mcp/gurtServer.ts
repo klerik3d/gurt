@@ -1,9 +1,10 @@
-import { createServer, type Server } from 'node:http'
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import type { AddressInfo } from 'node:net'
 import { z } from 'zod'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
+import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import type {
   AcpHttpMcpServer,
   AgentSessionRequest,
@@ -198,7 +199,7 @@ function makeMcpServer(hooks: GurtHooks): McpServer {
       },
       async (input) => {
         // The SDK has already validated `input` against PROPOSAL_SCHEMA.
-        hooks.onComplete(input as ChangeProposal)
+        hooks.onComplete(input)
         return { content: [{ type: 'text' as const, text: `complete: ${input.outcome} recorded` }] }
       }
     )
@@ -219,9 +220,13 @@ function makeMcpServer(hooks: GurtHooks): McpServer {
           'to you — never wait for the session you drafted.',
         inputSchema: createSessionSchema(roles, crossTask)
       },
-      async (input) => {
+      async (raw) => {
+        // The SDK has already validated `raw` against the schema above; it
+        // infers only `{}` from one built at runtime, so name the shape once
+        // here instead of asserting at each use.
+        const input = raw as AgentSessionRequest
         try {
-          const draft = await hooks.onCreateSession(input as AgentSessionRequest)
+          const draft = await hooks.onCreateSession(input)
           const where = input.task ? ` in task "${input.task}"` : ''
           return {
             content: [
@@ -254,7 +259,9 @@ function makeMcpServer(hooks: GurtHooks): McpServer {
  */
 export function buildGurtHttpServer(token: string, hooks: GurtHooks): Server {
   const prefix = `/mcp/${token}`
-  return createServer(async (req, res) => {
+  // Sync listener, async handler: node discards a request handler's return
+  // value, so an async listener would drop a rejection instead of reporting it.
+  const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     if (!req.url || !req.url.startsWith(prefix)) {
       res.writeHead(404).end()
       return
@@ -265,21 +272,26 @@ export function buildGurtHttpServer(token: string, hooks: GurtHooks): Server {
     }
     try {
       const server = makeMcpServer(hooks)
-      const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: undefined,
-        enableJsonResponse: true
-      })
+      // No `sessionIdGenerator` = stateless, which is what a fresh server per
+      // POST wants (the SDK reads an absent generator exactly that way).
+      const transport = new StreamableHTTPServerTransport({ enableJsonResponse: true })
       res.on('close', () => {
         void transport.close()
         void server.close()
       })
-      await server.connect(transport)
+      // The SDK's transport class does not satisfy its own `Transport`
+      // interface under exactOptionalPropertyTypes — it declares `onclose?:
+      // () => void`, which reads back as `(() => void) | undefined`. The two
+      // types are otherwise identical; this is the flag's cost at a
+      // third-party boundary, not a widening of ours.
+      await server.connect(transport as Transport)
       await transport.handleRequest(req, res)
     } catch (e) {
       log.error('internal.fail', { site: 'mcp-handler', id: 'gurt', err: e })
       if (!res.headersSent) res.writeHead(500).end()
     }
-  })
+  }
+  return createServer((req, res) => void handle(req, res))
 }
 
 interface RunningGurt {

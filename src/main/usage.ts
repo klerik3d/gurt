@@ -47,7 +47,7 @@ export function createUsageLedger(bus: Bus, now: () => number = Date.now): Usage
     pruning = true
     store
       .writeUsage(keep)
-      .catch((e) => log.error('internal.fail', { site: 'usage-prune', err: e }))
+      .catch((e: unknown) => log.error('internal.fail', { site: 'usage-prune', err: e }))
       .finally(() => {
         pruning = false
       })
@@ -63,15 +63,16 @@ export function createUsageLedger(bus: Bus, now: () => number = Date.now): Usage
     )
     prune()
     bus.emit('usage.changed', undefined)
-  })().catch((e) => log.error('internal.fail', { site: 'usage-load', err: e }))
+  })().catch((e: unknown) => log.error('internal.fail', { site: 'usage-load', err: e }))
 
   bus.on('agent.turn', (record) => {
     records.push(record)
     store
       .appendUsage([record])
-      .catch((e) => log.error('internal.fail', { site: 'usage-append', err: e }))
+      .catch((e: unknown) => log.error('internal.fail', { site: 'usage-append', err: e }))
     // The oldest record is the cheap test for "worth rewriting the file".
-    if (records.length && Date.parse(records[0].ts) < cutoff() - PRUNE_SLACK_MS) prune()
+    const oldest = records[0]
+    if (oldest && Date.parse(oldest.ts) < cutoff() - PRUNE_SLACK_MS) prune()
     bus.emit('usage.changed', undefined)
   })
 
