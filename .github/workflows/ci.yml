@@ -21,17 +21,5 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - name: tests
-        run: |
-          # Each scripts/*.test.mjs is a self-contained test run as `node <file>`.
-          # Excluded:
-          #   session-delete-container.test.mjs — pre-existing failure on the
-          #     current branch (fails locally too, unrelated to environment);
-          #     re-add once fixed.
-          EXCLUDE="session-delete-container.test.mjs"
-          fail=0
-          for f in scripts/*.test.mjs; do
-            case " $EXCLUDE " in *" $(basename "$f") "*) echo "SKIP $f"; continue;; esac
-            echo "RUN $f"
-            node "$f" || { echo "FAIL $f"; fail=1; }
-          done
-          exit $fail
+        # Runs scripts/*.test.mjs via scripts/run-tests.mjs (exclusions live there).
+        run: npm test

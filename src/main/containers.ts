@@ -501,8 +501,15 @@ export class ContainerManager {
     // container (which the sweep below then finds) or fails having left one
     // behind (which the sweep finds too). Stop does not wait: it is the idle
     // path, and a session that is starting is by definition not idle.
-    if (mode === 'remove') await this.ensureInFlight.get(sessionId)?.catch(() => {})
-    const c = this.container(sessionId)
+    // The record is read before the first await: `deleteSession` starts this
+    // teardown and drops the session record synchronously right after, so a
+    // later read finds nothing and the recorded-id fallback below goes blind.
+    let c = this.container(sessionId)
+    if (mode === 'remove') {
+      await this.ensureInFlight.get(sessionId)?.catch(() => {})
+      // A start that settled while we waited may have recorded a fresher id.
+      c = this.container(sessionId) ?? c
+    }
     if (mode === 'stop') {
       if (!c?.id) return
       this.forget(c.id)
