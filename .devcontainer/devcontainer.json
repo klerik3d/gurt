@@ -32,8 +32,9 @@
     "DISPLAY": ":99"
   },
 
-  // Install deps after the container is created.
-  "postCreateCommand": "npm install",
+  // Install deps after the container is created. npm ci for a lockfile-exact
+  // tree; lifecycle scripts are blocked by .npmrc and run via the allow-list.
+  "postCreateCommand": "npm ci && npx allow-scripts",
 
   // Start a headless X server for Electron on every container start.
   "postStartCommand": "bash -lc 'pgrep Xvfb >/dev/null || (Xvfb :99 -screen 0 1280x800x24 >/tmp/xvfb.log 2>&1 & disown)'",

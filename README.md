@@ -191,7 +191,7 @@ are not wired to the runtime yet.
 ## Run
 
 ```bash
-npm install
+npm ci && npx allow-scripts
 npm run dev        # requires docker daemon for env start
 ```
 
