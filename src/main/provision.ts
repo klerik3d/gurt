@@ -700,6 +700,56 @@ const LIFECYCLE_BANNER = /Running (?:the \w+|'[^']*') from /
 const STALE_BIND_RE = /bind source path does not exist: (?:\/host_mnt)?(\/\S+)/
 
 /**
+ * Lifecycle hooks the CLI runs only when it *creates* the container, named the
+ * way its `description` field names them (`postCreateCommand from
+ * devcontainer.json failed.`, `postCreateCommand from feature "..." failed.`).
+ *
+ * Their failure is the one that must never be retried in place. The container
+ * exists by then, so the next `up` finds it by id-label, skips every
+ * create-time hook as already run, and reports success — a session that starts
+ * against a workspace whose `npm install` died half-way, with no sign anything
+ * went wrong. That is the "it works the second time" of a flaky install: it
+ * does not work, it stops trying. A container in that state is one to remove
+ * and build again, never one to reuse.
+ */
+const CREATE_HOOK_RE = /^(?:onCreate|updateContent|postCreate)Command from /
+
+/** How many output lines a hook failure quotes, and how many it keeps to pick
+ *  them from (stack frames and the result JSON are dropped, so the window has
+ *  to be the wider of the two). */
+const HOOK_TAIL_LINES = 6
+const HOOK_WINDOW_LINES = 40
+
+/**
+ * The lines worth quoting when a lifecycle hook fails. The CLI's own `message`
+ * is the shell line it ran and nothing else (`Command failed: /bin/sh -c npm
+ * install`) — never why it failed; the reason is in the hook's own output, a
+ * few lines above it in the log.
+ *
+ * Everything before the last lifecycle banner belongs to the image build, which
+ * succeeded — quoting it would bury the one thing that did not. Node stack
+ * frames and the CLI's trailing JSON result say nothing a user can act on
+ * either, so they never make the quote.
+ */
+export function hookOutputTail(lines: string[], max = HOOK_TAIL_LINES): string[] {
+  let start = 0
+  for (let i = lines.length - 1; i >= 0; i--)
+    if (LIFECYCLE_BANNER.test(lines[i])) {
+      start = i
+      break
+    }
+  return lines
+    .slice(start)
+    .filter(
+      (l) =>
+        !/^\s*at /.test(l.trim()) &&
+        !l.trim().startsWith('{') &&
+        !/^Error: Command failed:/.test(l.trim())
+    )
+    .slice(-max)
+}
+
+/**
  * Docker Desktop's VM caches path lookups per bind source and can keep a stale
  * "missing" entry for a path that exists on the host, failing every `docker run`
  * that binds it for tens of minutes. A host-side rename does not clear it;
@@ -802,8 +852,18 @@ export async function devcontainerUp(
    *  (the whole subtree goes stale together), and only the last attempt's
    *  wording reaches the user, so accumulate across attempts. */
   const stalePaths = new Set<string>()
-  for (let attempt = 1; ; attempt++) {
+  /** Stale-bind and create-time-hook failures each retry on their own budget:
+   *  they are different faults with different fixes, and one must not spend the
+   *  other's attempts. A hook gets exactly one more go — the usual cause is a
+   *  transient registry or network error, which a second run clears, and one
+   *  that isn't transient would only make every start pay twice for it. */
+  let staleAttempts = 0
+  let hookRetries = 0
+  const MAX_HOOK_RETRIES = 1
+  for (;;) {
     let sawStale = false
+    /** The tail of this attempt's output, for a hook failure to quote. */
+    const recent: string[] = []
     const watch: LogSink = (line) => {
       if (!announced && LIFECYCLE_BANNER.test(line)) {
         announced = true
@@ -814,6 +874,8 @@ export async function devcontainerUp(
         sawStale = true
         stalePaths.add(staleMatch[1])
       }
+      recent.push(line)
+      if (recent.length > HOOK_WINDOW_LINES) recent.shift()
       log(line)
     }
     const { code, stdout } = await runNodeCli(args, watch)
@@ -823,27 +885,47 @@ export async function devcontainerUp(
       .find((l) => l.trim().startsWith('{'))
     const result = jsonLine ? JSON.parse(jsonLine) : undefined
     if (code !== 0 || result?.outcome !== 'success') {
-      // Anything that is not the stale-bind condition fails on the first
-      // attempt, exactly as it did before the retry existed.
-      if (!sawStale) throw new Error(result?.message ?? `devcontainer up failed (exit ${code})`)
-      if (attempt < MAX_ATTEMPTS) {
-        // Warm every bind source of this `up`, not just the reported one: the
-        // staleness covers a whole subtree, so the next path would fail next.
-        await warmBindPaths(
-          [workspaceFolder, ...extraMounts.map((m) => m.hostDir), ...stalePaths],
-          log
+      if (sawStale) {
+        staleAttempts++
+        if (staleAttempts < MAX_ATTEMPTS) {
+          // Warm every bind source of this `up`, not just the reported one: the
+          // staleness covers a whole subtree, so the next path would fail next.
+          await warmBindPaths(
+            [workspaceFolder, ...extraMounts.map((m) => m.hostDir), ...stalePaths],
+            log
+          )
+          await new Promise((r) => setTimeout(r, BACKOFF_MS[staleAttempts - 1] ?? 5_000))
+          continue
+        }
+        // The raw `docker run ...` command line the CLI reports says nothing
+        // about why it failed; lead with the cause and the way out instead.
+        throw new Error(
+          `container start failed: Docker could not see ${[...stalePaths].join(', ')} even ` +
+            `though it exists on the host (Docker Desktop's stale path cache). Retried ` +
+            `${MAX_ATTEMPTS}× with a cache warm-up. If this keeps happening, restart ` +
+            `Docker Desktop, or switch Settings → Resources → File sharing to gRPC FUSE.`
         )
-        await new Promise((r) => setTimeout(r, BACKOFF_MS[attempt - 1] ?? 5_000))
-        continue
       }
-      // The raw `docker run ...` command line the CLI reports says nothing
-      // about why it failed; lead with the cause and the way out instead.
-      throw new Error(
-        `container start failed: Docker could not see ${[...stalePaths].join(', ')} even ` +
-          `though it exists on the host (Docker Desktop's stale path cache). Retried ` +
-          `${MAX_ATTEMPTS}× with a cache warm-up. If this keeps happening, restart ` +
-          `Docker Desktop, or switch Settings → Resources → File sharing to gRPC FUSE.`
-      )
+      // A create-time hook (`npm install`, typically) failed, so the container
+      // it half-provisioned has to go — see CREATE_HOOK_RE for what reusing it
+      // would silently do on the next start. The clone it was installing into
+      // is a host bind mount, so nothing diagnostic dies with it.
+      const description: string = typeof result?.description === 'string' ? result.description : ''
+      if (CREATE_HOOK_RE.test(description) && typeof result?.containerId === 'string') {
+        await dockerRemove(result.containerId, log)
+        if (hookRetries < MAX_HOOK_RETRIES) {
+          hookRetries++
+          log(`${description} Removed the half-provisioned container; retrying once.`)
+          continue
+        }
+        const tail = hookOutputTail(recent)
+        throw new Error(
+          `${description} ${result.message ?? `exit ${code}`} — retried ` +
+            `${MAX_HOOK_RETRIES + 1}× in a fresh container.` +
+            (tail.length ? `\n${tail.join('\n')}` : '')
+        )
+      }
+      throw new Error(result?.message ?? `devcontainer up failed (exit ${code})`)
     }
     return {
       containerId: result.containerId,
