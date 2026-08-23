@@ -3,6 +3,7 @@
 // shown (sidebar row, draft/queued pane, chat header), so the confirmation
 // wording and the follow-up navigation live here once instead of in each caller.
 import { useRef, useState } from 'react'
+import type { JSX } from 'react'
 import type { SessionInfo } from '../../../shared/types'
 import { alertDialog, confirmDialog } from '../dialog'
 import { useOutsideClose } from '../hooks'

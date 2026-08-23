@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import type { JSX } from 'react'
 
 /**
  * App-native replacement for `window.alert` / `window.confirm`. The OS chrome of

@@ -4,6 +4,7 @@
 // marks the env/repository pickers use in the new-session sidebar.
 
 import { Fragment } from 'react'
+import type { JSX } from 'react'
 import type { SessionRole } from '../../../shared/types'
 import { Icon, type IconName } from './icons'
 

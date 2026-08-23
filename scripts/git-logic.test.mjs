@@ -157,7 +157,13 @@ try {
   assert.equal(fee.GH_HOST, 'ghe.corp.com')
   const ssh = await p.forgeEnv({ id: 'k', label: 'k', kind: 'git-ssh-key', hosts: [], data: {} }, 'github.com')
   assert.equal(ssh, null)
-  assert.ok('ghcr.io/devcontainers/features/github-cli:1' in m.forgeFeatures('github.com'))
+  // The feature is pinned by digest (supply chain) — assert on the repo id,
+  // not the exact digest, so routine pin bumps don't break this test.
+  assert.ok(
+    Object.keys(m.forgeFeatures('github.com')).some((k) =>
+      k.startsWith('ghcr.io/devcontainers/features/github-cli@sha256:')
+    )
+  )
   assert.deepEqual(m.forgeWrappers('github.com'), ['gh'])
   assert.deepEqual(m.forgeFeatures('gitlab.com'), {})
 

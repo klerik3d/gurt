@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import type { JSX } from 'react'
 import type { DiffTarget, RepoChanges, Tree } from '../../../shared/types'
 import { isActionable, isDelivered } from '../../../shared/types'
 import { agentKind, agentName, useAgents } from '../useAgents'

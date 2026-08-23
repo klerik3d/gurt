@@ -1,0 +1,23 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "minimumReleaseAge": "3 days",
+  "rangeStrategy": "bump",
+  "packageRules": [
+    {
+      "description": "Packages that execute code at install/build time, and the ACP adapter packages the app installs into user containers at runtime — hold new releases longer as a supply-chain buffer.",
+      "matchPackageNames": [
+        "electron",
+        "electron-builder",
+        "electron-vite",
+        "esbuild",
+        "@devcontainers/cli",
+        "@agentclientprotocol/claude-agent-acp",
+        "@agentclientprotocol/codex-acp",
+        "@google/gemini-cli",
+        "opencode-ai"
+      ],
+      "minimumReleaseAge": "7 days"
+    }
+  ]
+}

@@ -1,3 +1,4 @@
+import type { JSX } from 'react'
 // Shared line-icon set (Feather/Lucide-style strokes, 1.75px, round caps) used
 // across the whole UI — see the redesign handoff's Assets section.
 
