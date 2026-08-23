@@ -75,7 +75,12 @@ const github: ForgeProvider = {
     return { name: u.name || u.login, email: u.email || `${u.id}+${u.login}@users.noreply.github.com` }
   },
   wrappers: ['gh'],
-  features: { 'ghcr.io/devcontainers/features/github-cli:1': {} }
+  // Pinned by digest, not tag (supply chain) — the `:1` tag as of 2026-08-23;
+  // bump deliberately with gurt releases (see BASE_FEATURES in provision.ts).
+  features: {
+    'ghcr.io/devcontainers/features/github-cli@sha256:94879eebb6a0e4e2f197de9f12db7427cb4a25b82d93c55239ce8c8fc394a1b4':
+      {}
+  }
 }
 
 const PROVIDERS: ForgeProvider[] = [github]

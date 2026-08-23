@@ -68,8 +68,18 @@ function traceProc(
   }
 }
 
-/** Features every environment gets (adapters are npm packages). */
-const BASE_FEATURES = { 'ghcr.io/devcontainers/features/node:1': {} }
+/**
+ * Features every environment gets (adapters are npm packages).
+ *
+ * Pinned by digest, not tag (supply chain): tags are mutable, so a compromised
+ * feature release would flow straight into user containers. Digest = the `:1`
+ * tag as of 2026-08-23; bump deliberately with gurt releases
+ * (`docker manifest inspect ghcr.io/devcontainers/features/node:1`).
+ */
+const BASE_FEATURES = {
+  'ghcr.io/devcontainers/features/node@sha256:8c0de46939b61958041700ee89e3493f3b2e4131a06dc46b4d9423427d06e5f6':
+    {}
+}
 
 /**
  * In a packaged build the CLI lives inside app.asar, which only Electron's own
