@@ -1,6 +1,6 @@
 # Requirements: append-only session log
 
-Status: draft for review · Owner: klerik3d · Target: gurt Electron MVP (this repo)
+Status: draft for review · Target: gurt Electron MVP (this repo)
 
 This document is a work order for an implementing agent. Read `README.md`
 first. Key code: `src/main/{sessions,store}.ts`, `src/shared/types.ts`,
@@ -96,7 +96,7 @@ ignored (forward compatibility). `seq` is monotonic from 1 per session.
 1. `node scripts/session-log.test.mjs` (new, pure node, no docker):
    `applyLog` unit cases — entry/append/patch, out-of-order ignore,
    unknown-id ignore; fold(all) == incremental application.
-2. `smoke3.mjs` (persistence across restart) passes; chat history is
+2. `smoke-persistence.mjs` (persistence across restart) passes; chat history is
    byte-identical after restart (folded from JSONL).
 3. Migration: a fixture `sessions.json` in the legacy format (with
    `entries`) restores to the same chat and produces the JSONL.

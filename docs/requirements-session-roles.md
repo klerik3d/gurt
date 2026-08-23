@@ -1,6 +1,6 @@
 # Requirements: session roles (executor / researcher / reviewer)
 
-Status: implemented · Owner: klerik3d · Target: gurt Electron MVP (this repo)
+Status: implemented · Target: gurt Electron MVP (this repo)
 
 Key code: `src/shared/types.ts` (`SessionRole`, the role predicates,
 `AgentSessionRequest`), `src/main/sessions.ts` (lock by role, turn contract by

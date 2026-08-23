@@ -1,0 +1,12 @@
+{
+  // Solution-style config: holds no files of its own, it only points editors
+  // and tooling (typescript-eslint's projectService) at the real projects.
+  // `npm run typecheck` still drives tsconfig.node.json / tsconfig.web.json
+  // directly.
+  "files": [],
+  "references": [
+    { "path": "./tsconfig.node.json" },
+    { "path": "./tsconfig.web.json" },
+    { "path": "./tsconfig.scripts.json" }
+  ]
+}

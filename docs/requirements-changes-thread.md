@@ -1,6 +1,6 @@
 # Requirements: Changes panel → delivery thread (follow-up)
 
-Status: draft for review · Owner: klerik3d · Follow-up to
+Status: draft for review · Follow-up to
 `requirements-changes-panel.md` (PR #10, `src/main/changes.ts`).
 Supersedes its §2 (model), §3.1 (layout), §3.2 (badge); the rest stays.
 Do not change this contract without asking the owner.
@@ -92,7 +92,7 @@ exclusions.
 
 ## Verification
 
-Smoke like `smoke7.mjs` (offline, local bare origins, built app): merge
+Smoke like `smoke-changes.mjs` (offline, local bare origins, built app): merge
 case; squash case (`git update-ref -d` in the bare repo, assert
 `refs/gurt/integrated` in the clone); offline case (rename the bare
 dir); assert pushes via `git log` in the bare repo. Gotchas: strip

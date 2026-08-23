@@ -1,10 +1,45 @@
 import type { ChildProcessWithoutNullStreams } from 'node:child_process'
+import { z } from 'zod'
 import { createLogger, enabled } from './log'
 
 // Minimal JSON-RPC 2.0 peer over newline-delimited JSON on child stdio,
 // which is what ACP (Agent Client Protocol) speaks.
 
-type Handler = (params: any) => Promise<unknown> | unknown
+/** Our own requests are numbered; an agent may address us with either form. */
+const RPC_ID = z.union([z.number(), z.string()])
+
+/**
+ * The envelope, and only the envelope: everything on the other end of this pipe
+ * is a subprocess we do not control, so a line is a frame only once it has
+ * parsed as one. `params`/`result` deliberately stay `unknown` — their shape
+ * belongs to the protocol spoken on top (see acp.ts), and this peer must not
+ * pretend to know it. Loose object: unknown members of a frame are ignored, not
+ * a parse failure, so a newer agent's extra fields still dispatch.
+ */
+const RPC_FRAME = z.looseObject({
+  id: RPC_ID.optional(),
+  method: z.string().optional(),
+  params: z.unknown().optional(),
+  result: z.unknown().optional(),
+  error: z.looseObject({ message: z.string().optional() }).optional()
+})
+
+type RpcFrame = z.infer<typeof RPC_FRAME>
+
+/** Returns the request's result, or a promise of it. */
+type Handler = (params: unknown) => unknown
+
+/**
+ * Where a payload failed to match, and nothing else. Zod's own messages quote
+ * the value it received, and everything crossing this pipe is prompt text, agent
+ * output or tool arguments — so a rejection reports paths and issue codes only,
+ * never content. Same rule as the frame trace above.
+ */
+export function issuePaths(err: z.ZodError): string {
+  return err.issues
+    .map((i) => `${i.path.length ? i.path.join('.') : '<root>'}: ${i.code}`)
+    .join(', ')
+}
 
 const log = createLogger('rpc')
 /** Frames carry prompts, agent output and tool arguments, so the trace is the
@@ -13,9 +48,12 @@ const trace = enabled('debug')
 
 export class JsonRpcPeer {
   private nextId = 1
-  private pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>()
+  private pending = new Map<
+    number,
+    { resolve: (v: unknown) => void; reject: (e: Error) => void }
+  >()
   private requestHandlers = new Map<string, Handler>()
-  private notificationHandlers = new Map<string, (params: any) => void>()
+  private notificationHandlers = new Map<string, (params: unknown) => void>()
   private buffer = ''
 
   constructor(
@@ -37,14 +75,31 @@ export class JsonRpcPeer {
     this.requestHandlers.set(method, handler)
   }
 
-  onNotification(method: string, handler: (params: any) => void): void {
+  onNotification(method: string, handler: (params: unknown) => void): void {
     this.notificationHandlers.set(method, handler)
   }
 
-  request<T = any>(method: string, params: unknown): Promise<T> {
+  /**
+   * Send a request. The result is whatever the agent chose to send back, so a
+   * caller that wants to *use* it passes the schema it expects and gets a
+   * checked value — a response that does not match rejects the call instead of
+   * seeding an unchecked object into the session state. Callers that ignore the
+   * result (`session/set_mode`, …) pass no schema and get `unknown`.
+   */
+  request<T>(method: string, params: unknown, schema: z.ZodType<T>): Promise<T>
+  request(method: string, params: unknown): Promise<unknown>
+  request<T>(method: string, params: unknown, schema?: z.ZodType<T>): Promise<unknown> {
     const id = this.nextId++
-    return new Promise<T>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject })
+    return new Promise<unknown>((resolve, reject) => {
+      this.pending.set(id, {
+        resolve: (v) => {
+          if (!schema) return resolve(v)
+          const parsed = schema.safeParse(v)
+          if (parsed.success) resolve(parsed.data)
+          else reject(new Error(`${method}: malformed response (${issuePaths(parsed.error)})`))
+        },
+        reject
+      })
       this.send({ jsonrpc: '2.0', id, method, params })
     })
   }
@@ -60,7 +115,7 @@ export class JsonRpcPeer {
     this.child.stdin.write(line)
   }
 
-  private traceFrame(dir: 'in' | 'out', msg: Record<string, unknown>, bytes: number): void {
+  private traceFrame(dir: 'in' | 'out', msg: RpcFrame | Record<string, unknown>, bytes: number): void {
     log.debug('rpc.msg', {
       s: this.sessionId,
       dir,
@@ -77,18 +132,22 @@ export class JsonRpcPeer {
       const line = this.buffer.slice(0, nl).trim()
       this.buffer = this.buffer.slice(nl + 1)
       if (!line) continue
-      let msg: any
+      let parsed: unknown
       try {
-        msg = JSON.parse(line)
+        parsed = JSON.parse(line)
       } catch {
         continue // stray log line on stdout — ignore
       }
-      if (trace) this.traceFrame('in', msg, Buffer.byteLength(line, 'utf8'))
-      this.dispatch(msg)
+      const frame = RPC_FRAME.safeParse(parsed)
+      // Same treatment as unparsable JSON: an adapter that prints something
+      // JSON-shaped but not a frame is noise on stdout, not a message.
+      if (!frame.success) continue
+      if (trace) this.traceFrame('in', frame.data, Buffer.byteLength(line, 'utf8'))
+      void this.dispatch(frame.data)
     }
   }
 
-  private async dispatch(msg: any): Promise<void> {
+  private async dispatch(msg: RpcFrame): Promise<void> {
     if (msg.id !== undefined && msg.method) {
       const handler = this.requestHandlers.get(msg.method)
       if (!handler) {
@@ -111,7 +170,7 @@ export class JsonRpcPeer {
       }
     } else if (msg.method) {
       this.notificationHandlers.get(msg.method)?.(msg.params)
-    } else if (msg.id !== undefined) {
+    } else if (typeof msg.id === 'number') {
       const p = this.pending.get(msg.id)
       if (!p) return
       this.pending.delete(msg.id)

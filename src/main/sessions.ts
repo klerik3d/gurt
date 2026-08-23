@@ -7,6 +7,7 @@ import type {
   ChangeProposal,
   ChatEntry,
   ChatEntryBase,
+  ConfigSelectOption,
   EnvRef,
   McpSelection,
   PermissionOption,
@@ -42,6 +43,25 @@ import type { ContainerStatusReason, SessionStateReason } from '../shared/events
 import type { LaunchContext } from './containers'
 import { lineBuffer, spawnAcpAdapter } from './provision'
 import { JsonRpcPeer } from './jsonrpc'
+import {
+  CONFIG_OPTION,
+  COMMANDS_UPDATE,
+  CONFIG_OPTION_UPDATE,
+  INITIALIZE_RESULT,
+  MODE_UPDATE,
+  PERMISSION_REQUEST,
+  PLAN_UPDATE,
+  PROMPT_RESULT,
+  SESSION_LOAD_RESULT,
+  SESSION_NEW_RESULT,
+  SESSION_UPDATE,
+  SET_CONFIG_OPTION_RESULT,
+  TEXT_CHUNK,
+  TOOL_CALL,
+  USAGE_UPDATE,
+  parseOrDrop,
+  type AcpToolContent
+} from './acp'
 import { createLogger, errCtx } from './log'
 
 const log = createLogger('sessions')
@@ -73,41 +93,50 @@ export const adapterExitCode = (code: number | null, signal: NodeJS.Signals | nu
  *  select of any other adapter (codex, opencode, …) is left exactly as
  *  reported. */
 function normalizeConfigOptions(
-  raw: unknown[] | undefined,
+  raw: unknown,
   kind?: string
 ): SessionConfigOption[] | undefined {
   if (!Array.isArray(raw)) return undefined
   const out: SessionConfigOption[] = []
-  for (const o of raw as any[]) {
-    if (!o || typeof o.id !== 'string' || typeof o.name !== 'string') continue
-    if (o.type === 'boolean') {
-      out.push({
-        id: o.id,
-        name: o.name,
-        description: o.description ?? undefined,
-        category: o.category ?? undefined,
-        type: 'boolean',
-        currentValue: !!o.currentValue
-      })
-    } else if (o.type === 'select') {
-      const flat: SessionConfigOption['options'] = []
-      for (const item of (o.options ?? []) as any[]) {
-        if (Array.isArray(item?.options)) {
-          for (const v of item.options as any[])
-            if (v && typeof v.value === 'string')
-              flat.push({ value: v.value, name: `${item.name} · ${v.name ?? v.value}`, description: v.description ?? undefined })
-        } else if (item && typeof item.value === 'string') {
-          flat.push({ value: item.value, name: item.name ?? item.value, description: item.description ?? undefined })
+  for (const item of raw) {
+    // Per entry, not per list: one option the agent reports in a shape we do
+    // not recognize is skipped, the rest of its selectors still reach the UI.
+    const o = CONFIG_OPTION.safeParse(item)
+    if (!o.success) continue
+    // Absent, not `undefined`: these records are persisted and shipped over
+    // IPC, where a key present only to say "nothing" is noise.
+    const common = {
+      id: o.data.id,
+      name: o.data.name,
+      ...(o.data.description ? { description: o.data.description } : {}),
+      ...(o.data.category ? { category: o.data.category } : {})
+    }
+    if (o.data.type === 'boolean') {
+      out.push({ ...common, type: 'boolean', currentValue: !!o.data.currentValue })
+    } else {
+      const flat: ConfigSelectOption[] = []
+      for (const entry of o.data.options ?? []) {
+        if (entry.options) {
+          for (const v of entry.options)
+            if (v.value !== undefined)
+              flat.push({
+                value: v.value,
+                name: `${entry.name ?? ''} · ${v.name ?? v.value}`,
+                ...(v.description ? { description: v.description } : {})
+              })
+        } else if (entry.value !== undefined) {
+          flat.push({
+            value: entry.value,
+            name: entry.name ?? entry.value,
+            ...(entry.description ? { description: entry.description } : {})
+          })
         }
       }
       out.push({
-        id: o.id,
-        name: o.name,
-        description: o.description ?? undefined,
-        category: o.category ?? undefined,
+        ...common,
         type: 'select',
-        currentValue: typeof o.currentValue === 'string' ? o.currentValue : '',
-        options: o.category === 'model' && kind === 'claude-code' ? withFable(flat) : flat
+        currentValue: typeof o.data.currentValue === 'string' ? o.data.currentValue : '',
+        options: o.data.category === 'model' && kind === 'claude-code' ? withFable(flat) : flat
       })
     }
   }
@@ -125,8 +154,10 @@ interface Connection {
   sessionId: string
   containerId: string
   agent: string
-  /** Prompt content the agent accepts, from the `initialize` response (agent-level). */
-  promptCapabilities?: PromptCapabilities
+  /** Prompt content the agent accepts, from the `initialize` response
+   *  (agent-level). Unset until `initialize` answers, and an agent may report
+   *  none at all. */
+  promptCapabilities?: PromptCapabilities | undefined
   kill: () => void
   /** Set by `detach()` right before it kills *this* adapter process — the
    *  resulting 'close' is expected, not a crash. Lives on the connection
@@ -137,10 +168,19 @@ interface Connection {
   expectedExit?: boolean
 }
 
+/**
+ * Live, mutable state of one session in this process.
+ *
+ * The optional members spell out `| undefined` on purpose: under
+ * `exactOptionalPropertyTypes` an optional property may be *absent*, but this
+ * record is long-lived and its fields are cleared by assignment — `s.modes =
+ * undefined` when the adapter goes away, `s.startError = undefined` at the next
+ * start. "Present and unset" is the state being modelled here, not "missing".
+ */
 interface Session {
   info: SessionInfo
   ref: EnvRef
-  acpSessionId?: string
+  acpSessionId?: string | undefined
   /** The append-only log; the timeline below is its fold. */
   records: SessionLogRecord[]
   /** seq of the last appended record (monotonic from 1 per session). */
@@ -154,31 +194,31 @@ interface Session {
   nextEntryId: number
   /** Container workspace folder (agent cwd), set when the env is resolved this run.
    *  Used to turn repo-relative context paths into absolute `file://` resource links. */
-  remoteCwd?: string
+  remoteCwd?: string | undefined
   busy: boolean
   /** The current turn has seen its `complete` call; reset at each prompt start. */
   turnComplete: boolean
   /** Latest change proposal (outcome=changes) from a `complete` call; last wins. */
-  proposal?: StoredProposal
-  modes?: SessionModes
-  plan?: SessionSnapshot['plan']
-  commands?: SessionSnapshot['commands']
+  proposal?: StoredProposal | undefined
+  modes?: SessionModes | undefined
+  plan?: SessionSnapshot['plan'] | undefined
+  commands?: SessionSnapshot['commands'] | undefined
   /** Latest context-window usage from ACP's `usage_update`, if the adapter sends it. */
-  usage?: SessionSnapshot['usage']
+  usage?: SessionSnapshot['usage'] | undefined
   /** Live agent-reported config selectors (model/effort/…), from session/new & updates. */
-  configOptions?: SessionConfigOption[]
+  configOptions?: SessionConfigOption[] | undefined
   /** The live connection knows this ACP session (created or loaded this run). */
   attached: boolean
   /** session/load in progress — drop replayed updates, we keep our own history. */
   loading: boolean
   /** Last failure that put the session back to draft. */
-  startError?: string
+  startError?: string | undefined
   /** Wall clock of the current run's start, and the turns it has served — the
    *  two numbers `session.end` reports when the adapter goes away. */
-  startedAt?: number
+  startedAt?: number | undefined
   turns: number
   /** `stopReason` of the last finished turn, for the same record. */
-  lastStopReason?: string
+  lastStopReason?: string | undefined
   /** entry id -> resolver of a pending permission request. */
   pendingPermissions: Map<number, (outcome: unknown) => void>
 }
@@ -249,8 +289,8 @@ export interface SessionEvents {
 /** A persisted session plus its read (or just-migrated) JSONL log. */
 export interface RestoredSession {
   info: SessionInfo
-  acpSessionId?: string
-  proposal?: StoredProposal
+  acpSessionId?: string | undefined
+  proposal?: StoredProposal | undefined
   log: SessionLogRecord[]
 }
 
@@ -296,7 +336,7 @@ export type PostTurnAction = 'none' | 'nudge' | 'incomplete'
  * does not expose, so their turns simply end.
  */
 export function postTurnDecision(o: {
-  stopReason?: string
+  stopReason?: string | undefined
   turnComplete: boolean
   threw: boolean
   isNudge: boolean
@@ -338,7 +378,7 @@ export class SessionManager {
       sessionId: s.info.id,
       ref: s.ref,
       state: s.info.state,
-      reason,
+      ...(reason === undefined ? {} : { reason }),
       ...(err === undefined ? {} : { err: errCtx(err) })
     })
   }
@@ -348,7 +388,7 @@ export class SessionManager {
     for (const r of records) {
       if (this.sessions.has(r.info.id)) continue
       const entries = applyLog([], r.log)
-      const lastSeq = r.log.length ? r.log[r.log.length - 1].seq : 0
+      const lastSeq = r.log[r.log.length - 1]?.seq ?? 0
       this.sessions.set(r.info.id, {
         info: r.info,
         ref: { workspace: r.info.workspace, task: r.info.task, env: r.info.env },
@@ -396,10 +436,11 @@ export class SessionManager {
     const agentId = s.info.agent
     if (!agentId) return
     const prev = this.agentConfigs.get(agentId)
+    const modes = s.modes ?? prev?.modes
     const cfg: AgentConfig = {
       configOptions: s.configOptions ?? prev?.configOptions ?? [],
       commands: s.commands ?? prev?.commands ?? [],
-      modes: s.modes ?? prev?.modes,
+      ...(modes ? { modes } : {}),
       updatedAt: new Date().toISOString()
     }
     this.agentConfigs.set(agentId, cfg)
@@ -504,7 +545,7 @@ export class SessionManager {
       // `readonly`, so native git would fail on the first write anyway.
       gitAccess: gitAccess && !roleIsReadOnly(role),
       startPrompt,
-      configValues: Object.keys(configValues).length ? configValues : undefined
+      ...(Object.keys(configValues).length ? { configValues } : {})
     }
     this.sessions.set(info.id, {
       info,
@@ -818,17 +859,11 @@ export class SessionManager {
    * never blocks one: it cannot be what the lock exists to stop.
    */
   private reviewLocked(s: Session): boolean {
-    if (!this.repoKey(s)) return false
-    return this.events.isRepoLockedForReview(s.ref.workspace, s.ref.task, s.info.repos[0])
-  }
-
-  /** Start gate: the session has a repo and nothing else is holding its clone.
-   *  A researcher holds no clone — it is never gated by the scheduler, it only
-   *  needs something to read. Future predicates (concurrency, priorities)
-   *  compose here. */
-  private canStart(s: Session): boolean {
-    if (!roleLocksClone(sessionRole(s.info))) return s.info.repos.length > 0
-    return !!this.repoKey(s) && !this.repoHolder(s) && !this.reviewLocked(s)
+    const [repo] = s.info.repos
+    // `repoKey` is null for a session with no repo, so `repo` is set whenever
+    // this gets past the first line.
+    if (!this.repoKey(s) || !repo) return false
+    return this.events.isRepoLockedForReview(s.ref.workspace, s.ref.task, repo)
   }
 
   /**
@@ -920,15 +955,15 @@ export class SessionManager {
       // already runs on them (claude-code honors `_meta.claudeCode.options`);
       // any other picks (e.g. fast mode) are reconciled below, before the prompt.
       const meta = this.startMeta(ctx.agent, s.info.configValues)
-      const result = await conn.peer.request<{
-        sessionId: string
-        modes?: SessionModes
-        configOptions?: unknown[]
-      }>('session/new', {
-        cwd: ctx.remoteWorkspaceFolder,
-        mcpServers,
-        ...(meta ? { _meta: meta } : {})
-      })
+      const result = await conn.peer.request(
+        'session/new',
+        {
+          cwd: ctx.remoteWorkspaceFolder,
+          mcpServers,
+          ...(meta ? { _meta: meta } : {})
+        },
+        SESSION_NEW_RESULT
+      )
       s.acpSessionId = result.sessionId
       s.modes = result.modes ?? s.modes
       s.configOptions = normalizeConfigOptions(result.configOptions, ctx.agent.id)
@@ -1122,13 +1157,14 @@ export class SessionManager {
     const upTo = s.lastSeq
     const tail = s.records.filter((r) => r.seq > s.flushedSeq)
     s.flushInFlight = true
-    this.events
+    void this.events
       .appendLog(s.ref.workspace, s.ref.task, s.info.id, tail)
       .then(
         () => {
           s.flushedSeq = upTo
         },
-        (e) => log.error('internal.fail', { site: 'session-log-append', s: s.info.id, err: e })
+        (e: unknown) =>
+          log.error('internal.fail', { site: 'session-log-append', s: s.info.id, err: e })
       )
       .then(() => {
         s.flushInFlight = false
@@ -1260,20 +1296,22 @@ export class SessionManager {
     peer.onNotification('session/update', (params) => this.onSessionUpdate(params))
     peer.onRequest('session/request_permission', (params) => this.onPermission(params))
 
-    const init = await peer.request<{
-      agentCapabilities?: { promptCapabilities?: PromptCapabilities }
-    }>('initialize', {
-      protocolVersion: 1,
-      clientCapabilities: {
-        fs: { readTextFile: false, writeTextFile: false },
-        terminal: false,
-        // Opt in to boolean config options so agents may expose native toggles
-        // (e.g. Claude's "Fast mode") instead of degrading them to a select.
-        session: { configOptions: { boolean: {} } }
-      }
-    })
+    const init = await peer.request(
+      'initialize',
+      {
+        protocolVersion: 1,
+        clientCapabilities: {
+          fs: { readTextFile: false, writeTextFile: false },
+          terminal: false,
+          // Opt in to boolean config options so agents may expose native toggles
+          // (e.g. Claude's "Fast mode") instead of degrading them to a select.
+          session: { configOptions: { boolean: {} } }
+        }
+      },
+      INITIALIZE_RESULT
+    )
 
-    conn.promptCapabilities = init?.agentCapabilities?.promptCapabilities
+    conn.promptCapabilities = init.agentCapabilities?.promptCapabilities
     // The session may have been deleted while the adapter was coming up. Its
     // `detach` found no connection to kill (this one did not exist yet), so
     // this process is the one thing that would outlive it — and caching it
@@ -1320,23 +1358,25 @@ export class SessionManager {
             ...(await this.events.resolveMcpServers(s.ref, s.info.id, s.info.repos[0], s.info.mcp)),
             await this.events.resolveGurtServer(s.ref, s.info.id, this.gurtHooks(s))
           ]
-          const result = await conn.peer.request<{
-            modes?: SessionModes
-            configOptions?: unknown[]
-          }>('session/load', {
-            sessionId: s.acpSessionId,
-            cwd: ctx.remoteWorkspaceFolder,
-            mcpServers
-          })
-          s.modes = result?.modes ?? s.modes
-          s.configOptions = normalizeConfigOptions(result?.configOptions, ctx.agent.id) ?? s.configOptions
+          const result = await conn.peer.request(
+            'session/load',
+            {
+              sessionId: s.acpSessionId,
+              cwd: ctx.remoteWorkspaceFolder,
+              mcpServers
+            },
+            SESSION_LOAD_RESULT
+          )
+          s.modes = result.modes ?? s.modes
+          s.configOptions =
+            normalizeConfigOptions(result.configOptions, ctx.agent.id) ?? s.configOptions
           s.attached = true
           this.cacheAgentConfig(s)
           await this.applyAutoAllow(s, conn)
         } catch (e) {
           this.push(s, {
             kind: 'system',
-            text: `could not resume (${e instanceof Error ? e.message : e}) — create a new session`
+            text: `could not resume (${e instanceof Error ? e.message : String(e)}) — create a new session`
           })
           throw e
         }
@@ -1385,7 +1425,7 @@ export class SessionManager {
     isNudge: boolean,
     context?: PromptContext[],
     images?: PromptImage[]
-  ): Promise<{ stopReason?: string; threw: boolean }> {
+  ): Promise<{ stopReason?: string | undefined; threw: boolean }> {
     this.bus.emit('session.activity', { sessionId: s.info.id })
     this.push(s, { kind: entryKind, text })
     // Prompt start: the turn is incomplete until `complete` fires; clear any
@@ -1399,18 +1439,22 @@ export class SessionManager {
     const startedAt = Date.now()
     // Defaults to "threw" (→ final=true) so an unexpected throw between here and
     // the assignments below never reports a user-visible turn end as non-final.
-    let outcome: { stopReason?: string; threw: boolean } = { threw: true }
+    let outcome: { stopReason?: string | undefined; threw: boolean } = { threw: true }
     // What the accounting record reports as the turn's ending — a non-`end_turn`
     // stop or the thrown error's message, i.e. exactly the text the limit
     // detector needs to tell "the plan said no" from "the code broke".
     let detail: string | undefined
     try {
       const conn = await this.attach(s)
-      const result = await conn.peer.request<{ stopReason?: string }>('session/prompt', {
-        sessionId: s.acpSessionId,
-        prompt: this.promptBlocks(s, text, context, images)
-      })
-      const reason = result?.stopReason
+      const result = await conn.peer.request(
+        'session/prompt',
+        {
+          sessionId: s.acpSessionId,
+          prompt: this.promptBlocks(s, text, context, images)
+        },
+        PROMPT_RESULT
+      )
+      const reason = result.stopReason ?? undefined
       s.lastStopReason = reason
       if (reason && reason !== 'end_turn') {
         this.push(s, { kind: 'system', text: `stopped: ${reason}` })
@@ -1448,10 +1492,11 @@ export class SessionManager {
   private reportTurn(
     s: Session,
     startedAt: number,
-    outcome: { stopReason?: string; threw: boolean },
+    outcome: { stopReason?: string | undefined; threw: boolean },
     detail?: string
   ): void {
     const agent = s.info.agent ?? ''
+    const resetAt = limitResetAt(detail)
     this.bus.emit('agent.turn', {
       ts: new Date().toISOString(),
       agent,
@@ -1462,8 +1507,8 @@ export class SessionManager {
       ms: Date.now() - startedAt,
       outcome: turnOutcome({ ...outcome, detail }),
       ...usageFields(s.usage),
-      detail,
-      resetAt: limitResetAt(detail)
+      ...(detail ? { detail } : {}),
+      ...(resetAt ? { resetAt } : {})
     })
   }
 
@@ -1472,7 +1517,7 @@ export class SessionManager {
    *  it is never nudged for skipping it. */
   private decideTurn(
     s: Session,
-    outcome: { stopReason?: string; threw: boolean },
+    outcome: { stopReason?: string | undefined; threw: boolean },
     isNudge: boolean
   ): PostTurnAction {
     return postTurnDecision({
@@ -1709,7 +1754,7 @@ export class SessionManager {
 
   /** The ONE writer of the session log: assigns seq, applies, announces, persists. */
   private append(s: Session, record: NewLogRecord): void {
-    const rec = { ...record, seq: ++s.lastSeq } as SessionLogRecord
+    const rec = { ...record, seq: ++s.lastSeq }
     s.records.push(rec)
     s.entries = applyLog(s.entries, [rec])
     this.bus.emit('session.log', { sessionId: s.info.id, records: [rec] })
@@ -1735,10 +1780,10 @@ export class SessionManager {
   ): Record<string, unknown> | undefined {
     if (agent.id !== 'claude-code' || !configValues) return undefined
     const options: Record<string, string> = {}
-    const model = configValues.model
-    const effort = configValues.effort
-    if (typeof model === 'string' && model) options.model = model
-    if (typeof effort === 'string' && effort && effort !== 'default') options.effort = effort
+    const model = configValues['model']
+    const effort = configValues['effort']
+    if (typeof model === 'string' && model) options['model'] = model
+    if (typeof effort === 'string' && effort && effort !== 'default') options['effort'] = effort
     if (!Object.keys(options).length) return undefined
     return { claudeCode: { options } }
   }
@@ -1760,7 +1805,7 @@ export class SessionManager {
       } catch (e) {
         this.push(s, {
           kind: 'system',
-          text: `could not set ${configId}: ${e instanceof Error ? e.message : e}`
+          text: `could not set ${configId}: ${e instanceof Error ? e.message : String(e)}`
         })
       }
     }
@@ -1779,11 +1824,8 @@ export class SessionManager {
       typeof value === 'boolean'
         ? { sessionId: s.acpSessionId, configId, type: 'boolean', value }
         : { sessionId: s.acpSessionId, configId, value }
-    const res = await conn.peer.request<{ configOptions?: unknown[] }>(
-      'session/set_config_option',
-      params
-    )
-    const next = normalizeConfigOptions(res?.configOptions, this.agentKinds.get(s.info.agent ?? ''))
+    const res = await conn.peer.request('session/set_config_option', params, SET_CONFIG_OPTION_RESULT)
+    const next = normalizeConfigOptions(res.configOptions, this.agentKinds.get(s.info.agent ?? ''))
     if (next) s.configOptions = next
   }
 
@@ -1848,34 +1890,43 @@ export class SessionManager {
     } catch (e) {
       this.push(s, {
         kind: 'system',
-        text: `could not set mode: ${e instanceof Error ? e.message : e}`
+        text: `could not set mode: ${e instanceof Error ? e.message : String(e)}`
       })
     }
   }
 
   /** Flatten ACP tool-call content blocks into a plain-text preview. */
-  private toolDetail(content: any[] | undefined): string | undefined {
+  private toolDetail(content: AcpToolContent | undefined): string | undefined {
     if (!content?.length) return undefined
     const parts: string[] = []
     for (const c of content) {
-      if (c?.type === 'diff') {
-        parts.push(`--- ${c.path}\n${c.newText ?? ''}`.slice(0, 2000))
-      } else if (c?.type === 'content' && c.content?.type === 'text') {
-        parts.push(String(c.content.text).slice(0, 2000))
+      if (c.type === 'diff') {
+        parts.push(`--- ${c.path ?? ''}\n${c.newText ?? ''}`.slice(0, 2000))
+      } else if (c.type === 'content' && c.content?.type === 'text') {
+        parts.push((c.content.text ?? '').slice(0, 2000))
       }
     }
     return parts.length ? parts.join('\n') : undefined
   }
 
-  private onSessionUpdate(params: any): void {
-    const s = this.bySessionId(params?.sessionId)
+  /**
+   * A `session/update` notification. The envelope says which session and which
+   * variant; each variant parses its own payload, so an adapter that changes
+   * the shape of one update (or sends one gurt has never heard of) costs that
+   * update only — the timeline around it keeps flowing.
+   */
+  private onSessionUpdate(params: unknown): void {
+    const p = parseOrDrop(SESSION_UPDATE, params, 'session/update')
+    if (!p?.update) return
+    const s = this.bySessionId(p.sessionId)
     if (!s || s.loading) return
-    const u = params.update ?? {}
-    switch (u.sessionUpdate) {
+    const raw = p.update
+    switch (raw.sessionUpdate) {
       case 'agent_message_chunk':
       case 'agent_thought_chunk': {
-        const kind = u.sessionUpdate === 'agent_message_chunk' ? 'agent' : 'thought'
-        const text = u.content?.type === 'text' ? u.content.text : ''
+        const u = parseOrDrop(TEXT_CHUNK, raw, raw.sessionUpdate)
+        const kind = raw.sessionUpdate === 'agent_message_chunk' ? 'agent' : 'thought'
+        const text = u?.content?.type === 'text' ? (u.content.text ?? '') : ''
         if (!text) return
         const last = s.entries[s.entries.length - 1]
         if (last && last.kind === kind) {
@@ -1885,17 +1936,23 @@ export class SessionManager {
         }
         break
       }
-      case 'tool_call':
+      case 'tool_call': {
+        const u = parseOrDrop(TOOL_CALL, raw, 'tool_call')
+        if (!u) return
+        const detail = this.toolDetail(u.content)
         this.push(s, {
           kind: 'tool',
           toolCallId: u.toolCallId,
           title: u.title ?? u.kind ?? 'tool call',
           status: u.status ?? 'pending',
-          toolKind: u.kind,
-          detail: this.toolDetail(u.content)
+          ...(u.kind ? { toolKind: u.kind } : {}),
+          ...(detail ? { detail } : {})
         })
         break
+      }
       case 'tool_call_update': {
+        const u = parseOrDrop(TOOL_CALL, raw, 'tool_call_update')
+        if (!u) return
         const entry = s.entries.find((e) => e.kind === 'tool' && e.toolCallId === u.toolCallId)
         if (entry && entry.kind === 'tool') {
           const detail = this.toolDetail(u.content)
@@ -1911,39 +1968,54 @@ export class SessionManager {
         }
         break
       }
-      case 'plan':
-        s.plan = (u.entries ?? []).map((e: any) => ({
+      case 'plan': {
+        const u = parseOrDrop(PLAN_UPDATE, raw, 'plan')
+        if (!u) return
+        s.plan = u.entries.map((e) => ({
           content: e.content,
-          priority: e.priority,
+          ...(e.priority ? { priority: e.priority } : {}),
           status: e.status
         }))
         this.bus.emit('session.changed', { sessionId: s.info.id })
         break
-      case 'available_commands_update':
-        s.commands = (u.availableCommands ?? []).map((c: any) => ({
+      }
+      case 'available_commands_update': {
+        const u = parseOrDrop(COMMANDS_UPDATE, raw, 'available_commands_update')
+        if (!u) return
+        s.commands = u.availableCommands.map((c) => ({
           name: c.name,
-          description: c.description
+          ...(c.description ? { description: c.description } : {})
         }))
         this.cacheAgentConfig(s)
         this.bus.emit('session.changed', { sessionId: s.info.id })
         break
-      case 'current_mode_update':
+      }
+      case 'current_mode_update': {
+        const u = parseOrDrop(MODE_UPDATE, raw, 'current_mode_update')
+        if (!u) return
         if (s.modes) s.modes.currentModeId = u.currentModeId
         else s.modes = { currentModeId: u.currentModeId, availableModes: [] }
         this.cacheAgentConfig(s)
         this.bus.emit('session.changed', { sessionId: s.info.id })
         break
-      case 'config_option_update':
+      }
+      case 'config_option_update': {
+        const u = parseOrDrop(CONFIG_OPTION_UPDATE, raw, 'config_option_update')
+        if (!u) return
         s.configOptions =
           normalizeConfigOptions(u.configOptions, this.agentKinds.get(s.info.agent ?? '')) ??
           s.configOptions
         this.cacheAgentConfig(s)
         this.bus.emit('session.changed', { sessionId: s.info.id })
         break
-      case 'usage_update':
-        s.usage = { used: u.used, size: u.size, cost: u.cost ?? undefined }
+      }
+      case 'usage_update': {
+        const u = parseOrDrop(USAGE_UPDATE, raw, 'usage_update')
+        if (!u) return
+        s.usage = { used: u.used, size: u.size, ...(u.cost ? { cost: u.cost } : {}) }
         this.bus.emit('session.changed', { sessionId: s.info.id })
         break
+      }
       default:
         break // user_message_chunk — we add our own copy of the prompt
     }
@@ -1951,14 +2023,18 @@ export class SessionManager {
 
   /** Permission requests are always interactive — use session modes (e.g. a
    *  bypass/accept-edits mode) to reduce how often the agent asks. */
-  private onPermission(params: any): unknown {
-    const s = this.bySessionId(params?.sessionId)
-    const options: PermissionOption[] = (params?.options ?? []).map((o: any) => ({
+  private onPermission(params: unknown): unknown {
+    const p = parseOrDrop(PERMISSION_REQUEST, params, 'session/request_permission')
+    // A request we cannot read is one the user can never answer: refuse it
+    // rather than leave the agent waiting on a prompt that was never shown.
+    if (!p) return { outcome: { outcome: 'cancelled' } }
+    const s = this.bySessionId(p.sessionId)
+    const options: PermissionOption[] = p.options.map((o) => ({
       optionId: o.optionId,
       name: o.name ?? o.optionId,
-      kind: o.kind
+      ...(o.kind ? { kind: o.kind } : {})
     }))
-    const title = params?.toolCall?.title ?? 'permission request'
+    const title = p.toolCall?.title ?? 'permission request'
     if (!s) return { outcome: { outcome: 'cancelled' } }
 
     // The gurt tools are our own plumbing: every turn must end with `complete`,

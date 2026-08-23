@@ -1,20 +1,22 @@
 import { createRequire } from 'node:module'
 import fs from 'node:fs'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const APP_DIR = '/Users/klerik3d/workspace/personal/gurt'
+const APP_DIR = path.resolve(fileURLToPath(new URL('..', import.meta.url)))
 const SHOT_DIR = path.join(process.env.SCRATCH ?? '/tmp', 'shots')
 const GURT_ROOT = path.join(process.env.SCRATCH ?? '/tmp', 'gurt-root')
 fs.mkdirSync(SHOT_DIR, { recursive: true })
 
 const require = createRequire(path.join(APP_DIR, 'package.json'))
 const { _electron } = require('playwright-core')
+const electronPath = require('electron') // path string to the electron binary
 
 const env = { ...process.env, GURT_ROOT }
 delete env.ELECTRON_RUN_AS_NODE // inherited from the VSCode extension host shell
 
 const app = await _electron.launch({
-  executablePath: path.join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron'),
+  executablePath: electronPath,
   args: [APP_DIR],
   env,
   timeout: 30000

@@ -277,17 +277,26 @@ export class ContainerManager {
       since = Date.now()
     }
     try {
-      const dirs = await Promise.all(
-        repoCfgs.map((r) => ensureClone(this.refOf(info), r, provisionLog))
+      // Config and clone dir stay paired, so the anchor below is one lookup,
+      // not two parallel arrays indexed in step.
+      const clones = await Promise.all(
+        repoCfgs.map(async (cfg) => ({
+          cfg,
+          dir: await ensureClone(this.refOf(info), cfg, provisionLog)
+        }))
       )
-      enter('image')
       // repos[0] is the build anchor, same role a normal session's only repo
-      // plays today — every other repo (if any) is a sibling mount only.
+      // plays today — every other repo (if any) is a sibling mount only. A
+      // session with no repo never reaches provisioning (the start gate rejects
+      // it), so this is a guard on that invariant, not a path.
+      const [anchor] = clones
+      if (!anchor) throw new Error('session has no repository')
+      enter('image')
       const configArgs = await materializeEnvConfig(
         this.refOf(info),
         envCfg,
-        repoCfgs[0],
-        dirs[0],
+        anchor.cfg,
+        anchor.dir,
         provisionLog
       )
       enter('up')
@@ -298,20 +307,20 @@ export class ContainerManager {
       // empty wrapper dir and every repo (anchor included) is mounted into it
       // explicitly, so none of them sits at the container's top-level workspace
       // folder and each carries its own read-only flag.
-      let workspaceFolder = dirs[0]
+      let workspaceFolder = anchor.dir
       let extraMounts: { hostDir: string; name: string; readonly?: boolean }[] = []
       if (mounted) {
         workspaceFolder = store.mountedWorkspaceDir(info.workspace, info.task, sessionId)
         await fs.mkdir(workspaceFolder, { recursive: true })
-        extraMounts = repoCfgs.map((r, i) => ({ hostDir: dirs[i], name: r.name, readonly }))
+        extraMounts = clones.map(({ cfg, dir }) => ({ hostDir: dir, name: cfg.name, readonly }))
       }
       const up = await devcontainerUp(
         sessionId,
         configArgs,
         workspaceFolder,
         provisionLog,
-        mounted ? 'repos' : repoCfgs[0].name,
-        canonicalRepoId(repoCfgs[0].url)?.host,
+        mounted ? 'repos' : anchor.cfg.name,
+        canonicalRepoId(anchor.cfg.url)?.host,
         () =>
           this.setStatus(
             sessionId,
@@ -392,11 +401,11 @@ export class ContainerManager {
       cfg.credentialId
     )
     if (credError) throw new Error(`agent "${cfg.label}": ${credError}`)
-    if (!info.repos.length) throw new Error('session has no repository')
+    const [anchorRepo] = info.repos
+    if (!anchorRepo) throw new Error('session has no repository')
     const ws = await store.getWorkspace(info.workspace)
-    const repoCfg = ws.repos.find((r) => r.name === info.repos[0])
-    if (!repoCfg)
-      throw new Error(`repo "${info.repos[0]}" is not registered in "${info.workspace}"`)
+    const repoCfg = ws.repos.find((r) => r.name === anchorRepo)
+    if (!repoCfg) throw new Error(`repo "${anchorRepo}" is not registered in "${info.workspace}"`)
 
     const c = await this.ensure(sessionId)
     if (c.status !== 'running' || !c.id || !c.remoteWorkspaceFolder)
@@ -408,7 +417,7 @@ export class ContainerManager {
     // explicitly, the plain clone dir otherwise.
     const hostWorkspaceFolder = mounted
       ? store.mountedWorkspaceDir(info.workspace, info.task, sessionId)
-      : cloneDir(info.workspace, info.task, info.repos[0])
+      : cloneDir(info.workspace, info.task, anchorRepo)
     return {
       agent: def,
       session: sessionId,
@@ -424,15 +433,14 @@ export class ContainerManager {
         : overrideConfigArgs(this.refOf(info)),
       secret,
       secretEnv: cfg.secretEnv || def.secretEnv,
-      env: cfg.env,
+      ...(cfg.env ? { env: cfg.env } : {}),
       // The git broker is scoped to one repo for its whole container lifetime —
       // unavailable across several repos regardless of `gitAccess`. A read-only
       // role gets none either: its clone refuses writes at the mount, so native
       // git would only fail later and more confusingly.
-      gitBrokerEnv:
-        info.gitAccess && info.repos.length === 1 && !roleIsReadOnly(sessionRole(info))
-          ? await this.resolveGitAccess(info, repoCfg, c.id)
-          : undefined
+      ...(info.gitAccess && info.repos.length === 1 && !roleIsReadOnly(sessionRole(info))
+        ? { gitBrokerEnv: await this.resolveGitAccess(info, repoCfg, c.id) }
+        : {})
     }
   }
 
@@ -493,8 +501,15 @@ export class ContainerManager {
     // container (which the sweep below then finds) or fails having left one
     // behind (which the sweep finds too). Stop does not wait: it is the idle
     // path, and a session that is starting is by definition not idle.
-    if (mode === 'remove') await this.ensureInFlight.get(sessionId)?.catch(() => {})
-    const c = this.container(sessionId)
+    // The record is read before the first await: `deleteSession` starts this
+    // teardown and drops the session record synchronously right after, so a
+    // later read finds nothing and the recorded-id fallback below goes blind.
+    let c = this.container(sessionId)
+    if (mode === 'remove') {
+      await this.ensureInFlight.get(sessionId)?.catch(() => {})
+      // A start that settled while we waited may have recorded a fresher id.
+      c = this.container(sessionId) ?? c
+    }
     if (mode === 'stop') {
       if (!c?.id) return
       this.forget(c.id)
@@ -591,7 +606,7 @@ export class ContainerManager {
     this.noteActive(sessionId)
     const timer = setTimeout(() => {
       this.idleTimers.delete(sessionId)
-      this.autoStopIfIdle(sessionId).catch((e) =>
+      this.autoStopIfIdle(sessionId).catch((e: unknown) =>
         log.error('internal.fail', { site: 'container-auto-stop', s: sessionId, err: e })
       )
     }, this.IDLE_STOP_MS)

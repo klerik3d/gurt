@@ -171,10 +171,13 @@ try {
   const realFetch = globalThis.fetch
   try {
     let seen
-    globalThis.fetch = async (url, opts) => {
-      seen = { url, auth: opts.headers.Authorization }
-      return { ok: true, status: 200, json: async () => ({ login: 'me', id: 42, name: null, email: null }) }
-    }
+    // Cast: the double answers only what `identity` reads off the response.
+    globalThis.fetch = /** @type {typeof fetch} */ (
+      async (url, opts) => {
+        seen = { url, auth: opts.headers.Authorization }
+        return { ok: true, status: 200, json: async () => ({ login: 'me', id: 42, name: null, email: null }) }
+      }
+    )
     const idn = await p.identity(tok, 'github.com')
     assert.equal(seen.url, 'https://api.github.com/user')
     assert.equal(seen.auth, 'Bearer SEC')
@@ -183,7 +186,9 @@ try {
     await p.identity(tok, 'ghe.corp.com')
     assert.equal(seen.url, 'https://ghe.corp.com/api/v3/user')
 
-    globalThis.fetch = async () => ({ ok: false, status: 401, json: async () => ({}) })
+    globalThis.fetch = /** @type {typeof fetch} */ (
+      /** @type {unknown} */ (async () => ({ ok: false, status: 401, json: async () => ({}) }))
+    )
     await assert.rejects(() => p.identity(tok, 'github.com'), /rejected the token \(HTTP 401\)/)
     await assert.rejects(
       () => p.identity({ ...tok, kind: 'git-host', data: {} }, 'github.com'),

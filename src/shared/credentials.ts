@@ -38,8 +38,8 @@ export interface GitIdentity {
 
 /** The stamped identity of an entry, or null when it was never verified. */
 export const credentialIdentity = (entry: CredentialEntry): GitIdentity | null =>
-  entry.data.gitName && entry.data.gitEmail
-    ? { name: entry.data.gitName, email: entry.data.gitEmail }
+  entry.data['gitName'] && entry.data['gitEmail']
+    ? { name: entry.data['gitName'], email: entry.data['gitEmail'] }
     : null
 
 /**
@@ -146,7 +146,7 @@ export function resolveAgentSecret(
   if (!entry) return { secret: '', error: 'linked credential no longer exists' }
   if (entry.kind !== 'agent-token')
     return { secret: '', error: `linked credential "${entry.label}" is not an agent token` }
-  return { secret: entry.data.secret ?? '' }
+  return { secret: entry.data['secret'] ?? '' }
 }
 
 export const credentialKindLabel = (kind: CredentialKind): string =>
@@ -192,12 +192,21 @@ export function resolveCredential(
         source: 'implicit',
         error: `linked credential "${entry.label}" is not a git credential`
       }
-    return { entry, kind: entry.kind, source: 'link', error: unverifiedError(entry) }
+    const linkError = unverifiedError(entry)
+    return { entry, kind: entry.kind, source: 'link', ...(linkError ? { error: linkError } : {}) }
   }
   // Step 2: auto-match by host — git kinds only; an agent-token is never a
   // git transport, whatever its hosts say.
   const match = credentials.find((c) => isGitKind(c.kind) && c.hosts.includes(host))
-  if (match) return { entry: match, kind: match.kind, source: 'match', error: unverifiedError(match) }
+  if (match) {
+    const matchError = unverifiedError(match)
+    return {
+      entry: match,
+      kind: match.kind,
+      source: 'match',
+      ...(matchError ? { error: matchError } : {})
+    }
+  }
   // Step 3: implicit ambient host credentials.
   return { kind: 'git-host', source: 'implicit' }
 }

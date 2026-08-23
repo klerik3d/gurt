@@ -93,6 +93,7 @@ export function alignRows(before: string, after: string, lang: string | null = n
 
   for (let i = 0; i < parts.length; i++) {
     const part = parts[i]
+    if (!part) continue
     if (!part.added && !part.removed) {
       for (const text of lines(part.value)) {
         const spans = cellSpans(text, lang)
@@ -113,17 +114,20 @@ export function alignRows(before: string, after: string, lang: string | null = n
     if (added.length) i++
     const paired = Math.min(removed.length, added.length)
     for (let k = 0; k < paired; k++) {
-      const [bs, as] = wordDiff(removed[k], added[k])
+      // k < min(removed.length, added.length), so both cells are there.
+      const bText = removed[k] ?? ''
+      const aText = added[k] ?? ''
+      const [bs, as] = wordDiff(bText, aText)
       rows.push({
         kind: 'change',
-        before: { line: ++bn, text: removed[k], spans: cellSpans(removed[k], lang, bs) },
-        after: { line: ++an, text: added[k], spans: cellSpans(added[k], lang, as) }
+        before: { line: ++bn, text: bText, spans: cellSpans(bText, lang, bs) },
+        after: { line: ++an, text: aText, spans: cellSpans(aText, lang, as) }
       })
     }
-    for (let k = paired; k < removed.length; k++)
-      rows.push({ kind: 'change', before: { line: ++bn, text: removed[k], spans: cellSpans(removed[k], lang) } })
-    for (let k = paired; k < added.length; k++)
-      rows.push({ kind: 'change', after: { line: ++an, text: added[k], spans: cellSpans(added[k], lang) } })
+    for (const text of removed.slice(paired))
+      rows.push({ kind: 'change', before: { line: ++bn, text, spans: cellSpans(text, lang) } })
+    for (const text of added.slice(paired))
+      rows.push({ kind: 'change', after: { line: ++an, text, spans: cellSpans(text, lang) } })
   }
   return rows
 }
@@ -140,12 +144,15 @@ export function alignRows(before: string, after: string, lang: string | null = n
 export function foldRows(rows: Row[], expanded: ReadonlySet<number> = new Set()): Row[] {
   const out: Row[] = []
   for (let i = 0; i < rows.length; ) {
-    if (rows[i].kind !== 'equal') {
-      out.push(rows[i++])
+    const row = rows[i]
+    if (!row) break
+    if (row.kind !== 'equal') {
+      out.push(row)
+      i++
       continue
     }
     let end = i
-    while (end < rows.length && rows[end].kind === 'equal') end++
+    while (rows[end]?.kind === 'equal') end++
     const run = rows.slice(i, end)
     const head = i === 0 ? 0 : CONTEXT // nothing above the first run to anchor to
     const tail = end === rows.length ? 0 : CONTEXT
@@ -176,7 +183,7 @@ export function groupBlocks(rows: Row[]): Block[] {
   const blocks: Block[] = []
   let start = -1
   for (let i = 0; i < rows.length; i++) {
-    if (rows[i].kind === 'change') {
+    if (rows[i]?.kind === 'change') {
       if (start === -1) start = i
     } else if (start !== -1) {
       blocks.push({ startIndex: start, endIndex: i - 1 })

@@ -15,7 +15,7 @@ type Seen = Record<string, string>
 
 function read(): Seen {
   try {
-    const raw = JSON.parse(localStorage.getItem(KEY) ?? '{}')
+    const raw: unknown = JSON.parse(localStorage.getItem(KEY) ?? '{}')
     if (!raw || typeof raw !== 'object') return {}
     const out: Seen = {}
     for (const [id, at] of Object.entries(raw)) if (typeof at === 'string') out[id] = at
@@ -32,8 +32,9 @@ function commit(next: Seen): void {
   // Trim oldest-first so a long-lived install can't grow the entry unbounded.
   const ids = Object.keys(next)
   if (ids.length > CAP) {
-    const keep = ids.sort((a, b) => next[b].localeCompare(next[a])).slice(0, CAP)
-    next = Object.fromEntries(keep.map((id) => [id, next[id]]))
+    const at = (id: string): string => next[id] ?? ''
+    const keep = ids.sort((a, b) => at(b).localeCompare(at(a))).slice(0, CAP)
+    next = Object.fromEntries(keep.map((id) => [id, at(id)]))
   }
   seen = next
   try {

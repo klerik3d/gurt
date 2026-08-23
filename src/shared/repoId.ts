@@ -29,8 +29,9 @@ export function canonicalRepoId(url: string): RepoId | null {
     }
   } else {
     // scp-like: [user@]host:path
-    const m = s.match(/^(?:[^@/]+@)?([\w.-]+):(.+)$/)
-    if (!m) return null
+    const m = /^(?:[^@/]+@)?([\w.-]+):(.+)$/.exec(s)
+    // Both groups are mandatory in the pattern: a match has them.
+    if (!m?.[1] || !m[2]) return null
     host = m[1]
     p = m[2]
   }

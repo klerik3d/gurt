@@ -1,6 +1,6 @@
 # Requirements: domain event bus
 
-Status: draft for review · Owner: klerik3d · Target: gurt Electron MVP (this repo)
+Status: draft for review · Target: gurt Electron MVP (this repo)
 
 This document is a work order for an implementing agent. Read `README.md`
 first. Key code: `src/main/{kernel,envs,sessions,ipc}.ts`,
@@ -101,7 +101,7 @@ and `console.error`-ed; it never breaks the emitter or other handlers.
 
 1. Full smoke suite passes unchanged.
 2. `App.tsx` contains no busy-diffing; changes panel still refreshes at
-   the end of an agent turn (covered by smoke7's post-turn refresh path —
+   the end of an agent turn (covered by smoke-changes.mjs's post-turn refresh path —
    verify manually if the smoke doesn't exercise it).
 3. Idle auto-stop parity: env stops ~30s after the last turn ends; typing
    in the composer postpones it.

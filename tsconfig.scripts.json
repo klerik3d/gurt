@@ -1,0 +1,30 @@
+{
+  // The test suite CI runs (`node scripts/<name>.test.mjs`). It is plain ESM,
+  // outside both src projects, and was checked by nothing at all — checkJs is
+  // what puts it under the compiler without turning it into TypeScript.
+  //
+  // Deliberately softer than src/**: these files are read top to bottom, build
+  // their own fixtures, and lean on inference. `noImplicitAny` alone would cost
+  // ~320 annotations on callback parameters and buy nothing, so `strict` is off
+  // here — what stays on is the part that finds real mistakes, a property or a
+  // module that does not exist.
+  //
+  // The Playwright smoke drivers (scripts/smoke*.mjs) are NOT here: their
+  // page.evaluate callbacks run in the browser, where `document.querySelector`
+  // is typed `Element` and every `.click()` / `.innerText` needs a cast — ~105
+  // of them, in a harness that is run by hand. They stay covered by eslint.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "nodenext",
+    "lib": ["ES2022", "DOM"],
+    "types": ["node"],
+    "allowJs": true,
+    "checkJs": true,
+    "strict": false,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": ["scripts/*.test.mjs"]
+}

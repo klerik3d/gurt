@@ -1,6 +1,6 @@
 # Requirements: split Env and Repo
 
-Status: draft for review · Owner: klerik3d · Target: gurt Electron MVP (this repo)
+Status: draft for review · Target: gurt Electron MVP (this repo)
 
 > **Superseded in part** by `requirements-session-container.md`: a container now
 > belongs to exactly one session (there are no env instances, and `task.json`

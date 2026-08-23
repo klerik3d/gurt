@@ -33,7 +33,7 @@ export async function deleteSession(s: SessionTarget): Promise<boolean> {
     }))
   )
     return false
-  window.gurt.sessionDelete(s.id).catch((e) => alertDialog(String(e)))
+  window.gurt.sessionDelete(s.id).catch((e: unknown) => alertDialog(String(e)))
   return true
 }
 

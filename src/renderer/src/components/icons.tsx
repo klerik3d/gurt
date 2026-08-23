@@ -248,9 +248,9 @@ export function Icon({
   style
 }: {
   name: IconName
-  size?: number
-  className?: string
-  style?: React.CSSProperties
+  size?: number | undefined
+  className?: string | undefined
+  style?: React.CSSProperties | undefined
 }): JSX.Element {
   return (
     <svg
@@ -278,8 +278,8 @@ export function Dot({
   size = 8
 }: {
   tone: 'green' | 'yellow' | 'red' | 'accent' | 'outline'
-  pulse?: boolean
-  size?: number
+  pulse?: boolean | undefined
+  size?: number | undefined
 }): JSX.Element {
   return (
     <span

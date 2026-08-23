@@ -1,25 +1,26 @@
 // Turn contract end-to-end (docs/requirements-turn-contract.md §7.3). Real agent
 // turn through the built app: a trivial-edit session must end with a stored
-// change proposal. Offline: the origin is a local bare repo (smoke7 pattern), but
+// change proposal. Offline: the origin is a local bare repo (smoke-changes.mjs pattern), but
 // this DOES need docker + a working claude secret (the agent has to run a turn
 // and call `complete`). Set GURT_SMOKE_CLAUDE_TOKEN (or CLAUDE_CODE_OAUTH_TOKEN);
 // without it the script SKIPs. The Kernel.prUrl title-param path is unit-covered
 // by scripts/proposal-store.test.mjs.
 //
-//   SCRATCH=/tmp/gurt-smoke GURT_SMOKE_CLAUDE_TOKEN=... node scripts/smoke9.mjs
+//   SCRATCH=/tmp/gurt-smoke GURT_SMOKE_CLAUDE_TOKEN=... node scripts/smoke-turn-contract.mjs
 import { createRequire } from 'node:module'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 const TOKEN = process.env.GURT_SMOKE_CLAUDE_TOKEN || process.env.CLAUDE_CODE_OAUTH_TOKEN
 if (!TOKEN) {
-  console.log('SKIP smoke9: set GURT_SMOKE_CLAUDE_TOKEN (or CLAUDE_CODE_OAUTH_TOKEN) + run docker')
+  console.log('SKIP smoke-turn-contract: set GURT_SMOKE_CLAUDE_TOKEN (or CLAUDE_CODE_OAUTH_TOKEN) + run docker')
   process.exit(0)
 }
 
-const APP_DIR = '/Users/klerik3d/workspace/personal/gurt'
+const APP_DIR = path.resolve(fileURLToPath(new URL('..', import.meta.url)))
 const SHOT_DIR = path.join(process.env.SCRATCH ?? '/tmp', 'shots')
 // unique per run under /Users (Docker-shared, virtiofs cache); roots under /Users.
 const GURT_ROOT = path.join(os.homedir(), `.gurt-smoke-${Date.now()}`)
@@ -30,11 +31,12 @@ fs.mkdirSync(REPO_ROOT, { recursive: true })
 
 const require = createRequire(path.join(APP_DIR, 'package.json'))
 const { _electron } = require('playwright-core')
+const electronPath = require('electron') // path string to the electron binary
 
 const env = { ...process.env, GURT_ROOT, GURT_FORCE_PLAINTEXT: '1' }
 delete env.ELECTRON_RUN_AS_NODE
 
-const EXE = path.join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron')
+const EXE = electronPath
 
 let failures = 0
 const check = (cond, msg) => {

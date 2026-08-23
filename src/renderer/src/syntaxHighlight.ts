@@ -66,7 +66,10 @@ export interface SyntaxSpan {
 }
 
 const ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', '#x27': "'" }
-const unescape = (s: string): string => s.replace(/&(amp|lt|gt|quot|#x27);/g, (_, e) => ENTITIES[e])
+const unescape = (s: string): string =>
+  // The alternation and the map hold the same five names, so the fallback is
+  // unreachable — it keeps the entity's own text rather than inventing one.
+  s.replace(/&(amp|lt|gt|quot|#x27);/g, (m: string, e: string) => ENTITIES[e] ?? m)
 
 /**
  * hljs's HTML output is a strict, known-shape grammar (its own `escapeHTML`
@@ -121,21 +124,22 @@ export function mergeSpans(syntax: SyntaxSpan[], diff: { text: string; changed: 
   let sOff = 0
   let di = 0
   let dOff = 0
-  while (si < syntax.length && di < diff.length) {
-    const take = Math.min(syntax[si].text.length - sOff, diff[di].text.length - dOff)
+  for (;;) {
+    // Both cursors are bounded by their array's length; reading them here is
+    // also the loop's exit condition.
+    const s = syntax[si]
+    const d = diff[di]
+    if (!s || !d) break
+    const take = Math.min(s.text.length - sOff, d.text.length - dOff)
     if (take > 0)
-      out.push({
-        text: syntax[si].text.slice(sOff, sOff + take),
-        cls: syntax[si].cls,
-        changed: diff[di].changed
-      })
+      out.push({ text: s.text.slice(sOff, sOff + take), cls: s.cls, changed: d.changed })
     sOff += take
     dOff += take
-    if (sOff >= syntax[si].text.length) {
+    if (sOff >= s.text.length) {
       si++
       sOff = 0
     }
-    if (dOff >= diff[di].text.length) {
+    if (dOff >= d.text.length) {
       di++
       dOff = 0
     }

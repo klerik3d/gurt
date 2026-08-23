@@ -4,9 +4,11 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import os from 'node:os'
 import path from 'node:path'
+import { z } from 'zod'
 import type {
   AgentConfig,
   AgentConfigCache,
+  AgentInstance,
   AgentsFile,
   EnvConfig,
   PersistedSession,
@@ -50,7 +52,7 @@ export async function rmTree(dir: string): Promise<void> {
   await fs.rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
 }
 
-export const gurtRoot = process.env.GURT_ROOT || path.join(os.homedir(), '.gurt')
+export const gurtRoot = process.env['GURT_ROOT'] || path.join(os.homedir(), '.gurt')
 
 export const wsDir = (ws: string) => path.join(gurtRoot, ws)
 export const taskDir = (ws: string, task: string) => path.join(gurtRoot, ws, task)
@@ -125,24 +127,62 @@ async function writeJson(file: string, data: unknown): Promise<void> {
 
 const agentsFile = () => path.join(gurtRoot, 'agents.json')
 
-export async function getAgents(): Promise<AgentsFile> {
-  const raw = await readJson<Record<string, any>>(agentsFile(), {})
-  const agents: AgentsFile = {}
-  for (const [id, a] of Object.entries(raw)) {
-    if (!a || typeof a !== 'object') continue
-    // Current format is an instance carrying its own kind; the legacy per-kind
-    // format keyed each entry by the kind id and is lifted the same way. Inline
-    // secrets and the `enabled` flag are dropped here — the on-disk migration
-    // (migrateAgentSecrets) moves secrets into credentials before this runs.
-    const kind = typeof a.kind === 'string' ? a.kind : agentDef(id) ? id : undefined
-    if (!kind) continue
-    agents[id] = {
+/**
+ * One record of agents.json as it may actually be on disk. This file is written
+ * by older gurt versions and hand-edited by users, so nothing here is trusted:
+ * every field is optional, and one whose type is wrong degrades to "absent"
+ * rather than costing the whole record. `secret`/`oauthToken`/`enabled` are the
+ * pre-credentials layout, lifted by `migrateAgentSecrets` and dropped here.
+ */
+export const STORED_AGENT = z.looseObject({
+  kind: z.string().optional().catch(undefined),
+  label: z.string().optional().catch(undefined),
+  credentialId: z.string().optional().catch(undefined),
+  secretEnv: z.string().optional().catch(undefined),
+  env: z.record(z.string(), z.string()).optional().catch(undefined),
+  secret: z.string().optional().catch(undefined),
+  oauthToken: z.string().optional().catch(undefined),
+  enabled: z.boolean().optional().catch(undefined)
+})
+export type StoredAgent = z.infer<typeof STORED_AGENT>
+
+/** agents.json itself: an id → record map. Records stay `unknown` so one bad
+ *  entry is skipped instead of emptying the registry. */
+export const STORED_AGENTS = z.record(z.string(), z.unknown()).catch({})
+
+/**
+ * Lift one stored record into an agent instance, or nothing when it is not one.
+ * Current format carries its own `kind`; the legacy per-kind format keyed each
+ * entry by the kind id, which is the fallback. Shared with the credential
+ * migration so both readers agree on what a record means.
+ */
+export function liftAgent(id: string, raw: unknown): { data: StoredAgent; instance: AgentInstance } | undefined {
+  const parsed = STORED_AGENT.safeParse(raw)
+  if (!parsed.success) return undefined
+  const a = parsed.data
+  const kind = a.kind ?? (agentDef(id) ? id : undefined)
+  if (!kind) return undefined
+  return {
+    data: a,
+    instance: {
       kind,
       label: a.label || agentDef(kind)?.label || kind,
-      credentialId: typeof a.credentialId === 'string' ? a.credentialId : undefined,
-      secretEnv: a.secretEnv || undefined,
-      env: a.env && typeof a.env === 'object' ? a.env : undefined
+      ...(a.credentialId ? { credentialId: a.credentialId } : {}),
+      ...(a.secretEnv ? { secretEnv: a.secretEnv } : {}),
+      ...(a.env ? { env: a.env } : {})
     }
+  }
+}
+
+export async function getAgents(): Promise<AgentsFile> {
+  const raw = STORED_AGENTS.parse(await readJson<unknown>(agentsFile(), {}))
+  const agents: AgentsFile = {}
+  for (const [id, a] of Object.entries(raw)) {
+    // Inline secrets and the `enabled` flag are dropped here — the on-disk
+    // migration (migrateAgentSecrets) moves secrets into credentials before
+    // this runs.
+    const lifted = liftAgent(id, a)
+    if (lifted) agents[id] = lifted.instance
   }
   return agents
 }
@@ -443,9 +483,13 @@ export async function readSessions(ws: string, task: string): Promise<PersistedS
       if (!owner || owner.info.container) continue
       owner.info.container = {
         status: e.status,
-        id: e.containerId,
-        remoteWorkspaceFolder: e.remoteWorkspaceFolder,
+        ...(e.containerId ? { id: e.containerId } : {}),
+        ...(e.remoteWorkspaceFolder
+          ? { remoteWorkspaceFolder: e.remoteWorkspaceFolder }
+          : {}),
         repos: e.repo ? [e.repo] : [],
+        // Carried through as-is, undefined included: env-split-migration.test.mjs
+        // pins the exact record this migration produces.
         error: e.error
       }
     }
@@ -471,9 +515,9 @@ export async function readSessions(ws: string, task: string): Promise<PersistedS
     // Pre-multirepo records carried a single `repo?: string` field; fold it
     // into the now-plural `repos`.
     if (!Array.isArray(info.repos)) {
-      const legacyRepo = info.repo as string | undefined
+      const legacyRepo = info['repo'] as string | undefined
       info.repos = legacyRepo ? [legacyRepo] : []
-      delete info.repo
+      delete info['repo']
       migrated = true
     }
     // Pre-roles records inferred the role from the repo count: more than one
@@ -497,9 +541,9 @@ export async function readSessions(ws: string, task: string): Promise<PersistedS
     const c = r.info.container as (SessionInfo['container'] & Record<string, unknown>) | undefined
     if (c) {
       if (!Array.isArray(c.repos)) {
-        const legacyContainerRepo = c.repo as string | undefined
+        const legacyContainerRepo = c['repo'] as string | undefined
         c.repos = legacyContainerRepo ? [legacyContainerRepo] : []
-        delete c.repo
+        delete c['repo']
         migrated = true
       }
       if (c.status !== 'running' && c.status !== 'error') c.status = 'stopped'

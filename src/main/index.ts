@@ -12,6 +12,16 @@ const log = createLogger('app')
 // .icns route only exists once we ship a real bundle).
 const iconPath = path.join(__dirname, '../../resources/icon.png')
 
+/** Hand a URL to the OS browser. Never fatal: the user can still copy the link,
+ *  and an unhandled rejection here would be reported as an app crash. */
+async function openExternal(url: string): Promise<void> {
+  try {
+    await shell.openExternal(url)
+  } catch (e) {
+    log.warn('external.open-failed', { err: e })
+  }
+}
+
 function createWindow(): void {
   const win = new BrowserWindow({
     width: 1440,
@@ -32,27 +42,28 @@ function createWindow(): void {
   // Any link the renderer wants to open in a new window (target="_blank",
   // window.open) goes to the OS browser instead of a second app window.
   win.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url)
+    void openExternal(url)
     return { action: 'deny' }
   })
 
   // Same for in-place navigation (a plain <a href> click): only the app's
   // own page may load in this window, everything else goes to the browser.
   const isAppUrl = (url: string): boolean =>
-    process.env.ELECTRON_RENDERER_URL
-      ? url.startsWith(process.env.ELECTRON_RENDERER_URL)
+    process.env['ELECTRON_RENDERER_URL']
+      ? url.startsWith(process.env['ELECTRON_RENDERER_URL'])
       : url.startsWith('file://')
   win.webContents.on('will-navigate', (event, url) => {
     if (isAppUrl(url)) return
     event.preventDefault()
-    shell.openExternal(url)
+    void openExternal(url)
   })
 
-  if (process.env.ELECTRON_RENDERER_URL) {
-    win.loadURL(process.env.ELECTRON_RENDERER_URL)
-  } else {
-    win.loadFile(path.join(__dirname, '../renderer/index.html'))
-  }
+  const loaded = process.env['ELECTRON_RENDERER_URL']
+    ? win.loadURL(process.env['ELECTRON_RENDERER_URL'])
+    : win.loadFile(path.join(__dirname, '../renderer/index.html'))
+  // Nothing to fall back to if the window's own document fails to load, but a
+  // silent blank window is the worst way to find that out.
+  void loaded.catch((e: unknown) => log.error('internal.fail', { site: 'window-load', err: e }))
 }
 
 /** First record of every run: what this build is, and what it is running on.
@@ -71,7 +82,7 @@ async function logStartBanner(): Promise<void> {
   })
 }
 
-app.whenReady().then(async () => {
+void app.whenReady().then(async () => {
   void logStartBanner()
   if (process.platform === 'darwin') {
     const icon = nativeImage.createFromPath(iconPath)
@@ -80,12 +91,12 @@ app.whenReady().then(async () => {
   // Arm value-based log redaction before anything can spawn a process holding a
   // token, then lift any inline agent secrets into the credential store — both
   // before the IPC surface (and thus getAgents) serves the renderer.
-  await loadSecrets().catch((e) => log.error('internal.fail', { site: 'credential-load', err: e }))
-  await migrateAgentSecrets().catch((e) => log.error('internal.fail', { site: 'agent-secret-migrate', err: e }))
+  await loadSecrets().catch((e: unknown) => log.error('internal.fail', { site: 'credential-load', err: e }))
+  await migrateAgentSecrets().catch((e: unknown) => log.error('internal.fail', { site: 'agent-secret-migrate', err: e }))
   // Reseal any plaintext secret-flagged field left over from before this
   // feature existed (or from a GURT_FORCE_PLAINTEXT run) now that the
   // keystore may be available. Idempotent, so safe to run every start.
-  await sealPlaintextSecrets().catch((e) => log.error('internal.fail', { site: 'credential-seal', err: e }))
+  await sealPlaintextSecrets().catch((e: unknown) => log.error('internal.fail', { site: 'credential-seal', err: e }))
   registerIpc()
   createWindow()
   app.on('activate', () => {

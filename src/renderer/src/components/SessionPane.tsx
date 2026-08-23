@@ -11,6 +11,7 @@ import { Chat } from './Chat'
 import { SessionMenu, deleteSession, duplicateSession } from './SessionActions'
 import { NewSessionModal } from './Sidebar'
 import { VscodeButton } from './VscodeButton'
+import { run } from '../async'
 
 export function SessionPane({
   tree,
@@ -22,9 +23,9 @@ export function SessionPane({
   onDeleted
 }: {
   tree: Tree | null
-  snapshot?: SessionSnapshot
+  snapshot?: SessionSnapshot | undefined
   sessionId: string
-  queuePosition?: number
+  queuePosition?: number | undefined
   log: string[]
   /** Select another session — where a duplicate's fresh draft is handed to. */
   onSelect: (id: string) => void
@@ -96,7 +97,7 @@ function NonStartedPane({
   tree: Tree | null
   snapshot: SessionSnapshot
   sessionId: string
-  queuePosition?: number
+  queuePosition?: number | undefined
   log: string[]
   onSelect: (id: string) => void
   onDeleted: () => void
@@ -166,10 +167,10 @@ function NonStartedPane({
               className="btn btn-primary"
               disabled={!text.trim() || !info.repos.length}
               title={!info.repos.length ? 'pick a repository first (Edit settings)' : undefined}
-              onClick={async () => {
+              onClick={run(async () => {
                 if (text !== info.startPrompt) await window.gurt.sessionEditPrompt(sessionId, text)
-                window.gurt.sessionRun(sessionId).catch((e) => alertDialog(String(e)))
-              }}
+                window.gurt.sessionRun(sessionId).catch((e: unknown) => alertDialog(String(e)))
+              })}
             >
               Run now
             </button>
@@ -177,18 +178,18 @@ function NonStartedPane({
               className="btn"
               disabled={!text.trim() || !info.repos.length}
               title={!info.repos.length ? 'pick a repository first (Edit settings)' : undefined}
-              onClick={async () => {
+              onClick={run(async () => {
                 if (text !== info.startPrompt) await window.gurt.sessionEditPrompt(sessionId, text)
-                window.gurt.sessionEnqueue(sessionId).catch((e) => alertDialog(String(e)))
-              }}
+                window.gurt.sessionEnqueue(sessionId).catch((e: unknown) => alertDialog(String(e)))
+              })}
             >
               Add to queue
             </button>
             <span className="spacer" />
-            <button className="btn" onClick={copy} title="copy these settings and prompt into a new draft">
+            <button className="btn" onClick={run(copy)} title="copy these settings and prompt into a new draft">
               Duplicate
             </button>
-            <button className="btn btn-danger-text" onClick={del}>
+            <button className="btn btn-danger-text" onClick={run(del)}>
               Delete
             </button>
           </div>
@@ -221,15 +222,15 @@ function NonStartedPane({
           <div className="row-buttons">
             <button
               className="btn"
-              onClick={() => window.gurt.sessionCancelQueue(sessionId).catch((e) => alertDialog(String(e)))}
+              onClick={run(() => window.gurt.sessionCancelQueue(sessionId).catch((e: unknown) => alertDialog(String(e))))}
             >
               Cancel
             </button>
             <span className="spacer" />
-            <button className="btn" onClick={copy} title="copy these settings and prompt into a new draft">
+            <button className="btn" onClick={run(copy)} title="copy these settings and prompt into a new draft">
               Duplicate
             </button>
-            <button className="btn btn-danger-text" onClick={del}>
+            <button className="btn btn-danger-text" onClick={run(del)}>
               Delete
             </button>
           </div>
@@ -247,10 +248,10 @@ function NonStartedPane({
               already provisioned. */}
           <div className="row-buttons">
             <span className="spacer" />
-            <button className="btn" onClick={copy} title="copy these settings and prompt into a new draft">
+            <button className="btn" onClick={run(copy)} title="copy these settings and prompt into a new draft">
               Duplicate
             </button>
-            <button className="btn btn-danger-text" onClick={del}>
+            <button className="btn btn-danger-text" onClick={run(del)}>
               Delete
             </button>
           </div>

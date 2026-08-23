@@ -8,6 +8,7 @@ import { alignRows, foldRows, groupBlocks, type Block, type Cell, type Row, type
 import { langOf } from '../syntaxLang'
 import { Modal } from './Modal'
 import { Icon } from './icons'
+import { run } from '../async'
 
 /** Where a not-yet-written comment is being composed. */
 interface Draft {
@@ -79,10 +80,13 @@ export function ReviewModal({
         setReview(r)
         setActive((cur) => cur ?? f[0]?.path ?? null)
       })
-      .catch((e) => live && setError(e instanceof Error ? e.message : String(e)))
+      .catch((e: unknown) => live && setError(e instanceof Error ? e.message : String(e)))
     return () => {
       live = false
     }
+    // Mount-only, and that is the contract: the modal is keyed per (repo,
+    // target) by its caller, so a different review is a different component
+    // instance. ws/task/repo/target cannot change under this one.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -96,10 +100,12 @@ export function ReviewModal({
     window.gurt
       .getDiffPair(ws, task, repo, target, active)
       .then((p) => live && setPair(p))
-      .catch((e) => live && setError(e instanceof Error ? e.message : String(e)))
+      .catch((e: unknown) => live && setError(e instanceof Error ? e.message : String(e)))
     return () => {
       live = false
     }
+    // Only `active` moves: see the mount-only effect above for why the other
+    // four arguments are fixed for this component's lifetime.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active])
 
@@ -167,7 +173,7 @@ export function ReviewModal({
                 <Icon name="lock" size={11} />
                 {locked ? 'locked' : 'unlocked'}
               </span>
-              <button className="btn btn-xs" disabled={busy} onClick={toggleLock}>
+              <button className="btn btn-xs" disabled={busy} onClick={run(toggleLock)}>
                 {locked ? 'Unlock' : 'Lock for review'}
               </button>
             </div>
@@ -184,19 +190,19 @@ export function ReviewModal({
                 draft={draft}
                 canComment={locked}
                 onDraft={setDraft}
-                onSubmit={addComment}
-                onResolve={(id, r) =>
+                onSubmit={run(addComment)}
+                onResolve={run((id, r) =>
                   act(async () => {
                     await window.gurt.resolveReviewComment(ws, task, id, r)
                     await loadReview()
                   })
-                }
-                onDelete={(id) =>
+                )}
+                onDelete={run((id) =>
                   act(async () => {
                     await window.gurt.deleteReviewComment(ws, task, id)
                     await loadReview()
                   })
-                }
+                )}
               />
             )}
           </div>
@@ -222,7 +228,7 @@ export function ReviewModal({
                 ? 'leave a comment or write a prompt first'
                 : 'draft an executor session seeded with these comments'
             }
-            onClick={launch}
+            onClick={run(launch)}
           >
             Launch fix
           </button>
@@ -439,6 +445,7 @@ function SplitDiff({
   const elements: JSX.Element[] = []
   for (let i = 0; i < shown.length; ) {
     const row = shown[i]
+    if (!row) break
     if (row.kind === 'fold') {
       elements.push(
         <div key={`f${row.at}`} className="split-fold" onClick={() => onExpand(row.at)}>

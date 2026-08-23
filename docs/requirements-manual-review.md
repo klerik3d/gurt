@@ -1,6 +1,6 @@
 # Requirements: manual review (split diff, comments, launch-fix, review lock)
 
-Status: implemented · Owner: klerik3d · Target: gurt Electron MVP (this repo)
+Status: implemented · Target: gurt Electron MVP (this repo)
 
 This document is a work order for an implementing agent. Read `README.md`
 first. Follow-up to `docs/requirements-changes-thread.md` (the Changes

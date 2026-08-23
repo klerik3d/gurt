@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { JSX } from 'react'
 import type { AgentInstance, AgentsFile, EnvConfig, RepoConfig, Tree } from '../../../shared/types'
 import type { EnvImageStatus } from '../../../shared/api'
@@ -16,10 +16,11 @@ import type { NotificationPrefs, NotificationType } from '../../../shared/notifi
 import { AGENT_DEFS, agentDef } from '../../../shared/agents'
 import { refreshAgents } from '../useAgents'
 import { useOutsideClose } from '../hooks'
-import { alertDialog, confirmDialog } from '../dialog'
-import { Icon, Dot } from './icons'
+import { confirmDialog } from '../dialog'
+import { Icon } from './icons'
 import { AgentTag, agentIcon } from './tags'
 import { Modal } from './Modal'
+import { run } from '../async'
 
 export type SettingsSection =
   | 'general'
@@ -63,7 +64,7 @@ export function SettingsPage({
               className={`set-nav-item ${section === s ? 'active' : ''}`}
               onClick={() => onSection(s)}
             >
-              {s[0].toUpperCase() + s.slice(1)}
+              {s.slice(0, 1).toUpperCase() + s.slice(1)}
             </div>
           ))}
         </div>
@@ -98,20 +99,26 @@ function EnvironmentsSection({ tree, ws }: { tree: Tree | null; ws: string | nul
   const envs = wsData?.envs ?? []
   const repos = wsData?.repos ?? []
 
-  const loadStatus = (env: string) => {
-    if (!ws) return
-    window.gurt
-      .envImageStatus(ws, env)
-      .then((s) => setStatuses((prev) => ({ ...prev, [env]: s })))
-      .catch(() => {})
-  }
+  // Memoized on `ws` alone — the only thing it closes over — so the effect
+  // below can name it as a dependency instead of suppressing it.
+  const loadStatus = useCallback(
+    (env: string) => {
+      if (!ws) return
+      window.gurt
+        .envImageStatus(ws, env)
+        .then((s) => setStatuses((prev) => ({ ...prev, [env]: s })))
+        .catch(() => {})
+    },
+    [ws]
+  )
 
   // Badges load lazily when the section opens; refreshed per-env after a build.
+  // `envNames` is a joined string, not the array: the env list is rebuilt on
+  // every render, and only its *contents* should re-trigger the load.
   const envNames = envs.map((e) => e.name).join('\n')
   useEffect(() => {
     for (const name of envNames ? envNames.split('\n') : []) loadStatus(name)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ws, envNames])
+  }, [envNames, loadStatus])
 
   // Build-log tail: main streams `provision.log` with key `env-build:<ws>/<env>`.
   useEffect(() => {
@@ -243,7 +250,7 @@ function EnvModal({
 }: {
   ws: string
   repos: RepoConfig[]
-  initial?: EnvConfig
+  initial?: EnvConfig | undefined
   onClose: () => void
 }) {
   const editing = !!initial
@@ -271,12 +278,14 @@ function EnvModal({
   // The devcontainer is the single runtime description; the Dockerfile section
   // exists only while the (parseable) config carries a `build` section.
   const hasBuild = !!parseEnvDevcontainer(devcontainer).build
+  // Built by spread rather than by writing `undefined`: this is the record that
+  // gets saved, and a key carrying nothing would be stored as one.
   const draft: EnvConfig = {
     name: name.trim(),
     devcontainer,
-    dockerfile: hasBuild && dockerfile ? dockerfile : undefined,
-    dockerfilePath: hasBuild && dockerfile ? dockerfilePath || undefined : undefined,
-    repo: repo ?? undefined
+    ...(hasBuild && dockerfile ? { dockerfile } : {}),
+    ...(hasBuild && dockerfile && dockerfilePath ? { dockerfilePath } : {}),
+    ...(repo ? { repo } : {})
   }
   const cfgError = validateEnvConfig(draft)
   const valid = !!name.trim() && cfgError === null
@@ -314,11 +323,12 @@ function EnvModal({
     try {
       const found = await window.gurt.discoverDockerfiles(ws, repo)
       setDockerfileCandidates(found)
+      const [single] = found
       if (found.length === 0) setDockerfileMsg('no Dockerfile found in repo')
-      else if (found.length === 1) {
-        setDockerfilePath(found[0].path)
-        setDockerfile(found[0].content)
-        setDockerfileMsg(`loaded ${found[0].path}`)
+      else if (single && found.length === 1) {
+        setDockerfilePath(single.path)
+        setDockerfile(single.content)
+        setDockerfileMsg(`loaded ${single.path}`)
       } else {
         setDockerfileMsg(`${found.length} candidates — pick one below`)
       }
@@ -427,7 +437,7 @@ function EnvModal({
               className="btn-link mono"
               disabled={!repoUrl || discovering}
               title={!repoUrl ? 'set a default repository first' : undefined}
-              onClick={discover}
+              onClick={run(discover)}
             >
               {discovering ? 'detecting…' : '⤢ detect from repo'}
             </button>
@@ -452,7 +462,7 @@ function EnvModal({
                 className="btn-link mono"
                 disabled={!repoUrl || detectingDockerfiles}
                 title={!repoUrl ? 'set a default repository first' : undefined}
-                onClick={detectDockerfiles}
+                onClick={run(detectDockerfiles)}
               >
                 {detectingDockerfiles ? 'detecting…' : '⤢ detect Dockerfiles in repo'}
               </button>
@@ -510,7 +520,7 @@ function EnvModal({
       </div>
       <div className="modal-foot">
         {editing && (
-          <button className="btn btn-danger-text" onClick={del}>
+          <button className="btn btn-danger-text" onClick={run(del)}>
             Delete
           </button>
         )}
@@ -518,7 +528,7 @@ function EnvModal({
         <button className="btn" onClick={onClose}>
           Cancel
         </button>
-        <button className="btn btn-primary" disabled={!valid} onClick={save}>
+        <button className="btn btn-primary" disabled={!valid} onClick={run(save)}>
           Save
         </button>
       </div>
@@ -583,7 +593,7 @@ function RepoModal({
   onClose
 }: {
   ws: string
-  initial?: RepoConfig
+  initial?: RepoConfig | undefined
   onClose: () => void
 }) {
   const editing = !!initial
@@ -604,7 +614,7 @@ function RepoModal({
   const draft: RepoConfig = {
     name: name.trim(),
     url: url.trim(),
-    credentialId: credentialId || undefined
+    ...(credentialId ? { credentialId } : {})
   }
 
   const linked = credentials.find((c) => c.id === credentialId)
@@ -725,7 +735,7 @@ function RepoModal({
       </div>
       <div className="modal-foot">
         {editing && (
-          <button className="btn btn-danger-text" onClick={del}>
+          <button className="btn btn-danger-text" onClick={run(del)}>
             Delete
           </button>
         )}
@@ -733,7 +743,7 @@ function RepoModal({
         <button className="btn" onClick={onClose}>
           Cancel
         </button>
-        <button className="btn btn-primary" disabled={!valid} onClick={save}>
+        <button className="btn btn-primary" disabled={!valid} onClick={run(save)}>
           Save
         </button>
       </div>
@@ -853,7 +863,7 @@ function highlightJson(src: string): JSX.Element[] {
       )
     last = re.lastIndex
   }
-  if (last < src.length) out.push(<span key={k++}>{src.slice(last)}</span>)
+  if (last < src.length) out.push(<span key={k}>{src.slice(last)}</span>)
   return out
 }
 
@@ -897,7 +907,7 @@ function ClientsSection() {
   const [error, setError] = useState('')
 
   const load = () => {
-    window.gurt.getAgents().then(setAgents).catch((e) => setError(String(e)))
+    window.gurt.getAgents().then(setAgents).catch((e: unknown) => setError(String(e)))
     window.gurt.getCredentials().then((f) => setCredentials(f.credentials)).catch(() => {})
   }
   useEffect(load, [])
@@ -944,7 +954,8 @@ function ClientsSection() {
       setError('label must not be empty')
       return
     }
-    const inst: AgentInstance = { ...draft, env: textToEnv(draftEnv) }
+    const env = textToEnv(draftEnv)
+    const inst: AgentInstance = { ...draft, ...(env ? { env } : {}) }
     const out: AgentsFile = {}
     const taken = new Set(Object.keys(agents).filter((id) => !isTemp(id) && id !== open))
     for (const [id, a] of Object.entries(agents)) {
@@ -1088,7 +1099,7 @@ function ClientsSection() {
                     <button className="btn" onClick={collapse}>
                       Cancel
                     </button>
-                    <button className="btn btn-primary" onClick={save}>
+                    <button className="btn btn-primary" onClick={run(save)}>
                       Save
                     </button>
                   </div>
@@ -1149,8 +1160,9 @@ function ProviderCombo({ value, onPick }: { value: string; onPick: (kind: string
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' && filtered.length) {
-                    onPick(filtered[0].id)
+                  const first = filtered[0]
+                  if (e.key === 'Enter' && first) {
+                    onPick(first.id)
                     setOpen(false)
                   }
                 }}
@@ -1251,7 +1263,7 @@ function NotificationsSection() {
   const [error, setError] = useState('')
 
   useEffect(() => {
-    window.gurt.getNotificationPrefs().then(setPrefs).catch((e) => setError(String(e)))
+    window.gurt.getNotificationPrefs().then(setPrefs).catch((e: unknown) => setError(String(e)))
   }, [])
 
   const toggle = async (type: NotificationType, key: 'inApp' | 'external') => {
@@ -1296,14 +1308,14 @@ function NotificationsSection() {
               <button
                 className={`chip-btn ${p?.inApp ? 'on' : ''}`}
                 disabled={!prefs}
-                onClick={() => toggle(type, 'inApp')}
+                onClick={run(() => toggle(type, 'inApp'))}
               >
                 {p?.inApp ? 'on' : 'off'}
               </button>
               <button
                 className={`chip-btn ${p?.external ? 'on' : ''}`}
                 disabled={!prefs}
-                onClick={() => toggle(type, 'external')}
+                onClick={run(() => toggle(type, 'external'))}
               >
                 {p?.external ? 'on' : 'off'}
               </button>
@@ -1326,9 +1338,9 @@ const textToHosts = (text: string) => text.split(',').map((h) => h.trim()).filte
  *  used as-is. `keyPath` is not secret-flagged and still masked here, purely
  *  for display brevity. */
 function maskedPreview(c: CredentialEntry): string {
-  if (c.data.secret) return c.data.secret
-  if (c.data.keyPath) {
-    const tail = c.data.keyPath.length > 8 ? c.data.keyPath.slice(-4) : ''
+  if (c.data['secret']) return c.data['secret']
+  if (c.data['keyPath']) {
+    const tail = c.data['keyPath'].length > 8 ? c.data['keyPath'].slice(-4) : ''
     return `••••••${tail}`
   }
   return c.kind === 'git-host' ? 'ambient host auth' : '—'
@@ -1361,7 +1373,7 @@ function CredentialsSection() {
         setEntries(f.credentials)
         setPlaintext(!!f.plaintext)
       })
-      .catch((e) => setError(String(e)))
+      .catch((e: unknown) => setError(String(e)))
   }, [])
 
   const expand = (c: CredentialEntry) => {
@@ -1555,9 +1567,9 @@ function CredentialsSection() {
                       />
                     </label>
                   ))}
-                  {draft.kind === 'git-token' && draft.data.gitEmail && (
+                  {draft.kind === 'git-token' && draft.data['gitEmail'] && (
                     <div className="fld-hint">
-                      verified identity: {draft.data.gitName} &lt;{draft.data.gitEmail}&gt;
+                      verified identity: {draft.data['gitName']} &lt;{draft.data['gitEmail']}&gt;
                     </div>
                   )}
                   {isGitKind(draft.kind) && (
@@ -1573,14 +1585,14 @@ function CredentialsSection() {
                   )}
                   {error && <div className="error">{error}</div>}
                   <div className="set-card-foot">
-                    <button className="btn-danger-text" onClick={() => remove(c)}>
+                    <button className="btn-danger-text" onClick={run(() => remove(c))}>
                       Delete
                     </button>
                     <span className="spacer" />
                     <button className="btn" onClick={collapse}>
                       Cancel
                     </button>
-                    <button className="btn btn-primary" onClick={save}>
+                    <button className="btn btn-primary" onClick={run(save)}>
                       Save
                     </button>
                   </div>

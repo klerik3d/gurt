@@ -59,7 +59,7 @@ function isDev(): boolean {
 }
 
 function envLevel(): Level | undefined {
-  const v = (process.env.GURT_LOG ?? '').trim().toLowerCase()
+  const v = (process.env['GURT_LOG'] ?? '').trim().toLowerCase()
   return Object.prototype.hasOwnProperty.call(RANK, v) ? (v as Level) : undefined
 }
 
@@ -99,11 +99,32 @@ function internalFailure(file: string, e: unknown): void {
 
 // --- sanitization & redaction ---------------------------------------------
 
+/**
+ * `String()` for a value that came off the wire (renderer IPC, arbitrary ctx)
+ * and should have been text. An object deliberately lands as its default
+ * '[object Object]' rather than being expanded: everything here is untrusted
+ * and unbounded, and the structured path (ctxValue) is the only place an object
+ * is meant to be walked.
+ */
+function wireText(v: unknown): string {
+  if (typeof v === 'string') return v
+  if (v === null || v === undefined) return ''
+  // Symbols and functions carry their own toString (a function's source, say —
+  // just as caller-controlled as any other string, and truncated the same way).
+  if (typeof v === 'symbol' || typeof v === 'function') return v.toString()
+  if (typeof v === 'number' || typeof v === 'boolean' || typeof v === 'bigint') return String(v)
+  return Object.prototype.toString.call(v)
+}
+
 // Standard ANSI/OSC escape matcher — agent stderr and devcontainer output are
 // full of colour codes, and an OSC sequence can even carry a terminal command.
+// The control characters in both patterns below are the point of them, which is
+// what no-control-regex exists to question.
 const ANSI_RE =
+  // eslint-disable-next-line no-control-regex
   /[\u001B\u009B][[\]()#;?]*(?:(?:[a-zA-Z\d]*(?:;[-a-zA-Z\d/#&.:=?%@~_]*)*)?\u0007|(?:\d{1,4}(?:;\d{0,4})*)?[\dA-PR-TZcf-ntqry=><~])/g
 // Everything below 0x20 except \t \n \r, plus DEL.
+// eslint-disable-next-line no-control-regex
 const CTRL_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g
 /** `scheme://user:pass@host` — the one credential shape that rides in a URL.
  *  Quantifiers are bounded: an unbounded `scheme` + `user` + `pass` run makes
@@ -280,11 +301,11 @@ function errValue(e: unknown, level: Level, budget: CtxBudget): Record<string, u
   const out: Record<string, unknown> = { name, message }
   spend(budget, name.length + message.length)
   if (base.code !== undefined)
-    out.code = typeof base.code === 'number' ? base.code : sanitize(String(base.code))
+    out['code'] = typeof base.code === 'number' ? base.code : sanitize(String(base.code))
   const stack = (e as { stack?: unknown } | null)?.stack
   if (level === 'error' && typeof stack === 'string' && stack) {
     const stackOut = sanitize(truncateForSanitize(stack, MAX_STACK)).slice(0, MAX_STACK)
-    out.stack = stackOut
+    out['stack'] = stackOut
     spend(budget, stackOut.length)
   }
   return out
@@ -330,9 +351,9 @@ function ctxValue(v: unknown, level: Level, depth: number, budget: CtxBudget): u
     if (entries.length > MAX_OBJECT_KEYS) out['…'] = `+${entries.length - MAX_OBJECT_KEYS} more`
     return out
   }
-  // bigint / symbol / function — same bounds as the string path: String() of an
+  // bigint / symbol / function — same bounds as the string path: the text of an
   // exotic value (a function's source, say) is just as caller-controlled.
-  const out = sanitize(truncateForSanitize(String(v), MAX_STRING)).slice(0, MAX_STRING)
+  const out = sanitize(truncateForSanitize(wireText(v), MAX_STRING)).slice(0, MAX_STRING)
   spend(budget, out.length)
   return out
 }
@@ -436,7 +457,7 @@ class Sink {
    *  fs calls (see `prepare`), and the logger must never throw — a failure
    *  disables the sink exactly like a synchronous one would via `fail()`. */
   private kick(): void {
-    this.drain().catch((e) => {
+    this.drain().catch((e: unknown) => {
       this.draining = false
       this.fail(e)
     })
@@ -993,10 +1014,10 @@ export function logRenderer(level: unknown, scope: unknown, msg: unknown, ctx?: 
     }
     const safeCtx =
       ctx && typeof ctx === 'object' && !Array.isArray(ctx)
-        ? truncateCtxStrings(ctx as object)
+        ? truncateCtxStrings(ctx)
         : undefined
-    const safeMsg = truncateForSanitize(String(msg ?? ''), RECORD_MAX)
-    emit('r', lvl, scopeName(String(scope ?? ''), 'renderer'), safeMsg, safeCtx, rendererTs(ts))
+    const safeMsg = truncateForSanitize(wireText(msg), RECORD_MAX)
+    emit('r', lvl, scopeName(wireText(scope), 'renderer'), safeMsg, safeCtx, rendererTs(ts))
   } catch (e) {
     internalFailure('gurt.log', e)
   }

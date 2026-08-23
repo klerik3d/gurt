@@ -48,6 +48,7 @@ fs.writeFileSync(
 
 const require = createRequire(path.join(APP_DIR, 'package.json'))
 const { _electron } = require('playwright-core')
+const electronPath = require('electron') // path string to the electron binary
 
 const env = { ...process.env, GURT_ROOT, GURT_FORCE_PLAINTEXT: '1' }
 delete env.ELECTRON_RUN_AS_NODE
@@ -60,7 +61,7 @@ delete env.ELECTRON_RENDERER_URL
 const app = await _electron.launch({
   executablePath:
     process.env.ELECTRON ??
-    path.join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron'),
+    electronPath,
   args: [APP_DIR],
   env,
   timeout: 30000

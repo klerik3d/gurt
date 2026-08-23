@@ -145,6 +145,7 @@ export function createReview(): ReviewManager {
     async resolveComment(ws, task, id, resolved): Promise<void> {
       await edit(ws, task, (f) => {
         const c = f.comments.find((x) => x.id === id)
+        // Cleared, not set to false: an unresolved comment carries no flag.
         if (c) c.resolved = resolved || undefined
       })
     },

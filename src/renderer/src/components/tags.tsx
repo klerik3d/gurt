@@ -90,9 +90,9 @@ export function AgentTag({
   name,
   title
 }: {
-  kind?: string
+  kind?: string | undefined
   name: string
-  title?: string
+  title?: string | undefined
 }): JSX.Element {
   return (
     <span className="tag tag-ico" title={title ?? name}>
@@ -103,7 +103,13 @@ export function AgentTag({
 }
 
 /** Unpilled agent mark for inline mentions (chat header, session list, palette). */
-export function AgentMark({ kind, name }: { kind?: string; name: string }): JSX.Element {
+export function AgentMark({
+  kind,
+  name
+}: {
+  kind?: string | undefined
+  name: string
+}): JSX.Element {
   return (
     <span className="agent-mark">
       <Icon name={agentIcon(kind)} size={11} className="faint" />

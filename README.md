@@ -1,10 +1,44 @@
 # gurt
 
-Electron MVP: a local-first manager for dev environments and coding agents.
-Concept background lives in [CONCEPT.md](CONCEPT.md) (the Go stack described
-there is archived in `archive/`; the model mostly still applies).
+A local-first manager for dev environments and coding agents, built as an
+Electron app. The name "gurt" is a transcription of the Ukrainian word «гурт»
+("group").
+
+Platforms: **macOS and Linux are the primary platforms; Windows is a candidate
+(untested)**. Development happens in the devcontainer (see below).
+
+## Project layout
+
+Where to look in the code (the domain model itself is described below):
+
+- `src/main/` — the Electron main process, the app's core (Node side):
+  provisioning, ACP, git access, the MCP servers, persistence.
+- `src/preload/` — the preload bridge: derives `window.gurt` from the shared
+  API definition and exposes it to the renderer.
+- `src/renderer/` — the React UI (renderer process).
+- `src/shared/` — types shared by main and renderer, including the IPC
+  contract.
+
+```
+renderer (React)  ⇄  preload (window.gurt)  ⇄  main (kernel)
+        src/renderer/       src/preload/         src/main/
+                    └── src/shared/api.ts ──┘
+```
+
+Entry point and main flow: `package.json` `"main": "out/main/index.js"` is the
+build of `src/main/index.ts`, which calls `registerIpc()` (`src/main/ipc.ts`);
+that in turn builds the app core via `createKernel()` (`src/main/kernel.ts`).
+`src/shared/api.ts` is the single source of truth for IPC — adding a method
+there is the whole wiring, main and preload both derive from it.
+`src/main/sessions.ts` is the heart of the session lifecycle
+(start/stop/queue/persistence).
+
+Historical specs and design notes live in [docs/](docs/README.md).
 
 ## Model
+
+All gurt metadata lives outside the repositories, under `~/.gurt/` — a working
+tree is never polluted with gurt files.
 
 - **workspace** — top-level divider, a directory in `~/.gurt/<ws>/`
 - **repo** — registered per workspace: git URL + optional credential link;
@@ -102,6 +136,12 @@ scheduler runs once after sessions are restored. A failed start drops the
 session back to draft with the error shown, and does not block the queue.
 
 ## How a session starts
+
+Provisioning wraps the official `@devcontainers/cli` rather than driving Docker
+itself: features are injected via `--additional-features`, the stored env config
+via `--override-config`, identity labels via `--id-label`, secrets via
+`--remote-env`. Only container discovery and stop go through the docker CLI —
+with the Docker labels as the source of truth (hence the reconcile at boot).
 
 1. clone repo into `~/.gurt/<ws>/<task>/<repo>/` (if missing), branch `gurt/<task>`
 2. when the env's devcontainer has a `build` section, the image is built first:
@@ -232,15 +272,15 @@ The full docker-provisioning smokes are heavy nested-in-nested; the UI-only
 ```bash
 npm run build
 SCRATCH=/tmp/gurt-smoke node scripts/smoke.mjs    # UI only, no docker
-SCRATCH=/tmp/gurt-smoke node scripts/smoke2.mjs   # provisioning + ACP session
-SCRATCH=/tmp/gurt-smoke node scripts/smoke3.mjs   # session persistence across restart
-SCRATCH=/tmp/gurt-smoke node scripts/smoke4.mjs   # CRUD + stop/delete + codex handshake
-SCRATCH=/tmp/gurt-smoke node scripts/smoke5.mjs   # codex-in-gurt handshake
-SCRATCH=/tmp/gurt-smoke node scripts/smoke6.mjs   # session queue: draft/serialization/restart
-SCRATCH=/tmp/gurt-smoke node scripts/smoke7.mjs   # Changes panel delivery thread, no docker (local bare repos)
-SCRATCH=/tmp/gurt-smoke node scripts/smoke8.mjs   # native git access: credentials CRUD + resolution + composer toggle, no docker
+SCRATCH=/tmp/gurt-smoke node scripts/smoke-provisioning.mjs   # provisioning + ACP session
+SCRATCH=/tmp/gurt-smoke node scripts/smoke-persistence.mjs    # session persistence across restart
+SCRATCH=/tmp/gurt-smoke node scripts/smoke-crud.mjs           # CRUD + stop/delete + codex handshake
+SCRATCH=/tmp/gurt-smoke node scripts/smoke-codex.mjs          # codex-in-gurt handshake
+SCRATCH=/tmp/gurt-smoke node scripts/smoke-queue.mjs          # session queue: draft/serialization/restart
+SCRATCH=/tmp/gurt-smoke node scripts/smoke-changes.mjs        # Changes panel delivery thread, no docker (local bare repos)
+SCRATCH=/tmp/gurt-smoke node scripts/smoke-git-access.mjs     # native git access: credentials CRUD + resolution + composer toggle, no docker
 # turn contract end-to-end (docker + a working claude secret; SKIPs without one):
-SCRATCH=/tmp/gurt-smoke GURT_SMOKE_CLAUDE_TOKEN=… node scripts/smoke9.mjs
+SCRATCH=/tmp/gurt-smoke GURT_SMOKE_CLAUDE_TOKEN=… node scripts/smoke-turn-contract.mjs
 node scripts/smoke-delete-row.mjs                 # sidebar Del/⌫: confirm, delete, move the selection, no docker
 node scripts/smoke-session-copy.mjs               # duplicate/delete from the row actions and the pane menu, no docker
 node scripts/smoke-roles.mjs                      # session roles: the picker, the repo select it drives, persistence, no docker
