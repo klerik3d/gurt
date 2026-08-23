@@ -864,6 +864,13 @@ export async function devcontainerUp(
     'up',
     '--workspace-folder', workspaceFolder,
     '--additional-features', JSON.stringify(features),
+    // The CLI writes its feature lockfile to `<workspaceFolder>/.devcontainer/
+    // devcontainer-lock.json` by default since 0.87 — a directory that only
+    // exists when the workspace folder is itself a repo checkout that already
+    // has one. Neither the mounted wrapper dir nor a bare clone without a
+    // `.devcontainer/` of its own has it, so `up` failed there with ENOENT.
+    // Nothing here reads the lockfile back, so disable it outright.
+    '--no-lockfile',
     ...idLabelArgs(session),
     ...mountConfigArgs
   ]
