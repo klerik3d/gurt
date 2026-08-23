@@ -218,7 +218,7 @@ spawns it as a child process — only Electron's own fs can read from an asar.
 
 ## Dev container
 
-`.devcontainer/` provides a Node 20 environment for working on gurt itself.
+`.devcontainer/` provides a Node 22 environment for working on gurt itself.
 Because gurt provisions *child* dev containers at runtime, the container ships
 **Docker-in-Docker** (the inner daemon shares its filesystem, so clones under
 `GURT_ROOT` bind-mount into the children). Electron runs headless on an Xvfb

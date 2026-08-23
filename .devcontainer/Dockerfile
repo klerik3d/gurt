@@ -1,5 +1,5 @@
-# Node 20 toolchain (matches the version gurt is developed against) + git.
-FROM mcr.microsoft.com/devcontainers/typescript-node:20
+# Node 22 toolchain (matches the version gurt is developed against) + git.
+FROM mcr.microsoft.com/devcontainers/typescript-node:22
 
 # Runtime libraries Electron needs to launch (headless via Xvfb). Playwright's
 # _electron.launch used by the smoke scripts, and `electron-vite dev`, both
