@@ -275,16 +275,20 @@ export function buildGurtHttpServer(token: string, hooks: GurtHooks): Server {
       // No `sessionIdGenerator` = stateless, which is what a fresh server per
       // POST wants (the SDK reads an absent generator exactly that way).
       const transport = new StreamableHTTPServerTransport({ enableJsonResponse: true })
-      res.on('close', () => {
-        void transport.close()
-        void server.close()
-      })
       // The SDK's transport class does not satisfy its own `Transport`
       // interface under exactOptionalPropertyTypes — it declares `onclose?:
       // () => void`, which reads back as `(() => void) | undefined`. The two
       // types are otherwise identical; this is the flag's cost at a
       // third-party boundary, not a widening of ours.
       await server.connect(transport as Transport)
+      // Registered only after connect: a client aborting mid-connect would
+      // otherwise close the transport under `handleRequest`'s feet. The close
+      // promises are caught — a rejection here has nowhere better to go than
+      // the log, never the global unhandled-rejection hook.
+      res.on('close', () => {
+        transport.close().catch(() => {})
+        server.close().catch(() => {})
+      })
       await transport.handleRequest(req, res)
     } catch (e) {
       log.error('internal.fail', { site: 'mcp-handler', id: 'gurt', err: e })
@@ -314,9 +318,15 @@ const running = new Map<string, RunningGurt>()
 
 function listen(server: Server): Promise<number> {
   return new Promise((resolve, reject) => {
+    server.once('error', reject)
     // 0.0.0.0 (not loopback) so the container can reach it via host.docker.internal.
-    server.listen(0, '0.0.0.0', () => resolve((server.address() as AddressInfo).port))
-    server.on('error', reject)
+    server.listen(0, '0.0.0.0', () => {
+      // The startup reject is done its job; a *runtime* server error after this
+      // would otherwise call a settled promise's reject and vanish.
+      server.removeListener('error', reject)
+      server.on('error', (e) => log.error('internal.fail', { site: 'gurt-server', err: e }))
+      resolve((server.address() as AddressInfo).port)
+    })
   })
 }
 
@@ -372,6 +382,9 @@ export function stopGurtServer(sessionId: string): void {
   const rec = running.get(sessionId)
   if (!rec) return
   rec.http.close()
+  // `close()` only stops new connections — a keep-alive socket would keep the
+  // listener alive past the session it served.
+  rec.http.closeAllConnections()
   log.info('mcp.stop', { id: 'gurt', s: sessionId, mode: rec.hooks.role, port: rec.port })
   running.delete(sessionId)
 }

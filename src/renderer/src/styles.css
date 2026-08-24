@@ -611,6 +611,27 @@ textarea.input {
   align-items: center;
   gap: 6px;
 }
+/* Startup progress: shown while main is still restoring sessions and
+   reconciling containers (session starts wait on it). */
+.foot-boot {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.foot-boot-track {
+  width: 90px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--hover);
+  overflow: hidden;
+}
+.foot-boot-fill {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent);
+  transition: width 200ms ease;
+}
 
 .main {
   flex: 1;

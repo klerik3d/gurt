@@ -66,6 +66,12 @@ import { createLogger, errCtx } from './log'
 
 const log = createLogger('sessions')
 
+/** Bound on ACP control-plane calls (initialize, session/new, session/load,
+ *  set_config_option): they answer in seconds when the adapter is healthy, and
+ *  a hung one would otherwise pin the session in `starting` forever. Never
+ *  applied to `session/prompt` — a turn takes as long as it takes. */
+const ACP_REQUEST_TIMEOUT_MS = 60_000
+
 /** A signal-killed child reports `code: null`; keep the exit code non-zero and
  *  shell-conventional (128 + signum) so "it died" is never read as "it exited
  *  cleanly" — `kill -9` on an adapter must show up as 137 in `agent.exit` and
@@ -352,6 +358,14 @@ export function postTurnDecision(o: {
 export class SessionManager {
   /** One ACP adapter per session, held under the session id. */
   private connections = new Map<string, Connection>()
+  /** In-flight adapter spawn per session — concurrent callers (a prompt's
+   *  attach racing a config change's) must share one, or the loser's spawn
+   *  leaks a second adapter process. Same shape as `installsInFlight` in
+   *  containers.ts. */
+  private connectsInFlight = new Map<string, Promise<Connection>>()
+  /** In-flight attach per session, for the same reason one level up: two
+   *  overlapping attaches would each issue their own `session/load`. */
+  private attachesInFlight = new Map<string, Promise<Connection>>()
   private sessions = new Map<string, Session>()
   private persistTimers = new Map<string, NodeJS.Timeout>()
   /** Per agent-instance id, its last-known config surface (models/effort/commands/
@@ -962,7 +976,8 @@ export class SessionManager {
           mcpServers,
           ...(meta ? { _meta: meta } : {})
         },
-        SESSION_NEW_RESULT
+        SESSION_NEW_RESULT,
+        { timeoutMs: ACP_REQUEST_TIMEOUT_MS }
       )
       s.acpSessionId = result.sessionId
       s.modes = result.modes ?? s.modes
@@ -1179,9 +1194,23 @@ export class SessionManager {
    * The session's ACP adapter, spawned on first use. A cached connection is
    * reused only while it still belongs to the session's *current* container: a
    * container that was replaced took its adapter process with it, and the id
-   * comparison is what makes that impossible to miss.
+   * comparison is what makes that impossible to miss. Concurrent callers share
+   * one in-flight spawn — `resolveLaunch` coalesces the container ensure, so
+   * they hold the same launch context.
    */
-  private async connection(s: Session, ctx: LaunchContext): Promise<Connection> {
+  private connection(s: Session, ctx: LaunchContext): Promise<Connection> {
+    const key = s.info.id
+    const cached = this.connections.get(key)
+    if (cached && cached.containerId === ctx.containerId) return Promise.resolve(cached)
+    const inflight = this.connectsInFlight.get(key)
+    if (inflight) return inflight
+    const p = this.connectionUncoalesced(s, ctx)
+    this.connectsInFlight.set(key, p)
+    p.finally(() => this.connectsInFlight.delete(key)).catch(() => {})
+    return p
+  }
+
+  private async connectionUncoalesced(s: Session, ctx: LaunchContext): Promise<Connection> {
     const key = s.info.id
     const existing = this.connections.get(key)
     if (existing && existing.containerId === ctx.containerId) return existing
@@ -1296,20 +1325,31 @@ export class SessionManager {
     peer.onNotification('session/update', (params) => this.onSessionUpdate(params))
     peer.onRequest('session/request_permission', (params) => this.onPermission(params))
 
-    const init = await peer.request(
-      'initialize',
-      {
-        protocolVersion: 1,
-        clientCapabilities: {
-          fs: { readTextFile: false, writeTextFile: false },
-          terminal: false,
-          // Opt in to boolean config options so agents may expose native toggles
-          // (e.g. Claude's "Fast mode") instead of degrading them to a select.
-          session: { configOptions: { boolean: {} } }
-        }
-      },
-      INITIALIZE_RESULT
-    )
+    let init
+    try {
+      init = await peer.request(
+        'initialize',
+        {
+          protocolVersion: 1,
+          clientCapabilities: {
+            fs: { readTextFile: false, writeTextFile: false },
+            terminal: false,
+            // Opt in to boolean config options so agents may expose native toggles
+            // (e.g. Claude's "Fast mode") instead of degrading them to a select.
+            session: { configOptions: { boolean: {} } }
+          }
+        },
+        INITIALIZE_RESULT,
+        { timeoutMs: ACP_REQUEST_TIMEOUT_MS }
+      )
+    } catch (e) {
+      // The process is up but never became an ACP peer (hung, or spoke garbage)
+      // — it would outlive this failed connect as an orphan inside the
+      // container. Its exit is expected: this kill *is* the cleanup.
+      conn.expectedExit = true
+      conn.kill()
+      throw e
+    }
 
     conn.promptCapabilities = init.agentCapabilities?.promptCapabilities
     // The session may have been deleted while the adapter was coming up. Its
@@ -1325,8 +1365,21 @@ export class SessionManager {
     return conn
   }
 
-  /** Reconnect a session: spawn the adapter if needed and session/load. */
-  private async attach(s: Session): Promise<Connection> {
+  /** Reconnect a session: spawn the adapter if needed and session/load.
+   *  Concurrent callers share one in-flight attach — a prompt and a config
+   *  change on a detached session would otherwise both `session/load`. */
+  private attach(s: Session): Promise<Connection> {
+    const cached = this.connections.get(s.info.id)
+    if (cached && s.attached) return Promise.resolve(cached)
+    const inflight = this.attachesInFlight.get(s.info.id)
+    if (inflight) return inflight
+    const p = this.attachUncoalesced(s)
+    this.attachesInFlight.set(s.info.id, p)
+    p.finally(() => this.attachesInFlight.delete(s.info.id)).catch(() => {})
+    return p
+  }
+
+  private async attachUncoalesced(s: Session): Promise<Connection> {
     const existing = this.connections.get(s.info.id)
     if (existing && s.attached) return existing
     // We're going to re-open the session (resolveLaunch wakes the container, then
@@ -1365,7 +1418,8 @@ export class SessionManager {
               cwd: ctx.remoteWorkspaceFolder,
               mcpServers
             },
-            SESSION_LOAD_RESULT
+            SESSION_LOAD_RESULT,
+            { timeoutMs: ACP_REQUEST_TIMEOUT_MS }
           )
           s.modes = result.modes ?? s.modes
           s.configOptions =
@@ -1824,7 +1878,9 @@ export class SessionManager {
       typeof value === 'boolean'
         ? { sessionId: s.acpSessionId, configId, type: 'boolean', value }
         : { sessionId: s.acpSessionId, configId, value }
-    const res = await conn.peer.request('session/set_config_option', params, SET_CONFIG_OPTION_RESULT)
+    const res = await conn.peer.request('session/set_config_option', params, SET_CONFIG_OPTION_RESULT, {
+      timeoutMs: ACP_REQUEST_TIMEOUT_MS
+    })
     const next = normalizeConfigOptions(res.configOptions, this.agentKinds.get(s.info.agent ?? ''))
     if (next) s.configOptions = next
   }

@@ -60,6 +60,7 @@ process.env.GURT_LOG = 'debug'
 const SAFE_ARGS = new Set([
   // Reads. No arguments at all, or a workspace/task/repo/session key.
   'getTree',
+  'getBootProgress',
   'getMcpDefs',
   'getAgents',
   'getAgentConfig',

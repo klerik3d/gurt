@@ -99,6 +99,17 @@ function EnvironmentsSection({ tree, ws }: { tree: Tree | null; ws: string | nul
   const envs = wsData?.envs ?? []
   const repos = wsData?.repos ?? []
 
+  // These maps are keyed by env *name*, which is only unique within one
+  // workspace — switching workspaces must drop them, and a reply that raced
+  // the switch must not land under the new workspace's same-named env.
+  const wsRef = useRef(ws)
+  useEffect(() => {
+    wsRef.current = ws
+    setStatuses({})
+    setBuildLogs({})
+    setBuildErrors({})
+  }, [ws])
+
   // Memoized on `ws` alone — the only thing it closes over — so the effect
   // below can name it as a dependency instead of suppressing it.
   const loadStatus = useCallback(
@@ -106,7 +117,9 @@ function EnvironmentsSection({ tree, ws }: { tree: Tree | null; ws: string | nul
       if (!ws) return
       window.gurt
         .envImageStatus(ws, env)
-        .then((s) => setStatuses((prev) => ({ ...prev, [env]: s })))
+        .then((s) => {
+          if (wsRef.current === ws) setStatuses((prev) => ({ ...prev, [env]: s }))
+        })
         .catch(() => {})
     },
     [ws]

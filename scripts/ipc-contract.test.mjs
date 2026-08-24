@@ -222,7 +222,8 @@ try {
     'onProvisionLog',
     'onNotification',
     'onNotificationRead',
-    'onUsageChanged'
+    'onUsageChanged',
+    'onBootProgress'
   ])
   const extra = Object.keys(api).filter((k) => !apiSet.has(k) && !NON_METHOD_KEYS.has(k))
   assert.deepEqual(extra, [], `window.gurt exposes keys that are neither API methods nor known event hooks: ${extra}`)

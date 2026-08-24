@@ -32,6 +32,11 @@ import type { NotificationPrefs, NotificationRecord } from './notifications'
 
 export type CreateAction = 'run' | 'queue' | 'draft'
 
+/** Where the boot restore currently is — what the footer's startup bar shows.
+ *  `done` flips once the kernel is ready (or its restore failed; the app is
+ *  usable either way). */
+export type BootProgress = DomainEvents['boot.progress']
+
 /** Image state of a saved env config, shown as a badge in Settings. */
 export interface EnvImageStatus {
   state:
@@ -242,6 +247,9 @@ export interface GurtApi {
    *  in main. Calling this may poll the network; it never rejects for a failed
    *  poll — the record carries `error` and the previous windows. */
   getPlanUsage(): Promise<Record<string, PlanUsage>>
+  /** Current boot-restore progress — the pull for a window that opened after
+   *  some `boot-progress` pushes already fired. */
+  getBootProgress(): Promise<BootProgress>
 }
 
 /** Compile-checked to cover `GurtApi` exactly: a missing method fails the
@@ -316,7 +324,8 @@ const METHODS = {
   getNotificationPrefs: true,
   setNotificationPrefs: true,
   getUsage: true,
-  getPlanUsage: true
+  getPlanUsage: true,
+  getBootProgress: true
 } as const satisfies Record<keyof GurtApi, true>
 
 /** Runtime method list; `api:<method>` is the IPC channel per entry. */
@@ -337,4 +346,6 @@ export interface GurtEvents {
   'notification-read': DomainEvents['notification.read']
   /** A turn was filed (or the ledger pruned) — the dashboard refetches. */
   'usage-changed': DomainEvents['usage.changed']
+  /** Boot restore progress — the footer's startup bar (see `BootProgress`). */
+  'boot-progress': DomainEvents['boot.progress']
 }

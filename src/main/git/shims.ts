@@ -168,15 +168,24 @@ process.stdin.on('end', () => {
 export const hostBinDir = (): string => path.join(gurtRoot, 'bin')
 export const hostCredHelperPath = (): string => path.join(hostBinDir(), 'gurt-credential-host.cjs')
 
-let hostHelperWritten = false
+/** The in-flight (or completed) materialization, not a done-flag: concurrent
+ *  first callers must share one write — two unserialized `writeFile`s into the
+ *  same path can hand a third caller a half-written helper to spawn. Same
+ *  shape as broker.ts's `hostBroker`. */
+let hostHelper: Promise<string> | null = null
 
 /** Materialize the host credential helper (idempotent per app run) and return its path. */
-export async function ensureHostCredHelper(): Promise<string> {
-  const file = hostCredHelperPath()
-  if (!hostHelperWritten) {
-    await fs.mkdir(hostBinDir(), { recursive: true })
-    await fs.writeFile(file, HOST_CRED_HELPER)
-    hostHelperWritten = true
+export function ensureHostCredHelper(): Promise<string> {
+  if (!hostHelper) {
+    hostHelper = (async () => {
+      const file = hostCredHelperPath()
+      await fs.mkdir(hostBinDir(), { recursive: true })
+      await fs.writeFile(file, HOST_CRED_HELPER)
+      return file
+    })().catch((e: unknown) => {
+      hostHelper = null // a failed write must not poison every later call
+      throw e
+    })
   }
-  return file
+  return hostHelper
 }

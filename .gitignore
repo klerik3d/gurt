@@ -5,6 +5,13 @@ release/
 *.log
 .DS_Store
 
+# Regenerated on every `devcontainer up` since @devcontainers/cli 0.87 made
+# lockfile generation the default; whatever launches this container passes its
+# own features via --additional-features, which the CLI (rightly, since 0.86.1)
+# excludes from the lockfile it writes here, so every session's `up` rewrites
+# this file relative to whatever committed version came before it as noise.
+.devcontainer/devcontainer-lock.json
+
 tmp
 archive/
 smoke-shots/

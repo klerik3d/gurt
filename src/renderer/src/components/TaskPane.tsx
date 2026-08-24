@@ -187,8 +187,10 @@ function ChangesSection({
   const [locks, setLocks] = useState<Record<string, boolean>>({})
   /** repo -> last action error, rendered inline in its group. */
   const [errors, setErrors] = useState<Record<string, string>>({})
-  /** repo with an action in flight — its buttons are disabled. */
-  const [busyRepo, setBusyRepo] = useState<string | null>(null)
+  /** Repos with an action in flight — their buttons are disabled. A set, not a
+   *  single slot: with several repos, action A finishing must not re-enable
+   *  repo B's buttons while B's own action is still running. */
+  const [busyRepos, setBusyRepos] = useState<Set<string>>(new Set())
 
   // A repo renders while it has work to do, work awaiting merge, or is behind
   // its default branch; an integrated thread with nothing behind is gone from
@@ -201,14 +203,18 @@ function ChangesSection({
   const only = rendered.length === 1 ? rendered[0] : undefined
 
   const act = async (repo: string, fn: () => Promise<void>) => {
-    setBusyRepo(repo)
+    setBusyRepos((prev) => new Set(prev).add(repo))
     setErrors((prev) => ({ ...prev, [repo]: '' }))
     try {
       await fn()
     } catch (e) {
       setErrors((prev) => ({ ...prev, [repo]: e instanceof Error ? e.message : String(e) }))
     } finally {
-      setBusyRepo(null)
+      setBusyRepos((prev) => {
+        const next = new Set(prev)
+        next.delete(repo)
+        return next
+      })
       onRefresh()
     }
   }
@@ -241,7 +247,7 @@ function ChangesSection({
         {only && (
           <button
             className="btn btn-sm"
-            disabled={busyRepo === only.repo}
+            disabled={busyRepos.has(only.repo)}
             onClick={run(() => openVscode(only.repo))}
           >
             Open in VS Code
@@ -258,7 +264,7 @@ function ChangesSection({
               <span className="spacer" />
               <button
                 className="btn btn-xs"
-                disabled={busyRepo === r.repo}
+                disabled={busyRepos.has(r.repo)}
                 onClick={run(() => openVscode(r.repo))}
               >
                 Open in VS Code
@@ -289,7 +295,7 @@ function ChangesSection({
               <div className="changes-actions">
                 <button
                   className="btn btn-sm"
-                  disabled={busyRepo === r.repo}
+                  disabled={busyRepos.has(r.repo)}
                   onClick={() => setCommitRepo(r.repo)}
                 >
                   Commit
@@ -317,7 +323,7 @@ function ChangesSection({
               <div className="changes-actions">
                 <button
                   className="btn btn-sm"
-                  disabled={busyRepo === r.repo || r.conflicted}
+                  disabled={busyRepos.has(r.repo) || r.conflicted}
                   title={r.conflicted ? 'resolve the conflicts below, then commit' : undefined}
                   onClick={run(() =>
                     act(r.repo, () => window.gurt.changesUpdateFromMain(ws, task, r.repo))
@@ -354,7 +360,7 @@ function ChangesSection({
               <div className="changes-actions">
                 <button
                   className="btn btn-sm"
-                  disabled={!r.commits.some((c) => !c.pushed) || busyRepo === r.repo}
+                  disabled={!r.commits.some((c) => !c.pushed) || busyRepos.has(r.repo)}
                   onClick={run(() => act(r.repo, () => window.gurt.changesPush(ws, task, r.repo)))}
                 >
                   Push
@@ -362,7 +368,7 @@ function ChangesSection({
                 {r.prUrl && (
                   <button
                     className="btn btn-sm"
-                    disabled={busyRepo === r.repo}
+                    disabled={busyRepos.has(r.repo)}
                     onClick={run(() => act(r.repo, () => window.gurt.changesOpenPr(ws, task, r.repo)))}
                   >
                     Create PR

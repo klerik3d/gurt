@@ -91,18 +91,23 @@ function makePeer(sessionId) {
   const writes = []
   const child = Object.assign(new EventEmitter(), {
     stdout: new EventEmitter(),
-    stdin: {
+    // stdin is an EventEmitter too: the peer subscribes to its 'error' so that
+    // an EPIPE write into a dead adapter's pipe reaches onFatal instead of
+    // throwing uncaught. A plain `{ write }` sink would have no `.on`.
+    stdin: Object.assign(new EventEmitter(), {
       write(line) {
         writes.push(line)
         return true
       }
-    }
+    })
   })
   const fatal = []
   const peer = new m.JsonRpcPeer(child, (e) => fatal.push(e), sessionId)
   return {
     peer,
     fatal,
+    /** The fake child itself — for raising stream-level failures. */
+    child,
     /** Raw lines the peer wrote to the child's stdin. */
     writes,
     /** Those lines, parsed. */
@@ -360,6 +365,18 @@ try {
     h.fail(boom)
     assert.deepEqual(h.fatal, [boom], 'a child `error` reaches onFatal')
     console.log('close rejects pending requests, error reaches onFatal OK')
+  }
+
+  // A write into a dead adapter's pipe raises 'error' on the stdin *stream*,
+  // not on the process. Unlistened it is an uncaught exception, which takes the
+  // whole app down — so the peer must route it to onFatal like a child error.
+  {
+    const h = makePeer('s12')
+    const epipe = Object.assign(new Error('write EPIPE'), { code: 'EPIPE' })
+    h.child.stdin.emit('error', epipe)
+    await drain()
+    assert.deepEqual(h.fatal, [epipe], 'an EPIPE on the stdin stream reaches onFatal, uncaught by no one')
+    console.log('a stdin stream error reaches onFatal, not the uncaught handler OK')
   }
 
   // ------------------------------------------------------- issuePaths alone

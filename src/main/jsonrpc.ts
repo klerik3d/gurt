@@ -69,6 +69,11 @@ export class JsonRpcPeer {
       this.pending.clear()
     })
     child.on('error', (e) => this.onFatal(e))
+    // A write into a dead adapter's pipe (EPIPE — e.g. a cancel sent right
+    // after the process crashed) surfaces as an 'error' on the *stream*, not on
+    // the process; without a listener it throws as an uncaught exception and
+    // takes the whole app down.
+    child.stdin.on('error', (e) => this.onFatal(e))
   }
 
   onRequest(method: string, handler: Handler): void {
@@ -85,20 +90,46 @@ export class JsonRpcPeer {
    * checked value — a response that does not match rejects the call instead of
    * seeding an unchecked object into the session state. Callers that ignore the
    * result (`session/set_mode`, …) pass no schema and get `unknown`.
+   *
+   * `timeoutMs` bounds control-plane calls (initialize, session/new, …) whose
+   * answer should come in seconds — an adapter that never answers would
+   * otherwise hold its caller (and the session's `starting` state) forever.
+   * Deliberately never set on `session/prompt`: a turn takes as long as it
+   * takes.
    */
-  request<T>(method: string, params: unknown, schema: z.ZodType<T>): Promise<T>
+  request<T>(method: string, params: unknown, schema: z.ZodType<T>, opts?: { timeoutMs?: number }): Promise<T>
   request(method: string, params: unknown): Promise<unknown>
-  request<T>(method: string, params: unknown, schema?: z.ZodType<T>): Promise<unknown> {
+  request<T>(
+    method: string,
+    params: unknown,
+    schema?: z.ZodType<T>,
+    opts?: { timeoutMs?: number }
+  ): Promise<unknown> {
     const id = this.nextId++
     return new Promise<unknown>((resolve, reject) => {
+      const timer = opts?.timeoutMs
+        ? setTimeout(() => {
+            if (!this.pending.delete(id)) return
+            reject(
+              new Error(
+                `${method}: no response after ${Math.round((opts.timeoutMs ?? 0) / 1000)}s — the agent looks stuck`
+              )
+            )
+          }, opts.timeoutMs)
+        : undefined
+      timer?.unref?.()
       this.pending.set(id, {
         resolve: (v) => {
+          if (timer) clearTimeout(timer)
           if (!schema) return resolve(v)
           const parsed = schema.safeParse(v)
           if (parsed.success) resolve(parsed.data)
           else reject(new Error(`${method}: malformed response (${issuePaths(parsed.error)})`))
         },
-        reject
+        reject: (e) => {
+          if (timer) clearTimeout(timer)
+          reject(e)
+        }
       })
       this.send({ jsonrpc: '2.0', id, method, params })
     })

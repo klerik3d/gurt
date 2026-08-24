@@ -4,7 +4,7 @@
 // tests).
 import type { DiffTarget, ReviewState, Tree } from '../shared/types'
 import { isSessionRole, targetKey } from '../shared/types'
-import type { SessionDraftPatch } from '../shared/api'
+import type { BootProgress, SessionDraftPatch } from '../shared/api'
 import { NOTIFICATION_DEFAULTS } from '../shared/notifications'
 import { resolveMcpServers, stopMcpServers } from './mcp/manager'
 import { ensureGurtServer, stopGurtServer } from './mcp/gurtServer'
@@ -45,6 +45,9 @@ export interface Kernel {
    *  one landing mid-setup looks exactly like a container going away. Never
    *  rejects — a failed restore is logged, not thrown. */
   ready: Promise<void>
+  /** Where the boot restore currently is — the pull behind `getBootProgress`,
+   *  for a window that opened after some `boot.progress` events already fired. */
+  bootProgress(): BootProgress
   notifications: Notifications
   /** Per-turn agent accounting — what the dashboard's agent cards read. */
   usage: UsageLedger
@@ -296,42 +299,63 @@ export function createKernel(): Kernel {
     if (status === 'stopped' || status === 'error') sessions.schedule()
   })
 
+  // Mutating IPC waits on `ready` (see ipc.ts), so the wait has to be visible:
+  // each restore step reports a coarse percent + label, mirrored to the
+  // renderer's footer. The latest value is kept so a window opening mid-boot
+  // can pull it instead of waiting for the next event.
+  let lastProgress: BootProgress = { percent: 0, label: 'starting', done: false }
+  const progress = (percent: number, label: string, done = false): void => {
+    lastProgress = { percent: Math.round(percent), label, done }
+    bus.emit('boot.progress', lastProgress)
+  }
+
   async function restoreSessions(): Promise<void> {
+    progress(0, 'loading settings')
     notifications.setPrefs(await store.getNotificationPrefs())
     // Before the scheduler's first pass: a lock taken in a previous run still
     // holds, and a queue resumed past it would start exactly what it excludes.
     await review.load()
     sessions.loadAgentConfigs(await store.getAgentConfigs())
     sessions.loadAgentKinds(await store.getAgents())
+    progress(8, 'reading workspaces')
     const t = await store.buildTree()
+    const allTasks: { ws: string; task: string }[] = []
     for (const ws of t.workspaces)
-      for (const task of ws.tasks) {
-        const restored: RestoredSession[] = []
-        for (const r of await store.readSessions(ws.name, task.name)) {
-          let log = await store.readSessionLog(ws.name, task.name, r.info.id)
-          if (!log.length && r.entries?.length) {
-            // Legacy record carrying entries and no JSONL yet: synthesize the log
-            // once. sessions.json drops the entries on its next regular persist.
-            log = r.entries.map((entry, i) => ({ seq: i + 1, type: 'entry' as const, entry }))
-            await store.appendSessionLog(ws.name, task.name, r.info.id, log)
-          }
-          restored.push({ info: r.info, acpSessionId: r.acpSessionId, proposal: r.proposal, log })
+      for (const task of ws.tasks) allTasks.push({ ws: ws.name, task: task.name })
+    let done = 0
+    for (const { ws, task } of allTasks) {
+      done++
+      progress(10 + (50 * done) / allTasks.length, `restoring sessions (${done}/${allTasks.length})`)
+      const restored: RestoredSession[] = []
+      for (const r of await store.readSessions(ws, task)) {
+        let log = await store.readSessionLog(ws, task, r.info.id)
+        if (!log.length && r.entries?.length) {
+          // Legacy record carrying entries and no JSONL yet: synthesize the log
+          // once. sessions.json drops the entries on its next regular persist.
+          log = r.entries.map((entry, i) => ({ seq: i + 1, type: 'entry' as const, entry }))
+          await store.appendSessionLog(ws, task, r.info.id, log)
         }
-        sessions.restore(restored)
+        restored.push({ info: r.info, acpSessionId: r.acpSessionId, proposal: r.proposal, log })
       }
+      sessions.restore(restored)
+    }
     // Docker is the registry: correct the restored container records against it
     // (and reap orphans) before anything tries to exec into one.
+    progress(60, 'checking containers against Docker')
     await containers.reconcile().catch((e: unknown) => log.error('internal.fail', { site: 'container-reconcile', err: e }))
     // Resume the queue once, after everything is restored: start what can start,
     // then free what the rest is waiting on. Without the second call a queue
     // restored behind a still-running container would never move — nothing has
     // armed an idle timer for that container in this process yet.
+    progress(96, 'resuming queue')
     sessions.schedule()
     reapForQueue()
   }
-  const ready = restoreSessions().catch((e: unknown) =>
-    log.error('internal.fail', { site: 'session-restore', err: e })
-  )
+  const ready = restoreSessions()
+    .catch((e: unknown) => log.error('internal.fail', { site: 'session-restore', err: e }))
+    // Done fires whatever happened — a failed restore is logged and the app is
+    // usable; a footer stuck at 60% would read as a hang.
+    .finally(() => progress(100, 'ready', true))
 
   return {
     bus,
@@ -339,6 +363,7 @@ export function createKernel(): Kernel {
     sessions,
     review,
     ready,
+    bootProgress: () => lastProgress,
     notifications,
     usage,
     planUsage,

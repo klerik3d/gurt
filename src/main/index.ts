@@ -8,6 +8,22 @@ import { gurtRoot } from './store'
 
 const log = createLogger('app')
 
+// One instance only: two processes would share ~/.gurt with none of the
+// in-memory guarantees holding across them — both would reconcile containers,
+// both would write sessions.json/workspace.json, and the repo locks that keep
+// two agents out of one working tree exist per process. The second instance
+// hands focus to the first and leaves.
+if (!app.requestSingleInstanceLock()) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    const win = BrowserWindow.getAllWindows()[0]
+    if (!win) return
+    if (win.isMinimized()) win.restore()
+    win.focus()
+  })
+}
+
 // Bundled app icon; on macOS the dock icon is set at runtime (the packaged
 // .icns route only exists once we ship a real bundle).
 const iconPath = path.join(__dirname, '../../resources/icon.png')

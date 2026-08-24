@@ -22,7 +22,13 @@ import { normalizeNotificationPrefs } from '../shared/notifications'
 const log = createLogger('ipc')
 
 function broadcast(channel: string, ...args: unknown[]): void {
-  for (const win of BrowserWindow.getAllWindows()) win.webContents.send(channel, ...args)
+  // A window mid-close can still be listed while its webContents is already
+  // destroyed; sending there throws (the background poll's usage.changed is
+  // the common trigger).
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed() || win.webContents.isDestroyed()) continue
+    win.webContents.send(channel, ...args)
+  }
 }
 
 /**
@@ -69,6 +75,7 @@ export function registerIpc(): void {
   kernel.bus.on('notification.created', (record) => broadcast('notification', record))
   kernel.bus.on('notification.read', (e) => broadcast('notification-read', e))
   kernel.bus.on('usage.changed', () => broadcast('usage-changed'))
+  kernel.bus.on('boot.progress', (p) => broadcast('boot-progress', p))
 
   // Plan limits move with usage from every Claude surface, not just gurt's own
   // turns — so keep them fresh in the background instead of waiting for the
@@ -209,6 +216,12 @@ export function registerIpc(): void {
       configValues,
       role
     ) => {
+      // Anything that can bring a container up waits out the boot restore: the
+      // reconcile rewrites container records from a pre-start snapshot, and a
+      // container born mid-reconcile can have its record erased — which reads
+      // as "clone free" and lets a second session onto one working tree. The
+      // wait is surfaced by the footer's boot-progress bar.
+      await kernel.ready
       // The session's first persist mkdir -p's its way into the task directory,
       // so a stale or in-flight task name from the renderer would silently
       // recreate a deleted task — a directory with sessions and no `task.json`,
@@ -230,8 +243,15 @@ export function registerIpc(): void {
         role
       )
     },
-    sessionRun: async (id) => kernel.sessions.run(id),
-    sessionEnqueue: async (id) => kernel.sessions.enqueue(id),
+    // Same boot gate as createSession — see the comment there.
+    sessionRun: async (id) => {
+      await kernel.ready
+      kernel.sessions.run(id)
+    },
+    sessionEnqueue: async (id) => {
+      await kernel.ready
+      kernel.sessions.enqueue(id)
+    },
     sessionCancelQueue: async (id) => kernel.sessions.cancelQueue(id),
     sessionEditPrompt: async (id, text) => kernel.sessions.editPrompt(id, text),
     renameSession: async (id, title) => kernel.sessions.renameSession(id, title),
@@ -245,11 +265,18 @@ export function registerIpc(): void {
       kernel.notifications.markSessionRead(id)
       return kernel.sessions.snapshot(id)
     },
-    sessionPrompt: (id, text, context, images) => kernel.sessions.prompt(id, text, context, images),
+    // Prompt and config changes can wake a detached session's container — the
+    // same boot gate as createSession applies.
+    sessionPrompt: async (id, text, context, images) => {
+      await kernel.ready
+      return kernel.sessions.prompt(id, text, context, images)
+    },
     sessionCancel: async (id) => kernel.sessions.cancel(id),
     sessionSetMode: (id, modeId) => kernel.sessions.setMode(id, modeId),
-    sessionSetConfigOption: (id, configId, value) =>
-      kernel.sessions.setConfigOption(id, configId, value),
+    sessionSetConfigOption: async (id, configId, value) => {
+      await kernel.ready
+      return kernel.sessions.setConfigOption(id, configId, value)
+    },
     sessionPermission: async (id, entryId, optionId) =>
       kernel.sessions.respondPermission(id, entryId, optionId),
     sessionActivity: async (id) => kernel.sessions.activity(id),
@@ -277,7 +304,8 @@ export function registerIpc(): void {
       await kernel.usage.ready
       return kernel.usage.list()
     },
-    getPlanUsage: () => kernel.planUsage.get()
+    getPlanUsage: () => kernel.planUsage.get(),
+    getBootProgress: async () => kernel.bootProgress()
   }
 
   // Renderer records: validated, rate-limited and truncated inside `logRenderer`
