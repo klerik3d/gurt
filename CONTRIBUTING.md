@@ -225,3 +225,13 @@ every push and pull request; a PR should be green on all of it:
 
 Running `npm run typecheck`, `npm run lint` and `npm test` locally before
 pushing covers most of it.
+
+## Contributor License Agreement
+
+The project asks every contributor to sign its [CLA](CLA.md) once, on
+their first pull request. The Apache-2.0 license already covers the
+inbound license of a contribution; what the CLA adds is the right for
+the maintainer to relicense the project later. Signing is automated: the
+CLA bot comments on your first PR, and you sign by replying with the
+sentence it quotes. The signature is stored in the `cla-signatures`
+branch and covers all future contributions.
