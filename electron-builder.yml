@@ -35,3 +35,15 @@ mac:
   # Alpha builds are unsigned. They run fine locally; on another Mac the
   # recipient has to clear the download quarantine (see README).
   identity: null
+
+# Linux is built via `npm run dist:linux` (and the release-linux CI job).
+# electron-builder accepts a plain png icon for linux targets.
+linux:
+  icon: resources/icon.png
+  category: Development
+  # deb requires a maintainer contact; package.json has no author field, so it
+  # is set here (the repo owner's GitHub noreply address).
+  maintainer: klerik3d <4738416+klerik3d@users.noreply.github.com>
+  target:
+    - AppImage
+    - deb

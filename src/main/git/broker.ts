@@ -15,7 +15,8 @@ import { createServer, type IncomingMessage, type ServerResponse, type Server } 
 import type { AddressInfo } from 'node:net'
 import { z } from 'zod'
 import type { RepoConfig } from '../../shared/types'
-import { resolveCredential } from '../../shared/credentials'
+import type { CredentialEntry } from '../../shared/credentials'
+import { resolveCredential, credentialIdentity } from '../../shared/credentials'
 import { DEFAULT_TOKEN_USER } from '../../shared/credentials'
 import { canonicalRepoId } from '../../shared/repoId'
 import { listCredentials } from '../credentials'
@@ -224,6 +225,14 @@ export function stopGitBroker(sessionId: string): void {
  *  callers must share one server, so the cache is set before the first await. */
 let hostBroker: Promise<{ url: string }> | null = null
 
+/** Whether an entry's own `hosts` cover `host`. Entries are read the way §3.2's
+ *  verification lookup reads them — canonicalized, bare hosts passing through —
+ *  so a `hosts` field holding a full repo URL still scopes what it names. */
+function coversHost(entry: CredentialEntry, host: string): boolean {
+  const want = host.trim().toLowerCase()
+  return entry.hosts.some((raw) => (canonicalRepoId(raw)?.host ?? raw.trim().toLowerCase()) === want)
+}
+
 /** POST /host/<token>/credential — answer the host helper's git credential
  *  fill for https/http only, scoped to the header-carried entry id + host. */
 async function handleHostCredential(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -239,7 +248,19 @@ async function handleHostCredential(req: IncomingMessage, res: ServerResponse): 
     return
   }
   const entry = (await listCredentials()).find((c) => c.id === credId)
-  if (!entry || entry.kind !== 'git-token' || !entry.data['secret']) {
+  // The same two gates resolveCredential hands the session broker, re-checked
+  // here against the entry itself: §3.2 — a git-token with no stamped identity
+  // is an errored resolution and serves nothing — and the §8 scoping rule, that
+  // a managed helper is answered only for a host this entry covers. The headers
+  // attest a save-time resolution (env.ts), but the broker does not take that
+  // attestation as the only thing standing between a caller and a secret.
+  if (
+    !entry ||
+    entry.kind !== 'git-token' ||
+    !entry.data['secret'] ||
+    !credentialIdentity(entry) ||
+    !coversHost(entry, credHost)
+  ) {
     res.writeHead(204).end()
     return
   }

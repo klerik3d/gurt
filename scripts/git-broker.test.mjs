@@ -516,6 +516,17 @@ test('host broker is loopback + token + header scoped, and serves nothing else',
       what: 'a non-http protocol',
       headers: scoped,
       body: fill({ protocol: 'ssh', host: 'github.com' })
+    },
+    // §3.2 and the §8 scoping rule, re-checked here and not only in env.ts.
+    {
+      what: 'an unverified entry (§3.2), handed by id',
+      headers: { 'x-gurt-cred-id': 'cred-unverified', 'x-gurt-cred-host': 'gitlab.com' },
+      body: fill({ protocol: 'https', host: 'gitlab.com' })
+    },
+    {
+      what: 'an entry whose own hosts do not cover the requested host',
+      headers: { 'x-gurt-cred-id': 'cred-gh', 'x-gurt-cred-host': 'gitlab.com' },
+      body: fill({ protocol: 'https', host: 'gitlab.com' })
     }
   ]) {
     const res = await request(`${hostBroker.url}/credential`, { method: 'POST', headers, body })
@@ -523,13 +534,10 @@ test('host broker is loopback + token + header scoped, and serves nothing else',
     assert.equal(res.body, '', `${what} serves nothing`)
   }
 
-  // Note, deliberately not asserted either way: unlike the session broker,
-  // `handleHostCredential` does not re-check §3.2 — handed the id of an
-  // unverified git-token it would serve that entry's secret. It is not
-  // reachable: the only thing that ever sets GURT_CRED_ID is `hostGitAccess`,
-  // and an unverified entry blocks there instead (asserted above). Pinning the
-  // current 200 here would enshrine a gap; pinning a 204 would fail today. The
-  // invariant that holds is the one above — no reachable path yields that id.
+  // The unverified-entry and out-of-scope-host rows above are the host broker's
+  // own echelon, not a restatement of env.ts: unreachable through GURT_CRED_ID
+  // (hostGitAccess blocks both before setting it, asserted above), they hold
+  // even for a caller that forges the headers outright.
 
   // The host broker's token gates it exactly like the session one.
   for (const url of [
