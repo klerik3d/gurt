@@ -301,7 +301,14 @@ export class ContainerManager {
       )
       enter('up')
       const mounted = usesRepoMounts(info)
-      const readonly = roleIsReadOnly(sessionRole(info))
+      // Stopgap (2026-08-24, see requirements-session-roles.md §2/§4): a
+      // reviewer needs a writable clone to install dependencies and run
+      // typecheck/tests against the diff it is judging, so only researcher
+      // keeps the filesystem-level read-only bind. Everything else about a
+      // read-only role (no git broker, no `complete`, mount still routed
+      // through the wrapper below) is unchanged — `roleIsReadOnly` still
+      // governs those, just not this flag.
+      const readonly = sessionRole(info) === 'researcher'
       // Read-write single repo (an executor): unchanged — `--workspace-folder`
       // IS the clone, exactly as before. Otherwise `--workspace-folder` is an
       // empty wrapper dir and every repo (anchor included) is mounted into it

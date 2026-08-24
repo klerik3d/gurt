@@ -877,7 +877,8 @@ export async function devcontainerUp(
    *  itself: every repo of a session whose `--workspace-folder` is the empty
    *  wrapper directory. That is any session with more than one repo, and any
    *  read-only role — `readonly` is what the CLI's own workspace mount can never
-   *  be. Empty for a plain read-write single-repo session. */
+   *  be (per-mount `readonly` now only set for researcher, see `containers.ts`).
+   *  Empty for a plain read-write single-repo session. */
   extraMounts: { hostDir: string; name: string; readonly?: boolean }[] = []
 ): Promise<UpResult> {
   // The container is agent-agnostic: only the node feature is injected, plus any
@@ -918,6 +919,17 @@ export async function devcontainerUp(
       : remoteRoot
     const merged: Record<string, unknown> = {
       ...config,
+      // A single mounted repo (every reviewer, and a researcher on just one)
+      // has one unambiguous cwd for lifecycle hooks and `exec` to land in —
+      // point workspaceFolder straight at it instead of the empty wrapper
+      // root, so a hook that does `npm install` finds package.json instead of
+      // failing with ENOENT one level up. workspaceMount (untouched, still
+      // binds the wrapper) and workspaceFolder are independent CLI fields —
+      // disagreeing between them is fine. A true multi-repo session has no
+      // single repo to point at, so it keeps the wrapper root.
+      ...(extraMounts.length === 1 && extraMounts[0]
+        ? { workspaceFolder: `${mountRoot}/${extraMounts[0].name}` }
+        : {}),
       mounts: [
         ...read.mounts,
         ...extraMounts.map(
@@ -925,6 +937,22 @@ export async function devcontainerUp(
             `type=bind,source=${m.hostDir},target=${mountRoot}/${m.name}${m.readonly ? ',readonly' : ''}`
         )
       ]
+    }
+    // A read-only mount (researcher, see `containers.ts`) can never satisfy a
+    // create-time hook that expects to write into the checkout — the CLI would
+    // fail it deterministically, and `CREATE_HOOK_RE` below would burn a
+    // pointless container rebuild retrying a guaranteed repeat. Strip them
+    // instead: a researcher gets a clean, dependency-less container and never
+    // hits that path. Reviewer's mount isn't read-only, so its hooks run
+    // normally against the corrected cwd above.
+    if (extraMounts.some((m) => m.readonly)) {
+      delete merged['onCreateCommand']
+      delete merged['updateContentCommand']
+      delete merged['postCreateCommand']
+      log(
+        'read-only mount session: skipping onCreate/updateContent/postCreate ' +
+          'hooks (this role does not install dependencies)'
+      )
     }
     await fs.writeFile(mountedConfigPath(workspaceFolder), JSON.stringify(merged, null, 2))
     mountConfigArgs = ['--override-config', mountedConfigPath(workspaceFolder)]

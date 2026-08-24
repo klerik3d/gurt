@@ -74,10 +74,21 @@ drafted.
 
 Input: a review prompt carrying the requirements and pointing at one clone.
 The reviewer judges the clone's **uncommitted changes** against those
-requirements. The repo is mounted read-only, but the reviewer **holds the
-exclusive clone lock** — while the review runs nothing may mutate the working
-tree, exactly the way an executor excludes parallel writers today. Read-only
-plus locked is the one new mount/lock combination this document introduces.
+requirements. The repo was intended to be mounted read-only, with the reviewer
+**holding the exclusive clone lock** so that while the review runs nothing may
+mutate the working tree, exactly the way an executor excludes parallel writers
+today. Read-only plus locked is the one new mount/lock combination this
+document introduces.
+
+*Stopgap, 2026-08-24:* the read-only mount left a reviewer unable to install
+dependencies or run typecheck/tests against the diff it judges — a real loss
+for the role's whole purpose, and there was no writable-scratch-mount
+mechanism to give it deps without full write access (see §4). Until that
+mechanism exists, the reviewer's mount is plain read-write, same as an
+executor's; only researcher keeps the filesystem-level read-only bind. The
+lock, the missing `complete`/git broker, and everything else about the role
+are unchanged — this narrows one flag, not the role. Revisit once a writable
+subpath (or similar) mechanism lets a read-only mount host installed deps.
 
 The verdict is the reviewer's plain chat reply — no structured artifact, no
 tool call, and it gates nothing: whether to commit anyway is always the
@@ -111,11 +122,23 @@ this pass.
 
 - Read-only is enforced at the mount level (Docker `readonly` bind mounts),
   not by convention — this closes the deferral recorded in
-  `requirements-multirepo-sessions.md` §3 for researcher and reviewer
-  sessions. Executors keep plain read-write mounts.
-- Reviewer needs the read-only mount on a *single* clone — today read-only
-  thinking exists only in the multi-repo wrapper path, so the single-repo
-  mount path gains a read-only mode.
+  `requirements-multirepo-sessions.md` §3 for researcher sessions.
+  *(Since narrowed to researcher only, 2026-08-24 — see the reviewer stopgap
+  in §2: reviewer's mount is plain read-write, no writable-subpath mechanism
+  existing yet to give it deps without full write access.)* Executors keep
+  plain read-write mounts.
+- Reviewer needs the single-repo mount path a discovery session's wrapper
+  mechanism generalized (today read-only thinking exists only in the
+  multi-repo wrapper path) — but not, for now, its read-only mode (see above).
+- A mounted session with exactly one repo gets its container-side
+  `workspaceFolder` pointed at that repo's mount, not the wrapper root, so
+  lifecycle hooks and `exec` land with the checkout as cwd
+  (`provision.ts` `devcontainerUp`). A read-only mount (researcher) additionally
+  has `onCreateCommand`/`updateContentCommand`/`postCreateCommand` stripped
+  from its merged config before `up` — those hooks exist to prepare a writable
+  checkout and would otherwise fail deterministically against the read-only
+  bind, burning a retry `CREATE_HOOK_RE` cannot tell apart from a transient
+  one. Reviewer runs its env's hooks unmodified.
 - Locking is unchanged mechanically: the scheduler's exclusive clone lock is
   taken by executors (as today) and reviewers (new), skipped for researchers
   (as discovery sessions do today). Lifetimes are managed by the user.
