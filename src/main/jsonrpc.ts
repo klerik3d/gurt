@@ -1,4 +1,5 @@
 import type { ChildProcessWithoutNullStreams } from 'node:child_process'
+import { StringDecoder } from 'node:string_decoder'
 import { z } from 'zod'
 import { createLogger, enabled } from './log'
 
@@ -41,6 +42,24 @@ export function issuePaths(err: z.ZodError): string {
     .join(', ')
 }
 
+/**
+ * Cap on one inbound frame — and so on the unterminated remainder buffered
+ * between chunks, since that remainder *is* a frame still arriving. An adapter
+ * that never writes a '\n' must not grow `buffer` until the app runs out of
+ * memory.
+ *
+ * Deliberately far above `provision.ts`'s 32 KiB `MAX_LINE_BUFFER`: that one
+ * bounds a line of a log, this one bounds an ACP message. The large ones are
+ * `session/update` tool calls, whose content carries whole file bodies and
+ * diffs (`TOOL_CONTENT` in acp.ts) — a multi-megabyte generated or lock file
+ * edited in one turn is legitimate traffic, and a cap that rejected it would
+ * break normal work worse than the unbounded growth it replaces. 16 MiB clears
+ * the largest plausible frame by a wide margin and still bounds the buffer at
+ * ~32 MB in memory per session. Counted in code units, not bytes: this is a
+ * memory bound, and a code unit is what `buffer` actually costs.
+ */
+export const MAX_FRAME = 16 * 1024 * 1024
+
 const log = createLogger('rpc')
 /** Frames carry prompts, agent output and tool arguments, so the trace is the
  *  envelope only — method, id, direction, size. Never params, at any level. */
@@ -54,7 +73,18 @@ export class JsonRpcPeer {
   >()
   private requestHandlers = new Map<string, Handler>()
   private notificationHandlers = new Map<string, (params: unknown) => void>()
+  /** A chunk boundary can land mid multi-byte UTF-8 sequence; decoding each
+   *  chunk on its own turns both halves into U+FFFD — silently, because the
+   *  frame still parses as JSON and the corruption only shows up in the payload
+   *  the app then acts on. The decoder carries the partial sequence into the
+   *  next chunk, the same way `buffer` carries the partial line, and for the
+   *  same reason `lineBuffer()` in provision.ts uses one. */
+  private utf8 = new StringDecoder('utf8')
   private buffer = ''
+  /** Set while the tail of an over-cap frame is being discarded: everything up
+   *  to the next '\n' belongs to a frame that was already dropped and
+   *  reported, so it must not be parsed and must not be reported twice. */
+  private discarding = false
 
   constructor(
     private child: ChildProcessWithoutNullStreams,
@@ -62,7 +92,7 @@ export class JsonRpcPeer {
     /** Owning session, for the frame trace. */
     private sessionId?: string
   ) {
-    child.stdout.on('data', (d: Buffer) => this.onData(d.toString()))
+    child.stdout.on('data', (d: Buffer) => this.onData(this.utf8.write(d)))
     child.on('close', () => {
       const err = new Error('agent process exited')
       for (const p of this.pending.values()) p.reject(err)
@@ -156,12 +186,46 @@ export class JsonRpcPeer {
     })
   }
 
+  /**
+   * An over-cap frame is dropped whole, never truncated: a cut-off line is
+   * invalid JSON at best and — if the cut lands somewhere JSON still closes —
+   * a *valid* frame with a silently shortened payload at worst, which is the
+   * same class of quiet corruption the decoder above exists to prevent.
+   *
+   * Reported, not swallowed. `onFatal` is the module's channel to the owner,
+   * and the owner (sessions.ts) logs it and leaves the peer running — which is
+   * what this case wants: the pipe itself is intact and the stream resumes at
+   * the next newline. But the loss is real and asymmetric — a dropped
+   * `session/update` costs a timeline entry, while a dropped *response* leaves
+   * its request pending until its timeout, and `session/prompt` has none by
+   * design. A record is the only thing that tells those apart from an agent
+   * that simply went quiet. Size only, never the frame: same rule as the trace.
+   */
+  private reportOversize(chars: number): void {
+    log.warn('rpc.oversize', { s: this.sessionId, chars, cap: MAX_FRAME })
+    this.onFatal(
+      new Error(`agent frame exceeded the ${MAX_FRAME / (1024 * 1024)} MiB cap and was dropped`)
+    )
+  }
+
   private onData(chunk: string): void {
     this.buffer += chunk
     let nl: number
     while ((nl = this.buffer.indexOf('\n')) >= 0) {
-      const line = this.buffer.slice(0, nl).trim()
+      const raw = this.buffer.slice(0, nl)
       this.buffer = this.buffer.slice(nl + 1)
+      // The tail of a frame already dropped below: it ends at this newline.
+      if (this.discarding) {
+        this.discarding = false
+        continue
+      }
+      // A whole over-cap frame delivered inside one chunk never passed through
+      // the remainder check, so it is caught here.
+      if (raw.length > MAX_FRAME) {
+        this.reportOversize(raw.length)
+        continue
+      }
+      const line = raw.trim()
       if (!line) continue
       let parsed: unknown
       try {
@@ -175,6 +239,16 @@ export class JsonRpcPeer {
       if (!frame.success) continue
       if (trace) this.traceFrame('in', frame.data, Buffer.byteLength(line, 'utf8'))
       void this.dispatch(frame.data)
+    }
+    // What is left holds no newline, so it is one frame still arriving. Past
+    // the cap it can only get worse: drop it, remember that its tail is still
+    // coming, and resynchronize at the next newline.
+    if (this.buffer.length > MAX_FRAME) {
+      if (!this.discarding) {
+        this.discarding = true
+        this.reportOversize(this.buffer.length)
+      }
+      this.buffer = ''
     }
   }
 

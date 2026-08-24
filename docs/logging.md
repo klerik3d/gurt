@@ -149,6 +149,7 @@ escaped, and `\n` written as `\\n`, so one record stays one line.
 | `ipc.call`                | DBG   | `method`, `ms`, `args`                                     |
 | `ipc.fail`                | ERR   | `method`, `ms`, `err`, `args` (DBG only)                   |
 | `rpc.msg`                 | DBG   | `s`, `dir`, `method`, `id`, `bytes`                        |
+| `rpc.oversize`            | WRN   | `s`, `chars`, `cap` — an over-cap frame dropped whole; sizes only, never the frame |
 | `window.error` / `window.unhandledrejection` | ERR | `message`, `source`, `line`, `err`       |
 | `internal.fail`           | ERR   | `site`, `err`, plus whatever identifiers (`s`, `ws`, `task`, …) the failed operation carried |
 
