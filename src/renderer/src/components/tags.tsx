@@ -57,7 +57,7 @@ export const ROLE_INFO: Record<SessionRole, { label: string; hint: string; icon:
   },
   reviewer: {
     label: 'reviewer',
-    hint: "judges one clone's uncommitted changes: read-only, but holds the lock so nothing moves under it",
+    hint: "judges one clone's uncommitted changes: writable, so it can install deps and run tests, but holds the lock so nothing moves under it",
     icon: 'lock'
   }
 }
