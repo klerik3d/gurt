@@ -48,12 +48,37 @@ import * as L from ${JSON.stringify(bundle)}
 
 const dir = path.join(process.env.GURT_ROOT, 'logs')
 const appLog = path.join(dir, 'gurt.log')
+// A sleep is only correct where the assertion is about something *not*
+// happening (an unwritable sink, a paced flood). Everywhere else the records
+// reach disk through an async queue with a single write in flight, so "the
+// record landed" is a condition, not a duration — a fixed sleep is a race that
+// a loaded machine loses, and the scenario then reads an empty file.
 const settle = (ms = 60) => new Promise((r) => setTimeout(r, ms))
+// Poll cond() until it returns something truthy, or give up at the deadline
+// and let the caller's own assertion report what is actually on disk. Returns
+// fast in the common case, so this costs nothing when the machine is idle.
+const until = async (cond, timeout = 15000) => {
+  const deadline = Date.now() + timeout
+  for (;;) {
+    const v = cond()
+    if (v || Date.now() >= deadline) return v
+    await new Promise((r) => setTimeout(r, 5))
+  }
+}
 const read = (f) => { try { return fs.readFileSync(f, 'utf8') } catch { return '' } }
+// The two shapes almost every scenario needs: wait for markers to show up in
+// the app log, and wait for at least n records to be on disk.
+const appHas = (...needles) => until(() => { const a = read(appLog); return needles.every((s) => a.includes(s)) ? a : '' })
+const appLines = (n) => until(() => { const a = read(appLog); return a.split('\\n').filter(Boolean).length >= n ? a : '' })
 const ESC = '\\u001b'
 // fileId() appends a short hash of the raw key, so the exact file name isn't
 // known ahead of time — find it by prefix instead of hardcoding it.
-const findLog = (prefix) => fs.readdirSync(dir).find((f) => f.startsWith(prefix) && f.endsWith('.log'))
+// The dir itself only appears when the first sink opens, so polling helpers
+// must tolerate it not being there yet.
+const ls = () => { try { return fs.readdirSync(dir) } catch { return [] } }
+const findLog = (prefix) => ls().find((f) => f.startsWith(prefix) && f.endsWith('.log'))
+const readLog = (prefix) => { const f = findLog(prefix); return f ? read(path.join(dir, f)) : '' }
+const countLogs = (prefix) => ls().filter((f) => f.startsWith(prefix)).length
 
 const scenarios = {
   async format() {
@@ -81,11 +106,12 @@ const scenarios = {
     l.error('boom', { err: Object.assign(new Error('kaput'), { code: 'EACCES' }) })
     L.sessionLogLine('env-build:ws/env', 'building ' + ESC + '[32mok' + ESC + '[0m')
     L.sessionLogLine('sess-1', 'hello')
-    await settle()
+    await appLines(3)
+    await until(() => readLog('session-sess-1-').includes('hello') && readLog('session-env-build') !== '')
     return {
       app: read(appLog),
       files: fs.readdirSync(dir).sort(),
-      session: read(path.join(dir, findLog('session-sess-1-')))
+      session: readLog('session-sess-1-')
     }
   },
 
@@ -98,16 +124,16 @@ const scenarios = {
     L.addSecrets([secret])
     L.logRenderer('info', secret, 'renderer.msg')
     L.createLogger(secret).info('main.msg')
-    await settle()
+    await appHas('renderer.msg', 'main.msg')
     return { app: read(appLog) }
   },
 
   async dropSession() {
     L.sessionLogLine('sess-1', 'hello')
-    await settle()
+    await until(() => findLog('session-sess-1-'))
     const before = Boolean(findLog('session-sess-1-'))
     L.dropSessionLog('sess-1')
-    await settle()
+    await until(() => !findLog('session-sess-1-'))
     return { before, after: Boolean(findLog('session-sess-1-')) }
   },
 
@@ -117,10 +143,10 @@ const scenarios = {
   async fileIdCollision() {
     L.sessionLogLine('env-build:ws/env', 'first')
     L.sessionLogLine('env-build-ws-env', 'second')
-    await settle()
+    await until(() => countLogs('session-env-build-ws-env') >= 2)
     const files = fs.readdirSync(dir).filter((f) => f.startsWith('session-env-build-ws-env')).sort()
     L.dropSessionLog('env-build:ws/env')
-    await settle()
+    await until(() => countLogs('session-env-build-ws-env') < files.length)
     const after = fs.readdirSync(dir).filter((f) => f.startsWith('session-env-build-ws-env')).sort()
     return { files, after }
   },
@@ -133,7 +159,7 @@ const scenarios = {
     fs.truncateSync(appLog, 10 * 1024 * 1024 + 1)
     for (let i = 1; i <= 5; i++) fs.writeFileSync(appLog + '.' + i, 'gen' + i + '\\n')
     L.createLogger('app').info('app.start')
-    await settle()
+    await appHas('[app] app.start')
     return {
       files: fs.readdirSync(dir).sort(),
       fresh: read(appLog),
@@ -152,7 +178,7 @@ const scenarios = {
       for (let i = 0; i < 40; i++) l.info('bulk.record', ctx)
       await settle(20)
     }
-    for (let i = 0; i < 100 && !fs.existsSync(appLog + '.1'); i++) await settle(50)
+    await until(() => fs.existsSync(appLog + '.1'))
     const size = fs.statSync(appLog).size
     return { rotated: fs.existsSync(appLog + '.1'), size, files: fs.readdirSync(dir).sort() }
   },
@@ -162,7 +188,9 @@ const scenarios = {
   async queueFlood() {
     const l = L.createLogger('flood')
     for (let i = 0; i < 5000; i++) l.info('flood.record', { i })
-    await settle(300)
+    // The drop record is written by a later drain cycle than the batch it
+    // reports, so its presence means the accepted records are already on disk.
+    await appHas('log.dropped')
     const app = read(appLog)
     const m = app.match(/log\\.dropped \\{"n":(\\d+)\\}/)
     return { dropped: m ? Number(m[1]) : 0, lines: app.split('\\n').filter(Boolean).length }
@@ -173,7 +201,7 @@ const scenarios = {
     L.logRenderer('nonsense', 'x', 'should be ignored')
     L.logRenderer('info', '', 'scope falls back')
     for (let i = 0; i < 1000; i++) L.logRenderer('info', 'Chat Pane', 'ui.click', { i })
-    await settle(200)
+    await appHas('log.dropped', '[renderer] scope falls back')
     const app = read(appLog)
     return {
       accepted: (app.match(/ui\\.click/g) ?? []).length,
@@ -207,7 +235,7 @@ const scenarios = {
 
   async truncate() {
     L.createLogger('app').info('huge', { blob: 'y'.repeat(600), ...Object.fromEntries(Array.from({ length: 40 }, (_, i) => ['k' + i, 'z'.repeat(500)])) })
-    await settle()
+    await appHas('[app] huge')
     const line = read(appLog).split('\\n')[0]
     return { len: line.length, oneLine: read(appLog).trim().split('\\n').length }
   },
@@ -220,7 +248,7 @@ const scenarios = {
     L.logRenderer('toString', 'x', 'renderer should not appear toString')
     const l = L.createLogger('proto')
     l.info('control.record')
-    await settle()
+    await appHas('control.record')
     return { app: read(appLog) }
   },
 
@@ -229,7 +257,7 @@ const scenarios = {
   async envLevelPoison() {
     const l = L.createLogger('poison')
     l.info('control.record')
-    await settle()
+    await appHas('control.record')
     return { app: read(appLog), logLevel: L.logLevel }
   },
 
@@ -242,7 +270,7 @@ const scenarios = {
     const longKey = 'weird\\nkey\\t' + 'x'.repeat(100)
     const l = L.createLogger('keys')
     l.info('key.test', { [secretKey]: 1, [longKey]: 2 })
-    await settle()
+    await appHas('key.test')
     return { app: read(appLog) }
   },
 
@@ -259,7 +287,7 @@ const scenarios = {
     const b = 'b'.repeat(1500) // total 480+38+1500=2018 > 1536 headroom cutoff
     const l = L.createLogger('rb')
     l.info('boundary.test', { v: a + secret + b })
-    await settle()
+    await appHas('[rb]')
     const app = read(appLog)
     const line = app.split('\\n').find((x) => x.includes('[rb]')) ?? ''
     return {
@@ -295,7 +323,7 @@ const scenarios = {
     const t0 = Date.now()
     L.logRenderer('error', 'x', 'msg', ctx, Date.now())
     const ms = Date.now() - t0
-    await settle()
+    await appHas('[x] msg')
     const line = read(appLog).split('\\n').find((x) => x.includes('[x] msg')) ?? ''
     return { ms, recordBytes: Buffer.byteLength(line, 'utf8') }
   },
@@ -307,7 +335,7 @@ const scenarios = {
     const l = L.createLogger('bt')
     l.info('\\u4e2d'.repeat(3000)) // 3000 code units, 9000 UTF-8 bytes
     l.info('\\ud83d\\ude00'.repeat(3000)) // 6000 code units, 12000 UTF-8 bytes
-    await settle()
+    await until(() => read(appLog).split('\\n').filter((x) => x.includes('[bt]')).length >= 2)
     const lines = read(appLog).split('\\n').filter((x) => x.includes('[bt]'))
     const loneSurrogate = /[\\ud800-\\udbff](?![\\udc00-\\udfff])|(?:^|[^\\ud800-\\udbff])[\\udc00-\\udfff]/
     return {
@@ -323,7 +351,7 @@ const scenarios = {
     fs.writeFileSync(appLog, '')
     fs.chmodSync(appLog, 0o644)
     L.createLogger('app').info('app.start')
-    await settle()
+    await appHas('[app] app.start')
     return { mode: fs.statSync(appLog).mode & 0o777 }
   },
 
@@ -333,7 +361,7 @@ const scenarios = {
     if (!fs.existsSync('/proc/self/fd')) return { skipped: true }
     const before = fs.readdirSync('/proc/self/fd').length
     for (let i = 0; i < 200; i++) L.sessionLogLine('fd-test-' + i, 'line ' + i)
-    await settle(400)
+    await until(() => countLogs('session-fd-test-') >= 200)
     const after = fs.readdirSync('/proc/self/fd').length
     const files = fs.readdirSync(dir).filter((f) => f.startsWith('session-fd-test-')).length
     return { skipped: false, before, after, files }
@@ -529,15 +557,25 @@ if (process.getuid?.() === 0) {
 // --- 1. sanitize() stays roughly linear -------------------------------------
 {
   const r = scenario('perfSanitize')
-  assert.ok(r.ms < 2000, `sanitize() of a 1 MB string took ${r.ms} ms — the old backtracking regex took >100 s at this size`)
+  // What this guards is a complexity class, not a latency budget: the old
+  // URL-creds regex backtracked quadratically and took >100 s on 1 MB, while
+  // the linear scan lands in ~100 ms. There is no counter to assert on (the
+  // work happens inside one regex), so this stays a wall-clock check — with a
+  // threshold set far above any plausible shared-runner stall and far below
+  // the bug, instead of a tight one that a loaded CI box trips on its own.
+  assert.ok(r.ms < 30000, `sanitize() of a 1 MB string took ${r.ms} ms — the old backtracking regex took >100 s at this size`)
   console.log(`ok  sanitize() stays linear (1 MB in ${r.ms} ms)`)
 }
 
 // --- a ctx fanned out across levels cannot blow up the walk -----------------
 {
   const r = scenario('perfCtxBudget')
+  // Same reasoning as perfSanitize: ~262k leaf sanitize() calls without a
+  // cross-level budget measured at ~25 s, the budgeted walk at a few ms. The
+  // threshold is deliberately three orders of magnitude above the healthy
+  // value so that runner contention can never be mistaken for the bug.
   assert.ok(
-    r.ms < 500,
+    r.ms < 10000,
     `a ctx nested 3 levels deep (64x64x64) took ${r.ms} ms to serialize — a shared cross-level budget should bound this to a few ms, not the ~25 s a per-level-only cap allows`
   )
   assert.ok(r.recordBytes > 0 && r.recordBytes <= 8 * 1024, 'the record still respects the 8 KB byte cap')

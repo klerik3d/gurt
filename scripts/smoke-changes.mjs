@@ -28,7 +28,17 @@ const require = createRequire(path.join(APP_DIR, 'package.json'))
 const { _electron } = require('playwright-core')
 const electronPath = require('electron') // path string to the electron binary
 
-const env = { ...process.env, GURT_ROOT }
+// The app commits with the host's git, which needs an identity. Supply one
+// through the environment instead of relying on the machine's global config,
+// so the script is hermetic (a fresh container has no user.email at all).
+const env = {
+  ...process.env,
+  GURT_ROOT,
+  GIT_AUTHOR_NAME: 'smoke',
+  GIT_AUTHOR_EMAIL: 'smoke@test',
+  GIT_COMMITTER_NAME: 'smoke',
+  GIT_COMMITTER_EMAIL: 'smoke@test'
+}
 delete env.ELECTRON_RUN_AS_NODE
 
 const EXE = electronPath
@@ -92,8 +102,15 @@ async function open(app) {
   return page
 }
 
+// Throws on a miss: a silently swallowed click surfaces much later as a
+// timeout on whatever the click was supposed to open, which is a lot harder to
+// read than "no button titled X".
 const clickTitle = (page, t) =>
-  page.evaluate((x) => document.querySelector(`button[title="${x}"]`)?.click(), t)
+  page.evaluate((x) => {
+    const el = document.querySelector(`button[title="${x}"]`)
+    if (!el) throw new Error(`no button titled ${JSON.stringify(x)}`)
+    el.click()
+  }, t)
 const modalGone = (page) => page.waitForSelector('.modal', { state: 'detached' })
 
 /**
@@ -128,22 +145,18 @@ async function clickGroupButton(page, repo, text) {
 async function commitVia(page, repo) {
   check((await clickGroupButton(page, repo, 'Commit')) === null, `${repo}: Commit clickable`)
   await page.waitForSelector('.modal .commit-message')
-  await page.evaluate(() =>
-    [...document.querySelectorAll('.modal .row-buttons button')]
-      .find((b) => b.textContent.trim() === 'Commit')
-      ?.click()
-  )
+  await page.click('.modal .modal-foot .btn-primary')
   await modalGone(page)
 }
 
 /** Snapshot of the rendered changes panel for assertions. */
 const panelState = (page) =>
   page.evaluate(() => {
-    const section = document.querySelector('.changes-section')
+    const section = [...document.querySelectorAll('.tp-section')].find((s) => s.querySelector('.seclabel')?.textContent.trim() === 'CHANGES')
     if (!section) return null
     const badge = document.querySelector('.task-badge')
     return {
-      noChanges: !!section.querySelector('.no-changes'),
+      noChanges: !!section.querySelector('.tp-empty'),
       groups: [...section.querySelectorAll('.changes-group')].map((g) => ({
         repo: g.querySelector('.changes-repo')?.textContent.trim() ?? null,
         blocks: [...g.querySelectorAll('.block-head')].map((b) => b.textContent.trim()),
@@ -152,7 +165,7 @@ const panelState = (page) =>
         commits: [...g.querySelectorAll('.commit-row')].map((c) => ({
           sha: c.querySelector('.commit-sha')?.textContent.trim(),
           subject: c.querySelector('.commit-subject')?.textContent.trim(),
-          state: c.querySelector('.commit-state')?.textContent.trim()
+          state: c.querySelector('.tag')?.textContent.trim()
         })),
         buttons: [...g.querySelectorAll('.changes-actions button')].map((b) => ({
           text: b.textContent.trim(),
@@ -164,16 +177,23 @@ const panelState = (page) =>
     }
   })
 
+/** Re-read the panel from disk. App fetches a task's changes once, when the
+ *  tree first shows it (changesRequested in App.tsx), so clones and commits
+ *  made behind the app's back are invisible until the panel is refreshed. */
+const refreshPanel = (page) =>
+  page.click('.tp-sec-head .icon-sq[title="refresh changes"]').catch(() => {})
+
 /** Wait until the rendered panel matches the spec (only the given keys are checked). */
-const waitPanel = (page, spec, timeout = 20000) =>
-  page.waitForFunction(
+const waitPanel = async (page, spec, timeout = 20000) => {
+  await refreshPanel(page)
+  return page.waitForFunction(
     (want) => {
-      const section = document.querySelector('.changes-section')
+      const section = [...document.querySelectorAll('.tp-section')].find((s) => s.querySelector('.seclabel')?.textContent.trim() === 'CHANGES')
       if (!section) return false
       const groups = [...section.querySelectorAll('.changes-group')].map((g) => ({
         repo: g.querySelector('.changes-repo')?.textContent.trim() ?? null,
         files: g.querySelectorAll('.file-row').length,
-        states: [...g.querySelectorAll('.commit-state')].map((c) => c.textContent.trim()),
+        states: [...g.querySelectorAll('.commit-row .tag')].map((c) => c.textContent.trim()),
         buttons: [...g.querySelectorAll('.changes-actions button')].map((b) => ({
           text: b.textContent.trim(),
           disabled: b.disabled
@@ -190,7 +210,7 @@ const waitPanel = (page, spec, timeout = 20000) =>
         return false
       if (want.files0 !== undefined && groups[0]?.files !== want.files0) return false
       if (want.states0 !== undefined && groups[0]?.states.join(',') !== want.states0) return false
-      if (want.noChanges !== undefined && !!section.querySelector('.no-changes') !== want.noChanges)
+      if (want.noChanges !== undefined && !!section.querySelector('.tp-empty') !== want.noChanges)
         return false
       if (want.badge !== undefined && badge !== want.badge) return false
       if (want.pushEnabled !== undefined) {
@@ -206,10 +226,12 @@ const waitPanel = (page, spec, timeout = 20000) =>
     spec,
     { timeout, polling: 500 }
   )
+}
 
 /** Wait until `repo`'s own group matches the spec — `waitPanel` only sees the first. */
-const waitRepo = (page, repo, spec, timeout = 20000) =>
-  page.waitForFunction(
+const waitRepo = async (page, repo, spec, timeout = 20000) => {
+  await refreshPanel(page)
+  return page.waitForFunction(
     ([r, want]) => {
       const groups = [...document.querySelectorAll('.changes-group')]
       const g =
@@ -217,7 +239,7 @@ const waitRepo = (page, repo, spec, timeout = 20000) =>
           ? groups[0]
           : groups.find((x) => x.querySelector('.changes-repo')?.textContent.includes(r))
       if (!g) return false
-      const states = [...g.querySelectorAll('.commit-state')].map((c) => c.textContent.trim())
+      const states = [...g.querySelectorAll('.commit-row .tag')].map((c) => c.textContent.trim())
       if (want.states !== undefined && states.join(',') !== want.states) return false
       if (want.files !== undefined && g.querySelectorAll('.file-row').length !== want.files)
         return false
@@ -226,6 +248,7 @@ const waitRepo = (page, repo, spec, timeout = 20000) =>
     [repo, spec],
     { timeout, polling: 300 }
   )
+}
 
 // ---- run --------------------------------------------------------------
 
@@ -237,16 +260,18 @@ app.process().stdout.on('data', (d) => process.stdout.write(`[main] ${d}`))
 const page = await open(app)
 
 // workspace + task via UI (creates the dirs the clones go into)
-await clickTitle(page, 'new workspace')
+await page.click('.sb-ws-btn')
+await page.click('text=+ new workspace')
 await page.waitForSelector('.modal input')
 await page.fill('.modal input', 'personal')
-await page.click('.modal .form > button')
+await page.click('.modal .btn-primary')
 await modalGone(page)
-await clickTitle(page, 'new task')
-await page.waitForSelector('.modal input')
-await page.fill('.modal input', 't1')
-await page.click('.modal .form > button')
-await modalGone(page)
+// The task popover is inline — no modal, commit with Enter.
+await clickTitle(page, 'New task · ⌘⇧N')
+await page.waitForSelector('.sb-newtask-menu input')
+await page.fill('.sb-newtask-menu input', 't1')
+await page.press('.sb-newtask-menu input', 'Enter')
+await page.waitForSelector('.sb-newtask-menu', { state: 'detached' })
 console.log('ws + task ready')
 
 // 1) one dirty repo → flat panel, Uncommitted block, statuses, counts, filled badge
@@ -255,12 +280,12 @@ fs.appendFileSync(path.join(alphaDir, 'README.md'), 'changed by agent\n')
 fs.writeFileSync(path.join(alphaDir, 'hello.txt'), 'hello\nworld\n')
 
 await page.evaluate(() => {
-  const t = [...document.querySelectorAll('.task-node .node-label')].find(
+  const t = [...document.querySelectorAll('.sb-task-name')].find(
     (n) => n.textContent.trim() === 't1'
   )
   t?.click()
 })
-await page.waitForSelector('.changes-section')
+await page.waitForSelector('.tp-section .seclabel:text-is("CHANGES")')
 await waitPanel(page, { groups: 1, files0: 2 })
 let s = await panelState(page)
 check(s.groups.length === 1 && s.groups[0].repo === null, 'flat rendering, no repo header')
@@ -285,12 +310,17 @@ await page.evaluate(() => {
   )
   f?.click()
 })
-await page.waitForSelector('.diff-view')
-await page.waitForFunction(() => document.querySelector('.diff-view')?.textContent.includes('+'))
-const diffText = await page.evaluate(() => document.querySelector('.diff-view').textContent)
-check(diffText.includes('+hello') && diffText.includes('+world'), 'diff modal shows added lines')
+// The review surface is a split diff: added content is marked by row class,
+// not by a '+' prefix, so assert on the content itself.
+await page.waitForSelector('.review-diff')
+// The review surface opens on the whole target; the diff pane fills in once a
+// file from the list is picked.
+await page.click('.review-files .review-file-path:has-text("hello.txt")')
+await page.waitForFunction(() => document.querySelector('.review-diff')?.textContent.includes('hello'))
+const diffText = await page.evaluate(() => document.querySelector('.review-diff').textContent)
+check(diffText.includes('hello') && diffText.includes('world'), 'diff surface shows the added lines')
 await page.screenshot({ path: path.join(SHOT_DIR, 'c2-diff-modal.png') })
-await page.click('.modal-header .icon-btn')
+await page.click('.modal-head .icon-sq[title="close"]')
 await modalGone(page)
 
 // 3) commit → the change MOVES into the branch block as `local`; nothing vanishes
@@ -298,11 +328,7 @@ check((await clickGroupButton(page, 'alpha', 'Commit')) === null, 'Commit clicka
 await page.waitForSelector('.modal .commit-message')
 const prefill = await page.evaluate(() => document.querySelector('.modal .commit-message').value)
 check(prefill === 'gurt: t1', `commit message prefilled: "${prefill}"`)
-await page.evaluate(() =>
-  [...document.querySelectorAll('.modal .row-buttons button')]
-    .find((b) => b.textContent.trim() === 'Commit')
-    ?.click()
-)
+await page.click('.modal .modal-foot .btn-primary')
 await modalGone(page)
 await waitPanel(page, { groups: 1, states0: 'local', pushEnabled: true })
 s = await panelState(page)
@@ -317,15 +343,15 @@ await page.screenshot({ path: path.join(SHOT_DIR, 'c3-committed.png') })
 
 // 4) click the commit → read-only `git show` modal
 await page.evaluate(() => document.querySelector('.commit-row')?.click())
-await page.waitForSelector('.diff-view')
-await page.waitForFunction(() => document.querySelector('.diff-view')?.textContent.includes('+'))
-const showText = await page.evaluate(() => document.querySelector('.diff-view').textContent)
-check(
-  showText.includes('gurt: t1') && showText.includes('+hello'),
-  'commit modal shows `git show` output'
-)
+await page.waitForSelector('.review-diff')
+await page.click('.review-files .review-file-path:has-text("hello.txt")')
+await page.waitForFunction(() => document.querySelector('.review-diff')?.textContent.includes('hello'))
+// The commit's own subject is asserted on the panel row above; here the point
+// is that opening a commit renders that commit's content, read-only.
+const showText = await page.evaluate(() => document.querySelector('.review-diff').textContent)
+check(showText.includes('hello') && showText.includes('world'), 'commit view shows the committed content')
 await page.screenshot({ path: path.join(SHOT_DIR, 'c4-commit-show.png') })
-await page.click('.modal-header .icon-btn')
+await page.click('.modal-head .icon-sq[title="close"]')
 await modalGone(page)
 
 // 5) push → `pushed`, hollow badge, Push disabled; the bare repo has the branch
@@ -401,8 +427,16 @@ const betaHead = git(betaDir, 'rev-parse', 'HEAD').trim()
 squashOntoDefault(bareBeta, 'beta', 'squashed: t1')
 git(bareBeta, 'update-ref', '-d', 'refs/heads/t1')
 await clickTitle(page, 'refresh changes')
-await waitPanel(page, { noChanges: true, badge: null })
-console.log('OK   squash + branch deletion → "No changes", no badge')
+// The thread itself is integrated — no files, no commits of its own, badge
+// cleared. The group stays rendered only because the squash landed on main
+// and the clone is now behind it (the `behind > 0` arm of the panel filter).
+await waitPanel(page, { groups: 1, files0: 0, states0: '', badge: null })
+s = await panelState(page)
+check(
+  s.groups[0].blocks.join(',') === '1 commit behind main',
+  `only the behind-main block survives integration: ${s.groups[0].blocks}`
+)
+console.log('OK   squash + branch deletion → thread integrated, no badge')
 check(
   git(betaDir, 'rev-parse', 'refs/gurt/integrated').trim() === betaHead,
   'refs/gurt/integrated recorded at HEAD in the clone'
