@@ -4,6 +4,7 @@
 // No docker, no electron. Harness style of scripts/notifications.test.mjs.
 //
 //   node scripts/usage-ledger.test.mjs
+import { test, after } from 'node:test'
 import { build } from 'esbuild'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import path from 'node:path'
@@ -75,8 +76,10 @@ async function until(check, what) {
   assert.fail(`timed out waiting for: ${what}`)
 }
 
+after(() => fsp.rm(GURT_ROOT, { recursive: true, force: true }))
+
 // --- append ----------------------------------------------------------------
-{
+test('append', async () => {
   const bus = createBus()
   const ledger = createUsageLedger(bus)
   await ledger.ready
@@ -90,18 +93,18 @@ async function until(check, what) {
   assert.equal(changed, 2, 'every filed turn wakes the dashboard')
   await until(() => readFile().length === 2, 'both turns on disk')
   assert.equal(readFile()[1].sessionId, 's2', 'append order is turn order')
-}
+})
 
 // --- reload ----------------------------------------------------------------
-{
+test('reload', async () => {
   const ledger = createUsageLedger(createBus())
   await ledger.ready
   assert.equal(ledger.list().length, 2, 'a relaunch reads the ledger back')
   assert.equal(ledger.list()[0].ts, '2026-08-19T09:00:00.000Z')
-}
+})
 
 // --- merge: a turn filed while the load is still in flight ------------------
-{
+test('merge: a turn filed while the load is still in flight', async () => {
   const bus = createBus()
   const ledger = createUsageLedger(bus)
   // Synchronous — lands in memory before `readUsage` resolves.
@@ -110,10 +113,10 @@ async function until(check, what) {
   const ids = ledger.list().map((r) => r.sessionId)
   assert.deepEqual(ids, ['s1', 's2', 's3'], 'kept, ordered by ts, and not doubled')
   await until(() => readFile().length === 3, 'the mid-load turn reached disk too')
-}
+})
 
 // --- retention prune -------------------------------------------------------
-{
+test('retention prune', async () => {
   const now = Date.now()
   const old = new Date(now - USAGE_RETENTION_MS - 5 * 86_400_000).toISOString()
   const fresh = new Date(now - 3600_000).toISOString()
@@ -134,15 +137,12 @@ async function until(check, what) {
     () => readFile().length === 1 && readFile()[0].sessionId === 'recent',
     'the prune rewrote the file'
   )
-}
+})
 
 // --- torn line -------------------------------------------------------------
-{
+test('torn line', async () => {
   await fsp.appendFile(LEDGER, '{"ts":"2026-08-19T10:00:00.000Z","ms":1,"age')
   const ledger = createUsageLedger(createBus())
   await ledger.ready
   assert.equal(ledger.list().length, 1, 'a crash mid-append costs that line, not the ledger')
-}
-
-await fsp.rm(GURT_ROOT, { recursive: true, force: true })
-console.log('usage-ledger: ok')
+})

@@ -19,6 +19,7 @@
 // nothing here re-asserts those tables, only what the brokers do with them.
 //
 //   node scripts/git-broker.test.mjs
+import { test, after } from 'node:test'
 import { build } from 'esbuild'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
@@ -184,19 +185,37 @@ function noSecretIn(value, what) {
 }
 
 const started = []
-let exitCode = 0
 
-try {
-  // ==========================================================================
-  // §4 — the per-session container broker
-  // ==========================================================================
+// Bound by one test and read by later ones: node:test runs the tests in a file
+// one at a time, in declaration order.
+let b1, u1, token1, b2, base1, guessed, managed, hostBroker, blocked, b1b, r, child
 
-  const b1 = await m.resolveGitBroker('sess-1', GH_REPO)
+// The host credential broker is a process-lifetime singleton with no teardown
+// (by design: it serves every session's host git access until the app quits),
+// so its listener would keep this process alive forever. Nothing is pending once
+// the tests are done — the log is flushed below — so its handle is unref'd
+// rather than exiting explicitly, which would paper over a failing test.
+after(() => {
+  for (const id of started) m.stopGitBroker(id)
+  m.flushSync()
+  fs.rmSync(outfile, { force: true })
+  fs.rmSync(GURT_ROOT, { recursive: true, force: true })
+  // `_getActiveHandles` is undocumented, but the module never hands the host
+  // listener out, so there is no public reference to unref.
+  const handles = /** @type {any} */ (process)._getActiveHandles?.() ?? []
+  for (const h of handles) if (h?.constructor?.name === 'Server') h.unref()
+})
+
+// ==========================================================================
+// §4 — the per-session container broker
+// ==========================================================================
+test('per-session broker: own listener, own random token', async () => {
+  b1 = await m.resolveGitBroker('sess-1', GH_REPO)
   started.push('sess-1')
-  const u1 = new URL(b1.url)
+  u1 = new URL(b1.url)
   assert.equal(u1.protocol, 'http:')
   assert.equal(u1.hostname, 'host.docker.internal', 'the descriptor is written for the container')
-  const token1 = u1.pathname.replace(/^\/git\//, '')
+  token1 = u1.pathname.replace(/^\/git\//, '')
   assert.match(
     token1,
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
@@ -208,16 +227,18 @@ try {
   // (same port, same token) rather than leaking a second listener per start.
   assert.equal((await m.resolveGitBroker('sess-1', GH_REPO)).url, b1.url, 'one broker per session')
 
-  const b2 = await m.resolveGitBroker('sess-2', GH_REPO)
+  b2 = await m.resolveGitBroker('sess-2', GH_REPO)
   started.push('sess-2')
   assert.notEqual(new URL(b2.url).pathname, u1.pathname, 'each session gets its own token')
   assert.notEqual(new URL(b2.url).port, u1.port, 'each session gets its own listener')
-  console.log('per-session broker: own listener, own random token OK')
 
-  const base1 = reachable(b1.url)
 
-  // --- the credential fill, which is the only way a secret may come out ---
-  let r = await request(`${base1}/credential`, {
+  base1 = reachable(b1.url)
+})
+
+// --- the credential fill, which is the only way a secret may come out ---
+test('credential fill answers on the stored entry, ignoring every other field', async () => {
+  r = await request(`${base1}/credential`, {
     method: 'POST',
     body: fill({ protocol: 'https', host: 'github.com' })
   })
@@ -240,10 +261,11 @@ try {
   })
   assert.equal(r.status, 200)
   assert.equal(r.body, `username=octo\npassword=${GH_SECRET}\n`, 'extra fill fields are ignored')
-  console.log('credential fill answers on the stored entry, ignoring every other field OK')
+})
 
-  // --- the token is the whole authorization ---
-  const guessed = `http://127.0.0.1:${u1.port}`
+// --- the token is the whole authorization ---
+test('the path token is the whole authorization; every other path 404s', async () => {
+  guessed = `http://127.0.0.1:${u1.port}`
   for (const [what, url] of [
     ['no token at all', `${guessed}/credential`],
     ['a wrong token', `${guessed}/git/00000000-0000-4000-8000-000000000000/credential`],
@@ -260,9 +282,10 @@ try {
     assert.equal(res.status, 404, `${what} is refused`)
     noSecretIn(res.body, `the ${what} response`)
   }
-  console.log('the path token is the whole authorization; every other path 404s OK')
+})
 
-  // --- non-answers serve nothing (204, never a partial credential) ---
+// --- non-answers serve nothing (204, never a partial credential) ---
+test('unverified / cross-host / non-http fills serve nothing (204)', async () => {
   for (const [what, body] of [
     ['ssh (not an http transport)', fill({ protocol: 'ssh', host: 'github.com' })],
     ['a missing protocol', fill({ host: 'github.com' })],
@@ -275,7 +298,7 @@ try {
     assert.equal(res.status, 204, `${what} → 204`)
     assert.equal(res.body, '', `${what} serves no payload`)
   }
-  console.log('unverified / cross-host / non-http fills serve nothing (204) OK')
+
 
   // The agent-token entry lists github.com, and its secret must still never be
   // reachable through a git credential fill — covered by the 200 above serving
@@ -284,8 +307,10 @@ try {
     method: 'POST',
     body: fill({ protocol: 'https', host: 'github.com' })
   })).body.includes(AGENT_SECRET), 'an agent-token secret is never served as a git credential')
+})
 
-  // --- method/route discipline ---
+// --- method/route discipline ---
+test('method/route discipline', async () => {
   for (const [what, url, method] of [
     ['GET on /credential', `${base1}/credential`, 'GET'],
     ['POST on /forge-env', `${base1}/forge-env`, 'POST'],
@@ -294,8 +319,10 @@ try {
     const res = await request(url, { method, body: '' })
     assert.equal(res.status, 404, `${what} is refused`)
   }
+})
 
-  // --- /forge-env: the CLI env map, secret-bearing, same token gate ---
+// --- /forge-env: the CLI env map, secret-bearing, same token gate ---
+test('/forge-env serves the provider map behind the same token', async () => {
   r = await request(`${base1}/forge-env`)
   assert.equal(r.status, 200)
   assert.deepEqual(JSON.parse(r.body), { GH_TOKEN: GH_SECRET }, 'the forge env is served')
@@ -309,15 +336,16 @@ try {
   const glBase = reachable((await m.resolveGitBroker('sess-gl', repo('x'))).url)
   const glForge = await request(`${glBase}/forge-env`)
   assert.equal(glForge.status, 204, 'no forge provider → no forge env')
-  console.log('/forge-env serves the provider map behind the same token OK')
+})
 
-  // ==========================================================================
-  // The container credential shim, run for real against the live broker
-  // ==========================================================================
-  //
-  // This is the piece that actually carries a secret across a process boundary
-  // in production. It is spawned here exactly as the agent's git would spawn
-  // it: argv `get`, the fill on stdin, the broker URL in GURT_GIT_BROKER.
+// ==========================================================================
+// The container credential shim, run for real against the live broker
+// ==========================================================================
+//
+// This is the piece that actually carries a secret across a process boundary
+// in production. It is spawned here exactly as the agent's git would spawn
+// it: argv `get`, the fill on stdin, the broker URL in GURT_GIT_BROKER.
+test('container credential shim fills from the broker, and only from it', async () => {
   const shimFile = path.join(GURT_ROOT, 'gurt-git-credential.cjs')
   fs.writeFileSync(shimFile, m.CONTAINER_SHIMS['gurt-git-credential'])
   const shimArgv = (verb) => [process.execPath, shimFile, verb]
@@ -328,7 +356,7 @@ try {
   noSecretIn(shimArgv('get'), "the credential shim's argv")
   noSecretIn(shimEnv(base1), "the credential shim's env")
 
-  let child = await runChild(shimArgv('get'), {
+  child = await runChild(shimArgv('get'), {
     env: shimEnv(base1),
     stdin: fill({ protocol: 'https', host: 'github.com' })
   })
@@ -361,9 +389,10 @@ try {
     assert.equal(res.code, 0, `${what}: the shim still exits 0 (git falls through)`)
     assert.equal(res.stdout, '', `${what}: the shim serves nothing`)
   }
-  console.log('container credential shim fills from the broker, and only from it OK')
+})
 
-  // --- the install payload that puts those shims in a container ---
+// --- the install payload that puts those shims in a container ---
+test('shim install payload is base64-framed and shell-safe', () => {
   for (const name of m.BASE_SHIMS)
     assert.ok(m.CONTAINER_SHIMS[name], `BASE_SHIMS entry "${name}" has a source`)
   const script = m.shimInstallScript([...m.BASE_SHIMS, 'nonexistent-shim'])
@@ -381,13 +410,13 @@ try {
     'every single quote in the install payload is balanced'
   )
   noSecretIn(script, 'the shim install payload')
-  console.log('shim install payload is base64-framed and shell-safe OK')
+})
 
-  // ==========================================================================
-  // §8 — host git access: the resolution, and what it puts in argv vs. env
-  // ==========================================================================
-
-  const managed = await m.hostGitAccess(GH_REPO, CREDENTIALS)
+// ==========================================================================
+// §8 — host git access: the resolution, and what it puts in argv vs. env
+// ==========================================================================
+test('managed host access carries an id + a broker URL, never a secret', async () => {
+  managed = await m.hostGitAccess(GH_REPO, CREDENTIALS)
   assert.equal(managed.mode, 'managed')
   assert.equal(managed.host, 'github.com')
   assert.equal(managed.resolution.entry.id, 'cred-gh')
@@ -414,8 +443,9 @@ try {
   assert.equal(managed.env.GIT_TERMINAL_PROMPT, '0')
   assert.equal(managed.env.GIT_SSH_COMMAND, m.BLOCKED_SSH_COMMAND, 'ambient ssh is blocked')
   assert.ok(managed.env.GURT_CRED_BROKER.startsWith('http://127.0.0.1:'))
-  console.log('managed host access carries an id + a broker URL, never a secret OK')
+})
 
+test('blocked mode never falls back to ambient auth, and leaks nothing', async () => {
   // Ambient is an explicit kind, never a fallback.
   const ambient = await m.hostGitAccess(repo('https://bitbucket.org/octo/app.git'), CREDENTIALS)
   assert.equal(ambient.mode, 'ambient')
@@ -438,13 +468,13 @@ try {
     noSecretIn(res.gitArgs, `the ${what} argv`)
     noSecretIn(res.env, `the ${what} env`)
   }
-  console.log('blocked mode never falls back to ambient auth, and leaks nothing OK')
+})
 
-  // ==========================================================================
-  // §8 — the host credential broker, and its helper as a real child process
-  // ==========================================================================
-
-  const hostBroker = await m.ensureHostCredBroker()
+// ==========================================================================
+// §8 — the host credential broker, and its helper as a real child process
+// ==========================================================================
+test('host broker is loopback + token + header scoped, and serves nothing else', async () => {
+  hostBroker = await m.ensureHostCredBroker()
   assert.ok(
     hostBroker.url.startsWith('http://127.0.0.1:'),
     'the host broker is loopback-only — never container-reachable'
@@ -519,9 +549,10 @@ try {
     assert.equal(res.status, 404, `${url} is refused`)
     noSecretIn(res.body, 'an untokenized host-broker response')
   }
-  console.log('host broker is loopback + token + header scoped, and serves nothing else OK')
+})
 
-  // --- the real host helper, spawned the way git spawns it ---
+// --- the real host helper, spawned the way git spawns it ---
+test('host credential helper round-trips the secret over loopback only', async () => {
   const helperPath = await m.ensureHostCredHelper()
   assert.equal(helperPath, m.hostCredHelperPath())
   assert.equal(await m.ensureHostCredHelper(), helperPath, 'materializing it is idempotent')
@@ -562,15 +593,16 @@ try {
 
   // Blocked mode's env has no GURT_CRED_* at all — the same helper binary, run
   // under it, cannot reach the broker even though the broker is up.
-  const blocked = await m.hostGitAccess(repo('https://example.com/octo/app.git'), CREDENTIALS)
+  blocked = await m.hostGitAccess(repo('https://example.com/octo/app.git'), CREDENTIALS)
   child = await runChild(helperArgv, {
     env: blocked.env,
     stdin: fill({ protocol: 'https', host: 'github.com' })
   })
   assert.equal(child.stdout, '', 'the helper is inert without the resolved scope in its env')
-  console.log('host credential helper round-trips the secret over loopback only OK')
+})
 
-  // --- and the whole §8 chain through real git ---
+// --- and the whole §8 chain through real git ---
+test('real git fills through the host helper in managed mode, nothing in blocked', async () => {
   // `gitArgs` is a shell command string inside a `-c` value inside an argv;
   // nothing but git itself proves the quoting survives (a path with a space in
   // it is the classic break). This is what every host git call does.
@@ -593,21 +625,22 @@ try {
   })
   noSecretIn(blockedFill.stdout, "blocked-mode git's credential fill")
   assert.ok(!/^password=.+$/m.test(blockedFill.stdout), 'blocked mode fills no password')
-  console.log('real git fills through the host helper in managed mode, nothing in blocked OK')
+})
 
-  // ==========================================================================
-  // Teardown: a stopped broker stops answering
-  // ==========================================================================
-
+// ==========================================================================
+// Teardown: a stopped broker stops answering
+// ==========================================================================
+test('stopGitBroker closes the listener and is idempotent', async () => {
   m.stopGitBroker('sess-1')
   assert.ok(await awaitRefused(Number(u1.port)), 'the session broker stops listening')
   m.stopGitBroker('sess-1')
   m.stopGitBroker('never-started')
-  console.log('stopGitBroker closes the listener and is idempotent OK')
+})
 
+test('restarting a session broker invalidates its old token', async () => {
   // A restart mints a fresh token and port: the old descriptor, if it ever
   // escaped into a stale container env, addresses nothing.
-  const b1b = await m.resolveGitBroker('sess-1', GH_REPO)
+  b1b = await m.resolveGitBroker('sess-1', GH_REPO)
   started.push('sess-1')
   assert.notEqual(b1b.url, b1.url, 'a restarted broker is a new token on a new port')
   const stale = await request(`${reachable(b1b.url).replace(new URL(b1b.url).pathname, '')}/git/${token1}/credential`, {
@@ -615,12 +648,12 @@ try {
     body: fill({ protocol: 'https', host: 'github.com' })
   })
   assert.equal(stale.status, 404, 'the old token is worthless against the new broker')
-  console.log('restarting a session broker invalidates its old token OK')
+})
 
-  // ==========================================================================
-  // Nothing above reached the log
-  // ==========================================================================
-
+// ==========================================================================
+// Nothing above reached the log
+// ==========================================================================
+test('no secret, no bearer token and no fill content in gurt.log', () => {
   m.flushSync()
   const logFile = path.join(GURT_ROOT, 'logs', 'gurt.log')
   const gurtLog = fs.readFileSync(logFile, 'utf8')
@@ -662,22 +695,4 @@ try {
   }
   // …and neither does anything a fill body carried.
   assert.ok(!gurtLog.includes('PLANTED'), 'nothing from a fill body reaches gurt.log')
-  console.log('no secret, no bearer token and no fill content in gurt.log OK')
-
-  console.log('git-broker.test: PASS')
-} catch (e) {
-  console.error('git-broker.test: FAIL')
-  console.error(e)
-  exitCode = 1
-} finally {
-  for (const id of started) m.stopGitBroker(id)
-  m.flushSync()
-  fs.rmSync(outfile, { force: true })
-  fs.rmSync(GURT_ROOT, { recursive: true, force: true })
-}
-
-// The host credential broker is a process-lifetime singleton with no teardown
-// (by design: it serves every session's host git access until the app quits),
-// so its listener would keep this process alive forever. Nothing is pending
-// past this point — the log is flushed above.
-process.exit(exitCode)
+})

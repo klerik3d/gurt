@@ -3,6 +3,7 @@
 // unchanged runs collapse. Pure functions — no React, no app, no git.
 //
 //   node scripts/split-diff.test.mjs
+import { test, after } from 'node:test'
 import { build } from 'esbuild'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import path from 'node:path'
@@ -25,6 +26,8 @@ await build({
 
 const { alignRows, foldRows, groupBlocks, CONTEXT } = await import(pathToFileURL(outfile).href)
 
+after(() => fs.rmSync(outfile, { force: true }))
+
 /** Compact row rendering: `<before>|<after>`, '~' for a missing side. */
 const show = (rows) =>
   rows.map((r) =>
@@ -32,10 +35,10 @@ const show = (rows) =>
   )
 
 const lines = (...ls) => ls.join('\n') + '\n'
+const pad = (n, p) => Array.from({ length: n }, (_, i) => `${p}${i}`)
 
-try {
-  // --- alignment ----------------------------------------------------------
-
+// --- alignment ----------------------------------------------------------
+test('alignment', () => {
   // An insertion pads the before-side, so everything after it stays paired.
   let rows = alignRows(lines('a', 'b'), lines('a', 'x', 'b'))
   assert.deepEqual(show(rows), ['a|a', '~|x', 'b|b'], 'an insertion pads the other side')
@@ -66,12 +69,11 @@ try {
 
   // No trailing phantom line from the final newline.
   assert.equal(alignRows(lines('only'), lines('only')).length, 1, 'no phantom trailing line')
+})
 
-  console.log('alignment OK')
-
-  // --- intraline ----------------------------------------------------------
-
-  rows = alignRows(lines('return ok'), lines('return err'))
+// --- intraline ----------------------------------------------------------
+test('intraline', () => {
+  const rows = alignRows(lines('return ok'), lines('return err'))
   const { before, after } = rows[0]
   assert.ok(before.spans && after.spans, 'a paired rewrite carries word spans')
   assert.equal(
@@ -96,15 +98,13 @@ try {
     [{ text: 'a', cls: null, changed: false }],
     'no word-diff spans without a pair, but spans itself is never absent'
   )
+})
 
-  console.log('intraline OK')
-
-  // --- folding ------------------------------------------------------------
-
+// --- folding ------------------------------------------------------------
+test('folding', () => {
   // 40 unchanged lines around one change: context survives either side of it,
   // the middle of each run folds.
-  const pad = (n, p) => Array.from({ length: n }, (_, i) => `${p}${i}`)
-  rows = alignRows(lines(...pad(20, 'a'), 'x', ...pad(20, 'b')), lines(...pad(20, 'a'), 'y', ...pad(20, 'b')))
+  let rows = alignRows(lines(...pad(20, 'a'), 'x', ...pad(20, 'b')), lines(...pad(20, 'a'), 'y', ...pad(20, 'b')))
   let folded = foldRows(rows)
   const folds = folded.filter((r) => r.kind === 'fold')
   assert.equal(folds.length, 2, 'one fold per long run')
@@ -141,13 +141,12 @@ try {
   rows = alignRows(lines(...pad(10, 'a')), lines(...pad(10, 'a')))
   folded = foldRows(rows)
   assert.deepEqual(show(folded), ['fold(10)'], 'an unchanged file collapses entirely')
+})
 
-  console.log('folding OK')
-
-  // --- blocks ---------------------------------------------------------------
-
+// --- blocks ---------------------------------------------------------------
+test('blocks', () => {
   // Two separate change runs, split by an unchanged line, are two blocks.
-  rows = alignRows(lines('a', 'x', 'b', 'y', 'c'), lines('a', 'X', 'b', 'Y', 'c'))
+  let rows = alignRows(lines('a', 'x', 'b', 'y', 'c'), lines('a', 'X', 'b', 'Y', 'c'))
   let blocks = groupBlocks(rows)
   assert.equal(blocks.length, 2, 'a non-change row splits the run into two blocks')
   assert.deepEqual(blocks[0], { startIndex: 1, endIndex: 1 })
@@ -168,13 +167,12 @@ try {
   rows = alignRows(lines(...pad(20, 'a'), 'x', ...pad(20, 'b')), lines(...pad(20, 'a'), 'y', ...pad(20, 'b')))
   blocks = groupBlocks(foldRows(rows))
   assert.equal(blocks.length, 1, 'one block survives folding around it')
+})
 
-  console.log('blocks OK')
-
-  // --- syntax highlighting wiring -------------------------------------------
-
+// --- syntax highlighting wiring -------------------------------------------
+test('syntax highlighting', () => {
   // A lang is optional and defaults to none: same output as before.
-  rows = alignRows(lines('const a = 1'), lines('const a = 1'), null)
+  let rows = alignRows(lines('const a = 1'), lines('const a = 1'), null)
   assert.deepEqual(
     rows[0].before.spans,
     [{ text: 'const a = 1', cls: null, changed: false }],
@@ -211,14 +209,4 @@ try {
   // An unregistered/unknown lang id falls back to unhighlighted, not a crash.
   rows = alignRows(lines('const a = 1'), lines('const a = 1'), 'not-a-real-language')
   assert.deepEqual(rows[0].before.spans, [{ text: 'const a = 1', cls: null, changed: false }])
-
-  console.log('syntax highlighting OK')
-
-  console.log('split-diff.test: PASS')
-} catch (e) {
-  console.error('split-diff.test: FAIL')
-  console.error(e)
-  process.exitCode = 1
-} finally {
-  fs.rmSync(outfile, { force: true })
-}
+})

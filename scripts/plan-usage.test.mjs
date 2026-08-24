@@ -6,10 +6,12 @@
 // cost of guessing it wrong has to stay at "no data", never "wrong data".
 //
 //   node scripts/plan-usage.test.mjs
+import { test, after } from 'node:test'
 import { build } from 'esbuild'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import path from 'node:path'
 import os from 'node:os'
+import fs from 'node:fs'
 import assert from 'node:assert/strict'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -39,6 +41,9 @@ const { parsePlanWindows, isOauthToken, tightest, createPlanUsage, createBus } =
   pathToFileURL(outfile).href
 )
 
+// Every other test file removes its esbuild bundle; this one used to leak it.
+after(() => fs.rmSync(outfile, { force: true }))
+
 // --- parsing: nesting must not matter ---------------------------------------
 const FLAT = {
   five_hour: { utilization: 42, resets_at: '2026-08-19T18:00:00Z' },
@@ -47,21 +52,23 @@ const FLAT = {
 const NESTED = { rate_limits: FLAT }
 const DEEPER = { data: { account: { rate_limits: FLAT } } }
 
-for (const [name, body] of [
-  ['flat', FLAT],
-  ['nested', NESTED],
-  ['deeper', DEEPER]
-]) {
-  const w = parsePlanWindows(body)
-  assert.equal(w.length, 2, `${name}: found both windows`)
-  assert.equal(w[0].id, 'five_hour', `${name}: session window first`)
-  assert.equal(w[0].utilization, 42)
-  assert.equal(w[0].label, 'Current session')
-  assert.equal(w[0].resetsAt, '2026-08-19T18:00:00.000Z')
-  assert.equal(w[1].id, 'seven_day')
-}
+test('parsing: nesting must not matter', () => {
+  for (const [name, body] of [
+    ['flat', FLAT],
+    ['nested', NESTED],
+    ['deeper', DEEPER]
+  ]) {
+    const w = parsePlanWindows(body)
+    assert.equal(w.length, 2, `${name}: found both windows`)
+    assert.equal(w[0].id, 'five_hour', `${name}: session window first`)
+    assert.equal(w[0].utilization, 42)
+    assert.equal(w[0].label, 'Current session')
+    assert.equal(w[0].resetsAt, '2026-08-19T18:00:00.000Z')
+    assert.equal(w[1].id, 'seven_day')
+  }
+})
 
-{
+test('declared order wins over reported order', () => {
   // Declared order wins over reported order, so the meters don't reshuffle
   // between polls.
   const w = parsePlanWindows({
@@ -74,19 +81,19 @@ for (const [name, body] of [
     w.map((x) => x.id),
     ['five_hour', 'seven_day', 'seven_day_opus', 'seven_day_sonnet']
   )
-}
+})
 
-{
+test('a window key with no label is kept, not dropped', () => {
   // A key we have no label for is kept, not dropped — it still carries a real
   // number, and inventing a reason to hide it would be the wrong default.
   const w = parsePlanWindows({ some_new_window: { utilization: 7 } })
   assert.equal(w.length, 1)
   assert.equal(w[0].id, 'some_new_window')
   assert.equal(w[0].label, 'some new window')
-}
+})
 
 // --- the listed form: `limits[]` of self-describing entries (CLI 2.1.x) -----
-{
+test('the listed form: `limits[]` of self-describing entries', () => {
   // The newer bodies report windows as a list, keyed by `kind`, with the old
   // top-level keys arriving null — and model-scoped weeks exist ONLY here.
   const w = parsePlanWindows({
@@ -114,9 +121,9 @@ for (const [name, body] of [
   assert.equal(w[1].label, 'Current week (all models)')
   assert.equal(w[2].label, 'Current week (Fable)', 'the scope name rides into the label')
   assert.equal(w[2].utilization, 12)
-}
+})
 
-{
+test('both shapes at once: the keyed window wins its id', () => {
   // Both shapes at once: the keyed window wins its id, the list fills the rest.
   const w = parsePlanWindows({
     five_hour: { utilization: 42, resets_at: '2026-08-19T18:00:00Z' },
@@ -130,9 +137,9 @@ for (const [name, body] of [
   assert.equal(w[0].utilization, 42, 'keyed form wins over the list entry')
   assert.equal(w[1].id, 'weekly_scoped:apps')
   assert.equal(w[1].label, 'Current week (apps)', 'a surface scope labels like a model scope')
-}
+})
 
-{
+test('a null figure is skipped, never drawn as 0%', () => {
   // A window the plan has but is not metering arrives with a null figure — it
   // must be skipped, never drawn as 0%.
   const w = parsePlanWindows({
@@ -144,9 +151,9 @@ for (const [name, body] of [
     ['seven_day']
   )
   assert.equal(w[0].resetsAt, undefined, 'a null reset stays absent')
-}
+})
 
-{
+test('utilization is clamped for the meter, raw kept for the tooltip', () => {
   // Clamped for the meter, raw kept for the tooltip: if the field ever turns
   // out to be a 0-1 fraction, `raw` is what makes that visible.
   const w = parsePlanWindows({ five_hour: { utilization: 140 } })
@@ -154,12 +161,14 @@ for (const [name, body] of [
   assert.equal(w[0].raw, 140)
   const frac = parsePlanWindows({ five_hour: { utilization: 0.42 } })
   assert.equal(frac[0].raw, 0.42, 'a fractional report survives verbatim in raw')
-}
+})
 
-for (const body of [null, undefined, {}, [], 'nope', 42, { five_hour: {} }, { five_hour: null }])
-  assert.deepEqual(parsePlanWindows(body), [], `unreadable body yields no windows: ${JSON.stringify(body)}`)
+test('an unreadable body yields no windows', () => {
+  for (const body of [null, undefined, {}, [], 'nope', 42, { five_hour: {} }, { five_hour: null }])
+    assert.deepEqual(parsePlanWindows(body), [], `unreadable body yields no windows: ${JSON.stringify(body)}`)
+})
 
-{
+test('reset timestamps: seconds, milliseconds and unparseable', () => {
   // Reset timestamps arrive in whatever form; seconds and milliseconds both.
   const secs = parsePlanWindows({ five_hour: { utilization: 1, resets_at: 1755624000 } })
   assert.equal(secs[0].resetsAt, new Date(1755624000_000).toISOString())
@@ -168,15 +177,17 @@ for (const body of [null, undefined, {}, [], 'nope', 42, { five_hour: {} }, { fi
   const bad = parsePlanWindows({ five_hour: { utilization: 1, resets_at: 'soon' } })
   assert.equal(bad[0].resetsAt, undefined, 'an unparseable reset is absent, not Invalid Date')
   assert.equal(bad[0].utilization, 1, 'and it does not cost us the utilization')
-}
+})
 
 // --- token gate --------------------------------------------------------------
-assert.ok(isOauthToken('sk-ant-oat01-abc'))
-assert.ok(!isOauthToken('sk-ant-api03-abc'), 'an API key has no plan windows to ask about')
-assert.ok(!isOauthToken(''))
+test('token gate', () => {
+  assert.ok(isOauthToken('sk-ant-oat01-abc'))
+  assert.ok(!isOauthToken('sk-ant-api03-abc'), 'an API key has no plan windows to ask about')
+  assert.ok(!isOauthToken(''))
 
-assert.equal(tightest([]), undefined)
-assert.equal(tightest(parsePlanWindows(FLAT)).id, 'five_hour', 'the fullest window is the one to show')
+  assert.equal(tightest([]), undefined)
+  assert.equal(tightest(parsePlanWindows(FLAT)).id, 'five_hour', 'the fullest window is the one to show')
+})
 
 // --- the fetcher: rate floor and cache retention -----------------------------
 const AGENTS = { work: { kind: 'claude-code', label: 'work', credentialId: 'c1' } }
@@ -201,7 +212,7 @@ function harness({ responses }) {
   return { store, calls: () => calls, advance: (ms) => (clock += ms) }
 }
 
-{
+test('the fetcher: rate floor and cache retention', async () => {
   const h = harness({ responses: [{ body: FLAT }] })
   const first = await h.store.get()
   assert.equal(h.calls(), 1)
@@ -217,9 +228,9 @@ function harness({ responses }) {
   h.advance(61_000)
   await h.store.get()
   assert.equal(h.calls(), 2, 'past the floor it polls again')
-}
+})
 
-{
+test('a 429 keeps the previous windows and records why', async () => {
   // A 429 keeps the previous windows and records why — the same degradation
   // Claude Code's own /usage does rather than showing nothing.
   const h = harness({ responses: [{ body: FLAT }, { ok: false, status: 429 }] })
@@ -229,9 +240,9 @@ function harness({ responses }) {
   assert.equal(after.work.windows.length, 2, 'last good read survives the failure')
   assert.match(after.work.error, /rate limited/)
   assert.ok(after.work.fetchedAt, 'and still says when that read was taken')
-}
+})
 
-{
+test('an unreadable 200 shape does not blank the meters', async () => {
   // A 200 whose shape we cannot read must not blank the meters to zero.
   const h = harness({ responses: [{ body: FLAT }, { body: { unexpected: true } }] })
   await h.store.get()
@@ -239,9 +250,9 @@ function harness({ responses }) {
   const after = await h.store.get()
   assert.equal(after.work.windows.length, 2, 'a shape change is not an empty plan')
   assert.match(after.work.error, /shape/)
-}
+})
 
-{
+test('an API-key agent is skipped outright', async () => {
   // An API-key agent is skipped outright rather than collecting 401s.
   const store = createPlanUsage(createBus(), {
     agents: async () => ({ api: { kind: 'claude-code', label: 'api', credentialId: 'k' } }),
@@ -252,9 +263,9 @@ function harness({ responses }) {
   })
   const out = await store.get()
   assert.match(out.api.error, /no subscription token/)
-}
+})
 
-{
+test('other kinds never touch this endpoint at all', async () => {
   // Other kinds never touch this endpoint at all.
   const store = createPlanUsage(createBus(), {
     agents: async () => ({ cx: { kind: 'codex', label: 'cx', credentialId: 'c1' } }),
@@ -262,6 +273,4 @@ function harness({ responses }) {
     fetchImpl: async () => assert.fail('codex has no claude plan window')
   })
   assert.deepEqual(await store.get(), {})
-}
-
-console.log('plan-usage: ok')
+})

@@ -7,6 +7,7 @@
 // Covers the acceptance list of docs/logging.md: value-based redaction (1),
 // ANSI + newline sanitization (3), drop accounting under a flood (4), rotation
 // and the 6-file cap (5), and an unwritable log dir leaving the app usable (6).
+import { test, after } from 'node:test'
 import { build } from 'esbuild'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
@@ -388,8 +389,10 @@ function scenario(name, envOverrides = {}) {
   return { ...JSON.parse(out.slice(i + 1)), root, stdout: out.slice(0, i), stderr: res.stderr ?? '' }
 }
 
+after(() => fs.rmSync(tmp, { recursive: true, force: true }))
+
 // --- 1. record format, sanitization, redaction ----------------------------
-{
+test('format · sanitization · redaction · modes', () => {
   const r = scenario('format')
   const lines = r.app.split('\n').filter(Boolean)
   assert.equal(lines.length, 3, 'one record per call, and debug is filtered')
@@ -431,36 +434,32 @@ function scenario(name, envOverrides = {}) {
   assert.ok(!r.app.includes('building'), 'provisioning output never reaches the app log')
   assert.equal(fs.statSync(path.join(r.root, 'logs')).mode & 0o777, 0o700, 'dir mode 0700')
   assert.equal(fs.statSync(path.join(r.root, 'logs/gurt.log')).mode & 0o777, 0o600, 'file mode 0600')
-  console.log('ok  format · sanitization · redaction · modes')
-}
+})
 
 // --- 1. a secret used as the scope is redacted, not just msg/ctx -----------
-{
+test('a secret used as the scope is redacted (logRenderer and createLogger)', () => {
   const r = scenario('scopeSecret')
   assert.ok(!r.app.includes('abc123secretvaluezzz9988'), 'the raw secret never appears via scope')
   assert.ok(r.app.includes('[redacted] renderer.msg'), 'logRenderer scope is redacted')
   assert.ok(r.app.includes('[redacted] main.msg'), 'createLogger scope is redacted too')
-  console.log('ok  a secret used as the scope is redacted (logRenderer and createLogger)')
-}
+})
 
 // --- session log deletion --------------------------------------------------
-{
+test('session log deleted with its session', () => {
   const r = scenario('dropSession')
   assert.equal(r.before, true)
   assert.equal(r.after, false, 'dropSessionLog removes the file')
-  console.log('ok  session log deleted with its session')
-}
+})
 
 // --- 8. fileId collision -----------------------------------------------
-{
+test('fileId collision (distinct hash suffix per raw key)', () => {
   const r = scenario('fileIdCollision')
   assert.equal(r.files.length, 2, 'distinct keys that sanitize to the same id get distinct files')
   assert.equal(r.after.length, 1, 'dropping one session file leaves the other in place')
-  console.log('ok  fileId collision (distinct hash suffix per raw key)')
-}
+})
 
 // --- 5. rotation -----------------------------------------------------------
-{
+test('rotation at open · 6-file cap', () => {
   const r = scenario('rotateAtOpen')
   assert.deepEqual(
     r.files,
@@ -469,93 +468,89 @@ function scenario(name, envOverrides = {}) {
   )
   assert.deepEqual(r.gen, ['', 'gen1', 'gen2', 'gen3', 'gen4'], 'generations shift by one')
   assert.match(r.fresh, /INF m \[app\] app\.start\n$/, 'gurt.log is fresh')
-  console.log('ok  rotation at open · 6-file cap')
-}
-{
+})
+
+test('rotation on write', () => {
   const r = scenario('rotateOnWrite')
   assert.equal(r.rotated, true, 'crossing 10 MB rotates')
   assert.ok(r.size < 10 * 1024 * 1024, 'gurt.log restarts small')
   assert.ok(fs.statSync(path.join(r.root, 'logs/gurt.log.1')).size >= 8 * 1024 * 1024)
-  console.log(`ok  rotation on write (gurt.log ${r.size} B after rotate)`)
-}
+  console.log(`rotation on write (gurt.log ${r.size} B after rotate)`)
+})
 
 // --- 4. drop accounting ----------------------------------------------------
-{
+test('bounded queue', () => {
   const r = scenario('queueFlood')
   assert.ok(r.dropped > 0, 'overflow is dropped')
   assert.ok(r.lines > 900 && r.lines < 5000, `bounded queue kept ${r.lines} records`)
-  console.log(`ok  bounded queue (${r.lines} written, log.dropped n=${r.dropped})`)
-}
-{
+  console.log(`bounded queue (${r.lines} written, log.dropped n=${r.dropped})`)
+})
+
+test('renderer transport', () => {
   const r = scenario('rendererFlood')
   assert.ok(r.accepted <= 200 && r.accepted > 0, `rate limit held at ${r.accepted}/s`)
   assert.ok(r.dropped >= 700, 'the rest is counted into log.dropped')
   assert.equal(r.ignored, false, 'an invalid level is dropped')
   assert.equal(r.renderTag, true, 'renderer records are tagged `r` with a sanitized scope')
   assert.equal(r.fallback, true, 'an empty scope falls back to [renderer]')
-  console.log(`ok  renderer transport (accepted ${r.accepted}, dropped ${r.dropped})`)
-}
+  console.log(`renderer transport (accepted ${r.accepted}, dropped ${r.dropped})`)
+})
 
 // --- 6. unwritable log directory ------------------------------------------
-if (process.getuid?.() === 0) {
-  console.log('--  skipped unwritable-dir test (running as root)')
-} else {
+test('EACCES on the log file · app unaffected · one console report', {
+  skip: process.getuid?.() === 0 ? 'running as root' : false
+}, () => {
   const r = scenario('unwritable')
   assert.equal(r.alive, true, 'the app keeps running')
   assert.equal(r.size, 0, 'nothing was written')
   assert.match(r.stderr, /gurt: logging to .*gurt\.log disabled/, 'reported on the console')
   assert.equal((r.stderr.match(/logging to/g) ?? []).length, 1, 'reported exactly once')
-  console.log('ok  EACCES on the log file · app unaffected · one console report')
-}
+})
 
 // --- flushSync + record truncation ----------------------------------------
-{
+test('flushSync', () => {
   const r = scenario('flushSync')
   assert.match(r.app, /INF m \[app\] app\.quit\n$/, 'flushSync lands the queue synchronously')
-  console.log('ok  flushSync')
-}
-{
+})
+
+test('8 KB record cap', () => {
   const r = scenario('truncate')
   assert.ok(r.len <= 8 * 1024, `record truncated to ${r.len} B`)
   assert.equal(r.oneLine, 1, 'still one line')
-  console.log('ok  8 KB record cap')
-}
+})
 
 // --- 2. level checks use hasOwnProperty, not `in` -------------------------
-{
+test('logRenderer rejects prototype-chain level names', () => {
   const r = scenario('protoLevel')
   assert.ok(!r.app.includes('should not appear'), 'a prototype-chain level name is rejected, not treated as valid')
   assert.ok(!r.app.includes('[native code]'), 'no garbage level tag leaks into the record')
   assert.ok(r.app.includes('control.record'), 'normal logging still works')
-  console.log('ok  logRenderer rejects prototype-chain level names')
-}
-{
+})
+
+test('envLevel() rejects prototype-chain level names too', () => {
   const r = scenario('envLevelPoison', { GURT_LOG: 'constructor' })
   assert.equal(r.logLevel, 'info', 'GURT_LOG=constructor (a prototype property name) falls back to the default level')
   assert.ok(r.app.includes('control.record'), 'logging still works at the fallback level')
-  console.log('ok  envLevel() rejects prototype-chain level names too')
-}
+})
 
 // --- 3. ctx keys are sanitized and length-limited --------------------------
-{
+test('ctx keys go through the same sanitize/redact pipeline as values', () => {
   const r = scenario('keyRedaction')
   assert.ok(!r.app.includes('xk-supersecretkeyname1234567890'), 'a secret used as a ctx key is redacted, not just its value')
   assert.ok(r.app.includes('[redacted]'), 'the redacted key still appears as [redacted]')
   assert.ok(!r.app.includes('x'.repeat(100)), 'a very long ctx key is length-limited, not written in full')
-  console.log('ok  ctx keys go through the same sanitize/redact pipeline as values')
-}
+})
 
 // --- 1. secret at the pre-sanitize truncation boundary ----------------------
-{
+test('secret at the truncation boundary is not sliced in half', () => {
   const r = scenario('recordBoundary')
   assert.equal(r.hasSecret, false, 'a secret near the record-size truncation boundary is not sliced in half')
   assert.ok(r.hasRedacted, 'redaction still fires for a secret positioned right before the record limit')
   assert.ok(r.lineBytes > 0 && r.lineBytes <= 8 * 1024, 'the final record still respects the 8 KB byte cap')
-  console.log('ok  secret at the truncation boundary is not sliced in half')
-}
+})
 
 // --- 1. sanitize() stays roughly linear -------------------------------------
-{
+test('sanitize() stays linear', () => {
   const r = scenario('perfSanitize')
   // What this guards is a complexity class, not a latency budget: the old
   // URL-creds regex backtracked quadratically and took >100 s on 1 MB, while
@@ -564,11 +559,11 @@ if (process.getuid?.() === 0) {
   // threshold set far above any plausible shared-runner stall and far below
   // the bug, instead of a tight one that a loaded CI box trips on its own.
   assert.ok(r.ms < 30000, `sanitize() of a 1 MB string took ${r.ms} ms — the old backtracking regex took >100 s at this size`)
-  console.log(`ok  sanitize() stays linear (1 MB in ${r.ms} ms)`)
-}
+  console.log(`sanitize() stays linear (1 MB in ${r.ms} ms)`)
+})
 
 // --- a ctx fanned out across levels cannot blow up the walk -----------------
-{
+test('a fanned-out ctx is bounded by a shared budget', () => {
   const r = scenario('perfCtxBudget')
   // Same reasoning as perfSanitize: ~262k leaf sanitize() calls without a
   // cross-level budget measured at ~25 s, the budgeted walk at a few ms. The
@@ -579,38 +574,30 @@ if (process.getuid?.() === 0) {
     `a ctx nested 3 levels deep (64x64x64) took ${r.ms} ms to serialize — a shared cross-level budget should bound this to a few ms, not the ~25 s a per-level-only cap allows`
   )
   assert.ok(r.recordBytes > 0 && r.recordBytes <= 8 * 1024, 'the record still respects the 8 KB byte cap')
-  console.log(`ok  a fanned-out ctx is bounded by a shared budget (${r.ms} ms, ${r.recordBytes} B)`)
-}
+  console.log(`a fanned-out ctx is bounded by a shared budget (${r.ms} ms, ${r.recordBytes} B)`)
+})
 
 // --- 6. byte-accurate record truncation -------------------------------------
-{
+test('multi-byte records are capped by bytes, not UTF-16 code units', () => {
   const r = scenario('byteTruncate')
   assert.ok(
     r.byteLens.length === 2 && r.byteLens.every((n) => n <= 8 * 1024),
     `every record respects the 8 KB byte cap even with multi-byte content: ${r.byteLens}`
   )
   assert.equal(r.hasLoneSurrogate, false, 'byte-accurate truncation never splits a surrogate pair into a lone one')
-  console.log('ok  multi-byte records are capped by bytes, not UTF-16 code units')
-}
+})
 
 // --- 7. a pre-existing log file's mode is tightened on open -----------------
-{
+test('fchmodSync corrects a pre-existing log file mode', () => {
   const r = scenario('fixMode')
   assert.equal(r.mode, 0o600, 'a pre-existing gurt.log with a looser mode is tightened to 0600 on open')
-  console.log('ok  fchmodSync corrects a pre-existing log file mode')
-}
+})
 
 // --- 9. open session sinks are capped ---------------------------------------
-{
+test('session sinks past the cap release their fd', (t) => {
   const r = scenario('fdCap')
-  if (r.skipped) {
-    console.log('--  skipped fd-cap test (no /proc/self/fd on this platform)')
-  } else {
-    assert.equal(r.files, 200, 'every session still gets its file even once the open-sink cap evicts idle fds')
-    assert.ok(r.after - r.before < 100, `open fd count stays bounded past 64 concurrent sessions (+${r.after - r.before})`)
-    console.log(`ok  session sinks past the cap release their fd (open fds +${r.after - r.before})`)
-  }
-}
-
-fs.rmSync(tmp, { recursive: true, force: true })
-console.log('\nlog tests passed')
+  if (r.skipped) return t.skip('no /proc/self/fd on this platform')
+  assert.equal(r.files, 200, 'every session still gets its file even once the open-sink cap evicts idle fds')
+  assert.ok(r.after - r.before < 100, `open fd count stays bounded past 64 concurrent sessions (+${r.after - r.before})`)
+  console.log(`session sinks past the cap release their fd (open fds +${r.after - r.before})`)
+})

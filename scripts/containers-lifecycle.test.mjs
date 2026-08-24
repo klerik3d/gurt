@@ -30,6 +30,7 @@
 // that call resolves.
 //
 //   node scripts/containers-lifecycle.test.mjs
+import { test, after } from 'node:test'
 import { build } from 'esbuild'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import net from 'node:net'
@@ -232,13 +233,17 @@ async function awaitRefused(port) {
   return false
 }
 
-let exitCode = 0
+after(() => {
+  m.flushSync()
+  fs.rmSync(outfile, { force: true })
+  fs.rmSync(BIN, { recursive: true, force: true })
+  fs.rmSync(GURT_ROOT, { recursive: true, force: true })
+})
 
-try {
-  // ==========================================================================
-  // release(): the container does not survive its session
-  // ==========================================================================
-
+// ==========================================================================
+// release(): the container does not survive its session
+// ==========================================================================
+test('release removes the container, clears the record, detaches first', async () => {
   scenario([{ id: 'c-alpha', session: 's1', running: true }])
   session('s1', { status: 'running', id: 'c-alpha', remoteWorkspaceFolder: '/w', repos: ['alpha'] })
   // The git broker is derived from the session's container — teardown must take
@@ -266,9 +271,10 @@ try {
     'the tree is told'
   )
   assert.ok(await awaitRefused(brokerPort), "the session's git broker goes down with it")
-  console.log('release removes the container, clears the record, detaches first OK')
+})
 
-  // --- and doing it again changes nothing ---
+// --- and doing it again changes nothing ---
+test('teardown is idempotent, and harmless on an unknown session', async () => {
   const before = calls().length
   await manager.release('s1', 'session-deleted')
   await manager.release('s1', 'session-deleted')
@@ -278,12 +284,12 @@ try {
   // A teardown of a session that never existed at all is equally quiet.
   await manager.release('never-existed', 'session-deleted')
   assert.deepEqual(mutations(), [['rm', '-f', 'c-alpha']])
-  console.log('teardown is idempotent, and harmless on an unknown session OK')
+})
 
-  // ==========================================================================
-  // The record is not the registry
-  // ==========================================================================
-
+// ==========================================================================
+// The record is not the registry
+// ==========================================================================
+test('teardown sweeps by label, not by record', async () => {
   // A start that died between `docker run` (which stamped the label) and `up`
   // returning (which would have recorded the id): the session's record names no
   // container at all, and only the daemon knows this one exists.
@@ -312,21 +318,22 @@ try {
     'every container carrying the session label goes, recorded or not'
   )
   assert.deepEqual(alive(), [{ id: 'c-other', session: 's4', running: true }], "another session's container is untouched")
-  console.log('teardown sweeps by label, not by record OK')
+})
 
-  // --- short vs. full ids are one container, removed once ---
+// --- short vs. full ids are one container, removed once ---
+test('short and full container ids are not removed twice', async () => {
   const FULL = 'abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789'
   scenario([{ id: FULL, session: 's5', running: true }])
   session('s5', { status: 'running', id: FULL.slice(0, 12), repos: ['alpha'] })
   await manager.release('s5', 'session-deleted')
   assert.equal(mutations().length, 1, 'the short record and the full sweep id are one container')
   assert.deepEqual(alive(), [])
-  console.log('short and full container ids are not removed twice OK')
+})
 
-  // ==========================================================================
-  // `docker ps` failing is not "there are none"
-  // ==========================================================================
-
+// ==========================================================================
+// `docker ps` failing is not "there are none"
+// ==========================================================================
+test('an unreachable daemon does not turn teardown into a no-op', async () => {
   scenario([{ id: 'c-blind', session: 's6', running: true }], { psExit: 1 })
   session('s6', { status: 'running', id: 'c-blind', repos: ['alpha'] })
   await manager.release('s6', 'session-deleted')
@@ -336,17 +343,18 @@ try {
     'an unreachable daemon falls back to the recorded id instead of removing nothing'
   )
   assert.deepEqual(cleared, ['s6'], 'the record is cleared either way')
-  console.log('an unreachable daemon does not turn teardown into a no-op OK')
+})
 
-  // ==========================================================================
-  // The fcc244a shape: the session record vanishes mid-teardown
-  // ==========================================================================
-  //
-  // `deleteSession` calls the teardown and drops the session record
-  // synchronously right after — so anything the teardown reads after its first
-  // await is already gone. With `docker ps` also blind, the recorded id read
-  // before that await is the ONLY thing that can name the container: if
-  // containers.ts ever reads it later instead, this leaks.
+// ==========================================================================
+// The fcc244a shape: the session record vanishes mid-teardown
+// ==========================================================================
+//
+// `deleteSession` calls the teardown and drops the session record
+// synchronously right after — so anything the teardown reads after its first
+// await is already gone. With `docker ps` also blind, the recorded id read
+// before that await is the ONLY thing that can name the container: if
+// containers.ts ever reads it later instead, this leaks.
+test('a session dropped mid-teardown does not leak its container', async () => {
   scenario([{ id: 'c-race', session: 's7', running: true }], { psExit: 1 })
   session('s7', { status: 'running', id: 'c-race', repos: ['alpha'] })
   const inflight = manager.release('s7', 'session-deleted')
@@ -358,7 +366,7 @@ try {
     'a session deleted mid-teardown still takes its container with it'
   )
   assert.deepEqual(alive(), [])
-  console.log('a session dropped mid-teardown does not leak its container OK')
+
 
   // The same race with the daemon reachable: the label sweep covers it.
   scenario([{ id: 'c-race2', session: 's8', running: true }])
@@ -367,11 +375,12 @@ try {
   sessions.delete('s8')
   await inflight2
   assert.deepEqual(alive(), [], 'the label sweep catches it too')
+})
 
-  // ==========================================================================
-  // stop(): the container survives, the session can resume into it
-  // ==========================================================================
-
+// ==========================================================================
+// stop(): the container survives, the session can resume into it
+// ==========================================================================
+test('stop keeps the container and its record, and announces the transition', async () => {
   scenario([{ id: 'c-keep', session: 's9', running: true }])
   session('s9', { status: 'running', id: 'c-keep', remoteWorkspaceFolder: '/w', repos: ['alpha'], error: 'stale' })
   await manager.stop('s9', 'idle')
@@ -396,19 +405,20 @@ try {
   assert.equal(manager.status('s9'), 'stopped')
   assert.equal(manager.status('no-such-session'), 'stopped', 'an unknown session reads as stopped')
   assert.equal(manager.container('no-such-session'), undefined)
-  console.log('stop keeps the container and its record, and announces the transition OK')
+})
 
-  // A session with no container id has nothing to stop.
+test('a session with no container id has nothing to stop', async () => {
   scenario([])
   session('s10', { status: 'error', repos: ['alpha'], error: 'never came up' })
   await manager.stop('s10', 'user')
   assert.deepEqual(calls(), [], 'stop on a session with no container id asks docker nothing')
   assert.equal(sessions.get('s10').container.status, 'error', 'and does not clobber its status')
+})
 
-  // ==========================================================================
-  // Task / workspace teardown
-  // ==========================================================================
-
+// ==========================================================================
+// Task / workspace teardown
+// ==========================================================================
+test('task and workspace teardown cover exactly their own sessions', async () => {
   scenario([
     { id: 'c-t1', session: 'a1', running: true },
     { id: 'c-t2', session: 'a2', running: true },
@@ -446,12 +456,12 @@ try {
   await manager.stopTask('ws', 'task-a')
   assert.deepEqual(mutations(), [['stop', 'c-s1']], 'an already-stopped container is left alone')
   assert.deepEqual(alive().length, 2, 'stopTask removes nothing')
-  console.log('task and workspace teardown cover exactly their own sessions OK')
+})
 
-  // ==========================================================================
-  // Boot reconcile: the daemon is the registry
-  // ==========================================================================
-
+// ==========================================================================
+// Boot reconcile: the daemon is the registry
+// ==========================================================================
+test('reconcile corrects records and reaps orphans', async () => {
   scenario([
     { id: 'c-ok', session: 'k1', running: true },
     { id: 'c-exited', session: 'k2', running: false },
@@ -484,15 +494,17 @@ try {
     'live containers of live sessions survive the reconcile'
   )
   assert.deepEqual(detaches, [], 'reconcile detaches nothing — it did not tear a session down')
-  console.log('reconcile corrects records and reaps orphans OK')
+
 
   // An orphan is not logged into a session log file it would never own again.
   assert.ok(
     !fs.existsSync(path.join(GURT_ROOT, 'logs', 'session-k-deleted-while-down.log')),
     'reaping an orphan does not create a log file for a session that no longer exists'
   )
+})
 
-  // --- the unreachable daemon: leave every record alone ---
+// --- the unreachable daemon: leave every record alone ---
+test('reconcile skips entirely when docker is unreachable', async () => {
   scenario([{ id: 'c-safe', session: 'u1', running: true }], { psExit: 1 })
   session('u1', { status: 'running', id: 'c-safe', repos: ['alpha'] })
   session('u2', { status: 'running', id: 'c-also-safe', repos: ['alpha'] })
@@ -501,12 +513,12 @@ try {
   assert.equal(sessions.get('u1').container.id, 'c-safe')
   assert.equal(sessions.get('u2').container.id, 'c-also-safe')
   assert.deepEqual(mutations(), [], 'and removes nothing')
-  console.log('reconcile skips entirely when docker is unreachable OK')
+})
 
-  // ==========================================================================
-  // openVscode gates on a running container
-  // ==========================================================================
-
+// ==========================================================================
+// openVscode gates on a running container
+// ==========================================================================
+test('openVscode refuses anything but a fully-up container', () => {
   scenario([])
   session('v1', { status: 'stopped', id: 'c-v', remoteWorkspaceFolder: '/w', repos: ['alpha'] })
   session('v2', { status: 'running', repos: ['alpha'] })
@@ -519,22 +531,4 @@ try {
   ])
     assert.throws(() => manager.openVscode(id), /container is not running/, `${what} is refused`)
   assert.deepEqual(calls(), [], 'and nothing was spawned')
-  console.log('openVscode refuses anything but a fully-up container OK')
-
-  m.flushSync()
-  console.log('containers-lifecycle.test: PASS')
-} catch (e) {
-  console.error('containers-lifecycle.test: FAIL')
-  console.error(e)
-  exitCode = 1
-} finally {
-  m.flushSync()
-  fs.rmSync(outfile, { force: true })
-  fs.rmSync(BIN, { recursive: true, force: true })
-  fs.rmSync(GURT_ROOT, { recursive: true, force: true })
-}
-
-// `resolveGitBroker` above binds a listener that the teardown under test is
-// expected to close; nothing else here is pending. Exit explicitly rather than
-// depend on that expectation holding while the suite is red.
-process.exit(exitCode)
+})

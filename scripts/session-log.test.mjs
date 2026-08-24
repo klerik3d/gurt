@@ -3,6 +3,7 @@
 // the real electron-free kernel. Bundles the TS with esbuild on the fly.
 //
 //   node scripts/session-log.test.mjs
+import { test, after } from 'node:test'
 import { build } from 'esbuild'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import path from 'node:path'
@@ -38,26 +39,33 @@ await build({
 
 const { applyLog, createKernel } = await import(pathToFileURL(outfile).href)
 
-try {
-  // --- applyLog: entry / append / patch -----------------------------------
-  const e1 = { seq: 1, type: 'entry', entry: { id: 1, kind: 'user', text: 'hi' } }
-  const e2 = { seq: 2, type: 'entry', entry: { id: 2, kind: 'agent', text: 'he' } }
-  const a3 = { seq: 3, type: 'append', id: 2, text: 'llo' }
-  const t4 = {
-    seq: 4,
-    type: 'entry',
-    entry: { id: 3, kind: 'tool', toolCallId: 't1', title: 'run tests', status: 'pending' }
-  }
-  const p5 = { seq: 5, type: 'patch', id: 3, patch: { status: 'completed', detail: 'ok' } }
-  const perm6 = {
-    seq: 6,
-    type: 'entry',
-    entry: { id: 4, kind: 'permission', title: 'allow?', options: [] }
-  }
-  const p7 = { seq: 7, type: 'patch', id: 4, patch: { chosen: 'yes' } }
-  const all = [e1, e2, a3, t4, p5, perm6, p7]
+after(() => {
+  fs.rmSync(GURT_ROOT, { recursive: true, force: true })
+  fs.rmSync(outfile, { force: true })
+})
 
-  const folded = applyLog([], all)
+// --- applyLog: entry / append / patch -----------------------------------
+const e1 = { seq: 1, type: 'entry', entry: { id: 1, kind: 'user', text: 'hi' } }
+const e2 = { seq: 2, type: 'entry', entry: { id: 2, kind: 'agent', text: 'he' } }
+const a3 = { seq: 3, type: 'append', id: 2, text: 'llo' }
+const t4 = {
+  seq: 4,
+  type: 'entry',
+  entry: { id: 3, kind: 'tool', toolCallId: 't1', title: 'run tests', status: 'pending' }
+}
+const p5 = { seq: 5, type: 'patch', id: 3, patch: { status: 'completed', detail: 'ok' } }
+const perm6 = {
+  seq: 6,
+  type: 'entry',
+  entry: { id: 4, kind: 'permission', title: 'allow?', options: [] }
+}
+const p7 = { seq: 7, type: 'patch', id: 4, patch: { chosen: 'yes' } }
+const all = [e1, e2, a3, t4, p5, perm6, p7]
+
+let folded
+
+test('applyLog entry/append/patch', () => {
+  folded = applyLog([], all)
   assert.equal(folded.length, 4)
   assert.deepEqual(folded[0], { id: 1, kind: 'user', text: 'hi' })
   assert.deepEqual(folded[1], { id: 2, kind: 'agent', text: 'hello' })
@@ -65,22 +73,25 @@ try {
   assert.equal(folded[2].detail, 'ok')
   assert.equal(folded[2].title, 'run tests')
   assert.equal(folded[3].chosen, 'yes')
-  console.log('applyLog entry/append/patch OK')
+})
 
+test('fold == incremental', () => {
   // fold(all records) == incremental application, one record at a time
   let inc = []
   for (const r of all) inc = applyLog(inc, [r])
   assert.deepEqual(inc, folded)
-  console.log('fold == incremental OK')
+})
 
+test('purity', () => {
   // pure: returns a new array, never mutates the input
   const base = applyLog([], [e1])
   const before = structuredClone(base)
   const next = applyLog(base, [e2, a3])
   assert.notEqual(next, base)
   assert.deepEqual(base, before)
-  console.log('purity OK')
+})
 
+test('unknown id / unknown type ignored', () => {
   // unknown ids (out-of-order deltas) and unknown record types are ignored
   const ignored = applyLog(folded, [
     { seq: 8, type: 'append', id: 99, text: 'x' },
@@ -88,16 +99,18 @@ try {
     { seq: 10, type: 'compact' }
   ])
   assert.deepEqual(ignored, folded)
-  console.log('unknown id / unknown type ignored OK')
+})
 
+test('entry idempotence', () => {
   // a re-delivered entry record replaces instead of duplicating (snapshot/delta race)
   const redelivered = applyLog(folded, [
     { seq: 2, type: 'entry', entry: { id: 2, kind: 'agent', text: 'hello' } }
   ])
   assert.deepEqual(redelivered, folded)
-  console.log('entry idempotence OK')
+})
 
-  // --- migration: legacy sessions.json (with entries) restores identically --
+// --- migration: legacy sessions.json (with entries) restores identically --
+test('legacy migration', async () => {
   const info = {
     id: 'sess-1',
     envRepo: 'hello',
@@ -140,10 +153,4 @@ try {
   assert.deepEqual(records.map((r) => r.seq), [1, 2, 3])
   assert.ok(records.every((r) => r.type === 'entry'))
   assert.deepEqual(applyLog([], records), entries)
-  console.log('legacy migration OK')
-
-  console.log('session-log.test: PASS')
-} finally {
-  fs.rmSync(GURT_ROOT, { recursive: true, force: true })
-  fs.rmSync(outfile, { force: true })
-}
+})

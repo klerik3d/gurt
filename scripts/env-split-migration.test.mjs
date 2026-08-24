@@ -4,6 +4,7 @@
 // on the fly, like agent-migration.test.mjs.
 //
 //   node scripts/env-split-migration.test.mjs
+import { test, after } from 'node:test'
 import { build } from 'esbuild'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import path from 'node:path'
@@ -41,12 +42,17 @@ const m = await import(pathToFileURL(outfile).href)
 const read = (p) => fs.readFileSync(p, 'utf8')
 const readJson = (p) => JSON.parse(read(p))
 
-try {
-  const ws = 'ws1'
-  const task = 't'
-  fs.mkdirSync(path.join(GURT_ROOT, ws, task), { recursive: true })
+const ws = 'ws1'
+const task = 't'
+fs.mkdirSync(path.join(GURT_ROOT, ws, task), { recursive: true })
 
-  // --- workspace.json: repos fuse devcontainer, no envs ---
+after(() => {
+  fs.rmSync(outfile, { force: true })
+  fs.rmSync(GURT_ROOT, { recursive: true, force: true })
+})
+
+// --- workspace.json: repos fuse devcontainer, no envs ---
+test('workspace.json migration + write-once', async () => {
   const wsPath = path.join(GURT_ROOT, ws, 'workspace.json')
   fs.writeFileSync(
     wsPath,
@@ -80,9 +86,10 @@ try {
   // … and exactly once: a second read leaves the file byte-identical
   await m.getWorkspace(ws)
   assert.equal(read(wsPath), migratedWs, 'workspace.json write-back happens exactly once')
-  console.log('workspace.json migration + write-once OK')
+})
 
-  // --- task.json: per-env container records fold onto their owning session ---
+// --- task.json: per-env container records fold onto their owning session ---
+test('container fold onto sessions + write-once', async () => {
   // Containers used to live in task.json, one slot per env reused by successive
   // sessions. Each record names the session that owned it, so the fold is just
   // moving it to that session; a record naming no live session describes a
@@ -144,9 +151,10 @@ try {
   await m.readSessions(ws, task)
   assert.equal(read(taskPath), migratedTask, 'task.json write-back happens exactly once')
   assert.equal(read(sessPath), migratedSess, 'sessions.json write-back happens exactly once')
-  console.log('container fold onto sessions + write-once OK')
+})
 
-  // --- sessions.json: info.envRepo fuses env + repo ---
+// --- sessions.json: info.envRepo fuses env + repo ---
+test('sessions.json migration', async () => {
   const task2 = 't2'
   fs.mkdirSync(path.join(GURT_ROOT, ws, task2), { recursive: true })
   const sess2Path = path.join(GURT_ROOT, ws, task2, 'sessions.json')
@@ -179,9 +187,10 @@ try {
   assert.ok(!migrated2.includes('envRepo'), 'legacy key gone from disk')
   await m.readSessions(ws, task2)
   assert.equal(read(sess2Path), migrated2, 'sessions.json write-back happens exactly once')
-  console.log('sessions.json migration OK')
+})
 
-  // --- already-migrated workspace.json is not rewritten ---
+// --- already-migrated workspace.json is not rewritten ---
+test('no-op on already-migrated', async () => {
   const ws2 = 'ws2'
   fs.mkdirSync(path.join(GURT_ROOT, ws2), { recursive: true })
   const ws2Path = path.join(GURT_ROOT, ws2, 'workspace.json')
@@ -193,14 +202,4 @@ try {
   const ws2Data = await m.getWorkspace(ws2)
   assert.deepEqual(ws2Data.envs, [])
   assert.equal(read(ws2Path), before2, 'already-migrated workspace.json is left untouched')
-  console.log('no-op on already-migrated OK')
-
-  console.log('env-split-migration.test: PASS')
-} catch (e) {
-  console.error('env-split-migration.test: FAIL')
-  console.error(e)
-  process.exitCode = 1
-} finally {
-  fs.rmSync(outfile, { force: true })
-  fs.rmSync(GURT_ROOT, { recursive: true, force: true })
-}
+})

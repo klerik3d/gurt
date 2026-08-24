@@ -8,6 +8,7 @@
 // clone with no daemon (same trick as session-repo-gate.test.mjs).
 //
 //   node scripts/review.test.mjs
+import { test, after } from 'node:test'
 import { build } from 'esbuild'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
@@ -66,40 +67,46 @@ async function settle(kernel, id) {
   throw new Error(`session ${id} never left "starting"`)
 }
 
-try {
-  // --- a real clone, so the diff calls have something to read ---------------
-  fs.mkdirSync(clone, { recursive: true })
-  fs.writeFileSync(
-    path.join(GURT_ROOT, ws, 'workspace.json'),
-    JSON.stringify({
-      repos: [{ name: repo, url: 'https://github.com/o/alpha.git' }],
-      envs: [{ name: 'dev', devcontainer: '{"image":"x"}', repo }]
-    })
-  )
-  fs.writeFileSync(path.join(GURT_ROOT, ws, task, 'task.json'), JSON.stringify({}))
-  fs.writeFileSync(path.join(GURT_ROOT, ws, 'agents.json'), JSON.stringify({ a1: { kind: 'claude-code', label: 'c' } }))
+after(() => {
+  fs.rmSync(outfile, { force: true })
+  fs.rmSync(GURT_ROOT, { recursive: true, force: true })
+})
 
-  git('init', '-q', '-b', 'main')
-  git('config', 'user.email', 't@t.t')
-  git('config', 'user.name', 'T')
-  // Long enough that its untouched middle folds in the split view.
-  const base = Array.from({ length: 30 }, (_, i) => `line ${i}`).join('\n') + '\n'
-  fs.writeFileSync(path.join(clone, 'a.txt'), base)
-  fs.writeFileSync(path.join(clone, 'keep.txt'), 'kept\n')
-  git('add', '-A')
-  git('commit', '-qm', 'base')
-  const head = git('rev-parse', 'HEAD').trim()
-  // One edited line, one new file — the two shapes the panel shows.
-  fs.writeFileSync(path.join(clone, 'a.txt'), base.replace('line 15', 'line FIFTEEN'))
-  fs.writeFileSync(path.join(clone, 'new.txt'), 'fresh\n')
+// --- a real clone, so the diff calls have something to read ---------------
+fs.mkdirSync(clone, { recursive: true })
+fs.writeFileSync(
+  path.join(GURT_ROOT, ws, 'workspace.json'),
+  JSON.stringify({
+    repos: [{ name: repo, url: 'https://github.com/o/alpha.git' }],
+    envs: [{ name: 'dev', devcontainer: '{"image":"x"}', repo }]
+  })
+)
+fs.writeFileSync(path.join(GURT_ROOT, ws, task, 'task.json'), JSON.stringify({}))
+fs.writeFileSync(path.join(GURT_ROOT, ws, 'agents.json'), JSON.stringify({ a1: { kind: 'claude-code', label: 'c' } }))
 
-  const kernel = createKernel()
-  // The boot reconcile drops container records Docker does not confirm; staging
-  // one before it lands would be undone mid-test.
-  await kernel.ready
+git('init', '-q', '-b', 'main')
+git('config', 'user.email', 't@t.t')
+git('config', 'user.name', 'T')
+// Long enough that its untouched middle folds in the split view.
+const base = Array.from({ length: 30 }, (_, i) => `line ${i}`).join('\n') + '\n'
+fs.writeFileSync(path.join(clone, 'a.txt'), base)
+fs.writeFileSync(path.join(clone, 'keep.txt'), 'kept\n')
+git('add', '-A')
+git('commit', '-qm', 'base')
+const head = git('rev-parse', 'HEAD').trim()
+// One edited line, one new file — the two shapes the panel shows.
+fs.writeFileSync(path.join(clone, 'a.txt'), base.replace('line 15', 'line FIFTEEN'))
+fs.writeFileSync(path.join(clone, 'new.txt'), 'fresh\n')
 
-  // --- diff targets --------------------------------------------------------
-  const un = { kind: 'uncommitted' }
+const kernel = createKernel()
+// The boot reconcile drops container records Docker does not confirm; staging
+// one before it lands would be undone mid-test.
+await kernel.ready
+
+const un = { kind: 'uncommitted' }
+
+// --- diff targets --------------------------------------------------------
+test('diff targets', async () => {
   const diffFiles = await getDiffFiles(ws, task, repo, un)
   assert.deepEqual(
     diffFiles.map((f) => f.path).sort(),
@@ -136,11 +143,13 @@ try {
     /not a commit sha/,
     'a sha that is really an option is refused'
   )
-  console.log('diff targets OK')
+})
 
-  // --- comments ------------------------------------------------------------
-  const add = (target, path, line, text) =>
-    kernel.review.addComment(ws, task, repo, target, { path, side: 'after', line, text })
+const add = (target, path, line, text) =>
+  kernel.review.addComment(ws, task, repo, target, { path, side: 'after', line, text })
+
+// --- comments ------------------------------------------------------------
+test('comments', async () => {
 
   const c1 = await add('uncommitted', 'a.txt', 16, 'why shout?')
   await add('uncommitted', 'new.txt', 1, 'needs a test')
@@ -197,15 +206,17 @@ try {
   assert.equal('endLine' in plain, false, 'a plain comment has no endLine key at all')
   await kernel.review.deleteComment(ws, task, ranged.id)
   await kernel.review.deleteComment(ws, task, plain.id)
-  console.log('comments OK')
+})
 
-  // --- the lock ------------------------------------------------------------
-  const ref = { workspace: ws, task, env: 'dev' }
-  const mk = (role, title) => {
-    const info = kernel.sessions.createSession(ref, [repo], 'a1', 'hi', 'draft', [], true, false, {}, role)
-    kernel.sessions.renameSession(info.id, title)
-    return info.id
-  }
+const ref = { workspace: ws, task, env: 'dev' }
+const mk = (role, title) => {
+  const info = kernel.sessions.createSession(ref, [repo], 'a1', 'hi', 'draft', [], true, false, {}, role)
+  kernel.sessions.renameSession(info.id, title)
+  return info.id
+}
+
+// --- the lock ------------------------------------------------------------
+test('lock gates starts', async () => {
 
   await kernel.setReviewLock(ws, task, repo, true)
   assert.ok(reviewJson().locked[repo], 'the lock is on disk, with its timestamp')
@@ -243,9 +254,10 @@ try {
   await kernel.setReviewLock(ws, task, repo, false)
   snap = await settle(kernel, queued)
   assert.doesNotMatch(snap.startError ?? '', /locked for review/, 'unlocking lets the queue through')
-  console.log('lock gates starts OK')
+})
 
-  // --- the lock and a live session are the same exclusion ------------------
+// --- the lock and a live session are the same exclusion ------------------
+test('lock vs. live session', async () => {
   const holder = mk('executor', 'H')
   kernel.sessions.patchContainer(holder, {
     status: 'running',
@@ -260,9 +272,10 @@ try {
   )
   kernel.sessions.patchContainer(holder, undefined)
   await kernel.setReviewLock(ws, task, repo, true)
-  console.log('lock vs. live session OK')
+})
 
-  // --- launch fix ----------------------------------------------------------
+// --- launch fix ----------------------------------------------------------
+test('launch fix', async () => {
   await add('uncommitted', 'a.txt', 16, 'why shout?')
   const done = await add('uncommitted', 'a.txt', 3, 'already handled')
   await kernel.review.resolveComment(ws, task, done.id, true)
@@ -291,9 +304,10 @@ try {
     /nothing to send/,
     'a fix with neither comments nor a prompt is refused'
   )
-  console.log('launch fix OK')
+})
 
-  // --- fixPrompt shape (grouping and ordering) -----------------------------
+// --- fixPrompt shape (grouping and ordering) -----------------------------
+test('fixPrompt', () => {
   const at = '2026-01-01T00:00:00.000Z'
   const c = (p, line, text) => ({
     id: p + line,
@@ -324,25 +338,16 @@ try {
     'Review comments on r:\n\na.ts:3\n  same line twice',
     'endLine equal to line is still a single line'
   )
-  console.log('fixPrompt OK')
+})
 
-  // --- the lock survives a restart -----------------------------------------
+// --- the lock survives a restart -----------------------------------------
+test('lock survives restart', async () => {
   const kernel2 = createKernel()
   await kernel2.ready
   const restored = await kernel2.reviewState(ws, task, repo, un)
   assert.equal(restored.locked, true, 'a lock taken in a previous run still holds')
   const late = kernel2.sessions.createSession(ref, [repo], 'a1', 'hi', 'draft').id
   kernel2.sessions.run(late)
-  snap = await settle(kernel2, late)
+  const snap = await settle(kernel2, late)
   assert.match(snap.startError ?? '', /locked for review/, 'and still gates starts after boot')
-  console.log('lock survives restart OK')
-
-  console.log('review.test: PASS')
-} catch (e) {
-  console.error('review.test: FAIL')
-  console.error(e)
-  process.exitCode = 1
-} finally {
-  fs.rmSync(outfile, { force: true })
-  fs.rmSync(GURT_ROOT, { recursive: true, force: true })
-}
+})

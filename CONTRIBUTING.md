@@ -66,14 +66,65 @@ surrounding code; correctness is held by the TypeScript compiler and ESLint.
 npm test
 ```
 
-This runs every `scripts/*.test.mjs` (docker-free unit tests, each a
-self-contained node script) via `scripts/run-tests.mjs` — the same command CI
-uses. To run a single test: `node scripts/<name>.test.mjs`.
+This runs every `scripts/*.test.mjs` through Node's built-in test runner —
+the same command CI uses. To run one file: `node --test scripts/<name>.test.mjs`.
 
-Smoke tests (`scripts/smoke*.mjs`) are separate: they drive the built app
-end-to-end with Playwright (run `npm run build` first; some need Docker) and
-are not part of `npm test` or CI. The README's "Smoke tests" section lists
-each script and what it covers.
+Smoke tests (`scripts/smoke*.mjs`) drive the built app end-to-end with
+Playwright. `npm run smoke` runs the docker-free subset (CI runs it as its own
+job); the rest need Docker and agent secrets, and are run by hand after
+`npm run build`. The README's "Smoke tests" section lists each script.
+
+### Why the suite looks like this
+
+There is no Vitest or Jest, and tests are not split into unit/integration/e2e.
+The dividing line is instead **does it need the built app and a display** —
+that is the smoke tier — and everything else is one flat pile of `*.test.mjs`,
+whether it checks a pure function or drives a real HTTP server.
+
+No test framework, because gurt is supply-chain-sensitive (see `SECURITY.md`:
+it installs packages into containers holding your repos and agent secrets).
+The repo blocks npm lifecycle scripts, pins Actions by SHA and devcontainer
+features by digest, and keeps a deliberately small dependency tree. A test
+runner is a large dev dependency whose whole job is executing code in CI, so
+it is not a free addition here. Node 22 is already the floor, so `node:test`
+covers it for nothing; esbuild is already a build dependency, so bundling the
+real TypeScript costs nothing either.
+
+Which matters, because the rule is: **assert against the real modules.** A
+test bundles `src/**` with esbuild and imports it. Logic is never restated in
+the test — that is how a suite quietly ends up testing a copy of itself. What
+gets faked is the process boundary: the docker CLI, a spawned child, the
+`electron` module. Isolation comes from one process per file, which the runner
+gives you, rather than from a framework resetting module state.
+
+### Writing one
+
+Copy the closest existing file: `usage.test.mjs` for pure logic,
+`session-delete-container.test.mjs` for a fake docker CLI, `gurt-mcp.test.mjs`
+for a real server, `log.test.mjs` for a module that must run in a child.
+
+Name the file after the requirement it pins, not the module it imports
+(`turn-contract`, `session-roles`, `queue-handoff`), and name each `test()`
+after the behaviour it proves. Several correspond to a `docs/requirements-*.md`.
+
+Three things will bite you, and all three fail quietly rather than loudly:
+
+- **`test()` registers; the body runs later.** Cleanup at the end of the file
+  would run before any test touches its fixtures. Use `after()`.
+- **Never register a `test()` above a top-level `await`.** The runner drains
+  what is registered, decides the file is done, and fires `after()` while
+  module evaluation is still suspended — so later tests are wiped or never
+  registered, and the in-memory ones still pass. Finish all module-level
+  `await`s before the first `test()`.
+- **No fixed sleeps, no wall-clock assertions.** Poll for the condition. Logs
+  and other queues reach disk asynchronously, and a `readFileSync` that lands
+  early makes "the secret is absent" pass on an empty file.
+
+Tests run sequentially (`--test-concurrency=1`) and in declaration order, so a
+file may build state across its tests. Do not add `{ concurrency: true }`.
+
+Before pushing, make the assertion fail on purpose once and check that it
+fails for the reason you expect. A test that cannot fail is worse than none.
 
 ## Pull requests
 

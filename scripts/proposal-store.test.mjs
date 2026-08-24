@@ -6,6 +6,7 @@
 // Harness style of scripts/session-log.test.mjs.
 //
 //   node scripts/proposal-store.test.mjs
+import { test, after } from 'node:test'
 import { build } from 'esbuild'
 import { execFileSync } from 'node:child_process'
 import { pathToFileURL, fileURLToPath } from 'node:url'
@@ -42,71 +43,72 @@ const git = (dir, ...args) =>
     encoding: 'utf8'
   })
 
-try {
-  const ws = 'p'
-  const task = 't'
-  const repo = 'alpha'
+const ws = 'p'
+const task = 't'
+const repo = 'alpha'
 
-  // workspace + task metadata so buildTree/restore see the session
-  fs.mkdirSync(path.join(GURT_ROOT, ws, task), { recursive: true })
-  fs.writeFileSync(path.join(GURT_ROOT, ws, 'workspace.json'), JSON.stringify({ repos: [] }))
-  fs.writeFileSync(path.join(GURT_ROOT, ws, task, 'task.json'), JSON.stringify({ envs: [] }))
+// workspace + task metadata so buildTree/restore see the session
+fs.mkdirSync(path.join(GURT_ROOT, ws, task), { recursive: true })
+fs.writeFileSync(path.join(GURT_ROOT, ws, 'workspace.json'), JSON.stringify({ repos: [] }))
+fs.writeFileSync(path.join(GURT_ROOT, ws, task, 'task.json'), JSON.stringify({ envs: [] }))
 
-  // a clone with a github-style origin so changes.prUrl yields a compare URL
-  const clone = path.join(GURT_ROOT, ws, task, repo)
-  fs.mkdirSync(clone, { recursive: true })
-  git(clone, 'init', '-q')
-  git(clone, 'remote', 'add', 'origin', 'https://github.com/octo/alpha.git')
-  git(clone, 'checkout', '-q', '-b', task)
+// a clone with a github-style origin so changes.prUrl yields a compare URL
+const clone = path.join(GURT_ROOT, ws, task, repo)
+fs.mkdirSync(clone, { recursive: true })
+git(clone, 'init', '-q')
+git(clone, 'remote', 'add', 'origin', 'https://github.com/octo/alpha.git')
+git(clone, 'checkout', '-q', '-b', task)
 
-  const mkInfo = (id) => ({
-    id,
-    envRepo: repo,
-    task,
-    workspace: ws,
-    title: id,
-    agent: 'claude-code',
-    state: 'started',
-    startPrompt: 'hi'
-  })
+const mkInfo = (id) => ({
+  id,
+  envRepo: repo,
+  task,
+  workspace: ws,
+  title: id,
+  agent: 'claude-code',
+  state: 'started',
+  startPrompt: 'hi'
+})
 
-  // two sessions of the same env; the newer `at` must win. The older one also
-  // carries a PR so prUrl has a title/body to encode.
-  const older = {
-    version: 1,
-    outcome: 'changes',
-    commit: { subject: 'older change', body: 'older body' },
-    pr: { title: 'Old PR title', body: 'body with spaces & symbols' },
-    at: '2026-07-17T10:00:00.000Z'
-  }
-  const newer = {
-    version: 1,
-    outcome: 'changes',
-    commit: { subject: 'newer change' },
-    at: '2026-07-17T12:00:00.000Z'
-  }
-  fs.writeFileSync(
-    path.join(GURT_ROOT, ws, task, 'sessions.json'),
-    JSON.stringify([
-      { info: mkInfo('sess-old'), acpSessionId: 'acp-old', proposal: older },
-      { info: mkInfo('sess-new'), acpSessionId: 'acp-new', proposal: newer }
-    ])
-  )
+// two sessions of the same env; the newer `at` must win. The older one also
+// carries a PR so prUrl has a title/body to encode.
+const older = {
+  version: 1,
+  outcome: 'changes',
+  commit: { subject: 'older change', body: 'older body' },
+  pr: { title: 'Old PR title', body: 'body with spaces & symbols' },
+  at: '2026-07-17T10:00:00.000Z'
+}
+const newer = {
+  version: 1,
+  outcome: 'changes',
+  commit: { subject: 'newer change' },
+  at: '2026-07-17T12:00:00.000Z'
+}
+fs.writeFileSync(
+  path.join(GURT_ROOT, ws, task, 'sessions.json'),
+  JSON.stringify([
+    { info: mkInfo('sess-old'), acpSessionId: 'acp-old', proposal: older },
+    { info: mkInfo('sess-new'), acpSessionId: 'acp-new', proposal: newer }
+  ])
+)
 
-  const kernel = createKernel()
-  // restore is fire-and-forget — poll until both sessions show up
-  let snap
-  for (let i = 0; i < 100 && !snap; i++) {
-    await new Promise((r) => setTimeout(r, 50))
-    snap = kernel.sessions.snapshot('sess-new')
-  }
+const kernel = createKernel()
+// restore is fire-and-forget — poll until both sessions show up
+let snap
+for (let i = 0; i < 100 && !snap; i++) {
+  await new Promise((r) => setTimeout(r, 50))
+  snap = kernel.sessions.snapshot('sess-new')
+}
+
+// proposal survives restore, exposed in the snapshot
+test('proposal survives restore', () => {
   assert.ok(snap, 'restored session must be visible')
-
-  // proposal survives restore, exposed in the snapshot
   assert.deepEqual(snap.proposal, newer, 'snapshot carries the restored proposal')
-  console.log('proposal survives restore OK')
+})
 
-  // latestProposal: newest `at` among the env's sessions
+// latestProposal: newest `at` among the env's sessions
+test('latestProposal newest-wins', () => {
   const latest = kernel.sessions.latestProposal(ws, task, repo)
   assert.deepEqual(latest, newer, 'latestProposal returns the newest proposal')
   assert.equal(
@@ -114,8 +116,9 @@ try {
     undefined,
     'latestProposal is undefined for an env with no proposals'
   )
-  console.log('latestProposal newest-wins OK')
+})
 
+test('prUrl appends url-encoded title/body', async () => {
   // prUrl: no title param when the latest proposal has no PR
   const urlNoPr = await kernel.prUrl(ws, task, repo)
   assert.match(urlNoPr, /github\.com\/octo\/alpha\/compare\/main\.\.\.t/, 'compare URL shape')
@@ -148,10 +151,9 @@ try {
     urlPr.includes(`body=${encodeURIComponent('body with spaces & symbols')}`),
     `prUrl encodes the PR body: ${urlPr}`
   )
-  console.log('prUrl appends url-encoded title/body OK')
+})
 
-  console.log('proposal-store.test: PASS')
-} finally {
+after(() => {
   fs.rmSync(GURT_ROOT, { recursive: true, force: true })
   fs.rmSync(outfile, { force: true })
-}
+})

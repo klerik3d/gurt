@@ -3,6 +3,7 @@
 // pure `postTurnDecision` out of the session manager and checks the matrix.
 //
 //   node scripts/turn-contract.test.mjs
+import { test, after } from 'node:test'
 import { build } from 'esbuild'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import path from 'node:path'
@@ -33,6 +34,8 @@ await build({
 
 const { postTurnDecision, NUDGE_PROMPT, adapterExitCode } = await import(pathToFileURL(outfile).href)
 
+after(() => fs.rmSync(outfile, { force: true }))
+
 const decide = (o) =>
   postTurnDecision({
     threw: false,
@@ -44,7 +47,8 @@ const decide = (o) =>
     ...o
   })
 
-try {
+// --- post-turn decision ----------------------------------------------------
+test('post-turn decision', () => {
   // end_turn + complete → nothing
   assert.equal(decide({ turnComplete: true }), 'none', 'end_turn with complete → none')
 
@@ -95,7 +99,10 @@ try {
   )
 
   assert.match(NUDGE_PROMPT, /complete/, 'nudge prompt asks for `complete`')
+})
 
+// --- adapter exit code -----------------------------------------------------
+test('adapter exit code', () => {
   // kill -9 mid-turn → 137, the exact case docs/logging.md's acceptance #2 relies on
   assert.equal(adapterExitCode(null, 'SIGKILL'), 137, 'SIGKILL → 128 + 9')
 
@@ -111,8 +118,4 @@ try {
 
   // a signal outside the SIGNUM table still reads as "died", not "clean"
   assert.equal(adapterExitCode(null, 'SIGWINCH'), 128, 'unlisted signal → 128')
-
-  console.log('turn-contract.test: PASS')
-} finally {
-  fs.rmSync(outfile, { force: true })
-}
+})

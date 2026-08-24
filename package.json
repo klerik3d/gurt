@@ -15,7 +15,7 @@
     "dist": "npm run build && electron-builder --mac --publish never",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.scripts.json",
     "lint": "eslint .",
-    "test": "node scripts/run-tests.mjs",
+    "test": "node --test --test-concurrency=1 scripts/*.test.mjs",
     "smoke": "node scripts/run-smoke.mjs",
     "setup": "npm ci && npx allow-scripts"
   },

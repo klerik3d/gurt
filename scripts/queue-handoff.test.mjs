@@ -9,6 +9,7 @@
 // scheduling, not about anything coming up.
 //
 //   node scripts/queue-handoff.test.mjs
+import { test, after } from 'node:test'
 import { build } from 'esbuild'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import path from 'node:path'
@@ -54,66 +55,71 @@ async function dequeued(kernel, id) {
   throw new Error(`session ${id} never left the queue`)
 }
 
-try {
-  const ws = 'w'
-  const task = 't'
-  fs.mkdirSync(path.join(GURT_ROOT, ws, task), { recursive: true })
-  fs.writeFileSync(
-    path.join(GURT_ROOT, ws, 'workspace.json'),
-    JSON.stringify({
-      repos: [{ name: 'alpha', url: 'https://github.com/o/alpha.git' }],
-      envs: [{ name: 'dev', devcontainer: '{"image":"x"}', repo: 'alpha' }]
-    })
-  )
-  fs.writeFileSync(path.join(GURT_ROOT, ws, task, 'task.json'), JSON.stringify({}))
-  fs.writeFileSync(path.join(GURT_ROOT, ws, 'agents.json'), JSON.stringify({}))
+after(() => {
+  fs.rmSync(outfile, { force: true })
+  fs.rmSync(GURT_ROOT, { recursive: true, force: true })
+})
 
-  const kernel = createKernel()
-  // The boot reconcile asks Docker which containers exist and drops every record
-  // it does not confirm — including the holder staged below. It runs off the back
-  // of construction, so on a machine that *has* Docker it lands mid-test and looks
-  // like the holder's container vanished, freeing the clone the assertions expect
-  // it to hold. Stage after the boot, not into it.
-  await kernel.ready
-  const ref = { workspace: ws, task, env: 'dev' }
+const ws = 'w'
+const task = 't'
+fs.mkdirSync(path.join(GURT_ROOT, ws, task), { recursive: true })
+fs.writeFileSync(
+  path.join(GURT_ROOT, ws, 'workspace.json'),
+  JSON.stringify({
+    repos: [{ name: 'alpha', url: 'https://github.com/o/alpha.git' }],
+    envs: [{ name: 'dev', devcontainer: '{"image":"x"}', repo: 'alpha' }]
+  })
+)
+fs.writeFileSync(path.join(GURT_ROOT, ws, task, 'task.json'), JSON.stringify({}))
+fs.writeFileSync(path.join(GURT_ROOT, ws, 'agents.json'), JSON.stringify({}))
 
-  // The holder: a *started* session sitting idle on `alpha` with its container
-  // up — restore is the one public door into that state without an agent.
-  const holder = 'holder-1'
-  kernel.sessions.restore([
-    {
-      info: {
-        id: holder,
-        env: 'dev',
-        repos: ['alpha'],
-        task,
-        workspace: ws,
-        title: 'H',
-        agent: 'a1',
-        state: 'started',
-        startPrompt: 'x'
-      },
-      log: []
-    }
-  ])
-  const up = () =>
-    kernel.sessions.patchContainer(holder, {
-      status: 'running',
-      id: 'container-h',
-      remoteWorkspaceFolder: '/app',
-      repos: ['alpha']
-    })
-  const containerStatus = () => kernel.sessions.snapshot(holder).info.container?.status
+const kernel = createKernel()
+// The boot reconcile asks Docker which containers exist and drops every record
+// it does not confirm — including the holder staged below. It runs off the back
+// of construction, so on a machine that *has* Docker it lands mid-test and looks
+// like the holder's container vanished, freeing the clone the assertions expect
+// it to hold. Stage after the boot, not into it.
+await kernel.ready
+const ref = { workspace: ws, task, env: 'dev' }
 
-  // Stub the one seam that would need a daemon, and record every stop.
-  const stops = []
-  kernel.containers.stop = async (id, reason) => {
-    stops.push({ id, reason })
-    const c = kernel.sessions.snapshot(id)?.info.container
-    if (c) kernel.sessions.patchContainer(id, { ...c, status: 'stopped' })
+// The holder: a *started* session sitting idle on `alpha` with its container
+// up — restore is the one public door into that state without an agent.
+const holder = 'holder-1'
+kernel.sessions.restore([
+  {
+    info: {
+      id: holder,
+      env: 'dev',
+      repos: ['alpha'],
+      task,
+      workspace: ws,
+      title: 'H',
+      agent: 'a1',
+      state: 'started',
+      startPrompt: 'x'
+    },
+    log: []
   }
+])
+const up = () =>
+  kernel.sessions.patchContainer(holder, {
+    status: 'running',
+    id: 'container-h',
+    remoteWorkspaceFolder: '/app',
+    repos: ['alpha']
+  })
+const containerStatus = () => kernel.sessions.snapshot(holder).info.container?.status
 
-  // --- 1. a queue item arriving behind an idle environment frees it now ---
+// Stub the one seam that would need a daemon, and record every stop.
+const stops = []
+kernel.containers.stop = async (id, reason) => {
+  stops.push({ id, reason })
+  const c = kernel.sessions.snapshot(id)?.info.container
+  if (c) kernel.sessions.patchContainer(id, { ...c, status: 'stopped' })
+}
+
+// --- 1. a queue item arriving behind an idle environment frees it now ---
+test('enqueue frees an idle environment and the queue advances', async () => {
   up()
   const first = kernel.sessions.createSession(ref, ['alpha'], 'a1', 'hi', 'queue')
   await tick()
@@ -128,12 +134,13 @@ try {
     /is in use by session/,
     'the freed clone lets the queued session through the gate'
   )
-  console.log('enqueue frees an idle environment and the queue advances OK')
+})
 
-  // --- 2. the same thing at the end of a turn ---
-  // Stage the holder as mid-provision (`post`) so it blocks the gate but is not
-  // reapable, enqueue behind it, then bring it to `running` and end its turn:
-  // the turn end alone must trigger the handoff.
+// --- 2. the same thing at the end of a turn ---
+// Stage the holder as mid-provision (`post`) so it blocks the gate but is not
+// reapable, enqueue behind it, then bring it to `running` and end its turn:
+// the turn end alone must trigger the handoff.
+test('turn end frees an idle environment and the queue advances', async () => {
   stops.length = 0
   kernel.sessions.patchContainer(holder, {
     status: 'post',
@@ -155,21 +162,23 @@ try {
   assert.deepEqual(stops, [{ id: holder, reason: 'queue' }], 'a turn end frees the queue')
   const next = await dequeued(kernel, second.id)
   assert.doesNotMatch(next.startError ?? '', /is in use by session/, 'the second item runs too')
-  console.log('turn end frees an idle environment and the queue advances OK')
+})
 
-  // --- 3. nothing queued → the old grace-period policy, untouched ---
+// --- 3. nothing queued → the old grace-period policy, untouched ---
+test('empty queue keeps the old idle policy', async () => {
   stops.length = 0
   up()
   kernel.bus.emit('session.turn', { sessionId: holder, ref, phase: 'ended' })
   await tick()
   assert.deepEqual(stops, [], 'an empty queue stops nothing at turn end')
   assert.equal(containerStatus(), 'running', 'the container stays up for the grace period')
-  console.log('empty queue keeps the old idle policy OK')
+})
 
-  // --- 4. a stop that fails degrades to the grace period, it does not wedge ---
-  // The stop cancels the pending auto-stop before it goes to docker, so a failure
-  // leaves the container up with no timer left — and the queue would wait on that
-  // clone forever. The handoff must hand the session back to the idle policy.
+// --- 4. a stop that fails degrades to the grace period, it does not wedge ---
+// The stop cancels the pending auto-stop before it goes to docker, so a failure
+// leaves the container up with no timer left — and the queue would wait on that
+// clone forever. The handoff must hand the session back to the idle policy.
+test('a failed handoff falls back to the idle policy', async () => {
   stops.length = 0
   const rearmed = []
   const noteIdle = kernel.containers.noteIdle.bind(kernel.containers)
@@ -192,14 +201,4 @@ try {
     'queued',
     'the queued session waits rather than starting on a clone that is still held'
   )
-  console.log('a failed handoff falls back to the idle policy OK')
-
-  console.log('queue-handoff.test: PASS')
-} catch (e) {
-  console.error('queue-handoff.test: FAIL')
-  console.error(e)
-  process.exitCode = 1
-} finally {
-  fs.rmSync(outfile, { force: true })
-  fs.rmSync(GURT_ROOT, { recursive: true, force: true })
-}
+})

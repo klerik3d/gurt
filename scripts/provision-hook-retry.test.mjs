@@ -9,6 +9,7 @@
 // that fails too — say which hook failed and quote its output.
 //
 //   node scripts/provision-hook-retry.test.mjs
+import { test, after } from 'node:test'
 import { build } from 'esbuild'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import path from 'node:path'
@@ -109,19 +110,25 @@ async function up(m, failures, extraEnv = {}) {
   }
 }
 
-try {
-  const m = await import(pathToFileURL(outfile).href)
+after(() => {
+  fs.rmSync(tmp, { recursive: true, force: true })
+})
 
-  // 1. The transient case — the hook fails once, then succeeds. `up` must run a
-  //    second time *in a fresh container*, not adopt the one it just failed in.
+const m = await import(pathToFileURL(outfile).href)
+
+// 1. The transient case — the hook fails once, then succeeds. `up` must run a
+//    second time *in a fresh container*, not adopt the one it just failed in.
+test('a failed create-time hook is retried in a fresh container, never adopted', async () => {
   const once = await up(m, 1)
   assert.equal(once.err, undefined, `a hook that fails once must not fail the start: ${once.err?.message}`)
   assert.equal(once.attempts, 2, 'the CLI is invoked again after a create-time hook failure')
   assert.equal(once.ok.containerId, 'container-2', 'the start returns the retry container, not the failed one')
   assert.deepEqual(once.removed, ['rm -f container-1'], 'the half-provisioned container is removed before the retry')
+})
 
-  // 2. The persistent case — one retry, then a message that names the hook and
-  //    quotes its output. The CLI's own `message` is only the shell line.
+// 2. The persistent case — one retry, then a message that names the hook and
+//    quotes its output. The CLI's own `message` is only the shell line.
+test('a hook that keeps failing names the hook and quotes its output', async () => {
   const always = await up(m, 99)
   assert.ok(always.err, 'a hook failing twice fails the start')
   assert.equal(always.attempts, 2, 'a create-time hook is retried exactly once')
@@ -137,9 +144,11 @@ try {
   assert.ok(msg.includes('npm error code ECONNRESET'), `quotes the reason the hook itself gave: ${msg}`)
   assert.ok(!msg.includes('exporting to image'), `does not quote the build that succeeded: ${msg}`)
   assert.ok(!msg.includes('    at Q ('), `does not quote CLI stack frames: ${msg}`)
+})
 
-  // 3. Failures that are not a create-time hook are untouched: one attempt, the
-  //    CLI's message, and nothing removed (there may be no container at all).
+// 3. Failures that are not a create-time hook are untouched: one attempt, the
+//    CLI's message, and nothing removed (there may be no container at all).
+test('a non-hook failure is not retried', async () => {
   const other = await up(m, 99, {
     FAKE_DESCRIPTION: 'Error: Could not resolve image',
     FAKE_NO_CONTAINER: '1'
@@ -148,9 +157,11 @@ try {
   assert.equal(other.attempts, 1, 'a non-hook failure is not retried')
   assert.deepEqual(other.removed, [], 'a non-hook failure removes nothing')
   assert.equal(other.err.message, 'Command failed: /bin/sh -c npm install')
+})
 
-  // 4. `hookOutputTail` keeps the hook's own output and drops the noise around
-  //    it — everything before the last lifecycle banner belongs to the build.
+// 4. `hookOutputTail` keeps the hook's own output and drops the noise around
+//    it — everything before the last lifecycle banner belongs to the build.
+test('hookOutputTail keeps the hook output and drops the build noise', () => {
   const tail = m.hookOutputTail([
     '#5 [2/3] RUN apt-get install -y curl',
     'Running the postCreateCommand from devcontainer.json...',
@@ -163,8 +174,4 @@ try {
     'Running the postCreateCommand from devcontainer.json...',
     'npm error code EACCES'
   ])
-
-  console.log('ok — a failed create-time hook is retried in a fresh container, never adopted')
-} finally {
-  fs.rmSync(tmp, { recursive: true, force: true })
-}
+})

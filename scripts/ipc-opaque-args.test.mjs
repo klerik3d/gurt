@@ -28,6 +28,7 @@
 // end-to-end, down to the bytes in gurt.log; this one covers the whole surface.
 //
 //   node scripts/ipc-opaque-args.test.mjs
+import { test, after } from 'node:test'
 import { build } from 'esbuild'
 import ts from 'typescript'
 import { pathToFileURL, fileURLToPath } from 'node:url'
@@ -277,16 +278,16 @@ await build({
   plugins: [electronStub, exposeIpcInternals]
 })
 
-try {
-  const { __OPAQUE_ARGS: OPAQUE_ARGS, __argCtx: argCtx, API_METHODS } = await import(
-    pathToFileURL(outfile).href
-  )
-  assert.ok(OPAQUE_ARGS instanceof Set && OPAQUE_ARGS.size > 0, 'OPAQUE_ARGS is a non-empty Set')
-  assert.equal(typeof argCtx, 'function', 'argCtx is a function')
-  const opaque = [...OPAQUE_ARGS].sort()
-  console.log(`OPAQUE_ARGS: ${opaque.length} of ${API_METHODS.length} API methods`)
+const { __OPAQUE_ARGS: OPAQUE_ARGS, __argCtx: argCtx, API_METHODS } = await import(
+  pathToFileURL(outfile).href
+)
+assert.ok(OPAQUE_ARGS instanceof Set && OPAQUE_ARGS.size > 0, 'OPAQUE_ARGS is a non-empty Set')
+assert.equal(typeof argCtx, 'function', 'argCtx is a function')
+const opaque = [...OPAQUE_ARGS].sort()
+console.log(`OPAQUE_ARGS: ${opaque.length} of ${API_METHODS.length} API methods`)
 
-  // --- 1. every method is classified, and both lists name real methods ---
+// --- 1. every method is classified, and both lists name real methods ---
+test('every API method is classified', () => {
   const api = new Set(API_METHODS)
   const unknownOpaque = opaque.filter((m) => !api.has(m))
   assert.deepEqual(
@@ -308,9 +309,10 @@ try {
       'config or credential payload), add the method to OPAQUE_ARGS in src/main/ipc.ts; if it ' +
       'only takes ids/names/flags, add it to SAFE_ARGS in this test.'
   )
-  console.log(`every API method is classified: ${opaque.length} opaque, ${SAFE_ARGS.size} logged with values OK`)
+})
 
-  // --- 2. the signatures agree with the classification ---
+// --- 2. the signatures agree with the classification ---
+test('signatures agree with the classification', () => {
   const sigs = gurtApiSignatures()
   const fromApiTs = [...sigs.keys()].sort()
   assert.deepEqual(
@@ -333,15 +335,12 @@ try {
   // Not an assertion in the other direction: a method may be opaque for a
   // reason no signature shows. Print it, so the list stays reviewable.
   const opaqueWithoutProseSignature = opaque.filter((m) => !proseReason(sigs.get(m) ?? []))
-  console.log(
-    `signatures agree: every prose-carrying signature is opaque` +
-      (opaqueWithoutProseSignature.length
-        ? ` (opaque beyond what the signature shows: ${opaqueWithoutProseSignature.join(', ')})`
-        : '') +
-      ' OK'
-  )
+  if (opaqueWithoutProseSignature.length)
+    console.log(`opaque beyond what the signature shows: ${opaqueWithoutProseSignature.join(', ')}`)
+})
 
-  // --- 3. argCtx() hands the logger a count, and only a count ---
+// --- 3. argCtx() hands the logger a count, and only a count ---
+test('argCtx() returns a bare argument count for all opaque methods', () => {
   const SECRET = 'PROSE-c4f1a9-do-not-log-me'
   // One argument list per arity the API actually uses, each with the marker
   // buried at a different depth: a plain value, inside an object, inside an
@@ -374,9 +373,10 @@ try {
       )
     }
   }
-  console.log(`argCtx() returns a bare argument count for all ${opaque.length} opaque methods OK`)
+})
 
-  // The other branch still has to be useful, or the trace is pointless.
+// The other branch still has to be useful, or the trace is pointless.
+test('argCtx() still passes non-opaque arguments through', () => {
   const safeArgs = ['ws', 'task', 42, true]
   assert.deepEqual(
     argCtx('getFileDiff', safeArgs),
@@ -384,9 +384,10 @@ try {
     'argCtx() passes a non-opaque method\'s arguments through for the DBG trace'
   )
   assert.deepEqual(argCtx('getTree', []), [], 'argCtx() of a no-argument method is the empty list')
-  console.log('argCtx() still passes non-opaque arguments through OK')
+})
 
-  // --- 4. the boundary actually routes its arguments through argCtx ---
+// --- 4. the boundary actually routes its arguments through argCtx ---
+test('both ipc.ts argument traces go through argCtx()', () => {
   const ipcSrc = fs.readFileSync(IPC_TS, 'utf8')
   const sites = argsSites(ipcSrc)
   // The only `args:` ipc.ts may contain: argCtx's own parameter declaration,
@@ -406,14 +407,9 @@ try {
     'the ipc.call trace still records method/ms/args only — never the call\'s result, which is where ' +
       'session snapshots and chat history come back'
   )
-  console.log('both ipc.ts argument traces go through argCtx() OK')
+})
 
-  console.log('ipc-opaque-args.test: PASS')
-} catch (e) {
-  console.error('ipc-opaque-args.test: FAIL')
-  console.error(e)
-  process.exitCode = 1
-} finally {
+after(() => {
   fs.rmSync(outfile, { force: true })
   fs.rmSync(sandbox, { recursive: true, force: true })
-}
+})

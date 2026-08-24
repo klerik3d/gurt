@@ -3,6 +3,7 @@
 // no React, no DOM, no app.
 //
 //   node scripts/syntax-highlight.test.mjs
+import { test, after } from 'node:test'
 import { build } from 'esbuild'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import path from 'node:path'
@@ -25,11 +26,12 @@ await build({
 
 const { tokenize, mergeSpans } = await import(pathToFileURL(outfile).href)
 
+after(() => fs.rmSync(outfile, { force: true }))
+
 const reconstruct = (spans) => spans.map((s) => s.text).join('')
 
-try {
-  // --- tokenize --------------------------------------------------------------
-
+// --- tokenize --------------------------------------------------------------
+test('tokenize', () => {
   // No lang — the whole line is one unhighlighted span, the safe fallback.
   assert.deepEqual(tokenize('const a = 1', null), [{ text: 'const a = 1', cls: null }])
 
@@ -64,11 +66,10 @@ try {
     assert.ok(spans.some((s) => s.cls), `${lang}: at least one token is scoped`)
     assert.ok(reconstruct(spans).includes(mustInclude))
   }
+})
 
-  console.log('tokenize OK')
-
-  // --- mergeSpans --------------------------------------------------------------
-
+// --- mergeSpans --------------------------------------------------------------
+test('mergeSpans', () => {
   // No diff spans at all — degenerate merge (nothing to combine with).
   assert.deepEqual(mergeSpans([{ text: 'abc', cls: null }], []), [])
 
@@ -116,14 +117,4 @@ try {
     ]
   )
   assert.equal(reconstruct(uneven), 'abcdef', 'uneven boundaries still reconstruct exactly')
-
-  console.log('mergeSpans OK')
-
-  console.log('syntax-highlight.test: PASS')
-} catch (e) {
-  console.error('syntax-highlight.test: FAIL')
-  console.error(e)
-  process.exitCode = 1
-} finally {
-  fs.rmSync(outfile, { force: true })
-}
+})

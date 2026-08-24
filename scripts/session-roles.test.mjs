@@ -8,6 +8,7 @@
 // so no daemon is needed to make a session a holder.
 //
 //   node scripts/session-roles.test.mjs
+import { test, after } from 'node:test'
 import { build } from 'esbuild'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import path from 'node:path'
@@ -58,24 +59,58 @@ const rejects = async (fn, re, label) => {
   await assert.rejects(async () => fn(), re, label)
 }
 
-try {
-  const ws = 'w'
-  const task = 't'
-  fs.mkdirSync(path.join(GURT_ROOT, ws, task), { recursive: true })
-  fs.writeFileSync(
-    path.join(GURT_ROOT, ws, 'workspace.json'),
-    JSON.stringify({
-      repos: [
-        { name: 'alpha', url: 'https://github.com/o/alpha.git' },
-        { name: 'beta', url: 'https://github.com/o/beta.git' }
-      ],
-      envs: [{ name: 'dev', devcontainer: '{"image":"x"}', repo: 'alpha' }]
-    })
-  )
-  fs.writeFileSync(path.join(GURT_ROOT, ws, task, 'task.json'), JSON.stringify({}))
-  fs.writeFileSync(path.join(GURT_ROOT, ws, 'agents.json'), JSON.stringify({}))
+after(() => {
+  fs.rmSync(outfile, { force: true })
+  fs.rmSync(GURT_ROOT, { recursive: true, force: true })
+})
 
-  // --- the role predicates: the table of §2 -----------------------------------
+const ws = 'w'
+const task = 't'
+fs.mkdirSync(path.join(GURT_ROOT, ws, task), { recursive: true })
+fs.writeFileSync(
+  path.join(GURT_ROOT, ws, 'workspace.json'),
+  JSON.stringify({
+    repos: [
+      { name: 'alpha', url: 'https://github.com/o/alpha.git' },
+      { name: 'beta', url: 'https://github.com/o/beta.git' }
+    ],
+    envs: [{ name: 'dev', devcontainer: '{"image":"x"}', repo: 'alpha' }]
+  })
+)
+fs.writeFileSync(path.join(GURT_ROOT, ws, task, 'task.json'), JSON.stringify({}))
+fs.writeFileSync(path.join(GURT_ROOT, ws, 'agents.json'), JSON.stringify({}))
+
+const kernel = m.createKernel()
+// The boot reconcile drops container records Docker does not confirm; let it
+// finish before staging any (see queue-handoff.test.mjs).
+await kernel.ready
+const ref = { workspace: ws, task, env: 'dev' }
+const mk = (repos, role, title) => {
+  const info = kernel.sessions.createSession(
+    ref,
+    repos,
+    'a1',
+    'hi',
+    'none',
+    [],
+    true,
+    true, // gitAccess on for every session — a read-only role must drop it
+    {},
+    role
+  )
+  kernel.sessions.renameSession(info.id, title)
+  return info
+}
+const hold = (id, repos) =>
+  kernel.sessions.patchContainer(id, {
+    status: 'running',
+    id: `container-${id}`,
+    remoteWorkspaceFolder: '/app',
+    repos
+  })
+
+// --- the role predicates: the table of §2 -----------------------------------
+test('role table', () => {
   assert.deepEqual(
     ['executor', 'researcher', 'reviewer'].map((r) => [
       m.roleIsReadOnly(r),
@@ -90,38 +125,12 @@ try {
     ],
     'mounts / lock / complete / create_session per role'
   )
-  console.log('role table OK')
+})
 
-  const kernel = m.createKernel()
-  // The boot reconcile drops container records Docker does not confirm; let it
-  // finish before staging any (see queue-handoff.test.mjs).
-  await kernel.ready
-  const ref = { workspace: ws, task, env: 'dev' }
-  const mk = (repos, role, title) => {
-    const info = kernel.sessions.createSession(
-      ref,
-      repos,
-      'a1',
-      'hi',
-      'none',
-      [],
-      true,
-      true, // gitAccess on for every session — a read-only role must drop it
-      {},
-      role
-    )
-    kernel.sessions.renameSession(info.id, title)
-    return info
-  }
-  const hold = (id, repos) =>
-    kernel.sessions.patchContainer(id, {
-      status: 'running',
-      id: `container-${id}`,
-      remoteWorkspaceFolder: '/app',
-      repos
-    })
+let multi
 
-  // --- (role, repos) pairs ----------------------------------------------------
+// --- (role, repos) pairs ----------------------------------------------------
+test('(role, repos) rules', () => {
   assert.throws(
     () => mk(['alpha', 'beta'], 'executor', 'X'),
     /single repository/,
@@ -132,21 +141,26 @@ try {
     /single repository/,
     'a reviewer may not hold two repos'
   )
-  const multi = mk(['alpha', 'beta'], 'researcher', 'R-multi')
+  multi = mk(['alpha', 'beta'], 'researcher', 'R-multi')
   assert.equal(m.sessionRole(multi), 'researcher', 'a researcher may hold several')
-  console.log('(role, repos) rules OK')
+})
 
-  // --- git access is dropped for the read-only roles --------------------------
+// --- git access is dropped for the read-only roles --------------------------
+test('git access per role', () => {
   assert.equal(mk(['alpha'], 'executor', 'E-git').gitAccess, true, 'an executor keeps git access')
   assert.equal(multi.gitAccess, false, 'a researcher never gets the git broker')
   assert.equal(mk(['alpha'], 'reviewer', 'V-git').gitAccess, false, 'nor does a reviewer')
-  console.log('git access per role OK')
+})
 
-  // --- locking: a reviewer holds the clone, a researcher never does -----------
-  const reviewer = mk(['alpha'], 'reviewer', 'V')
+let reviewer
+let executor
+
+// --- locking: a reviewer holds the clone, a researcher never does -----------
+test('read-only + locked (reviewer) vs. unlocked (researcher)', async () => {
+  reviewer = mk(['alpha'], 'reviewer', 'V')
   hold(reviewer.id, ['alpha'])
 
-  const executor = mk(['alpha'], 'executor', 'E')
+  executor = mk(['alpha'], 'executor', 'E')
   kernel.sessions.run(executor.id)
   const blocked = await settle(kernel, executor.id)
   assert.match(
@@ -197,9 +211,10 @@ try {
     'a queued researcher is not held back by the lock'
   )
   kernel.sessions.patchContainer(reviewer.id, undefined)
-  console.log('read-only + locked (reviewer) vs. unlocked (researcher) OK')
+})
 
-  // --- role is editable while a draft, ignored afterwards ---------------------
+// --- role is editable while a draft, ignored afterwards ---------------------
+test('draft role edits', async () => {
   const draft = mk(['alpha', 'beta'], 'researcher', 'D')
   await kernel.editDraft(draft.id, { role: 'executor', repos: ['alpha'] })
   assert.equal(
@@ -222,10 +237,13 @@ try {
     /unknown session role/,
     'an unknown role is rejected at the boundary'
   )
-  console.log('draft role edits OK')
+})
 
-  // --- create_session: who may draft whom (§3) --------------------------------
-  const spawner = mk(['alpha'], 'researcher', 'S')
+let spawner
+
+// --- create_session: who may draft whom (§3) --------------------------------
+test('create_session gating', async () => {
+  spawner = mk(['alpha'], 'researcher', 'S')
   const made = await kernel.sessions.createAgentDraft(spawner.id, {
     role: 'reviewer',
     repos: ['alpha'],
@@ -286,9 +304,10 @@ try {
     /unknown session/,
     'an unknown spawner is rejected'
   )
-  console.log('create_session gating OK')
+})
 
-  // --- create_session across tasks: researcher-only, task created if missing --
+// --- create_session across tasks: researcher-only, task created if missing --
+test('create_session across tasks', async () => {
   const spun = await kernel.sessions.createAgentDraft(spawner.id, {
     role: 'executor',
     repos: ['alpha'],
@@ -333,9 +352,10 @@ try {
     /must not contain/,
     'an invalid task name is rejected, not written to disk'
   )
-  console.log('create_session across tasks OK')
+})
 
-  // --- default title: named after the role, index only from the second on ----
+// --- default title: named after the role, index only from the second on ----
+test('default title follows role', () => {
   const task3 = 'naming'
   fs.mkdirSync(path.join(GURT_ROOT, ws, task3), { recursive: true })
   fs.writeFileSync(path.join(GURT_ROOT, ws, task3, 'task.json'), JSON.stringify({}))
@@ -350,9 +370,10 @@ try {
     'researcher 2',
     'and counts independently of other roles'
   )
-  console.log('default title follows role OK')
+})
 
-  // --- migration: a pre-roles record gets an explicit role, written back once --
+// --- migration: a pre-roles record gets an explicit role, written back once --
+test('pre-roles migration', async () => {
   const task2 = 'legacy'
   fs.mkdirSync(path.join(GURT_ROOT, ws, task2), { recursive: true })
   const sessPath = path.join(GURT_ROOT, ws, task2, 'sessions.json')
@@ -381,14 +402,4 @@ try {
     migrated,
     'the write-back happens exactly once'
   )
-  console.log('pre-roles migration OK')
-
-  console.log('session-roles.test: PASS')
-} catch (e) {
-  console.error('session-roles.test: FAIL')
-  console.error(e)
-  process.exitCode = 1
-} finally {
-  fs.rmSync(outfile, { force: true })
-  fs.rmSync(GURT_ROOT, { recursive: true, force: true })
-}
+})

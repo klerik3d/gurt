@@ -28,6 +28,7 @@
 //                 changes.
 //
 //   node scripts/ipc-contract.test.mjs
+import { test, after } from 'node:test'
 import { build } from 'esbuild'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import path from 'node:path'
@@ -183,20 +184,23 @@ await build({
   plugins: [electronStub]
 })
 
-try {
-  const { API_METHODS } = await import(pathToFileURL(outfile).href)
+const { API_METHODS } = await import(pathToFileURL(outfile).href)
+const apiSet = new Set(API_METHODS)
+const bridged = globalThis.__exposed
+const api = bridged.value
+const ipcSrc = fs.readFileSync(path.join(ROOT, 'src/main/ipc.ts'), 'utf8')
 
-  // --- API_METHODS itself is a clean listing ---
+// --- API_METHODS itself is a clean listing ---
+test('API_METHODS itself is a clean listing', () => {
   assert.ok(Array.isArray(API_METHODS) && API_METHODS.length > 0, 'API_METHODS is a non-empty list')
-  const apiSet = new Set(API_METHODS)
   assert.equal(apiSet.size, API_METHODS.length, 'API_METHODS has no duplicate entries')
   console.log(`API_METHODS: ${API_METHODS.length} methods`)
+})
 
-  // --- preload: `window.gurt` carries exactly these methods ---
-  const bridged = globalThis.__exposed
+// --- preload: `window.gurt` carries exactly these methods ---
+test('preload bridges every API_METHODS entry onto its own channel', async () => {
   assert.ok(bridged, 'preload called contextBridge.exposeInMainWorld')
   assert.equal(bridged.key, 'gurt', 'the bridge is exposed as `window.gurt`')
-  const api = bridged.value
 
   for (const m of API_METHODS)
     assert.equal(typeof api[m], 'function', `window.gurt.${m} is bridged as a function`)
@@ -208,10 +212,11 @@ try {
     assert.equal(sent.channel, `api:${m}`, `window.gurt.${m} invokes api:${m}`)
     assert.deepEqual(sent.args, ['x', 'y'], `window.gurt.${m} forwards its arguments verbatim`)
   }
-  console.log('preload bridges every API_METHODS entry onto its own channel OK')
+})
 
-  // Everything else on the bridge is deliberate (logging + event subscriptions);
-  // a stray extra key here is a method that skipped API_METHODS.
+// Everything else on the bridge is deliberate (logging + event subscriptions);
+// a stray extra key here is a method that skipped API_METHODS.
+test('preload exposes nothing beyond API_METHODS + the known event hooks', () => {
   const NON_METHOD_KEYS = new Set([
     'log',
     'logLevel',
@@ -230,10 +235,10 @@ try {
   // …and nothing an API method would shadow.
   for (const k of NON_METHOD_KEYS)
     assert.ok(!apiSet.has(k), `API method "${k}" collides with a preload helper of the same name`)
-  console.log('preload exposes nothing beyond API_METHODS + the known event hooks OK')
+})
 
-  // --- main: `impl` covers exactly API_METHODS ---
-  const ipcSrc = fs.readFileSync(path.join(ROOT, 'src/main/ipc.ts'), 'utf8')
+// --- main: `impl` covers exactly API_METHODS ---
+test('ipc.ts impl covers all API methods, and nothing else', () => {
   const implKeys = objectLiteralKeys(ipcSrc, 'const impl: GurtApi = {')
   const implSet = new Set(implKeys)
   assert.equal(implSet.size, implKeys.length, `ipc.ts \`impl\` has a duplicate key: ${implKeys}`)
@@ -250,10 +255,11 @@ try {
     [],
     `ipc.ts \`impl\` implements methods missing from API_METHODS (never registered, never bridged): ${notListed}`
   )
-  console.log(`ipc.ts impl covers all ${implKeys.length} API methods, and nothing else OK`)
+})
 
-  // The registration loop is what turns the listing into live channels — if it
-  // ever stops walking API_METHODS, the two lists above stop meaning anything.
+// The registration loop is what turns the listing into live channels — if it
+// ever stops walking API_METHODS, the two lists above stop meaning anything.
+test('both sides still derive their surface from API_METHODS', () => {
   assert.ok(
     /for \(const m of API_METHODS\)\s*\n?\s*ipcMain\.handle\(`api:\$\{m\}`/.test(ipcSrc),
     'ipc.ts still registers one `api:<method>` handler per API_METHODS entry'
@@ -263,13 +269,8 @@ try {
     /for \(const m of API_METHODS\) api\[m\] =/.test(preloadSrc),
     'preload/index.ts still derives the bridge from API_METHODS'
   )
-  console.log('both sides still derive their surface from API_METHODS OK')
+})
 
-  console.log('ipc-contract.test: PASS')
-} catch (e) {
-  console.error('ipc-contract.test: FAIL')
-  console.error(e)
-  process.exitCode = 1
-} finally {
+after(() => {
   fs.rmSync(outfile, { force: true })
-}
+})

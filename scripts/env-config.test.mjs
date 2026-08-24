@@ -5,6 +5,7 @@
 // store-level validation. Bundles on the fly with esbuild, like the others.
 //
 //   node scripts/env-config.test.mjs
+import { test, after } from 'node:test'
 import { build } from 'esbuild'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
@@ -45,8 +46,16 @@ await build({
 const m = await import(pathToFileURL(outfile).href)
 const read = (p) => fs.readFileSync(p, 'utf8')
 
-try {
-  // --- JSONC with comments parses ---
+const URL1 = 'https://github.com/o/r.git'
+const ws = 'ws1'
+
+after(() => {
+  fs.rmSync(outfile, { force: true })
+  fs.rmSync(GURT_ROOT, { recursive: true, force: true })
+})
+
+// --- JSONC with comments parses ---
+test('JSONC parsing', () => {
   const jsonc = `{
     // build-flavored config
     "build": {
@@ -61,9 +70,10 @@ try {
   assert.deepEqual(parsed.build, { dockerfile: 'Dockerfile', args: { NODE: '20' } })
   assert.ok(m.parseEnvDevcontainer('{ nope').error, 'parse error is reported')
   assert.ok(m.parseEnvDevcontainer('[1,2]').error, 'non-object root is an error')
-  console.log('JSONC parsing OK')
+})
 
-  // --- validation matrix ---
+// --- validation matrix ---
+test('validation matrix', () => {
   const env = (devcontainer, dockerfile) => ({ name: 'e', devcontainer, dockerfile })
   assert.equal(m.validateEnvConfig(env('')), 'devcontainer config is required')
   assert.match(m.validateEnvConfig(env('{ nope')), /devcontainer/)
@@ -73,10 +83,10 @@ try {
   )
   assert.equal(m.validateEnvConfig(env('{"build":{"dockerfile":"Dockerfile"}}', 'FROM x')), null)
   assert.equal(m.validateEnvConfig(env('{"image":"x"}')), null)
-  console.log('validation matrix OK')
+})
 
-  // --- envImageTag: stable identity, verified against node:crypto ---
-  const URL1 = 'https://github.com/o/r.git'
+// --- envImageTag: stable identity, verified against node:crypto ---
+test('envImageTag identity', () => {
   const t1 = m.envImageTag(URL1, 'c0ffee', 'FROM scratch', {
     dockerfile: 'Dockerfile',
     context: '..',
@@ -112,10 +122,10 @@ try {
       createHash('sha256').update(`${s}\n\n\n{}`).digest('hex').slice(0, 16)
     assert.equal(m.envImageTag(s, '', '', {}), exp, `sha256 mismatch at len ${n}`)
   }
-  console.log('envImageTag identity OK')
+})
 
-  // --- migration: old Dockerfile-mode env gets a synthesized build config ---
-  const ws = 'ws1'
+// --- migration: old Dockerfile-mode env gets a synthesized build config ---
+test('Dockerfile-mode migration + write-once', async () => {
   fs.mkdirSync(path.join(GURT_ROOT, ws), { recursive: true })
   const wsPath = path.join(GURT_ROOT, ws, 'workspace.json')
   fs.writeFileSync(
@@ -146,9 +156,10 @@ try {
   assert.notEqual(after, before, 'workspace.json rewritten on first read')
   await m.getWorkspace(ws)
   assert.equal(read(wsPath), after, 'write-back happens exactly once')
-  console.log('Dockerfile-mode migration + write-once OK')
+})
 
-  // --- store rejects configs failing validateEnvConfig ---
+// --- store rejects configs failing validateEnvConfig ---
+test('store validation', async () => {
   await assert.rejects(
     () => m.addEnv(ws, { name: 'bad', devcontainer: '' }),
     /devcontainer config is required/
@@ -162,14 +173,4 @@ try {
     () => m.updateEnv(ws, { name: 'good', devcontainer: '{ nope' }),
     /devcontainer/
   )
-  console.log('store validation OK')
-
-  console.log('env-config.test: PASS')
-} catch (e) {
-  console.error('env-config.test: FAIL')
-  console.error(e)
-  process.exitCode = 1
-} finally {
-  fs.rmSync(outfile, { force: true })
-  fs.rmSync(GURT_ROOT, { recursive: true, force: true })
-}
+})

@@ -21,7 +21,8 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - name: tests
-        # Runs scripts/*.test.mjs via scripts/run-tests.mjs (exclusions live there).
+        # `node --test` over scripts/*.test.mjs — see the Tests section of
+        # CONTRIBUTING.md for why the suite is shaped the way it is.
         run: npm test
 
   # e2e lives in its own job so a broken UI is visually distinct from a broken
