@@ -34,8 +34,7 @@ await build({
   platform: 'node',
   mainFields: ['module', 'main'],
   outfile,
-  logLevel: 'silent',
-  sourcemap: 'inline'
+  logLevel: 'silent'
 })
 
 const { parsePlanWindows, isOauthToken, tightest, createPlanUsage, createBus } = await import(

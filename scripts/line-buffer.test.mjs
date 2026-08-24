@@ -30,8 +30,7 @@ await build({
   platform: 'node',
   mainFields: ['module', 'main'],
   outfile,
-  logLevel: 'silent',
-  sourcemap: 'inline'
+  logLevel: 'silent'
 })
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gurt-line-buffer-'))

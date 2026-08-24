@@ -41,8 +41,7 @@ await build({
   platform: 'node',
   mainFields: ['module', 'main'],
   outfile,
-  logLevel: 'silent',
-  sourcemap: 'inline'
+  logLevel: 'silent'
 })
 
 const { createKernel, fixPrompt, getDiffFiles, getDiffPair } = await import(

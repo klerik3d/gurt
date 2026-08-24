@@ -82,8 +82,7 @@ await build({
   // Resolved at run time from `outfile`'s directory — i.e. the stub above.
   external: ['@devcontainers/cli'],
   outfile,
-  logLevel: 'silent',
-  sourcemap: 'inline'
+  logLevel: 'silent'
 })
 
 const workspace = path.join(tmp, 'workspace')

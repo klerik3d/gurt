@@ -37,8 +37,7 @@ await build({
   platform: 'node',
   mainFields: ['module', 'main'],
   outfile,
-  logLevel: 'silent',
-  sourcemap: 'inline'
+  logLevel: 'silent'
 })
 
 const { createUsageLedger, USAGE_RETENTION_MS, createBus } = await import(

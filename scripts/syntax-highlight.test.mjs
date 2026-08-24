@@ -21,8 +21,7 @@ await build({
   platform: 'node',
   mainFields: ['module', 'main'],
   outfile,
-  logLevel: 'silent',
-  sourcemap: 'inline'
+  logLevel: 'silent'
 })
 
 const { tokenize, mergeSpans } = await import(pathToFileURL(outfile).href)

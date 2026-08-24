@@ -275,7 +275,6 @@ await build({
   mainFields: ['module', 'main'],
   outfile,
   logLevel: 'silent',
-  sourcemap: 'inline',
   plugins: [electronStub, exposeIpcInternals]
 })
 

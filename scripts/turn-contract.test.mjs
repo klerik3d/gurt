@@ -29,8 +29,7 @@ await build({
   // prefer each package's ESM entry, like vite does.
   mainFields: ['module', 'main'],
   outfile,
-  logLevel: 'silent',
-  sourcemap: 'inline'
+  logLevel: 'silent'
 })
 
 const { postTurnDecision, NUDGE_PROMPT, adapterExitCode } = await import(pathToFileURL(outfile).href)

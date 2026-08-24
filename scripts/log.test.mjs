@@ -34,8 +34,7 @@ await build({
   platform: 'node',
   mainFields: ['module', 'main'],
   outfile: bundle,
-  logLevel: 'silent',
-  sourcemap: 'inline'
+  logLevel: 'silent'
 })
 
 const ESC = '\u001b'

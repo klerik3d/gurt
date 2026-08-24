@@ -35,8 +35,7 @@ await build({
   mainFields: ['module', 'main'],
   external: ['electron'],
   outfile,
-  logLevel: 'silent',
-  sourcemap: 'inline'
+  logLevel: 'silent'
 })
 
 const m = await import(pathToFileURL(outfile).href)

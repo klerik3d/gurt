@@ -29,8 +29,7 @@ await build({
   platform: 'node',
   mainFields: ['module', 'main'],
   outfile,
-  logLevel: 'silent',
-  sourcemap: 'inline'
+  logLevel: 'silent'
 })
 
 const { HOUR, formatDuration, isLimitMessage, limitResetAt, turnOutcome } = await import(
