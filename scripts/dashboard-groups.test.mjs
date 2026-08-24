@@ -7,7 +7,7 @@
 //
 //   node scripts/dashboard-groups.test.mjs
 import { test } from 'node:test'
-import { build } from 'esbuild'
+import { bundle } from './lib/bundle.mjs'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import path from 'node:path'
 import os from 'node:os'
@@ -17,19 +17,14 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const outfile = path.join(os.tmpdir(), `gurt-dash-groups-${process.pid}.mjs`)
 const S = (rel) => JSON.stringify(path.join(ROOT, rel))
 
-await build({
+await bundle({
   stdin: {
     contents: `export { boardByWorkspace, summarize, COLUMNS } from ${S('src/renderer/src/components/Dashboard.tsx')}`,
     resolveDir: ROOT,
     loader: 'ts',
     sourcefile: 'entry.ts'
   },
-  bundle: true,
-  format: 'esm',
-  platform: 'node',
-  mainFields: ['module', 'main'],
-  outfile,
-  logLevel: 'silent'
+  outfile
 })
 
 const { boardByWorkspace, summarize, COLUMNS } = await import(pathToFileURL(outfile).href)

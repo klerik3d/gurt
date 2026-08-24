@@ -6,7 +6,7 @@
 //
 //   node scripts/env-config.test.mjs
 import { test, after } from 'node:test'
-import { build } from 'esbuild'
+import { bundle } from './lib/bundle.mjs'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
 import path from 'node:path'
@@ -22,7 +22,7 @@ const S = (rel) => JSON.stringify(path.join(ROOT, rel))
 const GURT_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'gurt-env-config-'))
 process.env.GURT_ROOT = GURT_ROOT
 
-await build({
+await bundle({
   stdin: {
     contents: `
       export { parseEnvDevcontainer, validateEnvConfig, envImageTag } from ${S('src/shared/envConfig.ts')}
@@ -32,15 +32,8 @@ await build({
     loader: 'ts',
     sourcefile: 'entry.ts'
   },
-  bundle: true,
-  format: 'esm',
-  platform: 'node',
-  // jsonc-parser's `main` is a UMD build esbuild can't wrap into ESM output —
-  // prefer each package's ESM entry, like vite does.
-  mainFields: ['module', 'main'],
   external: ['electron'],
-  outfile,
-  logLevel: 'silent'
+  outfile
 })
 
 const m = await import(pathToFileURL(outfile).href)

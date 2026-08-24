@@ -29,7 +29,7 @@
 //
 //   node scripts/ipc-opaque-args.test.mjs
 import { test, after } from 'node:test'
-import { build } from 'esbuild'
+import { bundle } from './lib/bundle.mjs'
 import ts from 'typescript'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import path from 'node:path'
@@ -258,7 +258,7 @@ const exposeIpcInternals = {
   }
 }
 
-await build({
+await bundle({
   stdin: {
     contents:
       `export { __OPAQUE_ARGS, __argCtx } from ${S('src/main/ipc.ts')}\n` +
@@ -267,14 +267,7 @@ await build({
     loader: 'ts',
     sourcefile: 'entry.ts'
   },
-  bundle: true,
-  format: 'esm',
-  platform: 'node',
-  // jsonc-parser's `main` is a UMD build esbuild can't wrap into ESM output —
-  // prefer each package's ESM entry, like vite does.
-  mainFields: ['module', 'main'],
   outfile,
-  logLevel: 'silent',
   plugins: [electronStub, exposeIpcInternals]
 })
 

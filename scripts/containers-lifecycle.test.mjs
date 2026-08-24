@@ -31,7 +31,7 @@
 //
 //   node scripts/containers-lifecycle.test.mjs
 import { test, after } from 'node:test'
-import { build } from 'esbuild'
+import { bundle } from './lib/bundle.mjs'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import net from 'node:net'
 import path from 'node:path'
@@ -132,7 +132,7 @@ const mutations = () => calls().filter((a) => a[0] === 'rm' || a[0] === 'stop')
 // --- the module under test --------------------------------------------------
 
 const outfile = path.join(os.tmpdir(), `gurt-containers-${process.pid}.mjs`)
-await build({
+await bundle({
   stdin: {
     contents: `
       export { ContainerManager } from ${S('src/main/containers.ts')}
@@ -144,14 +144,7 @@ await build({
     loader: 'ts',
     sourcefile: 'entry.ts'
   },
-  bundle: true,
-  format: 'esm',
-  platform: 'node',
-  // jsonc-parser's `main` is a UMD build esbuild can't wrap into ESM output —
-  // prefer each package's ESM entry, like vite does.
-  mainFields: ['module', 'main'],
-  outfile,
-  logLevel: 'silent'
+  outfile
 })
 const m = await import(pathToFileURL(outfile).href)
 

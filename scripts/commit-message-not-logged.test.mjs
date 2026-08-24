@@ -7,7 +7,7 @@
 //
 //   node scripts/commit-message-not-logged.test.mjs
 import { test, after } from 'node:test'
-import { build } from 'esbuild'
+import { bundle } from './lib/bundle.mjs'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -27,19 +27,14 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gurt-commit-msg-'))
 process.env.GURT_ROOT = path.join(root, 'gurt')
 process.env.GURT_LOG = 'debug'
 
-await build({
+await bundle({
   stdin: {
     contents: `export { commit } from ${S('src/main/changes.ts')}`,
     resolveDir: ROOT,
     loader: 'ts',
     sourcefile: 'entry.ts'
   },
-  bundle: true,
-  format: 'esm',
-  platform: 'node',
-  mainFields: ['module', 'main'],
-  outfile,
-  logLevel: 'silent'
+  outfile
 })
 
 const m = await import(pathToFileURL(outfile).href)

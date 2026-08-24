@@ -5,7 +5,7 @@
 //
 //   node scripts/usage-ledger.test.mjs
 import { test, after } from 'node:test'
-import { build } from 'esbuild'
+import { bundle } from './lib/bundle.mjs'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import path from 'node:path'
 import os from 'node:os'
@@ -22,7 +22,7 @@ const GURT_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'gurt-usage-'))
 process.env.GURT_ROOT = GURT_ROOT
 process.env.GURT_LOG_LEVEL = 'error'
 
-await build({
+await bundle({
   stdin: {
     contents: [
       `export { createUsageLedger, USAGE_RETENTION_MS } from ${S('src/main/usage.ts')}`,
@@ -32,12 +32,7 @@ await build({
     loader: 'ts',
     sourcefile: 'entry.ts'
   },
-  bundle: true,
-  format: 'esm',
-  platform: 'node',
-  mainFields: ['module', 'main'],
-  outfile,
-  logLevel: 'silent'
+  outfile
 })
 
 const { createUsageLedger, USAGE_RETENTION_MS, createBus } = await import(

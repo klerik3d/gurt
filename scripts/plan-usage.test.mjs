@@ -7,7 +7,7 @@
 //
 //   node scripts/plan-usage.test.mjs
 import { test, after } from 'node:test'
-import { build } from 'esbuild'
+import { bundle } from './lib/bundle.mjs'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import path from 'node:path'
 import os from 'node:os'
@@ -18,7 +18,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const outfile = path.join(os.tmpdir(), `gurt-plan-usage-${process.pid}.mjs`)
 const S = (rel) => JSON.stringify(path.join(ROOT, rel))
 
-await build({
+await bundle({
   stdin: {
     contents: [
       `export * from ${S('src/shared/planUsage.ts')}`,
@@ -29,12 +29,7 @@ await build({
     loader: 'ts',
     sourcefile: 'entry.ts'
   },
-  bundle: true,
-  format: 'esm',
-  platform: 'node',
-  mainFields: ['module', 'main'],
-  outfile,
-  logLevel: 'silent'
+  outfile
 })
 
 const { parsePlanWindows, isOauthToken, tightest, createPlanUsage, createBus } = await import(

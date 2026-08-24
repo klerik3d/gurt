@@ -5,7 +5,7 @@
 //
 //   node scripts/clone-branch.test.mjs
 import { test, after } from 'node:test'
-import { build } from 'esbuild'
+import { bundle } from './lib/bundle.mjs'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -23,21 +23,14 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gurt-clone-branch-'))
 // store.ts reads GURT_ROOT at module load — set it before importing the bundle.
 process.env.GURT_ROOT = path.join(root, 'gurt')
 
-await build({
+await bundle({
   stdin: {
     contents: `export { ensureClone } from ${S('src/main/provision.ts')}`,
     resolveDir: ROOT,
     loader: 'ts',
     sourcefile: 'entry.ts'
   },
-  bundle: true,
-  format: 'esm',
-  platform: 'node',
-  // jsonc-parser's `main` is a UMD build esbuild can't wrap into ESM output —
-  // prefer each package's ESM entry, like vite does.
-  mainFields: ['module', 'main'],
-  outfile,
-  logLevel: 'silent'
+  outfile
 })
 
 const m = await import(pathToFileURL(outfile).href)

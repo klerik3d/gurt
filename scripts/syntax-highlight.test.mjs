@@ -4,7 +4,7 @@
 //
 //   node scripts/syntax-highlight.test.mjs
 import { test, after } from 'node:test'
-import { build } from 'esbuild'
+import { bundle } from './lib/bundle.mjs'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import path from 'node:path'
 import os from 'node:os'
@@ -14,14 +14,9 @@ import assert from 'node:assert/strict'
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const outfile = path.join(os.tmpdir(), `gurt-synhl-${process.pid}.mjs`)
 
-await build({
+await bundle({
   entryPoints: [path.join(ROOT, 'src/renderer/src/syntaxHighlight.ts')],
-  bundle: true,
-  format: 'esm',
-  platform: 'node',
-  mainFields: ['module', 'main'],
-  outfile,
-  logLevel: 'silent'
+  outfile
 })
 
 const { tokenize, mergeSpans } = await import(pathToFileURL(outfile).href)

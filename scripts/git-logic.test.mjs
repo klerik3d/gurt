@@ -5,7 +5,7 @@
 //
 //   node scripts/git-logic.test.mjs
 import { test, after } from 'node:test'
-import { build } from 'esbuild'
+import { bundle } from './lib/bundle.mjs'
 import { pathToFileURL } from 'node:url'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
@@ -24,16 +24,9 @@ export { rewriteRules, containerGitEnv, CRED_HELPER_BIN } from ${S('src/main/git
 export { providerForHost, forgeFeatures, forgeWrappers } from ${S('src/main/git/providers.ts')}
 `
 
-await build({
+await bundle({
   stdin: { contents: entry, resolveDir: ROOT, loader: 'ts', sourcefile: 'entry.ts' },
-  bundle: true,
-  format: 'esm',
-  platform: 'node',
-  // jsonc-parser's `main` is a UMD build esbuild can't wrap into ESM output —
-  // prefer each package's ESM entry, like vite does.
-  mainFields: ['module', 'main'],
-  outfile,
-  logLevel: 'silent'
+  outfile
 })
 
 const m = await import(pathToFileURL(outfile).href)

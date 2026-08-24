@@ -8,7 +8,7 @@
 // ANSI + newline sanitization (3), drop accounting under a flood (4), rotation
 // and the 6-file cap (5), and an unwritable log dir leaving the app usable (6).
 import { test, after } from 'node:test'
-import { build } from 'esbuild'
+import { bundle } from './lib/bundle.mjs'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
@@ -18,23 +18,18 @@ import assert from 'node:assert/strict'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gurt-log-test-'))
-const bundle = path.join(tmp, 'log.mjs')
+const outfile = path.join(tmp, 'log.mjs')
 const runner = path.join(tmp, 'run.mjs')
 const S = (rel) => JSON.stringify(path.join(ROOT, rel))
 
-await build({
+await bundle({
   stdin: {
     contents: `export * from ${S('src/main/log.ts')}`,
     resolveDir: ROOT,
     loader: 'ts',
     sourcefile: 'entry.ts'
   },
-  bundle: true,
-  format: 'esm',
-  platform: 'node',
-  mainFields: ['module', 'main'],
-  outfile: bundle,
-  logLevel: 'silent'
+  outfile
 })
 
 const ESC = '\u001b'
@@ -45,7 +40,7 @@ fs.writeFileSync(
   `
 import fs from 'node:fs'
 import path from 'node:path'
-import * as L from ${JSON.stringify(bundle)}
+import * as L from ${JSON.stringify(outfile)}
 
 const dir = path.join(process.env.GURT_ROOT, 'logs')
 const appLog = path.join(dir, 'gurt.log')

@@ -4,7 +4,7 @@
 //
 //   node scripts/agent-migration.test.mjs
 import { test, after } from 'node:test'
-import { build } from 'esbuild'
+import { bundle } from './lib/bundle.mjs'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import path from 'node:path'
 import os from 'node:os'
@@ -27,17 +27,10 @@ export { migrateAgentSecrets, getCredentials } from ${S('src/main/credentials.ts
 export { getAgents } from ${S('src/main/store.ts')}
 `
 
-await build({
+await bundle({
   stdin: { contents: entry, resolveDir: ROOT, loader: 'ts', sourcefile: 'entry.ts' },
-  bundle: true,
-  format: 'esm',
-  platform: 'node',
-  // jsonc-parser's `main` is a UMD build esbuild can't wrap into ESM output —
-  // prefer each package's ESM entry, like vite does.
-  mainFields: ['module', 'main'],
   external: ['electron'],
-  outfile,
-  logLevel: 'silent'
+  outfile
 })
 
 const m = await import(pathToFileURL(outfile).href)

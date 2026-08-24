@@ -8,7 +8,7 @@
 //
 //   node scripts/env-image-build.test.mjs
 import { test, after } from 'node:test'
-import { build } from 'esbuild'
+import { bundle } from './lib/bundle.mjs'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -22,22 +22,15 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const outfile = path.join(os.tmpdir(), `gurt-env-image-build-${process.pid}.mjs`)
 const S = (rel) => JSON.stringify(path.join(ROOT, rel))
 
-await build({
+await bundle({
   stdin: {
     contents: `export { buildEnvImage } from ${S('src/main/provision.ts')}`,
     resolveDir: ROOT,
     loader: 'ts',
     sourcefile: 'entry.ts'
   },
-  bundle: true,
-  format: 'esm',
-  platform: 'node',
-  // jsonc-parser's `main` is a UMD build esbuild can't wrap into ESM output —
-  // prefer each package's ESM entry, like vite does.
-  mainFields: ['module', 'main'],
   external: ['electron'],
-  outfile,
-  logLevel: 'silent'
+  outfile
 })
 
 const m = await import(pathToFileURL(outfile).href)

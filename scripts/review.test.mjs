@@ -9,7 +9,7 @@
 //
 //   node scripts/review.test.mjs
 import { test, after } from 'node:test'
-import { build } from 'esbuild'
+import { bundle } from './lib/bundle.mjs'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
 import path from 'node:path'
@@ -26,7 +26,7 @@ process.env.GURT_ROOT = GURT_ROOT
 const outfile = path.join(os.tmpdir(), `gurt-review-${process.pid}.mjs`)
 const S = (rel) => JSON.stringify(path.join(ROOT, rel))
 
-await build({
+await bundle({
   stdin: {
     contents:
       `export { createKernel } from ${S('src/main/kernel.ts')}\n` +
@@ -36,12 +36,7 @@ await build({
     loader: 'ts',
     sourcefile: 'entry.ts'
   },
-  bundle: true,
-  format: 'esm',
-  platform: 'node',
-  mainFields: ['module', 'main'],
-  outfile,
-  logLevel: 'silent'
+  outfile
 })
 
 const { createKernel, fixPrompt, getDiffFiles, getDiffPair } = await import(

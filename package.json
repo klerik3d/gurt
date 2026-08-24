@@ -16,6 +16,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.scripts.json",
     "lint": "eslint .",
     "test": "node --test --test-concurrency=1 scripts/*.test.mjs",
+    "coverage": "node scripts/coverage.mjs",
     "smoke": "node scripts/run-smoke.mjs",
     "setup": "npm ci && npx allow-scripts"
   },

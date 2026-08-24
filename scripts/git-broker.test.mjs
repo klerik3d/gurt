@@ -20,7 +20,7 @@
 //
 //   node scripts/git-broker.test.mjs
 import { test, after } from 'node:test'
-import { build } from 'esbuild'
+import { bundle } from './lib/bundle.mjs'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
 import http from 'node:http'
@@ -82,7 +82,7 @@ fs.writeFileSync(
 )
 
 const outfile = path.join(os.tmpdir(), `gurt-git-broker-${process.pid}.mjs`)
-await build({
+await bundle({
   stdin: {
     contents: `
       export { resolveGitBroker, stopGitBroker, ensureHostCredBroker } from ${S('src/main/git/broker.ts')}
@@ -98,14 +98,7 @@ await build({
     loader: 'ts',
     sourcefile: 'entry.ts'
   },
-  bundle: true,
-  format: 'esm',
-  platform: 'node',
-  // jsonc-parser's `main` is a UMD build esbuild can't wrap into ESM output —
-  // prefer each package's ESM entry, like vite does.
-  mainFields: ['module', 'main'],
-  outfile,
-  logLevel: 'silent'
+  outfile
 })
 
 const m = await import(pathToFileURL(outfile).href)

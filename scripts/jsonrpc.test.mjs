@@ -29,7 +29,7 @@
 //
 //   node scripts/jsonrpc.test.mjs
 import { test, after } from 'node:test'
-import { build } from 'esbuild'
+import { bundle } from './lib/bundle.mjs'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import { EventEmitter } from 'node:events'
 import path from 'node:path'
@@ -48,7 +48,7 @@ process.env.GURT_ROOT = path.join(sandbox, 'gurt')
 process.env.GURT_LOG = 'debug'
 const logFile = path.join(process.env.GURT_ROOT, 'logs', 'gurt.log')
 
-await build({
+await bundle({
   stdin: {
     contents:
       `export { JsonRpcPeer, issuePaths } from ${S('src/main/jsonrpc.ts')}\n` +
@@ -57,14 +57,7 @@ await build({
     loader: 'ts',
     sourcefile: 'entry.ts'
   },
-  bundle: true,
-  format: 'esm',
-  platform: 'node',
-  // jsonc-parser's `main` is a UMD build esbuild can't wrap into ESM output —
-  // prefer each package's ESM entry, like vite does.
-  mainFields: ['module', 'main'],
-  outfile,
-  logLevel: 'silent'
+  outfile
 })
 
 const m = await import(pathToFileURL(outfile).href)

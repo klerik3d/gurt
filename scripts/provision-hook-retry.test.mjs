@@ -10,7 +10,7 @@
 //
 //   node scripts/provision-hook-retry.test.mjs
 import { test, after } from 'node:test'
-import { build } from 'esbuild'
+import { bundle } from './lib/bundle.mjs'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import path from 'node:path'
 import os from 'node:os'
@@ -68,21 +68,16 @@ fs.chmodSync(path.join(bin, 'docker'), 0o755)
 process.env.PATH = `${bin}${path.delimiter}${process.env.PATH}`
 
 const outfile = path.join(tmp, 'entry.mjs')
-await build({
+await bundle({
   stdin: {
     contents: `export { devcontainerUp, hookOutputTail } from ${JSON.stringify(path.join(ROOT, 'src/main/provision.ts'))}`,
     resolveDir: ROOT,
     loader: 'ts',
     sourcefile: 'entry.ts'
   },
-  bundle: true,
-  format: 'esm',
-  platform: 'node',
-  mainFields: ['module', 'main'],
   // Resolved at run time from `outfile`'s directory — i.e. the stub above.
   external: ['@devcontainers/cli'],
-  outfile,
-  logLevel: 'silent'
+  outfile
 })
 
 const workspace = path.join(tmp, 'workspace')

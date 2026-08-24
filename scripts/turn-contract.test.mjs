@@ -4,7 +4,7 @@
 //
 //   node scripts/turn-contract.test.mjs
 import { test, after } from 'node:test'
-import { build } from 'esbuild'
+import { bundle } from './lib/bundle.mjs'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import path from 'node:path'
 import os from 'node:os'
@@ -15,21 +15,14 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const outfile = path.join(os.tmpdir(), `gurt-turn-contract-${process.pid}.mjs`)
 const S = (rel) => JSON.stringify(path.join(ROOT, rel))
 
-await build({
+await bundle({
   stdin: {
     contents: `export { postTurnDecision, NUDGE_PROMPT, adapterExitCode } from ${S('src/main/sessions.ts')}`,
     resolveDir: ROOT,
     loader: 'ts',
     sourcefile: 'entry.ts'
   },
-  bundle: true,
-  format: 'esm',
-  platform: 'node',
-  // jsonc-parser's `main` is a UMD build esbuild can't wrap into ESM output —
-  // prefer each package's ESM entry, like vite does.
-  mainFields: ['module', 'main'],
-  outfile,
-  logLevel: 'silent'
+  outfile
 })
 
 const { postTurnDecision, NUDGE_PROMPT, adapterExitCode } = await import(pathToFileURL(outfile).href)

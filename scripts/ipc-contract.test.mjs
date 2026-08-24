@@ -29,7 +29,7 @@
 //
 //   node scripts/ipc-contract.test.mjs
 import { test, after } from 'node:test'
-import { build } from 'esbuild'
+import { bundle } from './lib/bundle.mjs'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import path from 'node:path'
 import os from 'node:os'
@@ -163,7 +163,7 @@ function pushKey(keys, body, j) {
 /** `a` minus `b`, as a sorted list. */
 const missing = (a, b) => [...a].filter((x) => !b.has(x)).sort()
 
-await build({
+await bundle({
   stdin: {
     contents: `
       export { API_METHODS } from ${S('src/shared/api.ts')}
@@ -173,14 +173,7 @@ await build({
     loader: 'ts',
     sourcefile: 'entry.ts'
   },
-  bundle: true,
-  format: 'esm',
-  platform: 'node',
-  // jsonc-parser's `main` is a UMD build esbuild can't wrap into ESM output —
-  // prefer each package's ESM entry, like vite does.
-  mainFields: ['module', 'main'],
   outfile,
-  logLevel: 'silent',
   plugins: [electronStub]
 })
 

@@ -7,7 +7,7 @@
 //
 //   node scripts/proposal-store.test.mjs
 import { test, after } from 'node:test'
-import { build } from 'esbuild'
+import { bundle } from './lib/bundle.mjs'
 import { execFileSync } from 'node:child_process'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import path from 'node:path'
@@ -24,16 +24,9 @@ process.env.GURT_ROOT = GURT_ROOT
 const outfile = path.join(os.tmpdir(), `gurt-proposal-${process.pid}.mjs`)
 const S = (rel) => JSON.stringify(path.join(ROOT, rel))
 
-await build({
+await bundle({
   stdin: { contents: `export { createKernel } from ${S('src/main/kernel.ts')}`, resolveDir: ROOT, loader: 'ts', sourcefile: 'entry.ts' },
-  bundle: true,
-  format: 'esm',
-  platform: 'node',
-  // jsonc-parser's `main` is a UMD build esbuild can't wrap into ESM output —
-  // prefer each package's ESM entry, like vite does.
-  mainFields: ['module', 'main'],
-  outfile,
-  logLevel: 'silent'
+  outfile
 })
 
 const { createKernel } = await import(pathToFileURL(outfile).href)

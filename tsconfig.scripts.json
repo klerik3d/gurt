@@ -9,6 +9,10 @@
   // here — what stays on is the part that finds real mistakes, a property or a
   // module that does not exist.
   //
+  // scripts/coverage.mjs and scripts/lib/*.mjs are in here for the same reason:
+  // the coverage command is the one thing in scripts/ that nothing else would
+  // catch — it is not run by CI, so a typo in it surfaces months later.
+  //
   // The Playwright smoke drivers (scripts/smoke*.mjs) are NOT here: their
   // page.evaluate callbacks run in the browser, where `document.querySelector`
   // is typed `Element` and every `.click()` / `.innerText` needs a cast — ~105
@@ -26,5 +30,5 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["scripts/*.test.mjs"]
+  "include": ["scripts/*.test.mjs", "scripts/coverage.mjs", "scripts/lib/*.mjs"]
 }
