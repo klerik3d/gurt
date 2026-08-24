@@ -29,3 +29,29 @@ jobs:
             release/*.dmg
             release/*.zip
             release/*.blockmap
+
+  # Both jobs publish into the same tag's release: action-gh-release appends
+  # files to an existing release, so mac and linux artifacts end up together.
+  release-linux:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # Actions are pinned by commit SHA (not tag) — see the note in the
+      # `release` job above.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npx allow-scripts
+      - run: npm run dist:linux
+      # electron-builder writes to release/ (directories.output in
+      # electron-builder.yml).
+      - uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        with:
+          files: |
+            release/*.AppImage
+            release/*.deb
+            release/*.blockmap

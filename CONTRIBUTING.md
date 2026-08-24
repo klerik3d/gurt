@@ -21,13 +21,15 @@ see the "Dev container" section of the [README](README.md).
 ## Setup
 
 ```bash
-npm run setup    # npm ci + npx allow-scripts
+npm run setup    # npm ci + npx allow-scripts + node node_modules/electron/install.js
 ```
 
 npm lifecycle scripts are disabled globally (`ignore-scripts=true` in
 `.npmrc`); the few packages that need their install scripts are allow-listed
 in `package.json` and run explicitly via `npx allow-scripts` — hence the
-`setup` script instead of a bare `npm ci`.
+`setup` script instead of a bare `npm ci`. Electron no longer declares a
+postinstall script at all, so `setup` also runs its `install.js` directly to
+unpack the binary into `node_modules/electron/dist/`.
 
 ## Running in dev
 

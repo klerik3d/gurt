@@ -235,7 +235,7 @@ are not wired to the runtime yet.
 ## Run
 
 ```bash
-npm ci && npx allow-scripts
+npm run setup      # npm ci + allow-scripts + unpack the Electron binary
 npm run dev        # requires docker daemon for env start
 ```
 
@@ -246,8 +246,12 @@ folder"); see [docs/logging.md](docs/logging.md).
 ## Packaging (alpha builds)
 
 ```bash
-npm run dist       # → release/gurt-<version>-arm64.dmg + release/mac-arm64/gurt.app
+npm run dist         # macOS → release/gurt-<version>-arm64.dmg + release/mac-arm64/gurt.app
+npm run dist:linux   # Linux → release/gurt-<version>.AppImage + .deb
 ```
+
+Release artifacts (built by `.github/workflows/release.yml` on version tags)
+are the dmg plus the AppImage/deb — all unsigned.
 
 Config lives in `electron-builder.yml`. Builds are **unsigned**: they run on the
 machine that produced them, but a Mac that downloads the dmg will refuse to open

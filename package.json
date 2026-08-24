@@ -13,12 +13,13 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "dist": "npm run build && electron-builder --mac --publish never",
+    "dist:linux": "npm run build && electron-builder --linux --publish never",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.scripts.json",
     "lint": "eslint .",
     "test": "node --test scripts/*.test.mjs",
     "coverage": "node scripts/coverage.mjs",
     "smoke": "node scripts/run-smoke.mjs",
-    "setup": "npm ci && npx allow-scripts"
+    "setup": "npm ci && npx allow-scripts && node node_modules/electron/install.js"
   },
   "lavamoat": {
     "allowScripts": {

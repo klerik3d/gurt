@@ -60,8 +60,11 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             xvfb libgtk-3-0 libnss3 libasound2t64 libgbm1 libxss1 libxtst6
       - run: npm ci --ignore-scripts
-      # Unpacks the Electron binary (postinstall) — the smokes launch it.
       - run: npx allow-scripts
+      # electron@43 no longer declares a postinstall script, so allow-scripts
+      # has nothing to run for it — call its install.js explicitly to unpack
+      # the Electron binary the smokes launch.
+      - run: node node_modules/electron/install.js
       - name: build
         run: npm run build
       - name: smoke
