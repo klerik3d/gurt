@@ -1,5 +1,9 @@
 # gurt
 
+[![CI](https://github.com/klerik3d/gurt/actions/workflows/ci.yml/badge.svg)](https://github.com/klerik3d/gurt/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/klerik3d/gurt)](https://github.com/klerik3d/gurt/releases/latest)
+[![Renovate enabled](https://img.shields.io/badge/renovate-enabled-brightgreen.svg)](https://renovatebot.com)
+
 A local-first manager for dev environments and coding agents, built as an
 Electron app. The name "gurt" is a transcription of the Ukrainian word «гурт»
 ("group").
