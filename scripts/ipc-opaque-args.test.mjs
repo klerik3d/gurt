@@ -125,7 +125,8 @@ const SAFE_ARGS = new Set([
   'markAllRead',
   'dismissNotification',
   'setNotificationPrefs',
-  'openLogsFolder'
+  'openLogsFolder',
+  'checkForUpdates'
 ])
 
 /**
@@ -220,17 +221,42 @@ const electronStub = {
     b.onLoad({ filter: /.*/, namespace: 'stub-electron' }, () => ({
       loader: 'js',
       contents: `
-        export const BrowserWindow = { getAllWindows: () => [] }
+        export const BrowserWindow = { getAllWindows: () => [], getFocusedWindow: () => null }
         export const ipcMain = { handle() {}, on() {} }
         export const shell = { openExternal() {} }
+        export const dialog = { showMessageBox: () => Promise.resolve({ response: 0 }) }
         export const app = {
           getPath: () => ${JSON.stringify(sandbox)},
           getVersion: () => '0.0.0-test',
           getAppPath: () => ${JSON.stringify(ROOT)},
+          isPackaged: false,
           on() {}, whenReady: () => Promise.resolve()
         }
         export const Notification = class { show() {} static isSupported() { return false } }
-        export default { BrowserWindow, ipcMain, shell, app, Notification }
+        export default { BrowserWindow, ipcMain, shell, dialog, app, Notification }
+      `
+    }))
+  }
+}
+
+/** Minimal `electron-updater` stand-in — same reasoning as `electronStub`:
+ *  nothing here calls into it, its module scope just has to resolve. The real
+ *  package also trips esbuild's bundler (fs-extra/graceful-fs use a dynamic
+ *  `require()`), so stubbing doubles as the fix for that. */
+const electronUpdaterStub = {
+  name: 'stub-electron-updater',
+  setup(b) {
+    b.onResolve({ filter: /^electron-updater$/ }, () => ({
+      path: 'electron-updater',
+      namespace: 'stub-electron-updater'
+    }))
+    b.onLoad({ filter: /.*/, namespace: 'stub-electron-updater' }, () => ({
+      loader: 'js',
+      contents: `
+        export const autoUpdater = {
+          logger: null, autoDownload: false, autoInstallOnAppQuit: false,
+          setFeedURL() {}, on() { return this }, checkForUpdates: async () => {}, quitAndInstall() {}
+        }
       `
     }))
   }
@@ -268,7 +294,7 @@ await bundle({
     sourcefile: 'entry.ts'
   },
   outfile,
-  plugins: [electronStub, exposeIpcInternals]
+  plugins: [electronStub, electronUpdaterStub, exposeIpcInternals]
 })
 
 const { __OPAQUE_ARGS: OPAQUE_ARGS, __argCtx: argCtx, API_METHODS } = await import(

@@ -230,6 +230,10 @@ export interface GurtApi {
   sessionActivity(id: string): Promise<void>
   /** Reveal `~/.gurt/logs` in the OS file manager (⌘K → "Open logs folder"). */
   openLogsFolder(): Promise<void>
+  /** Manual update check (⌘K → "Check for updates"); a no-op outside packaged
+   *  builds. Feedback (up to date / downloading / restart prompt / error) is
+   *  a native dialog from main, not a return value — see `main/update.ts`. */
+  checkForUpdates(): Promise<void>
   /** In-memory notification history (oldest first) — empty after a relaunch,
    *  see docs/requirements-notifications.md §6. */
   getNotifications(): Promise<NotificationRecord[]>
@@ -317,6 +321,7 @@ const METHODS = {
   sessionPermission: true,
   sessionActivity: true,
   openLogsFolder: true,
+  checkForUpdates: true,
   getNotifications: true,
   markNotificationRead: true,
   markAllRead: true,

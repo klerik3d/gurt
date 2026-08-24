@@ -5,6 +5,8 @@ import { loadSecrets, migrateAgentSecrets, sealPlaintextSecrets } from './creden
 import { createLogger, flushSync, logDir, logLevel } from './log'
 import { dockerVersion } from './provision'
 import { gurtRoot } from './store'
+import { initAutoUpdater } from './update'
+import { initAppMenu } from './menu'
 
 const log = createLogger('app')
 
@@ -114,6 +116,8 @@ void app.whenReady().then(async () => {
   // keystore may be available. Idempotent, so safe to run every start.
   await sealPlaintextSecrets().catch((e: unknown) => log.error('internal.fail', { site: 'credential-seal', err: e }))
   registerIpc()
+  initAutoUpdater()
+  initAppMenu()
   createWindow()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
