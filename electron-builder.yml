@@ -32,6 +32,34 @@ mac:
   category: public.app-category.developer-tools
   target:
     - dmg
+    # electron-updater's mac auto-updater (Squirrel.Mac) applies updates from
+    # the zip, not the dmg — the dmg stays as the first-download installer.
+    - zip
   # Alpha builds are unsigned. They run fine locally; on another Mac the
-  # recipient has to clear the download quarantine (see README).
+  # recipient has to clear the download quarantine (see README). Unsigned
+  # also means mac auto-update is untested end-to-end: Squirrel.Mac generally
+  # expects a signed app, so treat it as best-effort until this is signed.
   identity: null
+
+# Linux is built via `npm run dist:linux` (and the release-linux CI job).
+# electron-builder accepts a plain png icon for linux targets.
+linux:
+  icon: resources/icon.png
+  category: Development
+  # deb requires a maintainer contact; package.json has no author field, so it
+  # is set here (the repo owner's GitHub noreply address).
+  maintainer: klerik3d <4738416+klerik3d@users.noreply.github.com>
+  target:
+    - AppImage
+    # electron-updater only supports auto-update for AppImage on Linux — deb
+    # is still built (see README) but upgrades through apt/dpkg, not this.
+    - deb
+
+# Auto-update feed (electron-updater reads this from the packaged app's
+# app-update.yml). Matches the release.yml workflow, which publishes tagged
+# builds to this repo's GitHub Releases. `GURT_UPDATE_URL` overrides this at
+# runtime with a `generic` feed for local testing — see README.
+publish:
+  provider: github
+  owner: klerik3d
+  repo: gurt

@@ -2,6 +2,7 @@
   "name": "gurt",
   "version": "0.1.0",
   "description": "Local-first manager for dev environments and coding agents",
+  "license": "Apache-2.0",
   "main": "out/main/index.js",
   "private": true,
   "packageManager": "npm@11.17.0",
@@ -13,12 +14,13 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "dist": "npm run build && electron-builder --mac --publish never",
+    "dist:linux": "npm run build && electron-builder --linux --publish never",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.scripts.json",
     "lint": "eslint .",
-    "test": "node --test --test-concurrency=1 scripts/*.test.mjs",
+    "test": "node --test scripts/*.test.mjs",
     "coverage": "node scripts/coverage.mjs",
     "smoke": "node scripts/run-smoke.mjs",
-    "setup": "npm ci && npx allow-scripts"
+    "setup": "npm ci && npx allow-scripts && node node_modules/electron/install.js"
   },
   "lavamoat": {
     "allowScripts": {
@@ -33,6 +35,7 @@
   "dependencies": {
     "@devcontainers/cli": "0.88.0",
     "@modelcontextprotocol/sdk": "^1.30.0",
+    "electron-updater": "^6.8.9",
     "highlight.js": "^11.12.0",
     "jsonc-parser": "^3.3.1",
     "react-markdown": "^10.1.0",

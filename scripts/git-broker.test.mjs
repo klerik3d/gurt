@@ -516,6 +516,17 @@ test('host broker is loopback + token + header scoped, and serves nothing else',
       what: 'a non-http protocol',
       headers: scoped,
       body: fill({ protocol: 'ssh', host: 'github.com' })
+    },
+    // §3.2 and the §8 scoping rule, re-checked here and not only in env.ts.
+    {
+      what: 'an unverified entry (§3.2), handed by id',
+      headers: { 'x-gurt-cred-id': 'cred-unverified', 'x-gurt-cred-host': 'gitlab.com' },
+      body: fill({ protocol: 'https', host: 'gitlab.com' })
+    },
+    {
+      what: 'an entry whose own hosts do not cover the requested host',
+      headers: { 'x-gurt-cred-id': 'cred-gh', 'x-gurt-cred-host': 'gitlab.com' },
+      body: fill({ protocol: 'https', host: 'gitlab.com' })
     }
   ]) {
     const res = await request(`${hostBroker.url}/credential`, { method: 'POST', headers, body })
@@ -523,13 +534,10 @@ test('host broker is loopback + token + header scoped, and serves nothing else',
     assert.equal(res.body, '', `${what} serves nothing`)
   }
 
-  // Note, deliberately not asserted either way: unlike the session broker,
-  // `handleHostCredential` does not re-check §3.2 — handed the id of an
-  // unverified git-token it would serve that entry's secret. It is not
-  // reachable: the only thing that ever sets GURT_CRED_ID is `hostGitAccess`,
-  // and an unverified entry blocks there instead (asserted above). Pinning the
-  // current 200 here would enshrine a gap; pinning a 204 would fail today. The
-  // invariant that holds is the one above — no reachable path yields that id.
+  // The unverified-entry and out-of-scope-host rows above are the host broker's
+  // own echelon, not a restatement of env.ts: unreachable through GURT_CRED_ID
+  // (hostGitAccess blocks both before setting it, asserted above), they hold
+  // even for a caller that forges the headers outright.
 
   // The host broker's token gates it exactly like the session one.
   for (const url of [
@@ -646,10 +654,22 @@ test('restarting a session broker invalidates its old token', async () => {
 // ==========================================================================
 // Nothing above reached the log
 // ==========================================================================
-test('no secret, no bearer token and no fill content in gurt.log', () => {
-  m.flushSync()
+test('no secret, no bearer token and no fill content in gurt.log', async () => {
   const logFile = path.join(GURT_ROOT, 'logs', 'gurt.log')
-  const gurtLog = fs.readFileSync(logFile, 'utf8')
+  const readLog = () => (fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8') : '')
+  // `flushSync()` is the crash path: it writes what is still *queued*, and a
+  // batch already handed to an in-flight async drain is neither queued nor on
+  // disk yet. So it is not a barrier — call it to push the queue, then wait on
+  // the records themselves. The wait ends on the condition, never on a fixed
+  // delay, and the cap is a failure path rather than a timing assumption.
+  const TRACES = ['gitbroker.start', 'gitbroker.stop', 'hostcredbroker.start', `"port":${u1.port}`]
+  let gurtLog = ''
+  for (let i = 0; i < 1000; i++) {
+    m.flushSync()
+    gurtLog = readLog()
+    if (TRACES.every((t) => gurtLog.includes(t))) break
+    await new Promise((r) => setTimeout(r, 5))
+  }
   const lines = gurtLog.split('\n').filter(Boolean)
 
   // The assertion is only worth something if these brokers logged at all.

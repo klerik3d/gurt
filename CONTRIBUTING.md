@@ -21,13 +21,15 @@ see the "Dev container" section of the [README](README.md).
 ## Setup
 
 ```bash
-npm run setup    # npm ci + npx allow-scripts
+npm run setup    # npm ci + npx allow-scripts + node node_modules/electron/install.js
 ```
 
 npm lifecycle scripts are disabled globally (`ignore-scripts=true` in
 `.npmrc`); the few packages that need their install scripts are allow-listed
 in `package.json` and run explicitly via `npx allow-scripts` — hence the
-`setup` script instead of a bare `npm ci`.
+`setup` script instead of a bare `npm ci`. Electron no longer declares a
+postinstall script at all, so `setup` also runs its `install.js` directly to
+unpack the binary into `node_modules/electron/dist/`.
 
 ## Running in dev
 
@@ -179,7 +181,7 @@ Name the file after the requirement it pins, not the module it imports
 (`turn-contract`, `session-roles`, `queue-handoff`), and name each `test()`
 after the behaviour it proves. Several correspond to a `docs/requirements-*.md`.
 
-Three things will bite you, and all three fail quietly rather than loudly:
+Four things will bite you, and all four fail quietly rather than loudly:
 
 - **`test()` registers; the body runs later.** Cleanup at the end of the file
   would run before any test touches its fixtures. Use `after()`.
@@ -190,10 +192,22 @@ Three things will bite you, and all three fail quietly rather than loudly:
   `await`s before the first `test()`.
 - **No fixed sleeps, no wall-clock assertions.** Poll for the condition. Logs
   and other queues reach disk asynchronously, and a `readFileSync` that lands
-  early makes "the secret is absent" pass on an empty file.
+  early makes "the secret is absent" pass on an empty file. Poll for the exact
+  thing you are about to assert on, too: waiting for a directory's child to
+  disappear does not mean the directory is gone.
+- **Files run in parallel, so own everything you touch.** A hardcoded port, a
+  fixed path under `/tmp`, a shared docker image tag: each one passes on its
+  own and keeps passing until the file that wants the same thing happens to
+  land in the same batch. Derive every name — `mkdtemp()` for a directory,
+  port `0` for a listener, `${process.pid}` for a scratch file, a per-test tag
+  for an image. The collision surfaces as a failure in whichever file lost the
+  race, which is rarely the one that was at fault.
 
-Tests run sequentially (`--test-concurrency=1`) and in declaration order, so a
-file may build state across its tests. Do not add `{ concurrency: true }`.
+Test *files* run in parallel, one process each, up to the runner's default
+concurrency. Inside a file nothing changed: `node:test` still runs that file's
+tests one at a time, in declaration order, so a file may build state across its
+tests. Do not add `{ concurrency: true }` — that is the *inner* switch, for
+tests within a file, and it stays off.
 
 Before pushing, make the assertion fail on purpose once and check that it
 fails for the reason you expect. A test that cannot fail is worse than none.
@@ -211,3 +225,13 @@ every push and pull request; a PR should be green on all of it:
 
 Running `npm run typecheck`, `npm run lint` and `npm test` locally before
 pushing covers most of it.
+
+## Contributor License Agreement
+
+The project asks every contributor to sign its [CLA](CLA.md) once, on
+their first pull request. The Apache-2.0 license already covers the
+inbound license of a contribution; what the CLA adds is the right for
+the maintainer to relicense the project later. Signing is automated: the
+CLA bot comments on your first PR, and you sign by replying with the
+sentence it quotes. The signature is stored in the `cla-signatures`
+branch and covers all future contributions.
