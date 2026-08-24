@@ -331,3 +331,9 @@ node scripts/log.test.mjs              # app log: writer, rotation, sanitization
   does not exist" even though the path exists. Smoke tests use a unique root
   per run for this reason; if it bites the real `~/.gurt` after env
   delete/re-add, restart Docker Desktop.
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE). The project name and logo
+are not covered by this license. Contributions require signing the
+[CLA](CLA.md) — see [CONTRIBUTING.md](CONTRIBUTING.md).
