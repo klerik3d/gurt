@@ -264,6 +264,56 @@ xattr -dr com.apple.quarantine /Applications/gurt.app
 The devcontainer CLI is kept outside `app.asar` (`asarUnpack`) because gurt
 spawns it as a child process — only Electron's own fs can read from an asar.
 
+## Auto-update
+
+Packaged builds carry [electron-updater](https://www.electron.build/auto-update),
+wired in `src/main/update.ts`. Checks are user-initiated only (⌘K → "Check for
+updates") — there is no background poll — and feedback is a native dialog, not
+UI in the app itself: up to date, downloading, a restart prompt once the update
+lands, or an error. `electron-builder.yml`'s `publish` block points the default
+feed at this repo's GitHub Releases, matching `.github/workflows/release.yml`
+(which uploads the `latest*.yml` manifests alongside the installers — without
+those, electron-updater has nothing to compare versions against).
+
+Auto-update only works for the **AppImage** target on Linux (the deb ships too,
+but upgrades through apt/dpkg, not this — `checkForUpdates()` short-circuits with
+a dialog if it isn't running as the AppImage, so it never falls back to shelling
+out to `sudo dpkg -i`, which electron-updater will otherwise attempt and which
+just hangs or fails outside a desktop with a polkit agent). macOS auto-update
+needs the `zip` target (also configured) and, unverified so far here, a signed
+build — these are alpha builds and `identity: null` (see above), so treat mac
+auto-update as best-effort until that changes.
+
+**Testing the whole loop locally, before pushing a tag:**
+
+```bash
+# 1. Build and set aside the "old" version an installed user would be running.
+npm run dist:linux
+cp release/gurt-<old-version>-arm64.AppImage /tmp/gurt-old.AppImage
+
+# 2. Bump the version in package.json, rebuild — release/ now has the "new"
+#    installer plus an updated release/latest-linux*.yml pointing at it.
+npm run dist:linux
+
+# 3. Serve release/ as the update feed.
+npx http-server release -p 8384    # or: python3 -m http.server 8384 -d release
+
+# 4. Run the old build with the feed overridden to your local server (this is
+#    the one thing that only exists for this loop — GURT_UPDATE_URL isn't read
+#    anywhere else) and trigger a check from the running app (⌘K → "Check for
+#    updates"). It downloads the new AppImage, verifies its sha512 against the
+#    manifest, and replaces /tmp/gurt-old.AppImage in place.
+GURT_UPDATE_URL=http://127.0.0.1:8384 /tmp/gurt-old.AppImage
+```
+
+`GURT_UPDATE_URL` swaps the baked-in GitHub provider for a `generic` one at
+runtime (`autoUpdater.setFeedURL`) — nothing about the build config changes, so
+this is safe to leave set only for the one test run. Running the *unpacked*
+`release/linux-arm64-unpacked/gurt` binary instead of the real `.AppImage` also
+works for exercising the check-and-download path, but electron-updater then has
+no `APPIMAGE` env var to tell it how it was installed and falls back to the
+deb/sudo path above — always test through the actual `.AppImage` file.
+
 ## Dev container
 
 `.devcontainer/` provides a Node 22 environment for working on gurt itself.

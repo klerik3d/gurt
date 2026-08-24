@@ -26,16 +26,17 @@ interface TaskItem {
 
 interface ActionItem {
   kind: 'action'
-  id: 'new-session' | 'new-task' | 'open-logs'
+  id: 'new-session' | 'new-task' | 'open-logs' | 'check-updates'
   title: string
   keys: string
 }
 
 /** Icon per action row. */
-const ACTION_ICON: Record<ActionItem['id'], 'plus' | 'branch' | 'folder'> = {
+const ACTION_ICON: Record<ActionItem['id'], 'plus' | 'branch' | 'folder' | 'history'> = {
   'new-session': 'plus',
   'new-task': 'branch',
-  'open-logs': 'folder'
+  'open-logs': 'folder',
+  'check-updates': 'history'
 }
 
 type Item = ActionItem | SessionItem | TaskItem
@@ -81,7 +82,8 @@ export function CommandPalette({
     const actions: ActionItem[] = [
       { kind: 'action', id: 'new-session', title: 'New session…', keys: '⌘N' },
       { kind: 'action', id: 'new-task', title: 'New task…', keys: '⌘⇧N' },
-      { kind: 'action', id: 'open-logs', title: 'Open logs folder', keys: '' }
+      { kind: 'action', id: 'open-logs', title: 'Open logs folder', keys: '' },
+      { kind: 'action', id: 'check-updates', title: 'Check for updates', keys: '' }
     ].filter((a) => match(a.title)) as ActionItem[]
 
     const sessions: SessionItem[] = []
@@ -115,10 +117,15 @@ export function CommandPalette({
     if (item.kind === 'action') {
       if (item.id === 'new-session') onNewSession()
       else if (item.id === 'new-task') onNewTask()
-      else {
+      else if (item.id === 'open-logs') {
         // Reveals ~/.gurt/logs — the log is local, so "open it" is the whole
         // support story (see docs/logging.md).
         window.gurt.openLogsFolder().catch(logErr('openLogsFolder'))
+        onClose()
+      } else {
+        // Feedback (up to date / downloading / restart prompt / error) comes
+        // back as a native dialog from main, not through this call.
+        window.gurt.checkForUpdates().catch(logErr('checkForUpdates'))
         onClose()
       }
     } else if (item.kind === 'session') onSelectSession(item.id)
