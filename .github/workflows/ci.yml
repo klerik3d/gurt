@@ -21,5 +21,59 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - name: tests
-        # Runs scripts/*.test.mjs via scripts/run-tests.mjs (exclusions live there).
+        # `node --test` over scripts/*.test.mjs — see the Tests section of
+        # CONTRIBUTING.md for why the suite is shaped the way it is.
         run: npm test
+
+  # e2e lives in its own job so a broken UI is visually distinct from a broken
+  # unit test or a lint error, and so it can install the extra system bits the
+  # Electron GUI needs without slowing the fast job down.
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # ubuntu-latest restricts unprivileged user namespaces and npm cannot
+      # chown chrome-sandbox to root:root, so Chromium's setuid sandbox is
+      # unusable here. Most smokes already pass --no-sandbox; this covers the
+      # ones that do not (smoke.mjs, smoke-git-access.mjs).
+      ELECTRON_DISABLE_SANDBOX: 1
+      # Outer per-script backstop (see scripts/run-smoke.mjs). Generous: a
+      # shared runner is several times slower than a dev machine.
+      SMOKE_TIMEOUT_MS: 300000
+      # Fixed scratch root (instead of the default mkdtemp) so the failure
+      # artifact step below has a stable path to upload.
+      SMOKE_SCRATCH_ROOT: /tmp/gurt-smoke-ci
+    steps:
+      # Actions are pinned by commit SHA (not tag) — see the note in the `ci`
+      # job above.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - name: install Electron runtime deps
+        # xvfb gives the headless runner a display; the rest are the shared
+        # libraries Chromium dlopen()s at startup and that the runner image
+        # does not guarantee.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb libgtk-3-0 libnss3 libasound2t64 libgbm1 libxss1 libxtst6
+      - run: npm ci --ignore-scripts
+      # Unpacks the Electron binary (postinstall) — the smokes launch it.
+      - run: npx allow-scripts
+      - name: build
+        run: npm run build
+      - name: smoke
+        # xvfb-run -a picks a free display number; the smoke scripts launch
+        # Electron directly, so the whole runner is wrapped once.
+        timeout-minutes: 20
+        run: xvfb-run -a --server-args="-screen 0 1280x800x24" npm run smoke
+      - name: upload smoke artifacts
+        if: failure()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: smoke-artifacts
+          path: /tmp/gurt-smoke-ci/*/shots
+          if-no-files-found: ignore
+          retention-days: 7

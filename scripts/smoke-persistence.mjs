@@ -1,8 +1,18 @@
 // Phase 3: session persistence across app restart. Requires docker.
-// Run A: session on "hello" runs (env provisioned, prompt fails auth), quit.
+// Run A: a session on "hello" runs (container provisioned, prompt fails auth), quit.
 // Run B: relaunch, expect the session in the tree with restored history,
 // prompt again -> session/load resume path.
+//
+//   npm run build && SCRATCH=/tmp/gurt-smoke-persist node scripts/smoke-persistence.mjs
+//
+// The repo is a local bare origin, so the git half is hermetic. It carries a
+// `.devcontainer/` directory on purpose: gurt always passes
+// `--additional-features`, and @devcontainers/cli 0.88 writes the resolved
+// feature lockfile to `<workspace>/.devcontainer/devcontainer-lock.json` without
+// creating the directory — a repo without one fails `devcontainer up` with
+// ENOENT before the image is ever built.
 import { createRequire } from 'node:module'
+import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -13,14 +23,16 @@ const SHOT_DIR = path.join(process.env.SCRATCH ?? '/tmp', 'shots')
 // unique per run: Docker Desktop's virtiofs caches deleted paths, so reusing
 // a recently-removed directory name breaks bind mounts ("source does not exist")
 const GURT_ROOT = path.join(os.homedir(), `.gurt-smoke-${Date.now()}`)
+const REPO_ROOT = path.join(os.homedir(), `.gurt-smoke-repos-${Date.now()}`)
 console.log('GURT_ROOT:', GURT_ROOT)
 fs.mkdirSync(SHOT_DIR, { recursive: true })
+fs.mkdirSync(REPO_ROOT, { recursive: true })
 
 const require = createRequire(path.join(APP_DIR, 'package.json'))
 const { _electron } = require('playwright-core')
 const electronPath = require('electron') // path string to the electron binary
 
-const env = { ...process.env, GURT_ROOT }
+const env = { ...process.env, GURT_ROOT, DISPLAY: process.env.DISPLAY ?? ':99' }
 delete env.ELECTRON_RUN_AS_NODE
 
 // Seed a claude-code agent (no credential — the registry starts empty otherwise).
@@ -30,102 +42,154 @@ fs.writeFileSync(
   JSON.stringify({ 'claude-code': { kind: 'claude-code', label: 'claude code' } })
 )
 
+const DEVCONTAINER = '{ "image": "mcr.microsoft.com/devcontainers/base:ubuntu" }'
+
+const git = (dir, ...args) =>
+  execFileSync('git', ['-C', dir, '-c', 'user.email=smoke@test', '-c', 'user.name=smoke', ...args], {
+    encoding: 'utf8'
+  })
+
+/** A bare origin with one commit and a `.devcontainer/` for the feature lockfile. */
+function makeBareRepo(name) {
+  const seed = path.join(REPO_ROOT, `${name}-seed`)
+  const bare = path.join(REPO_ROOT, `${name}.git`)
+  fs.mkdirSync(path.join(seed, '.devcontainer'), { recursive: true })
+  git(REPO_ROOT, 'init', '-q', '-b', 'main', seed)
+  fs.writeFileSync(path.join(seed, 'README.md'), `# ${name}\n`)
+  fs.writeFileSync(path.join(seed, '.devcontainer', 'devcontainer.json'), `${DEVCONTAINER}\n`)
+  git(seed, 'add', '-A')
+  git(seed, 'commit', '-qm', 'initial')
+  git(REPO_ROOT, 'clone', '-q', '--bare', seed, bare)
+  return `file://${bare}`
+}
+
+const HELLO_URL = makeBareRepo('hello')
+
 async function launch() {
   const app = await _electron.launch({
     executablePath: electronPath,
-    args: [APP_DIR],
+    args: [APP_DIR, '--no-sandbox'],
     env,
     timeout: 30000
   })
+  // stdout only: a 'data' listener on Electron's stderr keeps the pipe
+  // referenced and the process alive past app.close().
   app.process().stdout.on('data', (d) => process.stdout.write(`[main] ${d}`))
-  app.process().stderr.on('data', (d) => {
-    const t = d.toString()
-    if (!t.includes('Debugger')) process.stdout.write(`[main!] ${t}`)
-  })
   const page = await app.firstWindow()
-  page.on('dialog', (dg) => {
-    console.log('[dialog]', dg.message())
-    dg.accept().catch(() => {})
+  page.on('console', (m) => {
+    if (m.type() === 'error') console.log('[console.error]', m.text())
   })
   await page.waitForSelector('.sidebar', { timeout: 15000 })
   return { app, page }
 }
 
+/** `app.close()` can hang when a session's ACP agent is still attached inside
+ *  its container: Electron waits on the `devcontainer exec` child that carries
+ *  the agent, and that child outlives the window. Give the clean shutdown a
+ *  grace period, then kill the process — by this point the script's own
+ *  assertions are what decide the exit code. */
+const closeApp = async (a) => {
+  await Promise.race([a.close().catch(() => {}), new Promise((r) => setTimeout(r, 20000))])
+  try {
+    a.process().kill('SIGKILL')
+  } catch {
+    /* already gone */
+  }
+}
+
 // ---- run A ----
 let { app, page } = await launch()
 
-const clickTitle = (t) =>
-  page.evaluate((x) => document.querySelector(`button[title="${x}"]`)?.click(), t)
-const clickText = (scope, text) =>
-  page.evaluate(
-    ([sc, tx]) => {
-      ;[...document.querySelectorAll(`${sc} button`)]
-        .find((b) => b.textContent.trim() === tx)
-        ?.click()
-    },
-    [scope, text]
-  )
-const modalGone = () => page.waitForSelector('.modal', { state: 'detached' })
+const modalGone = () => page.waitForSelector('.modal', { state: 'detached', timeout: 10000 })
 
-async function modalName(title, value) {
-  await clickTitle(title)
-  await page.waitForSelector('.modal input')
-  await page.fill('.modal input', value)
-  await page.click('.modal .form > button')
-  await modalGone()
+// The two views in the activity bar. Repos and environments live in Settings;
+// tasks and sessions in the work view.
+const openSettings = async (section) => {
+  await page.click('.activitybar .ab-item[title="Settings"]')
+  await page.click(`.set-nav-item:has-text("${section}")`)
 }
+const openWork = () => page.click('.activitybar .ab-item[title="Tasks & sessions"]')
 
-// Resolves when the session mark reaches one of `states`; fails fast when the
-// start fails (the session pane shows .env-error instead of ever starting).
-const waitMark = async (states, timeout = 600000) => {
+// Sessions are named after their role, and the sidebar row carries its status as
+// the row title (see SESSION_DOT). Resolves when the session reaches one of
+// `labels`; fails fast when the start fails (the pane shows .env-error).
+const STARTED = ['working', 'needs you', 'idle — turn ended']
+const waitStarted = async (timeout = 600000) => {
   await page.waitForFunction(
     (ss) => {
       if (document.querySelector('.env-error')) return true
-      const m = document.querySelector('.session-node .session-mark')
-      const st = m && [...m.classList].find((c) => c.startsWith('mark-'))?.slice(5)
-      return st && ss.includes(st)
+      const row = document.querySelector('.sb-session')
+      return !!row && ss.includes(row.getAttribute('title'))
     },
-    states,
+    STARTED,
     { timeout, polling: 1000 }
   )
   const err = await page.evaluate(() => document.querySelector('.env-error')?.innerText)
   if (err) throw new Error(`session start failed: ${err}`)
 }
 
-await modalName('new workspace', 'personal')
-await page.waitForSelector('.ws-node')
-await clickTitle('repos')
-await page.waitForSelector('.modal')
-await clickText('.modal', 'Add repo')
-await page.waitForSelector('.modal .repo-form input')
-await page.fill('.modal .repo-form input[placeholder="name"]', 'hello')
-await page.fill('.modal .repo-form input[placeholder*="git url"]', 'https://github.com/octocat/Hello-World.git')
-await page.fill('.modal .repo-form textarea', '{ "image": "mcr.microsoft.com/devcontainers/base:ubuntu" }')
-await clickText('.repo-form', 'Add')
-await page.waitForSelector('.repo-row')
-await page.click('.modal-header .icon-btn')
+// --- workspace ---------------------------------------------------------
+await page.click('.sb-ws-btn')
+await page.click('.menu-item:has-text("+ new workspace")')
+await page.waitForSelector('.modal input', { timeout: 5000 })
+await page.fill('.modal input', 'personal')
+await page.click('.modal button:has-text("Create")')
 await modalGone()
-await modalName('new task', 'try-electron')
-await page.waitForSelector('.task-node')
+await page.waitForSelector('.sb-ws-name:has-text("personal")', { timeout: 5000 })
 
-await clickTitle('new session')
-await page.waitForSelector('.modal textarea')
-await page.fill('.modal textarea', 'hello from run A')
-await clickText('.modal .row-buttons', 'Run now')
+// --- repo --------------------------------------------------------------
+await openSettings('Repos')
+await page.click('.set-head .btn-primary') // + New repo
+await page.waitForSelector('.modal:has-text("New repo")', { timeout: 5000 })
+await page.fill('.modal input[placeholder="checkout-web"]', 'hello')
+await page.fill('.modal input[placeholder^="https://github.com"]', HELLO_URL)
+await page.click('.modal-foot .btn-primary') // Save
+await modalGone()
+await page.waitForSelector('.set-row-label:text-is("hello")', { timeout: 5000 })
+
+// --- environment -------------------------------------------------------
+await openSettings('Environments')
+await page.click('.set-head .btn-primary') // + New environment
+await page.waitForSelector('.modal input[placeholder="web-app"]', { timeout: 5000 })
+await page.fill('.modal input[placeholder="web-app"]', 'hello-env')
+await page.click('.modal .fld:has(.seclabel:text-is("DEFAULT REPOSITORY")) .pick-row')
+await page.click('.modal .pick-menu .menu-item:has-text("hello")')
+await page.fill('.modal .jsoned textarea', DEVCONTAINER)
+await page.click('.modal-foot .btn-primary') // Save
+await modalGone()
+await page.waitForSelector('.set-row-label:text-is("hello-env")', { timeout: 5000 })
+
+// --- task --------------------------------------------------------------
+await openWork()
+await page.click('button[title="New task · ⌘⇧N"]')
+await page.waitForSelector('.sb-newtask-menu input', { timeout: 5000 })
+await page.fill('.sb-newtask-menu input', 'try-electron')
+await page.press('.sb-newtask-menu input', 'Enter')
+await page.waitForSelector('.sb-task-name:text-is("try-electron")', { timeout: 10000 })
+
+// --- session -----------------------------------------------------------
+await page.hover('.sb-task:has(.sb-task-name:text-is("try-electron"))')
+await page.click('.sb-task:has(.sb-task-name:text-is("try-electron")) .icon-sq[title="new session"]')
+await page.waitForSelector('.modal:has-text("New session")', { timeout: 5000 })
+// environment first: picking it seeds the session's repo from the env default
+await page.click('.modal .seclabel:text-is("ENVIRONMENT") + .pick-wrap .pick-row')
+await page.click('.modal .pick-menu .menu-item:has-text("hello-env")')
+await page.fill('.modal .ns-prompt-input', 'hello from run A')
+await page.click('.modal button:has-text("Run now")')
 await modalGone()
 console.log('provisioning...')
-await waitMark(['running', 'waiting', 'idle'])
+await waitStarted()
 console.log('session started')
 
-// open the chat and wait for the turn to finish (auth error entry is fine)
-await page.evaluate(() => document.querySelector('.session-node .node-label')?.click())
-await page.waitForSelector('.chat-log', { timeout: 15000 })
-await page.waitForSelector('.entry-text', { timeout: 120000 })
+// open the chat and wait for the turn to finish (an auth-error entry is fine)
+await page.click('.sb-session')
+await page.waitForSelector('.feed', { timeout: 15000 })
+await page.waitForSelector('.msg-sys, .msg-text.markdown', { timeout: 120000 })
 await new Promise((r) => setTimeout(r, 2000))
 console.log('--- run A chat ---')
-console.log(await page.evaluate(() => document.querySelector('.chat-log')?.innerText))
+console.log(await page.evaluate(() => document.querySelector('.feed')?.innerText))
 await new Promise((r) => setTimeout(r, 1000)) // let debounced persist flush
-await app.close()
+await closeApp(app)
 console.log('run A closed')
 
 const persisted = path.join(GURT_ROOT, 'personal', 'try-electron', 'sessions.json')
@@ -134,17 +198,17 @@ console.log(fs.readFileSync(persisted, 'utf8'))
 
 // ---- run B ----
 ;({ app, page } = await launch())
-await page.waitForSelector('.session-node', { timeout: 10000 })
+await page.waitForSelector('.sb-session', { timeout: 15000 })
 console.log('session visible in tree after restart')
-await page.evaluate(() => document.querySelector('.session-node .node-label')?.click())
-await page.waitForSelector('.chat-log')
+await page.click('.sb-session')
+await page.waitForSelector('.feed', { timeout: 15000 })
 await new Promise((r) => setTimeout(r, 500))
-const restored = await page.evaluate(() => document.querySelector('.chat-log')?.innerText)
+const restored = await page.evaluate(() => document.querySelector('.feed')?.innerText)
 console.log('--- restored chat ---')
 console.log(restored)
 if (!restored.includes('hello from run A')) {
   console.log('FAIL: history not restored')
-  await app.close()
+  await closeApp(app)
   process.exit(1)
 }
 await page.screenshot({ path: path.join(SHOT_DIR, '06-restored.png') })
@@ -164,13 +228,20 @@ await page.evaluate(() => {
 
 await page.fill('.composer-input', 'hello from run B')
 await page.click('.send-btn')
+// The reattach raises "resuming…" and then replays through session/load; without
+// a credential the turn ends in the same auth error, which is still the resume
+// path exercised end to end.
 await page.waitForFunction(
-  () => document.querySelector('.chat-log')?.innerText.includes('resum'),
-  { timeout: 120000 }
+  () => {
+    const feed = document.querySelector('.feed')?.innerText ?? ''
+    return feed.includes('hello from run B') && /resum|Authentication/i.test(feed)
+  },
+  undefined,
+  { timeout: 180000, polling: 1000 }
 )
-await new Promise((r) => setTimeout(r, 20000))
+await new Promise((r) => setTimeout(r, 5000))
 console.log('--- run B chat after prompt ---')
-console.log(await page.evaluate(() => document.querySelector('.chat-log')?.innerText))
+console.log(await page.evaluate(() => document.querySelector('.feed')?.innerText))
 await page.screenshot({ path: path.join(SHOT_DIR, '07-resumed.png') })
 
 const [scWithEntries, slRecords] = await page.evaluate(() => [
@@ -180,9 +251,13 @@ const [scWithEntries, slRecords] = await page.evaluate(() => [
 console.log('session-changed payloads with entries:', scWithEntries, scWithEntries === 0 ? 'OK' : 'FAIL')
 console.log('session-log records received:', slRecords, slRecords > 0 ? 'OK' : 'FAIL')
 if (scWithEntries > 0 || slRecords === 0) {
-  await app.close()
+  await closeApp(app)
   process.exit(1)
 }
 
-await app.close()
+await closeApp(app)
 console.log('PHASE3 DONE')
+
+// Explicit: playwright-core keeps its Electron transport referenced after a
+// force-killed close, so the script would otherwise sit idle at the end.
+process.exit(0)

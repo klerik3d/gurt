@@ -7,7 +7,8 @@
 // the build args, or the commit change.
 //
 //   node scripts/env-image-build.test.mjs
-import { build } from 'esbuild'
+import { test, after } from 'node:test'
+import { bundle } from './lib/bundle.mjs'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -21,22 +22,15 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const outfile = path.join(os.tmpdir(), `gurt-env-image-build-${process.pid}.mjs`)
 const S = (rel) => JSON.stringify(path.join(ROOT, rel))
 
-await build({
+await bundle({
   stdin: {
     contents: `export { buildEnvImage } from ${S('src/main/provision.ts')}`,
     resolveDir: ROOT,
     loader: 'ts',
     sourcefile: 'entry.ts'
   },
-  bundle: true,
-  format: 'esm',
-  platform: 'node',
-  // jsonc-parser's `main` is a UMD build esbuild can't wrap into ESM output —
-  // prefer each package's ESM entry, like vite does.
-  mainFields: ['module', 'main'],
   external: ['electron'],
-  outfile,
-  logLevel: 'silent'
+  outfile
 })
 
 const m = await import(pathToFileURL(outfile).href)
@@ -61,18 +55,27 @@ async function ensure(cfg) {
   return { tag, built: lines.some((l) => l.includes('building')) }
 }
 
-try {
-  await git('init', '-q')
-  fs.writeFileSync(path.join(repoDir, 'hello.txt'), 'v1\n')
-  // The repo's own .devcontainer/Dockerfile is a decoy: the env's content must
-  // overwrite it in the snapshot, or the build fails on the bogus instruction.
-  fs.mkdirSync(path.join(repoDir, '.devcontainer'))
-  fs.writeFileSync(path.join(repoDir, '.devcontainer', 'Dockerfile'), 'NOT A DOCKERFILE\n')
-  await git('add', '-A')
-  await git('-c', 'user.email=t@t.test', '-c', 'user.name=t', 'commit', '-q', '-m', 'init')
+after(async () => {
+  for (const tag of builtTags) await pexecFile('docker', ['rmi', '-f', tag]).catch(() => {})
+  fs.rmSync(repoDir, { recursive: true, force: true })
+  fs.rmSync(outfile, { force: true })
+})
 
-  // --- first call: builds and tags; env content overwrites the repo's file ---
-  const r1 = await ensure(envCfg(DOCKERFILE_V1))
+await git('init', '-q')
+fs.writeFileSync(path.join(repoDir, 'hello.txt'), 'v1\n')
+// The repo's own .devcontainer/Dockerfile is a decoy: the env's content must
+// overwrite it in the snapshot, or the build fails on the bogus instruction.
+fs.mkdirSync(path.join(repoDir, '.devcontainer'))
+fs.writeFileSync(path.join(repoDir, '.devcontainer', 'Dockerfile'), 'NOT A DOCKERFILE\n')
+await git('add', '-A')
+await git('-c', 'user.email=t@t.test', '-c', 'user.name=t', 'commit', '-q', '-m', 'init')
+
+// The baseline build every later test compares its tag against.
+let r1
+
+// --- first call: builds and tags; env content overwrites the repo's file ---
+test('first call builds and tags; env content overwrites the repo file', async () => {
+  r1 = await ensure(envCfg(DOCKERFILE_V1))
   assert.match(r1.tag, /^gurt-env:[0-9a-f]{16}$/, 'tag has the expected shape')
   assert.ok(r1.built, 'first call actually builds')
   assert.equal(
@@ -80,37 +83,43 @@ try {
     DOCKERFILE_V1,
     'the env Dockerfile content overwrites the repo copy in the snapshot'
   )
+})
 
-  // --- second call, same content: cache hit, no rebuild ---
+// --- second call, same content: cache hit, no rebuild ---
+test('cache hit on unchanged content', async () => {
   const r2 = await ensure(envCfg(DOCKERFILE_V1))
   assert.equal(r2.tag, r1.tag, 'same repo/content/commit → same tag')
   assert.ok(!r2.built, 'second call is a cache hit')
-  console.log('cache hit on unchanged content OK')
+})
 
-  // --- editing the Dockerfile content (same commit): new tag, rebuilds ---
+// --- editing the Dockerfile content (same commit): new tag, rebuilds ---
+test('editing content changes tag + rebuilds', async () => {
   const r3 = await ensure(envCfg(DOCKERFILE_V2))
   assert.notEqual(r3.tag, r1.tag, 'editing the content changes the tag')
   assert.ok(r3.built, 'edited content rebuilds')
-  console.log('editing content changes tag + rebuilds OK')
+})
 
-  // --- changing the build args (same content, same commit): new tag ---
+// --- changing the build args (same content, same commit): new tag ---
+test('build args change changes tag + rebuilds', async () => {
   const r4 = await ensure(envCfg(DOCKERFILE_V1, { args: { EXTRA: '1' } }))
   assert.notEqual(r4.tag, r1.tag, 'changed build args change the tag')
   assert.ok(r4.built, 'changed build args rebuild')
-  console.log('build args change changes tag + rebuilds OK')
+})
 
-  // --- new commit changes the repo content (same Dockerfile text): new tag ---
+// --- new commit changes the repo content (same Dockerfile text): new tag ---
+test('repo content change changes tag + rebuilds', async () => {
   fs.writeFileSync(path.join(repoDir, 'hello.txt'), 'v2\n')
   await git('add', '-A')
   await git('-c', 'user.email=t@t.test', '-c', 'user.name=t', 'commit', '-q', '-m', 'change content')
   const r5 = await ensure(envCfg(DOCKERFILE_V1))
   assert.notEqual(r5.tag, r1.tag, 'a new commit changes the tag even with unchanged Dockerfile text')
   assert.ok(r5.built, 'changed repo content rebuilds')
-  console.log('repo content change changes tag + rebuilds OK')
+})
 
-  // --- ${localWorkspaceFolder} in dockerfile/context: substituted with the
-  // snapshot root, so COPY sees the repo files (regression: it used to become
-  // a literal directory name holding only the written Dockerfile) ---
+// --- ${localWorkspaceFolder} in dockerfile/context: substituted with the
+// snapshot root, so COPY sees the repo files (regression: it used to become
+// a literal directory name holding only the written Dockerfile) ---
+test('${localWorkspaceFolder} substitution', async () => {
   const r6 = await ensure(
     envCfg(DOCKERFILE_V1, {
       dockerfile: '${localWorkspaceFolder}/Dockerfile',
@@ -123,15 +132,4 @@ try {
     DOCKERFILE_V1,
     'dockerfile written at the substituted path (snapshot root)'
   )
-  console.log('${localWorkspaceFolder} substitution OK')
-
-  console.log('env-image-build.test: PASS')
-} catch (e) {
-  console.error('env-image-build.test: FAIL')
-  console.error(e)
-  process.exitCode = 1
-} finally {
-  for (const tag of builtTags) await pexecFile('docker', ['rmi', '-f', tag]).catch(() => {})
-  fs.rmSync(repoDir, { recursive: true, force: true })
-  fs.rmSync(outfile, { force: true })
-}
+})

@@ -273,6 +273,13 @@ The full docker-provisioning smokes are heavy nested-in-nested; the UI-only
 
 ## Smoke tests
 
+Smoke scripts drive the built app with Playwright through the real UI and
+screenshot into `$SCRATCH/shots`; run `npm run build` first. Without agent
+secrets the chat shows an auth error — that still proves the ACP pipe. The
+scripts strip `ELECTRON_RUN_AS_NODE` (shells spawned from a VSCode extension
+host inherit it and it makes Electron start as plain Node). The list below is
+the full set (`ls scripts/smoke*.mjs`).
+
 ```bash
 npm run build
 SCRATCH=/tmp/gurt-smoke node scripts/smoke.mjs    # UI only, no docker
@@ -282,18 +289,26 @@ SCRATCH=/tmp/gurt-smoke node scripts/smoke-crud.mjs           # CRUD + stop/dele
 SCRATCH=/tmp/gurt-smoke node scripts/smoke-codex.mjs          # codex-in-gurt handshake
 SCRATCH=/tmp/gurt-smoke node scripts/smoke-queue.mjs          # session queue: draft/serialization/restart
 SCRATCH=/tmp/gurt-smoke node scripts/smoke-changes.mjs        # Changes panel delivery thread, no docker (local bare repos)
+SCRATCH=/tmp/gurt-smoke node scripts/smoke-review.mjs         # manual review: split diff, comments, lock toggle, Launch fix, no docker (local bare repos)
 SCRATCH=/tmp/gurt-smoke node scripts/smoke-git-access.mjs     # native git access: credentials CRUD + resolution + composer toggle, no docker
 # turn contract end-to-end (docker + a working claude secret; SKIPs without one):
 SCRATCH=/tmp/gurt-smoke GURT_SMOKE_CLAUDE_TOKEN=… node scripts/smoke-turn-contract.mjs
 node scripts/smoke-delete-row.mjs                 # sidebar Del/⌫: confirm, delete, move the selection, no docker
 node scripts/smoke-session-copy.mjs               # duplicate/delete from the row actions and the pane menu, no docker
 node scripts/smoke-roles.mjs                      # session roles: the picker, the repo select it drives, persistence, no docker
-node scripts/smoke-logging.mjs                    # app log: startup banner, IPC wrapper, renderer transport, needs docker
+node scripts/smoke-newtask.mjs                    # header "+" creates a task inline — no modal, no stray session, no docker
+node scripts/smoke-deleted-task.mjs               # a deleted task stays deleted: selection cleared, no dir resurrected by a late persist, no docker
+node scripts/smoke-logging.mjs                    # app log: startup banner, IPC wrapper, renderer transport, no docker (an unreachable daemon is logged as "unavailable")
+node scripts/smoke.linux.mjs                      # linux variant of smoke.mjs: client registry + agent-token credential linkage over a plaintext store, no docker
 ```
 
-Docker-free unit tests (pure node, bundled on the fly with esbuild):
+Unit tests are pure node — no Electron, no Playwright, no docker; the TS under
+test is bundled on the fly with esbuild. `npm test` runs every
+`scripts/*.test.mjs` (currently 27) and is the canonical way to run them; a single
+file can also be run directly. A few, to show what they cover:
 
 ```bash
+npm test                               # all of scripts/*.test.mjs
 node scripts/git-logic.test.mjs        # git contract: repo identity, credential resolution, rewrites, forge
 node scripts/session-log.test.mjs      # append-only session log + legacy migration
 node scripts/gurt-mcp.test.mjs         # the `gurt` MCP server: `complete` validation + the per-role tool set
@@ -306,11 +321,6 @@ node scripts/session-duplicate.test.mjs # duplicating a session: what a copy car
 node scripts/log.test.mjs              # app log: writer, rotation, sanitization, redaction, drop accounting
 ```
 
-All drive the built app with Playwright through the real UI and screenshot
-into `$SCRATCH/shots`. Without agent secrets the chat shows an auth error —
-that still proves the ACP pipe. The scripts strip `ELECTRON_RUN_AS_NODE`
-(shells spawned from a VSCode extension host inherit it and it makes Electron
-start as plain Node).
 
 ## Docker Desktop gotchas (macOS)
 

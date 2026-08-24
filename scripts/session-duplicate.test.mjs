@@ -8,7 +8,8 @@
 // No docker and no agent: every session here stays a draft or is only enqueued.
 //
 //   node scripts/session-duplicate.test.mjs
-import { build } from 'esbuild'
+import { test, after } from 'node:test'
+import { bundle } from './lib/bundle.mjs'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import path from 'node:path'
 import os from 'node:os'
@@ -24,45 +25,48 @@ process.env.GURT_ROOT = GURT_ROOT
 const outfile = path.join(os.tmpdir(), `gurt-dup-${process.pid}.mjs`)
 const S = (rel) => JSON.stringify(path.join(ROOT, rel))
 
-await build({
+await bundle({
   stdin: {
     contents: `export { createKernel } from ${S('src/main/kernel.ts')}`,
     resolveDir: ROOT,
     loader: 'ts',
     sourcefile: 'entry.ts'
   },
-  bundle: true,
-  format: 'esm',
-  platform: 'node',
-  mainFields: ['module', 'main'],
-  outfile,
-  logLevel: 'silent'
+  outfile
 })
 
 const { createKernel } = await import(pathToFileURL(outfile).href)
 
-try {
-  const ws = 'w'
-  const task = 't'
-  fs.mkdirSync(path.join(GURT_ROOT, ws, task), { recursive: true })
-  fs.writeFileSync(
-    path.join(GURT_ROOT, ws, 'workspace.json'),
-    JSON.stringify({
-      repos: [
-        { name: 'alpha', url: 'https://github.com/o/alpha.git' },
-        { name: 'beta', url: 'https://github.com/o/beta.git' }
-      ],
-      envs: [{ name: 'dev', devcontainer: '{"image":"x"}', repo: 'alpha' }]
-    })
-  )
-  fs.writeFileSync(path.join(GURT_ROOT, ws, task, 'task.json'), JSON.stringify({}))
-  fs.writeFileSync(path.join(GURT_ROOT, ws, 'agents.json'), JSON.stringify({}))
+after(() => {
+  fs.rmSync(outfile, { force: true })
+  fs.rmSync(GURT_ROOT, { recursive: true, force: true })
+})
 
-  const kernel = createKernel()
-  const ref = { workspace: ws, task, env: 'dev' }
+const ws = 'w'
+const task = 't'
+fs.mkdirSync(path.join(GURT_ROOT, ws, task), { recursive: true })
+fs.writeFileSync(
+  path.join(GURT_ROOT, ws, 'workspace.json'),
+  JSON.stringify({
+    repos: [
+      { name: 'alpha', url: 'https://github.com/o/alpha.git' },
+      { name: 'beta', url: 'https://github.com/o/beta.git' }
+    ],
+    envs: [{ name: 'dev', devcontainer: '{"image":"x"}', repo: 'alpha' }]
+  })
+)
+fs.writeFileSync(path.join(GURT_ROOT, ws, task, 'task.json'), JSON.stringify({}))
+fs.writeFileSync(path.join(GURT_ROOT, ws, 'agents.json'), JSON.stringify({}))
 
-  // --- every configured field rides along ---
-  const source = kernel.sessions.createSession(
+const kernel = createKernel()
+const ref = { workspace: ws, task, env: 'dev' }
+
+let source
+let copy
+
+// --- every configured field rides along ---
+test('the copy carries every configured field', () => {
+  source = kernel.sessions.createSession(
     ref,
     ['alpha'],
     'a1',
@@ -76,7 +80,7 @@ try {
   )
   kernel.sessions.renameSession(source.id, 'login')
 
-  const copy = kernel.sessions.duplicateSession(source.id)
+  copy = kernel.sessions.duplicateSession(source.id)
   assert.notEqual(copy.id, source.id, 'the copy is its own session')
   assert.equal(copy.state, 'draft', 'the copy is a draft')
   assert.equal(copy.title, 'login (copy)', 'the copy is named after its source')
@@ -91,16 +95,18 @@ try {
   assert.deepEqual(copy.configValues, { model: 'opus' })
   assert.equal(copy.workspace, ws)
   assert.equal(copy.task, task)
-  console.log('the copy carries every configured field OK')
+})
 
-  // --- nothing is shared: editing one must not reach the other ---
+// --- nothing is shared: editing one must not reach the other ---
+test('the two sessions share no mutable state', () => {
   kernel.sessions.editDraft(copy.id, { repos: ['beta'], startPrompt: 'other' })
   const after = kernel.sessions.snapshot(source.id).info
   assert.deepEqual(after.repos, ['alpha'], 'the source keeps its own repos')
   assert.equal(after.startPrompt, 'fix the login bug', 'the source keeps its own prompt')
-  console.log('the two sessions share no mutable state OK')
+})
 
-  // --- runtime state is never copied ---
+// --- runtime state is never copied ---
+test('the copy takes no container and no queue slot', () => {
   kernel.sessions.patchContainer(source.id, {
     status: 'running',
     id: 'container-a',
@@ -122,9 +128,10 @@ try {
   const sourceNow = kernel.sessions.snapshot(source.id).info
   assert.equal(sourceNow.state, liveState, 'the source is left exactly as it was')
   assert.equal(sourceNow.container?.id, 'container-a', 'the source keeps its container')
-  console.log('the copy takes no container and no queue slot OK')
+})
 
-  // --- a repo-less draft copies too (nothing to validate against) ---
+// --- a repo-less draft copies too (nothing to validate against) ---
+test('multi-repo and repo-less sources copy', () => {
   const bare = kernel.sessions.createSession(ref, [], 'a1', 'later', 'draft')
   const bareCopy = kernel.sessions.duplicateSession(bare.id)
   assert.deepEqual(bareCopy.repos, [], 'a repo-less draft stays repo-less')
@@ -146,20 +153,12 @@ try {
   const researcherCopy = kernel.sessions.duplicateSession(researcher.id)
   assert.deepEqual(researcherCopy.repos, ['alpha', 'beta'], 'multi-repo copies whole')
   assert.equal(researcherCopy.role, 'researcher')
-  console.log('multi-repo and repo-less sources copy OK')
+})
 
+test('an unknown id is rejected, not silently ignored', () => {
   assert.throws(
     () => kernel.sessions.duplicateSession('nope'),
     /unknown session/,
     'an unknown id is rejected, not silently ignored'
   )
-
-  console.log('session-duplicate.test: PASS')
-} catch (e) {
-  console.error('session-duplicate.test: FAIL')
-  console.error(e)
-  process.exitCode = 1
-} finally {
-  fs.rmSync(outfile, { force: true })
-  fs.rmSync(GURT_ROOT, { recursive: true, force: true })
-}
+})

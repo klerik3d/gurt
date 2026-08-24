@@ -10,7 +10,8 @@
 // succeeds and is recorded, which is how the `rm` is observed.
 //
 //   node scripts/session-delete-container.test.mjs
-import { build } from 'esbuild'
+import { test, after } from 'node:test'
+import { bundle } from './lib/bundle.mjs'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import path from 'node:path'
 import os from 'node:os'
@@ -43,19 +44,14 @@ process.env.PATH = `${BIN}${path.delimiter}${process.env.PATH}`
 const outfile = path.join(os.tmpdir(), `gurt-del-container-${process.pid}.mjs`)
 const S = (rel) => JSON.stringify(path.join(ROOT, rel))
 
-await build({
+await bundle({
   stdin: {
     contents: `export { createKernel } from ${S('src/main/kernel.ts')}`,
     resolveDir: ROOT,
     loader: 'ts',
     sourcefile: 'entry.ts'
   },
-  bundle: true,
-  format: 'esm',
-  platform: 'node',
-  mainFields: ['module', 'main'],
-  outfile,
-  logLevel: 'silent'
+  outfile
 })
 
 const { createKernel } = await import(pathToFileURL(outfile).href)
@@ -70,40 +66,47 @@ async function waitForCall(re) {
   return false
 }
 
-try {
-  const ws = 'w'
-  const task = 't'
-  fs.mkdirSync(path.join(GURT_ROOT, ws, task), { recursive: true })
-  fs.writeFileSync(
-    path.join(GURT_ROOT, ws, 'workspace.json'),
-    JSON.stringify({
-      repos: [{ name: 'alpha', url: 'https://github.com/o/alpha.git' }],
-      envs: [{ name: 'dev', devcontainer: '{"image":"x"}', repo: 'alpha' }]
-    })
-  )
-  fs.writeFileSync(path.join(GURT_ROOT, ws, task, 'task.json'), JSON.stringify({}))
-  fs.writeFileSync(path.join(GURT_ROOT, ws, 'agents.json'), JSON.stringify({}))
+after(() => {
+  fs.rmSync(outfile, { force: true })
+  fs.rmSync(BIN, { recursive: true, force: true })
+  fs.rmSync(GURT_ROOT, { recursive: true, force: true })
+})
 
-  const kernel = createKernel()
-  const ref = { workspace: ws, task, env: 'dev' }
-  const info = kernel.sessions.createSession(ref, ['alpha'], 'a1', 'hi', 'none')
-
-  // Stage a live container the same way the container manager would.
-  kernel.sessions.patchContainer(info.id, {
-    status: 'running',
-    id: 'container-a',
-    remoteWorkspaceFolder: '/app',
-    repos: ['alpha']
+const ws = 'w'
+const task = 't'
+fs.mkdirSync(path.join(GURT_ROOT, ws, task), { recursive: true })
+fs.writeFileSync(
+  path.join(GURT_ROOT, ws, 'workspace.json'),
+  JSON.stringify({
+    repos: [{ name: 'alpha', url: 'https://github.com/o/alpha.git' }],
+    envs: [{ name: 'dev', devcontainer: '{"image":"x"}', repo: 'alpha' }]
   })
+)
+fs.writeFileSync(path.join(GURT_ROOT, ws, task, 'task.json'), JSON.stringify({}))
+fs.writeFileSync(path.join(GURT_ROOT, ws, 'agents.json'), JSON.stringify({}))
+
+const kernel = createKernel()
+const ref = { workspace: ws, task, env: 'dev' }
+const info = kernel.sessions.createSession(ref, ['alpha'], 'a1', 'hi', 'none')
+
+// Stage a live container the same way the container manager would.
+kernel.sessions.patchContainer(info.id, {
+  status: 'running',
+  id: 'container-a',
+  remoteWorkspaceFolder: '/app',
+  repos: ['alpha']
+})
+
+// The scratch dir a mounted session's repos are staged in (`.multirepo/<id>`)
+// — gurt's own, and ownerless once the session is gone.
+const scratch = path.join(GURT_ROOT, ws, task, '.multirepo', info.id, 'repos')
+
+test('session delete takes its container down', async () => {
   assert.equal(
     kernel.sessions.snapshot(info.id).info.container?.id,
     'container-a',
     'the staged container survives the boot reconcile'
   )
-
-  // The scratch dir a mounted session's repos are staged in (`.multirepo/<id>`)
-  // — gurt's own, and ownerless once the session is gone.
-  const scratch = path.join(GURT_ROOT, ws, task, '.multirepo', info.id, 'repos')
   fs.mkdirSync(scratch, { recursive: true })
 
   kernel.sessions.deleteSession(info.id)
@@ -113,8 +116,9 @@ try {
     'deleting the session removes its container'
   )
   assert.equal(kernel.sessions.snapshot(info.id), undefined, 'the session itself is gone')
-  console.log('session delete takes its container down OK')
+})
 
+test('session delete removes its mount scratch', async () => {
   // Only after the container is down — the mounts live inside that directory.
   for (let i = 0; i < 200 && fs.existsSync(scratch); i++)
     await new Promise((r) => setTimeout(r, 25))
@@ -122,15 +126,4 @@ try {
     !fs.existsSync(path.join(GURT_ROOT, ws, task, '.multirepo', info.id)),
     'the mount scratch dir goes with the session'
   )
-  console.log('session delete removes its mount scratch OK')
-
-  console.log('session-delete-container.test: PASS')
-} catch (e) {
-  console.error('session-delete-container.test: FAIL')
-  console.error(e)
-  process.exitCode = 1
-} finally {
-  fs.rmSync(outfile, { force: true })
-  fs.rmSync(BIN, { recursive: true, force: true })
-  fs.rmSync(GURT_ROOT, { recursive: true, force: true })
-}
+})

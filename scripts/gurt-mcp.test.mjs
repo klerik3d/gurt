@@ -5,7 +5,8 @@
 // style of scripts/session-log.test.mjs.
 //
 //   node scripts/gurt-mcp.test.mjs
-import { build } from 'esbuild'
+import { test, after } from 'node:test'
+import { bundle } from './lib/bundle.mjs'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import path from 'node:path'
 import os from 'node:os'
@@ -16,21 +17,14 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const outfile = path.join(os.tmpdir(), `gurt-mcp-${process.pid}.mjs`)
 const S = (rel) => JSON.stringify(path.join(ROOT, rel))
 
-await build({
+await bundle({
   stdin: {
     contents: `export { buildGurtHttpServer } from ${S('src/main/mcp/gurtServer.ts')}`,
     resolveDir: ROOT,
     loader: 'ts',
     sourcefile: 'entry.ts'
   },
-  bundle: true,
-  format: 'esm',
-  platform: 'node',
-  // jsonc-parser's `main` is a UMD build esbuild can't wrap into ESM output —
-  // prefer each package's ESM entry, like vite does.
-  mainFields: ['module', 'main'],
-  outfile,
-  logLevel: 'silent'
+  outfile
 })
 
 const { buildGurtHttpServer } = await import(pathToFileURL(outfile).href)
@@ -107,8 +101,8 @@ async function tools(role) {
   return Object.fromEntries(body.result.tools.map((t) => [t.name, t]))
 }
 
-try {
-  // --- tools/list: exactly `complete`, with a real (non-empty, strict) schema ---
+// --- tools/list: exactly `complete`, with a real (non-empty, strict) schema ---
+test('tools/list', async () => {
   const executorTools = await tools('executor')
   assert.deepEqual(Object.keys(executorTools), ['complete'], 'executor gets exactly `complete`')
   const schema = executorTools.complete.inputSchema
@@ -118,9 +112,10 @@ try {
     ['commit', 'notes', 'outcome', 'pr', 'reason', 'version'],
     'input schema advertises the proposal fields'
   )
-  console.log('tools/list OK')
+})
 
-  // --- valid changes call → callback gets the payload, result not an error ----
+// --- valid changes call → callback gets the payload, result not an error ----
+test('valid changes', async () => {
   const before = received.length
   const ok = await complete({ version: 1, outcome: 'changes', commit: { subject: 'do the thing' } })
   assert.equal(ok.isError, false, 'valid changes call is not an error')
@@ -130,9 +125,10 @@ try {
     outcome: 'changes',
     commit: { subject: 'do the thing' }
   })
-  console.log('valid changes OK')
+})
 
-  // valid no_changes and blocked (+ optional pr on changes) also succeed --------
+// valid no_changes and blocked (+ optional pr on changes) also succeed --------
+test('valid no_changes / blocked / changes+pr', async () => {
   assert.equal((await complete({ version: 1, outcome: 'no_changes' })).isError, false)
   assert.equal(
     (await complete({ version: 1, outcome: 'blocked', reason: 'missing credentials' })).isError,
@@ -149,9 +145,10 @@ try {
     ).isError,
     false
   )
-  console.log('valid no_changes / blocked / changes+pr OK')
+})
 
-  // --- invalid calls: isError, and the callback never fires -------------------
+// --- invalid calls: isError, and the callback never fires -------------------
+test('invalid calls rejected, callback untouched', async () => {
   const guard = received.length
   const rejects = [
     ['changes without commit', { version: 1, outcome: 'changes' }],
@@ -168,9 +165,10 @@ try {
     assert.equal(r.isError, true, `${label} → isError`)
   }
   assert.equal(received.length, guard, 'no rejected call reached the host callback')
-  console.log('invalid calls rejected, callback untouched OK')
+})
 
-  // --- per-role tool sets (roles doc §5) --------------------------------------
+// --- per-role tool sets (roles doc §5) --------------------------------------
+test('per-role tool sets', async () => {
   const researcherTools = await tools('researcher')
   assert.deepEqual(
     Object.keys(researcherTools),
@@ -205,9 +203,10 @@ try {
     !('task' in reviewerTools.create_session.inputSchema.properties),
     'a reviewer has no `task` field at all'
   )
-  console.log('per-role tool sets OK')
+})
 
-  // --- create_session: valid call reaches the host, result names the draft ----
+// --- create_session: valid call reaches the host, result names the draft ----
+test('create_session', async () => {
   const draftedBefore = drafted.length
   const spawn = await call(
     'create_session',
@@ -242,9 +241,10 @@ try {
     'reviewer'
   )
   assert.equal(reviewerCross.isError, true, 'a reviewer cannot express a cross-task draft')
-  console.log('create_session OK')
+})
 
-  // --- create_session rejections ---------------------------------------------
+// --- create_session rejections ---------------------------------------------
+test('tool gating per role', async () => {
   const spawnGuard = drafted.length
   /** @type {[label: string, args: object, role: string][]} */
   const badSpawns = [
@@ -280,15 +280,15 @@ try {
   // …and neither role without the contract can report a proposal.
   const noComplete = await call('complete', { version: 1, outcome: 'no_changes' }, 'researcher')
   assert.equal(noComplete.isError, true, 'a researcher has no `complete` tool')
-  console.log('tool gating per role OK')
+})
 
-  // --- transport guards -------------------------------------------------------
+// --- transport guards -------------------------------------------------------
+test('token / method guards', async () => {
   assert.equal((await post({ jsonrpc: '2.0', id: ++id, method: 'tools/list' }, { token: 'nope' })).status, 404, 'wrong token → 404')
   assert.equal((await post({}, { method: 'GET' })).status, 405, 'GET → 405')
-  console.log('token / method guards OK')
+})
 
-  console.log('gurt-mcp.test: PASS')
-} finally {
+after(() => {
   for (const server of Object.values(servers)) server.close()
   fs.rmSync(outfile, { force: true })
-}
+})

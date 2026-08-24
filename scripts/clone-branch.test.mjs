@@ -4,7 +4,8 @@
 // starting at once share the clone instead of racing over it.
 //
 //   node scripts/clone-branch.test.mjs
-import { build } from 'esbuild'
+import { test, after } from 'node:test'
+import { bundle } from './lib/bundle.mjs'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -22,21 +23,14 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gurt-clone-branch-'))
 // store.ts reads GURT_ROOT at module load — set it before importing the bundle.
 process.env.GURT_ROOT = path.join(root, 'gurt')
 
-await build({
+await bundle({
   stdin: {
     contents: `export { ensureClone } from ${S('src/main/provision.ts')}`,
     resolveDir: ROOT,
     loader: 'ts',
     sourcefile: 'entry.ts'
   },
-  bundle: true,
-  format: 'esm',
-  platform: 'node',
-  // jsonc-parser's `main` is a UMD build esbuild can't wrap into ESM output —
-  // prefer each package's ESM entry, like vite does.
-  mainFields: ['module', 'main'],
-  outfile,
-  logLevel: 'silent'
+  outfile
 })
 
 const m = await import(pathToFileURL(outfile).href)
@@ -49,45 +43,56 @@ const refFor = (env) => ({ workspace: 'ws', task: TASK, env })
 const branchOf = (dir) =>
   pexecFile('git', ['-C', dir, 'rev-parse', '--abbrev-ref', 'HEAD']).then((r) => r.stdout.trim())
 
-try {
-  await pexecFile('git', ['init', '-q', '--bare', origin])
-  // The default HEAD of a bare init may be `master`; point it at what we push,
-  // so the clone checks out a real commit instead of landing unborn.
-  await pexecFile('git', ['-C', origin, 'symbolic-ref', 'HEAD', 'refs/heads/main'])
-  await pexecFile('git', ['init', '-q', seed])
-  fs.writeFileSync(path.join(seed, 'README.md'), 'hi\n')
-  const gitSeed = (...args) =>
-    pexecFile('git', ['-C', seed, '-c', 'user.email=t@t.test', '-c', 'user.name=t', ...args])
-  await gitSeed('add', '-A')
-  await gitSeed('commit', '-q', '-m', 'init')
-  await gitSeed('push', '-q', origin, 'HEAD:refs/heads/main')
+after(() => {
+  fs.rmSync(root, { recursive: true, force: true })
+  fs.rmSync(outfile, { force: true })
+})
 
-  // --- first session: clones and creates the task branch ---
+await pexecFile('git', ['init', '-q', '--bare', origin])
+// The default HEAD of a bare init may be `master`; point it at what we push,
+// so the clone checks out a real commit instead of landing unborn.
+await pexecFile('git', ['-C', origin, 'symbolic-ref', 'HEAD', 'refs/heads/main'])
+await pexecFile('git', ['init', '-q', seed])
+fs.writeFileSync(path.join(seed, 'README.md'), 'hi\n')
+const gitSeed = (...args) =>
+  pexecFile('git', ['-C', seed, '-c', 'user.email=t@t.test', '-c', 'user.name=t', ...args])
+await gitSeed('add', '-A')
+await gitSeed('commit', '-q', '-m', 'init')
+await gitSeed('push', '-q', origin, 'HEAD:refs/heads/main')
+
+// The clone the first test creates; every test after it works on the same one.
+let dir
+const gitClone = (...args) =>
+  pexecFile('git', ['-C', dir, '-c', 'user.email=t@t.test', '-c', 'user.name=t', ...args])
+
+// --- first session: clones and creates the task branch ---
+test('clone + branch creation', async () => {
   const lines = []
-  const dir = await m.ensureClone(refFor('env-a'), REPO, (l) => lines.push(l))
+  dir = await m.ensureClone(refFor('env-a'), REPO, (l) => lines.push(l))
   assert.equal(dir, path.join(process.env.GURT_ROOT, 'ws', TASK, 'demo'))
   assert.ok(lines.some((l) => l.includes('cloning')), 'first call clones')
   assert.equal(await branchOf(dir), TASK, 'task branch is checked out')
-  console.log('clone + branch creation OK')
+})
 
-  // --- second session on the same task: reuses clone and branch ---
+// --- second session on the same task: reuses clone and branch ---
+test('sequential second session', async () => {
   const again = await m.ensureClone(refFor('env-b'), REPO, () => {})
   assert.equal(again, dir)
   assert.equal(await branchOf(dir), TASK, 'existing branch is switched to, not recreated')
-  console.log('sequential second session OK')
+})
 
-  // --- a commit on the task branch survives the next session's checkout ---
-  const gitClone = (...args) =>
-    pexecFile('git', ['-C', dir, '-c', 'user.email=t@t.test', '-c', 'user.name=t', ...args])
+// --- a commit on the task branch survives the next session's checkout ---
+test('existing work preserved', async () => {
   fs.writeFileSync(path.join(dir, 'work.txt'), 'agent output\n')
   await gitClone('add', '-A')
   await gitClone('commit', '-q', '-m', 'agent work')
   const head = (await gitClone('rev-parse', 'HEAD')).stdout.trim()
   await m.ensureClone(refFor('env-c'), REPO, () => {})
   assert.equal((await gitClone('rev-parse', 'HEAD')).stdout.trim(), head, 'branch is not reset')
-  console.log('existing work preserved OK')
+})
 
-  // --- a clone left conflicted by "update from main" is still provisionable ---
+// --- a clone left conflicted by "update from main" is still provisionable ---
+test('conflicted clone', async () => {
   // Git refuses even a same-branch checkout while the index has unmerged entries,
   // so provisioning must skip it — otherwise no agent could be started to resolve
   // the conflict.
@@ -106,11 +111,12 @@ try {
   await m.ensureClone(refFor('env-d'), REPO, () => {})
   assert.equal(await branchOf(dir), TASK, 'still on the task branch')
   assert.ok(fs.existsSync(merging), 'conflict state is left for the agent to resolve')
-  console.log('conflicted clone OK')
 
   await gitClone('merge', '--abort')
+})
 
-  // --- same for a rebase stopped on conflicts, which also detaches HEAD ---
+// --- same for a rebase stopped on conflicts, which also detaches HEAD ---
+test('mid-rebase clone', async () => {
   await gitClone('rebase', 'origin/main').then(
     () => assert.fail('rebase should have conflicted'),
     () => {}
@@ -118,7 +124,6 @@ try {
   assert.equal(await branchOf(dir), 'HEAD', 'mid-rebase HEAD is detached')
   await m.ensureClone(refFor('env-e'), REPO, () => {})
   assert.equal(await branchOf(dir), 'HEAD', 'rebase is not clobbered by a checkout')
-  console.log('mid-rebase clone OK')
 
   // Resolve, so the following assertions start from a clean tree.
   await gitClone('rebase', '--abort')
@@ -126,8 +131,10 @@ try {
   fs.writeFileSync(path.join(dir, 'README.md'), 'resolved\n')
   await gitClone('add', '-A')
   await gitClone('commit', '-qm', 'resolve')
+})
 
-  // --- concurrent start of two sessions on a fresh task: no branch-exists race ---
+// --- concurrent start of two sessions on a fresh task: no branch-exists race ---
+test('concurrent sessions', async () => {
   const hot = { workspace: 'ws', task: 'task-2', env: 'env-a' }
   const results = await Promise.all([
     m.ensureClone(hot, REPO, () => {}),
@@ -136,10 +143,4 @@ try {
   ])
   assert.equal(new Set(results).size, 1, 'all sessions get the same clone')
   assert.equal(await branchOf(results[0]), 'task-2')
-  console.log('concurrent sessions OK')
-
-  console.log('clone-branch.test: PASS')
-} finally {
-  fs.rmSync(root, { recursive: true, force: true })
-  fs.rmSync(outfile, { force: true })
-}
+})

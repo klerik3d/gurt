@@ -6,7 +6,8 @@
 // one you see first.
 //
 //   node scripts/dashboard-groups.test.mjs
-import { build } from 'esbuild'
+import { test } from 'node:test'
+import { bundle } from './lib/bundle.mjs'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import path from 'node:path'
 import os from 'node:os'
@@ -16,19 +17,14 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const outfile = path.join(os.tmpdir(), `gurt-dash-groups-${process.pid}.mjs`)
 const S = (rel) => JSON.stringify(path.join(ROOT, rel))
 
-await build({
+await bundle({
   stdin: {
     contents: `export { boardByWorkspace, summarize, COLUMNS } from ${S('src/renderer/src/components/Dashboard.tsx')}`,
     resolveDir: ROOT,
     loader: 'ts',
     sourcefile: 'entry.ts'
   },
-  bundle: true,
-  format: 'esm',
-  platform: 'node',
-  mainFields: ['module', 'main'],
-  outfile,
-  logLevel: 'silent'
+  outfile
 })
 
 const { boardByWorkspace, summarize, COLUMNS } = await import(pathToFileURL(outfile).href)
@@ -46,7 +42,7 @@ const DONE = COLUMNS.findIndex((c) => c.id === 'done')
 const ids = (rows) => rows.map((r) => r.info.id)
 
 // --- every status lands in exactly one column --------------------------------
-{
+test('every status lands in exactly one column', () => {
   const rows = [
     row('d', 'draft', 'w', 't'),
     row('q', 'queued', 'w', 't'),
@@ -66,9 +62,9 @@ const ids = (rows) => rows.map((r) => r.info.id)
     rows.length,
     'no row is dropped and none is counted twice'
   )
-}
+})
 
-{
+test('urgency ranks across the whole workspace, not per task', () => {
   // Urgency ranks across the whole workspace: a task boundary must not push the
   // session that needs you below one that does not.
   const [b] = boardByWorkspace(
@@ -76,18 +72,18 @@ const ids = (rows) => rows.map((r) => r.info.id)
     {}
   )
   assert.deepEqual(ids(b.columns[ACTIVE]), ['a', 'r'], 'sorted by status, not bucketed by task')
-}
+})
 
-{
+test('queue order is real order, not alphabetical', () => {
   // Queue order is real order, not alphabetical.
   const [b] = boardByWorkspace(
     [row('z', 'queued', 'w', 't'), row('a', 'queued', 'w', 't')],
     { z: 1, a: 2 }
   )
   assert.deepEqual(ids(b.columns[QUEUE]), ['z', 'a'], 'a queued session keeps its queue position')
-}
+})
 
-{
+test('same rank, no queue position: task then title', () => {
   // Same rank, no queue position: task then title, so re-renders can't shuffle
   // rows and one task's sessions stay adjacent.
   const [b] = boardByWorkspace(
@@ -99,9 +95,9 @@ const ids = (rows) => rows.map((r) => r.info.id)
     {}
   )
   assert.deepEqual(ids(b.columns[QUEUE]), ['1', '3', '2'])
-}
+})
 
-{
+test('DONE reads newest-first', () => {
   // DONE reads newest-first, regardless of what the rows arrived in.
   const [b] = boardByWorkspace(
     [
@@ -112,10 +108,10 @@ const ids = (rows) => rows.map((r) => r.info.id)
     {}
   )
   assert.deepEqual(ids(b.columns[DONE]), ['new', 'mid', 'old'])
-}
+})
 
 // --- boards: most urgent workspace first, regardless of size ------------------
-{
+test('boards: most urgent workspace first, regardless of size', () => {
   const rows = [
     row('d1', 'draft', 'drafty', 't'),
     row('d2', 'draft', 'drafty', 't'),
@@ -128,9 +124,9 @@ const ids = (rows) => rows.map((r) => r.info.id)
     ['blocked', 'busy', 'drafty'],
     'one session needing you outranks a workspace holding three drafts'
   )
-}
+})
 
-{
+test('a workspace whose only rows are finished sorts last', () => {
   // A workspace whose only rows are finished sorts last — nothing there is moving.
   assert.deepEqual(
     boardByWorkspace(
@@ -142,9 +138,9 @@ const ids = (rows) => rows.map((r) => r.info.id)
     ).map((b) => b.key),
     ['zzz', 'aaa']
   )
-}
+})
 
-{
+test('workspaces that tie on urgency are ordered by name', () => {
   // Workspaces that tie on urgency are ordered by name, so the board is stable.
   assert.deepEqual(
     boardByWorkspace(
@@ -153,9 +149,9 @@ const ids = (rows) => rows.map((r) => r.info.id)
     ).map((b) => b.key),
     ['alpha', 'zeta']
   )
-}
+})
 
-{
+test('same task name in two workspaces stays in two boards', () => {
   // Same task name in two workspaces stays in two boards, never merged.
   const boards = boardByWorkspace(
     [row('a', 'running', 'work', 'api'), row('b', 'running', 'personal', 'api')],
@@ -166,30 +162,32 @@ const ids = (rows) => rows.map((r) => r.info.id)
     ['personal', 'work']
   )
   assert.equal(boards[0].total, 1)
-}
+})
 
-assert.deepEqual(boardByWorkspace([], {}), [])
+test('no rows, no boards', () => {
+  assert.deepEqual(boardByWorkspace([], {}), [])
+})
 
 // --- the folded summary ------------------------------------------------------
-assert.equal(summarize([]), '')
-assert.equal(summarize([row('a', 'waiting', 'w', 't')]), '1 needs you')
-assert.equal(
-  summarize([row('a', 'running', 'w', 't'), row('b', 'starting', 'w', 't')]),
-  '2 running',
-  'starting counts as running — both mean the thing is moving'
-)
-assert.equal(summarize([row('a', 'draft', 'w', 't')]), '1 draft')
-assert.equal(summarize([row('a', 'draft', 'w', 't'), row('b', 'draft', 'w', 't')]), '2 drafts')
-assert.equal(
-  summarize([
-    row('a', 'draft', 'w', 't'),
-    row('b', 'waiting', 'w', 't'),
-    row('c', 'queued', 'w', 't'),
-    row('d', 'running', 'w', 't'),
-    row('e', 'idle', 'w', 't')
-  ]),
-  '1 needs you · 1 running · 1 queued · 1 draft · 1 to review',
-  'summary reads left-to-right the way the board does'
-)
-
-console.log('dashboard-groups: ok')
+test('the folded summary', () => {
+  assert.equal(summarize([]), '')
+  assert.equal(summarize([row('a', 'waiting', 'w', 't')]), '1 needs you')
+  assert.equal(
+    summarize([row('a', 'running', 'w', 't'), row('b', 'starting', 'w', 't')]),
+    '2 running',
+    'starting counts as running — both mean the thing is moving'
+  )
+  assert.equal(summarize([row('a', 'draft', 'w', 't')]), '1 draft')
+  assert.equal(summarize([row('a', 'draft', 'w', 't'), row('b', 'draft', 'w', 't')]), '2 drafts')
+  assert.equal(
+    summarize([
+      row('a', 'draft', 'w', 't'),
+      row('b', 'waiting', 'w', 't'),
+      row('c', 'queued', 'w', 't'),
+      row('d', 'running', 'w', 't'),
+      row('e', 'idle', 'w', 't')
+    ]),
+    '1 needs you · 1 running · 1 queued · 1 draft · 1 to review',
+    'summary reads left-to-right the way the board does'
+  )
+})

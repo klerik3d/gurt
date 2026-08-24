@@ -1,8 +1,23 @@
-// Phase 4: iteration-2 features. CRUD (repos/tasks), env stop/delete via the
-// task pane, per-session agent, codex adapter handshake. Requires docker.
-// Session-centric: envs are born when a session runs; claude session on "hello",
-// codex session on "hello2" (auth errors expected — no secrets configured).
+// Phase 4: iteration-2 features through the real UI. Repo CRUD (add/edit/delete)
+// in Settings, task create/delete in the sidebar, the per-session container
+// lifecycle (stop/delete) in the task pane, and the codex adapter handshake.
+// Requires docker and network (the devcontainer image is pulled).
+//
+//   npm run build && SCRATCH=/tmp/gurt-smoke-crud node scripts/smoke-crud.mjs
+//
+// Session-centric: a container is born when a session runs, and belongs to that
+// one session. No agent secrets are configured, so both clients are expected to
+// fail on auth — reaching that error still proves install → spawn → initialize →
+// session/new end to end.
+//
+// The repos are local bare origins rather than github, so the git half is
+// hermetic. They carry a `.devcontainer/` directory on purpose: gurt always
+// passes `--additional-features`, and @devcontainers/cli 0.88 writes the
+// resolved feature lockfile to `<workspace>/.devcontainer/devcontainer-lock.json`
+// without creating the directory — a repo without one fails `devcontainer up`
+// with ENOENT before the image is ever built.
 import { createRequire } from 'node:module'
+import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -13,18 +28,31 @@ const SHOT_DIR = path.join(process.env.SCRATCH ?? '/tmp', 'shots')
 // unique per run: Docker Desktop's virtiofs caches deleted paths, so reusing
 // a recently-removed directory name breaks bind mounts ("source does not exist")
 const GURT_ROOT = path.join(os.homedir(), `.gurt-smoke-${Date.now()}`)
+const REPO_ROOT = path.join(os.homedir(), `.gurt-smoke-repos-${Date.now()}`)
 console.log('GURT_ROOT:', GURT_ROOT)
 fs.mkdirSync(SHOT_DIR, { recursive: true })
+fs.mkdirSync(REPO_ROOT, { recursive: true })
 
 const require = createRequire(path.join(APP_DIR, 'package.json'))
 const { _electron } = require('playwright-core')
 const electronPath = require('electron') // path string to the electron binary
 
-const env = { ...process.env, GURT_ROOT }
-delete env.ELECTRON_RUN_AS_NODE
+// The app shells out to the host's git, which needs an identity for any commit
+// it makes on the clone. Supply one through the environment rather than the
+// machine's global config — a fresh container has no user.email at all.
+const env = {
+  ...process.env,
+  GURT_ROOT,
+  DISPLAY: process.env.DISPLAY ?? ':99',
+  GIT_AUTHOR_NAME: 'smoke',
+  GIT_AUTHOR_EMAIL: 'smoke@test',
+  GIT_COMMITTER_NAME: 'smoke',
+  GIT_COMMITTER_EMAIL: 'smoke@test'
+}
+delete env.ELECTRON_RUN_AS_NODE // inherited from the VSCode extension host shell
 
-// Seed the claude-code and codex agents (no credentials — auth errors expected).
-// The registry starts empty, so both must be added before they are selectable.
+// Seed the claude-code and codex clients (no credentials — auth errors expected).
+// The registry starts empty, so both must exist before they are selectable.
 fs.mkdirSync(GURT_ROOT, { recursive: true })
 fs.writeFileSync(
   path.join(GURT_ROOT, 'agents.json'),
@@ -34,217 +62,237 @@ fs.writeFileSync(
   })
 )
 
+const DEVCONTAINER = '{ "image": "mcr.microsoft.com/devcontainers/base:ubuntu" }'
+
+const git = (dir, ...args) =>
+  execFileSync('git', ['-C', dir, '-c', 'user.email=smoke@test', '-c', 'user.name=smoke', ...args], {
+    encoding: 'utf8'
+  })
+
+/** A bare origin with one commit and a `.devcontainer/` for the feature lockfile. */
+function makeBareRepo(name) {
+  const seed = path.join(REPO_ROOT, `${name}-seed`)
+  const bare = path.join(REPO_ROOT, `${name}.git`)
+  fs.mkdirSync(path.join(seed, '.devcontainer'), { recursive: true })
+  git(REPO_ROOT, 'init', '-q', '-b', 'main', seed)
+  fs.writeFileSync(path.join(seed, 'README.md'), `# ${name}\n`)
+  fs.writeFileSync(path.join(seed, '.devcontainer', 'devcontainer.json'), `${DEVCONTAINER}\n`)
+  git(seed, 'add', '-A')
+  git(seed, 'commit', '-qm', 'initial')
+  git(REPO_ROOT, 'clone', '-q', '--bare', seed, bare)
+  return `file://${bare}`
+}
+
+const HELLO_URL = makeBareRepo('hello')
+const WORLD_URL = makeBareRepo('world')
+
 const app = await _electron.launch({
   executablePath: electronPath,
-  args: [APP_DIR],
+  args: [APP_DIR, '--no-sandbox'],
   env,
   timeout: 30000
 })
 app.process().stdout.on('data', (d) => process.stdout.write(`[main] ${d}`))
 const page = await app.firstWindow()
-page.on('dialog', (d) => {
-  console.log('[dialog]', d.type(), d.message().slice(0, 100))
-  d.accept().catch(() => {})
+page.on('console', (m) => {
+  if (m.type() === 'error') console.log('[console.error]', m.text())
 })
 
-const clickTitle = (t) => page.evaluate((x) => document.querySelector(`button[title="${x}"]`)?.click(), t)
-const clickText = (scope, text) =>
-  page.evaluate(
-    ([sc, tx]) => {
-      const b = [...document.querySelectorAll(`${sc} button`)].find((b) => b.textContent.trim() === tx)
-      if (!b) return 'NOT_FOUND'
-      b.click()
-      return 'OK'
-    },
-    [scope, text]
-  )
-const modalGone = () => page.waitForSelector('.modal', { state: 'detached' })
+const shot = (name) => page.screenshot({ path: path.join(SHOT_DIR, `${name}.png`) })
+const modalGone = () => page.waitForSelector('.modal', { state: 'detached', timeout: 10000 })
 
-// session mark (fine-grained status) of the session titled `title`
-const sessionMark = (title) =>
-  page.evaluate((t) => {
-    const node = [...document.querySelectorAll('.session-node')].find(
-      (n) => n.querySelector('.node-label')?.textContent.trim() === t
-    )
-    const mark = node?.querySelector('.session-mark')
-    return mark && [...mark.classList].find((c) => c.startsWith('mark-'))?.slice(5)
-  }, title)
+// The two views in the activity bar. Repos, environments and clients live in
+// Settings; tasks and sessions in the work view.
+const openSettings = async (section) => {
+  await page.click('.activitybar .ab-item[title="Settings"]')
+  await page.click(`.set-nav-item:has-text("${section}")`)
+}
+const openWork = () => page.click('.activitybar .ab-item[title="Tasks & sessions"]')
 
-// Resolves when the session mark reaches one of `states`; fails fast when the
-// selected session pane shows a start error instead of ever starting.
-const waitMark = async (title, states, timeout = 600000) => {
-  await page.waitForFunction(
-    ([t, ss]) => {
-      if (document.querySelector('.env-error')) return true
-      const node = [...document.querySelectorAll('.session-node')].find(
-        (n) => n.querySelector('.node-label')?.textContent.trim() === t
-      )
-      const mark = node?.querySelector('.session-mark')
-      const st = mark && [...mark.classList].find((c) => c.startsWith('mark-'))?.slice(5)
-      return st && ss.includes(st)
-    },
-    [title, states],
-    { timeout, polling: 1000 }
-  )
-  const err = await page.evaluate(() => document.querySelector('.env-error')?.innerText)
-  if (err) throw new Error(`session start failed: ${err}`)
+/** Confirms are an in-app dialog (dialog.tsx), not the OS one. */
+const confirm = async () => {
+  await page.waitForSelector('.dialog', { timeout: 10000 })
+  await page.click('.dialog-ok')
+  await page.waitForSelector('.dialog', { state: 'detached', timeout: 10000 })
 }
 
-// task-pane env row helpers, matched by repo name (`hello —` never matches `hello2 —`)
-const envAction = (repo, action) =>
-  page.evaluate(
-    ([r, a]) => {
-      const row = [...document.querySelectorAll('.env-table tr')].find((tr) =>
-        tr.querySelector('.env-cell')?.textContent.includes(`${r} —`)
+// Sessions are named after their role ("executor", "executor 2"), and the
+// sidebar row carries its status as the row title (see SESSION_DOT).
+const SESSION_ROW = (title) => `.sb-session:has(.sb-session-name:text-is("${title}"))`
+const sessionStatus = (title) => page.getAttribute(SESSION_ROW(title), 'title')
+
+/**
+ * Resolves when `title` reaches one of `labels`, or when the session pane shows
+ * a start error — a container that never comes up would otherwise burn the
+ * whole timeout on a status that is never going to move.
+ */
+const waitSession = async (title, labels, timeout = 900000) => {
+  await page.waitForFunction(
+    ([t, ls]) => {
+      if (document.querySelector('.env-error')) return true
+      const row = [...document.querySelectorAll('.sb-session')].find(
+        (n) => n.querySelector('.sb-session-name')?.textContent.trim() === t
       )
-      ;[...(row?.querySelectorAll('.env-actions button') ?? [])]
-        .find((b) => b.textContent.trim() === a)
-        ?.click()
+      return !!row && ls.includes(row.getAttribute('title'))
     },
-    [repo, action]
-  )
-const waitEnvStatus = (repo, status, timeout = 120000) =>
-  page.waitForFunction(
-    ([r, s]) => {
-      const row = [...document.querySelectorAll('.env-table tr')].find((tr) =>
-        tr.querySelector('.env-cell')?.textContent.includes(`${r} —`)
-      )
-      return !!row?.querySelector(`.status-${s}`)
-    },
-    [repo, status],
+    [title, labels],
     { timeout, polling: 1000 }
   )
+  return page.evaluate(() => document.querySelector('.env-error')?.innerText)
+}
 
-async function newSession(repo, agent, prompt) {
-  await clickTitle('new session')
-  await page.waitForSelector('.modal textarea')
-  await page.selectOption('.modal label:has-text("repo") select', repo)
-  await page.selectOption('.modal label:has-text("agent") select', agent)
-  await page.fill('.modal textarea', prompt)
-  await clickText('.modal .row-buttons', 'Run now')
+// Task-pane CONTAINERS rows, matched by the owning session's title.
+const CONTAINER_ROW = (title) => `.env-row:has(.env-name:text-is("${title}"))`
+const containerAction = (title, action) =>
+  page.click(`${CONTAINER_ROW(title)} button:text-is("${action}")`)
+const waitContainerStatus = (title, status, timeout = 180000) =>
+  page.waitForSelector(`${CONTAINER_ROW(title)} .env-status:text-is("${status}")`, { timeout })
+
+/** Open the task pane of `task` (a task row selects it). */
+const openTask = async (task) => {
+  await openWork()
+  await page.click(`.sb-task-name:text-is("${task}")`)
+  await page.waitForSelector('.task-pane', { timeout: 10000 })
+}
+
+/** Add a repo through Settings → Repos. */
+async function addRepo(name, url) {
+  await openSettings('Repos')
+  await page.click('.set-head .btn-primary') // + New repo
+  await page.waitForSelector('.modal:has-text("New repo")', { timeout: 5000 })
+  await page.fill('.modal input[placeholder="checkout-web"]', name)
+  await page.fill('.modal input[placeholder^="https://github.com"]', url)
+  await page.click('.modal-foot .btn-primary') // Save
+  await modalGone()
+  await page.waitForSelector(`.set-row-label:text-is("${name}")`, { timeout: 5000 })
+}
+
+/** Open the Edit repo modal of `name` — the row's only link. */
+const openRepo = async (name) => {
+  await page.click(`.set-row:has(.set-row-label:text-is("${name}")) .btn-link`)
+  await page.waitForSelector('.modal:has-text("Edit repo")', { timeout: 5000 })
+}
+
+/** Define an environment (name + default repo + devcontainer) in Settings. */
+async function addEnv(name, repo) {
+  await openSettings('Environments')
+  await page.click('.set-head .btn-primary') // + New environment
+  await page.waitForSelector('.modal input[placeholder="web-app"]', { timeout: 5000 })
+  await page.fill('.modal input[placeholder="web-app"]', name)
+  await page.click('.modal .fld:has(.seclabel:text-is("DEFAULT REPOSITORY")) .pick-row')
+  await page.click(`.modal .pick-menu .menu-item:has-text("${repo}")`)
+  await page.fill('.modal .jsoned textarea', DEVCONTAINER)
+  await page.click('.modal-foot .btn-primary') // Save
+  await modalGone()
+  await page.waitForSelector(`.set-row-label:text-is("${name}")`, { timeout: 5000 })
+}
+
+/** Compose and run a session off the task row's "new session" button. */
+async function newSession(task, envName, agentLabel, prompt) {
+  await openWork()
+  await page.hover(`.sb-task:has(.sb-task-name:text-is("${task}"))`)
+  await page.click(`.sb-task:has(.sb-task-name:text-is("${task}")) .icon-sq[title="new session"]`)
+  await page.waitForSelector('.modal:has-text("New session")', { timeout: 5000 })
+  // environment first: picking it seeds the session's repo from the env default
+  await page.click('.modal .seclabel:text-is("ENVIRONMENT") + .pick-wrap .pick-row')
+  await page.click(`.modal .pick-menu .menu-item:has-text("${envName}")`)
+  await page.click('.modal .seclabel:text-is("AGENT") + .pick-wrap .pick-row')
+  await page.click(`.modal .pick-menu .menu-item:has-text("${agentLabel}")`)
+  await page.fill('.modal .ns-prompt-input', prompt)
+  await page.click('.modal button:has-text("Run now")')
   await modalGone()
 }
 
 await page.waitForSelector('.sidebar', { timeout: 15000 })
 
-// workspace
-await clickTitle('new workspace')
-await page.waitForSelector('.modal input')
+// --- workspace ---------------------------------------------------------
+await page.click('.sb-ws-btn')
+await page.click('.menu-item:has-text("+ new workspace")')
+await page.waitForSelector('.modal input', { timeout: 5000 })
 await page.fill('.modal input', 'personal')
-await page.click('.modal .form > button')
+await page.click('.modal button:has-text("Create")')
 await modalGone()
+await page.waitForSelector('.sb-ws-name:has-text("personal")', { timeout: 5000 })
 console.log('ws created')
 
-// repos modal: add hello, add tmp, edit tmp, delete tmp
-await clickTitle('repos')
-await page.waitForSelector('.modal')
-async function addRepoInModal(name, url, dc) {
-  await clickText('.modal', 'Add repo')
-  await page.waitForSelector('.modal .repo-form input')
-  await page.fill('.modal .repo-form input[placeholder="name"]', name)
-  await page.fill('.modal .repo-form input[placeholder*="git url"]', url)
-  if (dc) await page.fill('.modal .repo-form textarea', dc)
-  await clickText('.repo-form', 'Add')
-  await page.waitForFunction((n) => [...document.querySelectorAll('.repo-row')].some((r) => r.textContent.includes(n)), name)
-}
-await addRepoInModal('hello', 'https://github.com/octocat/Hello-World.git', '{ "image": "mcr.microsoft.com/devcontainers/base:ubuntu" }')
-await addRepoInModal('tmp', 'https://example.com/x.git', '')
+// --- repo CRUD in Settings → Repos -------------------------------------
+await addRepo('hello', HELLO_URL)
+await addRepo('tmp', 'https://example.com/x.git')
 console.log('repos added')
-// edit tmp
-await page.evaluate(() => {
-  const row = [...document.querySelectorAll('.repo-row')].find((r) => r.textContent.includes('tmp'))
-  row?.querySelector('button[title="edit repo"]')?.click()
-})
-await page.waitForSelector('.modal .repo-form')
-await page.fill('.modal .repo-form input[placeholder*="git url"]', 'https://example.com/y.git')
-await clickText('.repo-form', 'Save')
-await page.waitForFunction(() => [...document.querySelectorAll('.repo-row')].some((r) => r.textContent.includes('example.com/y')))
+
+// edit: the name is frozen once saved, the url is not
+await openRepo('tmp')
+await page.fill('.modal input[placeholder^="https://github.com"]', 'https://example.com/y.git')
+await page.click('.modal-foot .btn-primary') // Save
+await modalGone()
+await page.waitForSelector('.set-row:has(.set-row-label:text-is("tmp")) .set-row-url:has-text("example.com/y")', { timeout: 5000 })
 console.log('repo edited')
-// second repo for codex
-await addRepoInModal('hello2', 'https://github.com/octocat/Hello-World.git', '{ "image": "mcr.microsoft.com/devcontainers/base:ubuntu" }')
-// delete tmp
-await page.evaluate(() => {
-  const row = [...document.querySelectorAll('.repo-row')].find((r) => r.textContent.includes('tmp'))
-  row?.querySelector('button[title="delete repo"]')?.click()
-})
-await page.waitForFunction(() => ![...document.querySelectorAll('.repo-row')].some((r) => r.textContent.includes('tmp')))
+
+// a second repo, for the codex session
+await addRepo('world', WORLD_URL)
+
+// delete: from inside the repo's own modal, behind the confirmation
+await openRepo('tmp')
+await page.click('.modal .btn-danger-text') // Delete
+await confirm()
+await modalGone()
+await page.waitForSelector('.set-row-label:text-is("tmp")', { state: 'detached', timeout: 5000 })
+await shot('08-repos')
 console.log('repo deleted')
-await page.screenshot({ path: path.join(SHOT_DIR, '08-repos.png') })
-await page.click('.modal-header .icon-btn')
-await modalGone()
 
-// codex is seeded and selectable (agents are added, not toggled available).
+// --- environments ------------------------------------------------------
+await addEnv('hello-env', 'hello')
+await addEnv('world-env', 'world')
+console.log('envs defined')
 
-// task
-await clickTitle('new task')
-await page.waitForSelector('.modal input')
-await page.fill('.modal input', 'try2')
-await page.click('.modal .form > button')
-await modalGone()
+// --- task --------------------------------------------------------------
+await openWork()
+await page.click('button[title="New task · ⌘⇧N"]')
+await page.waitForSelector('.sb-newtask-menu input', { timeout: 5000 })
+await page.fill('.sb-newtask-menu input', 'try2')
+await page.press('.sb-newtask-menu input', 'Enter')
+await page.waitForSelector('.sb-task-name:text-is("try2")', { timeout: 10000 })
+console.log('task created')
 
-// claude session on hello — births and provisions the env
-await newSession('hello', 'claude-code', 'ping')
+// --- claude session: births and provisions the container ---------------
+await newSession('try2', 'hello-env', 'claude code', 'ping')
 console.log('claude session starting...')
-await waitMark('session 1', ['running', 'waiting', 'idle'])
-console.log('claude session started; mark =', await sessionMark('session 1'))
+const claudeErr = await waitSession('executor', ['working', 'needs you', 'idle — turn ended'])
+if (claudeErr) throw new Error(`claude session start failed: ${claudeErr}`)
+console.log('claude session started; status =', await sessionStatus('executor'))
 
-// chat: prompt + auth-error reply
-await page.evaluate(() => {
-  const node = [...document.querySelectorAll('.session-node')].find(
-    (n) => n.querySelector('.node-label')?.textContent.trim() === 'session 1'
-  )
-  node?.querySelector('.node-label')?.click()
-})
-await page.waitForSelector('.chat-log', { timeout: 15000 })
-await page.waitForSelector('.entry-text', { timeout: 120000 })
+// chat: the prompt, and whatever the keyless agent answers (an auth error)
+await page.click(SESSION_ROW('executor'))
+await page.waitForSelector('.feed', { timeout: 15000 })
+await page.waitForSelector('.msg-sys, .msg-text.markdown', { timeout: 180000 })
 await new Promise((r) => setTimeout(r, 1500))
 console.log('--- claude chat ---')
-console.log(await page.evaluate(() => document.querySelector('.chat-log')?.innerText))
-await page.screenshot({ path: path.join(SHOT_DIR, '09-chat2.png') })
+console.log(await page.evaluate(() => document.querySelector('.feed')?.innerText))
+await shot('09-chat2')
 
-// stop claude env from the task pane
-await page.evaluate(() => {
-  const node = [...document.querySelectorAll('.task-node')].find((n) => n.textContent.includes('try2'))
-  node?.querySelector('.node-label')?.click()
-})
-await page.waitForSelector('.task-pane')
-await envAction('hello', 'Stop')
-await waitEnvStatus('hello', 'stopped')
-console.log('claude env stopped')
+// stop the claude container from the task pane
+await openTask('try2')
+await page.waitForSelector(CONTAINER_ROW('executor'), { timeout: 30000 })
+await containerAction('executor', 'Stop')
+await waitContainerStatus('executor', 'stopped')
+console.log('claude container stopped')
 
-// codex session on hello2. Keyless codex refuses session/new with
-// 'Authentication required' (every codex-acp version does) — reaching that
-// error still proves the pipe end-to-end: install, spawn, initialize,
-// session/new round-trip, error surfaced in the UI.
-await newSession('hello2', 'codex', 'ping')
+// --- codex session on the second repo ----------------------------------
+// Keyless codex refuses session/new with 'Authentication required' (every
+// codex-acp version does) — reaching that error still proves the pipe end to
+// end: install, spawn, initialize, session/new round-trip, error in the UI.
+await newSession('try2', 'world-env', 'codex', 'ping')
 console.log('codex session starting...')
-await page.waitForFunction(
-  () => {
-    if (document.querySelector('.env-error')) return true
-    const node = [...document.querySelectorAll('.session-node')].find(
-      (n) => n.querySelector('.node-label')?.textContent.trim() === 'session 2'
-    )
-    const mark = node?.querySelector('.session-mark')
-    const st = mark && [...mark.classList].find((c) => c.startsWith('mark-'))?.slice(5)
-    return st && ['running', 'waiting', 'idle'].includes(st)
-  },
-  undefined,
-  { timeout: 600000, polling: 1000 }
-)
-const codexErr = await page.evaluate(() => document.querySelector('.env-error')?.innerText)
-if (codexErr && !codexErr.includes('Authentication required'))
+const codexErr = await waitSession('executor 2', ['working', 'needs you', 'idle — turn ended'])
+if (codexErr && !/Authentication required|not logged in|login/i.test(codexErr))
   throw new Error(`codex session failed unexpectedly: ${codexErr}`)
 console.log(
   codexErr
     ? 'codex refused without a key at session/new (ACP pipe proven)'
-    : `codex session started (ACP handshake OK); mark = ${await sessionMark('session 2')}`
+    : `codex session started (ACP handshake OK); status = ${await sessionStatus('executor 2')}`
 )
-await page.evaluate(() => {
-  const node = [...document.querySelectorAll('.session-node')].find(
-    (n) => n.querySelector('.node-label')?.textContent.trim() === 'session 2'
-  )
-  node?.querySelector('.node-label')?.click()
-})
+await openWork()
+await page.click(SESSION_ROW('executor 2'))
 if (codexErr) {
   // A never-started session renders the draft pane, not a timeline — the
   // error banner is the assertion.
@@ -252,41 +300,44 @@ if (codexErr) {
   console.log('--- codex draft pane ---')
   console.log(await page.evaluate(() => document.querySelector('.env-error')?.innerText))
 } else {
-  await page.waitForSelector('.chat-log', { timeout: 15000 })
+  await page.waitForSelector('.feed', { timeout: 15000 })
   try {
-    await page.waitForSelector('.entry-text, .perm-card', { timeout: 90000 })
+    await page.waitForSelector('.msg-sys, .msg-text.markdown, .perm-head', { timeout: 120000 })
     await new Promise((r) => setTimeout(r, 1500))
     console.log('--- codex chat ---')
-    console.log(await page.evaluate(() => document.querySelector('.chat-log')?.innerText))
+    console.log(await page.evaluate(() => document.querySelector('.feed')?.innerText))
   } catch (e) {
     console.log('codex chat step failed:', e.message.slice(0, 200))
   }
 }
-await page.screenshot({ path: path.join(SHOT_DIR, '10-codex.png') })
+await shot('10-codex')
 
-// stop + delete codex env (confirm auto-accepted); clone dir must be gone
-await page.evaluate(() => {
-  const node = [...document.querySelectorAll('.task-node')].find((n) => n.textContent.includes('try2'))
-  node?.querySelector('.node-label')?.click()
-})
-await page.waitForSelector('.task-pane')
-await envAction('hello2', 'Stop')
-await waitEnvStatus('hello2', 'stopped')
-await envAction('hello2', 'Delete')
-await page.waitForFunction(
-  () => ![...document.querySelectorAll('.env-cell')].some((c) => c.textContent.includes('hello2 —')),
-  { timeout: 60000 }
-)
-console.log('codex env deleted; clone exists:', fs.existsSync(path.join(GURT_ROOT, 'personal', 'try2', 'hello2')))
+// --- container delete: the row goes, the clone stays -------------------
+await openTask('try2')
+if (await page.locator(CONTAINER_ROW('executor 2')).count()) {
+  await containerAction('executor 2', 'Stop')
+  await waitContainerStatus('executor 2', 'stopped')
+  await containerAction('executor 2', 'Delete')
+  await confirm()
+  await page.waitForSelector(CONTAINER_ROW('executor 2'), { state: 'detached', timeout: 120000 })
+  console.log(
+    'codex container deleted; clone kept:',
+    fs.existsSync(path.join(GURT_ROOT, 'personal', 'try2', 'world'))
+  )
+} else {
+  console.log('codex never provisioned a container — nothing to delete')
+}
 
-// delete the task (confirm auto-accepted)
-await page.evaluate(() => {
-  const node = [...document.querySelectorAll('.task-node')].find((n) => n.textContent.includes('try2'))
-  node.querySelector('button[title="delete task"]').click()
+// --- task delete -------------------------------------------------------
+await openWork()
+await page.hover('.sb-task:has(.sb-task-name:text-is("try2"))')
+await page.click('.sb-task:has(.sb-task-name:text-is("try2")) .icon-sq[title="delete task"]')
+await confirm()
+await page.waitForFunction(() => document.querySelectorAll('.sb-task').length === 0, undefined, {
+  timeout: 120000
 })
-await page.waitForFunction(() => document.querySelectorAll('.task-node').length === 0, { timeout: 60000 })
 console.log('task deleted; task dir exists:', fs.existsSync(path.join(GURT_ROOT, 'personal', 'try2')))
 
-await page.screenshot({ path: path.join(SHOT_DIR, '11-final.png') })
+await shot('11-final')
 await app.close()
 console.log('PHASE4 DONE')

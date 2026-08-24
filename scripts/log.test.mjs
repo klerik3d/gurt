@@ -7,7 +7,8 @@
 // Covers the acceptance list of docs/logging.md: value-based redaction (1),
 // ANSI + newline sanitization (3), drop accounting under a flood (4), rotation
 // and the 6-file cap (5), and an unwritable log dir leaving the app usable (6).
-import { build } from 'esbuild'
+import { test, after } from 'node:test'
+import { bundle } from './lib/bundle.mjs'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
@@ -17,23 +18,18 @@ import assert from 'node:assert/strict'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gurt-log-test-'))
-const bundle = path.join(tmp, 'log.mjs')
+const outfile = path.join(tmp, 'log.mjs')
 const runner = path.join(tmp, 'run.mjs')
 const S = (rel) => JSON.stringify(path.join(ROOT, rel))
 
-await build({
+await bundle({
   stdin: {
     contents: `export * from ${S('src/main/log.ts')}`,
     resolveDir: ROOT,
     loader: 'ts',
     sourcefile: 'entry.ts'
   },
-  bundle: true,
-  format: 'esm',
-  platform: 'node',
-  mainFields: ['module', 'main'],
-  outfile: bundle,
-  logLevel: 'silent'
+  outfile
 })
 
 const ESC = '\u001b'
@@ -44,16 +40,41 @@ fs.writeFileSync(
   `
 import fs from 'node:fs'
 import path from 'node:path'
-import * as L from ${JSON.stringify(bundle)}
+import * as L from ${JSON.stringify(outfile)}
 
 const dir = path.join(process.env.GURT_ROOT, 'logs')
 const appLog = path.join(dir, 'gurt.log')
+// A sleep is only correct where the assertion is about something *not*
+// happening (an unwritable sink, a paced flood). Everywhere else the records
+// reach disk through an async queue with a single write in flight, so "the
+// record landed" is a condition, not a duration — a fixed sleep is a race that
+// a loaded machine loses, and the scenario then reads an empty file.
 const settle = (ms = 60) => new Promise((r) => setTimeout(r, ms))
+// Poll cond() until it returns something truthy, or give up at the deadline
+// and let the caller's own assertion report what is actually on disk. Returns
+// fast in the common case, so this costs nothing when the machine is idle.
+const until = async (cond, timeout = 15000) => {
+  const deadline = Date.now() + timeout
+  for (;;) {
+    const v = cond()
+    if (v || Date.now() >= deadline) return v
+    await new Promise((r) => setTimeout(r, 5))
+  }
+}
 const read = (f) => { try { return fs.readFileSync(f, 'utf8') } catch { return '' } }
+// The two shapes almost every scenario needs: wait for markers to show up in
+// the app log, and wait for at least n records to be on disk.
+const appHas = (...needles) => until(() => { const a = read(appLog); return needles.every((s) => a.includes(s)) ? a : '' })
+const appLines = (n) => until(() => { const a = read(appLog); return a.split('\\n').filter(Boolean).length >= n ? a : '' })
 const ESC = '\\u001b'
 // fileId() appends a short hash of the raw key, so the exact file name isn't
 // known ahead of time — find it by prefix instead of hardcoding it.
-const findLog = (prefix) => fs.readdirSync(dir).find((f) => f.startsWith(prefix) && f.endsWith('.log'))
+// The dir itself only appears when the first sink opens, so polling helpers
+// must tolerate it not being there yet.
+const ls = () => { try { return fs.readdirSync(dir) } catch { return [] } }
+const findLog = (prefix) => ls().find((f) => f.startsWith(prefix) && f.endsWith('.log'))
+const readLog = (prefix) => { const f = findLog(prefix); return f ? read(path.join(dir, f)) : '' }
+const countLogs = (prefix) => ls().filter((f) => f.startsWith(prefix)).length
 
 const scenarios = {
   async format() {
@@ -81,11 +102,12 @@ const scenarios = {
     l.error('boom', { err: Object.assign(new Error('kaput'), { code: 'EACCES' }) })
     L.sessionLogLine('env-build:ws/env', 'building ' + ESC + '[32mok' + ESC + '[0m')
     L.sessionLogLine('sess-1', 'hello')
-    await settle()
+    await appLines(3)
+    await until(() => readLog('session-sess-1-').includes('hello') && readLog('session-env-build') !== '')
     return {
       app: read(appLog),
       files: fs.readdirSync(dir).sort(),
-      session: read(path.join(dir, findLog('session-sess-1-')))
+      session: readLog('session-sess-1-')
     }
   },
 
@@ -98,16 +120,16 @@ const scenarios = {
     L.addSecrets([secret])
     L.logRenderer('info', secret, 'renderer.msg')
     L.createLogger(secret).info('main.msg')
-    await settle()
+    await appHas('renderer.msg', 'main.msg')
     return { app: read(appLog) }
   },
 
   async dropSession() {
     L.sessionLogLine('sess-1', 'hello')
-    await settle()
+    await until(() => findLog('session-sess-1-'))
     const before = Boolean(findLog('session-sess-1-'))
     L.dropSessionLog('sess-1')
-    await settle()
+    await until(() => !findLog('session-sess-1-'))
     return { before, after: Boolean(findLog('session-sess-1-')) }
   },
 
@@ -117,10 +139,10 @@ const scenarios = {
   async fileIdCollision() {
     L.sessionLogLine('env-build:ws/env', 'first')
     L.sessionLogLine('env-build-ws-env', 'second')
-    await settle()
+    await until(() => countLogs('session-env-build-ws-env') >= 2)
     const files = fs.readdirSync(dir).filter((f) => f.startsWith('session-env-build-ws-env')).sort()
     L.dropSessionLog('env-build:ws/env')
-    await settle()
+    await until(() => countLogs('session-env-build-ws-env') < files.length)
     const after = fs.readdirSync(dir).filter((f) => f.startsWith('session-env-build-ws-env')).sort()
     return { files, after }
   },
@@ -133,7 +155,7 @@ const scenarios = {
     fs.truncateSync(appLog, 10 * 1024 * 1024 + 1)
     for (let i = 1; i <= 5; i++) fs.writeFileSync(appLog + '.' + i, 'gen' + i + '\\n')
     L.createLogger('app').info('app.start')
-    await settle()
+    await appHas('[app] app.start')
     return {
       files: fs.readdirSync(dir).sort(),
       fresh: read(appLog),
@@ -152,7 +174,7 @@ const scenarios = {
       for (let i = 0; i < 40; i++) l.info('bulk.record', ctx)
       await settle(20)
     }
-    for (let i = 0; i < 100 && !fs.existsSync(appLog + '.1'); i++) await settle(50)
+    await until(() => fs.existsSync(appLog + '.1'))
     const size = fs.statSync(appLog).size
     return { rotated: fs.existsSync(appLog + '.1'), size, files: fs.readdirSync(dir).sort() }
   },
@@ -162,7 +184,9 @@ const scenarios = {
   async queueFlood() {
     const l = L.createLogger('flood')
     for (let i = 0; i < 5000; i++) l.info('flood.record', { i })
-    await settle(300)
+    // The drop record is written by a later drain cycle than the batch it
+    // reports, so its presence means the accepted records are already on disk.
+    await appHas('log.dropped')
     const app = read(appLog)
     const m = app.match(/log\\.dropped \\{"n":(\\d+)\\}/)
     return { dropped: m ? Number(m[1]) : 0, lines: app.split('\\n').filter(Boolean).length }
@@ -173,7 +197,7 @@ const scenarios = {
     L.logRenderer('nonsense', 'x', 'should be ignored')
     L.logRenderer('info', '', 'scope falls back')
     for (let i = 0; i < 1000; i++) L.logRenderer('info', 'Chat Pane', 'ui.click', { i })
-    await settle(200)
+    await appHas('log.dropped', '[renderer] scope falls back')
     const app = read(appLog)
     return {
       accepted: (app.match(/ui\\.click/g) ?? []).length,
@@ -207,7 +231,7 @@ const scenarios = {
 
   async truncate() {
     L.createLogger('app').info('huge', { blob: 'y'.repeat(600), ...Object.fromEntries(Array.from({ length: 40 }, (_, i) => ['k' + i, 'z'.repeat(500)])) })
-    await settle()
+    await appHas('[app] huge')
     const line = read(appLog).split('\\n')[0]
     return { len: line.length, oneLine: read(appLog).trim().split('\\n').length }
   },
@@ -220,7 +244,7 @@ const scenarios = {
     L.logRenderer('toString', 'x', 'renderer should not appear toString')
     const l = L.createLogger('proto')
     l.info('control.record')
-    await settle()
+    await appHas('control.record')
     return { app: read(appLog) }
   },
 
@@ -229,7 +253,7 @@ const scenarios = {
   async envLevelPoison() {
     const l = L.createLogger('poison')
     l.info('control.record')
-    await settle()
+    await appHas('control.record')
     return { app: read(appLog), logLevel: L.logLevel }
   },
 
@@ -242,7 +266,7 @@ const scenarios = {
     const longKey = 'weird\\nkey\\t' + 'x'.repeat(100)
     const l = L.createLogger('keys')
     l.info('key.test', { [secretKey]: 1, [longKey]: 2 })
-    await settle()
+    await appHas('key.test')
     return { app: read(appLog) }
   },
 
@@ -259,7 +283,7 @@ const scenarios = {
     const b = 'b'.repeat(1500) // total 480+38+1500=2018 > 1536 headroom cutoff
     const l = L.createLogger('rb')
     l.info('boundary.test', { v: a + secret + b })
-    await settle()
+    await appHas('[rb]')
     const app = read(appLog)
     const line = app.split('\\n').find((x) => x.includes('[rb]')) ?? ''
     return {
@@ -295,7 +319,7 @@ const scenarios = {
     const t0 = Date.now()
     L.logRenderer('error', 'x', 'msg', ctx, Date.now())
     const ms = Date.now() - t0
-    await settle()
+    await appHas('[x] msg')
     const line = read(appLog).split('\\n').find((x) => x.includes('[x] msg')) ?? ''
     return { ms, recordBytes: Buffer.byteLength(line, 'utf8') }
   },
@@ -307,7 +331,7 @@ const scenarios = {
     const l = L.createLogger('bt')
     l.info('\\u4e2d'.repeat(3000)) // 3000 code units, 9000 UTF-8 bytes
     l.info('\\ud83d\\ude00'.repeat(3000)) // 6000 code units, 12000 UTF-8 bytes
-    await settle()
+    await until(() => read(appLog).split('\\n').filter((x) => x.includes('[bt]')).length >= 2)
     const lines = read(appLog).split('\\n').filter((x) => x.includes('[bt]'))
     const loneSurrogate = /[\\ud800-\\udbff](?![\\udc00-\\udfff])|(?:^|[^\\ud800-\\udbff])[\\udc00-\\udfff]/
     return {
@@ -323,7 +347,7 @@ const scenarios = {
     fs.writeFileSync(appLog, '')
     fs.chmodSync(appLog, 0o644)
     L.createLogger('app').info('app.start')
-    await settle()
+    await appHas('[app] app.start')
     return { mode: fs.statSync(appLog).mode & 0o777 }
   },
 
@@ -333,7 +357,7 @@ const scenarios = {
     if (!fs.existsSync('/proc/self/fd')) return { skipped: true }
     const before = fs.readdirSync('/proc/self/fd').length
     for (let i = 0; i < 200; i++) L.sessionLogLine('fd-test-' + i, 'line ' + i)
-    await settle(400)
+    await until(() => countLogs('session-fd-test-') >= 200)
     const after = fs.readdirSync('/proc/self/fd').length
     const files = fs.readdirSync(dir).filter((f) => f.startsWith('session-fd-test-')).length
     return { skipped: false, before, after, files }
@@ -360,8 +384,10 @@ function scenario(name, envOverrides = {}) {
   return { ...JSON.parse(out.slice(i + 1)), root, stdout: out.slice(0, i), stderr: res.stderr ?? '' }
 }
 
+after(() => fs.rmSync(tmp, { recursive: true, force: true }))
+
 // --- 1. record format, sanitization, redaction ----------------------------
-{
+test('format · sanitization · redaction · modes', () => {
   const r = scenario('format')
   const lines = r.app.split('\n').filter(Boolean)
   assert.equal(lines.length, 3, 'one record per call, and debug is filtered')
@@ -403,36 +429,32 @@ function scenario(name, envOverrides = {}) {
   assert.ok(!r.app.includes('building'), 'provisioning output never reaches the app log')
   assert.equal(fs.statSync(path.join(r.root, 'logs')).mode & 0o777, 0o700, 'dir mode 0700')
   assert.equal(fs.statSync(path.join(r.root, 'logs/gurt.log')).mode & 0o777, 0o600, 'file mode 0600')
-  console.log('ok  format · sanitization · redaction · modes')
-}
+})
 
 // --- 1. a secret used as the scope is redacted, not just msg/ctx -----------
-{
+test('a secret used as the scope is redacted (logRenderer and createLogger)', () => {
   const r = scenario('scopeSecret')
   assert.ok(!r.app.includes('abc123secretvaluezzz9988'), 'the raw secret never appears via scope')
   assert.ok(r.app.includes('[redacted] renderer.msg'), 'logRenderer scope is redacted')
   assert.ok(r.app.includes('[redacted] main.msg'), 'createLogger scope is redacted too')
-  console.log('ok  a secret used as the scope is redacted (logRenderer and createLogger)')
-}
+})
 
 // --- session log deletion --------------------------------------------------
-{
+test('session log deleted with its session', () => {
   const r = scenario('dropSession')
   assert.equal(r.before, true)
   assert.equal(r.after, false, 'dropSessionLog removes the file')
-  console.log('ok  session log deleted with its session')
-}
+})
 
 // --- 8. fileId collision -----------------------------------------------
-{
+test('fileId collision (distinct hash suffix per raw key)', () => {
   const r = scenario('fileIdCollision')
   assert.equal(r.files.length, 2, 'distinct keys that sanitize to the same id get distinct files')
   assert.equal(r.after.length, 1, 'dropping one session file leaves the other in place')
-  console.log('ok  fileId collision (distinct hash suffix per raw key)')
-}
+})
 
 // --- 5. rotation -----------------------------------------------------------
-{
+test('rotation at open · 6-file cap', () => {
   const r = scenario('rotateAtOpen')
   assert.deepEqual(
     r.files,
@@ -441,138 +463,136 @@ function scenario(name, envOverrides = {}) {
   )
   assert.deepEqual(r.gen, ['', 'gen1', 'gen2', 'gen3', 'gen4'], 'generations shift by one')
   assert.match(r.fresh, /INF m \[app\] app\.start\n$/, 'gurt.log is fresh')
-  console.log('ok  rotation at open · 6-file cap')
-}
-{
+})
+
+test('rotation on write', () => {
   const r = scenario('rotateOnWrite')
   assert.equal(r.rotated, true, 'crossing 10 MB rotates')
   assert.ok(r.size < 10 * 1024 * 1024, 'gurt.log restarts small')
   assert.ok(fs.statSync(path.join(r.root, 'logs/gurt.log.1')).size >= 8 * 1024 * 1024)
-  console.log(`ok  rotation on write (gurt.log ${r.size} B after rotate)`)
-}
+  console.log(`rotation on write (gurt.log ${r.size} B after rotate)`)
+})
 
 // --- 4. drop accounting ----------------------------------------------------
-{
+test('bounded queue', () => {
   const r = scenario('queueFlood')
   assert.ok(r.dropped > 0, 'overflow is dropped')
   assert.ok(r.lines > 900 && r.lines < 5000, `bounded queue kept ${r.lines} records`)
-  console.log(`ok  bounded queue (${r.lines} written, log.dropped n=${r.dropped})`)
-}
-{
+  console.log(`bounded queue (${r.lines} written, log.dropped n=${r.dropped})`)
+})
+
+test('renderer transport', () => {
   const r = scenario('rendererFlood')
   assert.ok(r.accepted <= 200 && r.accepted > 0, `rate limit held at ${r.accepted}/s`)
   assert.ok(r.dropped >= 700, 'the rest is counted into log.dropped')
   assert.equal(r.ignored, false, 'an invalid level is dropped')
   assert.equal(r.renderTag, true, 'renderer records are tagged `r` with a sanitized scope')
   assert.equal(r.fallback, true, 'an empty scope falls back to [renderer]')
-  console.log(`ok  renderer transport (accepted ${r.accepted}, dropped ${r.dropped})`)
-}
+  console.log(`renderer transport (accepted ${r.accepted}, dropped ${r.dropped})`)
+})
 
 // --- 6. unwritable log directory ------------------------------------------
-if (process.getuid?.() === 0) {
-  console.log('--  skipped unwritable-dir test (running as root)')
-} else {
+test('EACCES on the log file · app unaffected · one console report', {
+  skip: process.getuid?.() === 0 ? 'running as root' : false
+}, () => {
   const r = scenario('unwritable')
   assert.equal(r.alive, true, 'the app keeps running')
   assert.equal(r.size, 0, 'nothing was written')
   assert.match(r.stderr, /gurt: logging to .*gurt\.log disabled/, 'reported on the console')
   assert.equal((r.stderr.match(/logging to/g) ?? []).length, 1, 'reported exactly once')
-  console.log('ok  EACCES on the log file · app unaffected · one console report')
-}
+})
 
 // --- flushSync + record truncation ----------------------------------------
-{
+test('flushSync', () => {
   const r = scenario('flushSync')
   assert.match(r.app, /INF m \[app\] app\.quit\n$/, 'flushSync lands the queue synchronously')
-  console.log('ok  flushSync')
-}
-{
+})
+
+test('8 KB record cap', () => {
   const r = scenario('truncate')
   assert.ok(r.len <= 8 * 1024, `record truncated to ${r.len} B`)
   assert.equal(r.oneLine, 1, 'still one line')
-  console.log('ok  8 KB record cap')
-}
+})
 
 // --- 2. level checks use hasOwnProperty, not `in` -------------------------
-{
+test('logRenderer rejects prototype-chain level names', () => {
   const r = scenario('protoLevel')
   assert.ok(!r.app.includes('should not appear'), 'a prototype-chain level name is rejected, not treated as valid')
   assert.ok(!r.app.includes('[native code]'), 'no garbage level tag leaks into the record')
   assert.ok(r.app.includes('control.record'), 'normal logging still works')
-  console.log('ok  logRenderer rejects prototype-chain level names')
-}
-{
+})
+
+test('envLevel() rejects prototype-chain level names too', () => {
   const r = scenario('envLevelPoison', { GURT_LOG: 'constructor' })
   assert.equal(r.logLevel, 'info', 'GURT_LOG=constructor (a prototype property name) falls back to the default level')
   assert.ok(r.app.includes('control.record'), 'logging still works at the fallback level')
-  console.log('ok  envLevel() rejects prototype-chain level names too')
-}
+})
 
 // --- 3. ctx keys are sanitized and length-limited --------------------------
-{
+test('ctx keys go through the same sanitize/redact pipeline as values', () => {
   const r = scenario('keyRedaction')
   assert.ok(!r.app.includes('xk-supersecretkeyname1234567890'), 'a secret used as a ctx key is redacted, not just its value')
   assert.ok(r.app.includes('[redacted]'), 'the redacted key still appears as [redacted]')
   assert.ok(!r.app.includes('x'.repeat(100)), 'a very long ctx key is length-limited, not written in full')
-  console.log('ok  ctx keys go through the same sanitize/redact pipeline as values')
-}
+})
 
 // --- 1. secret at the pre-sanitize truncation boundary ----------------------
-{
+test('secret at the truncation boundary is not sliced in half', () => {
   const r = scenario('recordBoundary')
   assert.equal(r.hasSecret, false, 'a secret near the record-size truncation boundary is not sliced in half')
   assert.ok(r.hasRedacted, 'redaction still fires for a secret positioned right before the record limit')
   assert.ok(r.lineBytes > 0 && r.lineBytes <= 8 * 1024, 'the final record still respects the 8 KB byte cap')
-  console.log('ok  secret at the truncation boundary is not sliced in half')
-}
+})
 
 // --- 1. sanitize() stays roughly linear -------------------------------------
-{
+test('sanitize() stays linear', () => {
   const r = scenario('perfSanitize')
-  assert.ok(r.ms < 2000, `sanitize() of a 1 MB string took ${r.ms} ms — the old backtracking regex took >100 s at this size`)
-  console.log(`ok  sanitize() stays linear (1 MB in ${r.ms} ms)`)
-}
+  // What this guards is a complexity class, not a latency budget: the old
+  // URL-creds regex backtracked quadratically and took >100 s on 1 MB, while
+  // the linear scan lands in ~100 ms. There is no counter to assert on (the
+  // work happens inside one regex), so this stays a wall-clock check — with a
+  // threshold set far above any plausible shared-runner stall and far below
+  // the bug, instead of a tight one that a loaded CI box trips on its own.
+  assert.ok(r.ms < 30000, `sanitize() of a 1 MB string took ${r.ms} ms — the old backtracking regex took >100 s at this size`)
+  console.log(`sanitize() stays linear (1 MB in ${r.ms} ms)`)
+})
 
 // --- a ctx fanned out across levels cannot blow up the walk -----------------
-{
+test('a fanned-out ctx is bounded by a shared budget', () => {
   const r = scenario('perfCtxBudget')
+  // Same reasoning as perfSanitize: ~262k leaf sanitize() calls without a
+  // cross-level budget measured at ~25 s, the budgeted walk at a few ms. The
+  // threshold is deliberately three orders of magnitude above the healthy
+  // value so that runner contention can never be mistaken for the bug.
   assert.ok(
-    r.ms < 500,
+    r.ms < 10000,
     `a ctx nested 3 levels deep (64x64x64) took ${r.ms} ms to serialize — a shared cross-level budget should bound this to a few ms, not the ~25 s a per-level-only cap allows`
   )
   assert.ok(r.recordBytes > 0 && r.recordBytes <= 8 * 1024, 'the record still respects the 8 KB byte cap')
-  console.log(`ok  a fanned-out ctx is bounded by a shared budget (${r.ms} ms, ${r.recordBytes} B)`)
-}
+  console.log(`a fanned-out ctx is bounded by a shared budget (${r.ms} ms, ${r.recordBytes} B)`)
+})
 
 // --- 6. byte-accurate record truncation -------------------------------------
-{
+test('multi-byte records are capped by bytes, not UTF-16 code units', () => {
   const r = scenario('byteTruncate')
   assert.ok(
     r.byteLens.length === 2 && r.byteLens.every((n) => n <= 8 * 1024),
     `every record respects the 8 KB byte cap even with multi-byte content: ${r.byteLens}`
   )
   assert.equal(r.hasLoneSurrogate, false, 'byte-accurate truncation never splits a surrogate pair into a lone one')
-  console.log('ok  multi-byte records are capped by bytes, not UTF-16 code units')
-}
+})
 
 // --- 7. a pre-existing log file's mode is tightened on open -----------------
-{
+test('fchmodSync corrects a pre-existing log file mode', () => {
   const r = scenario('fixMode')
   assert.equal(r.mode, 0o600, 'a pre-existing gurt.log with a looser mode is tightened to 0600 on open')
-  console.log('ok  fchmodSync corrects a pre-existing log file mode')
-}
+})
 
 // --- 9. open session sinks are capped ---------------------------------------
-{
+test('session sinks past the cap release their fd', (t) => {
   const r = scenario('fdCap')
-  if (r.skipped) {
-    console.log('--  skipped fd-cap test (no /proc/self/fd on this platform)')
-  } else {
-    assert.equal(r.files, 200, 'every session still gets its file even once the open-sink cap evicts idle fds')
-    assert.ok(r.after - r.before < 100, `open fd count stays bounded past 64 concurrent sessions (+${r.after - r.before})`)
-    console.log(`ok  session sinks past the cap release their fd (open fds +${r.after - r.before})`)
-  }
-}
-
-fs.rmSync(tmp, { recursive: true, force: true })
-console.log('\nlog tests passed')
+  if (r.skipped) return t.skip('no /proc/self/fd on this platform')
+  assert.equal(r.files, 200, 'every session still gets its file even once the open-sink cap evicts idle fds')
+  assert.ok(r.after - r.before < 100, `open fd count stays bounded past 64 concurrent sessions (+${r.after - r.before})`)
+  console.log(`session sinks past the cap release their fd (open fds +${r.after - r.before})`)
+})

@@ -10,7 +10,8 @@
 // the container manager writes through, so no daemon is needed to stage a holder.
 //
 //   node scripts/session-repo-gate.test.mjs
-import { build } from 'esbuild'
+import { test, after } from 'node:test'
+import { bundle } from './lib/bundle.mjs'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import path from 'node:path'
 import os from 'node:os'
@@ -26,19 +27,14 @@ process.env.GURT_ROOT = GURT_ROOT
 const outfile = path.join(os.tmpdir(), `gurt-repo-gate-${process.pid}.mjs`)
 const S = (rel) => JSON.stringify(path.join(ROOT, rel))
 
-await build({
+await bundle({
   stdin: {
     contents: `export { createKernel } from ${S('src/main/kernel.ts')}`,
     resolveDir: ROOT,
     loader: 'ts',
     sourcefile: 'entry.ts'
   },
-  bundle: true,
-  format: 'esm',
-  platform: 'node',
-  mainFields: ['module', 'main'],
-  outfile,
-  logLevel: 'silent'
+  outfile
 })
 
 const { createKernel } = await import(pathToFileURL(outfile).href)
@@ -53,40 +49,45 @@ async function settle(kernel, id) {
   throw new Error(`session ${id} never left "starting"`)
 }
 
-try {
-  const ws = 'w'
-  const task = 't'
-  fs.mkdirSync(path.join(GURT_ROOT, ws, task), { recursive: true })
-  fs.writeFileSync(
-    path.join(GURT_ROOT, ws, 'workspace.json'),
-    JSON.stringify({
-      repos: [
-        { name: 'alpha', url: 'https://github.com/o/alpha.git' },
-        { name: 'beta', url: 'https://github.com/o/beta.git' }
-      ],
-      envs: [{ name: 'dev', devcontainer: '{"image":"x"}', repo: 'alpha' }]
-    })
-  )
-  fs.writeFileSync(path.join(GURT_ROOT, ws, task, 'task.json'), JSON.stringify({}))
-  fs.writeFileSync(path.join(GURT_ROOT, ws, 'agents.json' ), JSON.stringify({}))
+after(() => {
+  fs.rmSync(outfile, { force: true })
+  fs.rmSync(GURT_ROOT, { recursive: true, force: true })
+})
 
-  const kernel = createKernel()
-  // Wait out the boot reconcile before staging container records: it drops every
-  // record Docker does not confirm, and landing mid-test it would release a clone
-  // the gate is being asked about (see queue-handoff.test.mjs).
-  await kernel.ready
-  const ref = { workspace: ws, task, env: 'dev' }
-  const mk = (repo, title) => {
-    const info = kernel.sessions.createSession(ref, [repo], 'a1', 'hi', 'none')
-    kernel.sessions.renameSession(info.id, title)
-    return info.id
-  }
+const ws = 'w'
+const task = 't'
+fs.mkdirSync(path.join(GURT_ROOT, ws, task), { recursive: true })
+fs.writeFileSync(
+  path.join(GURT_ROOT, ws, 'workspace.json'),
+  JSON.stringify({
+    repos: [
+      { name: 'alpha', url: 'https://github.com/o/alpha.git' },
+      { name: 'beta', url: 'https://github.com/o/beta.git' }
+    ],
+    envs: [{ name: 'dev', devcontainer: '{"image":"x"}', repo: 'alpha' }]
+  })
+)
+fs.writeFileSync(path.join(GURT_ROOT, ws, task, 'task.json'), JSON.stringify({}))
+fs.writeFileSync(path.join(GURT_ROOT, ws, 'agents.json' ), JSON.stringify({}))
 
-  const a = mk('alpha', 'A')
-  const b = mk('alpha', 'B')
-  const c = mk('beta', 'C')
+const kernel = createKernel()
+// Wait out the boot reconcile before staging container records: it drops every
+// record Docker does not confirm, and landing mid-test it would release a clone
+// the gate is being asked about (see queue-handoff.test.mjs).
+await kernel.ready
+const ref = { workspace: ws, task, env: 'dev' }
+const mk = (repo, title) => {
+  const info = kernel.sessions.createSession(ref, [repo], 'a1', 'hi', 'none')
+  kernel.sessions.renameSession(info.id, title)
+  return info.id
+}
 
-  // --- a live container makes its session the holder of the clone ---
+const a = mk('alpha', 'A')
+const b = mk('alpha', 'B')
+const c = mk('beta', 'C')
+
+// --- a live container makes its session the holder of the clone ---
+test('repo is exclusive, env is not', async () => {
   kernel.sessions.patchContainer(a, {
     status: 'running',
     id: 'container-a',
@@ -113,9 +114,10 @@ try {
     /is in use by session/,
     'a session on another repo is not gated by A'
   )
-  console.log('repo is exclusive, env is not OK')
+})
 
-  // --- the same env twice is fine: A holds `alpha`, and D shares its env ---
+// --- the same env twice is fine: A holds `alpha`, and D shares its env ---
+test('two sessions may run one env definition', async () => {
   const d = mk('beta', 'D')
   kernel.sessions.run(d)
   const sameEnv = await settle(kernel, d)
@@ -124,9 +126,10 @@ try {
     /is in use by session/,
     'sharing an env definition is not a conflict'
   )
-  console.log('two sessions may run one env definition OK')
+})
 
-  // --- an auto-stopped container releases the clone ---
+// --- an auto-stopped container releases the clone ---
+test('idle session releases its repo', async () => {
   kernel.sessions.patchContainer(a, {
     status: 'stopped',
     id: 'container-a',
@@ -140,10 +143,11 @@ try {
     /is in use by session/,
     'an idle session with a stopped container holds nothing'
   )
-  console.log('idle session releases its repo OK')
+})
 
-  // --- the scheduler honours the same gate: a queued session on a held repo
-  //     stays queued instead of being started by the next pass ---
+// --- the scheduler honours the same gate: a queued session on a held repo
+//     stays queued instead of being started by the next pass ---
+test('queue waits for the repo, then advances', async () => {
   kernel.sessions.patchContainer(a, {
     status: 'running',
     id: 'container-a',
@@ -164,14 +168,4 @@ try {
     /is in use by session/,
     'freeing the repo lets the queued session through'
   )
-  console.log('queue waits for the repo, then advances OK')
-
-  console.log('session-repo-gate.test: PASS')
-} catch (e) {
-  console.error('session-repo-gate.test: FAIL')
-  console.error(e)
-  process.exitCode = 1
-} finally {
-  fs.rmSync(outfile, { force: true })
-  fs.rmSync(GURT_ROOT, { recursive: true, force: true })
-}
+})

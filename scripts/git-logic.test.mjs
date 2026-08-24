@@ -4,7 +4,8 @@
 // esbuild on the fly, then asserts against the real modules.
 //
 //   node scripts/git-logic.test.mjs
-import { build } from 'esbuild'
+import { test, after } from 'node:test'
+import { bundle } from './lib/bundle.mjs'
 import { pathToFileURL } from 'node:url'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
@@ -23,23 +24,29 @@ export { rewriteRules, containerGitEnv, CRED_HELPER_BIN } from ${S('src/main/git
 export { providerForHost, forgeFeatures, forgeWrappers } from ${S('src/main/git/providers.ts')}
 `
 
-await build({
+await bundle({
   stdin: { contents: entry, resolveDir: ROOT, loader: 'ts', sourcefile: 'entry.ts' },
-  bundle: true,
-  format: 'esm',
-  platform: 'node',
-  // jsonc-parser's `main` is a UMD build esbuild can't wrap into ESM output —
-  // prefer each package's ESM entry, like vite does.
-  mainFields: ['module', 'main'],
-  outfile,
-  logLevel: 'silent'
+  outfile
 })
 
 const m = await import(pathToFileURL(outfile).href)
 const repo = (url, credentialId) => ({ name: 'app', url, devcontainer: '', credentialId })
 
-try {
-  // --- repo identity (§2.1) ---
+// Shared credential fixtures (§3.1/§3.2).
+// Verified entries: save-time verification (§3.2) stamps gitName/gitEmail.
+const identity = { gitName: 'Me', gitEmail: '42+me@users.noreply.github.com' }
+const tok = { id: 't1', label: 'gh', kind: 'git-token', hosts: ['github.com'], data: { secret: 'SEC', ...identity } }
+const gl = { id: 'g1', label: 'gl', kind: 'git-token', hosts: ['gitlab.com'], data: { secret: 'XEC', ...identity } }
+const creds = [tok, gl]
+const agentTok = { id: 'a1', label: 'claude token', kind: 'agent-token', hosts: ['github.com'], data: { secret: 'ATOK' } }
+const p = m.providerForHost('github.com')
+
+after(() => {
+  fs.rmSync(outfile, { force: true })
+})
+
+// --- repo identity (§2.1) ---
+test('repo identity (§2.1)', () => {
   const id = { host: 'github.com', path: 'me/app' }
   assert.deepEqual(m.canonicalRepoId('git@github.com:me/app.git'), id)
   assert.deepEqual(m.canonicalRepoId('ssh://git@github.com/me/app'), id)
@@ -48,14 +55,10 @@ try {
   assert.equal(m.canonicalRepoId('git@github.com-work:me/app.git').host, 'github.com-work')
   assert.equal(m.canonicalRepoId('/tmp/local/bare.git'), null)
   assert.equal(m.canonicalRepoId('file:///tmp/x.git'), null)
+})
 
-  // --- credential resolution (§3.1) ---
-  // Verified entries: save-time verification (§3.2) stamps gitName/gitEmail.
-  const identity = { gitName: 'Me', gitEmail: '42+me@users.noreply.github.com' }
-  const tok = { id: 't1', label: 'gh', kind: 'git-token', hosts: ['github.com'], data: { secret: 'SEC', ...identity } }
-  const gl = { id: 'g1', label: 'gl', kind: 'git-token', hosts: ['gitlab.com'], data: { secret: 'XEC', ...identity } }
-  const creds = [tok, gl]
-
+// --- credential resolution (§3.1) ---
+test('credential resolution (§3.1)', () => {
   let r = m.resolveCredential(creds, repo('https://github.com/me/app'), 'github.com')
   assert.equal(r.entry.id, 't1')
   assert.equal(r.source, 'match')
@@ -80,20 +83,23 @@ try {
 
   assert.equal(m.hasManagedCredential(m.resolveForRepo(creds, repo('https://github.com/me/app'))), true)
   assert.equal(m.hasManagedCredential(m.resolveForRepo([], repo('https://github.com/me/app'))), false)
+})
 
-  // --- unverified entries are blocked, never served (§3.2) ---
+// --- unverified entries are blocked, never served (§3.2) ---
+test('unverified entries are blocked, never served (§3.2)', () => {
   const unverified = { ...tok, data: { secret: 'SEC' } }
-  r = m.resolveCredential([unverified], repo('https://github.com/me/app'), 'github.com')
+  const r = m.resolveCredential([unverified], repo('https://github.com/me/app'), 'github.com')
   assert.equal(r.entry.id, 't1')
   assert.ok(r.error && r.error.includes('re-save'))
   assert.equal(m.hasManagedCredential(r), false)
   assert.deepEqual(m.credentialIdentity(tok), { name: 'Me', email: '42+me@users.noreply.github.com' })
   assert.equal(m.credentialIdentity(unverified), null)
+})
 
-  // --- agent-token is never a git credential ---
-  const agentTok = { id: 'a1', label: 'claude token', kind: 'agent-token', hosts: ['github.com'], data: { secret: 'ATOK' } }
+// --- agent-token is never a git credential ---
+test('agent-token is never a git credential', () => {
   // Hosts on an agent-token (e.g. left behind by a kind switch) never auto-match.
-  r = m.resolveCredential([agentTok], repo('https://github.com/me/app'), 'github.com')
+  let r = m.resolveCredential([agentTok], repo('https://github.com/me/app'), 'github.com')
   assert.equal(r.entry, undefined)
   assert.equal(r.source, 'implicit')
   // An explicit repo link to one is a config error, not a served credential.
@@ -101,8 +107,10 @@ try {
   assert.ok(r.error && r.error.includes('not a git credential'))
   assert.equal(r.entry, undefined)
   assert.equal(m.hasManagedCredential(r), false)
+})
 
-  // --- agent secret resolution ---
+// --- agent secret resolution ---
+test('agent secret resolution', () => {
   assert.deepEqual(m.resolveAgentSecret([agentTok], undefined), { secret: '' })
   assert.equal(m.resolveAgentSecret([agentTok], 'a1').secret, 'ATOK')
   assert.ok(m.resolveAgentSecret([], 'a1').error.includes('no longer exists'))
@@ -111,8 +119,10 @@ try {
   assert.equal(wrongKind.secret, '')
   assert.ok(wrongKind.error.includes('not an agent token'))
   assert.deepEqual(m.agentCredentials([tok, agentTok]), [agentTok])
+})
 
-  // --- rewrite matrix (§6.1) ---
+// --- rewrite matrix (§6.1) ---
+test('rewrite matrix (§6.1)', () => {
   assert.deepEqual(m.rewriteRules('github.com', 'git-token'), [
     ['url.https://github.com/.insteadOf', 'git@github.com:'],
     ['url.https://github.com/.insteadOf', 'ssh://git@github.com/']
@@ -122,8 +132,10 @@ try {
   ])
   assert.deepEqual(m.rewriteRules('github.com', 'git-host'), [])
   assert.deepEqual(m.rewriteRules('github.com', 'agent-token'), [])
+})
 
-  // --- container injection env (§6) ---
+// --- container injection env (§6) ---
+test('container injection env (§6)', () => {
   const env = m.containerGitEnv('http://host.docker.internal:5000/git/abc', 'github.com', 'git-token')
   assert.equal(env.GURT_GIT_BROKER, 'http://host.docker.internal:5000/git/abc')
   assert.equal(env.GIT_TERMINAL_PROMPT, '0')
@@ -145,9 +157,10 @@ try {
   assert.equal(envId.GIT_CONFIG_VALUE_4, 'Me')
   assert.equal(envId.GIT_CONFIG_KEY_5, 'user.email')
   assert.equal(envId.GIT_CONFIG_VALUE_5, '42+me@users.noreply.github.com')
+})
 
-  // --- github forge provider (§7) ---
-  const p = m.providerForHost('github.com')
+// --- github forge provider (§7) ---
+test('github forge provider (§7)', async () => {
   assert.equal(p.id, 'github')
   assert.equal(m.providerForHost('gitlab.com'), null)
   const fe = await p.forgeEnv(tok, 'github.com')
@@ -166,8 +179,10 @@ try {
   )
   assert.deepEqual(m.forgeWrappers('github.com'), ['gh'])
   assert.deepEqual(m.forgeFeatures('gitlab.com'), {})
+})
 
-  // --- identity lookup (§3.2), fetch mocked ---
+// --- identity lookup (§3.2), fetch mocked ---
+test('identity lookup (§3.2), fetch mocked', async () => {
   const realFetch = globalThis.fetch
   try {
     let seen
@@ -197,12 +212,4 @@ try {
   } finally {
     globalThis.fetch = realFetch
   }
-
-  console.log('git-logic.test: PASS')
-} catch (e) {
-  console.error('git-logic.test: FAIL')
-  console.error(e)
-  process.exitCode = 1
-} finally {
-  fs.rmSync(outfile, { force: true })
-}
+})
