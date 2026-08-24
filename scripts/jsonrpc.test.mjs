@@ -11,17 +11,16 @@
 //     error responses) and requests in (results, handler failures, unknown
 //     methods, notifications);
 //   * teardown: `close` rejects everything pending, `error` reaches `onFatal`;
+//   * UTF-8 across chunk boundaries: a character cut in half by a `data` event
+//     must arrive whole, at every byte offset inside its sequence, including
+//     astral characters (surrogate pairs) and cuts spanning three chunks;
+//   * the frame cap (`MAX_FRAME`): a frame at the cap passes, one code unit
+//     over is dropped whole rather than truncated, reported once, and the
+//     stream resynchronizes at the next newline — including the runaway case
+//     of an adapter that never writes a newline at all;
 //   * the DBG trace, which must carry method/id/direction/size and never params
 //     (docs/logging.md: "JSON-RPC params — a frame is logged as method, id,
 //     direction and byte size").
-//
-// Two behaviours below are *characterized*, not endorsed — both are called out
-// with a "TODAY:" comment where they are asserted:
-//   1. `onData` decodes each chunk with `d.toString()`, so a multi-byte UTF-8
-//      character split across two chunks is corrupted (sibling `lineBuffer()`
-//      in provision.ts uses a StringDecoder for exactly this reason);
-//   2. there is no cap on the buffered remainder — an agent that never writes
-//      a newline grows it without bound (`lineBuffer()` caps at 32 KiB).
 //
 // No timers, no sleeps: the peer's dispatch is driven by the data we feed it,
 // and every "nothing happened" assertion is taken after draining the microtask
@@ -51,7 +50,7 @@ const logFile = path.join(process.env.GURT_ROOT, 'logs', 'gurt.log')
 await bundle({
   stdin: {
     contents:
-      `export { JsonRpcPeer, issuePaths } from ${S('src/main/jsonrpc.ts')}\n` +
+      `export { JsonRpcPeer, issuePaths, MAX_FRAME } from ${S('src/main/jsonrpc.ts')}\n` +
       `export { z } from 'zod'`,
     resolveDir: ROOT,
     loader: 'ts',
@@ -370,8 +369,10 @@ test('issuePaths reports paths and codes only', () => {
   assert.match(m.issuePaths(z.string().safeParse(1).error), /^<root>: /, 'a root-level issue is named <root>')
 })
 
-// ------------------------------------------------- size: no cap (TODAY’s behaviour)
-test('1 MiB frame passes: no size cap in jsonrpc.ts today', async () => {
+// --------------------------------------------------------------- size cap
+// The cap exists for a runaway adapter, not for real payloads: a `session/update`
+// carrying a file body or a diff is legitimate and routinely large.
+test('1 MiB frame passes: the cap is far above real traffic', async () => {
   const h = makePeer('s12')
   const seen = recorder(h)
   const big = 'x'.repeat(1024 * 1024)
@@ -381,17 +382,79 @@ test('1 MiB frame passes: no size cap in jsonrpc.ts today', async () => {
   h.feed(frame.slice(0, half))
   h.feed(frame.slice(half))
   await drain()
-  // TODAY: jsonrpc.ts caps neither the buffered remainder nor a single frame,
-  // so a 1 MiB message goes through whole — and an agent that never writes a
-  // newline can grow `buffer` without bound. `lineBuffer()` in provision.ts
-  // caps its remainder at 32 KiB for that reason; this peer does not. If a cap
-  // ever lands here, this is the assertion that has to change.
-  assert.equal(seen.length, 1, 'a 1 MiB frame is buffered across chunks and dispatched — there is no size cap')
+  assert.equal(seen.length, 1, 'a 1 MiB frame is buffered across chunks and dispatched')
   assert.equal(seen[0].params.length, big.length, 'and it arrives whole')
+  assert.deepEqual(h.fatal, [], 'and nothing is reported — it is nowhere near the cap')
 })
 
-// ------------------------- multi-byte UTF-8 on a chunk boundary (TODAY’s behaviour)
-test('multi-byte UTF-8 split across chunks: corrupted (known defect, characterized)', async () => {
+/** The envelope around the payload of `frameOfLength`, payload excluded. */
+const SHELL = `{"jsonrpc":"2.0","method":"note","params":""}`.length
+
+/** A frame whose line (without the '\n') is exactly `len` code units long. */
+const frameOfLength = (len, fill) => {
+  const line = `{"jsonrpc":"2.0","method":"note","params":${JSON.stringify(fill.repeat(len - SHELL))}}`
+  assert.equal(line.length, len, 'fixture is exactly the requested length')
+  return line
+}
+
+test('a frame exactly at the cap passes; one code unit over is dropped and reported', async () => {
+  const h = makePeer('s12a')
+  const seen = recorder(h)
+
+  const atCap = frameOfLength(m.MAX_FRAME, 'x')
+  // Split so the remainder check sees a buffer sitting right on the boundary.
+  const cut = Math.floor(atCap.length / 2)
+  h.feed(atCap.slice(0, cut))
+  h.feed(`${atCap.slice(cut)}\n`)
+  await drain()
+  assert.equal(seen.length, 1, 'a frame exactly at the cap is dispatched')
+  assert.equal(seen[0].params.length, m.MAX_FRAME - SHELL, 'and arrives whole')
+  assert.deepEqual(h.fatal, [], 'and is not reported — the cap is inclusive')
+
+  const over = frameOfLength(m.MAX_FRAME + 1, 'y')
+  const cut2 = Math.floor(over.length / 2)
+  h.feed(over.slice(0, cut2))
+  h.feed(`${over.slice(cut2)}\n`)
+  await drain()
+  assert.equal(seen.length, 1, 'one code unit over the cap: nothing is dispatched')
+  assert.equal(h.fatal.length, 1, 'the drop is reported to onFatal, exactly once')
+  assert.match(h.fatal[0].message, /exceeded the 16 MiB cap and was dropped/, 'and says what happened')
+  assert.ok(!h.fatal[0].message.includes('yyy'), 'the report quotes no frame content')
+
+  // Dropped whole, not truncated — a truncated line would have reached
+  // JSON.parse. And the pipe is still live afterwards.
+  await sentinel(h, seen)
+})
+
+test('an adapter that never writes a newline: capped once, then resynchronized', async () => {
+  const h = makePeer('s12b')
+  const seen = recorder(h)
+  const chunk = 'z'.repeat(1024 * 1024)
+  // Feed past the cap with no '\n' anywhere — the unbounded-growth case.
+  for (let fed = 0; fed <= m.MAX_FRAME; fed += chunk.length) h.feed(chunk)
+  await drain()
+  assert.equal(h.fatal.length, 1, 'passing the cap with no newline in sight is reported')
+  assert.equal(seen.length, 0, 'and nothing is dispatched from it')
+
+  // Keep it coming: the same runaway frame must not be re-reported per chunk,
+  // and the buffer must not grow — it was dropped, not kept.
+  for (let i = 0; i < 8; i++) h.feed(chunk)
+  await drain()
+  assert.equal(h.fatal.length, 1, 'one report per dropped frame, not one per chunk')
+
+  // The tail of the dropped frame ends at the next newline; everything after
+  // it is a fresh frame again. That tail must not be parsed as one itself.
+  h.feed('","id":1}\n')
+  await drain()
+  assert.equal(seen.length, 0, 'the tail of a dropped frame is discarded, never parsed')
+  await sentinel(h, seen)
+})
+
+// ------------------------------------- multi-byte UTF-8 on a chunk boundary
+// The corruption this guards against is silent: U+FFFD is a perfectly valid
+// character inside a JSON string, so a mangled frame still parses and still
+// dispatches — only the payload the app then acts on is wrong.
+test('multi-byte UTF-8 split across chunks arrives whole', async () => {
   const h = makePeer('s13')
   const seen = recorder(h)
   const text = 'привет 😀 ok'
@@ -401,15 +464,50 @@ test('multi-byte UTF-8 split across chunks: corrupted (known defect, characteriz
   h.feedBytes(frame.subarray(0, cut))
   h.feedBytes(frame.subarray(cut))
   await drain()
-  assert.equal(seen.length, 1, 'the frame still parses — U+FFFD is valid inside a JSON string')
-  // TODAY: `onData` does `d.toString()` per chunk, with no StringDecoder to
-  // carry a partial sequence across chunks, so both halves of the character
-  // become U+FFFD and the payload is silently corrupted. provision.ts's
-  // lineBuffer() solves exactly this with `new StringDecoder('utf8')`; when
-  // jsonrpc.ts does the same, flip this to `assert.equal(seen[0].params, text)`.
-  assert.notEqual(seen[0].params, text, 'a multi-byte character split across chunks does NOT survive today')
-  assert.ok(seen[0].params.includes('�'), 'it is replaced by U+FFFD')
-  assert.ok(seen[0].params.startsWith('привет '), 'the rest of the line is unaffected')
+  assert.equal(seen.length, 1, 'one frame')
+  assert.equal(seen[0].params, text, 'the partial sequence is carried into the next chunk')
+  assert.ok(!seen[0].params.includes('�'), 'no U+FFFD anywhere in the payload')
+})
+
+test('a character split across three chunks arrives whole', async () => {
+  const h = makePeer('s13a')
+  const seen = recorder(h)
+  const text = 'a ☃ b' // ☃ is 3 bytes: E2 98 83
+  const snow = Buffer.from('☃', 'utf8')
+  assert.equal(snow.length, 3)
+  const frame = Buffer.from(`{"jsonrpc":"2.0","method":"note","params":${JSON.stringify(text)}}\n`, 'utf8')
+  const at = frame.indexOf(snow)
+  // One byte of the character per `data` event: the decoder has to hold a
+  // partial state, then extend it, before it can emit anything.
+  h.feedBytes(frame.subarray(0, at + 1))
+  h.feedBytes(frame.subarray(at + 1, at + 2))
+  h.feedBytes(frame.subarray(at + 2))
+  await drain()
+  assert.equal(seen.length, 1, 'one frame')
+  assert.equal(seen[0].params, text, 'a 3-byte character split byte-per-chunk survives')
+})
+
+test('an astral character (surrogate pair) split at every byte offset', async () => {
+  const text = 'ok 🙂 done'
+  const emoji = Buffer.from('🙂', 'utf8')
+  assert.equal(emoji.length, 4, 'four UTF-8 bytes, one surrogate pair in JS')
+  assert.equal(text.length, 'ok X done'.length + 1, 'two code units for the one character')
+  const frame = Buffer.from(`{"jsonrpc":"2.0","method":"note","params":${JSON.stringify(text)}}\n`, 'utf8')
+  const at = frame.indexOf(emoji)
+  for (const off of [1, 2, 3]) {
+    const h = makePeer(`s13b-${off}`)
+    const seen = recorder(h)
+    h.feedBytes(frame.subarray(0, at + off))
+    h.feedBytes(frame.subarray(at + off))
+    await drain()
+    assert.equal(seen.length, 1, `cut ${off} byte(s) in: one frame`)
+    assert.equal(seen[0].params, text, `cut ${off} byte(s) in: the astral character survives whole`)
+    assert.equal(
+      seen[0].params.length,
+      text.length,
+      `cut ${off} byte(s) in: both halves of the surrogate pair arrive, not two replacements`
+    )
+  }
 })
 
 // ------------------------------------------------------------- DBG trace
