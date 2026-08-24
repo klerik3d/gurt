@@ -646,10 +646,22 @@ test('restarting a session broker invalidates its old token', async () => {
 // ==========================================================================
 // Nothing above reached the log
 // ==========================================================================
-test('no secret, no bearer token and no fill content in gurt.log', () => {
-  m.flushSync()
+test('no secret, no bearer token and no fill content in gurt.log', async () => {
   const logFile = path.join(GURT_ROOT, 'logs', 'gurt.log')
-  const gurtLog = fs.readFileSync(logFile, 'utf8')
+  const readLog = () => (fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8') : '')
+  // `flushSync()` is the crash path: it writes what is still *queued*, and a
+  // batch already handed to an in-flight async drain is neither queued nor on
+  // disk yet. So it is not a barrier — call it to push the queue, then wait on
+  // the records themselves. The wait ends on the condition, never on a fixed
+  // delay, and the cap is a failure path rather than a timing assumption.
+  const TRACES = ['gitbroker.start', 'gitbroker.stop', 'hostcredbroker.start', `"port":${u1.port}`]
+  let gurtLog = ''
+  for (let i = 0; i < 1000; i++) {
+    m.flushSync()
+    gurtLog = readLog()
+    if (TRACES.every((t) => gurtLog.includes(t))) break
+    await new Promise((r) => setTimeout(r, 5))
+  }
   const lines = gurtLog.split('\n').filter(Boolean)
 
   // The assertion is only worth something if these brokers logged at all.

@@ -98,8 +98,10 @@ kernel.sessions.patchContainer(info.id, {
 })
 
 // The scratch dir a mounted session's repos are staged in (`.multirepo/<id>`)
-// — gurt's own, and ownerless once the session is gone.
-const scratch = path.join(GURT_ROOT, ws, task, '.multirepo', info.id, 'repos')
+// — gurt's own, and ownerless once the session is gone. `repos` is what the
+// mounts are staged under; `scratchRoot` is what the delete removes.
+const scratchRoot = path.join(GURT_ROOT, ws, task, '.multirepo', info.id)
+const scratch = path.join(scratchRoot, 'repos')
 
 test('session delete takes its container down', async () => {
   assert.equal(
@@ -120,10 +122,11 @@ test('session delete takes its container down', async () => {
 
 test('session delete removes its mount scratch', async () => {
   // Only after the container is down — the mounts live inside that directory.
-  for (let i = 0; i < 200 && fs.existsSync(scratch); i++)
+  // Wait on the directory this asserts about, not on its `repos` child: the
+  // removal is an async recursive `fs.rm`, which unlinks the child first and
+  // yields to the event loop before unlinking the parent. Polling the child
+  // leaves that window, and a loaded box widens it until the assert lands in it.
+  for (let i = 0; i < 200 && fs.existsSync(scratchRoot); i++)
     await new Promise((r) => setTimeout(r, 25))
-  assert.ok(
-    !fs.existsSync(path.join(GURT_ROOT, ws, task, '.multirepo', info.id)),
-    'the mount scratch dir goes with the session'
-  )
+  assert.ok(!fs.existsSync(scratchRoot), 'the mount scratch dir goes with the session')
 })

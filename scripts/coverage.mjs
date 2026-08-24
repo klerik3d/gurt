@@ -9,6 +9,10 @@
 // scripts/lib/coverage-merge.mjs). Both cost time the everyday run should not
 // pay, and neither changes what `npm test` builds.
 //
+// That per-file `node --test` is also why this loop is serial where `npm test`
+// runs its files in parallel: the point here is one coverage report per file,
+// not wall-clock.
+//
 // Deliberately no threshold. `--test-coverage-lines=N` would gate a number this
 // suite cannot compute honestly — the report ends with the list of what it does
 // not measure — so the gate would fail on true statements, pass on false ones,
@@ -45,8 +49,6 @@ for (const [i, file] of tests.entries()) {
       '--enable-source-maps',
       '--experimental-test-coverage',
       '--test',
-      // Same as `npm test`: a file may build state across its own tests.
-      '--test-concurrency=1',
       `--test-reporter=${reporter}`,
       '--test-reporter-destination=stdout',
       path.join('scripts', file)
