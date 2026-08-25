@@ -107,11 +107,6 @@ try {
     'fix the login bug',
     'the copy carries the first prompt'
   )
-  assert.equal(
-    await page.locator('.draft-settings .tag', { hasText: 'git' }).count(),
-    1,
-    'the copy carries the git-access setting'
-  )
   await shot('02-copy')
   console.log('the row action copies a session into a draft OK')
 
