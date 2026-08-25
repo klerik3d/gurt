@@ -13,9 +13,6 @@ import type { EnvImageStatus } from '../shared/api'
 import { cloneDir, getWorkspace, gurtRoot, overrideConfigPath, taskDir } from './store'
 import { listCredentials } from './credentials'
 import { hostGitAccess } from './git/env'
-import { forgeFeatures, forgeWrappers } from './git/providers'
-import { BASE_SHIMS, shimInstallScript } from './git/shims'
-import { LAUNCH_BIN } from './git/config'
 import { createLogger } from './log'
 
 const require = createRequire(import.meta.url)
@@ -869,7 +866,6 @@ export async function devcontainerUp(
   workspaceFolder: string,
   log: LogSink,
   repoName: string,
-  repoHost?: string | null,
   /** Called once, when `up` moves from building the image to post-commands. */
   onPostCommands?: () => void,
   /** Repos mounted explicitly as siblings under the container-side root
@@ -881,11 +877,11 @@ export async function devcontainerUp(
    *  Empty for a plain read-write single-repo session. */
   extraMounts: { hostDir: string; name: string; readonly?: boolean }[] = []
 ): Promise<UpResult> {
-  // The container is agent-agnostic: only the node feature is injected, plus any
-  // forge-CLI features for the repo's host (computed from the host alone, so the
-  // image-level feature set is stable across ups — an installed-but-unused CLI
-  // is harmless). Agent adapters are installed lazily via `exec` on connect.
-  const features = { ...BASE_FEATURES, ...forgeFeatures(repoHost ?? null) }
+  // The container is agent-agnostic: only the node feature is injected. No
+  // forge CLI — the container authenticates to nothing, so a `gh` in it would
+  // have no credential to use (docs/requirements-mcp-proxy.md §10.2). Agent
+  // adapters are installed lazily via `exec` on connect.
+  const features = BASE_FEATURES
   const remoteRoot = '/workspaces/' + repoName
   // The CLI's `--mount` argument is validated by a strict regex
   // (`type=,source=,target=[,external=]`) with no `readonly` key, while strings
@@ -1124,32 +1120,6 @@ export async function installAcpAdapter(
   if (code !== 0) throw new Error(`ACP adapter install failed (exit ${code})`)
 }
 
-/**
- * Write the git shims into the container (§5), lazily, like the adapter install:
- * the launcher + credential helper always, plus any forge-CLI wrappers for the
- * repo's host. Idempotent — content is overwritten each call.
- *
- * Runs as root via `docker exec` (not `devcontainer exec`): /opt is root-owned
- * while the remoteUser is usually non-root, so a user-level `mkdir -p
- * /opt/gurt/bin` fails with EACCES. Shims hold no secrets; root-owned 755 also
- * keeps the agent from rewriting them.
- */
-export async function installGitShims(
-  containerId: string,
-  repoHost: string | null,
-  log: LogSink
-): Promise<void> {
-  const names = [...BASE_SHIMS, ...forgeWrappers(repoHost)]
-  log(`installing git shims (${names.join(', ')}) in container ...`)
-  try {
-    await run('docker', ['exec', '-u', 'root', containerId, 'sh', '-c', shimInstallScript(names)], log)
-  } catch (e) {
-    throw new Error(`git shim install failed: ${e instanceof Error ? e.message : String(e)}`, {
-      cause: e
-    })
-  }
-}
-
 /** Spawns the ACP adapter inside the environment; caller owns the process. */
 export function spawnAcpAdapter(
   session: string,
@@ -1159,7 +1129,7 @@ export function spawnAcpAdapter(
   secret: string,
   secretEnv: string,
   extraEnv?: Record<string, string>,
-  gitEnv?: Record<string, string>
+  gitIdentityEnv?: Record<string, string>
 ) {
   const args = [
     devcontainerCliPath(),
@@ -1171,11 +1141,10 @@ export function spawnAcpAdapter(
   if (secret) args.push('--remote-env', `${secretEnv}=${secret}`)
   for (const [k, v] of Object.entries(extraEnv ?? {}))
     args.push('--remote-env', `${k}=${v}`)
-  // Git access (§6): broker URL + GIT_CONFIG_* injected as env (never secrets),
-  // and the agent command run through the launcher so the shims shadow container
-  // binaries for the agent's process tree only.
-  for (const [k, v] of Object.entries(gitEnv ?? {})) args.push('--remote-env', `${k}=${v}`)
-  if (gitEnv) args.push(LAUNCH_BIN)
+  // Commit identity for the container's local git, as GIT_CONFIG_* env (§10.3).
+  // No credentials, no helper, no launcher — there are no shims to put on PATH.
+  for (const [k, v] of Object.entries(gitIdentityEnv ?? {}))
+    args.push('--remote-env', `${k}=${v}`)
   args.push(agent.bin, ...agent.binArgs)
   return spawn(process.execPath, args, {
     env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },

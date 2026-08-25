@@ -104,23 +104,24 @@ try {
   assert.deepEqual(await repoChips(), ['o/alpha'], 'seeded from the env default')
   await pickRepo('beta')
   assert.deepEqual(await repoChips(), ['o/beta'], 'an executor pick replaces the repo')
-  // Its GIT ACCESS toggle is offered (single, read-write clone).
+  // The harness config opens, and offers no git-access toggle for any role —
+  // the container broker is gone (docs/requirements-mcp-proxy.md §10.2).
   await page.click('.modal .hc-head')
-  await page.waitForSelector('.modal .hc .seclabel:text-is("GIT ACCESS")', { timeout: 5000 })
-  console.log('executor: single-select repo + git access OK')
+  await page.waitForSelector('.modal .hc', { timeout: 5000 })
+  assert.equal(
+    await page.locator('.modal .hc .seclabel:text-is("GIT ACCESS")').count(),
+    0,
+    'no role is offered a native git toggle any more'
+  )
+  console.log('executor: single-select repo OK, no git-access toggle')
 
-  // --- researcher: multi-select, no git access ---
+  // --- researcher: multi-select ---
   await pickRole('researcher')
   assert.equal(await shownRole(), 'researcher')
   await pickRepo('alpha')
   assert.deepEqual(await repoChips(), ['o/beta', 'o/alpha'], 'a researcher accumulates repos')
-  assert.equal(
-    await page.locator('.modal .hc .seclabel:text-is("GIT ACCESS")').count(),
-    0,
-    'a read-only role is not offered the git broker'
-  )
   await shot('02-researcher')
-  console.log('researcher: multi-select, no git access OK')
+  console.log('researcher: multi-select OK')
 
   // --- leaving the researcher role drops the extra repos ---
   await pickRole('reviewer')
@@ -135,7 +136,6 @@ try {
   const rec = await persisted((r) => r.info.role === 'reviewer', 'the reviewer draft')
   assert.equal(rec.info.role, 'reviewer', 'the role is persisted on the session')
   assert.deepEqual(rec.info.repos, ['beta'], 'with its single repo')
-  assert.equal(rec.info.gitAccess, false, 'and no git access')
   const tag = await page.locator('.draft-settings .tag-ico').first().innerText()
   assert.equal(tag.trim(), 'reviewer', 'the draft pane shows the role')
   await shot('04-draft')

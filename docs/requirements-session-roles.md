@@ -17,6 +17,14 @@ sketch; this document is the simpler path actually taken — roles are session
 configuration, verdicts are plain chat text, and the only orchestration
 primitive is "an agent drafts another session, the user launches it".
 
+> **Superseded in part** by `requirements-mcp-proxy.md` §10: the
+> container-side git credential broker (`src/main/git/broker.ts`), the
+> container shims, ssh git support and the `gitAccess` session flag are
+> removed. Wherever this document treats those as live, read: the container
+> holds no credentials at all, and authenticated git is exclusively the
+> host-side github MCP tools. The host credential broker survives as
+> `src/main/git/hostCredBroker.ts`.
+
 ## 1. Motivation
 
 Today a session's behavior is inferred: `repos.length > 1` makes it a

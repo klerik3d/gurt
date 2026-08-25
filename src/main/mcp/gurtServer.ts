@@ -157,7 +157,6 @@ function createSessionSchema(roles: SessionRole[], crossTask: boolean) {
     env: z.string().min(1).optional().describe("env definition name; defaults to this session's"),
     agent: z.string().min(1).optional().describe("agent instance id; defaults to this session's"),
     autoAllow: z.boolean().optional().describe('auto-allow the tool calls of the drafted session'),
-    gitAccess: z.boolean().optional().describe('native git/gh in its container (executor only)'),
     configValues: z
       .record(z.string(), z.union([z.string(), z.boolean()]))
       .optional()

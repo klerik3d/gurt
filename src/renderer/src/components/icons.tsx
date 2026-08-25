@@ -20,6 +20,8 @@ export type IconName =
   | 'send'
   | 'x'
   | 'key'
+  | 'plug'
+  | 'globe'
   | 'eye'
   | 'play'
   | 'file'
@@ -131,6 +133,21 @@ const PATHS: Record<IconName, JSX.Element> = {
     <>
       <line x1="18" y1="6" x2="6" y2="18" />
       <line x1="6" y1="6" x2="18" y2="18" />
+    </>
+  ),
+  plug: (
+    <>
+      <path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8z" />
+      <line x1="9" y1="2" x2="9" y2="8" />
+      <line x1="15" y1="2" x2="15" y2="8" />
+      <line x1="12" y1="17" x2="12" y2="22" />
+    </>
+  ),
+  globe: (
+    <>
+      <circle cx="12" cy="12" r="10" />
+      <line x1="2" y1="12" x2="22" y2="12" />
+      <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
     </>
   ),
   key: (

@@ -1,6 +1,9 @@
-// Native git access, UI-only (no docker): drives Settings → Credentials
-// through the real UI → IPC → store, then checks the repo credential
-// resolution note and the composer's harness credential note.
+// Git credentials, UI-only (no docker): drives Settings → Credentials through
+// the real UI → IPC → store, then checks the repo credential resolution note.
+//
+// There is no per-session "git access" toggle to smoke any more: the container
+// broker is gone (docs/requirements-mcp-proxy.md §10.2) and these credentials
+// are consumed host-side only — by the github MCP tools and the host clone.
 //
 // Secrets are masked over IPC now (T3), so this smoke also asserts the mask
 // round-trip: the renderer never sees plaintext, an untouched secret survives
@@ -155,27 +158,6 @@ await page.screenshot({ path: path.join(SHOT_DIR, 'g2-repo-credential.png') })
 await page.click('.modal button:has-text("Save")')
 await page.waitForSelector('.modal', { state: 'detached', timeout: 5000 })
 await page.waitForSelector('.set-row:has-text("demo")', { timeout: 5000 })
-
-// --- composer: harness config shows the resolved credential for the repo ---
-await openWork()
-await page.click('button[title="New task · ⌘⇧N"]')
-await page.fill('input[placeholder="task name"]', 'try')
-await page.press('input[placeholder="task name"]', 'Enter')
-await page.waitForSelector('.sb-task', { timeout: 5000 })
-
-await page.evaluate(() => document.querySelector('button[title="new session"]').click())
-await page.waitForSelector('.modal')
-// Pick the repo (sessions default to none), then open Harness config.
-await page.click('.modal .chip-dashed:has-text("no repository")')
-await page.click('.modal .menu-item:has-text("demo")')
-await page.click('.modal .hc-head')
-await page.waitForSelector('.modal .hc .hc-note')
-const credNote = (await page.textContent('.modal .hc .hc-note'))?.trim()
-assert.equal(credNote, 'credential: gh token 2', `harness shows the managed credential: ${credNote}`)
-console.log('composer credential note OK')
-await page.screenshot({ path: path.join(SHOT_DIR, 'g3-composer.png') })
-await page.click('.modal button[title="close"]')
-await page.waitForSelector('.modal', { state: 'detached', timeout: 5000 })
 
 await app.close()
 console.log('SMOKE PASS')

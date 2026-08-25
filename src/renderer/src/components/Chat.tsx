@@ -18,11 +18,14 @@ import type {
 import { sessionRole, sessionStatus } from '../../../shared/types'
 import { agentOptionView } from '../../../shared/agentConfig'
 import { agentKind, agentName, useAgents } from '../useAgents'
+import { useMcpEntries } from '../useMcp'
+import { resolveMcpSelection } from '../../../shared/mcp'
 import { alertDialog } from '../dialog'
 import { createLogger, logErr } from '../log'
 import { SESSION_DOT } from '../status'
 import { Icon, Dot } from './icons'
-import { AgentMark, EnvRepoMarks, RoleMark } from './tags'
+import { AgentMark, EnvRepoMarks, McpMarks, NetMark, RoleMark } from './tags'
+import { TrafficPanel } from './Network'
 import { SessionMenu } from './SessionActions'
 import { VscodeButton } from './VscodeButton'
 import { run } from '../async'
@@ -74,6 +77,8 @@ export function Chat({
   const [pinnedId, setPinnedId] = useState<number | undefined>(undefined)
   const pinnedTextRef = useRef('')
   const agents = useAgents()
+  // Up here with the other hooks: the snapshot guard below is an early return.
+  const mcpOffered = useMcpEntries(snapshot?.info.workspace)
 
   const entries = snapshot?.entries ?? []
   const hasSnapshot = !!snapshot
@@ -220,6 +225,7 @@ export function Chat({
   if (!snapshot) return <div className="placeholder">loading session…</div>
 
   const { info, modes, plan, commands, configOptions, promptCapabilities } = snapshot
+  const mcp = resolveMcpSelection(info.mcp, mcpOffered)
 
   const hasPlan = !!plan && plan.length > 0
 
@@ -260,6 +266,16 @@ export function Chat({
               · <AgentMark kind={agentKind(agents, info.agent)} name={agentName(agents, info.agent)} />
             </span>
           )}
+          {mcp.length > 0 && (
+            <span>
+              · <McpMarks resolved={mcp} />
+            </span>
+          )}
+          {info.network?.internal && (
+            <span>
+              · <NetMark network={info.network} />
+            </span>
+          )}
         </span>
         <VscodeButton info={info} />
         {/* A session already running is exactly where "this was set up wrong"
@@ -288,6 +304,11 @@ export function Chat({
       </div>
 
       {plan && plan.length > 0 && <PlanPinned plan={plan} />}
+
+      {/* Above the composer, under the feed: a host the session could not reach
+          usually shows up as a tool that failed a moment ago, and the answer
+          should be in the same glance (§8). */}
+      <TrafficPanel sessionId={sessionId} network={info.network} />
 
       <Composer
         key={sessionId}

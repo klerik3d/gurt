@@ -32,7 +32,7 @@ import {
   type ConfigPair
 } from './config'
 import { ensureHostCredHelper } from './shims'
-import { ensureHostCredBroker } from './broker'
+import { ensureHostCredBroker } from './hostCredBroker'
 
 export type HostGitMode = 'managed' | 'ambient' | 'blocked'
 

@@ -76,6 +76,9 @@ const SAFE_ARGS = new Set([
   'getReviewLocks',
   'latestProposal',
   'sessionSnapshot',
+  // A session id in, host/port/count records out — the proxy log this reads
+  // never held a path, a header or a body to begin with.
+  'sessionTraffic',
   'getNotifications',
   'getNotificationPrefs',
   'getUsage',
@@ -92,6 +95,8 @@ const SAFE_ARGS = new Set([
   'updateRepo',
   'removeRepo',
   'removeEnv',
+  'getMcpServers',
+  'removeMcpServer',
   'createTask',
   'removeTask',
   'renameTask',
@@ -149,12 +154,14 @@ const PROSE_PARAM_NAMES = new Set([
 
 /**
  * Payload types that carry prose or secrets inside them, so the parameter name
- * says nothing on its own: a whole devcontainer definition, the credential
- * file, the agent registry (agent env and credential links), a draft patch
- * (`startPrompt`), attached prompt context and images.
+ * says nothing on its own: a whole devcontainer definition, an MCP registry
+ * entry (user-filled static headers), the credential file, the agent registry
+ * (agent env and credential links), a draft patch (`startPrompt`), attached
+ * prompt context and images.
  */
 const PROSE_PARAM_TYPES = [
   'EnvConfig',
+  'McpRegistryEntry',
   'CredentialsFile',
   'AgentsFile',
   'SessionDraftPatch',

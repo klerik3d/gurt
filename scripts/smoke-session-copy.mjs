@@ -46,7 +46,6 @@ const draft = (id, title, prompt) => ({
     workspace: ws,
     title,
     state: 'draft',
-    gitAccess: true,
     autoAllow: false,
     startPrompt: prompt
   }

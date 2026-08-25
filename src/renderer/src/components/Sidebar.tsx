@@ -9,6 +9,7 @@ import type {
   SessionActivity,
   SessionConfigOption,
   SessionInfo,
+  SessionNetwork,
   SessionRole,
   Tree
 } from '../../../shared/types'
@@ -17,21 +18,21 @@ import {
   isActionable,
   isDelivered,
   roleAllowsMultiRepo,
-  roleIsReadOnly,
   sessionRole,
   sessionStatus
 } from '../../../shared/types'
-import type { CredentialEntry } from '../../../shared/credentials'
-import { hasManagedCredential, resolveForRepo } from '../../../shared/credentials'
-import type { McpDef } from '../../../shared/mcp'
+import type { McpEntry } from '../../../shared/mcp'
+import { mcpHasModes } from '../../../shared/mcp'
 import { agentOptionView } from '../../../shared/agentConfig'
 import type { Selection } from '../App'
 import { agentKind, agentName, useAgents } from '../useAgents'
+import { useMcpEntries } from '../useMcp'
+import { NetworkPicker } from './Network'
 import { useOutsideClose } from '../hooks'
 import { alertDialog, confirmDialog } from '../dialog'
 import { SESSION_DOT } from '../status'
 import { Icon, Dot } from './icons'
-import { AgentMark, ROLE_INFO, agentIcon } from './tags'
+import { AgentMark, NET_INFO, ROLE_INFO, agentIcon } from './tags'
 import { deleteSession, duplicateSession } from './SessionActions'
 import { Modal } from './Modal'
 import { fire, run } from '../async'
@@ -736,22 +737,26 @@ export function NewSessionModal({
    *  researcher may hold more than one. */
   const [repos, setRepos] = useState<string[]>(edit?.repos ?? [])
   const [prompt, setPrompt] = useState(edit?.startPrompt ?? '')
-  const [mcpDefs, setMcpDefs] = useState<McpDef[]>([])
-  /** MCP id -> granted mode; absent = not attached. */
-  const [mcp, setMcp] = useState<Record<string, McpMode>>(
-    Object.fromEntries((edit?.mcp ?? []).map((m) => [m.id, m.mode]))
-  )
+  /** Everything this workspace can offer: gurt's built-ins and its registry
+   *  (docs/requirements-mcp-proxy.md §3.3), in one list. */
+  const mcpOffered = useMcpEntries(ws)
+  /** The session's selection, in the user's order — the record `SessionInfo.mcp`
+   *  keeps, edited in place. An array, not a map: ids are user-chosen strings and
+   *  a numeric-looking one would silently sort itself to the front of an object. */
+  const [mcp, setMcp] = useState<McpSelection[]>(edit?.mcp ?? [])
   /** Permission mode: auto-allow tool calls, or ask for each one. */
   const [autoAllow, setAutoAllow] = useState(edit?.autoAllow ?? true)
-  /** Native git access injection — off by default; the user opts in per session. */
-  const [gitAccess, setGitAccess] = useState(edit?.gitAccess ?? false)
+  /** Egress: an open bridge with a logging proxy (default) or an internal
+   *  network the proxy is the only way out of, plus its allow list
+   *  (docs/requirements-mcp-proxy.md §6.2). Seeded from the draft, so editing
+   *  one never silently reopens a session the user isolated. */
+  const [network, setNetwork] = useState<SessionNetwork>(edit?.network ?? { internal: false })
   /** The selected agent's cached config surface (models/effort/commands). */
   const [agentConfig, setAgentConfig] = useState<AgentConfig | null>(null)
   /** Config-option picks keyed by option id; empty = agent defaults. */
   const [configValues, setConfigValues] = useState<Record<string, string | boolean>>(
     edit?.configValues ?? {}
   )
-  const [credentials, setCredentials] = useState<CredentialEntry[]>([])
   const [harnessOpen, setHarnessOpen] = useState(false)
   /** Which quiet-select menu is open. */
   const [picker, setPicker] = useState<'task' | 'env' | 'repo' | 'client' | 'role' | null>(null)
@@ -774,16 +779,25 @@ export function NewSessionModal({
         }
       })
     )
-    fire(() => window.gurt.getMcpDefs().then(setMcpDefs))
-    fire(() => window.gurt.getCredentials().then((f) => setCredentials(f.credentials)))
     // Mount-only on purpose: this seeds the *initial* pick of a modal that is
     // remounted per open, and `editing` decides that seed. Re-running it when
     // the flag flips mid-edit would overwrite the choice the user is making.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const mcpSelection = (): McpSelection[] =>
-    Object.entries(mcp).map(([id, mode]) => ({ id, mode }))
+  const mcpMode = (id: string): McpMode | undefined => mcp.find((m) => m.id === id)?.mode
+  /** null = detach. Attaching appends, so the order is the order they were
+   *  picked in; re-picking a mode edits in place and keeps the position. */
+  const setMcpMode = (id: string, mode: McpMode | null): void =>
+    setMcp((prev) => {
+      if (mode == null) return prev.filter((m) => m.id !== id)
+      if (prev.some((m) => m.id === id)) return prev.map((m) => (m.id === id ? { id, mode } : m))
+      return [...prev, { id, mode }]
+    })
+  /** Selected ids this workspace no longer offers — a registry entry deleted
+   *  behind the draft's back. Kept visible and removable instead of dropped, so
+   *  saving the draft is not a silent edit of what the user chose. */
+  const mcpOrphans = mcp.filter((sel) => !mcpOffered.some((e) => e.id === sel.id))
 
   const wsData = tree.workspaces.find((w) => w.name === ws)
   // Memoized because both feed effect dependency lists below: the `?? []`
@@ -822,12 +836,10 @@ export function NewSessionModal({
 
   // Only a researcher may hold several repos, so leaving that role drops the
   // extras rather than letting an invalid pair reach the IPC boundary (which
-  // rejects it). Git access follows the same logic: a read-only role's clone
-  // refuses writes at the mount, so the broker has nothing to offer it.
+  // rejects it).
   const pickRole = (next: SessionRole) => {
     setRole(next)
     if (!roleAllowsMultiRepo(next) && repos.length > 1) setRepos(repos.slice(0, 1))
-    if (roleIsReadOnly(next)) setGitAccess(false)
     setPicker(null)
   }
 
@@ -915,21 +927,6 @@ export function NewSessionModal({
   const selectedName = (opt: SessionConfigOption): string | undefined =>
     optionView.selectOptions(opt).find((o) => o.value === effective(opt))?.name
 
-  // Git access only ever applies to a single-repo read-write session — the
-  // broker is scoped to one repo for a container's whole lifetime, and a
-  // read-only role could not write with it anyway.
-  const gitAccessApplies = repos.length <= 1 && !roleIsReadOnly(role)
-  const repoCfg = repos.length === 1 ? allRepos.find((r) => r.name === repos[0]) : undefined
-  const gitResolution = repoCfg ? resolveForRepo(credentials, repoCfg) : null
-  const gitCredNote = gitResolution
-    ? hasManagedCredential(gitResolution)
-      ? `credential: ${gitResolution.entry?.label}`
-      : gitResolution.error
-        ? `credential error: ${gitResolution.error}`
-        : gitResolution.entry?.kind === 'git-host'
-          ? `host credentials (explicit): ${gitResolution.entry.label}`
-          : 'no credential — remote git/forge is blocked until one is configured'
-    : null
 
   const saveEdit = async () => {
     setError('')
@@ -940,10 +937,8 @@ export function NewSessionModal({
         role,
         repos,
         autoAllow,
-        // Never true where the broker cannot be wired up: across several repos,
-        // or on a read-only role's clone.
-        gitAccess: gitAccessApplies && gitAccess,
-        mcp: mcpSelection(),
+        mcp,
+        network,
         startPrompt: prompt,
         configValues
       })
@@ -965,11 +960,11 @@ export function NewSessionModal({
         agent,
         prompt,
         action,
-        mcpSelection(),
+        mcp,
         autoAllow,
-        gitAccessApplies && gitAccess,
         configValues,
-        role
+        role,
+        network
       )
       onCreated(s)
     } catch (e) {
@@ -980,7 +975,7 @@ export function NewSessionModal({
   // Draft only needs env + agent + prompt; running/queueing also needs a repo.
   const ready = !!taskName && !!env && !!agent && !!prompt.trim()
   const canRun = ready && repos.length > 0
-  const mcpCount = Object.keys(mcp).length
+  const mcpCount = mcp.length
   // Model/effort surface in the summary so they stay legible while the panel's collapsed.
   const modelOpt = cfgOptions.find((o) => o.category === 'model')
   const effortOpt = cfgOptions.find((o) => o.category === 'thought_level')
@@ -988,7 +983,10 @@ export function NewSessionModal({
     modelOpt && selectedName(modelOpt),
     effortOpt && selectedName(effortOpt),
     autoAllow ? 'auto' : 'manual',
-    `${mcpCount} mcp`
+    `${mcpCount} mcp`,
+    // Only when it is not the default: the summary is a line of chips, and
+    // "open network" on every session would say nothing.
+    network.internal ? NET_INFO.internal.label : null
   ]
     .filter(Boolean)
     .join(' · ')
@@ -1179,7 +1177,7 @@ export function NewSessionModal({
             <div className="hc-note">no repository — Run/Queue disabled until you pick one</div>
           )}
           {repos.length > 1 && (
-            <div className="hc-note">{repos.length} repos — mounted read-only, no git access</div>
+            <div className="hc-note">{repos.length} repos — mounted read-only</div>
           )}
         </div>
 
@@ -1304,48 +1302,27 @@ export function NewSessionModal({
                     </button>
                   </div>
                 </div>
-                {gitAccessApplies && (
-                  <div className="hc-block">
-                    <span className="seclabel">GIT ACCESS</span>
-                    <div className="chip-row">
-                      <button
-                        className={`chip-btn ${gitAccess ? 'on' : ''}`}
-                        onClick={() => setGitAccess(true)}
-                        title="native git + gh in the container"
-                      >
-                        on
-                      </button>
-                      <button
-                        className={`chip-btn ${!gitAccess ? 'on' : ''}`}
-                        onClick={() => setGitAccess(false)}
-                        title="delegate remote git to the github MCP"
-                      >
-                        off
-                      </button>
-                    </div>
-                    {gitCredNote && <div className="hc-note">{gitCredNote}</div>}
-                  </div>
-                )}
-                {mcpDefs.length > 0 && (
+                {(mcpOffered.length > 0 || mcpOrphans.length > 0) && (
                   <div className="hc-block">
                     <span className="seclabel">MCP SERVERS</span>
-                    {mcpDefs.map((def) => (
+                    {mcpOffered.map((entry) => (
                       <McpRow
-                        key={def.id}
-                        def={def}
-                        mode={mcp[def.id]}
-                        onChange={(mode) =>
-                          setMcp((prev) => {
-                            const next = { ...prev }
-                            if (mode == null) delete next[def.id]
-                            else next[def.id] = mode
-                            return next
-                          })
-                        }
+                        key={entry.id}
+                        entry={entry}
+                        mode={mcpMode(entry.id)}
+                        onChange={(mode) => setMcpMode(entry.id, mode)}
+                      />
+                    ))}
+                    {mcpOrphans.map((sel) => (
+                      <McpMissingRow
+                        key={sel.id}
+                        id={sel.id}
+                        onRemove={() => setMcpMode(sel.id, null)}
                       />
                     ))}
                   </div>
                 )}
+                <NetworkPicker network={network} onChange={setNetwork} />
                 <div className="hc-block">
                   <span className="seclabel">SKILLS</span>
                   <div className="hc-stub">Skills, hooks, tool policy — coming later</div>
@@ -1356,8 +1333,8 @@ export function NewSessionModal({
                     className="btn btn-sm"
                     onClick={() => {
                       setAutoAllow(true)
-                      setGitAccess(false)
-                      setMcp({})
+                      setMcp([])
+                      setNetwork({ internal: false })
                     }}
                   >
                     Reset
@@ -1438,48 +1415,60 @@ export function NewSessionModal({
   )
 }
 
-/** One MCP server row in the harness config: dot + name + off/read-only/full menu. */
+/**
+ * One offered MCP server in the harness config: dot + name + description + menu.
+ *
+ * Three states for a built-in (off / read-only / full) and two for a registry
+ * entry (off / on): gurt knows which of *its own* tools write and can hand the
+ * agent a smaller set, and knows nothing about an upstream's, so offering
+ * read-only there would claim an enforcement it does not have (§3.3). "on" is
+ * recorded as `full` — one `McpSelection` shape for both sources.
+ */
 function McpRow({
-  def,
+  entry,
   mode,
   onChange
 }: {
-  def: McpDef
+  entry: McpEntry
   mode: McpMode | undefined
   onChange: (mode: McpMode | null) => void
 }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
   useOutsideClose(open, ref, () => setOpen(false))
+  const modes = mcpHasModes(entry)
   const on = mode != null
-  const label = mode == null ? 'off' : mode === 'read-only' ? 'read-only' : 'full'
-  const pick = (m: McpMode | null) => {
+  const options = modes ? (['off', 'read-only', 'full'] as const) : (['off', 'on'] as const)
+  const label = !on ? 'off' : modes ? mode : 'on'
+  const pick = (m: (typeof options)[number]) => {
     setOpen(false)
-    onChange(m)
+    onChange(m === 'off' ? null : m === 'on' ? 'full' : m)
   }
   return (
     <div className="pick-wrap" ref={ref}>
       <button
         type="button"
         className="pick-row mcp-row"
-        title={def.description}
+        title={entry.description}
         onClick={() => setOpen((o) => !o)}
       >
         <Dot tone={on ? 'green' : 'outline'} size={7} />
-        <span className={`mcp-name ${on ? '' : 'faint'}`}>{def.label}</span>
-        <span className="spacer" />
+        <span className={`mcp-name ${on ? '' : 'faint'}`}>{entry.label}</span>
+        {/* Doubles as the source mark: a built-in describes its tools, a registry
+            entry shows the URL it forwards to. */}
+        <span className="mcp-desc faint">{entry.description}</span>
         <span className="pick-meta">{label}</span>
         <Icon name="chevron" size={12} className="faint" style={{ flex: 'none' }} />
       </button>
       {open && (
         <div className="menu pick-menu">
-          {(['off', 'read-only', 'full'] as const).map((m) => (
+          {options.map((m) => (
             <div
               key={m}
               className={`menu-item ${label === m ? 'active' : ''}`}
               onMouseDown={(e) => {
                 e.preventDefault()
-                pick(m === 'off' ? null : m)
+                pick(m)
               }}
             >
               {m}
@@ -1487,6 +1476,26 @@ function McpRow({
           ))}
         </div>
       )}
+    </div>
+  )
+}
+
+/** A selected id the workspace no longer offers. It stays on the list — and
+ *  stays in the selection until the user says otherwise — because the draft
+ *  still names it and a start would report it as unroutable, which is a thing
+ *  to see here rather than in the session log. */
+function McpMissingRow({ id, onRemove }: { id: string; onRemove: () => void }) {
+  return (
+    <div
+      className="pick-row mcp-row"
+      title={`"${id}" is selected but this workspace no longer offers it — it is not a built-in and not in the registry`}
+    >
+      <Dot tone="red" size={7} />
+      <span className="mcp-name">{id}</span>
+      <span className="mcp-desc faint">unavailable — not a built-in, not in the registry</span>
+      <button type="button" className="btn-link" onClick={onRemove}>
+        remove
+      </button>
     </div>
   )
 }

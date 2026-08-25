@@ -18,6 +18,7 @@ import type {
   SessionConfigOption,
   SessionContainer,
   SessionInfo,
+  SessionNetwork,
   SessionLogRecord,
   SessionModes,
   SessionRole,
@@ -28,8 +29,8 @@ import {
   applyLog,
   roleAllowsMultiRepo,
   roleHasTurnContract,
-  roleIsReadOnly,
   roleLocksClone,
+  sanitizeSessionNetwork,
   sessionRole,
   spawnableRoles
 } from '../shared/types'
@@ -42,6 +43,8 @@ import type { Bus } from './bus'
 import type { ContainerStatusReason, SessionStateReason } from '../shared/events'
 import type { LaunchContext } from './containers'
 import { lineBuffer, spawnAcpAdapter } from './provision'
+import { resolveProxyPlan } from './proxy/config'
+import type { ProxyConfig } from '../shared/proxy'
 import { JsonRpcPeer } from './jsonrpc'
 import {
   CONFIG_OPTION,
@@ -233,8 +236,8 @@ interface Session {
  *  Notifications ride the domain bus instead. */
 export interface SessionEvents {
   /** Ensure the session's container is up and return the agent's launch context.
-   *  When the session enabled git access, this also starts its broker and
-   *  installs the shims into that container. */
+   *  This also ensures the session's network and proxy, and switches the
+   *  container onto them, before the agent exists. */
   resolveLaunch: (sessionId: string) => Promise<LaunchContext>
   /** Install the agent's adapter packages in the session's container. */
   installAdapter: (ctx: LaunchContext) => Promise<void>
@@ -247,6 +250,10 @@ export interface SessionEvents {
   ) => Promise<AcpHttpMcpServer[]>
   /** Tear down the session's host MCP servers. */
   stopMcpServers: (sessionId: string) => void
+  /** Hand the session's proxy the scope its token names (MCP routes, resolved
+   *  credentials, egress policy). Called before the agent spawns, and again on
+   *  every later change — the token never changes with it. */
+  pushProxyScope: (sessionId: string, config: ProxyConfig) => Promise<void>
   /** Ensure the per-session `gurt` server is up; return its ACP descriptor.
    *  Attached to every session unconditionally — its tool set follows the
    *  session's role (`complete` for an executor, `create_session` for the
@@ -527,10 +534,11 @@ export class SessionManager {
     action: CreateAction,
     mcp: McpSelection[] = [],
     autoAllow = true,
-    gitAccess = false,
     configValues: Record<string, string | boolean> = {},
-    role: SessionRole = 'executor'
+    role: SessionRole = 'executor',
+    network?: SessionNetwork
   ): SessionInfo {
+    const clean = sanitizeSessionNetwork(network)
     // A session cannot run or enqueue without a repo (the UI disables those, but
     // the IPC boundary enforces it too). A draft with no repo is allowed.
     if ((action === 'run' || action === 'queue') && !repos.length)
@@ -555,9 +563,17 @@ export class SessionManager {
       autoAllow,
       state: 'draft',
       mcp,
-      // A read-only role cannot use the git broker: its clone is mounted
-      // `readonly`, so native git would fail on the first write anyway.
-      gitAccess: gitAccess && !roleIsReadOnly(role),
+      // Sanitized here rather than at each caller: this value decides how a
+      // container is wired, and it arrives from a renderer form, from an
+      // agent's `create_session` (through the spawner's record) and from a
+      // duplicate. The sanitizer is also the deep copy, so no two sessions
+      // share a policy's domain array.
+      //
+      // Absent means the defaults (an open bridge, everything logged) — the
+      // record only carries the setting once someone has chosen one, so a
+      // session created before this existed and one created with the default
+      // read the same way everywhere downstream.
+      ...(clean ? { network: clean } : {}),
       startPrompt,
       ...(Object.keys(configValues).length ? { configValues } : {})
     }
@@ -640,8 +656,8 @@ export class SessionManager {
       role?: SessionRole
       repos?: string[]
       autoAllow?: boolean
-      gitAccess?: boolean
       mcp?: McpSelection[]
+      network?: SessionNetwork
       startPrompt?: string
       configValues?: Record<string, string | boolean>
     }
@@ -654,8 +670,12 @@ export class SessionManager {
     assertRoleFitsRepos(role, patch.repos ?? s.info.repos)
     if (patch.agent !== undefined) s.info.agent = patch.agent
     if (patch.autoAllow !== undefined) s.info.autoAllow = patch.autoAllow
-    if (patch.gitAccess !== undefined) s.info.gitAccess = patch.gitAccess
     if (patch.mcp !== undefined) s.info.mcp = patch.mcp
+    // Takes effect at the next start: the network flag decides how the session's
+    // own network is created, and a live one cannot be edited in place (§7.2).
+    // Sanitized like the create path — same value, same untrusted sources.
+    if (patch.network !== undefined)
+      s.info.network = sanitizeSessionNetwork(patch.network) ?? { internal: false }
     if (patch.startPrompt !== undefined) s.info.startPrompt = patch.startPrompt
     if (patch.configValues !== undefined)
       s.info.configValues = Object.keys(patch.configValues).length ? patch.configValues : undefined
@@ -675,8 +695,6 @@ export class SessionManager {
       if (patch.role !== sessionRole(s.info)) void this.events.releaseContainer(s.info.id, 'user')
       s.info.role = patch.role
     }
-    // A read-only role has no use for the git broker (see `createSession`).
-    if (roleIsReadOnly(sessionRole(s.info))) s.info.gitAccess = false
     if (patch.env !== undefined && patch.env !== s.info.env) {
       void this.events.releaseContainer(s.info.id, 'user')
       s.info.env = patch.env
@@ -707,9 +725,11 @@ export class SessionManager {
       'draft',
       source.mcp ? [...source.mcp] : [],
       source.autoAllow ?? true,
-      source.gitAccess ?? false,
       { ...(source.configValues ?? {}) },
-      sessionRole(source)
+      sessionRole(source),
+      // Through the sanitizer, which is also the deep copy: the two sessions
+      // must not share a policy's domain array.
+      sanitizeSessionNetwork(source.network)
     )
     // The copy is recognisable as one instead of taking the next free
     // role-index name — the source is usually still in the tree right above it.
@@ -930,6 +950,65 @@ export class SessionManager {
     return out
   }
 
+  /**
+   * Say so when a selected MCP server did not make it into the descriptors the
+   * agent is about to receive — the scope the session got is not the scope the
+   * user picked, and the difference is otherwise invisible from the outside.
+   *
+   * Both sources are routed now (built-ins through gurt's host listeners,
+   * registry entries straight from the proxy), so landing here means the id did
+   * not resolve at all: the workspace no longer offers it, or its credential
+   * refused to resolve — an unresolvable credential blocks, it never falls back
+   * to an unauthenticated call. `attachMcp` logs the reason immediately above.
+   *
+   * Rides the session's provisioning log, where the rest of "what happened on
+   * the way up" is written.
+   */
+  private noteUnattachedMcp(s: Session, attached: AcpHttpMcpServer[]): void {
+    for (const sel of s.info.mcp ?? []) {
+      if (attached.some((m) => m.name === sel.id)) continue
+      this.bus.emit('provision.log', {
+        key: s.info.id,
+        line: `[mcp] "${sel.id}" is selected but is not in this session's scope — the agent will not see it`
+      })
+    }
+  }
+
+  /**
+   * Everything the agent needs to reach an MCP server, in the order it has to
+   * happen (docs/requirements-mcp-proxy.md §4.3, §5.3):
+   *
+   *   1. gurt's own host listeners come up (`github`, `gurt`), each on its own
+   *      port with its own token — the `host` upstreams of the scope below;
+   *   2. the scope is built from the session's selection resolved against the
+   *      workspace registry and the credential store, and *pushed to the proxy*;
+   *   3. the descriptors the agent receives are returned — every one of them a
+   *      `http://gurt-proxy:8100/mcp/<token>/<id>` URL.
+   *
+   * So the session container holds a URL and an opaque token, and never an MCP
+   * credential, never a host token, and never an upstream address (§2). It runs
+   * before the adapter is spawned, on both the start and the resume path, which
+   * is also what makes a scope edit mid-session take effect on the next attach.
+   */
+  private async attachMcp(s: Session, ctx: LaunchContext): Promise<AcpHttpMcpServer[]> {
+    const hosted = [
+      ...(await this.events.resolveMcpServers(s.ref, s.info.id, s.info.repos[0], s.info.mcp)),
+      await this.events.resolveGurtServer(s.ref, s.info.id, this.gurtHooks(s))
+    ]
+    const plan = await resolveProxyPlan(s.ref, s.info.id, ctx.proxy.token, s.info.mcp, {
+      // One URL per built-in, because gurt still runs one listener per (session,
+      // mcp id); §10.4 collapses these into a single `hostMcpUrl`.
+      hostMcpUrls: Object.fromEntries(hosted.map((m) => [m.name, m.url])),
+      network: s.info.network,
+      proxyBase: ctx.proxy.base
+    })
+    for (const line of plan.errors)
+      this.bus.emit('provision.log', { key: s.info.id, line: `[mcp] ${line}` })
+    await this.events.pushProxyScope(s.info.id, plan.config)
+    this.noteUnattachedMcp(s, plan.mcpServers)
+    return plan.mcpServers
+  }
+
   /** Provision (if needed), open the ACP session, and send the start prompt. */
   private async startSession(sessionId: string, by: 'user' | 'scheduler'): Promise<void> {
     const s = this.sessions.get(sessionId)
@@ -960,11 +1039,11 @@ export class SessionManager {
         )
       const ctx = await this.events.resolveLaunch(s.info.id)
       s.remoteCwd = ctx.remoteWorkspaceFolder
+      // Before the adapter, not after: the agent must never observe a proxy
+      // that has no scope, and its environment names that proxy from its first
+      // instruction.
+      const mcpServers = await this.attachMcp(s, ctx)
       const conn = await this.connection(s, ctx)
-      const mcpServers = [
-        ...(await this.events.resolveMcpServers(s.ref, s.info.id, s.info.repos[0], s.info.mcp)),
-        await this.events.resolveGurtServer(s.ref, s.info.id, this.gurtHooks(s))
-      ]
       // Model/effort chosen for the draft ride `_meta` so the very first turn
       // already runs on them (claude-code honors `_meta.claudeCode.options`);
       // any other picks (e.g. fast mode) are reconciled below, before the prompt.
@@ -1225,8 +1304,10 @@ export class SessionManager {
       ctx.hostWorkspaceFolder,
       ctx.secret,
       ctx.secretEnv,
-      ctx.env,
-      ctx.gitBrokerEnv
+      // The proxy variables go last, so a session's sandbox is not something an
+      // agent's own env config can talk its way out of (§4.5).
+      { ...ctx.env, ...ctx.proxy.env },
+      ctx.gitIdentityEnv
     )
     const spawnedAt = Date.now()
     log.info('agent.spawn', {
@@ -1239,7 +1320,8 @@ export class SessionManager {
       env: [
         ...(ctx.secret ? [ctx.secretEnv] : []),
         ...Object.keys(ctx.env ?? {}),
-        ...Object.keys(ctx.gitBrokerEnv ?? {})
+        ...Object.keys(ctx.proxy.env),
+        ...Object.keys(ctx.gitIdentityEnv ?? {})
       ]
     })
     // The adapter's own diagnostics: the reason a start fails is almost always
@@ -1403,14 +1485,15 @@ export class SessionManager {
         )
       const ctx = await this.events.resolveLaunch(s.info.id)
       s.remoteCwd = ctx.remoteWorkspaceFolder
+      // Same ordering as a start: the resumed session's proxy is a *new*
+      // container with no scope, so the scope is pushed before the adapter that
+      // will use it. A session that is still attached kept both, and re-pushing
+      // is what a scope edit does — not what a reconnect does.
+      const mcpServers = s.attached ? [] : await this.attachMcp(s, ctx)
       const conn = await this.connection(s, ctx)
       if (!s.attached) {
         if (!s.acpSessionId) throw new Error('session was never started')
         try {
-          const mcpServers = [
-            ...(await this.events.resolveMcpServers(s.ref, s.info.id, s.info.repos[0], s.info.mcp)),
-            await this.events.resolveGurtServer(s.ref, s.info.id, this.gurtHooks(s))
-          ]
           const result = await conn.peer.request(
             'session/load',
             {
@@ -1700,9 +1783,12 @@ export class SessionManager {
       'draft',
       spawner.info.mcp ?? [],
       req.autoAllow ?? spawner.info.autoAllow ?? true,
-      req.gitAccess ?? false,
       req.configValues ?? spawner.info.configValues ?? {},
-      req.role
+      req.role,
+      // Inherited, never chosen: a session running internal cannot draft one
+      // with open egress (§6.2), and `AgentSessionRequest` has no field to ask
+      // with — a rule the agent cannot express is one it cannot argue about.
+      sanitizeSessionNetwork(spawner.info.network)
     )
     // `renameSession` mutates the same info object createSession stored.
     if (req.title?.trim()) this.renameSession(info.id, req.title)

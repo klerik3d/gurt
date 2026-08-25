@@ -6,8 +6,14 @@
 
 import type { RepoConfig } from './types'
 import { canonicalRepoId } from './repoId'
+import { headerValueProblem, isHeaderName } from './mcp'
 
-export type CredentialKind = 'git-token' | 'git-ssh-key' | 'git-app' | 'git-host' | 'agent-token'
+export type CredentialKind =
+  | 'git-token'
+  | 'git-app'
+  | 'git-host'
+  | 'agent-token'
+  | 'mcp-token'
 
 export interface CredentialEntry {
   /** uuid, stable — configs link by this. */
@@ -30,6 +36,17 @@ export interface CredentialsFile {
 /** Default HTTP-basic username for token credentials (GitHub App / PAT convention). */
 export const DEFAULT_TOKEN_USER = 'x-access-token'
 
+/** Header an `mcp-token` is sent in, and the scheme prefixing it, unless the
+ *  entry overrides them (§3.2). */
+export const DEFAULT_MCP_HEADER = 'Authorization'
+export const DEFAULT_MCP_SCHEME = 'Bearer'
+
+/** The header an `mcp-token` credential resolves to, ready to send upstream. */
+export interface McpAuthHeader {
+  name: string
+  value: string
+}
+
 /** Commit identity of a credential's owner, stamped by save-time verification (§3.2). */
 export interface GitIdentity {
   name: string
@@ -43,13 +60,33 @@ export const credentialIdentity = (entry: CredentialEntry): GitIdentity | null =
     : null
 
 /**
- * §3.2: a git-token entry without stamped identity predates save-time
- * verification and must not be used — resolution errors instead of serving it.
+ * Kinds a previous gurt stored and this one no longer implements. `git-ssh-key`
+ * went with ssh git support (docs/requirements-mcp-proxy.md §10.1): the session
+ * container authenticates to nothing, so a key-based second path to the forge
+ * had no user left, and an agent socket bridged into a container is exactly the
+ * ambient authority that change exists to remove.
+ *
+ * An entry stored under one still survives a read/write round-trip of
+ * credentials.json (see CREDENTIALS_ENVELOPE in main/credentials.ts) — nothing
+ * silently deletes a user's data. What it does not do is resolve: per the
+ * credential policy an unresolvable credential *blocks*, it never falls back to
+ * ambient auth.
  */
-const unverifiedError = (entry: CredentialEntry): string | undefined =>
-  entry.kind === 'git-token' && !credentialIdentity(entry)
-    ? `credential "${entry.label || entry.id}" has no verified identity — re-save it in Credentials`
-    : undefined
+export const RETIRED_KINDS: readonly string[] = ['git-ssh-key']
+
+/** Whether this build still implements `kind` at all. */
+export const isRetiredKind = (kind: string): boolean => RETIRED_KINDS.includes(kind)
+
+/** Why a stored entry cannot be resolved as-is, or undefined when it can:
+ *  a retired kind (above), or — §3.2 — a git-token without stamped identity,
+ *  which predates save-time verification. */
+const entryError = (entry: CredentialEntry): string | undefined => {
+  if (isRetiredKind(entry.kind))
+    return `credential "${entry.label || entry.id}" is an ssh key — unsupported credential kind, ssh git support was removed; replace it with a token credential`
+  if (entry.kind === 'git-token' && !credentialIdentity(entry))
+    return `credential "${entry.label || entry.id}" has no verified identity — re-save it in Credentials`
+  return undefined
+}
 
 /** One editable field of a credential kind, for the credentials modal. */
 export interface CredentialField {
@@ -91,16 +128,6 @@ export const CREDENTIAL_KINDS: CredentialKindDef[] = [
     implemented: true
   },
   {
-    kind: 'git-ssh-key',
-    label: 'ssh key',
-    hint: 'Dedicated key file, or a bridge to the host ssh-agent. (phase 2)',
-    fields: [
-      { key: 'keyPath', label: 'key path (host)', placeholder: '~/.ssh/id_ed25519' },
-      { key: 'hostAgent', label: 'or bridge host agent ("1")', placeholder: '' }
-    ],
-    implemented: false
-  },
-  {
     kind: 'git-app',
     label: 'github app',
     hint: 'Broker mints short-lived installation tokens. (phase 3)',
@@ -122,15 +149,104 @@ export const CREDENTIAL_KINDS: CredentialKindDef[] = [
       { key: 'secret', label: 'token / api key', secret: true, placeholder: 'sk-… / oauth token' }
     ],
     implemented: true
+  },
+  {
+    kind: 'mcp-token',
+    label: 'mcp token',
+    hint:
+      'Auth for an MCP server in ⚙ MCP servers. Sent as "<header>: <scheme> <secret>". ' +
+      'Leave scheme unset for Bearer; clear it to send the bare secret (X-Api-Key style).',
+    fields: [
+      { key: 'secret', label: 'token / api key', secret: true, placeholder: 'sk-… / api key' },
+      { key: 'header', label: 'header (optional)', placeholder: DEFAULT_MCP_HEADER },
+      { key: 'scheme', label: 'scheme (optional)', placeholder: DEFAULT_MCP_SCHEME }
+    ],
+    implemented: true
   }
 ]
 
+/** Kinds that are not a git transport: they link explicitly (from an agent, from
+ *  an MCP registry entry) and never auto-match a host. */
+const NON_GIT_KINDS: readonly CredentialKind[] = ['agent-token', 'mcp-token']
+
 /** Whether a kind matches a git host (auto-match, forge verification, hosts field). */
-export const isGitKind = (kind: CredentialKind): boolean => kind !== 'agent-token'
+export const isGitKind = (kind: CredentialKind): boolean => !NON_GIT_KINDS.includes(kind)
 
 /** Agent-token entries — the pool the Agents editor links against. */
 export const agentCredentials = (credentials: CredentialEntry[]): CredentialEntry[] =>
   credentials.filter((c) => c.kind === 'agent-token')
+
+/** Mcp-token entries — the pool the MCP registry editor links against. */
+export const mcpCredentials = (credentials: CredentialEntry[]): CredentialEntry[] =>
+  credentials.filter((c) => c.kind === 'mcp-token')
+
+/**
+ * Resolve the auth header an MCP registry entry's credential link injects
+ * (docs/requirements-mcp-proxy.md §3.2), in the style of `resolveCredential`:
+ * no link ⇒ nothing (an unauthenticated upstream is legal), a dangling or
+ * wrong-kind link ⇒ a configuration error the caller surfaces.
+ *
+ * `scheme` unset ⇒ the `Bearer` default; explicitly empty ⇒ the bare secret.
+ *
+ * Whether the secret *works* is not checked here — an upstream's auth failure
+ * surfaces on first use as a 401, and the renderer only ever holds a mask. What
+ * is checked is whether it can be sent at all: a secret carrying a newline (the
+ * ordinary paste artifact) makes a header value node refuses to construct, and
+ * it would do so inside the proxy's request listener. `checkMcpSecret` rejects
+ * that on save, but a credential stored before that check existed has never
+ * been through it, so this is the layer that has to hold — a resolution error,
+ * surfaced like a dangling link, rather than a poisoned header handed onward.
+ */
+export function resolveMcpCredential(
+  credentials: readonly CredentialEntry[],
+  credentialId: string | undefined
+): { header?: McpAuthHeader; error?: string } {
+  if (!credentialId) return {}
+  const entry = credentials.find((c) => c.id === credentialId)
+  if (!entry) return { error: 'linked credential no longer exists' }
+  if (entry.kind !== 'mcp-token')
+    return { error: `linked credential "${entry.label || entry.id}" is not an MCP token` }
+  const label = entry.label || entry.id
+  const name = entry.data['header']?.trim() || DEFAULT_MCP_HEADER
+  if (!isHeaderName(name))
+    return { error: `linked credential "${label}" has "${name}" as its header name, which is not a valid header name` }
+  const raw = entry.data['scheme']
+  const scheme = (raw === undefined ? DEFAULT_MCP_SCHEME : raw).trim()
+  const secret = (entry.data['secret'] ?? '').trim()
+  // The composed value, not the secret alone: a scheme is user-typed too.
+  const value = scheme ? `${scheme} ${secret}` : secret
+  const bad = headerValueProblem(value)
+  if (bad) return { error: `linked credential "${label}" ${bad} — re-enter it as a single line` }
+  return { header: { name, value } }
+}
+
+/**
+ * Throws when an `mcp-token` entry could not be sent as a header — the save-time
+ * half of the same rule `resolveMcpCredential` enforces at use time (§3.2).
+ *
+ * Leading and trailing whitespace is stripped rather than refused: it is a
+ * paste artifact with no meaning in a token, and `resolveMcpCredential` trims
+ * too, so storing it trimmed is what makes the stored entry match the header it
+ * will produce. A newline is not strippable in the same way — it may sit in the
+ * middle, and a "token" that spans lines is not a token — so it is an error the
+ * user has to see.
+ */
+export function checkMcpSecret(entry: CredentialEntry): string {
+  const secret = (entry.data['secret'] ?? '').trim()
+  const bad = headerValueProblem(secret)
+  if (bad)
+    throw new Error(
+      `credential "${entry.label || entry.id}": the token ${bad} — paste it as a single line`
+    )
+  const header = entry.data['header']?.trim() || DEFAULT_MCP_HEADER
+  if (!isHeaderName(header))
+    throw new Error(`credential "${entry.label || entry.id}": "${header}" is not a valid header name`)
+  const scheme = (entry.data['scheme'] ?? DEFAULT_MCP_SCHEME).trim()
+  const schemeBad = headerValueProblem(scheme)
+  if (schemeBad)
+    throw new Error(`credential "${entry.label || entry.id}": the scheme ${schemeBad}`)
+  return secret
+}
 
 /**
  * Resolve the secret an agent injects, from its linked credential id (§6, like
@@ -192,14 +308,14 @@ export function resolveCredential(
         source: 'implicit',
         error: `linked credential "${entry.label}" is not a git credential`
       }
-    const linkError = unverifiedError(entry)
+    const linkError = entryError(entry)
     return { entry, kind: entry.kind, source: 'link', ...(linkError ? { error: linkError } : {}) }
   }
   // Step 2: auto-match by host — git kinds only; an agent-token is never a
   // git transport, whatever its hosts say.
   const match = credentials.find((c) => isGitKind(c.kind) && c.hosts.includes(host))
   if (match) {
-    const matchError = unverifiedError(match)
+    const matchError = entryError(match)
     return {
       entry: match,
       kind: match.kind,

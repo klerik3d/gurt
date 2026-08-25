@@ -119,10 +119,12 @@ function serverInstructions(mode: McpMode): string {
       : ' This session is read-only: there is no push/PR tool, so do not attempt to publish changes.'
   return (
     `Use these tools for any git operation against origin (${remoteOps}). ` +
-    'Do NOT run git or gh in the shell for remote operations: this container has ' +
-    'no credentials for origin, so shell `git pull`/`git push`/`gh pr create` will ' +
-    'fail. These tools run on the host with the credential configured for this ' +
-    'repo. Shell git is still fine for purely local work (status, diff, log, branch).' +
+    'Do NOT run git or gh in the shell for remote operations: this container never ' +
+    'holds credentials for origin and has no way to obtain them, so shell ' +
+    '`git pull`/`git push`/`gh pr create` cannot succeed — and `gh` is not installed. ' +
+    'These tools are the only authenticated path to origin; they run on the host, on ' +
+    'the same clone, with the credential configured for this repo. Shell git is still ' +
+    'fine for everything local: status, diff, add, commit, branch, log.' +
     writeNote
   )
 }
@@ -165,8 +167,8 @@ function makeMcpServer(ref: EnvRef, repo: string, dir: string, mode: McpMode): M
       {
         description:
           'Push the current branch to origin and open a GitHub pull request with the ' +
-          'gh CLI. Use this instead of a shell `git push` + `gh pr create`, which have ' +
-          'no credentials here and will fail.',
+          'gh CLI. Use this instead of a shell `git push` + `gh pr create` — this ' +
+          'container has no credentials for origin and no gh at all.',
         inputSchema: {
           title: z.string().describe('Pull request title'),
           body: z.string().optional().describe('Pull request body (markdown)')

@@ -3,14 +3,22 @@ import type { JSX } from 'react'
 import type { AgentInstance, AgentsFile, EnvConfig, RepoConfig, Tree } from '../../../shared/types'
 import type { EnvImageStatus } from '../../../shared/api'
 import { parseEnvDevcontainer, validateEnvConfig } from '../../../shared/envConfig'
-import type { CredentialEntry, CredentialKind } from '../../../shared/credentials'
+import type {
+  CredentialEntry,
+  CredentialKind,
+  CredentialKindDef
+} from '../../../shared/credentials'
 import {
   CREDENTIAL_KINDS,
   agentCredentials,
   credentialKindLabel,
   isGitKind,
-  resolveForRepo
+  mcpCredentials,
+  resolveForRepo,
+  resolveMcpCredential
 } from '../../../shared/credentials'
+import type { McpDef, McpHeader, McpRegistryEntry } from '../../../shared/mcp'
+import { mcpLabel, normalizeMcpEntry, validateMcpEntry } from '../../../shared/mcp'
 import { canonicalRepoId } from '../../../shared/repoId'
 import type { NotificationPrefs, NotificationType } from '../../../shared/notifications'
 import { AGENT_DEFS, agentDef } from '../../../shared/agents'
@@ -27,8 +35,12 @@ export type SettingsSection =
   | 'environments'
   | 'repos'
   | 'clients'
+  | 'mcp'
   | 'credentials'
   | 'notifications'
+
+/** Nav labels for sections whose id does not simply capitalize. */
+const SECTION_LABEL: Partial<Record<SettingsSection, string>> = { mcp: 'MCP servers' }
 
 /** Vendor tag shown beside each provider in the combobox (#4c). */
 const PROVIDER_VENDOR: Record<string, string> = {
@@ -58,21 +70,24 @@ export function SettingsPage({
             General
           </div>
           <div className="set-nav-sep" />
-          {(['environments', 'repos', 'clients', 'credentials', 'notifications'] as const).map((s) => (
-            <div
-              key={s}
-              className={`set-nav-item ${section === s ? 'active' : ''}`}
-              onClick={() => onSection(s)}
-            >
-              {s.slice(0, 1).toUpperCase() + s.slice(1)}
-            </div>
-          ))}
+          {(['environments', 'repos', 'clients', 'mcp', 'credentials', 'notifications'] as const).map(
+            (s) => (
+              <div
+                key={s}
+                className={`set-nav-item ${section === s ? 'active' : ''}`}
+                onClick={() => onSection(s)}
+              >
+                {SECTION_LABEL[s] ?? s.slice(0, 1).toUpperCase() + s.slice(1)}
+              </div>
+            )
+          )}
         </div>
       </div>
       <div className="set-content">
         {section === 'environments' && <EnvironmentsSection tree={tree} ws={ws} />}
         {section === 'repos' && <ReposSection tree={tree} ws={ws} />}
         {section === 'clients' && <ClientsSection />}
+        {section === 'mcp' && <McpServersSection ws={ws} />}
         {section === 'credentials' && <CredentialsSection />}
         {section === 'notifications' && <NotificationsSection />}
         {section === 'general' && <div className="placeholder">general settings — coming soon</div>}
@@ -910,6 +925,337 @@ function textToEnv(text: string): Record<string, string> | undefined {
   return Object.keys(env).length ? env : undefined
 }
 
+// ---- MCP servers (docs/requirements-mcp-proxy.md §3, §11) ----
+
+/** The workspace's MCP registry, plus the built-ins listed read-only so both
+ *  sources of the composer's picker are visible in one place (§11). */
+function McpServersSection({ ws }: { ws: string | null }) {
+  const [servers, setServers] = useState<McpRegistryEntry[]>([])
+  const [builtins, setBuiltins] = useState<McpDef[]>([])
+  const [editing, setEditing] = useState<McpRegistryEntry | null>(null)
+  const [adding, setAdding] = useState(false)
+  const [error, setError] = useState('')
+
+  const refresh = useCallback(() => {
+    if (!ws) {
+      setServers([])
+      return
+    }
+    window.gurt
+      .getMcpServers(ws)
+      .then(setServers)
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+  }, [ws])
+
+  // Mutations elsewhere (another window, a workspace switch) announce over
+  // tree.changed, the same signal the repo/env lists ride.
+  useEffect(() => {
+    refresh()
+    return window.gurt.onTreeChanged(refresh)
+  }, [refresh])
+
+  useEffect(() => {
+    window.gurt.getMcpDefs().then(setBuiltins).catch(() => {})
+  }, [])
+
+  return (
+    <>
+      <div className="set-head">
+        <div className="set-title-wrap">
+          <span className="set-title">MCP servers</span>
+          <span className="set-count mono">
+            {servers.length} server{servers.length === 1 ? '' : 's'}
+            {ws ? ` · ${ws}` : ''}
+          </span>
+        </div>
+        <span className="spacer" />
+        <button className="btn btn-primary" disabled={!ws} onClick={() => setAdding(true)}>
+          + New MCP server
+        </button>
+      </div>
+      <div className="set-list">
+        {servers.map((m) => (
+          <div key={m.id} className="set-row">
+            <span className="set-row-label">{mcpLabel(m)}</span>
+            <span className="set-row-url mono">{m.url}</span>
+            {m.credentialId && (
+              <Icon name="key" size={11} style={{ color: 'var(--yellow)', flex: 'none' }} />
+            )}
+            <button className="btn-link" onClick={() => setEditing(m)}>
+              edit
+            </button>
+          </div>
+        ))}
+        {servers.length === 0 && (
+          <div className="tp-dashed">
+            no MCP servers yet — add one to offer it to this workspace&apos;s sessions
+          </div>
+        )}
+        {builtins.length > 0 && (
+          <>
+            <div className="set-sub">Built-in · provided by gurt, not editable</div>
+            {builtins.map((def) => (
+              <div key={def.id} className="set-row faint" title={def.description}>
+                <span className="set-row-label">{def.label}</span>
+                <span className="set-row-url">{def.description}</span>
+              </div>
+            ))}
+          </>
+        )}
+        {error && <div className="error">{error}</div>}
+      </div>
+      {(editing || adding) && ws && (
+        <McpServerModal
+          key={editing?.id ?? '__new'}
+          ws={ws}
+          taken={servers.filter((m) => m.id !== editing?.id).map((m) => m.id)}
+          initial={editing ?? undefined}
+          onClose={() => {
+            setEditing(null)
+            setAdding(false)
+            refresh()
+          }}
+        />
+      )}
+    </>
+  )
+}
+
+function McpServerModal({
+  ws,
+  taken,
+  initial,
+  onClose
+}: {
+  ws: string
+  /** Ids of the other entries — id uniqueness is previewed here and enforced
+   *  in the store validator (§3.3). */
+  taken: string[]
+  initial?: McpRegistryEntry | undefined
+  onClose: () => void
+}) {
+  const editing = !!initial
+  const [id, setId] = useState(initial?.id ?? '')
+  const [label, setLabel] = useState(initial?.label ?? '')
+  const [url, setUrl] = useState(initial?.url ?? '')
+  const [headers, setHeaders] = useState<McpHeader[]>(initial?.headers?.map((h) => ({ ...h })) ?? [])
+  const [credentialId, setCredentialId] = useState(initial?.credentialId ?? '')
+  const [credentials, setCredentials] = useState<CredentialEntry[]>([])
+  const [credMenu, setCredMenu] = useState(false)
+  const [error, setError] = useState('')
+  const credRef = useRef<HTMLDivElement>(null)
+  useOutsideClose(credMenu, credRef, () => setCredMenu(false))
+
+  useEffect(() => {
+    window.gurt.getCredentials().then((f) => setCredentials(f.credentials)).catch(() => {})
+  }, [])
+
+  const draft = normalizeMcpEntry({
+    id: id.trim(),
+    label,
+    url,
+    headers,
+    ...(credentialId ? { credentialId } : {})
+  })
+  // The same validator the store runs — the modal only previews its verdict.
+  const invalid = validateMcpEntry(draft, { takenIds: taken })
+  const linked = credentials.find((c) => c.id === credentialId)
+  const credError = resolveMcpCredential(credentials, credentialId || undefined).error
+
+  const setHeader = (i: number, patch: Partial<McpHeader>) =>
+    setHeaders((prev) => prev.map((h, j) => (j === i ? { ...h, ...patch } : h)))
+
+  const save = async () => {
+    setError('')
+    try {
+      await (editing
+        ? window.gurt.updateMcpServer(ws, draft)
+        : window.gurt.addMcpServer(ws, draft))
+      onClose()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  const del = async () => {
+    if (
+      !(await confirmDialog(`Delete MCP server "${mcpLabel(initial!)}"?`, {
+        title: 'Delete MCP server',
+        confirmText: 'Delete',
+        danger: true
+      }))
+    )
+      return
+    try {
+      await window.gurt.removeMcpServer(ws, initial!.id)
+      onClose()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  return (
+    <Modal title={editing ? 'Edit MCP server' : 'New MCP server'} width={520} onClose={onClose}>
+      <div className="modal-body env-modal">
+        <div className="cred-grid">
+          <label className="fld">
+            <span className="seclabel">ID</span>
+            <input
+              className="input mono"
+              autoFocus={!editing}
+              placeholder="linear"
+              value={id}
+              disabled={editing}
+              onChange={(e) => setId(e.target.value)}
+            />
+          </label>
+          <label className="fld">
+            <span className="seclabel">NAME (OPTIONAL)</span>
+            <input
+              className="input"
+              placeholder={id.trim() || 'Linear'}
+              value={label}
+              onChange={(e) => setLabel(e.target.value)}
+            />
+          </label>
+        </div>
+
+        <div className="fld">
+          <span className="seclabel">ENDPOINT URL</span>
+          <input
+            className="input mono"
+            placeholder="https://mcp.example.com/mcp"
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+          />
+          <span className="fld-hint">
+            HTTP transport only — a remote http(s) endpoint, not a local command.
+          </span>
+        </div>
+
+        <div className="fld">
+          <div className="fld-head">
+            <span className="seclabel">HEADERS</span>
+            <span className="spacer" />
+            <button
+              className="btn-link"
+              onClick={() => setHeaders((prev) => [...prev, { name: '', value: '' }])}
+            >
+              + header
+            </button>
+          </div>
+          {headers.map((h, i) => (
+            <div key={i} className="mcp-hdr">
+              <input
+                className="input mono"
+                placeholder="X-Workspace"
+                value={h.name}
+                onChange={(e) => setHeader(i, { name: e.target.value })}
+              />
+              <input
+                className="input mono"
+                placeholder="value"
+                value={h.value}
+                onChange={(e) => setHeader(i, { value: e.target.value })}
+              />
+              <button
+                className="btn-link"
+                title="remove header"
+                onClick={() => setHeaders((prev) => prev.filter((_, j) => j !== i))}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+          <span className="fld-hint">
+            Sent upstream verbatim and stored in workspace.json — never put a secret here; link a
+            credential below.
+          </span>
+        </div>
+
+        <div className="env-access">
+          <span className="seclabel">AUTH</span>
+          <div className="env-access-chips" ref={credRef}>
+            {linked ? (
+              <span className="chip-tag">
+                <Icon name="key" size={11} style={{ color: 'var(--yellow)' }} />
+                {linked.label}
+                <span className="chip-x" title="unlink" onClick={() => setCredentialId('')}>
+                  ×
+                </span>
+              </span>
+            ) : (
+              <span className="chip-dashed clickable" onClick={() => setCredMenu((o) => !o)}>
+                + credential
+              </span>
+            )}
+            {credMenu && (
+              <div className="menu pick-menu">
+                <div
+                  className="menu-item"
+                  onMouseDown={(e) => {
+                    e.preventDefault()
+                    setCredentialId('')
+                    setCredMenu(false)
+                  }}
+                >
+                  none (unauthenticated)
+                </div>
+                {mcpCredentials(credentials).map((c) => (
+                  <div
+                    key={c.id}
+                    className="menu-item"
+                    onMouseDown={(e) => {
+                      e.preventDefault()
+                      setCredentialId(c.id)
+                      setCredMenu(false)
+                    }}
+                  >
+                    <Icon name="key" size={11} className="faint" />
+                    {c.label} · {credentialKindLabel(c.kind)}
+                  </div>
+                ))}
+                {mcpCredentials(credentials).length === 0 && (
+                  <div className="menu-item faint">no mcp token — add one in Credentials</div>
+                )}
+              </div>
+            )}
+            <span className="env-access-note mono">
+              {credError
+                ? `⚠ ${credError}`
+                : linked
+                  ? 'injected as a header upstream; the container never sees it'
+                  : 'no credential — the upstream is called unauthenticated'}
+            </span>
+          </div>
+        </div>
+
+        {(error || (invalid && (id.trim() || url.trim()))) && (
+          <div className="error">{error || invalid}</div>
+        )}
+      </div>
+      <div className="modal-foot">
+        {editing && (
+          <button className="btn btn-danger-text" onClick={run(del)}>
+            Delete
+          </button>
+        )}
+        <span className="spacer" />
+        <button className="btn" onClick={onClose}>
+          Cancel
+        </button>
+        <button
+          className="btn btn-primary"
+          disabled={!!invalid || !!credError}
+          onClick={run(save)}
+        >
+          Save
+        </button>
+      </div>
+    </Modal>
+  )
+}
+
 function ClientsSection() {
   const [agents, setAgents] = useState<AgentsFile | null>(null)
   const [credentials, setCredentials] = useState<CredentialEntry[]>([])
@@ -1346,26 +1692,26 @@ function NotificationsSection() {
 const hostsToText = (hosts: string[]) => hosts.join(', ')
 const textToHosts = (text: string) => text.split(',').map((h) => h.trim()).filter(Boolean)
 
-/** Preview of an entry's secret-ish field for the collapsed row. `data.secret`
- *  is already masked server-side (getCredentials() never serves plaintext) —
- *  used as-is. `keyPath` is not secret-flagged and still masked here, purely
- *  for display brevity. */
+/** Preview of an entry's secret field for the collapsed row. `data.secret` is
+ *  already masked server-side (getCredentials() never serves plaintext) — used
+ *  as-is. */
 function maskedPreview(c: CredentialEntry): string {
   if (c.data['secret']) return c.data['secret']
-  if (c.data['keyPath']) {
-    const tail = c.data['keyPath'].length > 8 ? c.data['keyPath'].slice(-4) : ''
-    return `••••••${tail}`
-  }
   return c.kind === 'git-host' ? 'ambient host auth' : '—'
 }
 
 const KIND_TAG: Record<CredentialKind, string> = {
   'git-token': 'token',
-  'git-ssh-key': 'ssh',
   'git-app': 'app',
   'git-host': 'host',
-  'agent-token': 'agent'
+  'agent-token': 'agent',
+  'mcp-token': 'mcp'
 }
+
+/** Tag for a stored entry, tolerating a kind this build retired (§10.1) — such
+ *  an entry still round-trips through credentials.json, so the UI has to be
+ *  able to draw it. */
+const kindTag = (kind: string): string => KIND_TAG[kind as CredentialKind] ?? kind
 
 function CredentialsSection() {
   const [entries, setEntries] = useState<CredentialEntry[] | null>(null)
@@ -1395,7 +1741,7 @@ function CredentialsSection() {
     // empty field on save means "keep what's stored" (main's sentinel
     // resolution). The mask shows up as the input's placeholder instead.
     const data = { ...c.data }
-    for (const f of kindDef(c.kind).fields) if (f.secret) data[f.key] = ''
+    for (const f of kindDef(c.kind)?.fields ?? []) if (f.secret) data[f.key] = ''
     setDraft({ ...c, data })
     setDraftHosts(hostsToText(c.hosts))
     setError('')
@@ -1436,7 +1782,7 @@ function CredentialsSection() {
       return
     }
     if (freshIds.current.has(draft.id)) {
-      const missing = kindDef(draft.kind).fields.find(
+      const missing = (kindDef(draft.kind)?.fields ?? []).find(
         (f) => f.secret && !(draft.data[f.key] ?? '').trim()
       )
       if (missing) {
@@ -1465,10 +1811,10 @@ function CredentialsSection() {
 
   const remove = async (c: CredentialEntry) => {
     setError('')
-    // Block deleting an entry a repo still links to (§9).
+    // Block deleting an entry a repo, client or MCP server still links to (§9).
     const used = await window.gurt.credentialUsedBy(c.id).catch(() => [])
     if (used.length) {
-      setError(`linked by ${used.join(', ')} — unlink it (repo / client settings) first`)
+      setError(`linked by ${used.join(', ')} — unlink it (repo / client / MCP settings) first`)
       return
     }
     if (
@@ -1492,7 +1838,8 @@ function CredentialsSection() {
   }
 
   const count = (entries ?? []).filter((c) => c.label.trim()).length
-  const kindDef = (kind: CredentialKind) => CREDENTIAL_KINDS.find((k) => k.kind === kind)!
+  const kindDef = (kind: CredentialKind): CredentialKindDef | undefined =>
+    CREDENTIAL_KINDS.find((k) => k.kind === kind)
 
   return (
     <>
@@ -1522,7 +1869,7 @@ function CredentialsSection() {
                 <Icon name="key" size={13} className="faint" style={{ flex: 'none' }} />
                 <span className="cred-name mono">{c.label}</span>
                 <span className="cred-tag">
-                  <span className="tag">{KIND_TAG[c.kind]}</span>
+                  <span className="tag">{kindTag(c.kind)}</span>
                 </span>
                 <span className="cred-preview mono">{maskedPreview(c)}</span>
                 <Icon name="chevron" size={12} className="faint" style={{ transform: 'rotate(-90deg)' }} />
@@ -1536,12 +1883,12 @@ function CredentialsSection() {
                 <Icon name="key" size={13} style={{ color: 'var(--yellow)', flex: 'none' }} />
                 <span className="cred-name mono">{draft?.label || c.label || 'new credential'}</span>
                 <span className="cred-tag">
-                  <span className="tag">{KIND_TAG[draft?.kind ?? c.kind]}</span>
+                  <span className="tag">{kindTag(draft?.kind ?? c.kind)}</span>
                 </span>
                 <span className="cred-preview mono">{maskedPreview(c)}</span>
                 <Icon name="chevron" size={12} className="faint" />
               </div>
-              {draft && def && (
+              {draft && (
                 <div className="set-card-body">
                   <div className="cred-grid">
                     <label className="fld">
@@ -1562,11 +1909,19 @@ function CredentialsSection() {
                       />
                     </div>
                   </div>
-                  <div className="fld-hint">
-                    {def.hint}
-                    {!def.implemented && ' — stored, runtime not wired yet'}
+                  <div className={def ? 'fld-hint' : 'error'}>
+                    {def ? (
+                      <>
+                        {def.hint}
+                        {!def.implemented && ' — stored, runtime not wired yet'}
+                      </>
+                    ) : (
+                      `"${draft.kind}" credentials are no longer supported — ssh git access was ` +
+                      'removed; anything resolving to this entry is blocked. Switch it to a token ' +
+                      'credential above, or delete it.'
+                    )}
                   </div>
-                  {def.fields.map((f) => (
+                  {(def?.fields ?? []).map((f) => (
                     <label key={f.key} className="fld">
                       <span className="seclabel">{f.label.toUpperCase()}</span>
                       <input

@@ -12,6 +12,14 @@ inventory of `requirements-stable-keys.md`. Those documents describe the
 env-instance model this one replaces; the parts of them not about container
 ownership still hold.
 
+> **Superseded in part** by `requirements-mcp-proxy.md` §10: the
+> container-side git credential broker (`src/main/git/broker.ts`), the
+> container shims, ssh git support and the `gitAccess` session flag are
+> removed. Wherever this document treats those as live, read: the container
+> holds no credentials at all, and authenticated git is exclusively the
+> host-side github MCP tools. The host credential broker survives as
+> `src/main/git/hostCredBroker.ts`.
+
 ## 1. Motivation
 
 A container used to belong to an *env instance* — one slot per `(task, env)`,

@@ -20,9 +20,11 @@ import type {
   Tree,
   WorkspaceFile
 } from '../shared/types'
+import type { McpRegistryEntry } from '../shared/mcp'
 import { agentDef } from '../shared/agents'
 import { defaultAgentConfig } from '../shared/agentConfig'
 import { validateEnvConfig } from '../shared/envConfig'
+import { normalizeMcpEntry, validateMcpEntry } from '../shared/mcp'
 import type { NotificationPrefs } from '../shared/notifications'
 import type { TurnRecord } from '../shared/usage'
 import { NOTIFICATION_DEFAULTS } from '../shared/notifications'
@@ -149,6 +151,44 @@ export type StoredAgent = z.infer<typeof STORED_AGENT>
 /** agents.json itself: an id → record map. Records stay `unknown` so one bad
  *  entry is skipped instead of emptying the registry. */
 export const STORED_AGENTS = z.record(z.string(), z.unknown()).catch({})
+
+/**
+ * One `workspace.json` MCP registry entry as it may actually be on disk —
+ * hand-edited, like agents.json, so nothing is trusted. A malformed field
+ * degrades to "absent" (`.catch`) and an entry missing `id`/`url` is dropped by
+ * `STORED_MCP_SERVERS` rather than emptying the registry.
+ */
+const STORED_MCP_SERVER = z.looseObject({
+  id: z.string(),
+  label: z.string().optional().catch(undefined),
+  url: z.string(),
+  headers: z
+    .array(z.object({ name: z.string(), value: z.string() }))
+    .optional()
+    .catch(undefined),
+  credentialId: z.string().optional().catch(undefined)
+})
+
+/** The `mcpServers` array itself: entries stay `unknown` so one bad record is
+ *  skipped, and a non-array (or absent) field reads as "no registry". */
+const STORED_MCP_SERVERS = z.array(z.unknown()).catch([])
+
+/** Lift the stored array into entries, dropping records that are not one. */
+function liftMcpServers(raw: unknown): McpRegistryEntry[] {
+  const out: McpRegistryEntry[] = []
+  const seen = new Set<string>()
+  for (const record of STORED_MCP_SERVERS.parse(raw)) {
+    const parsed = STORED_MCP_SERVER.safeParse(record)
+    if (!parsed.success) continue
+    const entry = normalizeMcpEntry(parsed.data)
+    // A duplicate id would make `mcpServers` ambiguous for every consumer; the
+    // first one wins, exactly as `mcpEntries` resolves it.
+    if (!entry.id || !entry.url || seen.has(entry.id)) continue
+    seen.add(entry.id)
+    out.push(entry)
+  }
+  return out
+}
 
 /**
  * Lift one stored record into an agent instance, or nothing when it is not one.
@@ -300,7 +340,10 @@ export async function getWorkspace(ws: string): Promise<WorkspaceFile> {
       migrated = true
     }
   }
-  const data: WorkspaceFile = { repos, envs }
+  // Absent stays absent: an untouched workspace.json is not rewritten with an
+  // empty array just because it was read (§3.1 — `getWorkspace` stays tolerant).
+  const mcpServers = raw.mcpServers === undefined ? undefined : liftMcpServers(raw.mcpServers)
+  const data: WorkspaceFile = { repos, envs, ...(mcpServers ? { mcpServers } : {}) }
   if (migrated) await saveWorkspace(ws, data)
   return data
 }
@@ -421,6 +464,72 @@ export function removeEnv(ws: string, name: string): Promise<void> {
     data.envs = data.envs.filter((e) => e.name !== name)
     await saveWorkspace(ws, data)
     await fs.rm(overrideConfigPath(ws, name), { force: true })
+  })
+}
+
+// --- MCP registry (workspace registry, docs/requirements-mcp-proxy.md §3) ---
+
+/** The workspace's user-configured MCP servers ([] when the field is absent). */
+export async function getMcpServers(ws: string): Promise<McpRegistryEntry[]> {
+  return (await getWorkspace(ws)).mcpServers ?? []
+}
+
+/** Task names with a session whose MCP selection names this entry — the same
+ *  delete-blocking rule a linked credential gets (§3.1). */
+export async function tasksUsingMcp(ws: string, id: string): Promise<string[]> {
+  const used: string[] = []
+  for (const task of await listTasks(ws)) {
+    const sessions = await readJson<PersistedSession[]>(sessionsFile(ws, task), [])
+    if (sessions.some((s) => s.info.mcp?.some((m) => m.id === id))) used.push(task)
+  }
+  return used
+}
+
+/** Reject an entry the registry cannot hold: bad id/url/headers, a reserved
+ *  built-in id, or an id another entry already has (§3.3). The credential link
+ *  is checked by the caller — see `checkMcpCredential` in main/credentials.ts. */
+function assertValidMcp(entry: McpRegistryEntry, others: McpRegistryEntry[]): void {
+  const invalid = validateMcpEntry(entry, { takenIds: others.map((e) => e.id) })
+  if (invalid) throw new Error(`mcp server "${entry.id}": ${invalid}`)
+}
+
+export function addMcpServer(ws: string, entry: McpRegistryEntry): Promise<void> {
+  return editWorkspace(ws, async () => {
+    const data = await getWorkspace(ws)
+    const servers = data.mcpServers ?? []
+    assertValidMcp(entry, servers)
+    data.mcpServers = [...servers, normalizeMcpEntry(entry)]
+    await saveWorkspace(ws, data)
+  })
+}
+
+/** Update an entry, matched by its (immutable) id — renaming is not supported,
+ *  the id is what a session's selection and the proxy route are keyed by. */
+export function updateMcpServer(ws: string, entry: McpRegistryEntry): Promise<void> {
+  return editWorkspace(ws, async () => {
+    const data = await getWorkspace(ws)
+    const servers = data.mcpServers ?? []
+    const i = servers.findIndex((e) => e.id === entry.id)
+    if (i < 0) throw new Error(`mcp server "${entry.id}" not found in "${ws}"`)
+    assertValidMcp(entry, servers.filter((_, j) => j !== i))
+    servers[i] = normalizeMcpEntry(entry)
+    data.mcpServers = servers
+    await saveWorkspace(ws, data)
+  })
+}
+
+export function removeMcpServer(ws: string, id: string): Promise<void> {
+  return editWorkspace(ws, async () => {
+    const used = await tasksUsingMcp(ws, id)
+    if (used.length)
+      throw new Error(
+        `mcp server "${id}" is selected by session(s) in task(s): ${used.join(', ')} — unselect it there first`
+      )
+    const data = await getWorkspace(ws)
+    if (!data.mcpServers?.some((e) => e.id === id))
+      throw new Error(`mcp server "${id}" not found in "${ws}"`)
+    data.mcpServers = data.mcpServers.filter((e) => e.id !== id)
+    await saveWorkspace(ws, data)
   })
 }
 
@@ -549,6 +658,14 @@ export async function readSessions(ws: string, task: string): Promise<PersistedS
     }
     if (legacyKey in info) {
       delete info[legacyKey]
+      migrated = true
+    }
+    // Pre-MCP-proxy records carried `gitAccess` — the container's native git
+    // broker toggle. The broker is gone (docs/requirements-mcp-proxy.md §10.2)
+    // and authenticated git is the host-side github MCP only, so the flag is
+    // dropped from disk rather than left as a setting nothing reads.
+    if ('gitAccess' in info) {
+      delete info['gitAccess']
       migrated = true
     }
     // Pre-multirepo records carried a single `repo?: string` field; fold it

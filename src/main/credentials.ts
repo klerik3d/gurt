@@ -7,8 +7,9 @@
 // When no keystore is available (or GURT_FORCE_PLAINTEXT=1), secrets stay in
 // `data` as before — an honest plaintext fallback, surfaced to the UI via
 // `CredentialsFile.plaintext`. Secrets never leave this file except through
-// the git brokers' per-request responses (§3, §4) and the masked view served
-// to the renderer (getCredentials()).
+// the host credential broker's per-request responses (git/hostCredBroker.ts),
+// the resolved MCP header pushed to a session's proxy, and the masked view
+// served to the renderer (getCredentials()).
 import { promises as fs } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { createRequire } from 'node:module'
@@ -16,8 +17,14 @@ import path from 'node:path'
 import { z } from 'zod'
 import type { AgentInstance, AgentsFile } from '../shared/types'
 import type { CredentialEntry, CredentialKind, CredentialsFile } from '../shared/credentials'
-import { CREDENTIAL_KINDS, credentialIdentity } from '../shared/credentials'
+import {
+  CREDENTIAL_KINDS,
+  checkMcpSecret,
+  credentialIdentity,
+  resolveMcpCredential
+} from '../shared/credentials'
 import { canonicalRepoId } from '../shared/repoId'
+import { mcpLabel } from '../shared/mcp'
 import {
   gurtRoot,
   getWorkspace,
@@ -335,9 +342,9 @@ export async function sealPlaintextSecrets(): Promise<void> {
 }
 
 /**
- * Everything that links to `credentialId`: repos (as `ws/repo`) across every
- * workspace, and agents (as `agent "<label>"`). Both link kinds block deletion
- * the same way (§9).
+ * Everything that links to `credentialId`: repos (as `ws/repo`) and MCP
+ * registry entries across every workspace, and agents (as `agent "<label>"`).
+ * Every link kind blocks deletion the same way (§9).
  */
 export async function credentialUsedBy(credentialId: string): Promise<string[]> {
   const used: string[] = []
@@ -345,6 +352,8 @@ export async function credentialUsedBy(credentialId: string): Promise<string[]> 
     const data = await getWorkspace(ws)
     for (const repo of data.repos)
       if (repo.credentialId === credentialId) used.push(`${ws}/${repo.name}`)
+    for (const server of data.mcpServers ?? [])
+      if (server.credentialId === credentialId) used.push(`mcp "${mcpLabel(server)}" (${ws})`)
   }
   for (const a of Object.values(await getAgents()))
     if (a.credentialId === credentialId) used.push(`agent "${a.label}"`)
@@ -426,6 +435,22 @@ function resolveSentinels(entry: CredentialEntry, prior: CredentialEntry | undef
   return { ...entry, data }
 }
 
+/**
+ * Save-time enforcement for `mcp-token` entries (docs/requirements-mcp-proxy.md
+ * §3.2): a secret that cannot be sent as a header value never reaches the
+ * store, and the stored form is the trimmed one the proxy scope will carry.
+ *
+ * This is the first of the three places the rule holds. The second is
+ * `resolveMcpCredential`, which covers entries saved before this check existed;
+ * the third is the proxy, which answers 502 rather than dying if one gets
+ * through anyway. A newline here would otherwise surface as a whole proxy
+ * process gone, taking every MCP route and all egress with it.
+ */
+function checkedEntry(entry: CredentialEntry): CredentialEntry {
+  if (entry.kind !== 'mcp-token') return entry
+  return { ...entry, data: { ...entry.data, secret: checkMcpSecret(entry) } }
+}
+
 /** Serializes saves: `setCredentials` is read → (network) verify → write, and
  *  two overlapping saves would each read the same `before` and last-write-wins
  *  away the other's entries. */
@@ -445,11 +470,13 @@ export function setCredentials(data: CredentialsFile): Promise<void> {
       const users = await credentialUsedBy(entry.id)
       if (users.length)
         throw new Error(
-          `credential "${entry.label || entry.id}" is linked by ${users.join(', ')} — unlink it (repo settings / ⚙ Agents) first`
+          `credential "${entry.label || entry.id}" is linked by ${users.join(', ')} — unlink it (repo / MCP settings, ⚙ Agents) first`
         )
     }
     const beforeById = new Map(before.credentials.map((c) => [c.id, c]))
-    const resolved = data.credentials.map((entry) => resolveSentinels(entry, beforeById.get(entry.id)))
+    const resolved = data.credentials.map((entry) =>
+      checkedEntry(resolveSentinels(entry, beforeById.get(entry.id)))
+    )
     await verifyTokens(resolved, before.credentials)
     await write({ credentials: resolved })
     // Refresh the redaction set with whatever was just stored.
@@ -462,6 +489,18 @@ export function setCredentials(data: CredentialsFile): Promise<void> {
 /** Convenience for the broker/host paths: the raw entry list. */
 export async function listCredentials(): Promise<CredentialEntry[]> {
   return (await read()).credentials
+}
+
+/**
+ * Reject an MCP registry entry whose credential link does not resolve to an
+ * `mcp-token` (docs/requirements-mcp-proxy.md §3.2). Lives here rather than in
+ * store.ts's validator because the credential store is what holds the answer,
+ * and it is this module that reads workspace.json — not the other way round.
+ */
+export async function checkMcpCredential(credentialId: string | undefined): Promise<void> {
+  if (!credentialId) return
+  const { error } = resolveMcpCredential(await listCredentials(), credentialId)
+  if (error) throw new Error(error)
 }
 
 /**
