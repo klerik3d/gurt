@@ -1,9 +1,25 @@
 // Domain model shared between main and renderer.
+import type { McpRegistryEntry } from './mcp'
+import type { DomainPolicy } from './proxy'
+import { sanitizeDomainPolicy } from './proxy'
 
 /** How much of an MCP server's toolset the agent may use. */
 export type McpMode = 'read-only' | 'full'
 
-/** An MCP server the user picked for a session, with its granted access level. */
+/**
+ * An MCP server the user picked for a session, with its granted access level.
+ *
+ * `id` names either a built-in (`MCP_DEFS`) or an entry of the workspace's
+ * registry (`WorkspaceFile.mcpServers`) — one shape for both, resolved through
+ * `mcpEntry`/`resolveMcpSelection`. The union is not closed at write time: an
+ * id can stop resolving after the fact, so every reader treats an unknown one as
+ * "selected but unavailable" rather than as corruption.
+ *
+ * `mode` is meaningful for built-ins only. gurt knows statically which of *its*
+ * tools write and drops them in `read-only`; it knows nothing about an
+ * upstream's tools, so a selected registry entry records `full` and the picker
+ * offers it as off/on (docs/requirements-mcp-proxy.md §3.3).
+ */
 export interface McpSelection {
   id: string
   mode: McpMode
@@ -113,6 +129,9 @@ export interface EnvConfig {
 export interface WorkspaceFile {
   repos: RepoConfig[]
   envs: EnvConfig[]
+  /** User-configured HTTP MCP servers, workspace-scoped like repos and envs
+   *  (docs/requirements-mcp-proxy.md §3.1). Absent = none. */
+  mcpServers?: McpRegistryEntry[]
 }
 
 /**
@@ -259,8 +278,47 @@ export interface AgentSessionRequest {
   /** Agent-instance id; defaults to the spawner's. */
   agent?: string
   autoAllow?: boolean
-  gitAccess?: boolean
   configValues?: Record<string, string | boolean>
+}
+
+/**
+ * A session's egress settings (docs/requirements-mcp-proxy.md §6.2), chosen at
+ * creation and adjustable while it runs.
+ *
+ * The two modes differ in what they *are*. The default (`internal: false`) is a
+ * normal bridge: the container has its own route out, `HTTP_PROXY` points at
+ * the session proxy, and what that buys is **observability, not enforcement** —
+ * a process that ignores the variables goes straight past it. `internal: true`
+ * creates the session network `--internal`, so the daemon installs no route out
+ * and the proxy is the only way to anything.
+ *
+ * `policy` is the session's allow list, evaluated by the proxy on the host (and
+ * port) a request names — empty means "everything but this machine's own
+ * networks", non-empty means "only these" (§6.3). It is what the default mode
+ * *logs* and the internal mode *enforces*.
+ */
+export interface SessionNetwork {
+  /** Default false. Setup (image build, features, `postCreate`, the adapter
+   *  install) always runs before this applies — see §7.3. */
+  internal?: boolean
+  policy?: DomainPolicy
+}
+
+/**
+ * Network settings as they arrive from outside main — the renderer's form or an
+ * agent's `create_session`. Undefined for anything that carries no choice, so a
+ * caller that never set one leaves the session's own value alone rather than
+ * overwriting it with a synthesised default.
+ *
+ * The internal flag is coerced, never guessed: only a literal `true` is
+ * internal. A restriction has to be asked for.
+ */
+export function sanitizeSessionNetwork(raw: unknown): SessionNetwork | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const { internal, policy } = raw as { internal?: unknown; policy?: unknown }
+  const out: SessionNetwork = { internal: internal === true }
+  if (policy !== undefined) out.policy = sanitizeDomainPolicy(policy)
+  return out
 }
 
 /**
@@ -279,9 +337,8 @@ export interface SessionInfo {
   /** The session's repos (first entry seeded from the env's default,
    *  changeable while a draft, fixed at start). Empty on a repo-less draft —
    *  it cannot start. `repos[0]` is the build anchor. Only a researcher may
-   *  hold more than one; then every repo is mounted as a sibling, no repo is
-   *  exclusively locked, and the git broker is unavailable (native git/gh
-   *  access does not make sense across more than one repo). */
+   *  hold more than one; then every repo is mounted as a sibling and no repo
+   *  is exclusively locked. */
   repos: string[]
   task: string
   workspace: string
@@ -293,13 +350,9 @@ export interface SessionInfo {
   state: SessionState
   /** MCP servers to attach when this session starts (empty/undefined = none). */
   mcp?: McpSelection[]
-  /**
-   * Inject native git access (credential helper + transport rewrite, and the gh
-   * wrapper) into the agent process when it starts. Off = status quo: no
-   * injection, the github MCP remains the delegated remote path. Fixed at the
-   * first start of the (env, agent) adapter this session shares (§6).
-   */
-  gitAccess?: boolean
+  /** Egress settings for this session's network (absent = the defaults:
+   *  a normal bridge, everything allowed and logged). */
+  network?: SessionNetwork
   /** First prompt, sent automatically when the session starts. */
   startPrompt: string
   /**

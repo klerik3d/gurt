@@ -7,6 +7,7 @@ import type {
   SessionState,
   StoredProposal
 } from './types'
+import type { SessionTraffic } from './proxy'
 import type { TurnRecord } from './usage'
 import type { NotificationRecord } from './notifications'
 
@@ -95,6 +96,11 @@ export interface DomainEvents {
   'usage.changed': void
   /** Provisioning output of one session's container; `key` is the session id. */
   'provision.log': { key: string; line: string }
+  /** One session's proxy was seen allowing or refusing a host — the whole
+   *  aggregate, not the delta, coalesced over a few hundred ms in the watcher
+   *  (docs/requirements-mcp-proxy.md §8). Refusals are the point: they are the
+   *  only explanation a user ever gets for a tool that could not connect. */
+  'proxy.traffic': SessionTraffic
   /** A bus event resolved into a user-facing notification (see
    *  docs/requirements-notifications.md) — fired only when that type's
    *  in-app pref is on. */

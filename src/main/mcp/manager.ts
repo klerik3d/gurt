@@ -77,9 +77,27 @@ function stopServer(sessionId: string, key: string, rec: Running): void {
   running.delete(key)
 }
 
+/** Stop this session's servers that its selection no longer names — the other
+ *  half of "the selection is the scope". Without it, narrowing a session's MCP
+ *  set would leave the dropped server listening for the container's lifetime,
+ *  and the agent's own descriptor list is not what keeps it out. */
+function pruneServers(sessionId: string, keep: Set<string>): void {
+  const prefix = `${sessionId}::`
+  for (const [key, rec] of running) {
+    if (!key.startsWith(prefix) || keep.has(rec.id)) continue
+    stopServer(sessionId, key, rec)
+  }
+}
+
 /**
  * Ensure the host MCP servers for `selection` are running for this session and
- * return their ACP descriptors. Restarts a server whose granted mode changed.
+ * return their ACP descriptors. Restarts a server whose granted mode changed,
+ * and stops one the selection dropped — this runs again on every start and
+ * resume, so it is where a mid-session scope change takes effect.
+ *
+ * Built-ins only. A selected *registry* entry (docs/requirements-mcp-proxy.md
+ * §3.1) is a remote HTTP endpoint the session proxy routes to; there is no host
+ * server to start for it, and this path leaves it to `planProxy`.
  */
 export async function resolveMcpServers(
   ref: EnvRef,
@@ -87,12 +105,22 @@ export async function resolveMcpServers(
   repo: string | undefined,
   selection: McpSelection[] | undefined
 ): Promise<AcpHttpMcpServer[]> {
-  if (!selection?.length) return []
-  // The servers operate on the session's clone; without a repo there is none.
-  if (!repo) return []
+  // The servers operate on the session's clone; without a repo there is none —
+  // and the prune still runs, so this revokes rather than leaks.
+  if (!repo) {
+    pruneServers(sessionId, new Set())
+    return []
+  }
+  const wanted = (selection ?? []).filter((sel) => {
+    if (mcpDef(sel.id)) return true
+    log.info('mcp.skip', { id: sel.id, s: sessionId, why: 'not-builtin' })
+    return false
+  })
+  // Before the starts, so a selection that swapped one built-in for another does
+  // not hold both open for the moment in between.
+  pruneServers(sessionId, new Set(wanted.map((sel) => sel.id)))
   const out: AcpHttpMcpServer[] = []
-  for (const sel of selection) {
-    if (!mcpDef(sel.id)) continue
+  for (const sel of wanted) {
     const key = mcpServerKey(sessionId, sel.id)
     let rec = running.get(key)
     if (rec && rec.mode !== sel.mode) {
@@ -115,9 +143,5 @@ export async function resolveMcpServers(
 
 /** Tear down every host MCP server of a session (its container is going away). */
 export function stopMcpServers(sessionId: string): void {
-  const prefix = `${sessionId}::`
-  for (const [key, rec] of running) {
-    if (!key.startsWith(prefix)) continue
-    stopServer(sessionId, key, rec)
-  }
+  pruneServers(sessionId, new Set())
 }

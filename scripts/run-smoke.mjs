@@ -24,7 +24,7 @@ import { fileURLToPath } from 'node:url'
 // secrets and stay out of the default gate — run them by hand.
 const SMOKES = [
   'smoke.mjs',
-  'smoke-git-access.mjs',
+  'smoke-git-credentials.mjs',
   'smoke-delete-row.mjs',
   'smoke-session-copy.mjs',
   'smoke-roles.mjs',

@@ -16,12 +16,16 @@ Platforms: **macOS and Linux are the primary platforms; Windows is a candidate
 Where to look in the code (the domain model itself is described below):
 
 - `src/main/` — the Electron main process, the app's core (Node side):
-  provisioning, ACP, git access, the MCP servers, persistence.
+  provisioning, ACP, git credentials, the MCP servers, persistence.
 - `src/preload/` — the preload bridge: derives `window.gurt` from the shared
   API definition and exposes it to the renderer.
 - `src/renderer/` — the React UI (renderer process).
 - `src/shared/` — types shared by main and renderer, including the IPC
   contract.
+- `resources/proxy/gurt-proxy.mjs` — the per-session egress/MCP proxy. Plain
+  dependency-free Node, bind-mounted into a stock `node:alpine` container and
+  run as-is, so it is not built with the app; its host-side contract (the
+  config file it reads) is `src/main/proxy/config.ts`.
 
 ```
 renderer (React)  ⇄  preload (window.gurt)  ⇄  main (kernel)
@@ -166,7 +170,19 @@ with the Docker labels as the source of truth (hence the reconcile at boot).
    gemini: `@google/gemini-cli` (run as `gemini --experimental-acp`),
    opencode: `opencode-ai`) — cached per **container id**, so a container that is
    stopped and restarted keeps its install and a replaced one reinstalls.
-5. ACP `session/new`, then the session's `startPrompt` is sent as the first
+5. the session's own Docker network (`gurt-s-<id>`, labelled
+   `gurt.session=<id>`) and its **proxy container** are ensured, and the
+   container is switched onto that network with no restart (`docker network
+   connect`/`disconnect` — a converge against what the daemon reports, so a
+   reused or half-attached container lands in the same place). The proxy is a
+   stock `node:22-alpine` running one bind-mounted script (`gurt.proxy=<id>`),
+   sitting on the session network *and* on a shared `gurt-egress` bridge, and it
+   is where every MCP call and — in `internal` sessions — every byte of egress
+   goes. Everything above runs on the open network, because the image build,
+   the features, `postCreate` and the adapter install all need it
+   (docs/requirements-mcp-proxy.md §7.3); the provisioning log records the
+   switch.
+6. ACP `session/new`, then the session's `startPrompt` is sent as the first
    prompt. ACP (JSON-RPC over stdio) runs through `devcontainer exec`; the agent
    secret is passed via `--remote-env <secretEnv>=<secret>`. One adapter process
    per session, held under the session id and tagged with the container it was
@@ -182,7 +198,9 @@ startPrompt / queuedAt / its container record, ACP session id, chat history) and
 restored on app start; `task.json` is now only the marker that makes a directory
 a task. At boot the restored container records are reconciled against
 `docker ps --filter label=gurt.session`: one describing a container the daemon no
-longer has is dropped, and a container whose session is gone is removed. A restored `started` session reattaches lazily: the first prompt runs ACP
+longer has is dropped, and a container whose session is gone is removed. Proxies
+(`docker ps --filter label=gurt.proxy`) and session networks (`docker network ls
+--filter label=gurt.session`) are swept by the same rule, from the same registry. A restored `started` session reattaches lazily: the first prompt runs ACP
 `session/load` with the stored id (claude `--resume` under the hood). The agent's
 own session state lives inside the container, so resume survives an app restart
 but not a container recreation.
@@ -202,35 +220,113 @@ Not implemented (declared unsupported in the ACP handshake): client fs
 read/write and client-side terminals — agents fall back to their own tools
 inside the container.
 
-## Native git access
+## MCP servers
 
-Optional per-session (`git access` toggle in the composer; default on when a
-credential resolves for the repo). When on, the agent gets **native** git in the
-container — `git push`, `gh`, submodule fetches — instead of delegating remote
-ops to the github MCP. See [docs/requirements-git-access.md](docs/requirements-git-access.md)
-for the full design. Phase 1 (this slice) covers the HTTPS path:
+Two sources, one picker. **Built-ins** are gurt's own host servers (`github`
+today; `gurt`, the turn contract, is always attached and never selectable).
+**Registry entries** are the workspace's own remote HTTP MCP endpoints, kept in
+`workspace.json` and edited in Settings → MCP servers — see
+[docs/requirements-mcp-proxy.md](docs/requirements-mcp-proxy.md).
+
+The composer's harness panel lists both, and what is picked there is the
+session's scope: `SessionInfo.mcp`, persisted with the session, carried by a
+duplicate, and shown as chips on the draft and as a mark in the chat header.
+
+- A built-in is **off / read-only / full**: gurt knows statically which of *its*
+  tools write, and hands the agent the smaller set in read-only.
+- A registry entry is **off / on** (recorded as `full`): gurt knows nothing about
+  an upstream's tools, so it does not offer a read-only it cannot enforce.
+- A selected id the workspace no longer offers (a registry entry deleted behind
+  the session) stays listed, marked unavailable, until the user drops it. The
+  scope builders report it and route the rest; nothing narrows silently.
+
+Two things build a scope out of that selection, and both re-read it on every
+start and resume: `mcp/manager.ts` starts, restarts and stops the *host* servers
+per (session, mcp id), and `proxy/config.ts` (`planProxy`) turns the same
+selection into the per-session proxy's routes, where registry entries get their
+credentials injected.
+
+## Session network & observed traffic
+
+The same harness panel carries a **network** control, and the pick is the
+session's record (`SessionInfo.network`, persisted next to the MCP selection,
+carried by a duplicate, inherited by a session an agent drafts):
+
+- **open** (default) — a normal bridge. The container keeps its own route out;
+  `HTTP_PROXY`/`HTTPS_PROXY` point at the session proxy, so MCP and anything
+  that honours them is routed and logged. This is **visibility, not
+  enforcement**: a process that ignores those variables goes straight past it.
+- **internal** — `gurt-s-<id>` is created `--internal`, so the daemon installs
+  no route out and the proxy is the session's only egress, filtered by a
+  **domain policy**: `allow` (everything permitted, everything recorded — the
+  place to start), `denylist` or `allowlist`. A rule covers the host and its
+  subdomains, IP literals match exactly, ports are recorded but not matched.
+
+Under **every** mode, `allow` included and in both network modes, the proxy
+refuses agent egress to this machine: loopback, link-local (169.254.x, where the
+cloud metadata service lives), `host.docker.internal` and the private ranges.
+The mode is a statement about the internet, not about the host. The check is on
+the address a name *resolves* to — resolved once and then dialled directly, so a
+name cannot answer differently between the check and the connection — and the
+one way through it is the picker's **always allow** list, where `host` or
+`host:port` opens exactly that target (docs/requirements-mcp-proxy.md §6.4).
+Refusals show in the traffic panel under their own reason, since "edit your
+allowlist" would be the wrong fix. MCP routing is outside it: an upstream in the
+registry is one a human put there, and it is usually on the docker host.
+
+Two caveats the UI states where the choice is made: **setup runs open** — the
+image build, the devcontainer features, `postCreate` and the adapter install all
+need the network and all happen before the switch (docs/requirements-mcp-proxy.md
+§7.3; the provisioning log records the boundary) — and **SSH git is
+unsupported**; authenticated git is the host-side github MCP.
+
+The proxy writes one JSON line per connection to stdout. The host tails
+`docker logs -f` for the session's lifetime, folds the lines into a bounded
+per-session ledger (`main/proxy/traffic.ts`) and pushes it to the renderer, which
+shows **blocked attempts first** — the host, the rule that refused it, a count
+and a last-seen time — with the observed domains collapsed under them. That
+panel is how "why can't it reach X?" is answered without reading a log. The
+ledger outlives the proxy (an idle session keeps its explanation) and dies with
+the session. Hostnames and ports are all there is: no path, header, body or
+token is ever recorded.
+
+## Git credentials & authenticated git
+
+Authenticated git happens **only on the host**, through the github MCP tools
+(`git_pull`, `git_push`, `create_pull_request`). The session container never
+holds or brokers a credential: it gets unauthenticated local git (status, diff,
+add, commit, branch, log) plus the commit identity of the repo's credential, so
+the commits it does make are attributed. See
+[docs/requirements-git-access.md](docs/requirements-git-access.md) for the full
+design and [docs/requirements-mcp-proxy.md](docs/requirements-mcp-proxy.md) §10
+for why the container-side path was removed.
 
 - **Credentials** (🔑 in the sidebar) live in `~/.gurt/credentials.json`, generic
-  `kind` + opaque `data`. Phase 1 implements `git-token` (PAT / fine-grained /
-  GitLab / Gitea) and `git-host` (ambient). A repo links one by id (or
-  auto-matches by host); the link is never a secret. Agent secrets are the same
-  store's `agent-token` kind — an agent links one by id (no host matching); old
-  inline `agents.json` secrets migrate into it on first launch.
-- The contract is **git's own extension points**, never a forge API: an in-container
-  credential-helper shim forwards to a host **broker** (one per session, like the
-  MCP servers) that answers from the store; `url.<base>.insteadOf` rewrites make the
-  transport follow the *credential* (a token repo pushes over https even if cloned
-  over ssh). All injected via `GIT_CONFIG_*` env into the agent process only —
-  nothing is written into the clone or the container's global config, and secrets
-  never leave the broker's per-request responses.
-- Forge-specific behavior (the `gh` wrapper, GitHub App minting later) lives behind
-  interchangeable **forge providers**; the github provider also injects the
-  github-cli devcontainer feature at env-up. Host-side git (clone, the Changes
-  panel's fetch/push) uses the same resolution, so it works with no ambient auth.
+  `kind` + opaque `data`, secret fields sealed with the OS keystore where one is
+  available. `git-token` (PAT / fine-grained / GitLab / Gitea) and `git-host`
+  (explicit opt-in to ambient host auth) are implemented. A repo links one by id
+  (or auto-matches by host); the link is never a secret. The same store holds
+  `agent-token` (an agent's API key) and `mcp-token` (a registry MCP server's).
+- Ambient host auth is **never a fallback**. When nothing resolves, remote
+  operations are blocked with a clear error rather than quietly reaching the
+  machine's ssh keys or `gh` login — and ambient ssh is shut off with a failing
+  `GIT_SSH_COMMAND` on every managed or blocked call.
+- The contract is **git's own extension points**, never a forge API: a host
+  credential helper forwards fills to a loopback-only **broker** that answers
+  from the store, and `url.<base>.insteadOf` rewrites make the transport follow
+  the *credential* (a token repo pushes over https even if it was cloned over
+  ssh). Delivered as `-c key=value` argv on the one git call — nothing is
+  written into the clone or any global config, and the secret never leaves the
+  broker's per-request response.
+- A `git-token` is verified against its forge at save time; the owner's
+  name/email is stamped on the entry and is what authors managed commits.
+  Forge-specific behavior (the host `gh`, GitHub App minting later) lives behind
+  interchangeable **forge providers**.
 
-SSH keys (phase 2) and GitHub App tokens + agent-secret migration (phase 3) reuse
-the same broker/shim/provider seams; their credential kinds appear in the modal but
-are not wired to the runtime yet.
+GitHub App tokens (`git-app`) reuse the same provider seam; the kind appears in
+the editor but is not wired to the runtime. SSH is not a supported credential
+kind — an entry left over from when it was resolves as an error telling you to
+replace it with a token.
 
 ## Run
 
@@ -344,7 +440,7 @@ SCRATCH=/tmp/gurt-smoke node scripts/smoke-codex.mjs          # codex-in-gurt ha
 SCRATCH=/tmp/gurt-smoke node scripts/smoke-queue.mjs          # session queue: draft/serialization/restart
 SCRATCH=/tmp/gurt-smoke node scripts/smoke-changes.mjs        # Changes panel delivery thread, no docker (local bare repos)
 SCRATCH=/tmp/gurt-smoke node scripts/smoke-review.mjs         # manual review: split diff, comments, lock toggle, Launch fix, no docker (local bare repos)
-SCRATCH=/tmp/gurt-smoke node scripts/smoke-git-access.mjs     # native git access: credentials CRUD + resolution + composer toggle, no docker
+SCRATCH=/tmp/gurt-smoke node scripts/smoke-git-credentials.mjs # credentials CRUD + repo resolution note, no docker
 # turn contract end-to-end (docker + a working claude secret; SKIPs without one):
 SCRATCH=/tmp/gurt-smoke GURT_SMOKE_CLAUDE_TOKEN=… node scripts/smoke-turn-contract.mjs
 node scripts/smoke-delete-row.mjs                 # sidebar Del/⌫: confirm, delete, move the selection, no docker
@@ -358,7 +454,7 @@ node scripts/smoke.linux.mjs                      # linux variant of smoke.mjs: 
 
 Unit tests are pure node — no Electron, no Playwright, no docker; the TS under
 test is bundled on the fly with esbuild. `npm test` runs every
-`scripts/*.test.mjs` (currently 27) and is the canonical way to run them; a single
+`scripts/*.test.mjs` (currently 37) and is the canonical way to run them; a single
 file can also be run directly. A few, to show what they cover:
 
 ```bash
@@ -370,6 +466,13 @@ node scripts/session-roles.test.mjs    # session roles: locks, (role, repos) rul
 node scripts/turn-contract.test.mjs    # turn contract: the post-turn nudge/incomplete decision matrix
 node scripts/proposal-store.test.mjs   # turn contract: proposal restore, latestProposal, Kernel.prUrl params
 node scripts/env-config.test.mjs       # env normal form: JSONC parse/validation, envImageTag identity, migration
+node scripts/mcp-registry.test.mjs     # workspace MCP registry: validation, built-in/registry lookup, store CRUD, mcp-token links
+node scripts/mcp-selection.test.mjs    # per-session MCP selection: persistence over both sources, scope resolution, a deleted entry
+node scripts/proxy-policy.test.mjs     # session proxy: the domain matcher, the policy modes, route/config parsing
+node scripts/proxy-server.test.mjs     # session proxy, live: MCP routing + credential injection, CONNECT, config reload
+node scripts/proxy-config.test.mjs     # host side of the proxy contract: scope + ACP descriptors, and what never reaches the container
+node scripts/proxy-traffic.test.mjs    # observed traffic: the proxy's JSON lines → the blocked/allowed lists the session pane shows
+node scripts/session-network.test.mjs  # per-session network mode: persistence, restore, sanitization, what a copy or a drafted session inherits
 node scripts/session-delete-container.test.mjs  # deleting a session takes its container down with it
 node scripts/session-duplicate.test.mjs # duplicating a session: what a copy carries, and what it never does
 node scripts/log.test.mjs              # app log: writer, rotation, sanitization, redaction, drop accounting

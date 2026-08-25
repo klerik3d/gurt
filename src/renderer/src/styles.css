@@ -1802,6 +1802,9 @@ textarea.input {
   font-size: 10.5px;
   color: var(--faint);
 }
+.hc-warn {
+  color: var(--red);
+}
 .hc-stub {
   padding: 9px 12px;
   border: 1px dashed var(--border2);
@@ -1821,6 +1824,17 @@ textarea.input {
 .mcp-name {
   font-family: var(--mono);
   font-size: 12.5px;
+  flex: none;
+}
+/* Takes the row's slack (so the mode label still sits right) and says which
+   server this is without a hover: a built-in's tools, a registry entry's URL. */
+.mcp-desc {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 11px;
 }
 .ns-section .pick-row + .hc,
 .ns-section .hc + .pick-row {
@@ -2611,6 +2625,29 @@ textarea.input {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* MCP servers: the built-ins subheading and the header name/value rows. */
+.set-sub {
+  margin: 14px 0 -2px;
+  font-size: 11px;
+  color: var(--faint);
+}
+.set-row.faint .set-row-label {
+  color: var(--faint);
+}
+.mcp-hdr {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.mcp-hdr .input:first-child {
+  width: 190px;
+  flex: none;
+}
+.mcp-hdr .input:nth-child(2) {
+  flex: 1;
+  min-width: 0;
 }
 
 /* Environments: image badge extras + streamed build-log tail under a row. */
@@ -3408,4 +3445,90 @@ textarea.input {
 .dash-card-sub .tag {
   font-size: 9.5px;
   padding: 0 4px;
+}
+
+/* ---- session traffic (docs/requirements-mcp-proxy.md §8) ---- */
+/* Blocked attempts first, observed domains collapsed under them. Sits under
+   the chat feed and under the non-started pane's header — in both places it is
+   the answer to "why couldn't it reach that". */
+.net-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 7% 10px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+}
+.net-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  color: var(--dim);
+}
+.net-mode {
+  color: var(--text);
+}
+.net-note {
+  font-size: 11px;
+  color: var(--yellow);
+  margin-bottom: 2px;
+}
+.net-blocked,
+.net-allowed {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.net-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--dim);
+}
+.net-blocked .net-host {
+  color: var(--red);
+}
+.net-allowed {
+  max-height: 180px;
+  overflow: auto;
+}
+.net-allowed .net-host {
+  color: var(--dim);
+}
+.net-row .dim {
+  font-size: 10.5px;
+}
+/* The built-in denylist, shown read-only above the allow list: the same rows as
+   the traffic panel, so "what is blocked" and "what was blocked" read alike. */
+.net-builtin {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.net-builtin .net-host {
+  color: var(--dim);
+}
+.net-builtin .dim {
+  font-size: 10.5px;
+}
+
+/* Allow-list entry in the composer — same frame as the prompt field. */
+.net-domains {
+  padding: 8px 10px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text);
+  background: var(--app);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  resize: vertical;
+}
+.net-domains:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--glow);
 }

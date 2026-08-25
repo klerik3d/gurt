@@ -8,13 +8,19 @@ import { MCP_DEFS } from '../shared/mcp'
 import { createKernel } from './kernel'
 import { POLL_INTERVAL_MS } from './planUsage'
 import { createLogger, dropSessionLog, enabled, logDir, logLevel, logRenderer } from './log'
-import { getCredentials, setCredentials, credentialUsedBy } from './credentials'
+import {
+  getCredentials,
+  setCredentials,
+  credentialUsedBy,
+  checkMcpCredential
+} from './credentials'
 import {
   discoverDevcontainer,
   discoverDockerfiles,
   envBuildImage,
   envImageStatus
 } from './provision'
+import { traffic } from './proxy/traffic'
 import * as store from './store'
 import * as changes from './changes'
 import { normalizeNotificationPrefs } from '../shared/notifications'
@@ -51,7 +57,12 @@ const OPAQUE_ARGS = new Set<keyof GurtApi>([
   'setCredentials',
   'setAgents',
   'addEnv',
-  'updateEnv'
+  'updateEnv',
+  // An MCP registry entry is a config payload: its static headers are the
+  // user's to fill, and "never a secret" is a rule the store states, not one
+  // the wire can enforce.
+  'addMcpServer',
+  'updateMcpServer'
 ])
 
 /** Args for the DBG trace: a count for the opaque methods, the (redacted,
@@ -73,6 +84,7 @@ export function registerIpc(): void {
   kernel.bus.on('session.log', (e) => broadcast('session-log', e))
   kernel.bus.on('session.turn', (e) => broadcast('session-turn', e))
   kernel.bus.on('provision.log', (e) => broadcast('provision-log', e))
+  kernel.bus.on('proxy.traffic', (t) => broadcast('proxy-traffic', t))
   kernel.bus.on('notification.created', (record) => broadcast('notification', record))
   kernel.bus.on('notification.read', (e) => broadcast('notification-read', e))
   kernel.bus.on('usage.changed', () => broadcast('usage-changed'))
@@ -153,6 +165,23 @@ export function registerIpc(): void {
       dropSessionLog(`env-build:${ws}/${name}`)
       kernel.bus.emit('tree.changed', undefined)
     },
+    getMcpServers: (ws) => store.getMcpServers(ws),
+    addMcpServer: async (ws, entry) => {
+      // The link is checked here, next to the credential store; everything the
+      // entry can be judged on by itself is the store validator's business.
+      await checkMcpCredential(entry.credentialId)
+      await store.addMcpServer(ws, entry)
+      kernel.bus.emit('tree.changed', undefined)
+    },
+    updateMcpServer: async (ws, entry) => {
+      await checkMcpCredential(entry.credentialId)
+      await store.updateMcpServer(ws, entry)
+      kernel.bus.emit('tree.changed', undefined)
+    },
+    removeMcpServer: async (ws, id) => {
+      await store.removeMcpServer(ws, id)
+      kernel.bus.emit('tree.changed', undefined)
+    },
     createTask: async (ws, name) => {
       await store.createTask(ws, name)
       kernel.bus.emit('tree.changed', undefined)
@@ -213,9 +242,9 @@ export function registerIpc(): void {
       action,
       mcp,
       autoAllow,
-      gitAccess,
       configValues,
-      role
+      role,
+      network
     ) => {
       // Anything that can bring a container up waits out the boot restore: the
       // reconcile rewrites container records from a pre-start snapshot, and a
@@ -239,9 +268,12 @@ export function registerIpc(): void {
         action,
         mcp,
         autoAllow,
-        gitAccess,
         configValues,
-        role
+        role,
+        // Not validated here: `SessionManager.createSession` sanitizes it, and
+        // it has to — the agent-drafted and duplicate paths never pass this
+        // boundary at all.
+        network
       )
     },
     // Same boot gate as createSession — see the comment there.
@@ -266,6 +298,10 @@ export function registerIpc(): void {
       kernel.notifications.markSessionRead(id)
       return kernel.sessions.snapshot(id)
     },
+    // The session's own `internal` flag is the fallback, so a pane that opens
+    // before the proxy has logged anything still says which mode it is reading.
+    sessionTraffic: async (id) =>
+      traffic.get(id, kernel.sessions.sessionInfo(id)?.network?.internal === true),
     // Prompt and config changes can wake a detached session's container — the
     // same boot gate as createSession applies.
     sessionPrompt: async (id, text, context, images) => {

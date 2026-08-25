@@ -1,7 +1,12 @@
 // Forge providers: the single extension point for forge-specific behavior
-// (forge CLI wrappers + API tokens). Adding a forge (gitlab, gitea, …) is one
-// new provider plus optional wrapper shims — the git-native contract in
-// config.ts never changes. Providers extend it, they never replace it (§7).
+// (forge API tokens + save-time verification). Adding a forge (gitlab, gitea,
+// …) is one new provider — the git-native contract in config.ts never changes.
+// Providers extend it, they never replace it (§7).
+//
+// Everything here is host-side. The container-side halves this used to have —
+// wrapper shims and devcontainer features guaranteeing the wrapped CLI exists —
+// went with the container's credentials (docs/requirements-mcp-proxy.md §10.2):
+// a `gh` in the container has nothing to authenticate with.
 import { z } from 'zod'
 import type { CredentialEntry, GitIdentity } from '../../shared/credentials'
 
@@ -23,9 +28,9 @@ export interface ForgeProvider {
   matches(host: string): boolean
   /**
    * Env map for the forge CLI, or null when the credential cannot serve the
-   * forge API (git-ssh-key, git-host → null). git-token returns the stored
-   * secret; git-app (phase 3) mints a short-lived scoped token — wrappers
-   * benefit without changes.
+   * forge API (git-host → null). git-token returns the stored secret; git-app
+   * (phase 3) mints a short-lived scoped token — the host `gh` in
+   * `mcp/githubServer.ts` benefits without changes.
    */
   forgeEnv(cred: CredentialEntry, host: string): Promise<Record<string, string> | null>
   /**
@@ -35,13 +40,6 @@ export interface ForgeProvider {
    * rejected, so an unverified credential is never stored.
    */
   identity(cred: CredentialEntry, host: string): Promise<GitIdentity>
-  /** Shim names to install into the container (e.g. ['gh']). */
-  wrappers: string[]
-  /**
-   * devcontainer features guaranteeing the wrapped CLIs exist, merged into
-   * --additional-features at env-up (next to BASE_FEATURES' node).
-   */
-  features: Record<string, object>
 }
 
 const github: ForgeProvider = {
@@ -87,13 +85,6 @@ const github: ForgeProvider = {
     // The noreply form github attributes to the account regardless of the
     // profile email's visibility setting.
     return { name: u.name || u.login, email: u.email || `${u.id}+${u.login}@users.noreply.github.com` }
-  },
-  wrappers: ['gh'],
-  // Pinned by digest, not tag (supply chain) — the `:1` tag as of 2026-08-23;
-  // bump deliberately with gurt releases (see BASE_FEATURES in provision.ts).
-  features: {
-    'ghcr.io/devcontainers/features/github-cli@sha256:94879eebb6a0e4e2f197de9f12db7427cb4a25b82d93c55239ce8c8fc394a1b4':
-      {}
   }
 }
 
@@ -106,22 +97,3 @@ export const providerForHost = (host: string): ForgeProvider | null =>
 /** Kept for the (unused today) case of stacked providers; returns 0 or 1 today. */
 export const providersForHost = (host: string): ForgeProvider[] =>
   PROVIDERS.filter((p) => p.matches(host))
-
-/**
- * devcontainer features contributed by the provider for `host`, computed from
- * the env repo's host only (not credentials or the session toggle) so the set
- * is stable for the env's lifetime — image-level features must not change
- * between ups (§7). Empty when no provider matches or the host is unknown.
- */
-export function forgeFeatures(host: string | null): Record<string, object> {
-  if (!host) return {}
-  const p = providerForHost(host)
-  return p ? p.features : {}
-}
-
-/** Wrapper shim names to install for `host` (e.g. ['gh']). */
-export function forgeWrappers(host: string | null): string[] {
-  if (!host) return []
-  const p = providerForHost(host)
-  return p ? p.wrappers : []
-}

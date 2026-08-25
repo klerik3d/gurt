@@ -19,7 +19,7 @@
 //     the floor (teardown) or deletes every container record (reconcile);
 //   - short vs. full ids are the same container, and must be removed once;
 //   - `detach` runs before any docker call — nothing derived from a container
-//     may outlive it — and that includes the session's git broker.
+//     may outlive it.
 //
 // The manager is constructed directly on its `ContainerManagerDeps` seam, so
 // this is containers.ts itself and not the kernel around it
@@ -33,7 +33,6 @@
 import { test, after } from 'node:test'
 import { bundle } from './lib/bundle.mjs'
 import { pathToFileURL, fileURLToPath } from 'node:url'
-import net from 'node:net'
 import path from 'node:path'
 import os from 'node:os'
 import fs from 'node:fs'
@@ -55,13 +54,17 @@ const CALLS = path.join(BIN, 'calls.log')
 const FAKE = path.join(BIN, 'fake-docker.cjs')
 
 /**
- * A `docker` that answers the five subcommands provision.ts uses, off a JSON
- * file this test owns. Two behaviours matter beyond bookkeeping:
+ * A `docker` that answers the subcommands provision.ts and proxy/* use, off a
+ * JSON file this test owns. Three behaviours matter beyond bookkeeping:
  *   - `ps` honours `psExit`, so "the daemon is unreachable" is expressible
  *     (provision.ts turns a non-zero `ps` into `null`, which is emphatically
  *     not the empty list);
  *   - ids match by PREFIX, the way the real `docker ps` (short) and the
- *     devcontainer CLI (full) name the same container.
+ *     devcontainer CLI (full) name the same container;
+ *   - session containers (`gurt.session`), proxies (`gurt.proxy`) and networks
+ *     are three separate registries, because that separation is the point of
+ *     giving the proxy its own label: a query for one must never answer with
+ *     the other (docs/requirements-mcp-proxy.md §4.1).
  */
 fs.writeFileSync(
   FAKE,
@@ -72,34 +75,125 @@ const CALLS = ${JSON.stringify(CALLS)}
 const args = process.argv.slice(2)
 fs.appendFileSync(CALLS, JSON.stringify(args) + '\\n')
 const state = JSON.parse(fs.readFileSync(STATE, 'utf8'))
+state.proxies = state.proxies || []
+state.networks = state.networks || []
 const save = () => fs.writeFileSync(STATE, JSON.stringify(state))
 const same = (a, b) => a.startsWith(b) || b.startsWith(a)
 const last = args[args.length - 1]
+const flag = (name) => {
+  const i = args.indexOf(name)
+  return i < 0 ? '' : args[i + 1]
+}
+/** Which registry a \`--filter label=<key>[=<value>]\` names, and whose. */
+const filtered = () => {
+  const label = flag('--filter').slice('label='.length)
+  const [key, owner] = label.split('=')
+  return { key, owner: owner || null }
+}
+const anyContainer = (id) =>
+  state.containers.find((c) => same(c.id, id)) || state.proxies.find((c) => same(c.id, id))
 if (args[0] === 'ps') {
   if (state.psExit) process.exit(state.psExit)
-  const i = args.indexOf('--filter')
-  const label = i < 0 ? '' : args[i + 1]
-  const prefix = 'label=gurt.session='
-  const session = label.startsWith(prefix) ? label.slice(prefix.length) : null
-  for (const c of state.containers)
-    if (session === null) process.stdout.write(c.session + ' ' + c.id + '\\n')
-    else if (c.session === session) process.stdout.write(c.id + '\\n')
+  const { key, owner } = filtered()
+  const rows = key === 'gurt.proxy' ? state.proxies : key === 'gurt.session' ? state.containers : []
+  // The label is printed only when the caller's --format asked for it; the
+  // per-session container query asks for the bare id.
+  const withLabel = args.join(' ').includes('{{.Label')
+  for (const c of rows)
+    if (owner === null || c.session === owner)
+      process.stdout.write((withLabel ? c.session + ' ' : '') + c.id + '\\n')
   process.exit(0)
 }
 if (args[0] === 'inspect') {
-  const c = state.containers.find((c) => same(c.id, last))
-  process.stdout.write((c && c.running ? 'true' : 'false') + '\\n')
+  const format = flag('-f')
+  const c = anyContainer(last)
+  if (!c) process.exit(1)
+  if (format.includes('NetworkSettings.Networks')) {
+    process.stdout.write((c.networks || []).join(' ') + '\\n')
+  } else if (format.includes('Config.Image')) {
+    const mounts = Object.entries(c.mounts || {}).map(([d, s]) => d + '=' + s).join(';')
+    process.stdout.write((c.running ? 'true' : 'false') + '\\t' + (c.image || '') + '\\t' + mounts + '\\n')
+  } else {
+    process.stdout.write((c.running ? 'true' : 'false') + '\\n')
+  }
   process.exit(0)
 }
 if (args[0] === 'rm') {
   state.containers = state.containers.filter((c) => !same(c.id, last))
+  state.proxies = state.proxies.filter((c) => !same(c.id, last))
+  // A removed container takes its endpoints with it, exactly like the daemon.
+  for (const n of state.networks) n.endpoints = (n.endpoints || []).filter((id) => !same(id, last))
   save()
   process.exit(0)
 }
-if (args[0] === 'stop') {
-  const c = state.containers.find((c) => same(c.id, last))
-  if (c) c.running = false
+if (args[0] === 'stop' || args[0] === 'kill') {
+  const c = anyContainer(last)
+  // SIGHUP is a reload, not a stop — the proxy stays up.
+  if (c && args[0] === 'stop') c.running = false
   save()
+  process.exit(0)
+}
+if (args[0] === 'network') {
+  const name = last
+  const net = state.networks.find((n) => n.name === name)
+  if (args[1] === 'ls') {
+    if (state.psExit) process.exit(state.psExit)
+    const { owner } = filtered()
+    for (const n of state.networks)
+      if (owner === null || n.session === owner)
+        process.stdout.write((n.session || '') + ' ' + n.name + '\\n')
+    process.exit(0)
+  }
+  if (args[1] === 'inspect') {
+    if (!net) process.exit(1)
+    const format = flag('-f')
+    if (format.includes('.Containers')) process.stdout.write((net.endpoints || []).join(' ') + '\\n')
+    else process.stdout.write((net.internal ? 'true' : 'false') + '\\n')
+    process.exit(0)
+  }
+  if (args[1] === 'create') {
+    if (net) process.exit(1)
+    const label = flag('--label').split('=')
+    state.networks.push({
+      name,
+      session: label[0] === 'gurt.session' ? label[1] : null,
+      internal: args.includes('--internal'),
+      endpoints: []
+    })
+    save()
+    process.exit(0)
+  }
+  if (args[1] === 'rm') {
+    if (!net) process.exit(1)
+    // The real daemon refuses a network that still has endpoints — the reason
+    // teardown disconnects first.
+    if ((net.endpoints || []).length) {
+      process.stderr.write('error while removing network: has active endpoints\\n')
+      process.exit(1)
+    }
+    state.networks = state.networks.filter((n) => n.name !== name)
+    save()
+    process.exit(0)
+  }
+  if (args[1] === 'connect' || args[1] === 'disconnect') {
+    const container = anyContainer(last)
+    const netName = args[args.length - 2]
+    const target = state.networks.find((n) => n.name === netName)
+    if (!target) process.exit(1)
+    if (args[1] === 'connect' && !container) process.exit(1)
+    target.endpoints = target.endpoints || []
+    if (args[1] === 'connect') {
+      container.networks = (container.networks || []).concat(netName)
+      target.endpoints.push(container.id)
+    } else {
+      // --force disconnects an endpoint whose container the daemon can no
+      // longer talk to: exactly the endpoint that blocks a network rm.
+      if (container) container.networks = (container.networks || []).filter((n) => n !== netName)
+      target.endpoints = target.endpoints.filter((id) => !same(id, last))
+    }
+    save()
+    process.exit(0)
+  }
   process.exit(0)
 }
 process.exit(0)
@@ -113,12 +207,16 @@ fs.writeFileSync(
 process.env.PATH = `${BIN}${path.delimiter}${process.env.PATH}`
 
 /** Replace the fake daemon's world; also resets the call transcript. */
-function daemon(containers, { psExit = 0 } = {}) {
-  fs.writeFileSync(STATE, JSON.stringify({ containers, psExit }))
+function daemon(containers, { psExit = 0, proxies = [], networks = [] } = {}) {
+  fs.writeFileSync(STATE, JSON.stringify({ containers, proxies, networks, psExit }))
   fs.writeFileSync(CALLS, '')
 }
 /** Containers the fake daemon still has. */
 const alive = () => JSON.parse(fs.readFileSync(STATE, 'utf8')).containers
+/** Proxy containers it still has. */
+const proxiesAlive = () => JSON.parse(fs.readFileSync(STATE, 'utf8')).proxies
+/** Networks it still has. */
+const networksAlive = () => JSON.parse(fs.readFileSync(STATE, 'utf8')).networks
 /** Every `docker` invocation since the last `daemon()`, as argv arrays. */
 const calls = () =>
   fs
@@ -126,8 +224,15 @@ const calls = () =>
     .split('\n')
     .filter(Boolean)
     .map((l) => JSON.parse(l))
-/** Just the mutating calls — `ps`/`inspect` are queries and say nothing. */
-const mutations = () => calls().filter((a) => a[0] === 'rm' || a[0] === 'stop')
+/** Just the mutating calls on *containers* — `ps`/`inspect` are queries and say
+ *  nothing, and the network calls have their own view below. */
+const mutations = () =>
+  calls().filter((a) => a[0] === 'rm' || (a[0] === 'stop' && a[0] !== 'network'))
+/** Mutating network calls, as `<verb> <args…>` strings. */
+const networkCalls = () =>
+  calls()
+    .filter((a) => a[0] === 'network' && a[1] !== 'ls' && a[1] !== 'inspect')
+    .map((a) => a.slice(1).join(' '))
 
 // --- the module under test --------------------------------------------------
 
@@ -137,7 +242,6 @@ await bundle({
     contents: `
       export { ContainerManager } from ${S('src/main/containers.ts')}
       export { createBus } from ${S('src/main/bus.ts')}
-      export { resolveGitBroker } from ${S('src/main/git/broker.ts')}
       export { flushSync } from ${S('src/main/log.ts')}
     `,
     resolveDir: ROOT,
@@ -209,23 +313,6 @@ function scenario(containers, opts) {
   daemon(containers, opts)
 }
 
-/** Poll (bounded, no fixed sleep) until nothing is listening on `port`. */
-async function awaitRefused(port) {
-  for (let i = 0; i < 200; i++) {
-    const refused = await new Promise((resolve) => {
-      const sock = net.connect({ port, host: '127.0.0.1' })
-      sock.on('connect', () => {
-        sock.destroy()
-        resolve(false)
-      })
-      sock.on('error', () => resolve(true))
-    })
-    if (refused) return true
-    await new Promise((r) => setImmediate(r))
-  }
-  return false
-}
-
 after(() => {
   m.flushSync()
   fs.rmSync(outfile, { force: true })
@@ -239,14 +326,6 @@ after(() => {
 test('release removes the container, clears the record, detaches first', async () => {
   scenario([{ id: 'c-alpha', session: 's1', running: true }])
   session('s1', { status: 'running', id: 'c-alpha', remoteWorkspaceFolder: '/w', repos: ['alpha'] })
-  // The git broker is derived from the session's container — teardown must take
-  // it down too, or a listener survives every session the app ever ran.
-  const broker = await m.resolveGitBroker('s1', {
-    name: 'alpha',
-    url: 'https://github.com/o/alpha.git',
-    devcontainer: ''
-  })
-  const brokerPort = Number(new URL(broker.url).port)
 
   await manager.release('s1', 'session-deleted')
 
@@ -263,7 +342,6 @@ test('release removes the container, clears the record, detaches first', async (
     events.some((e) => e.type === 'tree.changed'),
     'the tree is told'
   )
-  assert.ok(await awaitRefused(brokerPort), "the session's git broker goes down with it")
 })
 
 // --- and doing it again changes nothing ---
@@ -332,7 +410,10 @@ test('an unreachable daemon does not turn teardown into a no-op', async () => {
   await manager.release('s6', 'session-deleted')
   assert.deepEqual(
     mutations(),
-    [['rm', '-f', 'c-blind']],
+    // The proxy has no record to fall back to, so a blind teardown falls back
+    // to the name it would have given it — same principle as the recorded id:
+    // remove what we can name rather than read silence as "there is nothing".
+    [['rm', '-f', 'c-blind'], ['rm', '-f', 'gurt-proxy-s6']],
     'an unreachable daemon falls back to the recorded id instead of removing nothing'
   )
   assert.deepEqual(cleared, ['s6'], 'the record is cleared either way')
@@ -355,7 +436,7 @@ test('a session dropped mid-teardown does not leak its container', async () => {
   await inflight
   assert.deepEqual(
     mutations(),
-    [['rm', '-f', 'c-race']],
+    [['rm', '-f', 'c-race'], ['rm', '-f', 'gurt-proxy-s7']],
     'a session deleted mid-teardown still takes its container with it'
   )
   assert.deepEqual(alive(), [])
@@ -400,11 +481,20 @@ test('stop keeps the container and its record, and announces the transition', as
   assert.equal(manager.container('no-such-session'), undefined)
 })
 
-test('a session with no container id has nothing to stop', async () => {
+test('a session with no container id still takes its proxy down', async () => {
   scenario([])
   session('s10', { status: 'error', repos: ['alpha'], error: 'never came up' })
   await manager.stop('s10', 'user')
-  assert.deepEqual(calls(), [], 'stop on a session with no container id asks docker nothing')
+  // The record naming no container does not mean nothing is running: a start
+  // that died after the proxy came up and before `up` returned leaves one
+  // findable only by its label. So the proxy sweep runs regardless — and finds
+  // nothing here, which is why it stops and removes nothing.
+  assert.deepEqual(mutations(), [], 'it stops nothing')
+  assert.deepEqual(networkCalls(), [], 'and keeps the network, as every stop does')
+  assert.ok(
+    calls().some((a) => a[0] === 'ps' && a.join(' ').includes('label=gurt.proxy=s10')),
+    'it does ask the daemon whether this session has a proxy'
+  )
   assert.equal(sessions.get('s10').container.status, 'error', 'and does not clobber its status')
 })
 
@@ -452,15 +542,121 @@ test('task and workspace teardown cover exactly their own sessions', async () =>
 })
 
 // ==========================================================================
+// The proxy and the session network go with the session
+// ==========================================================================
+//
+// Same leak, one namespace over. A proxy that outlives its session holds that
+// session's resolved MCP credentials in its heap and answers a token the agent
+// may still have; a network that outlives it holds a subnet out of a pool that
+// runs dry at ~16-31 entries (docs/requirements-mcp-proxy.md §6.1). Both are
+// found the way containers are — by label, from the daemon, never from a record.
+
+/** Where a session's scope file lives on the host. */
+const scopeFile = (id) => path.join(GURT_ROOT, 'proxy', id, 'proxy.json')
+/** Write one, as `pushProxyScope` would. */
+function scope(id) {
+  fs.mkdirSync(path.dirname(scopeFile(id)), { recursive: true })
+  fs.writeFileSync(scopeFile(id), JSON.stringify({ version: 1, session: id, token: 't', mcp: {} }))
+}
+
+test('release takes the proxy and the network with the container', async () => {
+  scenario([{ id: 'c-p1', session: 'p1', running: true }], {
+    proxies: [{ id: 'proxy-p1', session: 'p1', running: true, networks: ['gurt-egress', 'gurt-s-p1'] }],
+    networks: [
+      { name: 'gurt-s-p1', session: 'p1', endpoints: ['c-p1', 'proxy-p1'] },
+      { name: 'gurt-s-other', session: 'p2', endpoints: [] }
+    ]
+  })
+  session('p1', { status: 'running', id: 'c-p1', repos: ['alpha'] })
+  scope('p1')
+
+  await manager.release('p1', 'session-deleted')
+
+  assert.deepEqual(alive(), [], 'the container is gone')
+  assert.deepEqual(proxiesAlive(), [], 'and so is its proxy')
+  assert.deepEqual(
+    networksAlive().map((n) => n.name),
+    ['gurt-s-other'],
+    "the session's network is removed; another session's is untouched"
+  )
+  // Ordering is the whole trick: a network with live endpoints refuses to be
+  // removed, so everything on it goes (or is disconnected) first.
+  const order = calls().filter(
+    (a) => (a[0] === 'rm' && a[1] === '-f') || (a[0] === 'network' && a[1] === 'rm')
+  )
+  assert.deepEqual(order.map((a) => a[a.length - 1]), ['c-p1', 'proxy-p1', 'gurt-s-p1'])
+  assert.equal(fs.existsSync(scopeFile('p1')), false, 'the scope is revoked with it')
+  assert.equal(
+    fs.existsSync(path.dirname(scopeFile('p1'))),
+    false,
+    'and its directory, which was the proxy bind-mount source, is retired too'
+  )
+})
+
+test('an endpoint left on the network is disconnected before the rm', async () => {
+  // The container a failed start left behind: nothing recorded it, the label
+  // sweep above removes it — but a daemon that still holds *some* endpoint is
+  // the normal case here, and `network rm` fails flat if one is left.
+  scenario([], {
+    networks: [{ name: 'gurt-s-p3', session: 'p3', endpoints: ['c-stranded'] }]
+  })
+  session('p3', { status: 'error', repos: ['alpha'] })
+  await manager.release('p3', 'session-deleted')
+  assert.deepEqual(networksAlive(), [], 'the network is gone despite the stranded endpoint')
+  assert.deepEqual(
+    networkCalls(),
+    ['disconnect --force gurt-s-p3 c-stranded', 'rm gurt-s-p3'],
+    'disconnect first, then remove'
+  )
+})
+
+test('stop revokes the scope and stops the proxy, but keeps the network', async () => {
+  scenario([{ id: 'c-p4', session: 'p4', running: true }], {
+    proxies: [{ id: 'proxy-p4', session: 'p4', running: true }],
+    networks: [{ name: 'gurt-s-p4', session: 'p4', endpoints: ['c-p4', 'proxy-p4'] }]
+  })
+  session('p4', { status: 'running', id: 'c-p4', repos: ['alpha'] })
+  scope('p4')
+
+  await manager.stop('p4', 'idle')
+
+  assert.deepEqual(
+    mutations(),
+    [['stop', 'proxy-p4'], ['stop', 'c-p4']],
+    'both containers stop; neither is removed'
+  )
+  assert.deepEqual(networkCalls(), [], 'the network is kept — endpoints survive a stop/start')
+  assert.deepEqual(
+    networksAlive()[0].endpoints,
+    ['c-p4', 'proxy-p4'],
+    'so the resume converges onto the same endpoints instead of rebuilding them'
+  )
+  assert.equal(fs.existsSync(scopeFile('p4')), false, 'the scope is revoked: an idle proxy has none')
+  assert.equal(sessions.get('p4').container.status, 'stopped')
+})
+
+// ==========================================================================
 // Boot reconcile: the daemon is the registry
 // ==========================================================================
 test('reconcile corrects records and reaps orphans', async () => {
-  scenario([
-    { id: 'c-ok', session: 'k1', running: true },
-    { id: 'c-exited', session: 'k2', running: false },
-    { id: 'c-renamed', session: 'k3', running: true },
-    { id: 'c-orphan', session: 'k-deleted-while-down', running: true }
-  ])
+  scenario(
+    [
+      { id: 'c-ok', session: 'k1', running: true },
+      { id: 'c-exited', session: 'k2', running: false },
+      { id: 'c-renamed', session: 'k3', running: true },
+      { id: 'c-orphan', session: 'k-deleted-while-down', running: true }
+    ],
+    {
+      proxies: [
+        { id: 'proxy-k1', session: 'k1', running: true },
+        { id: 'proxy-gone', session: 'k-deleted-while-down', running: true }
+      ],
+      networks: [
+        { name: 'gurt-s-k1', session: 'k1', endpoints: ['c-ok'] },
+        { name: 'gurt-s-k-deleted-while-down', session: 'k-deleted-while-down', endpoints: [] }
+      ]
+    }
+  )
   session('k1', { status: 'running', id: 'c-ok', remoteWorkspaceFolder: '/w', repos: ['alpha'] })
   session('k2', { status: 'running', id: 'c-exited', repos: ['alpha'] })
   session('k3', { status: 'running', id: 'c-was-something-else', repos: ['alpha'] })
@@ -478,8 +674,8 @@ test('reconcile corrects records and reaps orphans', async () => {
   assert.equal(sessions.get('k5').container, undefined, 'a session with no container stays that way')
   assert.deepEqual(
     mutations(),
-    [['rm', '-f', 'c-orphan']],
-    'a container whose session is gone is reaped, and nothing else is'
+    [['rm', '-f', 'c-orphan'], ['rm', '-f', 'proxy-gone']],
+    'a container whose session is gone is reaped, with its proxy, and nothing else is'
   )
   assert.deepEqual(
     alive().map((c) => c.id).sort(),
@@ -487,6 +683,19 @@ test('reconcile corrects records and reaps orphans', async () => {
     'live containers of live sessions survive the reconcile'
   )
   assert.deepEqual(detaches, [], 'reconcile detaches nothing — it did not tear a session down')
+
+  // The proxy and the network of a session that was deleted while the app was
+  // down are orphans in exactly the same sense, and are swept the same way.
+  assert.deepEqual(
+    proxiesAlive().map((p) => p.id),
+    ['proxy-k1'],
+    "a live session's proxy survives; a deleted session's does not"
+  )
+  assert.deepEqual(
+    networksAlive().map((n) => n.name),
+    ['gurt-s-k1'],
+    'same for the networks'
+  )
 
 
   // An orphan is not logged into a session log file it would never own again.
@@ -503,6 +712,7 @@ test('reconcile skips entirely when docker is unreachable', async () => {
   session('u2', { status: 'running', id: 'c-also-safe', repos: ['alpha'] })
   await manager.reconcile()
   assert.deepEqual(cleared, [], 'a silent daemon does not wipe every container record')
+  assert.deepEqual(proxiesAlive(), [], 'nothing was swept, because nothing could be asked')
   assert.equal(sessions.get('u1').container.id, 'c-safe')
   assert.equal(sessions.get('u2').container.id, 'c-also-safe')
   assert.deepEqual(mutations(), [], 'and removes nothing')

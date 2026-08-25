@@ -5,7 +5,10 @@
 
 import { Fragment } from 'react'
 import type { JSX } from 'react'
-import type { SessionRole } from '../../../shared/types'
+import type { McpSelection, SessionNetwork, SessionRole } from '../../../shared/types'
+import type { DomainPolicy } from '../../../shared/proxy'
+import { explicitAllows } from '../../../shared/proxy'
+import type { ResolvedMcpSelection } from '../../../shared/mcp'
 import { Icon, type IconName } from './icons'
 
 /** kind (an `AgentDef.id`) → glyph. Unmatched/custom kinds fall back to a
@@ -102,6 +105,62 @@ export function AgentTag({
   )
 }
 
+/** What one selected server is, in the words the pill and the mark share:
+ *  built-ins say what the agent may do with them, a registry entry says where
+ *  it points, and an id the workspace no longer offers says so (§3.3). */
+function mcpTitle({ selection, entry }: ResolvedMcpSelection<McpSelection>): string {
+  if (!entry)
+    return `MCP "${selection.id}" — selected, but this workspace no longer offers it (removed from the registry?)`
+  if (entry.source === 'builtin') return `MCP ${entry.label} — built-in · ${selection.mode}`
+  return `MCP ${entry.label} — ${entry.description}`
+}
+
+/** Name to show for one selection: the entry's label, or the bare id when the
+ *  id is all that is left of it. */
+const mcpName = ({ selection, entry }: ResolvedMcpSelection<McpSelection>): string =>
+  entry?.label ?? selection.id
+
+/**
+ * One MCP server a session carries — same pill as `EnvTag`/`RepoTag`.
+ *
+ * `read-only` is marked (built-ins only, where it means something); a registry
+ * entry is off or on, so an attached one carries no mode mark. An unresolvable
+ * id goes red rather than vanishing: the session still names it, and hiding it
+ * would make the scope the agent gets look like the scope the user chose.
+ */
+export function McpTag(resolved: ResolvedMcpSelection<McpSelection>): JSX.Element {
+  const { selection, entry } = resolved
+  const readOnly = entry?.source === 'builtin' && selection.mode === 'read-only'
+  return (
+    <span className={`tag tag-ico ${entry ? 'tag-accent' : 'tag-red'}`} title={mcpTitle(resolved)}>
+      <Icon name="plug" size={10} />
+      {mcpName(resolved)}
+      {readOnly ? ' ᴿᴼ' : ''}
+      {entry ? '' : ' ?'}
+    </span>
+  )
+}
+
+/** The session's whole MCP scope as one header mark — names inline, the rest in
+ *  the tooltip. Nothing at all when the session carries no servers. */
+export function McpMarks({
+  resolved
+}: {
+  resolved: ResolvedMcpSelection<McpSelection>[]
+}): JSX.Element | null {
+  if (!resolved.length) return null
+  const missing = resolved.some((r) => !r.entry)
+  return (
+    <span
+      className={`agent-mark${missing ? ' tag-red' : ''}`}
+      title={`MCP servers\n${resolved.map((r) => mcpTitle(r)).join('\n')}`}
+    >
+      <Icon name="plug" size={11} className={missing ? undefined : 'faint'} />
+      {resolved.map(mcpName).join(', ')}
+    </span>
+  )
+}
+
 /** Unpilled agent mark for inline mentions (chat header, session list, palette). */
 export function AgentMark({
   kind,
@@ -145,5 +204,69 @@ export function EnvRepoMarks({
       ))}
       {list.length > 0 && task && <span className="dim">{task}</span>}
     </>
+  )
+}
+
+// --- network ---------------------------------------------------------------
+
+/**
+ * The two egress modes in the UI's own words (docs/requirements-mcp-proxy.md
+ * §6.2), read by the composer's picker, the draft settings row and the chat
+ * header — so the promise each mode makes is phrased once.
+ *
+ * The wording is deliberate on the default: it *logs*, it does not *enforce*.
+ * A process that ignores `HTTP_PROXY` goes straight out, and a UI that implied
+ * otherwise would be selling a guarantee that is not there.
+ */
+export const NET_INFO: Record<'open' | 'internal', { label: string; hint: string; icon: IconName }> = {
+  open: {
+    label: 'open network',
+    hint: 'normal network: the container keeps its own route out. MCP goes through the session proxy, and so does anything that honours HTTP_PROXY — which makes this visibility, not enforcement: a process that ignores those variables is not stopped, only unlogged.',
+    icon: 'globe'
+  },
+  internal: {
+    label: 'internal',
+    hint: "isolated: the session network is created with no route out, so the proxy is the session's only egress and the allow list is enforced on every host it asks for. Two caveats: setup (image build, devcontainer features, postCreate, the agent install) runs before the switch, with unrestricted network; and SSH git is unsupported — git over the proxy is HTTPS, via the github MCP.",
+    icon: 'lock'
+  }
+}
+
+export const networkMode = (network?: SessionNetwork): 'open' | 'internal' =>
+  network?.internal ? 'internal' : 'open'
+
+/** The policy in three words — the allow list is the whole of it, and whether
+ *  it is empty is the whole of what it means. */
+export const policySummary = (policy?: DomainPolicy): string => {
+  const n = explicitAllows(policy).length
+  return n ? `allow list (${n} ${n === 1 ? 'entry' : 'entries'})` : 'all domains allowed, all logged'
+}
+
+const netTitle = (network?: SessionNetwork): string => {
+  const info = NET_INFO[networkMode(network)]
+  return `${info.label} — ${info.hint}\npolicy: ${policySummary(network?.policy)}`
+}
+
+/** The session's egress mode as a pill — same shape as `EnvTag`/`RoleTag`.
+ *  Internal is marked (it is the restriction); open is plain. */
+export function NetTag({ network }: { network?: SessionNetwork | undefined }): JSX.Element {
+  const mode = networkMode(network)
+  return (
+    <span className={`tag tag-ico ${mode === 'internal' ? 'tag-accent' : ''}`} title={netTitle(network)}>
+      <Icon name={NET_INFO[mode].icon} size={10} />
+      {NET_INFO[mode].label}
+    </span>
+  )
+}
+
+/** Unpilled network mark for the header pills. Nothing at all in the default
+ *  mode: every session is on an open network unless it says otherwise, and a
+ *  mark that is always there marks nothing. */
+export function NetMark({ network }: { network?: SessionNetwork | undefined }): JSX.Element | null {
+  if (!network?.internal) return null
+  return (
+    <span className="agent-mark" title={netTitle(network)}>
+      <Icon name={NET_INFO.internal.icon} size={11} className="faint" />
+      {NET_INFO.internal.label}
+    </span>
   )
 }

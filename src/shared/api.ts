@@ -18,14 +18,16 @@ import type {
   ReviewComment,
   ReviewState,
   SessionInfo,
+  SessionNetwork,
   SessionRole,
   SessionSnapshot,
   StoredProposal,
   Tree
 } from './types'
 import type { CredentialsFile } from './credentials'
+import type { SessionTraffic } from './proxy'
 import type { DomainEvents } from './events'
-import type { McpDef } from './mcp'
+import type { McpDef, McpRegistryEntry } from './mcp'
 import type { TurnRecord } from './usage'
 import type { PlanUsage } from './planUsage'
 import type { NotificationPrefs, NotificationRecord } from './notifications'
@@ -63,8 +65,10 @@ export interface SessionDraftPatch {
    *  to leave them unchanged. */
   repos?: string[]
   autoAllow?: boolean
-  gitAccess?: boolean
   mcp?: McpSelection[]
+  /** Egress settings — the session network's `internal` flag and its domain
+   *  policy. Absent leaves them unchanged. */
+  network?: SessionNetwork
   startPrompt?: string
   /** Config-option picks (model, effort, …), keyed by option id. */
   configValues?: Record<string, string | boolean>
@@ -116,6 +120,16 @@ export interface GurtApi {
   updateEnv(ws: string, env: EnvConfig): Promise<void>
   /** Remove an env definition (blocked while any session still runs it). */
   removeEnv(ws: string, name: string): Promise<void>
+  /** The workspace's user-configured MCP servers (§3.1). Built-ins are a
+   *  separate, code-owned list — see `getMcpDefs`. */
+  getMcpServers(ws: string): Promise<McpRegistryEntry[]>
+  /** Register an MCP server in the workspace. Rejects a reserved or duplicate
+   *  id, a non-http(s) url, or a credential link that is not an mcp-token. */
+  addMcpServer(ws: string, entry: McpRegistryEntry): Promise<void>
+  /** Update an MCP server, matched by its (immutable) id. */
+  updateMcpServer(ws: string, entry: McpRegistryEntry): Promise<void>
+  /** Remove an MCP server (blocked while a session's selection names it). */
+  removeMcpServer(ws: string, id: string): Promise<void>
   createTask(ws: string, name: string): Promise<void>
   removeTask(ws: string, name: string): Promise<void>
   /** Rename a task; stops its containers and best-effort renames its branch in every clone. */
@@ -192,10 +206,12 @@ export interface GurtApi {
     action: CreateAction,
     mcp: McpSelection[],
     autoAllow: boolean,
-    gitAccess: boolean,
     configValues: Record<string, string | boolean>,
     /** What the session is for — executor unless told otherwise. */
-    role: SessionRole
+    role: SessionRole,
+    /** Egress settings (`internal` + the allow list). Omitted = the defaults:
+     *  a normal bridge, everything allowed and logged. */
+    network?: SessionNetwork
   ): Promise<SessionInfo>
   sessionRun(id: string): Promise<void>
   sessionEnqueue(id: string): Promise<void>
@@ -203,7 +219,7 @@ export interface GurtApi {
   sessionEditPrompt(id: string, text: string): Promise<void>
   /** Rename a session's display title (sidebar/pane header) — cosmetic only. */
   renameSession(id: string, title: string): Promise<void>
-  /** Change a draft's settings (agent, repo, mode, git, MCP, prompt) before it starts. */
+  /** Change a draft's settings (agent, repo, mode, MCP, prompt) before it starts. */
   sessionEditDraft(id: string, patch: SessionDraftPatch): Promise<void>
   /** Copy a session into a fresh **draft** of the same task: its role, env,
    *  repos, agent, MCP/git/auto-allow picks, config values and first prompt come
@@ -215,6 +231,12 @@ export interface GurtApi {
    *  The clone (and any uncommitted work in it) stays. */
   sessionDelete(id: string): Promise<void>
   sessionSnapshot(id: string): Promise<SessionSnapshot | undefined>
+  /** What this session's proxy has been seen doing — the blocked attempts the
+   *  session pane leads with, and the observed hosts under them
+   *  (docs/requirements-mcp-proxy.md §8). Empty, never absent: a session with
+   *  no proxy yet has observed nothing, which is an answer. Live updates ride
+   *  `proxy-traffic`; this is the pull for a pane that mounted after them. */
+  sessionTraffic(id: string): Promise<SessionTraffic>
   sessionPrompt(
     id: string,
     text: string,
@@ -279,6 +301,10 @@ const METHODS = {
   addEnv: true,
   updateEnv: true,
   removeEnv: true,
+  getMcpServers: true,
+  addMcpServer: true,
+  updateMcpServer: true,
+  removeMcpServer: true,
   createTask: true,
   removeTask: true,
   renameTask: true,
@@ -314,6 +340,7 @@ const METHODS = {
   sessionDuplicate: true,
   sessionDelete: true,
   sessionSnapshot: true,
+  sessionTraffic: true,
   sessionPrompt: true,
   sessionCancel: true,
   sessionSetMode: true,
@@ -353,4 +380,7 @@ export interface GurtEvents {
   'usage-changed': DomainEvents['usage.changed']
   /** Boot restore progress — the footer's startup bar (see `BootProgress`). */
   'boot-progress': DomainEvents['boot.progress']
+  /** One session's observed traffic changed — coalesced in main, so this is a
+   *  few per second at worst even under an `npm install`. */
+  'proxy-traffic': DomainEvents['proxy.traffic']
 }

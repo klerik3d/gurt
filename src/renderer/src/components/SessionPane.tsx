@@ -2,11 +2,26 @@ import { useEffect, useState } from 'react'
 import type { SessionSnapshot, Tree } from '../../../shared/types'
 import { roleLocksClone, sessionRole, sessionStatus } from '../../../shared/types'
 import { agentKind, agentName, useAgents } from '../useAgents'
+import { useMcpEntries } from '../useMcp'
+import { resolveMcpSelection } from '../../../shared/mcp'
 import { alertDialog } from '../dialog'
 import { logErr } from '../log'
 import { SESSION_DOT } from '../status'
 import { Dot } from './icons'
-import { AgentMark, AgentTag, EnvRepoMarks, EnvTag, RepoTag, RoleMark, RoleTag } from './tags'
+import {
+  AgentMark,
+  AgentTag,
+  EnvRepoMarks,
+  EnvTag,
+  McpMarks,
+  McpTag,
+  NetMark,
+  NetTag,
+  RepoTag,
+  RoleMark,
+  RoleTag
+} from './tags'
+import { TrafficPanel } from './Network'
 import { Chat } from './Chat'
 import { SessionMenu, deleteSession, duplicateSession } from './SessionActions'
 import { NewSessionModal } from './Sidebar'
@@ -59,6 +74,8 @@ function Header({
 }) {
   const { info } = snapshot
   const agents = useAgents()
+  const mcpOffered = useMcpEntries(info.workspace)
+  const mcp = resolveMcpSelection(info.mcp, mcpOffered)
   const dot = SESSION_DOT[sessionStatus(info)]
   return (
     <div className="chat-head">
@@ -76,6 +93,16 @@ function Header({
         {info.agent && (
           <span>
             · <AgentMark kind={agentKind(agents, info.agent)} name={agentName(agents, info.agent)} />
+          </span>
+        )}
+        {mcp.length > 0 && (
+          <span>
+            · <McpMarks resolved={mcp} />
+          </span>
+        )}
+        {info.network?.internal && (
+          <span>
+            · <NetMark network={info.network} />
           </span>
         )}
       </span>
@@ -104,6 +131,8 @@ function NonStartedPane({
 }) {
   const { info } = snapshot
   const agents = useAgents()
+  const mcpOffered = useMcpEntries(info.workspace)
+  const mcp = resolveMcpSelection(info.mcp, mcpOffered)
   const [text, setText] = useState(info.startPrompt)
   const [editOpen, setEditOpen] = useState(false)
 
@@ -123,6 +152,10 @@ function NonStartedPane({
       {snapshot.startError && (
         <div className="error env-error">start failed: {snapshot.startError}</div>
       )}
+      {/* A session that has run keeps what its proxy was seen doing, and this
+          pane is where it lands once the session goes idle — which is exactly
+          when someone asks why a host could not be reached (§8). */}
+      <TrafficPanel sessionId={sessionId} network={info.network} />
 
       {info.state === 'draft' && (
         <div className="draft-body">
@@ -140,13 +173,10 @@ function NonStartedPane({
               <span className="tag">no agent</span>
             )}
             <span className="tag">{info.autoAllow === false ? 'manual' : 'auto'}</span>
-            {info.gitAccess && <span className="tag tag-green">git</span>}
-            {info.mcp?.map((m) => (
-              <span key={m.id} className="tag tag-accent" title={`MCP ${m.id} · ${m.mode}`}>
-                {m.id}
-                {m.mode === 'read-only' ? ' ᴿᴼ' : ''}
-              </span>
+            {mcp.map((r) => (
+              <McpTag key={r.selection.id} {...r} />
             ))}
+            <NetTag network={info.network} />
             <span className="spacer" />
             <button className="btn btn-sm" onClick={() => setEditOpen(true)}>
               Edit settings

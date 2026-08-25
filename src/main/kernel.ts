@@ -14,6 +14,7 @@ import { cloneDir } from './store'
 import * as changes from './changes'
 import { createBus, type Bus } from './bus'
 import { ContainerManager } from './containers'
+import { traffic } from './proxy/traffic'
 import { SessionManager, type RestoredSession } from './sessions'
 import { createReview, fixPrompt, type ReviewManager } from './review'
 import { createNotifications, type Notifications } from './notifications'
@@ -103,6 +104,12 @@ async function assertDraftTarget(ws: string, repos: string[], env?: string): Pro
 export function createKernel(): Kernel {
   const bus = createBus()
 
+  // The proxy watcher is a module singleton (the proxy manager feeds it from
+  // wherever a session's container is ensured); this is the one seam between it
+  // and the bus, so a coalesced traffic change reaches the renderer the same
+  // way every other session event does (§8).
+  traffic.onChange((t) => bus.emit('proxy.traffic', t))
+
   // Review state is standalone (no dependency back into sessions — the kernel
   // itself joins the two where they meet, at lock acquisition).
   const review = createReview()
@@ -126,6 +133,7 @@ export function createKernel(): Kernel {
   const sessions: SessionManager = new SessionManager(
     {
       resolveLaunch: (sessionId) => containers.resolveLaunch(sessionId),
+      pushProxyScope: (sessionId, config) => containers.pushProxyScope(sessionId, config),
       // Never rejects: the session record is gone by the time this settles, so
       // a failure has nowhere to surface — it is logged, and the delete's own
       // follow-up (the scratch dir) still runs.
@@ -480,7 +488,6 @@ export function createKernel(): Kernel {
         'draft',
         prior?.mcp ?? [],
         prior?.autoAllow ?? true,
-        prior?.gitAccess ?? false,
         prior?.configValues ?? {},
         'executor'
       )

@@ -4,8 +4,8 @@
 // build), and several sessions of a task may run the same one while owning
 // separate containers.
 //
-// The state this manager derives — installed git shims, and, over in the
-// session manager, the ACP adapter — is keyed by container id, never by session
+// The state this manager derives — the installed ACP adapter, and whatever else
+// lives in a container's filesystem — is keyed by container id, never by session
 // or env name. A container id is minted by `docker` and never reused, so a
 // record keyed by it cannot survive the thing it describes. That is what makes
 // stale-cache reuse unrepresentable rather than merely avoided.
@@ -19,7 +19,6 @@ import { agentDef } from '../shared/agents'
 import { canonicalRepoId } from '../shared/repoId'
 import { resolveCredential, resolveAgentSecret, credentialIdentity } from '../shared/credentials'
 import { listCredentials } from './credentials'
-import { resolveGitBroker, stopGitBroker } from './git/broker'
 import { containerGitEnv } from './git/config'
 import * as store from './store'
 import { cloneDir } from './store'
@@ -33,13 +32,20 @@ import {
   dockerStop,
   ensureClone,
   installAcpAdapter,
-  installGitShims,
   materializeEnvConfig,
   overrideConfigArgs,
   mountedConfigPath
 } from './provision'
 import type { Bus } from './bus'
 import { createLogger, errCtx } from './log'
+import { proxies, type ProxyRuntime } from './proxy/manager'
+import {
+  DEFAULT_BRIDGE,
+  assertContainerNetworks,
+  convergeContainerNetworks,
+  sessionNetworkName
+} from './proxy/network'
+import { proxyEnv, type ProxyConfig } from '../shared/proxy'
 
 const log = createLogger('containers')
 
@@ -63,23 +69,40 @@ function usesRepoMounts(info: SessionInfo): boolean {
   return info.repos.length > 1 || roleIsReadOnly(sessionRole(info))
 }
 
-/** Everything needed to (re)spawn the agent process for a session. */
-export interface LaunchContext {
+/**
+ * What the adapter install needs to address one container — the half of
+ * {@link LaunchContext} that exists *before* the session's network is switched,
+ * because the install itself needs the open network (§7.1 step 3).
+ */
+export interface AdapterTarget {
   agent: AgentDef
   /** Owning session — also the container's identity (`gurt.session` id-label). */
   session: string
   /** The container the adapter runs in; the key of every container-bound cache. */
   containerId: string
-  remoteWorkspaceFolder: string
   hostWorkspaceFolder: string
   configArgs: string[]
+}
+
+/** Everything needed to (re)spawn the agent process for a session. */
+export interface LaunchContext extends AdapterTarget {
+  remoteWorkspaceFolder: string
   secret: string
   secretEnv: string
   /** Extra env vars for the adapter (e.g. a local model's base URL). */
   env?: Record<string, string>
-  /** Git-access injection (§6): broker URL + GIT_CONFIG_*; present only when the
-   *  session enabled git access. Never secrets. */
-  gitBrokerEnv?: Record<string, string>
+  /** The container's git injection: GIT_CONFIG_* commit identity only (§10.3).
+   *  No credentials — the container authenticates to nothing. */
+  gitIdentityEnv?: Record<string, string>
+  /**
+   * The session's proxy — its token (a handle to the scope, never a secret in
+   * itself), the URL the container reaches it on, and the `HTTP_PROXY` family
+   * to launch the agent with (docs/requirements-mcp-proxy.md §4.5).
+   *
+   * The scope behind the token is pushed by the session manager, from the same
+   * pass that builds the agent's MCP descriptors, *before* the adapter spawns.
+   */
+  proxy: ProxyRuntime & { env: Record<string, string> }
 }
 
 export interface ContainerManagerDeps {
@@ -103,13 +126,10 @@ export interface ContainerManagerDeps {
 export class ContainerManager {
   /** In-flight `up` per session, so concurrent start/attach share one. */
   private ensureInFlight = new Map<string, Promise<SessionContainer>>()
-  // Both caches below are keyed by container id, and both describe things
-  // living in that container's filesystem. A container id is minted by Docker
-  // and never reused, so these cannot address a container that has been
-  // replaced — and `forget` drops them when one is destroyed, so they do not
-  // grow without bound either.
-  /** Container ids whose git shims are installed. */
-  private shimmed = new Set<string>()
+  // Keyed by container id, describing something living in that container's
+  // filesystem. A container id is minted by Docker and never reused, so this
+  // cannot address a container that has been replaced — and `forget` drops the
+  // entry when one is destroyed, so it does not grow without bound either.
   /** Container ids the agent's adapter packages are installed in. */
   private adapterInstalled = new Set<string>()
   /** In-flight adapter install per container id. npm rewrites a global package
@@ -300,14 +320,23 @@ export class ContainerManager {
         provisionLog
       )
       enter('up')
+      // Step 1 of the provisioning sequence (§7.1): whatever this container is
+      // attached to, `up` runs on the open network. The image build, the
+      // devcontainer features and every create-time hook need unrestricted
+      // egress, and in internal mode the session's own network has none — so a
+      // reused container is moved back to the default bridge *before* the CLI
+      // starts it, and moved onto the session network again once it is done
+      // (`convergeNetworks` below). A fresh container is born on the bridge
+      // anyway, which is why this only has work to do on a reused one.
+      if (owned?.id) await this.convergeNetworks(sessionId, owned.id, [DEFAULT_BRIDGE])
       const mounted = usesRepoMounts(info)
       // Stopgap (2026-08-24, see requirements-session-roles.md §2/§4): a
       // reviewer needs a writable clone to install dependencies and run
       // typecheck/tests against the diff it is judging, so only researcher
       // keeps the filesystem-level read-only bind. Everything else about a
-      // read-only role (no git broker, no `complete`, mount still routed
-      // through the wrapper below) is unchanged — `roleIsReadOnly` still
-      // governs those, just not this flag.
+      // read-only role (no `complete`, mount still routed through the wrapper
+      // below) is unchanged — `roleIsReadOnly` still governs those, just not
+      // this flag.
       const readonly = sessionRole(info) === 'researcher'
       // Read-write single repo (an executor): unchanged — `--workspace-folder`
       // IS the clone, exactly as before. Otherwise `--workspace-folder` is an
@@ -327,7 +356,6 @@ export class ContainerManager {
         workspaceFolder,
         provisionLog,
         mounted ? 'repos' : anchor.cfg.name,
-        canonicalRepoId(anchor.cfg.url)?.host,
         () =>
           this.setStatus(
             sessionId,
@@ -369,26 +397,124 @@ export class ContainerManager {
   }
 
   /**
-   * Provision the git-access injection for a starting session: ensure the broker
-   * is up and the shims are installed in *this* container, and return the
-   * injection env (§6). Secrets never appear here — only the broker URL + token.
+   * Move one container's endpoints to `desired`, logging what actually changed.
+   *
+   * The log line is an obligation, not decoration (§7.3): everything before the
+   * switch ran with unrestricted egress, and a reader of the provisioning log
+   * has to be able to see exactly where that window closed.
    */
-  private async resolveGitAccess(
-    info: SessionInfo,
-    repo: RepoConfig,
-    containerId: string
-  ): Promise<Record<string, string>> {
-    const host = canonicalRepoId(repo.url)?.host ?? null
-    const broker = await resolveGitBroker(info.id, repo)
-    const resolved = host ? resolveCredential(await listCredentials(), repo, host) : undefined
-    if (!this.shimmed.has(containerId)) {
-      await installGitShims(containerId, host, this.logFor(info.id))
-      this.shimmed.add(containerId)
+  private async convergeNetworks(
+    sessionId: string,
+    containerId: string,
+    desired: string[]
+  ): Promise<void> {
+    const provisionLog = this.logFor(sessionId)
+    // Throws on a docker call that failed — including the inspect this plans
+    // against, which must never read as "nothing to do" (§7.2). Only "the
+    // daemon says there is no such container" is a null, and that is a no-op
+    // here for the same reason `reconcile` merely drops the record: a container
+    // that is gone is not one this can move.
+    const plan = await convergeContainerNetworks(containerId, desired, provisionLog)
+    if (!plan) {
+      provisionLog(
+        `network: container ${containerId.slice(0, 12)} no longer exists, nothing to switch`
+      )
+      return
     }
-    // Identity only from a clean resolution — an errored one (e.g. unverified
-    // entry, §3.2) injects nothing, and the broker refuses it per request too.
+    if (!plan.connect.length && !plan.disconnect.length) return
+    provisionLog(
+      `network: ${containerId.slice(0, 12)} switched to ${desired.join(', ')}` +
+        (plan.disconnect.length ? ` (left ${plan.disconnect.join(', ')})` : '')
+    )
+    log.info('network.converge', {
+      s: sessionId,
+      c: containerId.slice(0, 12),
+      connect: plan.connect,
+      disconnect: plan.disconnect
+    })
+  }
+
+  /**
+   * Steps 4 and 5 of the provisioning sequence (§7.1), run after `up` and the
+   * adapter install and before the agent exists: the session's network and its
+   * proxy are ensured, then the container is switched onto that network.
+   *
+   * Both halves are converges, so this is also the *resume* path: a container
+   * that is already where it belongs costs two `docker inspect`s, and one left
+   * half-attached by a crash is corrected rather than compounded.
+   *
+   * No restart is involved. The daemon rewires a live container's interfaces,
+   * rewrites its `/etc/hosts` and points it at the embedded resolver; sockets
+   * open across the switch die, and nothing of the agent's exists yet — which is
+   * the whole reason this happens here and not later.
+   *
+   * In internal mode the switch is re-checked against the daemon before this
+   * returns. Every caller of this is one step away from launching an agent, and
+   * an agent launched into a container still on the default bridge has the
+   * unrestricted egress the session was created to deny — so the last thing
+   * that happens here is asking whether the switch actually took.
+   */
+  private async ensureProxy(info: SessionInfo, containerId: string): Promise<ProxyRuntime> {
+    const provisionLog = this.logFor(info.id)
+    const settings = info.network ?? {}
+    const network = sessionNetworkName(info.id)
+    const runtime = await proxies.ensure(info.id, settings, provisionLog)
+    await this.convergeNetworks(info.id, containerId, [network])
+    if (settings.internal) {
+      await this.assertIsolated(info.id, containerId, network)
+      provisionLog(
+        'network: this session is internal — from here the proxy is its only ' +
+          'route out; everything above ran with unrestricted egress (setup needs it)'
+      )
+    }
+    return runtime
+  }
+
+  /**
+   * The post-condition of step 5 for an internal session: the container is on
+   * the session network and on nothing else.
+   *
+   * Cheap (one inspect) and worth it out of all proportion to that cost. This
+   * failure mode is silent by nature — a container left on the default bridge
+   * looks exactly like a working one, right up until the agent exfiltrates
+   * something — so it is turned into the loudest thing provisioning has: the
+   * start fails, before the agent exists.
+   */
+  private async assertIsolated(
+    sessionId: string,
+    containerId: string,
+    network: string
+  ): Promise<void> {
+    const provisionLog = this.logFor(sessionId)
+    try {
+      await assertContainerNetworks(containerId, [network])
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e)
+      log.error('network.isolation.fail', { s: sessionId, c: containerId.slice(0, 12), err: e })
+      provisionLog(`network: refusing to start — isolation not confirmed (${message})`)
+      throw new Error(
+        `this session is internal but its network isolation could not be confirmed: ${message}`,
+        { cause: e }
+      )
+    }
+  }
+
+  /**
+   * The container's whole git injection: commit identity, and nothing else
+   * (§10.3). The container authenticates to nothing — authenticated git is
+   * exclusively the host-side github MCP — so there is no broker to start, no
+   * shim to install and no secret in here.
+   *
+   * Identity comes only from a clean resolution: an errored one (e.g. an
+   * unverified entry, §3.2) injects nothing, and a commit made without it is
+   * authored by whatever the image contains, which is the honest outcome when
+   * gurt cannot say whose credential this repo uses.
+   */
+  private async resolveGitIdentity(repo: RepoConfig): Promise<Record<string, string>> {
+    const host = canonicalRepoId(repo.url)?.host ?? null
+    const resolved = host ? resolveCredential(await listCredentials(), repo, host) : undefined
     const identity = resolved?.entry && !resolved.error ? credentialIdentity(resolved.entry) : null
-    return containerGitEnv(broker.url, host, resolved?.kind ?? 'git-host', identity)
+    return containerGitEnv(identity)
   }
 
   /** Ensure the session's container is up, then build its validated launch context. */
@@ -425,11 +551,10 @@ export class ContainerManager {
     const hostWorkspaceFolder = mounted
       ? store.mountedWorkspaceDir(info.workspace, info.task, sessionId)
       : cloneDir(info.workspace, info.task, anchorRepo)
-    return {
+    const target: AdapterTarget = {
       agent: def,
       session: sessionId,
       containerId: c.id,
-      remoteWorkspaceFolder: c.remoteWorkspaceFolder,
       hostWorkspaceFolder,
       // The file behind these args was written by ensure's up (and persists
       // across app restarts) — up and every exec resolve the same config: the
@@ -437,17 +562,26 @@ export class ContainerManager {
       // are mounted explicitly (extra mounts + wrapper workspaceFolder).
       configArgs: mounted
         ? ['--override-config', mountedConfigPath(hostWorkspaceFolder)]
-        : overrideConfigArgs(this.refOf(info)),
+        : overrideConfigArgs(this.refOf(info))
+    }
+    // Step 3 of the provisioning sequence (§7.1), and the reason it is here
+    // rather than in the connection path: `npm install -g` needs the open
+    // network, and step 5 below is what takes it away in internal mode. The
+    // connection path calls this again and hits the per-container cache.
+    await this.installAdapter(target)
+    const proxy = await this.ensureProxy(info, c.id)
+    return {
+      ...target,
+      remoteWorkspaceFolder: c.remoteWorkspaceFolder,
       secret,
       secretEnv: cfg.secretEnv || def.secretEnv,
       ...(cfg.env ? { env: cfg.env } : {}),
-      // The git broker is scoped to one repo for its whole container lifetime —
-      // unavailable across several repos regardless of `gitAccess`. A read-only
-      // role gets none either: its clone refuses writes at the mount, so native
-      // git would only fail later and more confusingly.
-      ...(info.gitAccess && info.repos.length === 1 && !roleIsReadOnly(sessionRole(info))
-        ? { gitBrokerEnv: await this.resolveGitAccess(info, repoCfg, c.id) }
-        : {})
+      proxy: { ...proxy, env: proxyEnv(proxy.base) },
+      // Identity is injected unconditionally — it carries no authority, and a
+      // local commit an agent does make should still be attributed. Anchored on
+      // the session's first repo: with several, that is the one the identity is
+      // resolved from, and they normally share a forge account anyway.
+      gitIdentityEnv: await this.resolveGitIdentity(repoCfg)
     }
   }
 
@@ -456,7 +590,7 @@ export class ContainerManager {
    *  filesystem), a replacement gets a new id and so reinstalls. The in-memory
    *  set only fast-paths that answer within one app process — a fresh process
    *  probes the container itself before reinstalling into it. */
-  installAdapter(ctx: LaunchContext): Promise<void> {
+  installAdapter(ctx: AdapterTarget): Promise<void> {
     if (this.adapterInstalled.has(ctx.containerId)) return Promise.resolve()
     const inflight = this.installsInFlight.get(ctx.containerId)
     if (inflight) return inflight
@@ -473,11 +607,23 @@ export class ContainerManager {
     return p
   }
 
+  /**
+   * Hand the session's proxy the scope its token names — the MCP routes, the
+   * resolved credentials, the egress policy.
+   *
+   * Called by the session manager, which is where the selection and the host
+   * listeners are known, and always before the agent is spawned: until this
+   * lands the proxy has no scope at all and answers every MCP call with 503.
+   * Every later change (an MCP toggled, the policy edited) is another call.
+   */
+  pushProxyScope(sessionId: string, config: ProxyConfig): Promise<void> {
+    return proxies.pushScope(sessionId, config)
+  }
+
   // --- teardown -----------------------------------------------------------
 
   /** Drop every host-side record derived from a container that is going away. */
   private forget(containerId: string): void {
-    this.shimmed.delete(containerId)
     this.adapterInstalled.delete(containerId)
   }
 
@@ -502,7 +648,6 @@ export class ContainerManager {
   ): Promise<void> {
     this.noteActive(sessionId)
     this.deps.detach(sessionId)
-    stopGitBroker(sessionId)
     // A start already in flight is creating a container that neither the record
     // nor the daemon can name yet. Let it settle first — it either records its
     // container (which the sweep below then finds) or fails having left one
@@ -518,9 +663,15 @@ export class ContainerManager {
       c = this.container(sessionId) ?? c
     }
     if (mode === 'stop') {
+      const provisionLog = this.logFor(sessionId)
+      // The scope is revoked and the proxy stopped whether or not the record
+      // names a container: a start that died after `docker run` and before `up`
+      // returned leaves a proxy findable only by its label. The session network
+      // is kept — endpoints survive a stop, so the resume converges onto the
+      // same one instead of rebuilding it (§9).
+      await proxies.stop(sessionId, provisionLog)
       if (!c?.id) return
       this.forget(c.id)
-      const provisionLog = this.logFor(sessionId)
       const started = Date.now()
       await dockerStop(c.id, provisionLog)
       this.setStatus(sessionId, { ...c, status: 'stopped', error: undefined }, reason)
@@ -544,6 +695,10 @@ export class ContainerManager {
       this.forget(id)
       await dockerRemove(id, provisionLog)
     }
+    // After the containers, so the network's last endpoints are already gone —
+    // a network with live ones refuses to be removed (§9). Record-independent
+    // like the sweep above: both the proxy and the network are found by label.
+    await proxies.remove(sessionId, provisionLog)
     this.deps.patchContainer(sessionId, undefined)
     this.deps.bus.emit('tree.changed', undefined)
     if (!ids.length) return
@@ -679,13 +834,21 @@ export class ContainerManager {
     for (const [session, containerId] of live) {
       if (known.has(session)) continue
       orphans++
+      // (the proxy and network of the same session are swept below, by label)
       // Not `this.logFor(session)`: that would create a `session-<id>.log` for
       // a session that no longer exists — a file nothing would ever delete. The
       // removal is traced by `proc.spawn`/`proc.exit` anyway; the docker output
       // itself goes to the app log at DBG.
       await dockerRemove(containerId, (line) => log.debug('reconcile.orphan', { c: containerId, line }))
     }
-    log.info('reconcile.done', { fixed, orphans })
+    // Proxies and session networks are their own namespaces, swept the same
+    // way and for the same reason: a session that was deleted while the app was
+    // down leaves both behind, and only the daemon knows they exist.
+    const swept = await proxies.sweepOrphans(
+      known,
+      (line) => log.debug('reconcile.orphan', { line })
+    )
+    log.info('reconcile.done', { fixed, orphans, ...swept })
     this.deps.bus.emit('tree.changed', undefined)
   }
 }
