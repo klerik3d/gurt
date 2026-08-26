@@ -89,8 +89,25 @@ after(() => {
 const persisted = async (id) =>
   (await m.readSessions(ws, task)).find((r) => r.info.id === id)?.info
 
-/** sessions.json is written on a 300ms debounce. */
-const flushed = () => new Promise((r) => setTimeout(r, 400))
+/**
+ * Retry `check` until it holds, or give up after `deadlineMs` with whatever it
+ * last threw. `sessions.json` is written on a 300ms debounce and the write
+ * itself is async, so waiting a fixed 400ms is a race the moment the machine is
+ * busy — which it always is here, `node --test` running every file at once.
+ * Waiting for the assertion instead of for a number is the same test without
+ * the flake.
+ */
+const eventually = async (check, deadlineMs = 5000) => {
+  const until = Date.now() + deadlineMs
+  for (;;) {
+    try {
+      return await check()
+    } catch (e) {
+      if (Date.now() >= until) throw e
+      await new Promise((r) => setTimeout(r, 25))
+    }
+  }
+}
 
 /** Port out of a host MCP descriptor (`http://host.docker.internal:PORT/mcp/…`). */
 const portOf = (descriptor) => Number(new URL(descriptor.url).port)
@@ -189,13 +206,14 @@ test('a mixed selection is persisted verbatim', async () => {
     {},
     'executor'
   )
-  await flushed()
-  assert.deepEqual((await persisted(session.id)).mcp, [
-    { id: 'github', mode: 'read-only' },
-    // A registry entry is off or on; on is recorded as `full` so the selection
-    // keeps one shape (§3.3).
-    { id: 'linear', mode: 'full' }
-  ])
+  await eventually(async () =>
+    assert.deepEqual((await persisted(session.id)).mcp, [
+      { id: 'github', mode: 'read-only' },
+      // A registry entry is off or on; on is recorded as `full` so the selection
+      // keeps one shape (§3.3).
+      { id: 'linear', mode: 'full' }
+    ])
+  )
 })
 
 test('editing the draft rewrites the selection', async () => {
@@ -205,11 +223,12 @@ test('editing the draft rewrites the selection', async () => {
       { id: 'docs', mode: 'full' }
     ]
   })
-  await flushed()
-  assert.deepEqual((await persisted(session.id)).mcp, [
-    { id: 'linear', mode: 'full' },
-    { id: 'docs', mode: 'full' }
-  ])
+  await eventually(async () =>
+    assert.deepEqual((await persisted(session.id)).mcp, [
+      { id: 'linear', mode: 'full' },
+      { id: 'docs', mode: 'full' }
+    ])
+  )
   assert.deepEqual(kernel.sessions.sessionInfo(session.id).mcp, [
     { id: 'linear', mode: 'full' },
     { id: 'docs', mode: 'full' }
@@ -234,7 +253,14 @@ test('a restart restores the selection, registry ids and all', async () => {
       { id: 'linear', mode: 'full' }
     ]
   })
-  await flushed()
+  // Waited for on disk, not slept for: the restart below reads the file, so an
+  // unflushed edit would make it restore the *previous* selection.
+  await eventually(async () =>
+    assert.deepEqual((await persisted(session.id)).mcp, [
+      { id: 'github', mode: 'read-only' },
+      { id: 'linear', mode: 'full' }
+    ])
+  )
   const next = m.createKernel()
   await next.ready
   assert.deepEqual(next.sessions.sessionInfo(session.id).mcp, [

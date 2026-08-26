@@ -100,8 +100,25 @@ after(() => {
 const persisted = async (id) =>
   (await m.readSessions(ws, task)).find((r) => r.info.id === id)?.info
 
-/** sessions.json is written on a 300ms debounce. */
-const flushed = () => new Promise((r) => setTimeout(r, 400))
+/**
+ * Retry `check` until it holds, or give up after `deadlineMs` with whatever it
+ * last threw. `sessions.json` is written on a 300ms debounce and the write
+ * itself is async, so waiting a fixed 400ms is a race the moment the machine is
+ * busy — which it always is here, `node --test` running every file at once.
+ * Waiting for the assertion instead of for a number is the same test without
+ * the flake.
+ */
+const eventually = async (check, deadlineMs = 5000) => {
+  const until = Date.now() + deadlineMs
+  for (;;) {
+    try {
+      return await check()
+    } catch (e) {
+      if (Date.now() >= until) throw e
+      await new Promise((r) => setTimeout(r, 25))
+    }
+  }
+}
 
 /** A draft with the given network settings — the composer's create call. */
 const mk = (network, prompt = 'do the thing', role = 'executor') =>
@@ -117,11 +134,12 @@ test('an internal session records its mode and its policy', async () => {
     internal: true,
     policy: { allow: ['registry.npmjs.org'] }
   })
-  await flushed()
-  assert.deepEqual((await persisted(internal.id)).network, {
-    internal: true,
-    policy: { allow: ['registry.npmjs.org'] }
-  })
+  await eventually(async () =>
+    assert.deepEqual((await persisted(internal.id)).network, {
+      internal: true,
+      policy: { allow: ['registry.npmjs.org'] }
+    })
+  )
 })
 
 test('the default mode is the absence of a record, not a synthesised one', async () => {
@@ -130,8 +148,13 @@ test('the default mode is the absence of a record, not a synthesised one', async
   // treats a missing record as `{}` and gets the open bridge either way.
   const open = mk(undefined, 'no network pick')
   assert.equal(open.network, undefined)
-  await flushed()
-  assert.equal((await persisted(open.id)).network, undefined)
+  // The record has to be *there* and have no network — an absent record would
+  // satisfy a bare `.network === undefined` read by not existing yet.
+  await eventually(async () => {
+    const record = await persisted(open.id)
+    assert.ok(record, 'the draft reached sessions.json')
+    assert.equal(record.network, undefined)
+  })
 })
 
 test('a restart restores the mode and the policy', async () => {
@@ -149,11 +172,12 @@ test('editing a draft rewrites the mode, and the edit persists', async () => {
   await kernel.editDraft(internal.id, {
     network: { internal: true, policy: { allow: ['registry.npmjs.org', 'github.com'] } }
   })
-  await flushed()
-  assert.deepEqual((await persisted(internal.id)).network, {
-    internal: true,
-    policy: { allow: ['registry.npmjs.org', 'github.com'] }
-  })
+  await eventually(async () =>
+    assert.deepEqual((await persisted(internal.id)).network, {
+      internal: true,
+      policy: { allow: ['registry.npmjs.org', 'github.com'] }
+    })
+  )
 })
 
 test('a draft can be reopened to the default network', async () => {
