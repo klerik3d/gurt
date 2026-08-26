@@ -14,7 +14,7 @@ import { NOTIFICATION_RING_CAP } from '../../shared/notifications'
 import { SESSION_DOT, containerDot } from './status'
 import { Icon, Logo } from './components/icons'
 import { EnvRepoMarks } from './components/tags'
-import { Sidebar, NameModal, DeleteWorkspaceModal, NewSessionModal } from './components/Sidebar'
+import { Sidebar, NameModal, DeleteWorkspaceModal } from './components/Sidebar'
 import { SessionPane } from './components/SessionPane'
 import { TaskPane } from './components/TaskPane'
 import { SettingsPage, type SettingsSection } from './components/SettingsPage'
@@ -105,8 +105,6 @@ export default function App() {
   const [notifOpen, setNotifOpen] = useState(false)
   const notifRef = useRef<HTMLDivElement>(null)
   useOutsideClose(notifOpen, notifRef, () => setNotifOpen(false))
-  /** New-session modal context; task empty → the modal's task picker chooses. */
-  const [newSession, setNewSession] = useState<{ ws: string; task: string } | null>(null)
   const [newTask, setNewTask] = useState<string | null>(null)
   const [newWorkspace, setNewWorkspace] = useState(false)
   const [deletingWorkspace, setDeletingWorkspace] = useState<string | null>(null)
@@ -342,10 +340,35 @@ export default function App() {
     window.gurt.dismissNotification(id).catch(logErr('dismissNotification'))
   }, [])
 
+  // A new session is a bare draft from the moment it exists — nothing to pick
+  // up front, no modal round-trip. Its env/repo/agent/harness get filled in on
+  // the draft's own Config tab; only its task is decided here, since a session
+  // cannot exist outside one (the IPC boundary requires it, ipc.ts).
+  const createDraft = useCallback(
+    (wsName: string, task: string) => {
+      window.gurt
+        .createSession(
+          { workspace: wsName, task, env: '' },
+          [],
+          '',
+          '',
+          'draft',
+          [],
+          true,
+          {},
+          'executor',
+          { internal: false }
+        )
+        .then((s) => selectSession(s.id))
+        .catch((e: unknown) => alertDialog(e instanceof Error ? e.message : String(e)))
+    },
+    [selectSession]
+  )
+
   const openNewSession = useCallback(
     (ctx?: { ws: string; task: string }) => {
       if (ctx) {
-        setNewSession(ctx)
+        createDraft(ctx.ws, ctx.task)
         return
       }
       if (!ws) return
@@ -356,12 +379,20 @@ export default function App() {
       else if (sel?.type === 'session')
         task = ws.tasks.find((t) => t.sessions.some((s) => s.id === sel.id))?.name ?? ''
       // The selection can lag the tree (a task deleted while selected). Never
-      // prefill a task that no longer exists — the session would be created
+      // target a task that no longer exists — the session would be created
       // inside a task that isn't there.
       if (task && !ws.tasks.some((t) => t.name === task)) task = ''
-      setNewSession({ ws: ws.name, task })
+      // Still nothing — fall back to the workspace's first task.
+      if (!task) task = ws.tasks[0]?.name ?? ''
+      // No tasks at all: a session cannot exist outside one, so send the user
+      // through the ordinary "new task" flow first instead of failing silently.
+      if (!task) {
+        setNewTask(ws.name)
+        return
+      }
+      createDraft(ws.name, task)
     },
-    [ws]
+    [ws, createDraft]
   )
 
   // Global hotkeys: ⌘K palette · ⌘N new session · ⌘⇧N new task.
@@ -569,7 +600,7 @@ export default function App() {
               selection={selection}
               changes={changes}
               activity={activity}
-              onNewSession={(w, t) => setNewSession({ ws: w, task: t })}
+              onNewSession={(w, t) => createDraft(w, t)}
               onSelectTask={selectTask}
               onSelectSession={selectSession}
             />
@@ -686,18 +717,6 @@ export default function App() {
           onSelectTask={(w, t) => {
             setPaletteOpen(false)
             selectTask(w, t)
-          }}
-        />
-      )}
-      {newSession && tree && (
-        <NewSessionModal
-          tree={tree}
-          ws={newSession.ws}
-          task={newSession.task}
-          onClose={() => setNewSession(null)}
-          onCreated={(s) => {
-            setNewSession(null)
-            selectSession(s.id)
           }}
         />
       )}

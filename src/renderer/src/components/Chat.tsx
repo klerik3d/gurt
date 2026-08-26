@@ -13,7 +13,8 @@ import type {
   SessionConfigOption,
   SessionMode,
   SessionModes,
-  SessionSnapshot
+  SessionSnapshot,
+  Tree
 } from '../../../shared/types'
 import { sessionRole, sessionStatus } from '../../../shared/types'
 import { agentOptionView } from '../../../shared/agentConfig'
@@ -26,7 +27,9 @@ import { SESSION_DOT } from '../status'
 import { Icon, Dot } from './icons'
 import { AgentMark, EnvRepoMarks, McpFailBanner, McpMarks, NetMark, RoleMark } from './tags'
 import { TrafficPanel } from './Network'
+import { ConfigTab } from './ConfigTab'
 import { SessionMenu } from './SessionActions'
+import { TabBar, type SessionTab } from './SessionTabs'
 import { VscodeButton } from './VscodeButton'
 import { run } from '../async'
 
@@ -66,17 +69,23 @@ const PIN_BAR_CLEARANCE = 36
 const composerDrafts = new Map<string, { text: string; chips: PromptContext[]; images: PromptImage[] }>()
 
 export function Chat({
+  tree,
   snapshot,
   sessionId,
+  log,
   onSelect,
   onDeleted
 }: {
+  tree: Tree | null
   snapshot?: SessionSnapshot | undefined
   sessionId: string
+  log: string[]
   /** Select another session — where a duplicate's fresh draft is handed to. */
   onSelect: (id: string) => void
   onDeleted: () => void
 }) {
+  const [activeTab, setActiveTab] = useState<SessionTab>('chat')
+  useEffect(() => setActiveTab('chat'), [sessionId])
   const feedRef = useRef<HTMLDivElement>(null)
   const innerRef = useRef<HTMLDivElement>(null)
   /** Follow-the-tail flag: true until the user scrolls away from the bottom. */
@@ -260,11 +269,12 @@ export function Chat({
   return (
     <div className="chat">
       <div className="chat-head">
+        <TabBar active={activeTab} onChange={setActiveTab} />
+        <span className="spacer" />
         <Dot tone={headDot.tone} pulse={headDot.pulse} />
         <span className="chat-title">
           {info.task} / {info.title}
         </span>
-        <span className="spacer" />
         <span className="chat-pill">{sizeLabel}</span>
         <span className="chat-pill">
           <RoleMark role={sessionRole(info)} />
@@ -298,42 +308,52 @@ export function Chat({
           reason would be in ~/.gurt/logs. */}
       <McpFailBanner failures={mcpFailures} />
 
-      <div className="feed-wrap">
-        {lastUserEntry && (
-          <PinnedRequest
-            text={pinnedTextRef.current || lastUserEntry.text}
-            visible={pinnedId !== undefined}
-            onNavigate={scrollToPinned}
-          />
-        )}
-        <div className="feed" ref={feedRef} onScroll={onFeedScroll}>
-          <div className="feed-inner" ref={innerRef}>
-            {entries.map((e, i) => (
-              <Msg key={e.id} entry={e} sessionId={sessionId} live={busy && i === entries.length - 1} />
-            ))}
-            {liveTail && <ThinkingLive label={liveTail} />}
+      {activeTab === 'config' && <ConfigTab tree={tree} snapshot={snapshot} />}
+
+      {activeTab === 'logs' && (
+        <pre className="env-log">{log.length ? log.join('\n') : 'no logs yet'}</pre>
+      )}
+
+      {activeTab === 'chat' && (
+        <>
+          <div className="feed-wrap">
+            {lastUserEntry && (
+              <PinnedRequest
+                text={pinnedTextRef.current || lastUserEntry.text}
+                visible={pinnedId !== undefined}
+                onNavigate={scrollToPinned}
+              />
+            )}
+            <div className="feed" ref={feedRef} onScroll={onFeedScroll}>
+              <div className="feed-inner" ref={innerRef}>
+                {entries.map((e, i) => (
+                  <Msg key={e.id} entry={e} sessionId={sessionId} live={busy && i === entries.length - 1} />
+                ))}
+                {liveTail && <ThinkingLive label={liveTail} />}
+              </div>
+            </div>
           </div>
-        </div>
-      </div>
 
-      {plan && plan.length > 0 && <PlanPinned plan={plan} />}
+          {plan && plan.length > 0 && <PlanPinned plan={plan} />}
 
-      {/* Above the composer, under the feed: a host the session could not reach
-          usually shows up as a tool that failed a moment ago, and the answer
-          should be in the same glance (§8). */}
-      <TrafficPanel sessionId={sessionId} network={info.network} />
+          {/* Above the composer, under the feed: a host the session could not
+              reach usually shows up as a tool that failed a moment ago, and the
+              answer should be in the same glance (§8). */}
+          <TrafficPanel sessionId={sessionId} network={info.network} />
 
-      <Composer
-        key={sessionId}
-        sessionId={sessionId}
-        agentKind={agentKind(agents, info.agent)}
-        busy={busy}
-        flush={!hasPlan}
-        modes={modes}
-        commands={commands ?? []}
-        configOptions={configOptions ?? []}
-        promptCaps={promptCapabilities}
-      />
+          <Composer
+            key={sessionId}
+            sessionId={sessionId}
+            agentKind={agentKind(agents, info.agent)}
+            busy={busy}
+            flush={!hasPlan}
+            modes={modes}
+            commands={commands ?? []}
+            configOptions={configOptions ?? []}
+            promptCaps={promptCapabilities}
+          />
+        </>
+      )}
     </div>
   )
 }
