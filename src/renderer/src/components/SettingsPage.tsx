@@ -15,15 +15,31 @@ import {
   isGitKind,
   mcpCredentials,
   resolveForRepo,
-  resolveMcpCredential
+  resolveMcpCredential,
+  resolveMcpEnvSecret
 } from '../../../shared/credentials'
-import type { McpDef, McpHeader, McpRegistryEntry } from '../../../shared/mcp'
+import type {
+  McpDef,
+  McpEntryDraft,
+  McpEntryKind,
+  McpEnvRow,
+  McpHeader,
+  McpRegistryEntry,
+  McpSnippetResult
+} from '../../../shared/mcp'
 import {
   LOCAL_MCP_NOTICE,
+  isEnvName,
   isHttpMcpEntry,
+  isLocalMcpEntry,
+  looksLikeSecretEnv,
   mcpEntryDetail,
+  mcpEntryKind,
+  mcpEnvRecord,
+  mcpEnvRows,
   mcpLabel,
   normalizeMcpEntry,
+  parseMcpSnippet,
   validateMcpEntry
 } from '../../../shared/mcp'
 import { canonicalRepoId } from '../../../shared/repoId'
@@ -932,7 +948,26 @@ function textToEnv(text: string): Record<string, string> | undefined {
   return Object.keys(env).length ? env : undefined
 }
 
-// ---- MCP servers (docs/requirements-mcp-proxy.md §3, §11) ----
+// ---- MCP servers (docs/requirements-mcp-proxy.md §3, §11 ·
+//      docs/requirements-mcp-stdio.md §3, §5, §8.2) ----
+
+/** The three transports, in the order the picker offers them: what the
+ *  ecosystem publishes first, the original remote shape second, the escape
+ *  hatch last (docs/requirements-mcp-stdio.md §3). */
+const MCP_KINDS: { kind: McpEntryKind; label: string; hint: string }[] = [
+  { kind: 'npm', label: 'npm package', hint: 'gurt installs it and runs it on this machine' },
+  { kind: 'http', label: 'Remote URL', hint: 'an http(s) endpoint the session proxy calls' },
+  { kind: 'command', label: 'Command (advanced)', hint: 'uvx, docker, a script — run as written' }
+]
+
+/** argv as text: one argument per line, so a value containing a space needs no
+ *  quoting rules of gurt's own invention. */
+const argsToText = (args?: readonly string[]): string => (args ?? []).join('\n')
+const textToArgs = (text: string): string[] =>
+  text
+    .split('\n')
+    .map((a) => a.trim())
+    .filter(Boolean)
 
 /** The workspace's MCP registry, plus the built-ins listed read-only so both
  *  sources of the composer's picker are visible in one place (§11). */
@@ -940,8 +975,12 @@ function McpServersSection({ ws }: { ws: string | null }) {
   const [servers, setServers] = useState<McpRegistryEntry[]>([])
   const [builtins, setBuiltins] = useState<McpDef[]>([])
   const [editing, setEditing] = useState<McpRegistryEntry | null>(null)
-  const [adding, setAdding] = useState(false)
+  /** The kind a `+ Add` pick chose, i.e. "a new entry of this shape". */
+  const [adding, setAdding] = useState<McpEntryKind | null>(null)
+  const [addMenu, setAddMenu] = useState(false)
   const [error, setError] = useState('')
+  const addRef = useRef<HTMLDivElement>(null)
+  useOutsideClose(addMenu, addRef, () => setAddMenu(false))
 
   const refresh = useCallback(() => {
     if (!ws) {
@@ -976,30 +1015,52 @@ function McpServersSection({ ws }: { ws: string | null }) {
           </span>
         </div>
         <span className="spacer" />
-        <button className="btn btn-primary" disabled={!ws} onClick={() => setAdding(true)}>
-          + New MCP server
-        </button>
+        {/* Three transports, so the transport is chosen before the form rather
+            than as a field inside one shape's editor. */}
+        <div className="pick-wrap" ref={addRef}>
+          <button
+            className="btn btn-primary"
+            disabled={!ws}
+            onClick={() => setAddMenu((o) => !o)}
+          >
+            + Add
+            <Icon name="chevron" size={11} />
+          </button>
+          {addMenu && (
+            <div className="menu pick-menu right">
+              {MCP_KINDS.map((k) => (
+                <div
+                  key={k.kind}
+                  className="menu-item"
+                  onMouseDown={(e) => {
+                    e.preventDefault()
+                    setAddMenu(false)
+                    setAdding(k.kind)
+                  }}
+                >
+                  {k.label}
+                  <span className="menu-hint">{k.hint}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
       <div className="set-list">
         {servers.map((m) => (
-          <div key={m.id} className="set-row" title={isHttpMcpEntry(m) ? undefined : LOCAL_MCP_NOTICE}>
+          <div key={m.id} className="set-row">
             <span className="set-row-label">{mcpLabel(m)}</span>
             <span className="set-row-url mono">{mcpEntryDetail(m)}</span>
             {m.credentialId && (
               <Icon name="key" size={11} style={{ color: 'var(--yellow)', flex: 'none' }} />
             )}
-            {/* The editor below only knows the remote shape, so a local entry is
-                read-only here until the phase-2 UI lands
-                (docs/requirements-mcp-stdio.md §8) — opening it in this modal
-                would rewrite it into an http entry on save. Until then a local
-                entry is added and edited in workspace.json. */}
-            {isHttpMcpEntry(m) ? (
-              <button className="btn-link" onClick={() => setEditing(m)}>
-                edit
-              </button>
-            ) : (
-              <span className="set-row-url faint">runs on this machine</span>
-            )}
+            {/* Said here, in the editor and in the composer's picker — every
+                surface that offers a local entry carries the same line
+                (docs/requirements-mcp-stdio.md §2). */}
+            {isLocalMcpEntry(m) && <span className="mcp-local-note">{LOCAL_MCP_NOTICE}</span>}
+            <button className="btn-link" onClick={() => setEditing(m)}>
+              edit
+            </button>
           </div>
         ))}
         {servers.length === 0 && (
@@ -1022,13 +1083,14 @@ function McpServersSection({ ws }: { ws: string | null }) {
       </div>
       {(editing || adding) && ws && (
         <McpServerModal
-          key={editing?.id ?? '__new'}
+          key={editing?.id ?? `__new:${adding}`}
           ws={ws}
           taken={servers.filter((m) => m.id !== editing?.id).map((m) => m.id)}
           initial={editing ?? undefined}
+          initialKind={adding ?? 'npm'}
           onClose={() => {
             setEditing(null)
-            setAdding(false)
+            setAdding(null)
             refresh()
           }}
         />
@@ -1037,10 +1099,24 @@ function McpServersSection({ ws }: { ws: string | null }) {
   )
 }
 
+/** A secret lifted out of a pasted `env` and held here until Save (§5): it goes
+ *  into the credential store, never into `workspace.json`. */
+interface PendingSecret {
+  /** The environment variable the server reads it from — its name in the snippet. */
+  name: string
+  value: string
+}
+
+/** Stands in for the credential Save is going to create, so the draft the user
+ *  sees validated is the draft that will be written (a `credentialId` with no
+ *  `credentialEnvVar` is a rejected save — §3.4). It never leaves this modal. */
+const PENDING_CREDENTIAL_ID = '__pending__'
+
 function McpServerModal({
   ws,
   taken,
   initial,
+  initialKind,
   onClose
 }: {
   ws: string
@@ -1048,19 +1124,34 @@ function McpServerModal({
    *  in the store validator (§3.3). */
   taken: string[]
   initial?: McpRegistryEntry | undefined
+  /** Shape of a *new* entry, as the `+ Add` menu chose it. Ignored when editing:
+   *  an existing entry's kind comes from the entry, and the picker below can
+   *  still change it. */
+  initialKind: McpEntryKind
   onClose: () => void
 }) {
   const editing = !!initial
-  // Remote entries only — the section above never opens this modal on a local
-  // one (docs/requirements-mcp-stdio.md §8).
   const http = initial && isHttpMcpEntry(initial) ? initial : undefined
+  const local = initial && isLocalMcpEntry(initial) ? initial : undefined
+  const [kind, setKind] = useState<McpEntryKind>(initial ? mcpEntryKind(initial) : initialKind)
   const [id, setId] = useState(initial?.id ?? '')
   const [label, setLabel] = useState(initial?.label ?? '')
   const [url, setUrl] = useState(http?.url ?? '')
   const [headers, setHeaders] = useState<McpHeader[]>(http?.headers?.map((h) => ({ ...h })) ?? [])
+  const [pkg, setPkg] = useState(local?.kind === 'npm' ? local.package : '')
+  const [version, setVersion] = useState((local?.kind === 'npm' && local.version) || '')
+  const [command, setCommand] = useState(local?.kind === 'command' ? local.command : '')
+  const [cwd, setCwd] = useState((local?.kind === 'command' && local.cwd) || '')
+  const [argsText, setArgsText] = useState(argsToText(local?.args))
+  const [envRows, setEnvRows] = useState<McpEnvRow[]>(mcpEnvRows(local?.env))
   const [credentialId, setCredentialId] = useState(initial?.credentialId ?? '')
+  const [credentialEnvVar, setCredentialEnvVar] = useState(local?.credentialEnvVar ?? '')
+  const [pendingSecret, setPendingSecret] = useState<PendingSecret | null>(null)
+  const [snippet, setSnippet] = useState('')
+  const [snippetError, setSnippetError] = useState('')
   const [credentials, setCredentials] = useState<CredentialEntry[]>([])
   const [credMenu, setCredMenu] = useState(false)
+  const [note, setNote] = useState('')
   const [error, setError] = useState('')
   const credRef = useRef<HTMLDivElement>(null)
   useOutsideClose(credMenu, credRef, () => setCredMenu(false))
@@ -1069,28 +1160,152 @@ function McpServerModal({
     window.gurt.getCredentials().then((f) => setCredentials(f.credentials)).catch(() => {})
   }, [])
 
-  const draft = normalizeMcpEntry({
+  const isLocal = kind !== 'http'
+  const linkedId = credentialId || (pendingSecret ? PENDING_CREDENTIAL_ID : '')
+  const tail = {
     id: id.trim(),
     label,
-    url,
-    headers,
-    ...(credentialId ? { credentialId } : {})
-  })
+    ...(linkedId ? { credentialId: linkedId } : {})
+  }
+  const localTail = {
+    args: textToArgs(argsText),
+    env: mcpEnvRecord(envRows),
+    ...(credentialEnvVar ? { credentialEnvVar } : {})
+  }
+  const draft: McpEntryDraft =
+    kind === 'http'
+      ? { ...tail, url, headers }
+      : kind === 'npm'
+        ? { kind: 'npm', ...tail, ...localTail, package: pkg, version }
+        : { kind: 'command', ...tail, ...localTail, command, cwd }
+  const entry = normalizeMcpEntry(draft)
   // The same validator the store runs — the modal only previews its verdict.
-  const invalid = validateMcpEntry(draft, { takenIds: taken })
+  const invalid = validateMcpEntry(entry, { takenIds: taken })
   const linked = credentials.find((c) => c.id === credentialId)
-  const credError = resolveMcpCredential(credentials, credentialId || undefined).error
+  // A pending secret has no stored credential to resolve yet; it is checked by
+  // being created, at save time.
+  const credError = pendingSecret
+    ? undefined
+    : isLocal
+      ? resolveMcpEnvSecret(credentials, credentialId || undefined).error
+      : resolveMcpCredential(credentials, credentialId || undefined).error
 
   const setHeader = (i: number, patch: Partial<McpHeader>) =>
     setHeaders((prev) => prev.map((h, j) => (j === i ? { ...h, ...patch } : h)))
+  const setEnvRow = (i: number, patch: Partial<McpEnvRow>) =>
+    setEnvRows((prev) => prev.map((r, j) => (j === i ? { ...r, ...patch } : r)))
+
+  /** Move one `env` value out of the entry and into the credential link. The
+   *  value is held in component state until Save — nothing is written to the
+   *  credential store by looking at a form. */
+  const liftSecret = (row: McpEnvRow, at: number) => {
+    setEnvRows((prev) => prev.filter((_, j) => j !== at))
+    setCredentialEnvVar(row.name.trim())
+    setPendingSecret({ name: row.name.trim(), value: row.value })
+    setCredentialId('')
+  }
+
+  /** Put a lifted secret back where the snippet had it — the user's call, and
+   *  the only way back to an inline value. */
+  const dropPending = () => {
+    if (!pendingSecret) return
+    setEnvRows((prev) => [...prev, { name: pendingSecret.name, value: pendingSecret.value }])
+    setPendingSecret(null)
+    setCredentialEnvVar('')
+  }
+
+  /**
+   * A published snippet, straight into the form (§5). `parseMcpSnippet` does all
+   * of the reading — the kind, the id, the package and version, the argv, the
+   * env — so a `uvx` or `docker` snippet switches this form to `command` rather
+   * than being refused. Its error is a sentence written for the user; it is
+   * shown as it is.
+   */
+  const applySnippet = (text: string) => {
+    if (!text.trim()) return
+    const result: McpSnippetResult = parseMcpSnippet(text)
+    if (!result.entry) {
+      setSnippetError(result.error ?? 'that snippet could not be read')
+      return
+    }
+    const parsed = result.entry
+    setSnippetError('')
+    setNote('')
+    setKind(mcpEntryKind(parsed))
+    // The id is a route segment and a selection key, so an existing entry keeps
+    // the one its sessions already name.
+    if (!editing) setId(parsed.id)
+    if (parsed.label) setLabel(parsed.label)
+    if (isHttpMcpEntry(parsed)) {
+      setUrl(parsed.url)
+      setHeaders(parsed.headers?.map((h) => ({ ...h })) ?? [])
+      return
+    }
+    setPkg(parsed.kind === 'npm' ? parsed.package : '')
+    setVersion((parsed.kind === 'npm' && parsed.version) || '')
+    setCommand(parsed.kind === 'command' ? parsed.command : '')
+    setCwd((parsed.kind === 'command' && parsed.cwd) || '')
+    setArgsText(argsToText(parsed.args))
+    // A snippet's `env` is where READMEs put a real token, and `workspace.json`
+    // is a plain file meant to be shared and committed. So a value that looks
+    // like a secret is lifted out here, by default, rather than being saved
+    // inline and warned about afterwards (§5).
+    const rows = mcpEnvRows(parsed.env)
+    const at = rows.findIndex((r) => looksLikeSecretEnv(r.name, r.value))
+    if (at < 0 || credentialId) {
+      setEnvRows(rows)
+      setPendingSecret(null)
+      return
+    }
+    const row = rows[at]!
+    setEnvRows(rows.filter((_, j) => j !== at))
+    setCredentialEnvVar(row.name)
+    setPendingSecret({ name: row.name, value: row.value })
+  }
+
+  /** Store a lifted secret as an `mcp-token` credential and return its id.
+   *  Written before the entry, so a failure here leaves no entry pointing at a
+   *  credential that does not exist. */
+  const createCredential = async (secret: PendingSecret): Promise<string> => {
+    const fresh: CredentialEntry = {
+      id: crypto.randomUUID(),
+      label: `${id.trim() || 'mcp'} ${secret.name}`,
+      kind: 'mcp-token',
+      hosts: [],
+      data: { secret: secret.value }
+    }
+    const file = await window.gurt.getCredentials()
+    await window.gurt.setCredentials({ credentials: [...file.credentials, fresh] })
+    return fresh.id
+  }
 
   const save = async () => {
     setError('')
     try {
+      let saved = entry
+      if (pendingSecret) {
+        const cid = await createCredential(pendingSecret)
+        saved = normalizeMcpEntry({ ...draft, credentialId: cid })
+        setCredentialId(cid)
+        setPendingSecret(null)
+      }
       await (editing
-        ? window.gurt.updateMcpServer(ws, draft)
-        : window.gurt.addMcpServer(ws, draft))
+        ? window.gurt.updateMcpServer(ws, saved)
+        : window.gurt.addMcpServer(ws, saved))
       onClose()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  /** Forget what is installed, so the next session start installs it again —
+   *  the button behind a pinned `latest` (§4.2). A running process keeps
+   *  running: gurt does not restart a local server under its holders (§10). */
+  const reinstall = async () => {
+    setError('')
+    try {
+      await window.gurt.reinstallMcpServer(ws, initial!.id)
+      setNote('will be installed again the next time a session starts it')
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
@@ -1113,9 +1328,76 @@ function McpServerModal({
     }
   }
 
+  const filledIn = id.trim() || url.trim() || pkg.trim() || command.trim()
+
   return (
     <Modal title={editing ? 'Edit MCP server' : 'New MCP server'} width={520} onClose={onClose}>
       <div className="modal-body env-modal">
+        <div className="fld">
+          <span className="seclabel">TRANSPORT</span>
+          <div className="seg">
+            {MCP_KINDS.map((k) => (
+              <button
+                key={k.kind}
+                className={`seg-btn ${kind === k.kind ? 'active' : ''}`}
+                title={k.hint}
+                onClick={() => setKind(k.kind)}
+              >
+                {k.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Every surface that offers a local entry says this, in these words
+            (docs/requirements-mcp-stdio.md §2). */}
+        {isLocal && (
+          <div className="mcp-notice">
+            <Icon name="key" size={12} />
+            <span>
+              {LOCAL_MCP_NOTICE} The session container still sees nothing but a proxy URL — this
+              process does not run in it.
+            </span>
+          </div>
+        )}
+
+        {isLocal && (
+          <div className="fld">
+            <div className="fld-head">
+              <span className="seclabel">PASTE FROM README</span>
+              <span className="spacer" />
+              <button className="btn-link" onClick={() => applySnippet(snippet)}>
+                fill the form
+              </button>
+            </div>
+            <textarea
+              className="input mono snippet-input"
+              rows={4}
+              spellCheck={false}
+              placeholder={'{"mcpServers": {"kubernetes": {"command": "npx", "args": ["-y", "kubernetes-mcp-server@latest", "--read-only"]}}}'}
+              value={snippet}
+              onChange={(e) => setSnippet(e.target.value)}
+              onPaste={(e) => {
+                // Applied from the clipboard rather than from state: the paste
+                // event fires before React has the new value.
+                const text = e.clipboardData.getData('text')
+                if (!text.trim()) return
+                e.preventDefault()
+                setSnippet(text)
+                applySnippet(text)
+              }}
+            />
+            {snippetError ? (
+              <span className="error">{snippetError}</span>
+            ) : (
+              <span className="fld-hint">
+                The block a README gives you — `mcpServers`, `servers`, or the bare body. A `uvx`
+                or `docker` invocation fills in the command form instead.
+              </span>
+            )}
+          </div>
+        )}
+
         <div className="cred-grid">
           <label className="fld">
             <span className="seclabel">ID</span>
@@ -1139,63 +1421,213 @@ function McpServerModal({
           </label>
         </div>
 
-        <div className="fld">
-          <span className="seclabel">ENDPOINT URL</span>
-          <input
-            className="input mono"
-            placeholder="https://mcp.example.com/mcp"
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-          />
-          <span className="fld-hint">
-            HTTP transport only — a remote http(s) endpoint, not a local command.
-          </span>
-        </div>
-
-        <div className="fld">
-          <div className="fld-head">
-            <span className="seclabel">HEADERS</span>
-            <span className="spacer" />
-            <button
-              className="btn-link"
-              onClick={() => setHeaders((prev) => [...prev, { name: '', value: '' }])}
-            >
-              + header
-            </button>
+        {kind === 'http' && (
+          <div className="fld">
+            <span className="seclabel">ENDPOINT URL</span>
+            <input
+              className="input mono"
+              placeholder="https://mcp.example.com/mcp"
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+            />
+            <span className="fld-hint">
+              A remote http(s) endpoint the session proxy calls — nothing runs on this machine.
+            </span>
           </div>
-          {headers.map((h, i) => (
-            <div key={i} className="mcp-hdr">
+        )}
+
+        {kind === 'npm' && (
+          <div className="cred-grid">
+            <label className="fld">
+              <span className="seclabel">PACKAGE</span>
               <input
                 className="input mono"
-                placeholder="X-Workspace"
-                value={h.name}
-                onChange={(e) => setHeader(i, { name: e.target.value })}
+                placeholder="kubernetes-mcp-server"
+                value={pkg}
+                onChange={(e) => setPkg(e.target.value)}
               />
+            </label>
+            <label className="fld cred-type">
+              <span className="seclabel">VERSION</span>
               <input
                 className="input mono"
-                placeholder="value"
-                value={h.value}
-                onChange={(e) => setHeader(i, { value: e.target.value })}
+                placeholder="latest"
+                value={version}
+                onChange={(e) => setVersion(e.target.value)}
               />
+            </label>
+          </div>
+        )}
+        {kind === 'npm' && (
+          <span className="fld-hint">
+            Installed once under ~/.gurt/mcp/{id.trim() || '<id>'} and pinned to what it resolved
+            to — a version or dist-tag here, never <span className="mono">name@version</span> in
+            the package field.
+          </span>
+        )}
+
+        {kind === 'command' && (
+          <div className="cred-grid">
+            <label className="fld">
+              <span className="seclabel">COMMAND</span>
+              <input
+                className="input mono"
+                placeholder="uvx"
+                value={command}
+                onChange={(e) => setCommand(e.target.value)}
+              />
+            </label>
+            <label className="fld cred-type">
+              <span className="seclabel">WORKING DIR</span>
+              <input
+                className="input mono"
+                placeholder="(optional)"
+                value={cwd}
+                onChange={(e) => setCwd(e.target.value)}
+              />
+            </label>
+          </div>
+        )}
+        {kind === 'command' && (
+          <span className="fld-hint">
+            A name is resolved against your PATH when this is saved, so a missing tool is an error
+            here rather than an hour later; an absolute path is used as given.
+          </span>
+        )}
+
+        {isLocal && (
+          <div className="fld">
+            <span className="seclabel">ARGUMENTS</span>
+            <textarea
+              className="input mono snippet-input"
+              rows={3}
+              spellCheck={false}
+              placeholder={'--read-only'}
+              value={argsText}
+              onChange={(e) => setArgsText(e.target.value)}
+            />
+            <span className="fld-hint">
+              One per line, passed verbatim. A server&apos;s own read-only flag lives here — gurt
+              reports the argv, and does not claim to enforce what it means.
+            </span>
+          </div>
+        )}
+
+        {kind === 'http' && (
+          <div className="fld">
+            <div className="fld-head">
+              <span className="seclabel">HEADERS</span>
+              <span className="spacer" />
               <button
                 className="btn-link"
-                title="remove header"
-                onClick={() => setHeaders((prev) => prev.filter((_, j) => j !== i))}
+                onClick={() => setHeaders((prev) => [...prev, { name: '', value: '' }])}
               >
-                ×
+                + header
               </button>
             </div>
-          ))}
-          <span className="fld-hint">
-            Sent upstream verbatim and stored in workspace.json — never put a secret here; link a
-            credential below.
-          </span>
-        </div>
+            {headers.map((h, i) => (
+              <div key={i} className="mcp-hdr">
+                <input
+                  className="input mono"
+                  placeholder="X-Workspace"
+                  value={h.name}
+                  onChange={(e) => setHeader(i, { name: e.target.value })}
+                />
+                <input
+                  className="input mono"
+                  placeholder="value"
+                  value={h.value}
+                  onChange={(e) => setHeader(i, { value: e.target.value })}
+                />
+                <button
+                  className="btn-link"
+                  title="remove header"
+                  onClick={() => setHeaders((prev) => prev.filter((_, j) => j !== i))}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+            <span className="fld-hint">
+              Sent upstream verbatim and stored in workspace.json — never put a secret here; link a
+              credential below.
+            </span>
+          </div>
+        )}
+
+        {isLocal && (
+          <div className="fld">
+            <div className="fld-head">
+              <span className="seclabel">ENVIRONMENT</span>
+              <span className="spacer" />
+              <button
+                className="btn-link"
+                onClick={() => setEnvRows((prev) => [...prev, { name: '', value: '' }])}
+              >
+                + variable
+              </button>
+            </div>
+            {envRows.map((row, i) => {
+              const secret = looksLikeSecretEnv(row.name, row.value)
+              const badName = !!row.name.trim() && !isEnvName(row.name.trim())
+              return (
+                <div key={i}>
+                  <div className="mcp-hdr">
+                    <input
+                      className="input mono"
+                      placeholder="KUBECONFIG"
+                      value={row.name}
+                      onChange={(e) => setEnvRow(i, { name: e.target.value })}
+                    />
+                    <input
+                      className="input mono"
+                      placeholder="value"
+                      value={row.value}
+                      onChange={(e) => setEnvRow(i, { value: e.target.value })}
+                    />
+                    <button
+                      className="btn-link"
+                      title="remove variable"
+                      onClick={() => setEnvRows((prev) => prev.filter((_, j) => j !== i))}
+                    >
+                      ×
+                    </button>
+                  </div>
+                  {badName && (
+                    <span className="error">
+                      {row.name.trim()} is not an environment variable name
+                    </span>
+                  )}
+                  {secret && !pendingSecret && (
+                    <span className="mcp-local-note">
+                      that value looks like a secret — workspace.json is a plain file{' '}
+                      <button className="btn-link" onClick={() => liftSecret(row, i)}>
+                        store it as a credential
+                      </button>
+                    </span>
+                  )}
+                </div>
+              )
+            })}
+            <span className="fld-hint">
+              Stored in workspace.json and given to the process verbatim — a secret belongs in the
+              credential link below, which resolves on this machine and is never written here.
+            </span>
+          </div>
+        )}
 
         <div className="env-access">
           <span className="seclabel">AUTH</span>
           <div className="env-access-chips" ref={credRef}>
-            {linked ? (
+            {pendingSecret ? (
+              <span className="chip-tag">
+                <Icon name="key" size={11} style={{ color: 'var(--yellow)' }} />
+                new credential · {pendingSecret.name}
+                <span className="chip-x" title="keep it inline instead" onClick={dropPending}>
+                  ×
+                </span>
+              </span>
+            ) : linked ? (
               <span className="chip-tag">
                 <Icon name="key" size={11} style={{ color: 'var(--yellow)' }} />
                 {linked.label}
@@ -1239,24 +1671,46 @@ function McpServerModal({
                 )}
               </div>
             )}
+            {/* A header has a sensible default; an environment variable does
+                not, and only the server's own docs know its name (§3.4). */}
+            {isLocal && (linked || pendingSecret) && (
+              <input
+                className="input mono cred-env-var"
+                placeholder="GITHUB_TOKEN"
+                value={credentialEnvVar}
+                onChange={(e) => setCredentialEnvVar(e.target.value)}
+              />
+            )}
             <span className="env-access-note mono">
               {credError
                 ? `⚠ ${credError}`
-                : linked
-                  ? 'injected as a header upstream; the container never sees it'
-                  : 'no credential — the upstream is called unauthenticated'}
+                : pendingSecret
+                  ? `saved to the credential store on Save, not to workspace.json`
+                  : linked
+                    ? isLocal
+                      ? 'resolved here and put in the process environment; the container never sees it'
+                      : 'injected as a header upstream; the container never sees it'
+                    : 'no credential — the server is started with nothing of yours'}
             </span>
           </div>
         </div>
 
-        {(error || (invalid && (id.trim() || url.trim()))) && (
-          <div className="error">{error || invalid}</div>
-        )}
+        {note && <div className="fld-hint">{note}</div>}
+        {(error || (invalid && filledIn)) && <div className="error">{error || invalid}</div>}
       </div>
       <div className="modal-foot">
         {editing && (
           <button className="btn btn-danger-text" onClick={run(del)}>
             Delete
+          </button>
+        )}
+        {editing && local?.kind === 'npm' && kind === 'npm' && (
+          <button
+            className="btn btn-text"
+            title="forget what is installed, so the next start installs the package again"
+            onClick={run(reinstall)}
+          >
+            Reinstall
           </button>
         )}
         <span className="spacer" />

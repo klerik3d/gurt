@@ -346,6 +346,19 @@ export async function ensureNpmPackage(entry: McpNpmEntry): Promise<string> {
   return script
 }
 
+/**
+ * Forget what is installed for `id`, so the next start installs it again.
+ *
+ * The stamp goes, the directory stays: `npm install` will overwrite the tree in
+ * place, and removing `node_modules` out from under a server that is still
+ * running (§6 — one process, several sessions) would break it for the sessions
+ * holding it. Which is also why this only takes effect at the next start: gurt
+ * does not restart a local server under its holders (§10).
+ */
+export async function clearNpmInstall(id: string): Promise<void> {
+  await fs.rm(stampPath(id), { force: true })
+}
+
 // --- the child process ------------------------------------------------------
 
 /** What to spawn for one entry, once everything host-specific is resolved. */

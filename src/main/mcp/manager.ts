@@ -2,7 +2,12 @@ import { randomUUID } from 'node:crypto'
 import type { AddressInfo } from 'node:net'
 import type { Server } from 'node:http'
 import type { AcpHttpMcpServer, EnvRef, McpMode, McpSelection } from '../../shared/types'
-import type { McpLocalEntry, McpRegistryEntry } from '../../shared/mcp'
+import type {
+  McpFailure,
+  McpLocalEntry,
+  McpRegistryEntry,
+  SessionMcpFailures
+} from '../../shared/mcp'
 import { RESERVED_MCP_IDS, isLocalMcpEntry, mcpDef } from '../../shared/mcp'
 import { resolveMcpEnvSecret } from '../../shared/credentials'
 import { mcpServerKey } from '../../shared/keys'
@@ -191,6 +196,31 @@ const localBridges = new Map<string, RunningLocal>()
 /** sessionId → what it holds. Written by `resolveMcpServers`, cleared by
  *  `stopMcpServers`; never persisted (see the note above). */
 const localHolders = new Map<string, LocalMcpHolder>()
+/** key → why its last start failed. Set beside every `mcp.fail`, deleted the
+ *  moment a process for that key is running, so it never outlives the failure it
+ *  describes. This is the *reason* half of what the session pane shows (§8.2):
+ *  a session only ever learns "the process is not running" from `planProxy`. */
+const localFails = new Map<string, string>()
+
+const failureSinks = new Set<(f: SessionMcpFailures) => void>()
+
+/** Subscribe to the per-session failure sets. The one seam between this module
+ *  and the bus — `kernel.ts` wires it to `mcp.fail`, the way it wires the proxy
+ *  watcher to `proxy.traffic`. */
+export function onMcpFailures(fn: (f: SessionMcpFailures) => void): () => void {
+  failureSinks.add(fn)
+  return () => failureSinks.delete(fn)
+}
+
+function publishFailures(f: SessionMcpFailures): void {
+  for (const sink of failureSinks) {
+    try {
+      sink(f)
+    } catch (e) {
+      log.error('internal.fail', { site: 'mcp-failure-sink', err: e })
+    }
+  }
+}
 
 /** Reconciles run one at a time: they start and stop processes, and two
  *  overlapping passes would each see the other's half-finished work. */
@@ -258,24 +288,32 @@ async function reconcileLocal(): Promise<void> {
   }
 
   for (const [key, next] of desired) {
-    if (localBridges.has(key)) continue
+    if (localBridges.has(key)) {
+      localFails.delete(key)
+      continue
+    }
     if (next.error) {
-      log.error('mcp.fail', { id: next.want.entry.id, kind: next.want.entry.kind, err: next.error })
+      fail(key, next.want.entry, next.error)
       continue
     }
     const bridge = startStdioBridge(next.want.entry, next.env)
     localBridges.set(key, { bridge, spec: next.spec, secret: next.secret })
     try {
       await bridge.ready
+      localFails.delete(key)
     } catch (e) {
       localBridges.delete(key)
-      log.error('mcp.fail', {
-        id: next.want.entry.id,
-        kind: next.want.entry.kind,
-        err: e instanceof Error ? e.message : String(e)
-      })
+      fail(key, next.want.entry, e instanceof Error ? e.message : String(e))
     }
   }
+  // Nothing wants this key any more, so its old failure describes nothing.
+  for (const key of [...localFails.keys()]) if (!desired.has(key)) localFails.delete(key)
+}
+
+/** Log the failure and keep its reason for the sessions that asked (§8.2). */
+function fail(key: string, entry: McpLocalEntry, err: string): void {
+  localFails.set(key, err)
+  log.error('mcp.fail', { id: entry.id, kind: entry.kind, err })
 }
 
 /** Queue a reconcile behind any in flight. */
@@ -369,15 +407,36 @@ export async function resolveMcpServers(
 
   // In the user's order, and only the ones whose process actually came up: a
   // descriptor without a live bridge is a route the agent cannot use.
+  //
+  // The ones that did not come up are this session's failures, published as a
+  // set: the reason lives in the app log, and this is how it reaches the pane
+  // the user is actually looking at (§8.2). Publishing even when the set is
+  // empty is what clears a failure a restart fixed.
   const served = new Set<string>()
+  const failures: McpFailure[] = []
   for (const sel of picked) {
     if (!localIds.includes(sel.id) || served.has(sel.id)) continue
     served.add(sel.id)
-    const rec = localBridges.get(localKey(ref.workspace, sel.id))
-    if (!rec) continue
-    const url = await rec.bridge.ready.catch(() => null)
-    if (url) out.push({ type: 'http', name: sel.id, url, headers: [] })
+    const key = localKey(ref.workspace, sel.id)
+    const rec = localBridges.get(key)
+    const url = rec ? await rec.bridge.ready.catch(() => null) : null
+    if (url) {
+      out.push({ type: 'http', name: sel.id, url, headers: [] })
+      continue
+    }
+    // `localIds` was filtered out of this same registry read, so the entry is
+    // here and it is local — the fallback is a type-level one, not a case.
+    const entry = registry.find((e) => e.id === sel.id)
+    failures.push({
+      id: sel.id,
+      kind: entry && isLocalMcpEntry(entry) ? entry.kind : 'npm',
+      // Absent when nothing failed *this* pass — the process was stopped
+      // between the reconcile and here, or another session's reconcile took it
+      // down. The session still gets a reason, just a coarser one.
+      err: localFails.get(key) ?? 'the server process is not running'
+    })
   }
+  publishFailures({ sessionId, failures })
   return out
 }
 
@@ -386,6 +445,10 @@ export async function resolveMcpServers(
  *  a shared process. */
 export function stopMcpServers(sessionId: string): void {
   pruneServers(sessionId, new Set())
+  // Whatever it could not get, it is no longer asking for: a detached session
+  // showing a failure from its last start would be describing a scope it does
+  // not have.
+  publishFailures({ sessionId, failures: [] })
   if (!localHolders.delete(sessionId)) return
   void scheduleReconcile()
 }

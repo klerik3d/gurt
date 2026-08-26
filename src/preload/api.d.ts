@@ -22,6 +22,8 @@ declare global {
       onBootProgress(cb: (event: GurtEvents['boot-progress']) => void): () => void
       /** One session's observed proxy traffic changed (blocked/allowed hosts). */
       onProxyTraffic(cb: (event: GurtEvents['proxy-traffic']) => void): () => void
+      /** A session's local (stdio) MCP servers that did not start, and why. */
+      onMcpFail(cb: (event: GurtEvents['mcp-fail']) => void): () => void
     }
   }
 }
