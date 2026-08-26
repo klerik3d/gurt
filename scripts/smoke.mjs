@@ -48,8 +48,8 @@ await page.screenshot({ path: path.join(SHOT_DIR, '01-initial.png') })
 console.log('initial render OK')
 
 // create a workspace through the real UI -> IPC -> store. It lives behind the
-// workspace switcher in the sidebar header, not a toolbar icon.
-await page.click('.sb-ws-btn')
+// workspace switcher in the titlebar breadcrumb, not a toolbar icon.
+await page.click('.tb-ws-btn')
 await page.click('text=+ new workspace')
 await page.waitForSelector('.modal input')
 await page.fill('.modal input', 'personal')
