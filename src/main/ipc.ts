@@ -12,8 +12,10 @@ import {
   getCredentials,
   setCredentials,
   credentialUsedBy,
-  checkMcpCredential
+  checkMcpEntryCredential
 } from './credentials'
+import { isLocalMcpEntry } from '../shared/mcp'
+import { checkMcpCommand } from './mcp/stdioBridge'
 import {
   discoverDevcontainer,
   discoverDockerfiles,
@@ -167,14 +169,17 @@ export function registerIpc(): void {
     },
     getMcpServers: (ws) => store.getMcpServers(ws),
     addMcpServer: async (ws, entry) => {
-      // The link is checked here, next to the credential store; everything the
-      // entry can be judged on by itself is the store validator's business.
-      await checkMcpCredential(entry.credentialId)
+      // Two checks that need main, done here rather than in the store
+      // validator, which is shared with the renderer and knows neither the
+      // credential store nor this machine's PATH.
+      await checkMcpEntryCredential(entry)
+      if (isLocalMcpEntry(entry)) checkMcpCommand(entry)
       await store.addMcpServer(ws, entry)
       kernel.bus.emit('tree.changed', undefined)
     },
     updateMcpServer: async (ws, entry) => {
-      await checkMcpCredential(entry.credentialId)
+      await checkMcpEntryCredential(entry)
+      if (isLocalMcpEntry(entry)) checkMcpCommand(entry)
       await store.updateMcpServer(ws, entry)
       kernel.bus.emit('tree.changed', undefined)
     },

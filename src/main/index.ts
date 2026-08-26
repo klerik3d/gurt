@@ -3,6 +3,7 @@ import path from 'node:path'
 import { registerIpc } from './ipc'
 import { loadSecrets, migrateAgentSecrets, sealPlaintextSecrets } from './credentials'
 import { createLogger, flushSync, logDir, logLevel } from './log'
+import { stopLocalMcpServers } from './mcp/manager'
 import { dockerVersion } from './provision'
 import { gurtRoot } from './store'
 import { initAutoUpdater } from './update'
@@ -130,6 +131,12 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   log.info('app.quit')
+  // Local MCP servers are host processes gurt spawned, shared across sessions
+  // and so not tied to any one session's teardown
+  // (docs/requirements-mcp-stdio.md §6). Signalled here rather than left to
+  // die with the parent: an orphaned `kubernetes-mcp-server` holding a `tsh`
+  // session is exactly the thing a user would not think to go looking for.
+  stopLocalMcpServers()
   flushSync()
 })
 

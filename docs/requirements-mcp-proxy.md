@@ -82,6 +82,25 @@ or the project's own dependency install. Those run before the agent
 exists and, deliberately, on an open network (§7.3). Say this out loud in
 the UI: internal mode bounds the *agent*, not the *build*.
 
+**A second adversary, added by local MCP servers**
+(`requirements-mcp-stdio.md` §2.1). A registry entry of kind `npm` or
+`command` is a process gurt spawns **on the host**: outside every
+container, in no sandbox, with the user's full privileges — and the
+agent is what drives it. A compromised package reaches the user's ssh
+keys, their cloud credentials, their whole filesystem and the open
+internet, and it reaches them from `postinstall` onward, before any MCP
+request is made. That is not a variant of the exclusion above; it is a
+new category, and it is accepted deliberately because the containerized
+alternative cannot hold a host authorization (`tsh`, `gcloud`, a
+keychain) and those are the servers the feature exists for.
+
+Note what does **not** change: nothing about a local server crosses into
+the session container. Not the process, not its port, not its token, not
+its credential. The contract in §2 holds exactly as written — the
+boundary that moves is the *host's*, which is why the decision is the
+user's and why every surface offering such an entry must carry the line
+`Runs on your machine, unsandboxed, with your privileges.`
+
 ## 3. The MCP registry
 
 ### 3.1 Where it lives: workspace.json
@@ -105,8 +124,7 @@ export interface McpRegistryEntry {
    *  of the proxy route. Unique per workspace; may not collide with a
    *  built-in id (`github`, `gurt`) — see §3.3. */
   id: string
-  /** Absolute http(s) URL of the upstream MCP endpoint. HTTP transport
-   *  only: no stdio, no local process. */
+  /** Absolute http(s) URL of the upstream MCP endpoint. */
   url: string
   /** Static headers sent upstream, verbatim. Never a secret — the store
    *  is a plain file the user edits and shares. */
@@ -116,6 +134,14 @@ export interface McpRegistryEntry {
   credentialId?: string
 }
 ```
+
+> **Extended by** `requirements-mcp-stdio.md` §3: this is now the `http`
+> member of a union discriminated on `kind`, alongside `npm` and
+> `command` (local processes gurt runs on the host). `kind` is optional
+> and its absence means `http`, so the shape above is still exactly what
+> a pre-existing `workspace.json` holds and everything below about
+> workspace scope, the store mutators and the secret boundary is
+> unchanged.
 
 **Why workspace-level and not global.** Four reasons, in order of weight:
 
@@ -1008,11 +1034,21 @@ built-in and registry alike. `AcpHttpMcpServer` itself is unchanged.
 ## 14. Out of scope
 
 A global MCP registry layer that workspaces inherit and override (§3.1 —
-the runtime does not change if it lands later). stdio/local-process MCP
-servers. Per-tool or per-method policy on an upstream MCP server (gurt
-does not know an upstream's tool semantics — §3.3). TLS interception, and
+the runtime does not change if it lands later). Per-tool or per-method
+policy on an upstream MCP server (gurt does not know an upstream's tool
+semantics — §3.3). TLS interception, and
 therefore any policy finer than a hostname. Closing the provisioning
 window (§7.3) via pre-built images, vendoring or a registry mirror.
 Bandwidth or rate limiting at the proxy. Sharing one proxy between
 sessions, for any reason. Encrypted credential storage (`safeStorage`),
 still, as in `requirements-git-access.md` §11.
+
+**No longer out of scope: stdio / local-process MCP servers.** They were
+excluded here on the grounds that this document's whole subject is the
+*remote* half of the registry and the container that reaches it. They
+now exist — `requirements-mcp-stdio.md` — and they land without changing
+anything above: a local entry is routed as a `host` upstream (§4.3),
+exactly like `github` and `gurt`, so `resources/proxy/gurt-proxy.mjs`
+is untouched and the container still sees only a proxy URL and an opaque
+token. What that document does change is §2.1, which gains a second
+adversary.

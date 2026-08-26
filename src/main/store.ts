@@ -155,35 +155,89 @@ export const STORED_AGENTS = z.record(z.string(), z.unknown()).catch({})
 /**
  * One `workspace.json` MCP registry entry as it may actually be on disk —
  * hand-edited, like agents.json, so nothing is trusted. A malformed field
- * degrades to "absent" (`.catch`) and an entry missing `id`/`url` is dropped by
- * `STORED_MCP_SERVERS` rather than emptying the registry.
+ * degrades to "absent" (`.catch`) and an entry missing what its kind requires
+ * is dropped by `liftMcpServers` rather than emptying the registry.
+ *
+ * One schema per kind, dispatched on `kind` by hand rather than through a zod
+ * discriminated union, because the discriminant is *optional*: a record with no
+ * `kind` is an http entry written before the local kinds existed, and reading
+ * those unchanged is the whole compatibility promise
+ * (docs/requirements-mcp-stdio.md §3.1).
  */
-const STORED_MCP_SERVER = z.looseObject({
+const STORED_MCP_COMMON = {
   id: z.string(),
   label: z.string().optional().catch(undefined),
+  credentialId: z.string().optional().catch(undefined)
+}
+
+const STORED_MCP_HTTP = z.looseObject({
+  ...STORED_MCP_COMMON,
+  kind: z.literal('http').optional().catch(undefined),
   url: z.string(),
   headers: z
     .array(z.object({ name: z.string(), value: z.string() }))
     .optional()
-    .catch(undefined),
-  credentialId: z.string().optional().catch(undefined)
+    .catch(undefined)
+})
+
+/** The fields the two local kinds share. `env` degrades as a whole: a single
+ *  non-string value makes the map unreadable, and half an environment is worse
+ *  than none. */
+const STORED_MCP_LOCAL = {
+  ...STORED_MCP_COMMON,
+  args: z.array(z.string()).optional().catch(undefined),
+  env: z.record(z.string(), z.string()).optional().catch(undefined),
+  credentialEnvVar: z.string().optional().catch(undefined)
+}
+
+const STORED_MCP_NPM = z.looseObject({
+  ...STORED_MCP_LOCAL,
+  kind: z.literal('npm'),
+  package: z.string(),
+  version: z.string().optional().catch(undefined)
+})
+
+const STORED_MCP_COMMAND = z.looseObject({
+  ...STORED_MCP_LOCAL,
+  kind: z.literal('command'),
+  command: z.string(),
+  cwd: z.string().optional().catch(undefined)
 })
 
 /** The `mcpServers` array itself: entries stay `unknown` so one bad record is
  *  skipped, and a non-array (or absent) field reads as "no registry". */
 const STORED_MCP_SERVERS = z.array(z.unknown()).catch([])
 
+/** Lift one stored record, or nothing when it is not a readable entry of any
+ *  kind. An unknown `kind` is dropped rather than read as http: a record whose
+ *  transport this build does not understand must not be spawned or called. */
+function liftMcpServer(record: unknown): McpRegistryEntry | undefined {
+  const kind = (record as { kind?: unknown } | null)?.kind ?? 'http'
+  if (kind === 'npm') {
+    const parsed = STORED_MCP_NPM.safeParse(record)
+    if (!parsed.success || !parsed.data.package) return undefined
+    return normalizeMcpEntry(parsed.data)
+  }
+  if (kind === 'command') {
+    const parsed = STORED_MCP_COMMAND.safeParse(record)
+    if (!parsed.success || !parsed.data.command) return undefined
+    return normalizeMcpEntry(parsed.data)
+  }
+  if (kind !== 'http') return undefined
+  const parsed = STORED_MCP_HTTP.safeParse(record)
+  if (!parsed.success || !parsed.data.url) return undefined
+  return normalizeMcpEntry(parsed.data)
+}
+
 /** Lift the stored array into entries, dropping records that are not one. */
 function liftMcpServers(raw: unknown): McpRegistryEntry[] {
   const out: McpRegistryEntry[] = []
   const seen = new Set<string>()
   for (const record of STORED_MCP_SERVERS.parse(raw)) {
-    const parsed = STORED_MCP_SERVER.safeParse(record)
-    if (!parsed.success) continue
-    const entry = normalizeMcpEntry(parsed.data)
+    const entry = liftMcpServer(record)
     // A duplicate id would make `mcpServers` ambiguous for every consumer; the
     // first one wins, exactly as `mcpEntries` resolves it.
-    if (!entry.id || !entry.url || seen.has(entry.id)) continue
+    if (!entry || !entry.id || seen.has(entry.id)) continue
     seen.add(entry.id)
     out.push(entry)
   }
