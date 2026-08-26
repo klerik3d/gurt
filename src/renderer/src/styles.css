@@ -2547,6 +2547,10 @@ textarea.input {
   background: var(--app);
   border: 1px solid var(--border);
   border-radius: 10px;
+  /* .set-content scrolls (overflow-y: auto), which promotes it to its own
+     compositor layer — without clipping here that layer paints a square
+     corner over this border's curve. */
+  overflow: hidden;
 }
 .set-nav {
   width: 216px;
@@ -2555,7 +2559,6 @@ textarea.input {
   flex-direction: column;
   background: var(--surface);
   border-right: 1px solid var(--border);
-  border-radius: 10px 0 0 10px;
 }
 .set-nav-head {
   height: 44px;
