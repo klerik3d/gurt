@@ -111,6 +111,11 @@ export default function App() {
   const [newWorkspace, setNewWorkspace] = useState(false)
   const [deletingWorkspace, setDeletingWorkspace] = useState<string | null>(null)
   const [curWs, setCurWs] = useState<string | null>(null)
+  /** Titlebar workspace-switcher dropdown — the single place to change `curWs`
+   *  now, visible from every view (see the sidebar's now-static readout). */
+  const [wsMenuOpen, setWsMenuOpen] = useState(false)
+  const wsMenuRef = useRef<HTMLDivElement>(null)
+  useOutsideClose(wsMenuOpen, wsMenuRef, () => setWsMenuOpen(false))
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     const saved = Number(localStorage.getItem(SIDEBAR_WIDTH_KEY))
     return saved ? clampSidebar(saved) : SIDEBAR_DEFAULT
@@ -411,16 +416,22 @@ export default function App() {
     ? sessionStatus({ ...activeInfo, ...activity[activeInfo.id] })
     : null
 
-  const crumb =
+  // The workspace name itself is now the interactive `.tb-ws` button — this is
+  // only the rest of the breadcrumb, shown as plain text after it. Dropping
+  // `activeInfo.workspace` / `selection.ws` here is safe: selectSession/
+  // selectTask already keep curWs in step with whatever's open (see the note
+  // in selectSession about cross-workspace jumps), so the button's label is
+  // always in sync.
+  const crumbRest =
     view === 'settings'
-      ? `${ws?.name ?? 'gurt'} / settings`
+      ? 'settings'
       : view === 'dashboard'
-        ? `${ws?.name ?? 'gurt'} / dashboard`
+        ? 'dashboard'
         : activeInfo
-          ? `${activeInfo.workspace} / ${activeInfo.task} · ${activeInfo.title}`
+          ? `${activeInfo.task} · ${activeInfo.title}`
           : selection?.type === 'task'
-            ? `${selection.ws} / ${selection.task}`
-            : (ws?.name ?? 'gurt')
+            ? selection.task
+            : null
 
   const crumbDot = view === 'work' && activeStatus ? SESSION_DOT[activeStatus] : null
 
@@ -429,14 +440,65 @@ export default function App() {
       <div className="titlebar">
         <div className="tb-center">
           <div className="tb-crumb">
-            {crumbDot && (
-              <span
-                className={`dot dot-${crumbDot.tone}${crumbDot.pulse ? ' dot-pulse' : ''}`}
-                title={crumbDot.label}
-                style={{ width: 7, height: 7 }}
-              />
+            <div className="tb-ws" ref={wsMenuRef}>
+              <button className="tb-ws-btn" onClick={() => setWsMenuOpen((o) => !o)}>
+                {ws?.name ?? 'gurt'}
+                <Icon name="chevron" size={12} className="faint" />
+              </button>
+              {wsMenuOpen && (
+                <div className="menu tb-ws-menu">
+                  {tree?.workspaces.map((w) => (
+                    <div
+                      key={w.name}
+                      className={`menu-item ${w.name === ws?.name ? 'active' : ''}`}
+                      onMouseDown={(e) => {
+                        e.preventDefault()
+                        setWsMenuOpen(false)
+                        setCurWs(w.name)
+                      }}
+                    >
+                      <span style={{ flex: 1 }}>{w.name}</span>
+                      <button
+                        className="icon-sq sb-act"
+                        title="delete workspace"
+                        onMouseDown={(e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          setWsMenuOpen(false)
+                          setDeletingWorkspace(w.name)
+                        }}
+                      >
+                        <Icon name="trash" size={13} />
+                      </button>
+                    </div>
+                  ))}
+                  <div className="menu-sep" />
+                  <div
+                    className="menu-item"
+                    onMouseDown={(e) => {
+                      e.preventDefault()
+                      setWsMenuOpen(false)
+                      setNewWorkspace(true)
+                    }}
+                  >
+                    + new workspace
+                  </div>
+                </div>
+              )}
+            </div>
+            {crumbRest && (
+              <>
+                <span className="tb-crumb-sep">/</span>
+                {crumbDot && (
+                  <span
+                    className={`dot dot-${crumbDot.tone}${crumbDot.pulse ? ' dot-pulse' : ''}`}
+                    title={crumbDot.label}
+                    style={{ width: 7, height: 7 }}
+                  />
+                )}
+                <span className="tb-crumb-rest">{crumbRest}</span>
+              </>
             )}
-            {crumb}
           </div>
         </div>
         <div className="tb-icons">
@@ -502,9 +564,6 @@ export default function App() {
               selection={selection}
               changes={changes}
               activity={activity}
-              onPickWorkspace={setCurWs}
-              onNewWorkspace={() => setNewWorkspace(true)}
-              onDeleteWorkspace={setDeletingWorkspace}
               onNewSession={(w, t) => setNewSession({ ws: w, task: t })}
               onSelectTask={selectTask}
               onSelectSession={selectSession}
