@@ -97,6 +97,9 @@ const SAFE_ARGS = new Set([
   'removeEnv',
   'getMcpServers',
   'removeMcpServer',
+  // A workspace and an entry id — the package it reinstalls is read from the
+  // registry, not passed in.
+  'reinstallMcpServer',
   'createTask',
   'removeTask',
   'renameTask',

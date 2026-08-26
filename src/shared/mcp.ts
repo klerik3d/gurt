@@ -804,3 +804,81 @@ export function parseMcpSnippet(input: unknown): McpSnippetResult {
     }
   return entryFromSnippetBody(id, body)
 }
+
+// --- a local server that did not start (docs/requirements-mcp-stdio.md §8.2) -
+
+/**
+ * One local server a session selected and did not get. Produced by
+ * `mcp/manager.ts`, carried on the bus as `mcp.fail`, rendered in the session
+ * pane — which is why it lives here rather than in either end.
+ *
+ * `err` is the reason and nothing else. The child's environment is where a
+ * local entry's credential lands (§3.4) and is never logged, never carried and
+ * never shown (§7).
+ */
+export interface McpFailure {
+  id: string
+  kind: McpEntryKind
+  err: string
+}
+
+/** Every local server one session asked for and did not get — the whole set,
+ *  not a delta, so an empty `failures` is how a session that has recovered
+ *  clears the last one (the shape `proxy.traffic` uses, for the same reason). */
+export interface SessionMcpFailures {
+  sessionId: string
+  failures: McpFailure[]
+}
+
+// --- what the editor needs, kept pure (docs/requirements-mcp-stdio.md §8.2) --
+
+/** One environment entry as the editor holds it: ordered, and editable while
+ *  its name is still blank. `env` on disk is a record, which has neither
+ *  property. */
+export interface McpEnvRow {
+  name: string
+  value: string
+}
+
+/** A local entry's `env` as rows to edit, in insertion order — which is the
+ *  order a pasted snippet listed them in. */
+export const mcpEnvRows = (env: Readonly<Record<string, string>> | undefined): McpEnvRow[] =>
+  Object.entries(env ?? {}).map(([name, value]) => ({ name, value }))
+
+/** Rows back to a record: names trimmed, blank rows dropped, the last of a
+ *  repeated name winning — the same collapse `normalizeMcpEntry` would do,
+ *  done early so what the editor validates is what it saves. */
+export function mcpEnvRecord(rows: readonly McpEnvRow[]): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const row of rows) {
+    const name = row.name.trim()
+    if (name) out[name] = row.value
+  }
+  return out
+}
+
+/** Names a README fills in with a real secret. Substring, not exact: the
+ *  ecosystem spells it `GITHUB_TOKEN`, `API_KEY`, `SLACK_BOT_TOKEN`,
+ *  `NOTION_API_SECRET`, `DB_PASSWORD`. */
+const SECRET_ENV_NAME_RE = /TOKEN|SECRET|PASSWORD|PASSWD|APIKEY|API_KEY|_KEY$|^KEY$|CREDENTIAL/i
+/** The value a README puts there *instead* of a secret: `<your token>`,
+ *  `YOUR_API_KEY_HERE`, `xxxxxxxx`, `…`. Storing one of those in the credential
+ *  store would be storing a placeholder as if it were a key. */
+const PLACEHOLDER_VALUE_RE = /^(<.*>|\{.*\}|\[.*\]|x+|\.+|…+|-+|your[-_ ].*|.*[-_ ]here)$/i
+
+/**
+ * Whether this `env` pair looks like a secret a user pasted out of a README, and
+ * so should be offered a credential link rather than a resting place in
+ * `workspace.json` (§5). A heuristic, and deliberately a loud one: a false
+ * positive costs one dismissed suggestion, a false negative is a token in a file
+ * meant to be shared and committed.
+ *
+ * A placeholder value is *not* a secret — there is nothing to store, and "keep
+ * `<your token>` in the credential store" is worse advice than none.
+ */
+export function looksLikeSecretEnv(name: string, value: string): boolean {
+  const v = value.trim()
+  if (v.length < 8) return false
+  if (PLACEHOLDER_VALUE_RE.test(v)) return false
+  return SECRET_ENV_NAME_RE.test(name)
+}

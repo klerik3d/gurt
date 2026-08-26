@@ -1,16 +1,20 @@
 # Requirements: local (stdio) MCP servers
 
-Status: implemented (phase 1) · Target: gurt Electron MVP (this repo)
+Status: implemented (phases 1 and 2) · Target: gurt Electron MVP (this repo)
 
 This document is a work order for an implementing agent, and the
-as-built record of what phase 1 landed. Read
+as-built record of what landed. Read
 `requirements-mcp-proxy.md` first — this is an extension of its registry
 (§3.1) and of its routing (§4.3), and it changes neither. Key code:
 `src/shared/mcp.ts` (the entry model, the validator, the snippet
 parser), `src/main/mcp/stdioBridge.ts` (new), `src/main/mcp/manager.ts`
 (the built-in/local split and the refcount), `src/main/proxy/config.ts`
 (`planProxy`), `src/main/store.ts` (`liftMcpServers`), `src/main/ipc.ts`
-(the save-time checks).
+(the save-time checks and `reinstallMcpServer`), and — phase 2 —
+`src/renderer/src/components/SettingsPage.tsx` (the kind picker, the
+paste field and the per-kind editor), `src/renderer/src/useMcp.ts`
+(`useMcpFailures`) and `src/renderer/src/components/tags.tsx`
+(`McpFailBanner`).
 
 > **Extends** `requirements-mcp-proxy.md`: §14 no longer lists
 > stdio/local-process MCP servers as out of scope, and §2.1's threat
@@ -374,7 +378,7 @@ The install is stamped: `~/.gurt/mcp/<id>/gurt-install.json` records the
 run. A start reinstalls only when the requested spec differs from the
 stamp. So `version: 'latest'` means "whatever latest was when I saved
 this", pinned from then on; a user who wants a newer one re-saves the
-entry (phase 2 gives that a button), and a user who pins a version gets
+entry, or presses **Reinstall** in its editor (§8), and a user who pins a version gets
 a reinstall when they change it and never otherwise.
 
 `npm` itself is still resolved from the PATH — it is the one host tool
@@ -467,8 +471,8 @@ memory.
 
 `parseMcpSnippet` (`src/shared/mcp.ts`) is a pure function from a
 published snippet to a registry entry. It is in `shared/` and has no
-`node:` imports, so the phase-2 UI calls it directly on paste and the
-tests exercise it without a UI at all.
+`node:` imports, so the editor's paste field calls it directly on paste
+and the tests exercise it without a UI at all.
 
 It accepts, in the shapes the ecosystem actually ships:
 
@@ -510,8 +514,12 @@ decisions, and batching that into one paste hides all three.
 the wrong resting place for a secret: a snippet's `env` is where
 READMEs put `"GITHUB_TOKEN": "<your token>"`, and `workspace.json` is a
 plain file meant to be shared and committed. Moving such a value to a
-credential link is a phase-2 UI affordance (§8), not something this
-function should do silently.
+credential link is the *editor's* job (§8), not something this function
+should do silently: `looksLikeSecretEnv` marks the pair, the editor lifts
+it out of the entry and the save turns it into an `mcp-token` credential
+linked by `credentialId` + `credentialEnvVar`. A placeholder
+(`<your token>`, `YOUR_API_KEY_HERE`) is explicitly not a secret — there
+is nothing to store, and storing it would be worse than leaving it.
 
 ## 6. Lifecycle: one process per entry, refcounted from the live sessions
 
@@ -620,19 +628,42 @@ New slugs, for `docs/logging.md`'s dictionary:
    upstream. An entry is created by editing `workspace.json` and works
    end to end from there: selected in the composer, spawned on start,
    reached by the agent through the proxy.
-2. **UI.** Settings → MCP servers grows a kind picker and a **paste**
-   field wired to `parseMcpSnippet`; the local fields (package/version,
-   command/cwd, args, env rows, credential + env var name); the
-   `LOCAL_MCP_NOTICE` line on the row, in the editor and in the
-   composer's picker; a "reinstall / update" action for an `npm` entry
-   (which is just a re-save with the same spec, forcing the stamp);
-   surfacing `mcp.fail`'s reason in the session pane instead of only in
-   the app log; and an affordance for moving a pasted `env` value into a
-   credential link (§5).
+2. **UI** (done). `SettingsPage.tsx` no longer shows a local entry
+   read-only: `+ Add` is a choice of the three kinds, and
+   `McpServerModal` branches on `kind` — url + headers for `http`,
+   package + version for `npm`, command + cwd for `command`, argv and
+   `env` rows for both local kinds, and a credential that resolves into
+   a named environment variable rather than a header (§3.4).
 
-   Until phase 2 lands, `SettingsPage.tsx` shows local entries read-only
-   — the existing editor knows only the remote shape, and opening a
-   local entry in it would rewrite it into an http entry on save.
+   What the phase is *for* is the paste field: a textarea calling
+   `parseMcpSnippet` on paste and spreading the result across the form —
+   kind, id, package/version, argv, env — so the six lines in a README
+   become a saved entry without a field being retyped. A `uvx` or
+   `docker` snippet switches the form to `command` instead of being
+   refused. The parser's error is already a sentence written for a
+   person, so it is shown verbatim.
+
+   The rest of the phase, in one list: `LOCAL_MCP_NOTICE` as visible text
+   (not only a tooltip) on the settings row, in the editor and in the
+   composer's picker, per §2's first obligation; a **Reinstall** button
+   for an `npm` entry (`reinstallMcpServer` → `clearNpmInstall`, which
+   drops the stamp so the next start resolves the spec again — §4.2);
+   `mcp.fail` carried off the host process as a bus event
+   (`mcp/manager.ts` → `onMcpFailures` → `bus` → `mcp-fail` → the session
+   pane's banner) so a process that would not start says *why* where the
+   user is working, carrying the reason and never the environment (§7);
+   and a pasted `env` value that looks like a secret lifted out of the
+   entry by default (`looksLikeSecretEnv`) into a credential the save
+   creates, rather than resting in `workspace.json` (§5).
+
+   Two things this phase deliberately did **not** grow. There is still no
+   read-only mode for a registry entry — `mcpHasModes` stays
+   `source === 'builtin'` for the reason in §3.3, and a local server's
+   own read-only flag is rendered as part of the argv where the user put
+   it. And `resources/proxy/gurt-proxy.mjs` and `stdioBridge.ts`'s
+   routing are untouched: this phase is a renderer phase, plus the one
+   IPC method and the one event that a renderer cannot invent for
+   itself.
 
 ## 9. Acceptance
 

@@ -2705,6 +2705,98 @@ textarea.input {
   align-items: center;
   gap: 8px;
 }
+/* Transport picker: three shapes, chosen before the form (stdio §3). */
+.seg {
+  display: flex;
+  gap: 6px;
+}
+.seg-btn {
+  flex: 1;
+  padding: 7px 10px;
+  font-size: 12px;
+  color: var(--dim);
+  background: var(--app);
+  border: 1px solid var(--border2);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.seg-btn:hover {
+  color: var(--text);
+}
+.seg-btn.active {
+  color: var(--text);
+  border-color: var(--accent);
+}
+/* The `+ Add` kind menu hangs off the button's right edge, not the header's. */
+.pick-menu.right {
+  left: auto;
+  right: 0;
+  min-width: 300px;
+}
+.menu-item .menu-hint {
+  margin-left: auto;
+  padding-left: 12px;
+  font-size: 11px;
+  color: var(--faint);
+}
+/* A pasted snippet, and the argv/env blocks next to it. */
+.snippet-input {
+  resize: vertical;
+  line-height: 1.5;
+}
+.cred-env-var {
+  width: 190px;
+  flex: none;
+}
+/*
+ * "Runs on your machine, unsandboxed, with your privileges." — the same line on
+ * the settings row, in the editor and in the composer's picker
+ * (docs/requirements-mcp-stdio.md §2). Yellow, because it is the one thing on
+ * these screens that is not bounded by the session container.
+ */
+.mcp-local-note {
+  font-size: 10.5px;
+  color: var(--yellow);
+  flex: none;
+}
+.pick-wrap > .mcp-local-note {
+  padding: 0 12px 8px 29px;
+}
+.mcp-notice {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 11px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--yellow);
+  background: var(--app);
+  border: 1px solid var(--border2);
+  border-radius: 9px;
+}
+/* A local MCP server that did not start, in the session pane (§8.2): the
+   reason, never the environment (§7). */
+.mcp-fail {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 10px 7% 0;
+  padding: 9px 11px;
+  background: var(--app);
+  border: 1px solid var(--border2);
+  border-radius: 9px;
+}
+.mcp-fail-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--red);
+}
+.mcp-fail-why {
+  color: var(--dim);
+  white-space: pre-wrap;
+}
 .mcp-hdr .input:first-child {
   width: 190px;
   flex: none;

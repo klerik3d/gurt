@@ -8,7 +8,7 @@ import type { JSX } from 'react'
 import type { McpSelection, SessionNetwork, SessionRole } from '../../../shared/types'
 import type { DomainPolicy } from '../../../shared/proxy'
 import { explicitAllows } from '../../../shared/proxy'
-import type { ResolvedMcpSelection } from '../../../shared/mcp'
+import type { McpFailure, ResolvedMcpSelection } from '../../../shared/mcp'
 import { Icon, type IconName } from './icons'
 
 /** kind (an `AgentDef.id`) → glyph. Unmatched/custom kinds fall back to a
@@ -158,6 +158,36 @@ export function McpMarks({
       <Icon name="plug" size={11} className={missing ? undefined : 'faint'} />
       {resolved.map(mcpName).join(', ')}
     </span>
+  )
+}
+
+/**
+ * The local MCP servers this session selected and did not get, with the reason
+ * each one gave (docs/requirements-mcp-stdio.md §8.2).
+ *
+ * A remote entry that cannot be reached fails per request, inside the agent's
+ * own tool call; a local one is a process that never came up, and until this
+ * banner the only trace of *why* was a line in `~/.gurt/logs`. The session still
+ * runs — a server that will not start does not fail a start (§6) — so nothing
+ * else on this pane would say it.
+ *
+ * The reason and nothing else: a local server's environment is where its
+ * credential lands, and it is never carried this far (§7).
+ */
+export function McpFailBanner({ failures }: { failures: McpFailure[] }): JSX.Element | null {
+  if (!failures.length) return null
+  return (
+    <div className="mcp-fail">
+      {failures.map((f) => (
+        <div key={f.id} className="mcp-fail-row">
+          <Icon name="plug" size={11} />
+          <span className="mono">{f.id}</span>
+          <span className="mcp-fail-why">
+            did not start ({f.kind}) — {f.err}
+          </span>
+        </div>
+      ))}
+    </div>
   )
 }
 

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import type { SessionSnapshot, Tree } from '../../../shared/types'
 import { roleLocksClone, sessionRole, sessionStatus } from '../../../shared/types'
 import { agentKind, agentName, useAgents } from '../useAgents'
-import { useMcpEntries } from '../useMcp'
+import { useMcpEntries, useMcpFailures } from '../useMcp'
 import { resolveMcpSelection } from '../../../shared/mcp'
 import { alertDialog } from '../dialog'
 import { logErr } from '../log'
@@ -13,6 +13,7 @@ import {
   AgentTag,
   EnvRepoMarks,
   EnvTag,
+  McpFailBanner,
   McpMarks,
   McpTag,
   NetMark,
@@ -133,6 +134,7 @@ function NonStartedPane({
   const agents = useAgents()
   const mcpOffered = useMcpEntries(info.workspace)
   const mcp = resolveMcpSelection(info.mcp, mcpOffered)
+  const mcpFailures = useMcpFailures(sessionId)
   const [text, setText] = useState(info.startPrompt)
   const [editOpen, setEditOpen] = useState(false)
 
@@ -152,6 +154,9 @@ function NonStartedPane({
       {snapshot.startError && (
         <div className="error env-error">start failed: {snapshot.startError}</div>
       )}
+      {/* A local MCP server that would not start does not fail the session
+          (§6), so this is the only place its reason shows up. */}
+      <McpFailBanner failures={mcpFailures} />
       {/* A session that has run keeps what its proxy was seen doing, and this
           pane is where it lands once the session goes idle — which is exactly
           when someone asks why a host could not be reached (§8). */}

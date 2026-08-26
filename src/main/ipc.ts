@@ -14,8 +14,8 @@ import {
   credentialUsedBy,
   checkMcpEntryCredential
 } from './credentials'
-import { isLocalMcpEntry } from '../shared/mcp'
-import { checkMcpCommand } from './mcp/stdioBridge'
+import { isLocalMcpEntry, mcpEntryKind } from '../shared/mcp'
+import { checkMcpCommand, clearNpmInstall } from './mcp/stdioBridge'
 import {
   discoverDevcontainer,
   discoverDockerfiles,
@@ -87,6 +87,7 @@ export function registerIpc(): void {
   kernel.bus.on('session.turn', (e) => broadcast('session-turn', e))
   kernel.bus.on('provision.log', (e) => broadcast('provision-log', e))
   kernel.bus.on('proxy.traffic', (t) => broadcast('proxy-traffic', t))
+  kernel.bus.on('mcp.fail', (f) => broadcast('mcp-fail', f))
   kernel.bus.on('notification.created', (record) => broadcast('notification', record))
   kernel.bus.on('notification.read', (e) => broadcast('notification-read', e))
   kernel.bus.on('usage.changed', () => broadcast('usage-changed'))
@@ -186,6 +187,16 @@ export function registerIpc(): void {
     removeMcpServer: async (ws, id) => {
       await store.removeMcpServer(ws, id)
       kernel.bus.emit('tree.changed', undefined)
+    },
+    reinstallMcpServer: async (ws, id) => {
+      // Read the entry rather than trusting the caller's word for its kind:
+      // "reinstall" means nothing for a command or an http entry, and clearing
+      // a stamp that belongs to neither would be a silent no-op.
+      const entry = (await store.getMcpServers(ws)).find((e) => e.id === id)
+      if (!entry) throw new Error(`MCP server "${id}" is not in this workspace's registry`)
+      if (mcpEntryKind(entry) !== 'npm')
+        throw new Error(`MCP server "${id}" is not an npm entry — there is nothing to reinstall`)
+      await clearNpmInstall(id)
     },
     createTask: async (ws, name) => {
       await store.createTask(ws, name)

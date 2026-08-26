@@ -18,13 +18,13 @@ import type {
 import { sessionRole, sessionStatus } from '../../../shared/types'
 import { agentOptionView } from '../../../shared/agentConfig'
 import { agentKind, agentName, useAgents } from '../useAgents'
-import { useMcpEntries } from '../useMcp'
+import { useMcpEntries, useMcpFailures } from '../useMcp'
 import { resolveMcpSelection } from '../../../shared/mcp'
 import { alertDialog } from '../dialog'
 import { createLogger, logErr } from '../log'
 import { SESSION_DOT } from '../status'
 import { Icon, Dot } from './icons'
-import { AgentMark, EnvRepoMarks, McpMarks, NetMark, RoleMark } from './tags'
+import { AgentMark, EnvRepoMarks, McpFailBanner, McpMarks, NetMark, RoleMark } from './tags'
 import { TrafficPanel } from './Network'
 import { SessionMenu } from './SessionActions'
 import { VscodeButton } from './VscodeButton'
@@ -86,6 +86,7 @@ export function Chat({
   const agents = useAgents()
   // Up here with the other hooks: the snapshot guard below is an early return.
   const mcpOffered = useMcpEntries(snapshot?.info.workspace)
+  const mcpFailures = useMcpFailures(sessionId)
 
   const entries = snapshot?.entries ?? []
   const hasSnapshot = !!snapshot
@@ -291,6 +292,11 @@ export function Chat({
         <SessionMenu info={info} onSelect={onSelect} onDeleted={onDeleted} />
         {busy && <span className="chat-hint mono">esc to stop</span>}
       </div>
+
+      {/* A local MCP server that would not start does not fail the session
+          (§6): without this the agent would simply be missing tools, and the
+          reason would be in ~/.gurt/logs. */}
+      <McpFailBanner failures={mcpFailures} />
 
       <div className="feed-wrap">
         {lastUserEntry && (

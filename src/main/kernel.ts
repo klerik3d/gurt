@@ -6,7 +6,7 @@ import type { DiffTarget, ReviewState, Tree } from '../shared/types'
 import { isSessionRole, targetKey } from '../shared/types'
 import type { BootProgress, SessionDraftPatch } from '../shared/api'
 import { NOTIFICATION_DEFAULTS } from '../shared/notifications'
-import { resolveMcpServers, stopMcpServers } from './mcp/manager'
+import { onMcpFailures, resolveMcpServers, stopMcpServers } from './mcp/manager'
 import { ensureGurtServer, stopGurtServer } from './mcp/gurtServer'
 import { isDirty } from './provision'
 import * as store from './store'
@@ -109,6 +109,12 @@ export function createKernel(): Kernel {
   // and the bus, so a coalesced traffic change reaches the renderer the same
   // way every other session event does (§8).
   traffic.onChange((t) => bus.emit('proxy.traffic', t))
+
+  // Same seam for the local MCP servers: `mcp/manager.ts` is a module singleton
+  // too, and a server that would not start is a thing the session pane has to
+  // say out loud rather than leave in ~/.gurt/logs (requirements-mcp-stdio.md
+  // §8.2). The reason travels; the environment never does (§7).
+  onMcpFailures((f) => bus.emit('mcp.fail', f))
 
   // Review state is standalone (no dependency back into sessions — the kernel
   // itself joins the two where they meet, at lock acquisition).
