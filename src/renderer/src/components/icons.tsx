@@ -302,6 +302,7 @@ export function Icon({
 export function Logo({ size = 64, className }: { size?: number; className?: string }): JSX.Element {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" className={className}>
+      <rect x="1" y="1" width="22" height="22" rx="5" fill="none" stroke="var(--faint)" strokeWidth="1.2" />
       <circle cx="7.5" cy="7.5" r="3.4" fill="var(--green)" />
       <circle cx="16.5" cy="7.5" r="3.4" fill="var(--accent)" />
       <circle cx="7.5" cy="16.5" r="3.4" fill="var(--accent)" />
