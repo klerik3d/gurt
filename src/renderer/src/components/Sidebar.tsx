@@ -29,8 +29,7 @@ export function Sidebar({
   activity,
   onNewSession,
   onSelectTask,
-  onSelectSession,
-  onOpenPalette
+  onSelectSession
 }: {
   /** Current sidebar width in px (user-draggable). */
   width: number
@@ -45,7 +44,6 @@ export function Sidebar({
   onNewSession: (ws: string, task: string) => void
   onSelectTask: (ws: string, task: string) => void
   onSelectSession: (id: string) => void
-  onOpenPalette: () => void
 }) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const [creatingTask, setCreatingTask] = useState(false)
@@ -85,6 +83,24 @@ export function Sidebar({
     if (on && selection?.type === 'session') {
       const owner = wsData?.tasks.find((t) => t.sessions.some((s) => s.id === selection.id))
       if (owner?.name === task) onSelectTask(ws2, task)
+    }
+  }
+
+  /** Every task's collapse key, for the header's fold-all toggle. */
+  const allTaskKeys = wsData?.tasks.map((t) => `${wsData.name}/${t.name}`) ?? []
+  const allCollapsed = allTaskKeys.length > 0 && allTaskKeys.every((k) => collapsed.has(k))
+  const toggleCollapseAll = () => {
+    if (!wsData || !allTaskKeys.length) return
+    if (allCollapsed) {
+      setCollapsed(new Set())
+      return
+    }
+    setCollapsed(new Set(allTaskKeys))
+    // Same reasoning as setCollapse: a selected session about to be hidden
+    // moves the selection up to its task.
+    if (selection?.type === 'session') {
+      const owner = wsData.tasks.find((t) => t.sessions.some((s) => s.id === selection.id))
+      if (owner) onSelectTask(wsData.name, owner.name)
     }
   }
 
@@ -258,11 +274,16 @@ export function Sidebar({
     <aside className="sidebar" style={{ width }}>
       <div className="sb-head">
         <div className="sb-ws">
-          <span className="sb-ws-name">{ws ?? 'gurt'}</span>
+          <span className="sb-ws-name">Tasks</span>
         </div>
         <span className="spacer" />
-        <button className="icon-sq" title="Search · ⌘K" onClick={onOpenPalette}>
-          <Icon name="search" size={14} />
+        <button
+          className="icon-sq"
+          title={allCollapsed ? 'Expand all' : 'Collapse all'}
+          disabled={!allTaskKeys.length}
+          onClick={toggleCollapseAll}
+        >
+          <Icon name="fold" size={14} style={allCollapsed ? { transform: 'rotate(180deg)' } : undefined} />
         </button>
         <div className="sb-newtask" ref={taskPopRef}>
           <button

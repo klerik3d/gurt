@@ -14,7 +14,7 @@ import type {
 import { SESSION_ROLES, roleAllowsMultiRepo, sessionRole } from '../../../shared/types'
 import type { SessionDraftPatch } from '../../../shared/api'
 import type { McpEntry } from '../../../shared/mcp'
-import { mcpHasModes, resolveMcpSelection } from '../../../shared/mcp'
+import { LOCAL_MCP_NOTICE, isLocalMcpEntry, mcpHasModes, resolveMcpSelection } from '../../../shared/mcp'
 import { agentOptionView } from '../../../shared/agentConfig'
 import { agentKind, agentName, useAgents } from '../useAgents'
 import { useMcpEntries } from '../useMcp'
@@ -99,6 +99,10 @@ function McpRow({
   const ref = useRef<HTMLDivElement>(null)
   useOutsideClose(open, ref, () => setOpen(false))
   const modes = mcpHasModes(entry)
+  // Selecting this runs a process on the user's machine, so the picker says so
+  // where the choice is made — not only in Settings, and not only as a tooltip
+  // (docs/requirements-mcp-stdio.md §2).
+  const local = entry.source === 'registry' && isLocalMcpEntry(entry.entry)
   const on = mode != null
   const options = modes ? (['off', 'read-only', 'full'] as const) : (['off', 'on'] as const)
   const label = !on ? 'off' : modes ? mode : 'on'
@@ -120,6 +124,7 @@ function McpRow({
         <span className="pick-meta">{label}</span>
         <Icon name="chevron" size={12} className="faint" style={{ flex: 'none' }} />
       </button>
+      {local && <div className="mcp-local-note">{LOCAL_MCP_NOTICE}</div>}
       {open && (
         <div className="menu pick-menu">
           {options.map((m) => (

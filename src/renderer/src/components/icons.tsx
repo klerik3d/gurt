@@ -36,6 +36,7 @@ export type IconName =
   | 'agent-opencode'
   | 'agent-generic'
   | 'bell'
+  | 'fold'
 
 const PATHS: Record<IconName, JSX.Element> = {
   search: (
@@ -234,6 +235,14 @@ const PATHS: Record<IconName, JSX.Element> = {
       <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" />
       <path d="M13.73 21a2 2 0 0 1-3.46 0" />
     </>
+  ),
+  // Two stacked chevrons — collapse/expand-all toggle for the task tree.
+  // Rotated 180° in place for the opposite (expand) state.
+  fold: (
+    <>
+      <polyline points="7 6 12 11 17 6" />
+      <polyline points="7 13 12 18 17 13" />
+    </>
   )
 }
 
@@ -283,6 +292,21 @@ export function Icon({
       style={style}
     >
       {PATHS[name]}
+    </svg>
+  )
+}
+
+/** App mark — the same four-dot layout as the window/dock icon (three filled,
+ *  one outlined), redrawn flat for in-UI use (e.g. the session placeholder's
+ *  watermark) rather than embedding the packaged app-icon image. */
+export function Logo({ size = 64, className }: { size?: number; className?: string }): JSX.Element {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" className={className}>
+      <rect x="1" y="1" width="22" height="22" rx="5" fill="none" stroke="var(--faint)" strokeWidth="1.2" />
+      <circle cx="7.5" cy="7.5" r="3.4" fill="var(--green)" />
+      <circle cx="16.5" cy="7.5" r="3.4" fill="var(--accent)" />
+      <circle cx="7.5" cy="16.5" r="3.4" fill="var(--accent)" />
+      <circle cx="16.5" cy="16.5" r="3.4" fill="none" stroke="var(--faint)" strokeWidth="1.75" />
     </svg>
   )
 }

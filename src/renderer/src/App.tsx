@@ -12,7 +12,7 @@ import { applyLog, sessionStatus } from '../../shared/types'
 import type { NotificationRecord } from '../../shared/notifications'
 import { NOTIFICATION_RING_CAP } from '../../shared/notifications'
 import { SESSION_DOT, containerDot } from './status'
-import { Icon } from './components/icons'
+import { Icon, Logo } from './components/icons'
 import { EnvRepoMarks } from './components/tags'
 import { Sidebar, NameModal, DeleteWorkspaceModal } from './components/Sidebar'
 import { SessionPane } from './components/SessionPane'
@@ -603,7 +603,6 @@ export default function App() {
               onNewSession={(w, t) => createDraft(w, t)}
               onSelectTask={selectTask}
               onSelectSession={selectSession}
-              onOpenPalette={() => setPaletteOpen(true)}
             />
             <div className="sidebar-resizer" onMouseDown={startSidebarResize} />
             <main className="main">
@@ -632,8 +631,13 @@ export default function App() {
               )}
               {!selection && (
                 <div className="placeholder">
-                  select a session on the left, or press <span className="kbd">⌘K</span> to get
-                  started
+                  <div className="placeholder-logo">
+                    <Logo size={240} />
+                  </div>
+                  <div className="placeholder-text">
+                    select a session on the left, or press <span className="kbd">⌘K</span> to get
+                    started
+                  </div>
                 </div>
               )}
             </main>

@@ -130,6 +130,18 @@ export interface GurtApi {
   updateMcpServer(ws: string, entry: McpRegistryEntry): Promise<void>
   /** Remove an MCP server (blocked while a session's selection names it). */
   removeMcpServer(ws: string, id: string): Promise<void>
+  /**
+   * Reinstall an `npm` entry's package: drops the install stamp, so the next
+   * start resolves the spec against the registry again instead of reusing what
+   * is already under `~/.gurt/mcp/<id>/`.
+   *
+   * This is the button behind `version: 'latest'` — the pin is deliberate
+   * (docs/requirements-mcp-stdio.md §4.2), so "get a newer latest" has to be
+   * something the user asks for. Like every other registry change it takes
+   * effect the next time the server starts; a running process is not restarted
+   * under the sessions holding it (§10).
+   */
+  reinstallMcpServer(ws: string, id: string): Promise<void>
   createTask(ws: string, name: string): Promise<void>
   removeTask(ws: string, name: string): Promise<void>
   /** Rename a task; stops its containers and best-effort renames its branch in every clone. */
@@ -305,6 +317,7 @@ const METHODS = {
   addMcpServer: true,
   updateMcpServer: true,
   removeMcpServer: true,
+  reinstallMcpServer: true,
   createTask: true,
   removeTask: true,
   renameTask: true,
@@ -383,4 +396,7 @@ export interface GurtEvents {
   /** One session's observed traffic changed — coalesced in main, so this is a
    *  few per second at worst even under an `npm install`. */
   'proxy-traffic': DomainEvents['proxy.traffic']
+  /** The local MCP servers a session selected and did not get, with the reason
+   *  — the whole set per session, an empty one clearing it. */
+  'mcp-fail': DomainEvents['mcp.fail']
 }

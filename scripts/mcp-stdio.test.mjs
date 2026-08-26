@@ -44,14 +44,15 @@ await bundle({
       export {
         parseMcpSnippet, validateMcpEntry, normalizeMcpEntry, mcpEntries, mcpEntry,
         mcpEntryDetail, mcpEntryKind, mcpHasModes, mcpIdFromName, isLocalMcpEntry,
-        isHttpMcpEntry, npmPackageSpec, splitPackageSpec, LOCAL_MCP_NOTICE
+        isHttpMcpEntry, npmPackageSpec, splitPackageSpec, LOCAL_MCP_NOTICE,
+        mcpEnvRows, mcpEnvRecord, looksLikeSecretEnv
       } from ${S('src/shared/mcp.ts')}
       export { resolveMcpEnvSecret } from ${S('src/shared/credentials.ts')}
       export { planProxy } from ${S('src/main/proxy/config.ts')}
       export { localMcpWants, localMcpSpec } from ${S('src/main/mcp/manager.ts')}
       export {
         stdioFramer, encodeStdioMessage, isJsonRpcRequest, resolveHostCommand, hostPath,
-        checkMcpCommand, mcpInstallDir, startStdioBridge
+        checkMcpCommand, mcpInstallDir, startStdioBridge, clearNpmInstall
       } from ${S('src/main/mcp/stdioBridge.ts')}
       export { addMcpServer, getMcpServers, createWorkspace } from ${S('src/main/store.ts')}
     `,
@@ -699,6 +700,98 @@ test('a command that is not on this machine is refused when the entry is saved',
 
 test('an npm entry installs under ~/.gurt/mcp, keyed by its id', () => {
   assert.equal(m.mcpInstallDir('k8s'), path.join(GURT_ROOT, 'mcp', 'k8s'))
+})
+
+test('reinstall forgets the stamp and keeps the tree (§4.2, §8.2)', async () => {
+  // What the editor's Reinstall button does: no stamp means the next start
+  // resolves the spec again, which is the whole of "get a newer latest". The
+  // installed tree is left alone — a shared process may still be running out of
+  // it (§6), and `npm install` overwrites it in place anyway.
+  const dir = m.mcpInstallDir('stamped')
+  fs.mkdirSync(dir, { recursive: true })
+  fs.writeFileSync(path.join(dir, 'gurt-install.json'), '{"spec":"p@1","script":"/tmp/p.js"}')
+  fs.writeFileSync(path.join(dir, 'package.json'), '{}')
+  await m.clearNpmInstall('stamped')
+  assert.equal(fs.existsSync(path.join(dir, 'gurt-install.json')), false)
+  assert.equal(fs.existsSync(path.join(dir, 'package.json')), true)
+  // Clearing what was never there is not an error: the button is offered for
+  // every npm entry, including one that has never started.
+  await m.clearNpmInstall('never-installed')
+})
+
+// --- what the editor asks of the model (§8.2) -------------------------------
+
+test('env is edited as ordered rows and collapses back to a record', () => {
+  const rows = m.mcpEnvRows({ KUBECONFIG: '/tmp/kc', LOG: 'debug' })
+  assert.deepEqual(rows, [
+    { name: 'KUBECONFIG', value: '/tmp/kc' },
+    { name: 'LOG', value: 'debug' }
+  ])
+  assert.deepEqual(m.mcpEnvRows(undefined), [])
+  // A half-typed row (no name yet) is not an entry; a repeated name is the last
+  // one the user typed; a value keeps its own whitespace, which may be the point.
+  assert.deepEqual(
+    m.mcpEnvRecord([
+      { name: ' KUBECONFIG ', value: '/tmp/kc' },
+      { name: '', value: 'orphan' },
+      { name: 'LOG', value: 'debug' },
+      { name: 'LOG', value: 'trace' }
+    ]),
+    { KUBECONFIG: '/tmp/kc', LOG: 'trace' }
+  )
+  assert.deepEqual(m.mcpEnvRecord([]), {})
+})
+
+test('a pasted env value that is a secret is recognised, and a placeholder is not', () => {
+  // The case §5 names: a README's `env` is where a real token gets pasted, and
+  // workspace.json is a plain file meant to be shared and committed.
+  assert.equal(m.looksLikeSecretEnv('GITHUB_TOKEN', 'ghp_ABCDEFGH0123456789'), true)
+  assert.equal(m.looksLikeSecretEnv('SLACK_BOT_TOKEN', 'xoxb-1234-5678-abcdefgh'), true)
+  assert.equal(m.looksLikeSecretEnv('NOTION_API_SECRET', 'secret_abcdefghij'), true)
+  assert.equal(m.looksLikeSecretEnv('api_key', 'AKIAIOSFODNN7EXAMPLE'), true)
+  assert.equal(m.looksLikeSecretEnv('DB_PASSWORD', 'hunter2hunter2'), true)
+
+  // A placeholder is not a secret: there is nothing to store, and storing it
+  // would put `<your token>` in the credential store as if it were a key.
+  assert.equal(m.looksLikeSecretEnv('GITHUB_TOKEN', '<your token here>'), false)
+  assert.equal(m.looksLikeSecretEnv('GITHUB_TOKEN', 'YOUR_API_KEY_HERE'), false)
+  assert.equal(m.looksLikeSecretEnv('GITHUB_TOKEN', 'xxxxxxxxxxxx'), false)
+  assert.equal(m.looksLikeSecretEnv('GITHUB_TOKEN', ''), false)
+  assert.equal(m.looksLikeSecretEnv('GITHUB_TOKEN', 'short'), false)
+
+  // A name that says nothing about secrecy is left alone, however long its value.
+  assert.equal(m.looksLikeSecretEnv('KUBECONFIG', '/Users/me/.kube/config'), false)
+  assert.equal(m.looksLikeSecretEnv('LOG_LEVEL', 'debugdebugdebug'), false)
+})
+
+test('the paste path a user actually walks: snippet in, editable fields out', () => {
+  // The acceptance scenario (§8.2): six lines from someone else's README,
+  // saved without editing a field.
+  const entry = parsed({
+    kubernetes: { command: 'npx', args: ['-y', 'kubernetes-mcp-server@latest', '--read-only'] }
+  })
+  assert.equal(m.mcpEntryKind(entry), 'npm')
+  assert.equal(entry.id, 'kubernetes')
+  assert.deepEqual(m.mcpEnvRows(entry.env), [])
+  // The form's own round-trip: what it read out is what it writes back.
+  assert.deepEqual(
+    m.normalizeMcpEntry({
+      kind: 'npm',
+      id: entry.id,
+      label: '',
+      package: entry.package,
+      version: entry.version,
+      args: entry.args,
+      env: m.mcpEnvRecord(m.mcpEnvRows(entry.env))
+    }),
+    entry
+  )
+  assert.equal(m.validateMcpEntry(entry, { takenIds: [] }), null)
+
+  // And the uvx one, which must switch the form rather than be refused.
+  const uvx = parsed({ mcpServers: { git: { command: 'uvx', args: ['mcp-server-git'] } } })
+  assert.equal(m.mcpEntryKind(uvx), 'command')
+  assert.equal(uvx.command, 'uvx')
 })
 
 // --- the bridge end to end, against a real (tiny) stdio server --------------
