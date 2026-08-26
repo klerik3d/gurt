@@ -688,15 +688,38 @@ textarea.input {
   background: var(--app);
   border: 1px solid var(--border);
   border-radius: 10px;
+  /* Same fix as .settings: a full-bleed opaque child (.chat, .session-pane,
+     .task-pane) would otherwise square off this border's rounded corners. */
+  overflow: hidden;
 }
 
+/* 3x3 layout: the logo owns the whole center column as a faint watermark: the
+   copy sits in front of it, at the top of the bottom-center cell. */
 .placeholder {
   flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-rows: 1fr 1fr 1fr;
+}
+.placeholder-logo {
+  grid-column: 2;
+  grid-row: 1 / span 3;
   display: flex;
   align-items: center;
   justify-content: center;
+  opacity: 0.03;
+  pointer-events: none;
+}
+.placeholder-text {
+  grid-column: 2;
+  grid-row: 3;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
   gap: 6px;
+  padding-top: 22px;
   color: var(--faint);
+  text-align: center;
 }
 
 /* ---- sidebar ---- */
@@ -738,13 +761,12 @@ textarea.input {
 }
 
 .sb-head {
-  height: 44px;
+  height: 32px;
   flex: none;
   display: flex;
   align-items: center;
   gap: 4px;
   padding: 0 10px 0 8px;
-  border-bottom: 1px solid var(--border);
 }
 .sb-ws {
   min-width: 0;
