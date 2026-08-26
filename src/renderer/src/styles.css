@@ -505,10 +505,10 @@ textarea.input {
   height: 100%;
 }
 
-/* Title bar: 44px, traffic-light inset on the left. Floats on the shared
-   base fill — no border or background of its own. */
+/* Title bar: 36px (matches the footer), traffic-light inset on the left.
+   Floats on the shared base fill — no border or background of its own. */
 .titlebar {
-  height: 44px;
+  height: 36px;
   flex: none;
   display: flex;
   align-items: center;
@@ -550,24 +550,26 @@ textarea.input {
   -webkit-app-region: no-drag;
 }
 
+/* No top/bottom padding — the panels sit flush under the titlebar and flush
+   above the footer; the side gutter and inter-panel gaps stay. */
 .workbench {
   flex: 1;
   display: flex;
   min-height: 0;
-  padding: 8px;
+  padding: 0 4px;
 }
 
-/* Activity bar: 52px, three items. Floats on the shared base fill; only the
+/* Activity bar: 44px, three items. Floats on the shared base fill; only the
    sidebar/main panels below get an outline. */
 .activitybar {
-  width: 52px;
+  width: 44px;
   flex: none;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
-  padding: 10px 0;
-  margin-right: 8px;
+  gap: 3px;
+  padding: 5px 0;
+  margin-right: 4px;
 }
 .ab-item {
   width: 36px;
@@ -586,9 +588,9 @@ textarea.input {
   color: var(--text);
 }
 
-/* Footer: 26px status strip. Floats on the shared base fill. */
+/* Footer: 36px (matches the titlebar). Floats on the shared base fill. */
 .footer {
-  height: 26px;
+  height: 36px;
   flex: none;
   display: flex;
   align-items: center;
@@ -664,7 +666,7 @@ textarea.input {
    seam is draggable (col-resize), stacked parallel to it. */
 .sidebar-resizer {
   flex: none;
-  width: 10px;
+  width: 5px;
   cursor: col-resize;
   z-index: 5;
   display: flex;
@@ -673,19 +675,19 @@ textarea.input {
 }
 .sidebar-resizer::before {
   content: '';
-  width: 3px;
-  height: 3px;
+  width: 2px;
+  height: 2px;
   border-radius: 50%;
   background: var(--faint);
   box-shadow:
-    0 -7px 0 var(--faint),
-    0 7px 0 var(--faint);
+    0 -5px 0 var(--faint),
+    0 5px 0 var(--faint);
 }
 .sidebar-resizer:hover::before {
   background: var(--accent);
   box-shadow:
-    0 -7px 0 var(--accent),
-    0 7px 0 var(--accent);
+    0 -5px 0 var(--accent),
+    0 5px 0 var(--accent);
 }
 
 .sb-head {

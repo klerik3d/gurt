@@ -40,8 +40,8 @@ const SIDEBAR_MAX = 600
 const SIDEBAR_DEFAULT = 284
 const SIDEBAR_WIDTH_KEY = 'gurt.sidebarWidth'
 // Distance from the window edge to the sidebar's left border: .workbench's
-// 8px padding + the 52px activity bar + its 8px margin-right (styles.css).
-const SIDEBAR_LEFT_OFFSET = 68
+// 4px padding + the 44px activity bar + its 4px margin-right (styles.css).
+const SIDEBAR_LEFT_OFFSET = 52
 
 const clampSidebar = (w: number) => Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, w))
 
