@@ -135,7 +135,7 @@ console.log('credential persisted OK')
 
 // --- workspace + repo: the repo modal shows the credential resolution ---
 await openWork()
-await page.click('.sb-ws-btn')
+await page.click('.tb-ws-btn')
 await page.click('.menu-item:has-text("+ new workspace")')
 await page.waitForSelector('.modal input')
 await page.fill('.modal input', 'personal')

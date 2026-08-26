@@ -260,7 +260,7 @@ app.process().stdout.on('data', (d) => process.stdout.write(`[main] ${d}`))
 const page = await open(app)
 
 // workspace + task via UI (creates the dirs the clones go into)
-await page.click('.sb-ws-btn')
+await page.click('.tb-ws-btn')
 await page.click('text=+ new workspace')
 await page.waitForSelector('.modal input')
 await page.fill('.modal input', 'personal')

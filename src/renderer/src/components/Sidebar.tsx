@@ -51,9 +51,6 @@ export function Sidebar({
   selection,
   changes,
   activity,
-  onPickWorkspace,
-  onNewWorkspace,
-  onDeleteWorkspace,
   onNewSession,
   onSelectTask,
   onSelectSession,
@@ -69,17 +66,12 @@ export function Sidebar({
   changes: Record<string, RepoChanges[]>
   /** Live runtime overlay per session id — splits `started` into running/waiting/idle. */
   activity: Record<string, SessionActivity>
-  onPickWorkspace: (ws: string) => void
-  onNewWorkspace: () => void
-  onDeleteWorkspace: (ws: string) => void
   onNewSession: (ws: string, task: string) => void
   onSelectTask: (ws: string, task: string) => void
   onSelectSession: (id: string) => void
   onOpenPalette: () => void
 }) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
-  const [wsMenuOpen, setWsMenuOpen] = useState(false)
-  const wsMenuRef = useRef<HTMLDivElement>(null)
   const [creatingTask, setCreatingTask] = useState(false)
   const [taskDraftName, setTaskDraftName] = useState('')
   const taskPopRef = useRef<HTMLDivElement>(null)
@@ -99,22 +91,6 @@ export function Sidebar({
   const selectedRef = useRef<HTMLDivElement>(null)
 
   const wsData = tree?.workspaces.find((w) => w.name === ws)
-
-  useEffect(() => {
-    if (!wsMenuOpen) return
-    const onDown = (e: MouseEvent) => {
-      if (wsMenuRef.current && !wsMenuRef.current.contains(e.target as Node)) setWsMenuOpen(false)
-    }
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setWsMenuOpen(false)
-    }
-    document.addEventListener('mousedown', onDown)
-    document.addEventListener('keydown', onKey)
-    return () => {
-      document.removeEventListener('mousedown', onDown)
-      document.removeEventListener('keydown', onKey)
-    }
-  }, [wsMenuOpen])
 
   // Keyboard navigation can walk the selection out of view — follow it.
   useEffect(() => {
@@ -305,51 +281,8 @@ export function Sidebar({
   return (
     <aside className="sidebar" style={{ width }}>
       <div className="sb-head">
-        <div className="sb-ws" ref={wsMenuRef}>
-          <button className="sb-ws-btn" onClick={() => setWsMenuOpen((o) => !o)}>
-            <span className="sb-ws-name">{ws ?? 'gurt'}</span>
-            <Icon name="chevron" size={13} className="faint" />
-          </button>
-          {wsMenuOpen && (
-            <div className="menu sb-ws-menu">
-              {tree?.workspaces.map((w) => (
-                <div
-                  key={w.name}
-                  className={`menu-item ${w.name === ws ? 'active' : ''}`}
-                  onMouseDown={(e) => {
-                    e.preventDefault()
-                    setWsMenuOpen(false)
-                    onPickWorkspace(w.name)
-                  }}
-                >
-                  <span style={{ flex: 1 }}>{w.name}</span>
-                  <button
-                    className="icon-sq sb-act"
-                    title="delete workspace"
-                    onMouseDown={(e) => {
-                      e.preventDefault()
-                      e.stopPropagation()
-                      setWsMenuOpen(false)
-                      onDeleteWorkspace(w.name)
-                    }}
-                  >
-                    <Icon name="trash" size={13} />
-                  </button>
-                </div>
-              ))}
-              <div className="menu-sep" />
-              <div
-                className="menu-item"
-                onMouseDown={(e) => {
-                  e.preventDefault()
-                  setWsMenuOpen(false)
-                  onNewWorkspace()
-                }}
-              >
-                + new workspace
-              </div>
-            </div>
-          )}
+        <div className="sb-ws">
+          <span className="sb-ws-name">{ws ?? 'gurt'}</span>
         </div>
         <span className="spacer" />
         <button className="icon-sq" title="Search · ⌘K" onClick={onOpenPalette}>

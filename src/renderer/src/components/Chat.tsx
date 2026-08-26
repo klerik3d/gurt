@@ -58,6 +58,13 @@ const formatTokens = (n: number): string => (n >= 1000 ? `${(n / 1000).toFixed(1
  *  when jumping back to that message. */
 const PIN_BAR_CLEARANCE = 36
 
+/** Unsent composer text/context/images, kept outside React state so they survive
+ *  the remount `key={sessionId}` forces on every session switch (that key exists
+ *  to stop a *different* bug — stale text bleeding into the next session). Entries
+ *  are dropped once a draft goes back to empty, so switching away after sending
+ *  doesn't leak an entry per session for the life of the app. */
+const composerDrafts = new Map<string, { text: string; chips: PromptContext[]; images: PromptImage[] }>()
+
 export function Chat({
   snapshot,
   sessionId,
@@ -650,10 +657,11 @@ function Composer({
   configOptions: SessionConfigOption[]
   promptCaps?: PromptCapabilities | undefined
 }) {
-  const [text, setText] = useState('')
+  const draft = composerDrafts.get(sessionId)
+  const [text, setText] = useState(draft?.text ?? '')
   const [focused, setFocused] = useState(false)
-  const [chips, setChips] = useState<PromptContext[]>([])
-  const [images, setImages] = useState<PromptImage[]>([])
+  const [chips, setChips] = useState<PromptContext[]>(draft?.chips ?? [])
+  const [images, setImages] = useState<PromptImage[]>(draft?.images ?? [])
   const [slashOpen, setSlashOpen] = useState(false)
   const [addOpen, setAddOpen] = useState(false)
   const [gearOpen, setGearOpen] = useState(false)
@@ -695,6 +703,15 @@ function Composer({
 
   // Re-fit whenever the value changes (send clears it, pickCommand extends it).
   useEffect(autoGrow, [text])
+
+  // Mirror the draft into the module-level cache on every change, so it
+  // survives this component's remount on session switch. An empty draft is
+  // removed rather than stored, so a sent (or never-started) message doesn't
+  // leave a dangling entry behind.
+  useEffect(() => {
+    if (!text && chips.length === 0 && images.length === 0) composerDrafts.delete(sessionId)
+    else composerDrafts.set(sessionId, { text, chips, images })
+  }, [sessionId, text, chips, images])
 
   // Close the open popup on any click outside it (mousedown on the trigger
   // button lands inside the anchor, so it falls through to the button's own

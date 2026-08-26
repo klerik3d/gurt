@@ -35,7 +35,7 @@ body,
 body {
   font-family: var(--ui);
   font-size: 13px;
-  background: var(--app);
+  background: var(--surface);
   color: var(--text);
   -webkit-font-smoothing: antialiased;
 }
@@ -505,16 +505,15 @@ textarea.input {
   height: 100%;
 }
 
-/* Title bar: 44px, traffic-light inset on the left. */
+/* Title bar: 36px (matches the footer), traffic-light inset on the left.
+   Floats on the shared base fill — no border or background of its own. */
 .titlebar {
-  height: 44px;
+  height: 36px;
   flex: none;
   display: flex;
   align-items: center;
   gap: 14px;
   padding: 0 12px 0 78px;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
   -webkit-app-region: drag;
 }
 .tb-center {
@@ -535,6 +534,53 @@ textarea.input {
   font-family: var(--mono);
   font-size: 12px;
   color: var(--dim);
+}
+/* Workspace switcher — the titlebar breadcrumb's interactive segment, usable
+   from every view (work/dashboard/settings), unlike the old sidebar-only one. */
+.tb-ws {
+  position: relative;
+  -webkit-app-region: no-drag;
+}
+.tb-ws-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: -3px -6px;
+  padding: 3px 6px;
+  border-radius: 6px;
+  font-weight: 600;
+  color: var(--text);
+  -webkit-app-region: no-drag;
+}
+.tb-ws-btn:hover {
+  background: var(--hover);
+}
+.tb-ws-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 180px;
+  -webkit-app-region: no-drag;
+}
+.tb-ws-menu .menu-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.tb-ws-menu .menu-item .sb-act {
+  visibility: hidden;
+  width: 22px;
+  height: 22px;
+  margin: -4px -6px -4px 0;
+}
+.tb-ws-menu .menu-item:hover .sb-act {
+  visibility: visible;
+}
+.tb-crumb-sep {
+  color: var(--faint);
+}
+.tb-crumb-rest {
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -551,23 +597,26 @@ textarea.input {
   -webkit-app-region: no-drag;
 }
 
+/* No top/bottom padding — the panels sit flush under the titlebar and flush
+   above the footer; the side gutter and inter-panel gaps stay. */
 .workbench {
   flex: 1;
   display: flex;
   min-height: 0;
+  padding: 0 4px;
 }
 
-/* Activity bar: 52px, three items. */
+/* Activity bar: 44px, three items. Floats on the shared base fill; only the
+   sidebar/main panels below get an outline. */
 .activitybar {
-  width: 52px;
+  width: 44px;
   flex: none;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
-  padding: 10px 0;
-  background: var(--surface);
-  border-right: 1px solid var(--border);
+  gap: 3px;
+  padding: 5px 0;
+  margin-right: 4px;
 }
 .ab-item {
   width: 36px;
@@ -586,16 +635,14 @@ textarea.input {
   color: var(--text);
 }
 
-/* Footer: 26px status strip. */
+/* Footer: 36px (matches the titlebar). Floats on the shared base fill. */
 .footer {
-  height: 26px;
+  height: 36px;
   flex: none;
   display: flex;
   align-items: center;
   gap: 14px;
   padding: 0 16px;
-  background: var(--surface);
-  border-top: 1px solid var(--border);
   font-family: var(--mono);
   font-size: 10.5px;
   color: var(--faint);
@@ -639,6 +686,8 @@ textarea.input {
   flex-direction: column;
   min-width: 0;
   background: var(--app);
+  border: 1px solid var(--border);
+  border-radius: 10px;
 }
 
 .placeholder {
@@ -655,20 +704,37 @@ textarea.input {
 .sidebar {
   flex: none;
   background: var(--app);
-  border-right: 1px solid var(--border);
+  border: 1px solid var(--border);
+  border-radius: 10px;
   display: flex;
   flex-direction: column;
 }
+/* Sits in the gap between sidebar and main; the three dots hint that the
+   seam is draggable (col-resize), stacked parallel to it. */
 .sidebar-resizer {
   flex: none;
   width: 5px;
-  margin-left: -3px;
   cursor: col-resize;
   z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
-.sidebar-resizer:hover {
+.sidebar-resizer::before {
+  content: '';
+  width: 2px;
+  height: 2px;
+  border-radius: 50%;
+  background: var(--faint);
+  box-shadow:
+    0 -5px 0 var(--faint),
+    0 5px 0 var(--faint);
+}
+.sidebar-resizer:hover::before {
   background: var(--accent);
-  opacity: 0.4;
+  box-shadow:
+    0 -5px 0 var(--accent),
+    0 5px 0 var(--accent);
 }
 
 .sb-head {
@@ -681,19 +747,8 @@ textarea.input {
   border-bottom: 1px solid var(--border);
 }
 .sb-ws {
-  position: relative;
   min-width: 0;
-}
-.sb-ws-btn {
-  display: flex;
-  align-items: center;
-  gap: 8px;
   padding: 4px 6px;
-  border-radius: 7px;
-  min-width: 0;
-}
-.sb-ws-btn:hover {
-  background: var(--hover);
 }
 .sb-ws-name {
   font-weight: 600;
@@ -702,26 +757,6 @@ textarea.input {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-.sb-ws-menu {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  min-width: 180px;
-}
-.sb-ws-menu .menu-item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.sb-ws-menu .menu-item .sb-act {
-  visibility: hidden;
-  width: 22px;
-  height: 22px;
-  margin: -4px -6px -4px 0;
-}
-.sb-ws-menu .menu-item:hover .sb-act {
-  visibility: visible;
 }
 .sb-newtask {
   position: relative;
@@ -2509,6 +2544,13 @@ textarea.input {
   flex: 1;
   display: flex;
   min-width: 0;
+  background: var(--app);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  /* .set-content scrolls (overflow-y: auto), which promotes it to its own
+     compositor layer — without clipping here that layer paints a square
+     corner over this border's curve. */
+  overflow: hidden;
 }
 .set-nav {
   width: 216px;

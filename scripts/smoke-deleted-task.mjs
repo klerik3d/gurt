@@ -79,6 +79,10 @@ page.on('pageerror', (e) => console.log('[pageerror]', e.message))
 const shot = (name) => page.screenshot({ path: path.join(SHOT_DIR, `${name}.png`) })
 const diskTasks = () =>
   fs.readdirSync(path.join(GURT_ROOT, ws)).filter((d) => d !== 'workspace.json')
+// The breadcrumb's workspace segment is now its own flex child (the titlebar
+// switcher button), so innerText's line-break-per-block-box rule inserts
+// newlines around it — collapse to spaces for a plain-text comparison.
+const crumbText = async () => (await page.locator('.tb-crumb').innerText()).replace(/\s+/g, ' ').trim()
 
 try {
   await page.waitForSelector('.sidebar', { timeout: 15000 })
@@ -94,11 +98,7 @@ try {
     timeout: 10000
   })
   assert.deepEqual(diskTasks(), [], 'the deleted task dir is gone from disk')
-  assert.equal(
-    await page.locator('.tb-crumb').innerText(),
-    ws,
-    'the selection of the deleted task is dropped'
-  )
+  assert.equal(await crumbText(), ws, 'the selection of the deleted task is dropped')
   console.log('task deleted from tree and disk OK')
 
   // Open the new-session modal. It must NOT prefill the deleted task — the
@@ -150,11 +150,7 @@ try {
     1,
     'the new session is selected, not pruned as unknown to the tree'
   )
-  assert.match(
-    await page.locator('.tb-crumb').innerText(),
-    /w \/ n · /,
-    'the new session pane is open'
-  )
+  assert.match(await crumbText(), /w \/ n · /, 'the new session pane is open')
   await shot('02-session-in-new-task')
   console.log('session created under the new task, not the deleted one OK')
 

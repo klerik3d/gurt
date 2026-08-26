@@ -31,7 +31,7 @@ page.on('pageerror', (e) => console.log('[pageerror]', e.message))
 await page.waitForSelector('.sidebar', { timeout: 15000 })
 
 // New workspace, so there's somewhere to create a task.
-await page.click('.sb-ws-btn')
+await page.click('.tb-ws-btn')
 await page.click('text=+ new workspace')
 await page.waitForSelector('.modal input')
 await page.fill('.modal input', 'acme')
