@@ -935,6 +935,31 @@ textarea.input {
   padding: 0 20px;
   border-bottom: 1px solid var(--border);
 }
+.tab-bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+.tab-btn {
+  font-family: var(--ui);
+  font-weight: 500;
+  font-size: 12px;
+  color: var(--dim);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  padding: 5px 11px;
+  cursor: pointer;
+}
+.tab-btn:hover {
+  color: var(--text);
+  background: var(--hover);
+}
+.tab-btn.active {
+  color: var(--text);
+  background: var(--panel);
+}
 .chat-title {
   font-weight: 600;
   font-size: 13.5px;
@@ -1755,6 +1780,8 @@ textarea.input {
 .ns-body {
   display: flex;
   flex-direction: column;
+  flex: 1;
+  min-height: 0;
   padding: 16px 22px 18px;
   overflow-y: auto;
 }

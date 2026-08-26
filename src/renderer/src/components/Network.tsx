@@ -37,7 +37,7 @@ function blockedWhy(h: TrafficHost, internal: boolean): string {
   // one: it is what applies *because* the allow list is empty, so the fix — and
   // its cost, since one entry closes everything else — has to be said in full.
   if (h.reason === BUILTIN_DENY_REASON)
-    return `gurt refuses proxied egress to ${BUILTIN_DENY_SUMMARY} by default — either directly or because the name resolved to one. Add it under Edit settings → Harness config → Network → allow list if this session is meant to reach it; note that any entry there also restricts the session to the listed destinations.`
+    return `gurt refuses proxied egress to ${BUILTIN_DENY_SUMMARY} by default — either directly or because the name resolved to one. Add it under the Config tab → Harness config → Network → allow list if this session is meant to reach it; note that any entry there also restricts the session to the listed destinations.`
   const by =
     h.reason === 'allowlist'
       ? "it is not on this session's allow list"
@@ -104,7 +104,7 @@ export function TrafficPanel({
               : `this session was blocked reaching ${traffic.blocked.length} hosts by its network policy`}
             {' — '}
             {internal
-              ? 'add it under Edit settings → Harness config → Network to let it through (applies at the next start)'
+              ? 'add it under the Config tab → Harness config → Network to let it through (applies at the next start)'
               : 'nothing was actually cut off: on an open network the proxy only refuses the traffic that came through it'}
           </div>
           {traffic.blocked.map((h) => (

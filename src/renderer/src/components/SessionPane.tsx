@@ -8,23 +8,12 @@ import { alertDialog } from '../dialog'
 import { logErr } from '../log'
 import { SESSION_DOT } from '../status'
 import { Dot } from './icons'
-import {
-  AgentMark,
-  AgentTag,
-  EnvRepoMarks,
-  EnvTag,
-  McpMarks,
-  McpTag,
-  NetMark,
-  NetTag,
-  RepoTag,
-  RoleMark,
-  RoleTag
-} from './tags'
+import { AgentMark, EnvRepoMarks, McpMarks, NetMark, RoleMark } from './tags'
 import { TrafficPanel } from './Network'
 import { Chat } from './Chat'
+import { ConfigTab } from './ConfigTab'
 import { SessionMenu, deleteSession, duplicateSession } from './SessionActions'
-import { NewSessionModal } from './Sidebar'
+import { TabBar, type SessionTab } from './SessionTabs'
 import { VscodeButton } from './VscodeButton'
 import { run } from '../async'
 
@@ -48,7 +37,16 @@ export function SessionPane({
 }) {
   if (!snapshot) return <div className="placeholder">loading session…</div>
   if (snapshot.info.state === 'started')
-    return <Chat snapshot={snapshot} sessionId={sessionId} onSelect={onSelect} onDeleted={onDeleted} />
+    return (
+      <Chat
+        tree={tree}
+        snapshot={snapshot}
+        sessionId={sessionId}
+        log={log}
+        onSelect={onSelect}
+        onDeleted={onDeleted}
+      />
+    )
 
   return (
     <NonStartedPane
@@ -65,10 +63,14 @@ export function SessionPane({
 
 function Header({
   snapshot,
+  activeTab,
+  onTab,
   onSelect,
   onDeleted
 }: {
   snapshot: SessionSnapshot
+  activeTab: SessionTab
+  onTab: (t: SessionTab) => void
   onSelect: (id: string) => void
   onDeleted: () => void
 }) {
@@ -79,12 +81,13 @@ function Header({
   const dot = SESSION_DOT[sessionStatus(info)]
   return (
     <div className="chat-head">
+      <TabBar active={activeTab} onChange={onTab} />
+      <span className="spacer" />
       <Dot tone={dot.tone} pulse={dot.pulse} />
       <span className="chat-title">
         {info.task} / {info.title}
       </span>
       <span className="tag">{info.state}</span>
-      <span className="spacer" />
       <span className="chat-pill">
         <RoleMark role={sessionRole(info)} />
         <EnvRepoMarks env={info.env} repos={info.repos} task={info.task} />
@@ -130,58 +133,56 @@ function NonStartedPane({
   onDeleted: () => void
 }) {
   const { info } = snapshot
-  const agents = useAgents()
-  const mcpOffered = useMcpEntries(info.workspace)
-  const mcp = resolveMcpSelection(info.mcp, mcpOffered)
   const [text, setText] = useState(info.startPrompt)
-  const [editOpen, setEditOpen] = useState(false)
+  const [activeTab, setActiveTab] = useState<SessionTab>('chat')
 
-  // Keep the editor in sync when the persisted prompt changes elsewhere.
+  // Keep the editor in sync when the persisted prompt changes elsewhere, and
+  // land back on the chat tab when the selection switches to another session.
   useEffect(() => {
     setText(info.startPrompt)
-  }, [info.startPrompt, sessionId])
+    setActiveTab('chat')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId])
+  useEffect(() => {
+    setText(info.startPrompt)
+  }, [info.startPrompt])
 
   const del = async () => {
     if (await deleteSession(info)) onDeleted()
   }
   const copy = () => duplicateSession(sessionId, (c) => onSelect(c.id))
 
+  // A start needs an environment, a repository and an agent — a bare draft
+  // (created with none of these picked) has all three blank until the Config
+  // tab fills them in.
+  const missing = !info.env ? 'an environment' : !info.repos.length ? 'a repository' : !info.agent ? 'an agent' : null
+  const canRun = !!text.trim() && !missing
+
   return (
     <div className="session-pane">
-      <Header snapshot={snapshot} onSelect={onSelect} onDeleted={onDeleted} />
+      <Header
+        snapshot={snapshot}
+        activeTab={activeTab}
+        onTab={setActiveTab}
+        onSelect={onSelect}
+        onDeleted={onDeleted}
+      />
       {snapshot.startError && (
         <div className="error env-error">start failed: {snapshot.startError}</div>
       )}
       {/* A session that has run keeps what its proxy was seen doing, and this
           pane is where it lands once the session goes idle — which is exactly
           when someone asks why a host could not be reached (§8). */}
-      <TrafficPanel sessionId={sessionId} network={info.network} />
+      {activeTab === 'chat' && <TrafficPanel sessionId={sessionId} network={info.network} />}
 
-      {info.state === 'draft' && (
+      {activeTab === 'config' && <ConfigTab tree={tree} snapshot={snapshot} />}
+
+      {activeTab === 'logs' && (
+        <pre className="env-log">{log.length ? log.join('\n') : 'no logs yet'}</pre>
+      )}
+
+      {activeTab === 'chat' && info.state === 'draft' && (
         <div className="draft-body">
-          <div className="draft-settings">
-            <RoleTag role={sessionRole(info)} />
-            <EnvTag name={info.env} />
-            {info.repos.length ? (
-              info.repos.map((r) => <RepoTag key={r} name={r} />)
-            ) : (
-              <RepoTag name="no repo" title="no repository — Run/Queue disabled" />
-            )}
-            {info.agent ? (
-              <AgentTag kind={agentKind(agents, info.agent)} name={agentName(agents, info.agent)} />
-            ) : (
-              <span className="tag">no agent</span>
-            )}
-            <span className="tag">{info.autoAllow === false ? 'manual' : 'auto'}</span>
-            {mcp.map((r) => (
-              <McpTag key={r.selection.id} {...r} />
-            ))}
-            <NetTag network={info.network} />
-            <span className="spacer" />
-            <button className="btn btn-sm" onClick={() => setEditOpen(true)}>
-              Edit settings
-            </button>
-          </div>
           <textarea
             className="draft-prompt"
             rows={10}
@@ -195,8 +196,8 @@ function NonStartedPane({
           <div className="row-buttons">
             <button
               className="btn btn-primary"
-              disabled={!text.trim() || !info.repos.length}
-              title={!info.repos.length ? 'pick a repository first (Edit settings)' : undefined}
+              disabled={!canRun}
+              title={missing ? `pick ${missing} first (Config tab)` : undefined}
               onClick={run(async () => {
                 if (text !== info.startPrompt) await window.gurt.sessionEditPrompt(sessionId, text)
                 window.gurt.sessionRun(sessionId).catch((e: unknown) => alertDialog(String(e)))
@@ -206,8 +207,8 @@ function NonStartedPane({
             </button>
             <button
               className="btn"
-              disabled={!text.trim() || !info.repos.length}
-              title={!info.repos.length ? 'pick a repository first (Edit settings)' : undefined}
+              disabled={!canRun}
+              title={missing ? `pick ${missing} first (Config tab)` : undefined}
               onClick={run(async () => {
                 if (text !== info.startPrompt) await window.gurt.sessionEditPrompt(sessionId, text)
                 window.gurt.sessionEnqueue(sessionId).catch((e: unknown) => alertDialog(String(e)))
@@ -223,20 +224,10 @@ function NonStartedPane({
               Delete
             </button>
           </div>
-          {editOpen && tree && (
-            <NewSessionModal
-              tree={tree}
-              ws={info.workspace}
-              task={info.task}
-              edit={info}
-              onClose={() => setEditOpen(false)}
-              onCreated={() => setEditOpen(false)}
-            />
-          )}
         </div>
       )}
 
-      {info.state === 'queued' && (
+      {activeTab === 'chat' && info.state === 'queued' && (
         <div className="draft-body">
           {queuePosition != null && (
             <div className="queue-badge">
@@ -267,11 +258,10 @@ function NonStartedPane({
         </div>
       )}
 
-      {info.state === 'starting' && (
+      {activeTab === 'chat' && info.state === 'starting' && (
         <div className="draft-body">
           <div className="queue-badge">starting…</div>
           <pre className="draft-prompt readonly">{info.startPrompt}</pre>
-          <pre className="env-log">{log.length ? log.join('\n') : 'launching…'}</pre>
           {/* A start is exactly when a misconfigured session shows itself, and
               it can take minutes — the way out is offered here, not only after
               it finishes. Deleting mid-start takes down whatever the start has

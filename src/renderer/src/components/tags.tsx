@@ -195,7 +195,7 @@ export function EnvRepoMarks({
   return (
     <>
       <Icon name="box" size={11} className="faint" />
-      {env}
+      {env || 'no env'}
       {list.map((r) => (
         <Fragment key={r}>
           <Icon name="branch" size={11} className="faint" />
