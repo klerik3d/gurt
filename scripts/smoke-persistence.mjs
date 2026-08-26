@@ -129,7 +129,7 @@ const waitStarted = async (timeout = 600000) => {
 }
 
 // --- workspace ---------------------------------------------------------
-await page.click('.sb-ws-btn')
+await page.click('.tb-ws-btn')
 await page.click('.menu-item:has-text("+ new workspace")')
 await page.waitForSelector('.modal input', { timeout: 5000 })
 await page.fill('.modal input', 'personal')

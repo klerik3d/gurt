@@ -534,6 +534,53 @@ textarea.input {
   font-family: var(--mono);
   font-size: 12px;
   color: var(--dim);
+}
+/* Workspace switcher — the titlebar breadcrumb's interactive segment, usable
+   from every view (work/dashboard/settings), unlike the old sidebar-only one. */
+.tb-ws {
+  position: relative;
+  -webkit-app-region: no-drag;
+}
+.tb-ws-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: -3px -6px;
+  padding: 3px 6px;
+  border-radius: 6px;
+  font-weight: 600;
+  color: var(--text);
+  -webkit-app-region: no-drag;
+}
+.tb-ws-btn:hover {
+  background: var(--hover);
+}
+.tb-ws-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 180px;
+  -webkit-app-region: no-drag;
+}
+.tb-ws-menu .menu-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.tb-ws-menu .menu-item .sb-act {
+  visibility: hidden;
+  width: 22px;
+  height: 22px;
+  margin: -4px -6px -4px 0;
+}
+.tb-ws-menu .menu-item:hover .sb-act {
+  visibility: visible;
+}
+.tb-crumb-sep {
+  color: var(--faint);
+}
+.tb-crumb-rest {
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -700,19 +747,8 @@ textarea.input {
   border-bottom: 1px solid var(--border);
 }
 .sb-ws {
-  position: relative;
   min-width: 0;
-}
-.sb-ws-btn {
-  display: flex;
-  align-items: center;
-  gap: 8px;
   padding: 4px 6px;
-  border-radius: 7px;
-  min-width: 0;
-}
-.sb-ws-btn:hover {
-  background: var(--hover);
 }
 .sb-ws-name {
   font-weight: 600;
@@ -721,26 +757,6 @@ textarea.input {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-.sb-ws-menu {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  min-width: 180px;
-}
-.sb-ws-menu .menu-item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.sb-ws-menu .menu-item .sb-act {
-  visibility: hidden;
-  width: 22px;
-  height: 22px;
-  margin: -4px -6px -4px 0;
-}
-.sb-ws-menu .menu-item:hover .sb-act {
-  visibility: visible;
 }
 .sb-newtask {
   position: relative;
