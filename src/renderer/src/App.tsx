@@ -39,6 +39,9 @@ const SIDEBAR_MIN = 200
 const SIDEBAR_MAX = 600
 const SIDEBAR_DEFAULT = 284
 const SIDEBAR_WIDTH_KEY = 'gurt.sidebarWidth'
+// Distance from the window edge to the sidebar's left border: .workbench's
+// 8px padding + the 52px activity bar + its 8px margin-right (styles.css).
+const SIDEBAR_LEFT_OFFSET = 68
 
 const clampSidebar = (w: number) => Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, w))
 
@@ -259,11 +262,12 @@ export default function App() {
     treeKnown.current = alive
   }, [tree, selection])
 
-  // Drag the divider between sidebar and main; the sidebar's left edge sits
-  // after the 52px activity bar, so the new width is clientX minus that.
+  // Drag the divider between sidebar and main; the new width is clientX
+  // minus the sidebar's left offset (see SIDEBAR_LEFT_OFFSET).
   const startSidebarResize = useCallback((e: ReactMouseEvent) => {
     e.preventDefault()
-    const onMove = (ev: MouseEvent) => setSidebarWidth(clampSidebar(ev.clientX - 52))
+    const onMove = (ev: MouseEvent) =>
+      setSidebarWidth(clampSidebar(ev.clientX - SIDEBAR_LEFT_OFFSET))
     const onUp = () => {
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)

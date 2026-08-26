@@ -35,7 +35,7 @@ body,
 body {
   font-family: var(--ui);
   font-size: 13px;
-  background: var(--app);
+  background: var(--surface);
   color: var(--text);
   -webkit-font-smoothing: antialiased;
 }
@@ -505,7 +505,8 @@ textarea.input {
   height: 100%;
 }
 
-/* Title bar: 44px, traffic-light inset on the left. */
+/* Title bar: 44px, traffic-light inset on the left. Floats on the shared
+   base fill — no border or background of its own. */
 .titlebar {
   height: 44px;
   flex: none;
@@ -513,8 +514,6 @@ textarea.input {
   align-items: center;
   gap: 14px;
   padding: 0 12px 0 78px;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
   -webkit-app-region: drag;
 }
 .tb-center {
@@ -555,9 +554,11 @@ textarea.input {
   flex: 1;
   display: flex;
   min-height: 0;
+  padding: 8px;
 }
 
-/* Activity bar: 52px, three items. */
+/* Activity bar: 52px, three items. Floats on the shared base fill; only the
+   sidebar/main panels below get an outline. */
 .activitybar {
   width: 52px;
   flex: none;
@@ -566,8 +567,7 @@ textarea.input {
   align-items: center;
   gap: 6px;
   padding: 10px 0;
-  background: var(--surface);
-  border-right: 1px solid var(--border);
+  margin-right: 8px;
 }
 .ab-item {
   width: 36px;
@@ -586,7 +586,7 @@ textarea.input {
   color: var(--text);
 }
 
-/* Footer: 26px status strip. */
+/* Footer: 26px status strip. Floats on the shared base fill. */
 .footer {
   height: 26px;
   flex: none;
@@ -594,8 +594,6 @@ textarea.input {
   align-items: center;
   gap: 14px;
   padding: 0 16px;
-  background: var(--surface);
-  border-top: 1px solid var(--border);
   font-family: var(--mono);
   font-size: 10.5px;
   color: var(--faint);
@@ -639,6 +637,8 @@ textarea.input {
   flex-direction: column;
   min-width: 0;
   background: var(--app);
+  border: 1px solid var(--border);
+  border-radius: 10px;
 }
 
 .placeholder {
@@ -655,20 +655,37 @@ textarea.input {
 .sidebar {
   flex: none;
   background: var(--app);
-  border-right: 1px solid var(--border);
+  border: 1px solid var(--border);
+  border-radius: 10px;
   display: flex;
   flex-direction: column;
 }
+/* Sits in the gap between sidebar and main; the three dots hint that the
+   seam is draggable (col-resize), stacked parallel to it. */
 .sidebar-resizer {
   flex: none;
-  width: 5px;
-  margin-left: -3px;
+  width: 10px;
   cursor: col-resize;
   z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
-.sidebar-resizer:hover {
+.sidebar-resizer::before {
+  content: '';
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--faint);
+  box-shadow:
+    0 -7px 0 var(--faint),
+    0 7px 0 var(--faint);
+}
+.sidebar-resizer:hover::before {
   background: var(--accent);
-  opacity: 0.4;
+  box-shadow:
+    0 -7px 0 var(--accent),
+    0 7px 0 var(--accent);
 }
 
 .sb-head {
@@ -2509,6 +2526,9 @@ textarea.input {
   flex: 1;
   display: flex;
   min-width: 0;
+  background: var(--app);
+  border: 1px solid var(--border);
+  border-radius: 10px;
 }
 .set-nav {
   width: 216px;
@@ -2517,6 +2537,7 @@ textarea.input {
   flex-direction: column;
   background: var(--surface);
   border-right: 1px solid var(--border);
+  border-radius: 10px 0 0 10px;
 }
 .set-nav-head {
   height: 44px;
