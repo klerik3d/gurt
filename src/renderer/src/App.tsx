@@ -454,6 +454,11 @@ export default function App() {
                       onMouseDown={(e) => {
                         e.preventDefault()
                         setWsMenuOpen(false)
+                        // An explicit workspace switch closes whatever session/task is
+                        // open — it belongs to the workspace being left, and leaving it
+                        // selected would show stale content the sidebar no longer scopes
+                        // to, and a breadcrumb that no longer matches the sidebar tree.
+                        if (w.name !== ws?.name) setSelection(null)
                         setCurWs(w.name)
                       }}
                     >
