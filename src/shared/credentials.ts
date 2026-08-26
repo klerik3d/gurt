@@ -221,6 +221,41 @@ export function resolveMcpCredential(
 }
 
 /**
+ * Resolve the same `mcp-token` link for a **local** MCP server, which has no
+ * request headers to carry it (docs/requirements-mcp-stdio.md §3.4). The value
+ * is the bare secret — no header name, no `Bearer` scheme — because it is going
+ * into an environment variable the server names itself, exactly the way an
+ * agent's `secretEnv` works.
+ *
+ * Same contract as {@link resolveMcpCredential} otherwise: no link ⇒ nothing (a
+ * server that authenticates some other way is legal), a dangling or wrong-kind
+ * link ⇒ a configuration error the caller surfaces rather than a silent
+ * unauthenticated start.
+ *
+ * The one check that survives the change of transport is the NUL byte: `execve`
+ * cannot carry one, and a secret containing it would truncate the whole
+ * environment entry rather than fail loudly. Newlines are legal in an
+ * environment value and are left alone — the header rule they exist for does
+ * not apply here.
+ */
+export function resolveMcpEnvSecret(
+  credentials: readonly CredentialEntry[],
+  credentialId: string | undefined
+): { secret?: string; error?: string } {
+  if (!credentialId) return {}
+  const entry = credentials.find((c) => c.id === credentialId)
+  if (!entry) return { error: 'linked credential no longer exists' }
+  if (entry.kind !== 'mcp-token')
+    return { error: `linked credential "${entry.label || entry.id}" is not an MCP token` }
+  const secret = (entry.data['secret'] ?? '').trim()
+  if (secret.includes('\0'))
+    return {
+      error: `linked credential "${entry.label || entry.id}" contains a NUL byte — re-enter it`
+    }
+  return { secret }
+}
+
+/**
  * Throws when an `mcp-token` entry could not be sent as a header — the save-time
  * half of the same rule `resolveMcpCredential` enforces at use time (§3.2).
  *

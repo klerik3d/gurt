@@ -25,8 +25,8 @@ import path from 'node:path'
 import type { AcpHttpMcpServer, EnvRef, McpSelection } from '../../shared/types'
 import type { CredentialEntry } from '../../shared/credentials'
 import { resolveMcpCredential } from '../../shared/credentials'
-import type { McpRegistryEntry } from '../../shared/mcp'
-import { mcpEntries, resolveMcpSelection } from '../../shared/mcp'
+import type { McpHttpEntry, McpRegistryEntry } from '../../shared/mcp'
+import { isLocalMcpEntry, mcpEntries, resolveMcpSelection } from '../../shared/mcp'
 import {
   PROXY_CONFIG_VERSION,
   sanitizeDomainPolicy,
@@ -169,10 +169,24 @@ export function planProxy(input: ProxyPlanInput): ProxyPlan {
   const mcp: Record<string, McpUpstream> = {}
   const mcpServers: AcpHttpMcpServer[] = []
 
-  const hostUpstream = (id: string): McpUpstream | null => {
+  /**
+   * gurt's own listener for this id, built-in or local-process alike (§4.4 of
+   * requirements-mcp-stdio.md). Both are `kind: 'host'` because both really are
+   * a port on this machine that the container has no token for; the difference
+   * is only what is listening.
+   *
+   * A local entry has no `hostMcpUrl` fallback: its bridge is one listener with
+   * one token of its own, so an absent URL means the process is not running,
+   * never "derive the path from the shared base".
+   */
+  const hostUpstream = (id: string, local = false): McpUpstream | null => {
     const direct = input.hostMcpUrls?.[id]
-    if (!direct && !input.hostMcpUrl) {
-      errors.push(`MCP server "${id}" is built in but gurt's host listener is not running`)
+    if (!direct && (local || !input.hostMcpUrl)) {
+      errors.push(
+        local
+          ? `MCP server "${id}" runs as a process on this machine and that process is not running — see the app log for why`
+          : `MCP server "${id}" is built in but gurt's host listener is not running`
+      )
       return null
     }
     // The host token is already in the URL, either way. It is injected here and
@@ -185,7 +199,7 @@ export function planProxy(input: ProxyPlanInput): ProxyPlan {
     }
   }
 
-  const registryUpstream = (entry: McpRegistryEntry): McpUpstream | null => {
+  const registryUpstream = (entry: McpHttpEntry): McpUpstream | null => {
     const headers = [...(entry.headers ?? []).map((h) => ({ name: h.name, value: h.value }))]
     const { header, error } = resolveMcpCredential(credentials, entry.credentialId)
     if (error) {
@@ -219,7 +233,11 @@ export function planProxy(input: ProxyPlanInput): ProxyPlan {
       errors.push(`MCP server "${sel.id}" is not a built-in and is not in this workspace's registry`)
       continue
     }
-    add(sel.id, entry.source === 'builtin' ? hostUpstream(sel.id) : registryUpstream(entry.entry))
+    // Three destinations, one dispatch: a built-in and a local process are both
+    // a host listener; only a remote endpoint is the proxy's own outbound call.
+    if (entry.source === 'builtin') add(sel.id, hostUpstream(sel.id))
+    else if (isLocalMcpEntry(entry.entry)) add(sel.id, hostUpstream(sel.id, true))
+    else add(sel.id, registryUpstream(entry.entry))
   }
   for (const id of ALWAYS_HOST_IDS) if (!mcp[id]) add(id, hostUpstream(id))
 

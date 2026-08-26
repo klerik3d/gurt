@@ -18,7 +18,14 @@ import {
   resolveMcpCredential
 } from '../../../shared/credentials'
 import type { McpDef, McpHeader, McpRegistryEntry } from '../../../shared/mcp'
-import { mcpLabel, normalizeMcpEntry, validateMcpEntry } from '../../../shared/mcp'
+import {
+  LOCAL_MCP_NOTICE,
+  isHttpMcpEntry,
+  mcpEntryDetail,
+  mcpLabel,
+  normalizeMcpEntry,
+  validateMcpEntry
+} from '../../../shared/mcp'
 import { canonicalRepoId } from '../../../shared/repoId'
 import type { NotificationPrefs, NotificationType } from '../../../shared/notifications'
 import { AGENT_DEFS, agentDef } from '../../../shared/agents'
@@ -975,15 +982,24 @@ function McpServersSection({ ws }: { ws: string | null }) {
       </div>
       <div className="set-list">
         {servers.map((m) => (
-          <div key={m.id} className="set-row">
+          <div key={m.id} className="set-row" title={isHttpMcpEntry(m) ? undefined : LOCAL_MCP_NOTICE}>
             <span className="set-row-label">{mcpLabel(m)}</span>
-            <span className="set-row-url mono">{m.url}</span>
+            <span className="set-row-url mono">{mcpEntryDetail(m)}</span>
             {m.credentialId && (
               <Icon name="key" size={11} style={{ color: 'var(--yellow)', flex: 'none' }} />
             )}
-            <button className="btn-link" onClick={() => setEditing(m)}>
-              edit
-            </button>
+            {/* The editor below only knows the remote shape, so a local entry is
+                read-only here until the phase-2 UI lands
+                (docs/requirements-mcp-stdio.md §8) — opening it in this modal
+                would rewrite it into an http entry on save. Until then a local
+                entry is added and edited in workspace.json. */}
+            {isHttpMcpEntry(m) ? (
+              <button className="btn-link" onClick={() => setEditing(m)}>
+                edit
+              </button>
+            ) : (
+              <span className="set-row-url faint">runs on this machine</span>
+            )}
           </div>
         ))}
         {servers.length === 0 && (
@@ -1035,10 +1051,13 @@ function McpServerModal({
   onClose: () => void
 }) {
   const editing = !!initial
+  // Remote entries only — the section above never opens this modal on a local
+  // one (docs/requirements-mcp-stdio.md §8).
+  const http = initial && isHttpMcpEntry(initial) ? initial : undefined
   const [id, setId] = useState(initial?.id ?? '')
   const [label, setLabel] = useState(initial?.label ?? '')
-  const [url, setUrl] = useState(initial?.url ?? '')
-  const [headers, setHeaders] = useState<McpHeader[]>(initial?.headers?.map((h) => ({ ...h })) ?? [])
+  const [url, setUrl] = useState(http?.url ?? '')
+  const [headers, setHeaders] = useState<McpHeader[]>(http?.headers?.map((h) => ({ ...h })) ?? [])
   const [credentialId, setCredentialId] = useState(initial?.credentialId ?? '')
   const [credentials, setCredentials] = useState<CredentialEntry[]>([])
   const [credMenu, setCredMenu] = useState(false)

@@ -145,6 +145,11 @@ escaped, and `\n` written as `\\n`, so one record stays one line.
 | `container.stop` / `.remove` | INF | `s`, `c`, `reason`, `ms`                                  |
 | `reconcile.done`          | INF   | `fixed`, `orphans`                                         |
 | `mcp.start` / `mcp.stop`  | INF   | `id`, `s`, `mode` (the granted access level, or the session's role for `gurt`), `port` |
+| `mcp.listen`              | INF   | `id`, `kind`, `port` — a local (stdio) server's bridge is up; the port, never the URL, which carries its token |
+| `mcp.install`             | INF   | `id`, `package` (`name@version`) — an `npm` MCP entry being installed under `~/.gurt/mcp` |
+| `mcp.exit`                | WRN   | `id`, `command`, `code`, `signal` — a local MCP server died and gurt did not ask it to |
+| `mcp.fail`                | ERR   | `id`, `kind`, `err` — a local MCP server could not be started; the session log only says the id is unroutable |
+| `mcp.out`                 | DBG   | `id`, `stream`, `line` — a local MCP server's own stdout/stderr. Its **environment** is never logged at any level: that is where the credential lands |
 | `gitbroker.start` / `.stop` | INF | `s`, `port`                                                |
 | `ipc.call`                | DBG   | `method`, `ms`, `args`                                     |
 | `ipc.fail`                | ERR   | `method`, `ms`, `err`, `args` (DBG only)                   |

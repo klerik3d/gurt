@@ -21,10 +21,12 @@ import {
   CREDENTIAL_KINDS,
   checkMcpSecret,
   credentialIdentity,
-  resolveMcpCredential
+  resolveMcpCredential,
+  resolveMcpEnvSecret
 } from '../shared/credentials'
 import { canonicalRepoId } from '../shared/repoId'
-import { mcpLabel } from '../shared/mcp'
+import type { McpRegistryEntry } from '../shared/mcp'
+import { isLocalMcpEntry, mcpLabel } from '../shared/mcp'
 import {
   gurtRoot,
   getWorkspace,
@@ -500,6 +502,23 @@ export async function listCredentials(): Promise<CredentialEntry[]> {
 export async function checkMcpCredential(credentialId: string | undefined): Promise<void> {
   if (!credentialId) return
   const { error } = resolveMcpCredential(await listCredentials(), credentialId)
+  if (error) throw new Error(error)
+}
+
+/**
+ * The same check for a whole registry entry, which is what the IPC boundary
+ * actually holds — and what decides *how* the link resolves: an http entry's
+ * credential becomes a request header, a local entry's becomes an environment
+ * variable (docs/requirements-mcp-stdio.md §3.4). The two have different
+ * legality rules (a newline is fatal in a header and ordinary in an env value),
+ * so asking the wrong one would reject a valid entry or accept a broken one.
+ */
+export async function checkMcpEntryCredential(entry: McpRegistryEntry): Promise<void> {
+  if (!entry.credentialId) return
+  const credentials = await listCredentials()
+  const { error } = isLocalMcpEntry(entry)
+    ? resolveMcpEnvSecret(credentials, entry.credentialId)
+    : resolveMcpCredential(credentials, entry.credentialId)
   if (error) throw new Error(error)
 }
 
