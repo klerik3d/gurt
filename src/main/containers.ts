@@ -831,24 +831,35 @@ export class ContainerManager {
         fixed++
       }
     }
-    for (const [session, containerId] of live) {
-      if (known.has(session)) continue
-      orphans++
-      // (the proxy and network of the same session are swept below, by label)
-      // Not `this.logFor(session)`: that would create a `session-<id>.log` for
-      // a session that no longer exists — a file nothing would ever delete. The
-      // removal is traced by `proc.spawn`/`proc.exit` anyway; the docker output
-      // itself goes to the app log at DBG.
-      await dockerRemove(containerId, (line) => log.debug('reconcile.orphan', { c: containerId, line }))
+    // The mirror of the "docker unavailable" guard above. An empty session set
+    // is evidence of "no sessions" only when the store actually managed to read
+    // them: a file that failed to parse — or a 0-byte one left by a crash
+    // mid-write — deserializes to nothing just the same, and reaping on that
+    // deletes containers whose sessions still exist, agent history included.
+    const mayReap = !store.storeDegraded() && !(known.size === 0 && live.size > 0)
+    if (!mayReap)
+      log.warn('reconcile: orphan sweep skipped — session index empty or degraded', {
+        known: known.size,
+        live: live.size
+      })
+    let sweepResult: Awaited<ReturnType<typeof proxies.sweepOrphans>> = { proxies: 0, networks: 0 }
+    if (mayReap) {
+      for (const [session, containerId] of live) {
+        if (known.has(session)) continue
+        orphans++
+        // (the proxy and network of the same session are swept below, by label)
+        // Not `this.logFor(session)`: that would create a `session-<id>.log` for
+        // a session that no longer exists — a file nothing would ever delete. The
+        // removal is traced by `proc.spawn`/`proc.exit` anyway; the docker output
+        // itself goes to the app log at DBG.
+        await dockerRemove(containerId, (line) => log.debug('reconcile.orphan', { c: containerId, line }))
+      }
+      // Proxies and session networks are their own namespaces, swept the same
+      // way and for the same reason: a session that was deleted while the app was
+      // down leaves both behind, and only the daemon knows they exist.
+      sweepResult = await proxies.sweepOrphans(known, (line) => log.debug('reconcile.orphan', { line }))
     }
-    // Proxies and session networks are their own namespaces, swept the same
-    // way and for the same reason: a session that was deleted while the app was
-    // down leaves both behind, and only the daemon knows they exist.
-    const swept = await proxies.sweepOrphans(
-      known,
-      (line) => log.debug('reconcile.orphan', { line })
-    )
-    log.info('reconcile.done', { fixed, orphans, ...swept })
+    log.info('reconcile.done', { fixed, orphans, swept: mayReap, ...sweepResult })
     this.deps.bus.emit('tree.changed', undefined)
   }
 }

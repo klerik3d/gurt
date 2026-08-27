@@ -13,6 +13,7 @@ import type {
   SessionConfigOption,
   SessionMode,
   SessionModes,
+  SessionNetwork,
   SessionSnapshot,
   Tree
 } from '../../../shared/types'
@@ -26,7 +27,7 @@ import { createLogger, logErr } from '../log'
 import { SESSION_DOT } from '../status'
 import { Icon, Dot } from './icons'
 import { AgentMark, EnvRepoMarks, McpFailBanner, McpMarks, NetMark, RoleMark } from './tags'
-import { TrafficPanel } from './Network'
+import { NetButton } from './Network'
 import { ConfigTab } from './ConfigTab'
 import { SessionMenu } from './SessionActions'
 import { TabBar, type SessionTab } from './SessionTabs'
@@ -336,15 +337,11 @@ export function Chat({
 
           {plan && plan.length > 0 && <PlanPinned plan={plan} />}
 
-          {/* Above the composer, under the feed: a host the session could not
-              reach usually shows up as a tool that failed a moment ago, and the
-              answer should be in the same glance (§8). */}
-          <TrafficPanel sessionId={sessionId} network={info.network} />
-
           <Composer
             key={sessionId}
             sessionId={sessionId}
             agentKind={agentKind(agents, info.agent)}
+            network={info.network}
             busy={busy}
             flush={!hasPlan}
             modes={modes}
@@ -659,6 +656,7 @@ function fileToBase64(file: File): Promise<string> {
 function Composer({
   sessionId,
   agentKind,
+  network,
   busy,
   flush,
   modes,
@@ -669,6 +667,8 @@ function Composer({
   sessionId: string
   /** The session agent's kind (`AgentDef.id`) — scopes agent-specific UI fixups. */
   agentKind?: string | undefined
+  /** The session's egress mode — what the network button on the bar reports (§8). */
+  network?: SessionNetwork | undefined
   busy: boolean
   /** No plan bar above — the composer sits flush against the feed. */
   flush: boolean
@@ -685,6 +685,7 @@ function Composer({
   const [slashOpen, setSlashOpen] = useState(false)
   const [addOpen, setAddOpen] = useState(false)
   const [gearOpen, setGearOpen] = useState(false)
+  const [netOpen, setNetOpen] = useState(false)
   const [cmdQuery, setCmdQuery] = useState('')
   const [cmdIdx, setCmdIdx] = useState(0)
   /** null → the add-context item list; 'file'/'folder' → an inline path input. */
@@ -703,6 +704,7 @@ function Composer({
   const addAnchorRef = useRef<HTMLSpanElement>(null)
   const slashAnchorRef = useRef<HTMLSpanElement>(null)
   const gearAnchorRef = useRef<HTMLSpanElement>(null)
+  const netAnchorRef = useRef<HTMLSpanElement>(null)
   const imgRef = useRef<HTMLInputElement>(null)
   const recogRef = useRef<{ stop: () => void } | null>(null)
   const lastActivityPingRef = useRef(0)
@@ -739,8 +741,14 @@ function Composer({
   // also handle their own Esc; this document listener covers the rest (e.g.
   // focus left on the button that opened the menu).
   useEffect(() => {
-    if (!slashOpen && !addOpen && !gearOpen) return
-    const anchorRef = slashOpen ? slashAnchorRef : addOpen ? addAnchorRef : gearAnchorRef
+    if (!slashOpen && !addOpen && !gearOpen && !netOpen) return
+    const anchorRef = slashOpen
+      ? slashAnchorRef
+      : addOpen
+        ? addAnchorRef
+        : gearOpen
+          ? gearAnchorRef
+          : netAnchorRef
     const onDown = (e: MouseEvent) => {
       const anchor = anchorRef.current
       if (anchor && !anchor.contains(e.target as Node)) closeMenus()
@@ -754,7 +762,7 @@ function Composer({
       document.removeEventListener('mousedown', onDown)
       document.removeEventListener('keydown', onKey)
     }
-  }, [slashOpen, addOpen, gearOpen])
+  }, [slashOpen, addOpen, gearOpen, netOpen])
 
   // Stop any live dictation when the composer unmounts (session switch).
   useEffect(() => () => recogRef.current?.stop(), [])
@@ -795,6 +803,7 @@ function Composer({
     setSlashOpen(false)
     setAddOpen(false)
     setGearOpen(false)
+    setNetOpen(false)
     setAddKind(null)
     setAddPath('')
   }
@@ -802,6 +811,7 @@ function Composer({
   const openSlash = (open: boolean) => {
     setAddOpen(false)
     setGearOpen(false)
+    setNetOpen(false)
     setSlashOpen(open)
     setCmdQuery('')
     setCmdIdx(0)
@@ -811,6 +821,7 @@ function Composer({
   const openAdd = (open: boolean) => {
     setSlashOpen(false)
     setGearOpen(false)
+    setNetOpen(false)
     setAddKind(null)
     setAddPath('')
     setAddOpen(open)
@@ -1165,6 +1176,21 @@ function Composer({
             </button>
           ))}
           <span className="spacer" />
+          {/* What the session can reach, on the bar rather than above it: the
+              icon is the mode, the click is the whole traffic ledger (§8). */}
+          <span className="pop-anchor" ref={netAnchorRef}>
+            <NetButton
+              sessionId={sessionId}
+              network={network}
+              open={netOpen}
+              onToggle={() => {
+                setSlashOpen(false)
+                setAddOpen(false)
+                setGearOpen(false)
+                setNetOpen((o) => !o)
+              }}
+            />
+          </span>
           {hasGearContent && (
             <span className="pop-anchor" ref={gearAnchorRef}>
               <button
@@ -1173,6 +1199,7 @@ function Composer({
                 onClick={() => {
                   setSlashOpen(false)
                   setAddOpen(false)
+                  setNetOpen(false)
                   setGearOpen((o) => !o)
                 }}
               >
