@@ -110,21 +110,74 @@ function jsonParseErrCtx(e: unknown): { name: string; code?: string | number; po
   }
 }
 
+let degraded = false
+
+/** True when a store file failed to parse this run and was quarantined. Boot
+ *  paths that delete things on "nothing is known" must not run on that. */
+export const storeDegraded = (): boolean => degraded
+
 async function readJson<T>(file: string, fallback: T): Promise<T> {
   try {
     return JSON.parse(await fs.readFile(file, 'utf8')) as T
   } catch (e) {
-    // A missing file is the normal "nothing stored yet" path; anything else is
-    // a file we are about to silently replace with the fallback — say so.
-    if ((e as NodeJS.ErrnoException)?.code !== 'ENOENT')
-      log.warn('unreadable json — falling back to defaults', { file, err: jsonParseErrCtx(e) })
+    // A missing file is the normal "nothing stored yet" path. Anything else is
+    // a file we are about to shadow with defaults: move it aside first, so the
+    // next write cannot make the loss permanent and the bytes stay for recovery.
+    if ((e as NodeJS.ErrnoException)?.code === 'ENOENT') return fallback
+    degraded = true
+    const quarantine = `${file}.corrupt-${new Date().toISOString().replace(/[:.]/g, '-')}`
+    try {
+      await fs.rename(file, quarantine)
+    } catch {
+      // Quarantine is best-effort; the degraded flag is what gates the damage.
+    }
+    log.error('unreadable json — quarantined, using defaults', {
+      file,
+      quarantine,
+      err: jsonParseErrCtx(e)
+    })
     return fallback
   }
 }
 
-async function writeJson(file: string, data: unknown): Promise<void> {
-  await fs.mkdir(path.dirname(file), { recursive: true })
-  await fs.writeFile(file, JSON.stringify(data, null, 2) + '\n')
+/** Per-file write chain, so overlapping writes never race on the temp file. */
+const writeChains = new Map<string, Promise<void>>()
+
+/**
+ * Write JSON durably: a complete temp file, fsync'd, renamed over the target
+ * (atomic on POSIX), then the directory fsync'd so the rename itself survives a
+ * power loss. `fs.writeFile` truncates in place and never fsyncs — a crash
+ * between the truncate and the flush leaves a 0-byte file, which is how one
+ * task lost every session record on 2026-08-27.
+ */
+function writeJson(file: string, data: unknown): Promise<void> {
+  const prev = writeChains.get(file) ?? Promise.resolve()
+  const next = prev.then(async () => {
+    const dir = path.dirname(file)
+    await fs.mkdir(dir, { recursive: true })
+    const tmp = path.join(dir, `.${path.basename(file)}.tmp`)
+    const fh = await fs.open(tmp, 'w')
+    try {
+      await fh.writeFile(JSON.stringify(data, null, 2) + '\n')
+      await fh.sync()
+    } finally {
+      await fh.close()
+    }
+    await fs.rename(tmp, file)
+    if (process.platform !== 'win32') {
+      const dh = await fs.open(dir, 'r')
+      try {
+        await dh.sync()
+      } finally {
+        await dh.close()
+      }
+    }
+  })
+  writeChains.set(
+    file,
+    next.catch(() => {})
+  )
+  return next
 }
 
 const agentsFile = () => path.join(gurtRoot, 'agents.json')
@@ -837,12 +890,31 @@ function appendJsonl(file: string, records: unknown[]): Promise<void> {
 }
 
 /** Replace a JSONL file's contents, waiting for pending appends first so a
- *  rewrite can never land between an append's mkdir and its write. */
+ *  rewrite can never land between an append's mkdir and its write. Same
+ *  tmp+fsync+rename durability as `writeJson` — `fs.writeFile` in place would
+ *  be just as vulnerable to a crash leaving a 0-byte file. */
 function rewriteJsonl(file: string, records: unknown[]): Promise<void> {
   const prev = appendChains.get(file) ?? Promise.resolve()
   const next = prev.then(async () => {
-    await fs.mkdir(path.dirname(file), { recursive: true })
-    await fs.writeFile(file, records.map((r) => JSON.stringify(r) + '\n').join(''))
+    const dir = path.dirname(file)
+    await fs.mkdir(dir, { recursive: true })
+    const tmp = path.join(dir, `.${path.basename(file)}.tmp`)
+    const fh = await fs.open(tmp, 'w')
+    try {
+      await fh.writeFile(records.map((r) => JSON.stringify(r) + '\n').join(''))
+      await fh.sync()
+    } finally {
+      await fh.close()
+    }
+    await fs.rename(tmp, file)
+    if (process.platform !== 'win32') {
+      const dh = await fs.open(dir, 'r')
+      try {
+        await dh.sync()
+      } finally {
+        await dh.close()
+      }
+    }
   })
   appendChains.set(
     file,
