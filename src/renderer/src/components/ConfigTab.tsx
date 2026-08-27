@@ -27,7 +27,6 @@ import {
   AgentTag,
   EnvTag,
   McpTag,
-  NET_INFO,
   NetTag,
   ROLE_INFO,
   RepoTag,
@@ -186,7 +185,7 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
   const autoAllow = info.autoAllow ?? true
   const configValues = info.configValues ?? {}
   const [agentConfig, setAgentConfig] = useState<AgentConfig | null>(null)
-  const [harnessOpen, setHarnessOpen] = useState(false)
+  const [advancedOpen, setAdvancedOpen] = useState(false)
   const [picker, setPicker] = useState<'env' | 'repo' | 'client' | 'role' | null>(null)
   const [error, setError] = useState('')
 
@@ -267,21 +266,55 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
     o.category === 'model' ? 'MODEL' : o.category === 'thought_level' ? 'EFFORT' : o.name.toUpperCase()
   const selectedDescription = (opt: SessionConfigOption): string | undefined =>
     opt.options?.find((o) => o.value === effective(opt))?.description ?? undefined
-  const selectedName = (opt: SessionConfigOption): string | undefined =>
-    optionView.selectOptions(opt).find((o) => o.value === effective(opt))?.name
 
+  // MODEL/EFFORT are pulled out of `cfgOptions` into the always-visible
+  // BEHAVIOR section below; whatever else an agent reports (rare) stays in
+  // the collapsed panel with MCP and the rest.
+  const behaviorOptions = cfgOptions.filter((o) => o.category === 'model' || o.category === 'thought_level')
+  const advancedOptions = cfgOptions.filter((o) => o.category !== 'model' && o.category !== 'thought_level')
   const mcpCount = mcp.length
-  const modelOpt = cfgOptions.find((o) => o.category === 'model')
-  const effortOpt = cfgOptions.find((o) => o.category === 'thought_level')
-  const harnessSummary = [
-    modelOpt && selectedName(modelOpt),
-    effortOpt && selectedName(effortOpt),
-    autoAllow ? 'auto' : 'manual',
-    `${mcpCount} mcp`,
-    network.internal ? NET_INFO.internal.label : null
-  ]
-    .filter(Boolean)
-    .join(' · ')
+  const advancedSummary = mcpCount ? `${mcpCount} mcp` : 'no mcp'
+
+  const configBlock = (opt: SessionConfigOption): ReactNode =>
+    opt.type === 'select' ? (
+      <div key={opt.id} className="hc-block">
+        <span className="seclabel">{cfgLabel(opt)}</span>
+        <div className="chip-row">
+          {optionView.selectOptions(opt).map((o) => (
+            <button
+              key={o.value}
+              type="button"
+              className={`chip-btn ${effective(opt) === o.value ? 'on' : ''}`}
+              title={o.description ?? undefined}
+              onClick={() => setConfig(opt, o.value)}
+            >
+              {o.name}
+            </button>
+          ))}
+        </div>
+        {selectedDescription(opt) && <div className="hc-note">{selectedDescription(opt)}</div>}
+      </div>
+    ) : (
+      <div key={opt.id} className="hc-block">
+        <span className="seclabel">{cfgLabel(opt)}</span>
+        <div className="chip-row">
+          <button
+            type="button"
+            className={`chip-btn ${effective(opt) === true ? 'on' : ''}`}
+            onClick={() => setConfig(opt, true)}
+          >
+            on
+          </button>
+          <button
+            type="button"
+            className={`chip-btn ${effective(opt) === false ? 'on' : ''}`}
+            onClick={() => setConfig(opt, false)}
+          >
+            off
+          </button>
+        </div>
+      </div>
+    )
 
   return (
     <div className="ns-body">
@@ -314,92 +347,100 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
         <div className="hc-note">{ROLE_INFO[role].hint}</div>
       </div>
 
-      {/* environment */}
+      {/* env + repo: what the session runs against. Grouped as a pair — each
+          keeps its own label, a subtle rule marks the split between them —
+          rather than under one shared heading, since "workspace" already
+          names the envs/repos' parent in this codebase and would be
+          confusing reused here. */}
       <div className="ns-section">
-        <span className="seclabel">ENVIRONMENT</span>
-        <PickRow
-          open={picker === 'env'}
-          onToggle={() => setPicker(picker === 'env' ? null : 'env')}
-          onClose={() => setPicker(null)}
-          menu={
-            envs.length ? (
-              envs.map((e) => (
-                <div
-                  key={e.name}
-                  className={`menu-item ${e.name === info.env ? 'active' : ''}`}
-                  onMouseDown={(ev) => {
-                    ev.preventDefault()
-                    pickEnv(e.name)
-                  }}
-                >
-                  <Icon name="box" size={13} className="dim" />
-                  {e.name}
-                  {e.repo && <span className="menu-meta mono">{e.repo}</span>}
-                </div>
-              ))
-            ) : (
-              <div className="menu-empty">no environments — add one in Settings → Environments</div>
-            )
-          }
-        >
-          <Icon name="box" size={14} className="dim" style={{ flex: 'none' }} />
-          <span className="pick-value strong">{info.env || 'pick an environment'}</span>
-          <span className="spacer" />
-        </PickRow>
+        <div className="ns-subsection">
+          <span className="seclabel">ENVIRONMENT</span>
+          <PickRow
+            open={picker === 'env'}
+            onToggle={() => setPicker(picker === 'env' ? null : 'env')}
+            onClose={() => setPicker(null)}
+            menu={
+              envs.length ? (
+                envs.map((e) => (
+                  <div
+                    key={e.name}
+                    className={`menu-item ${e.name === info.env ? 'active' : ''}`}
+                    onMouseDown={(ev) => {
+                      ev.preventDefault()
+                      pickEnv(e.name)
+                    }}
+                  >
+                    <Icon name="box" size={13} className="dim" />
+                    {e.name}
+                    {e.repo && <span className="menu-meta mono">{e.repo}</span>}
+                  </div>
+                ))
+              ) : (
+                <div className="menu-empty">no environments — add one in Settings → Environments</div>
+              )
+            }
+          >
+            <Icon name="box" size={14} className="dim" style={{ flex: 'none' }} />
+            <span className="pick-value strong">{info.env || 'pick an environment'}</span>
+            <span className="spacer" />
+          </PickRow>
+        </div>
 
         {/* session repositories — seeded from the env's default, changeable
             here. Multi-select for a researcher only. */}
-        <span className="seclabel">REPOSITORY</span>
-        <PickRow
-          open={picker === 'repo'}
-          onToggle={() => setPicker(picker === 'repo' ? null : 'repo')}
-          onClose={() => setPicker(null)}
-          menu={
-            allRepos.length ? (
-              allRepos.map((r) => {
-                const active = repos.includes(r.name)
+        <div className="ns-subsection">
+          <span className="seclabel">REPOSITORY</span>
+          <PickRow
+            open={picker === 'repo'}
+            onToggle={() => setPicker(picker === 'repo' ? null : 'repo')}
+            onClose={() => setPicker(null)}
+            menu={
+              allRepos.length ? (
+                allRepos.map((r) => {
+                  const active = repos.includes(r.name)
+                  return (
+                    <div
+                      key={r.name}
+                      className={`menu-item ${active ? 'active' : ''}`}
+                      onMouseDown={(e) => {
+                        e.preventDefault()
+                        toggleRepo(r.name)
+                      }}
+                    >
+                      <Icon name="branch" size={11} className="faint" />
+                      {r.name}
+                      <span className="menu-meta mono">{shortRepoUrl(r.url)}</span>
+                    </div>
+                  )
+                })
+              ) : (
+                <div className="menu-empty">no repositories — add one in Settings</div>
+              )
+            }
+          >
+            {repos.length ? (
+              repos.map((name) => {
+                const cfg = allRepos.find((r) => r.name === name)
                 return (
-                  <div
-                    key={r.name}
-                    className={`menu-item ${active ? 'active' : ''}`}
-                    onMouseDown={(e) => {
-                      e.preventDefault()
-                      toggleRepo(r.name)
-                    }}
-                  >
+                  <span className="chip-tag" key={name}>
                     <Icon name="branch" size={11} className="faint" />
-                    {r.name}
-                    <span className="menu-meta mono">{shortRepoUrl(r.url)}</span>
-                  </div>
+                    {cfg ? shortRepoUrl(cfg.url) : name}
+                  </span>
                 )
               })
             ) : (
-              <div className="menu-empty">no repositories — add one in Settings</div>
-            )
-          }
-        >
-          {repos.length ? (
-            repos.map((name) => {
-              const cfg = allRepos.find((r) => r.name === name)
-              return (
-                <span className="chip-tag" key={name}>
-                  <Icon name="branch" size={11} className="faint" />
-                  {cfg ? shortRepoUrl(cfg.url) : name}
-                </span>
-              )
-            })
-          ) : (
-            <span className="chip-dashed">no repository</span>
+              <span className="chip-dashed">no repository</span>
+            )}
+            <span className="spacer" />
+          </PickRow>
+          {!repos.length && (
+            <div className="hc-note">no repository — Run/Queue disabled until you pick one</div>
           )}
-          <span className="spacer" />
-        </PickRow>
-        {!repos.length && (
-          <div className="hc-note">no repository — Run/Queue disabled until you pick one</div>
-        )}
-        {repos.length > 1 && <div className="hc-note">{repos.length} repos — mounted read-only</div>}
+          {repos.length > 1 && <div className="hc-note">{repos.length} repos — mounted read-only</div>}
+        </div>
       </div>
 
-      {/* agent */}
+      {/* agent — which client/harness runs the session */}
       <div className="ns-section">
         <span className="seclabel">AGENT</span>
         <PickRow
@@ -439,83 +480,59 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
             )}
           </span>
         </PickRow>
+      </div>
 
-        <div className={`hc ${harnessOpen ? 'open' : ''}`}>
-          <button type="button" className="pick-row hc-head" onClick={() => setHarnessOpen((o) => !o)}>
+      {/* behavior — the fields changed most often (model/effort) plus the
+          auto/manual safety toggle, always visible rather than a click away. */}
+      <div className="ns-section">
+        <span className="seclabel">BEHAVIOR</span>
+        {behaviorOptions.map(configBlock)}
+        <div className="hc-block">
+          <span className="seclabel">MODE</span>
+          <div className="chip-row">
+            <button
+              className={`chip-btn ${autoAllow ? 'on' : ''}`}
+              onClick={() => patch({ autoAllow: true })}
+              title="allow tool calls automatically"
+            >
+              auto
+            </button>
+            <button
+              className={`chip-btn ${!autoAllow ? 'on' : ''}`}
+              onClick={() => patch({ autoAllow: false })}
+              title="confirm each tool call"
+            >
+              manual
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* permissions — network is a capability boundary like MODE, not tuning,
+          so it stays out of the collapsed panel too. */}
+      <div className="ns-section">
+        <span className="seclabel">PERMISSIONS</span>
+        <NetworkPicker network={network} onChange={(next) => patch({ network: next })} />
+      </div>
+
+      {/* advanced — everything left: rare agent-reported options, MCP
+          servers, the skills stub, and reset. */}
+      <div className="ns-section">
+        <div className={`hc ${advancedOpen ? 'open' : ''}`}>
+          <button type="button" className="pick-row hc-head" onClick={() => setAdvancedOpen((o) => !o)}>
             <Icon
               name="chevron"
               size={13}
               className="faint"
-              style={{ flex: 'none', transform: harnessOpen ? undefined : 'rotate(-90deg)' }}
+              style={{ flex: 'none', transform: advancedOpen ? undefined : 'rotate(-90deg)' }}
             />
-            <span className="pick-value">Harness config</span>
+            <span className="pick-value">Advanced</span>
             <span className="spacer" />
-            <span className="pick-meta">{harnessSummary}</span>
+            <span className="pick-meta">{advancedSummary}</span>
           </button>
-          {harnessOpen && (
+          {advancedOpen && (
             <div className="hc-body">
-              {cfgOptions.map((opt) =>
-                opt.type === 'select' ? (
-                  <div key={opt.id} className="hc-block">
-                    <span className="seclabel">{cfgLabel(opt)}</span>
-                    <div className="chip-row">
-                      {optionView.selectOptions(opt).map((o) => (
-                        <button
-                          key={o.value}
-                          type="button"
-                          className={`chip-btn ${effective(opt) === o.value ? 'on' : ''}`}
-                          title={o.description ?? undefined}
-                          onClick={() => setConfig(opt, o.value)}
-                        >
-                          {o.name}
-                        </button>
-                      ))}
-                    </div>
-                    {selectedDescription(opt) && (
-                      <div className="hc-note">{selectedDescription(opt)}</div>
-                    )}
-                  </div>
-                ) : (
-                  <div key={opt.id} className="hc-block">
-                    <span className="seclabel">{cfgLabel(opt)}</span>
-                    <div className="chip-row">
-                      <button
-                        type="button"
-                        className={`chip-btn ${effective(opt) === true ? 'on' : ''}`}
-                        onClick={() => setConfig(opt, true)}
-                      >
-                        on
-                      </button>
-                      <button
-                        type="button"
-                        className={`chip-btn ${effective(opt) === false ? 'on' : ''}`}
-                        onClick={() => setConfig(opt, false)}
-                      >
-                        off
-                      </button>
-                    </div>
-                  </div>
-                )
-              )}
-              <div className="hc-block">
-                <span className="seclabel">MODE</span>
-                <div className="chip-row">
-                  <button
-                    className={`chip-btn ${autoAllow ? 'on' : ''}`}
-                    onClick={() => patch({ autoAllow: true })}
-                    title="allow tool calls automatically"
-                  >
-                    auto
-                  </button>
-                  <button
-                    className={`chip-btn ${!autoAllow ? 'on' : ''}`}
-                    onClick={() => patch({ autoAllow: false })}
-                    title="confirm each tool call"
-                  >
-                    manual
-                  </button>
-                </div>
-              </div>
+              {advancedOptions.map(configBlock)}
               {(mcpOffered.length > 0 || mcpOrphans.length > 0) && (
                 <div className="hc-block">
                   <span className="seclabel">MCP SERVERS</span>
@@ -532,7 +549,6 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
                   ))}
                 </div>
               )}
-              <NetworkPicker network={network} onChange={(next) => patch({ network: next })} />
               <div className="hc-block">
                 <span className="seclabel">SKILLS</span>
                 <div className="hc-stub">Skills, hooks, tool policy — coming later</div>
