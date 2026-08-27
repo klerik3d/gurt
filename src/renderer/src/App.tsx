@@ -395,10 +395,25 @@ export default function App() {
     [ws, createDraft]
   )
 
-  // Global hotkeys: ⌘K palette · ⌘N new session · ⌘⇧N new task.
+  // Global hotkeys: ⌘K palette · ⌘N new session · ⌘⇧N new task ·
+  // ⌘` / ⌘⇧` cycle workspaces (mirrors macOS's ⌘` window-cycling within an app).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey)) return
+      if (e.code === 'Backquote') {
+        e.preventDefault()
+        const wsList = treeRef.current?.workspaces ?? []
+        if (wsList.length < 2) return
+        const idx = wsList.findIndex((w) => w.name === ws?.name)
+        const dir = e.shiftKey ? -1 : 1
+        const next = wsList[(idx + dir + wsList.length) % wsList.length]
+        if (!next) return
+        // Same rule as the titlebar dropdown: leaving a workspace clears whatever
+        // session/task was open so the sidebar/breadcrumb don't show stale content.
+        if (next.name !== ws?.name) setSelection(null)
+        setCurWs(next.name)
+        return
+      }
       const k = e.key.toLowerCase()
       if (k === 'k') {
         e.preventDefault()
