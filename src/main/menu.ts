@@ -60,32 +60,39 @@ function broadcast(channel: string, ...args: unknown[]): void {
   }
 }
 
-/** Hidden, accelerator-only items for the workspace-cycle hotkeys.
+/** Accelerator items for the workspace-cycle hotkeys, appended to the Window
+ *  menu — the same place Safari/Xcode-style apps put "Select Next/Previous
+ *  Tab".
  *
  * macOS reserves ⌘`/⌘⇧` system-wide for "cycle through this app's windows" —
  * AppKit's key window handling claims it before it ever becomes a DOM keydown
  * in the renderer, so App.tsx's own listener can never see it (a well-known
  * Electron gotcha: github.com/electron/electron/issues/1978). Registering it
  * as this app's own menu accelerator instead reclaims it — Electron's menu
- * layer takes priority over the OS default — and a hidden item keeps it out
- * of the menu bar. `visible: false` still leaves the accelerator active.
+ * layer takes priority over the OS default.
+ *
+ * These items must stay *visible*: a `visible: false` `MenuItem` is what the
+ * first version of this fix used, and it never worked — AppKit excludes
+ * hidden `NSMenuItem`s from key-equivalent matching entirely (they don't
+ * just fail to show, they don't fire), so the combination silently fell back
+ * to the OS's own no-op window cycle. Showing two extra Window-menu entries
+ * is a small, well-precedented cost for an accelerator that actually fires.
  *
  * Built from the live hotkey map rather than hardcoded to `` ` ``, so a remap
  * in Settings → Hotkeys follows: if the user moves `workspaceNext` off the
  * combination macOS reserves, this stops hijacking that combination too. */
 function workspaceCycleItems(hotkeys: HotkeyMap): MenuItemConstructorOptions[] {
   const items: MenuItemConstructorOptions[] = []
-  for (const [dir, binding] of [
-    [1, hotkeys.workspaceNext],
-    [-1, hotkeys.workspacePrev]
+  for (const [dir, label, binding] of [
+    [1, 'Next Workspace', hotkeys.workspaceNext],
+    [-1, 'Previous Workspace', hotkeys.workspacePrev]
   ] as const) {
     // The capture UI in Settings never saves a binding without `mod` — this
     // guards a hand-edited hotkeys.json from registering a bare-letter
     // accelerator that would swallow ordinary typing app-wide.
     if (!binding.mod) continue
     items.push({
-      label: `Cycle workspace ${dir > 0 ? 'forward' : 'backward'}`,
-      visible: false,
+      label,
       accelerator: bindingToAccelerator(binding),
       click: () => broadcast('hotkey-cycle-workspace', dir)
     })
@@ -107,6 +114,7 @@ function workspaceCycleItems(hotkeys: HotkeyMap): MenuItemConstructorOptions[] {
 export function initAppMenu(hotkeys: HotkeyMap): void {
   if (process.platform !== 'darwin') return
   app.setName('Gurt')
+  const cycleItems = workspaceCycleItems(hotkeys)
   const template: MenuItemConstructorOptions[] = [
     {
       label: 'Gurt',
@@ -124,8 +132,20 @@ export function initAppMenu(hotkeys: HotkeyMap): void {
     },
     { role: 'editMenu' },
     { role: 'viewMenu' },
-    { role: 'windowMenu' },
-    { label: 'gurt-hotkeys', visible: false, submenu: workspaceCycleItems(hotkeys) }
+    {
+      // `role: 'windowMenu'` normally fills in its own submenu (Minimize,
+      // Zoom, a separator, Bring All to Front); providing one explicitly
+      // replaces that default, so it's spelled out here to keep those same
+      // items and add the workspace-cycle entries after them.
+      role: 'windowMenu',
+      submenu: [
+        { role: 'minimize' },
+        { role: 'zoom' },
+        { type: 'separator' },
+        { role: 'front' },
+        ...(cycleItems.length ? [{ type: 'separator' } as const, ...cycleItems] : [])
+      ]
+    }
   ]
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
