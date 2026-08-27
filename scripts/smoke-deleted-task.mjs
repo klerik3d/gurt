@@ -1,13 +1,18 @@
 // Deleting a task must fully retire it: no leftover selection pointing at it,
 // and no directory resurrected on disk by a late persist.
 //
-// Regression for: after deleting a task, the new-session modal (⌘N) was
-// pre-filled with the deleted task's name (the selection was never cleared), and
-// a session created from there landed in the deleted task's re-created directory
-// — invisible in the tree, because the resurrected dir had sessions.json but no
-// task.json. Two bugs caused it: the stale selection, and a debounced persist
-// (scheduled by the container teardown) that fired after the task dir was
-// removed.
+// Regression for: after deleting a task, ⌘N was still pointed at the deleted
+// task's name — the selection was never cleared — and the session it made landed
+// in the deleted task's re-created directory, invisible in the tree because the
+// resurrected dir had sessions.json but no task.json. Two bugs caused it: the
+// stale selection, and a debounced persist (scheduled by the container teardown)
+// that fired after the task dir was removed.
+//
+// ⌘N no longer opens a modal — it creates a bare draft in the task the user is
+// looking at, falling back to the "new task" flow when the workspace has none,
+// which is exactly the state deleting the last task leaves behind. So a stale
+// selection here would now write a session into a dead directory with no popup
+// in between to notice it in.
 //
 //   npm run build && node scripts/smoke-deleted-task.mjs
 import { createRequire } from 'node:module'
@@ -101,38 +106,28 @@ try {
   assert.equal(await crumbText(), ws, 'the selection of the deleted task is dropped')
   console.log('task deleted from tree and disk OK')
 
-  // Open the new-session modal. It must NOT prefill the deleted task — the
-  // stale selection was cleared, and the deleted dir stays gone.
+  // ⌘N with the workspace empty must NOT reach for the deleted task — no
+  // session anywhere, and the deleted dir stays gone. What it offers instead is
+  // the ordinary "new task" flow, since a session cannot exist outside a task.
   await page.keyboard.press('Control+n')
-  await page.waitForSelector('.modal:has-text("New session")', { timeout: 5000 })
-  const taskValue = await page.locator('.ns-body .pick-value').first().innerText()
-  assert.equal(taskValue, 'no tasks yet', 'modal does not prefill the deleted task')
+  await page.waitForSelector('.modal:has-text("New task in w")', { timeout: 5000 })
+  assert.equal(await page.locator('.sb-session').count(), 0, 'no session was created for a dead task')
   await new Promise((r) => setTimeout(r, 700)) // a late persist would show up here
-  assert.deepEqual(diskTasks(), [], 'the deleted task dir is not resurrected on modal open')
-  await shot('01-modal-no-stale-task')
-  console.log('modal is not pre-filled with the deleted task OK')
+  assert.deepEqual(diskTasks(), [], 'the deleted task dir is not resurrected by ⌘N')
+  await shot('01-no-stale-task')
+  console.log('⌘N does not reach for the deleted task OK')
 
-  // Create a new task inline and run a session on it.
-  await page.click('.ns-body .pick-row:has-text("TASK")')
-  await page.waitForSelector('.pick-menu', { timeout: 5000 })
-  assert.deepEqual(
-    await page.locator('.pick-menu .menu-item').allInnerTexts(),
-    ['+ new task'],
-    'the picker only offers creating a fresh task'
-  )
-  await page.click('.pick-menu .menu-item:has-text("+ new task")')
-  await page.waitForSelector('.menu-item-input input', { timeout: 5000 })
-  await page.fill('.menu-item-input input', 'n')
-  await page.press('.menu-item-input input', 'Enter')
-  await page.waitForSelector('.menu-item-input', { state: 'detached', timeout: 5000 })
-  assert.equal(
-    await page.locator('.ns-body .pick-value').first().innerText(),
-    'n',
-    'the new task is selected right away'
-  )
-  await page.fill('.ns-prompt-input', 'do something')
-  await page.click('.modal .btn-primary:has-text("Run now")')
-  await page.waitForSelector('.modal', { state: 'detached', timeout: 8000 })
+  // Create the replacement task, which becomes the selection…
+  await page.fill('.modal input', 'n')
+  await page.click('.modal .btn-primary')
+  await page.waitForSelector('.modal', { state: 'detached', timeout: 5000 })
+  await page.waitForSelector('.sb-task-name:has-text("n")', { timeout: 5000 })
+
+  // …then ⌘N again, which now creates a draft straight into the selected task.
+  // Pruning the dead selection must not have left a stale one behind.
+  await page.keyboard.press('Control+n')
+  await page.waitForSelector('.session-pane .tab-bar', { timeout: 8000 })
+  assert.equal(await page.locator('.modal').count(), 0, 'a new session is a bare draft, no modal')
   await new Promise((r) => setTimeout(r, 800))
 
   // The session must land in the NEW task, and the deleted task must stay gone.

@@ -1813,6 +1813,16 @@ textarea.input {
   gap: 7px;
   margin-top: 14px;
 }
+.ns-subsection {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.ns-subsection + .ns-subsection {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border2);
+}
 .ns-chips {
   display: flex;
   align-items: center;
