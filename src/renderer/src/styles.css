@@ -3631,9 +3631,10 @@ textarea.input {
 }
 
 /* ---- session traffic (docs/requirements-mcp-proxy.md §8) ---- */
-/* Blocked attempts first, observed domains collapsed under them. Sits under
-   the chat feed and under the non-started pane's header — in both places it is
-   the answer to "why couldn't it reach that". */
+/* Blocked attempts first, observed domains collapsed under them. In the chat
+   it lives behind the composer's network button; the non-started pane has no
+   composer and shows it as a panel under the header. Either way it is the
+   answer to "why couldn't it reach that". */
 .net-panel {
   display: flex;
   flex-direction: column;
@@ -3697,6 +3698,32 @@ textarea.input {
 }
 .net-builtin .dim {
   font-size: 10.5px;
+}
+
+/* The composer's network button and the popup it opens. Same body as the
+   panel, so the two surfaces stay one thing with two frames. */
+.net-btn {
+  position: relative;
+}
+/* A blocked host is the one part of this that must not wait to be asked for:
+   the dot says "there is something to open", the popup says what. */
+.net-btn-dot {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--red);
+}
+.net-pop {
+  right: 0;
+  width: 340px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  font-size: 11px;
 }
 
 /* Allow-list entry in the composer — same frame as the prompt field. */

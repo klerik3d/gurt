@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import type { JSX } from 'react'
 import type { SessionNetwork } from '../../../shared/types'
-import type { TrafficHost } from '../../../shared/proxy'
+import type { SessionTraffic, TrafficHost } from '../../../shared/proxy'
 import {
   BUILTIN_DENY_ENTRIES,
   BUILTIN_DENY_REASON,
@@ -59,24 +59,25 @@ function HostRow({ host, why }: { host: TrafficHost; why?: string }): JSX.Elemen
 }
 
 /**
- * Blocked attempts first, observed hosts collapsed under them. Renders nothing
- * at all until the proxy has been seen doing something — an empty panel on
- * every draft would be noise, and "no traffic yet" is not news.
+ * Everything the proxy has been seen doing, as a block: the mode and its policy
+ * on one line, blocked attempts under it, observed hosts collapsed under those.
+ *
+ * `traffic` is passed in rather than pulled here — the button that opens this
+ * in a popup needs the same ledger for its own mark, and one subscription
+ * answers both.
  */
-export function TrafficPanel({
-  sessionId,
-  network
+function NetBody({
+  network,
+  traffic
 }: {
-  sessionId: string
   network?: SessionNetwork | undefined
-}): JSX.Element | null {
-  const traffic = useSessionTraffic(sessionId)
+  traffic: SessionTraffic
+}): JSX.Element {
   const [showAllowed, setShowAllowed] = useState(false)
   const internal = network?.internal === true || traffic.internal
-  if (!traffic.blocked.length && !traffic.allowed.length) return null
 
   return (
-    <div className="net-panel">
+    <>
       <div className="net-head">
         <Icon name={NET_INFO[internal ? 'internal' : 'open'].icon} size={11} className="faint" />
         <span className="net-mode">{NET_INFO[internal ? 'internal' : 'open'].label}</span>
@@ -120,7 +121,83 @@ export function TrafficPanel({
           ))}
         </div>
       )}
+    </>
+  )
+}
+
+/**
+ * The same block standing on its own, for the panes with no composer to hang a
+ * button off. Renders nothing at all until the proxy has been seen doing
+ * something — an empty panel on every draft would be noise, and "no traffic
+ * yet" is not news when nobody asked.
+ */
+export function TrafficPanel({
+  sessionId,
+  network
+}: {
+  sessionId: string
+  network?: SessionNetwork | undefined
+}): JSX.Element | null {
+  const traffic = useSessionTraffic(sessionId)
+  if (!traffic.blocked.length && !traffic.allowed.length) return null
+  return (
+    <div className="net-panel">
+      <NetBody network={network} traffic={traffic} />
     </div>
+  )
+}
+
+/**
+ * The composer's network mark: the session's egress mode as an icon, and the
+ * traffic block behind a click.
+ *
+ * The block used to sit above the composer whenever there was any traffic at
+ * all, which spent a permanent strip of the feed on a line most sessions never
+ * need to read. Asking for it is the right default — but a *blocked* host is
+ * not something to wait to be asked about, so the button carries a mark while
+ * there is one, and the icon itself always says which mode the session is on.
+ *
+ * Open/closed is owned by the composer, like its other popups: only one of them
+ * may be open, and the composer's outside-click and Esc handling closes this
+ * one along with the rest.
+ */
+export function NetButton({
+  sessionId,
+  network,
+  open,
+  onToggle
+}: {
+  sessionId: string
+  network?: SessionNetwork | undefined
+  open: boolean
+  onToggle: () => void
+}): JSX.Element {
+  const traffic = useSessionTraffic(sessionId)
+  const internal = network?.internal === true || traffic.internal
+  const info = NET_INFO[internal ? 'internal' : 'open']
+  const blocked = traffic.blocked.length
+
+  return (
+    <>
+      <button
+        className={`icon-sq net-btn ${open ? 'active' : ''}`}
+        title={`${info.label} — ${policySummary(network?.policy)}${
+          blocked ? ` · ${blocked} blocked ${blocked === 1 ? 'host' : 'hosts'}` : ''
+        }`}
+        onClick={onToggle}
+      >
+        <Icon name={info.icon} size={14} />
+        {blocked > 0 && <span className="net-btn-dot" />}
+      </button>
+      {open && (
+        <div className="cmp-menu net-pop">
+          <NetBody network={network} traffic={traffic} />
+          {!traffic.blocked.length && !traffic.allowed.length && (
+            <div className="dim">nothing has gone through this session's proxy yet</div>
+          )}
+        </div>
+      )}
+    </>
   )
 }
 
