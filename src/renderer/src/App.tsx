@@ -26,6 +26,8 @@ import { markSeen } from './reviewed'
 import { DialogHost, alertDialog } from './dialog'
 import { logErr } from './log'
 import { run } from './async'
+import { bindingLabel, bindingMatchesEvent } from '../../shared/hotkeys'
+import { useHotkeys } from './useHotkeys'
 
 export type Selection =
   | { type: 'session'; id: string }
@@ -71,6 +73,7 @@ export default function App() {
    *  main does not persist turn starts, and inventing one would misreport. */
   const [turnStarts, setTurnStarts] = useState<Record<string, number>>({})
   const [paletteOpen, setPaletteOpen] = useState(false)
+  const hotkeys = useHotkeys()
   /** Boot restore progress — the footer bar while main is still restoring
    *  sessions / reconciling containers. Null until first heard from; hidden
    *  once `done`. */
@@ -395,41 +398,42 @@ export default function App() {
     [ws, createDraft]
   )
 
-  // Global hotkeys: ⌘K palette · ⌘N new session · ⌘⇧N new task ·
-  // ⌘` / ⌘⇧` cycle workspaces (mirrors macOS's ⌘` window-cycling within an app).
+  // Global hotkeys: palette · new session · new task · cycle workspaces
+  // (default ⌘K / ⌘N / ⌘⇧N / ⌘` / ⌘⇧`, remappable in Settings → Hotkeys).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey)) return
-      if (e.code === 'Backquote') {
-        e.preventDefault()
+      const cycle = (dir: 1 | -1) => {
         const wsList = treeRef.current?.workspaces ?? []
         if (wsList.length < 2) return
         const idx = wsList.findIndex((w) => w.name === ws?.name)
-        const dir = e.shiftKey ? -1 : 1
         const next = wsList[(idx + dir + wsList.length) % wsList.length]
         if (!next) return
         // Same rule as the titlebar dropdown: leaving a workspace clears whatever
         // session/task was open so the sidebar/breadcrumb don't show stale content.
         if (next.name !== ws?.name) setSelection(null)
         setCurWs(next.name)
-        return
       }
-      const k = e.key.toLowerCase()
-      if (k === 'k') {
+      if (bindingMatchesEvent(hotkeys.workspaceNext, e)) {
+        e.preventDefault()
+        cycle(1)
+      } else if (bindingMatchesEvent(hotkeys.workspacePrev, e)) {
+        e.preventDefault()
+        cycle(-1)
+      } else if (bindingMatchesEvent(hotkeys.palette, e)) {
         e.preventDefault()
         setPaletteOpen((o) => !o)
-      } else if (k === 'n') {
+      } else if (bindingMatchesEvent(hotkeys.newTask, e)) {
         e.preventDefault()
-        if (e.shiftKey) {
-          if (ws) setNewTask(ws.name)
-        } else {
-          openNewSession()
-        }
+        if (ws) setNewTask(ws.name)
+      } else if (bindingMatchesEvent(hotkeys.newSession, e)) {
+        e.preventDefault()
+        openNewSession()
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [ws, openNewSession])
+  }, [ws, openNewSession, hotkeys])
 
   const positions = queuePositions(tree)
   const unreadCount = notifications.reduce((n, r) => n + (r.read ? 0 : 1), 0)
@@ -553,7 +557,11 @@ export default function App() {
           </div>
         </div>
         <div className="tb-icons">
-          <button className="icon-sq tb-btn" title="Search · ⌘K" onClick={() => setPaletteOpen(true)}>
+          <button
+            className="icon-sq tb-btn"
+            title={`Search · ${bindingLabel(hotkeys.palette)}`}
+            onClick={() => setPaletteOpen(true)}
+          >
             <Icon name="search" size={16} />
           </button>
           <div className="notif-wrap" ref={notifRef}>
@@ -602,7 +610,7 @@ export default function App() {
             title="Settings"
             onClick={() => setView('settings')}
           >
-            <Icon name="sliders" size={17} />
+            <Icon name="gear" size={17} />
           </button>
         </div>
 
@@ -650,8 +658,8 @@ export default function App() {
                     <Logo size={240} />
                   </div>
                   <div className="placeholder-text">
-                    select a session on the left, or press <span className="kbd">⌘K</span> to get
-                    started
+                    select a session on the left, or press{' '}
+                    <span className="kbd">{bindingLabel(hotkeys.palette)}</span> to get started
                   </div>
                 </div>
               )}

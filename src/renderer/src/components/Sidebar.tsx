@@ -3,7 +3,9 @@ import type { KeyboardEvent as ReactKeyboardEvent } from 'react'
 import type { RepoChanges, SessionActivity, Tree } from '../../../shared/types'
 import { isActionable, isDelivered, sessionStatus } from '../../../shared/types'
 import type { Selection } from '../App'
+import { bindingLabel } from '../../../shared/hotkeys'
 import { agentKind, agentName, useAgents } from '../useAgents'
+import { useHotkeys } from '../useHotkeys'
 import { useOutsideClose } from '../hooks'
 import { alertDialog, confirmDialog } from '../dialog'
 import { SESSION_DOT } from '../status'
@@ -54,6 +56,7 @@ export function Sidebar({
     setTaskDraftName('')
   })
   const agents = useAgents()
+  const hotkeys = useHotkeys()
   /** The row whose name is currently swapped for a text field, if any. */
   const [renaming, setRenaming] = useState<Row | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
@@ -288,7 +291,7 @@ export function Sidebar({
         <div className="sb-newtask" ref={taskPopRef}>
           <button
             className="icon-sq"
-            title="New task · ⌘⇧N"
+            title={`New task · ${bindingLabel(hotkeys.newTask)}`}
             onClick={() => setCreatingTask((o) => !o)}
           >
             <Icon name="plus" size={14} />

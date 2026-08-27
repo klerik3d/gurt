@@ -2728,6 +2728,15 @@ textarea.input {
   text-overflow: ellipsis;
 }
 
+/* Hotkeys: the recording placeholder and the conflict note under a row. */
+.hotkey-recording {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.hotkey-conflict {
+  margin: 6px 16px 0;
+}
+
 /* MCP servers: the built-ins subheading and the header name/value rows. */
 .set-sub {
   margin: 14px 0 -2px;

@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { SessionActivity, SessionStatus, Tree } from '../../../shared/types'
 import { sessionStatus } from '../../../shared/types'
+import { bindingLabel } from '../../../shared/hotkeys'
 import { agentKind, agentName, useAgents } from '../useAgents'
+import { useHotkeys } from '../useHotkeys'
 import { logErr } from '../log'
 import type { Tone } from '../status'
 import { SESSION_DOT } from '../status'
@@ -73,6 +75,7 @@ export function CommandPalette({
   const [query, setQuery] = useState('')
   const [idx, setIdx] = useState(0)
   const agents = useAgents()
+  const hotkeys = useHotkeys()
   const listRef = useRef<HTMLDivElement>(null)
 
   const { items, groups } = useMemo(() => {
@@ -80,8 +83,8 @@ export function CommandPalette({
     const match = (s: string) => !q || s.toLowerCase().includes(q)
 
     const actions: ActionItem[] = [
-      { kind: 'action', id: 'new-session', title: 'New session…', keys: '⌘N' },
-      { kind: 'action', id: 'new-task', title: 'New task…', keys: '⌘⇧N' },
+      { kind: 'action', id: 'new-session', title: 'New session…', keys: bindingLabel(hotkeys.newSession) },
+      { kind: 'action', id: 'new-task', title: 'New task…', keys: bindingLabel(hotkeys.newTask) },
       { kind: 'action', id: 'open-logs', title: 'Open logs folder', keys: '' },
       { kind: 'action', id: 'check-updates', title: 'Check for updates', keys: '' }
     ].filter((a) => match(a.title)) as ActionItem[]
@@ -107,7 +110,7 @@ export function CommandPalette({
     const shownTasks = tasks.slice(0, 5)
     const all: Item[] = [...actions, ...shownSessions, ...shownTasks]
     return { items: all, groups: { actions, sessions: shownSessions, tasks: shownTasks } }
-  }, [tree, activity, agents, query])
+  }, [tree, activity, agents, hotkeys, query])
 
   useEffect(() => {
     if (idx >= items.length) setIdx(0)
@@ -234,7 +237,7 @@ export function CommandPalette({
           <span>↑↓ navigate</span>
           <span>↵ open</span>
           <span className="spacer" />
-          <span>⌘K</span>
+          <span>{bindingLabel(hotkeys.palette)}</span>
         </div>
       </div>
     </div>
