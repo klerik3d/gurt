@@ -37,7 +37,9 @@ await page.waitForSelector('.modal input')
 await page.fill('.modal input', 'acme')
 await page.click('.modal .btn-primary')
 await page.waitForSelector('.modal', { state: 'detached', timeout: 5000 })
-await page.waitForSelector('.sb-ws-name:has-text("acme")', { timeout: 5000 })
+// The workspace name lives in the titlebar switcher, not the sidebar header
+// (which is a static "Tasks" label) — that button is the readback for the create.
+await page.waitForSelector('.tb-ws-btn:has-text("acme")', { timeout: 5000 })
 console.log('workspace created OK')
 
 // The fix under test: header "+" opens an inline popover, not a modal — one
@@ -69,14 +71,20 @@ assert.equal(await page.locator('.sb-task').count(), 2, 'two independent tasks e
 assert.equal(await page.locator('.sb-session').count(), 0, 'still no sessions after a second task')
 console.log('second task created independently OK')
 
-// The per-task "new session" button is now a distinct message icon, not a
-// second identical plus — click it and confirm the New Session modal (not
-// another task) is what opens. It's only visible on row hover.
+// The per-task "new session" button is a distinct message icon, not a second
+// identical plus — click it and confirm it makes a *session* (not another
+// task). It's only visible on row hover. Since the New Session modal was
+// replaced by instant drafts, the session appears in the tree straight away
+// and its pane opens on the Chat tab — no popup in between.
 await page.hover('.sb-task >> nth=0')
 await page.click('.sb-task .icon-sq[title="new session"] >> nth=0')
-await page.waitForSelector('.modal:has-text("New session")', { timeout: 5000 })
-await page.screenshot({ path: path.join(SHOT_DIR, '02-new-session-modal.png') })
-console.log('per-task + opens New Session modal, distinct from task creation OK')
+await page.waitForSelector('.session-pane .tab-bar', { timeout: 5000 })
+await page.waitForSelector('.sb-session', { timeout: 5000 })
+assert.equal(await page.locator('.modal').count(), 0, 'a new session is a bare draft, no modal')
+assert.equal(await page.locator('.sb-task').count(), 2, 'still two tasks — no task was created')
+assert.equal(await page.locator('.sb-session').count(), 1, 'exactly one session, under the hovered task')
+await page.screenshot({ path: path.join(SHOT_DIR, '02-new-session-draft.png') })
+console.log('per-task message icon creates a session draft, distinct from task creation OK')
 
 await app.close()
 console.log('DONE')
