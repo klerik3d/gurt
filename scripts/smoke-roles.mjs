@@ -71,10 +71,33 @@ const row = (label) => `.ns-body .seclabel:text-is("${label}") + .pick-wrap .pic
 const ROLE_ROW = row('ROLE')
 /** The role the Config tab currently shows, from the picker's own value. */
 const shownRole = async () => (await page.locator(`${ROLE_ROW} .pick-value`).innerText()).trim()
+
+// A pick is not applied when its menu closes. `DraftConfig` holds no optimistic
+// copy of the draft — it renders the `info` that main pushes back — so a pick
+// travels IPC → `kernel.editDraft` → `store.getWorkspace` (a disk read) →
+// snapshot push before the pane shows it, while the menu closes on the click
+// itself. Reading the picker straight after the menu detaches is therefore a
+// race that a loaded CI runner loses. These wait for the value instead.
+const untilRole = (role) =>
+  page.waitForSelector(`${ROLE_ROW} .pick-value:text-is("${role}")`, { timeout: 5000 })
+/** The repo chips, once they read exactly `want` — same round-trip, same wait. */
+const untilChips = (want) =>
+  page.waitForFunction(
+    (expected) => {
+      const got = [...document.querySelectorAll('.ns-body .chip-tag')].map((e) =>
+        (e.innerText ?? '').trim()
+      )
+      return got.length === expected.length && got.every((g, i) => g === expected[i])
+    },
+    want,
+    { timeout: 5000 }
+  )
+
 const pickRole = async (role) => {
   await page.click(ROLE_ROW)
   await page.click(`.ns-body .pick-menu .menu-item:has-text("${role}")`)
   await page.waitForSelector('.ns-body .pick-menu', { state: 'detached', timeout: 5000 })
+  await untilRole(role)
 }
 const repoChips = () => page.locator('.ns-body .chip-tag').allInnerTexts()
 const pickRepo = async (name) => {
@@ -125,8 +148,10 @@ try {
   // second pick replaces the first.
   assert.deepEqual(await repoChips(), [], 'a bare draft starts with no repository')
   await pickEnv('dev')
+  await untilChips(['o/alpha'])
   assert.deepEqual(await repoChips(), ['o/alpha'], 'seeded from the env default')
   await pickRepo('beta')
+  await untilChips(['o/beta'])
   assert.deepEqual(await repoChips(), ['o/beta'], 'an executor pick replaces the repo')
   // The advanced panel opens, and offers no git-access toggle for any role —
   // the container broker is gone (docs/requirements-mcp-proxy.md §10.2).
@@ -144,12 +169,14 @@ try {
   await pickRole('researcher')
   assert.equal(await shownRole(), 'researcher')
   await pickRepo('alpha')
+  await untilChips(['o/beta', 'o/alpha'])
   assert.deepEqual(await repoChips(), ['o/beta', 'o/alpha'], 'a researcher accumulates repos')
   await shot('02-researcher')
   console.log('researcher: multi-select OK')
 
   // --- leaving the researcher role drops the extra repos ---
   await pickRole('reviewer')
+  await untilChips(['o/beta'])
   assert.deepEqual(await repoChips(), ['o/beta'], 'a reviewer keeps a single clone')
   await shot('03-reviewer')
 
@@ -172,7 +199,9 @@ try {
   await page.waitForSelector('.sb-session', { timeout: 15000 })
   await page.click('.sb-session >> nth=0')
   await openConfig()
+  await untilRole('reviewer')
   assert.equal(await shownRole(), 'reviewer', 'the Config tab reopens on the saved role')
+  await untilChips(['o/beta'])
   assert.deepEqual(await repoChips(), ['o/beta'], 'and on the saved repo')
 
   // --- editing the draft can still change the role (nothing has run) ---
