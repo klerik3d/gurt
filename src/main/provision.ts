@@ -292,18 +292,18 @@ export function run(cmd: string, args: string[], sink: LogSink, opts: RunOpts = 
   })
 }
 
-/** True if `refs/heads/<branch>` exists in the clone. Fully qualified on
- *  purpose: the short name would also match a tag or a remote-tracking ref
+/** True if `ref` exists in the clone. Callers pass a fully qualified ref on
+ *  purpose: a short name would also match a tag or a remote-tracking ref
  *  through rev-parse's DWIM rules, and the answer decides create-vs-switch. */
-async function localBranchExists(
+async function refExists(
   dir: string,
   gitArgs: string[],
   env: NodeJS.ProcessEnv,
-  branch: string
+  ref: string
 ): Promise<boolean> {
   const out = await run(
     'git',
-    ['-C', dir, ...gitArgs, 'rev-parse', '--verify', '--quiet', `refs/heads/${branch}`],
+    ['-C', dir, ...gitArgs, 'rev-parse', '--verify', '--quiet', ref],
     () => {},
     { env, okCodes: [0, 1] }
   )
@@ -404,8 +404,25 @@ async function provisionClone(
   // Create vs switch, never one masking the other: a `checkout` that fails on
   // its own (dirty tree, missing ref) must surface that error, not retry as
   // `checkout -b` and report the misleading "branch already exists".
-  if (await localBranchExists(dir, gitArgs, env, branch))
+  if (await refExists(dir, gitArgs, env, `refs/heads/${branch}`))
     await run('git', ['-C', dir, ...gitArgs, 'checkout', branch], log, { env })
+  // A remote branch of the task's name *is* the task's branch, so continue it
+  // instead of forking a second one off the default branch: changes.ts already
+  // reads `origin/<task>` as this task's remote branch — it fetches and prunes
+  // it, publishes with `push -u`, and splits pushed from local commits against
+  // it — so provisioning has to agree, or a task whose branch already exists on
+  // the remote would start from the wrong commit and report every commit
+  // already on that branch as missing. `--track origin/<branch>` is spelled out
+  // rather than left to a bare `checkout <branch>`, so the DWIM path stays
+  // unused here too. No fetch is needed: the clone above brought every remote
+  // ref along, and a pre-existing clone returned further up.
+  else if (await refExists(dir, gitArgs, env, `refs/remotes/origin/${branch}`))
+    await run(
+      'git',
+      ['-C', dir, ...gitArgs, 'checkout', '-b', branch, '--track', `origin/${branch}`],
+      log,
+      { env }
+    )
   else await run('git', ['-C', dir, ...gitArgs, 'checkout', '-b', branch], log, { env })
   return dir
 }
