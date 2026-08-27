@@ -31,6 +31,7 @@ import type { McpDef, McpRegistryEntry } from './mcp'
 import type { TurnRecord } from './usage'
 import type { PlanUsage } from './planUsage'
 import type { NotificationPrefs, NotificationRecord } from './notifications'
+import type { HotkeyMap } from './hotkeys'
 
 export type CreateAction = 'run' | 'queue' | 'draft'
 
@@ -277,6 +278,10 @@ export interface GurtApi {
   dismissNotification(id: string): Promise<void>
   getNotificationPrefs(): Promise<NotificationPrefs>
   setNotificationPrefs(prefs: NotificationPrefs): Promise<void>
+  /** User overrides for the global keyboard shortcuts, keyed by action —
+   *  an action missing from the stored file uses its built-in default. */
+  getHotkeys(): Promise<HotkeyMap>
+  setHotkeys(map: HotkeyMap): Promise<void>
   /** The retained usage ledger, oldest first — one record per agent turn.
    *  Survives relaunches (unlike the notification ring): it is what puts a
    *  finished session on the dashboard's DONE column and marks its failures. */
@@ -368,6 +373,8 @@ const METHODS = {
   dismissNotification: true,
   getNotificationPrefs: true,
   setNotificationPrefs: true,
+  getHotkeys: true,
+  setHotkeys: true,
   getUsage: true,
   getPlanUsage: true,
   getBootProgress: true

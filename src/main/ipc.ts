@@ -26,6 +26,7 @@ import { traffic } from './proxy/traffic'
 import * as store from './store'
 import * as changes from './changes'
 import { normalizeNotificationPrefs } from '../shared/notifications'
+import { sanitizeHotkeys } from '../shared/hotkeys'
 import { checkForUpdates } from './update'
 
 const log = createLogger('ipc')
@@ -351,6 +352,14 @@ export function registerIpc(): void {
       const normalized = normalizeNotificationPrefs(prefs, await store.getNotificationPrefs())
       await store.setNotificationPrefs(normalized)
       kernel.notifications.setPrefs(normalized)
+    },
+    getHotkeys: () => store.getHotkeys(),
+    setHotkeys: async (map) => {
+      // Same untrusted-boundary treatment as notification prefs: a bad/partial
+      // payload falls back per-action to what's already persisted, never wipes
+      // every other action's remap.
+      const normalized = sanitizeHotkeys(map, await store.getHotkeys())
+      await store.setHotkeys(normalized)
     },
     getUsage: async () => {
       // The first read can beat the ledger's own load off disk; waiting on it

@@ -134,7 +134,10 @@ const SAFE_ARGS = new Set([
   'dismissNotification',
   'setNotificationPrefs',
   'openLogsFolder',
-  'checkForUpdates'
+  'checkForUpdates',
+  // A map of action id -> key code/booleans; no prose ever passes through it.
+  'getHotkeys',
+  'setHotkeys'
 ])
 
 /**

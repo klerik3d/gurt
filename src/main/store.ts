@@ -28,6 +28,8 @@ import { normalizeMcpEntry, validateMcpEntry } from '../shared/mcp'
 import type { NotificationPrefs } from '../shared/notifications'
 import type { TurnRecord } from '../shared/usage'
 import { NOTIFICATION_DEFAULTS } from '../shared/notifications'
+import type { HotkeyMap } from '../shared/hotkeys'
+import { HOTKEY_DEFAULTS, sanitizeHotkeys } from '../shared/hotkeys'
 import { createLogger } from './log'
 
 const pexecFile = promisify(execFile)
@@ -400,6 +402,20 @@ export async function getNotificationPrefs(): Promise<NotificationPrefs> {
 
 export async function setNotificationPrefs(prefs: NotificationPrefs): Promise<void> {
   await writeJson(notificationsFile(), prefs)
+}
+
+const hotkeysFile = () => path.join(gurtRoot, 'hotkeys.json')
+
+/** A missing/partial file (fresh install, or an action added later) falls
+ *  back per-action to the built-in default, the same tolerance as
+ *  `getNotificationPrefs`. */
+export async function getHotkeys(): Promise<HotkeyMap> {
+  const raw = await readJson<Partial<HotkeyMap>>(hotkeysFile(), {})
+  return sanitizeHotkeys(raw, HOTKEY_DEFAULTS)
+}
+
+export async function setHotkeys(map: HotkeyMap): Promise<void> {
+  await writeJson(hotkeysFile(), map)
 }
 
 export async function createWorkspace(name: string): Promise<void> {
