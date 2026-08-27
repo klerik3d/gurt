@@ -4,8 +4,10 @@
 // panel, so the build info the panel would otherwise omit (commit, build
 // date, Electron/Chromium/Node/V8) is there and copyable in one click — same
 // shape as VS Code's About dialog.
-import { app, clipboard, dialog, Menu, type MenuItemConstructorOptions } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, Menu, type MenuItemConstructorOptions } from 'electron'
 import os from 'node:os'
+import type { HotkeyMap } from '../shared/hotkeys'
+import { bindingToAccelerator } from '../shared/hotkeys'
 
 /** Coarse "when was this" wording — same rounding as the renderer's
  *  `relativeTime` (src/renderer/src/time.ts), duplicated because that file
@@ -51,12 +53,58 @@ function showAbout(): void {
   if (button === 0) clipboard.writeText(`Gurt\n${detail}`)
 }
 
+function broadcast(channel: string, ...args: unknown[]): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed() || win.webContents.isDestroyed()) continue
+    win.webContents.send(channel, ...args)
+  }
+}
+
+/** Hidden, accelerator-only items for the workspace-cycle hotkeys.
+ *
+ * macOS reserves ⌘`/⌘⇧` system-wide for "cycle through this app's windows" —
+ * AppKit's key window handling claims it before it ever becomes a DOM keydown
+ * in the renderer, so App.tsx's own listener can never see it (a well-known
+ * Electron gotcha: github.com/electron/electron/issues/1978). Registering it
+ * as this app's own menu accelerator instead reclaims it — Electron's menu
+ * layer takes priority over the OS default — and a hidden item keeps it out
+ * of the menu bar. `visible: false` still leaves the accelerator active.
+ *
+ * Built from the live hotkey map rather than hardcoded to `` ` ``, so a remap
+ * in Settings → Hotkeys follows: if the user moves `workspaceNext` off the
+ * combination macOS reserves, this stops hijacking that combination too. */
+function workspaceCycleItems(hotkeys: HotkeyMap): MenuItemConstructorOptions[] {
+  const items: MenuItemConstructorOptions[] = []
+  for (const [dir, binding] of [
+    [1, hotkeys.workspaceNext],
+    [-1, hotkeys.workspacePrev]
+  ] as const) {
+    // The capture UI in Settings never saves a binding without `mod` — this
+    // guards a hand-edited hotkeys.json from registering a bare-letter
+    // accelerator that would swallow ordinary typing app-wide.
+    if (!binding.mod) continue
+    items.push({
+      label: `Cycle workspace ${dir > 0 ? 'forward' : 'backward'}`,
+      visible: false,
+      accelerator: bindingToAccelerator(binding),
+      click: () => broadcast('hotkey-cycle-workspace', dir)
+    })
+  }
+  return items
+}
+
 /** Sets the macOS app menu; a no-op elsewhere, since the app-named menu at
  *  the top left is a mac-only convention (Windows/Linux keep Electron's
- *  default menu). Also renames the app itself — the role-based items below
- *  (`quit`, `hide`, …) render as "Quit " + `app.name`, so the label has to
- *  change, not just this menu's title, or they'd still read "Electron". */
-export function initAppMenu(): void {
+ *  default menu, and their Ctrl+`/Ctrl+Shift+` are not OS-reserved — the
+ *  renderer's own keydown listener already catches them there). Also renames
+ *  the app itself — the role-based items below (`quit`, `hide`, …) render as
+ *  "Quit " + `app.name`, so the label has to change, not just this menu's
+ *  title, or they'd still read "Electron".
+ *
+ *  Re-run whenever the hotkey map changes (main/ipc.ts's `setHotkeys`) —
+ *  rebuilding the whole template is the only way to change a live menu's
+ *  accelerators, and it's cheap enough to not need finer-grained diffing. */
+export function initAppMenu(hotkeys: HotkeyMap): void {
   if (process.platform !== 'darwin') return
   app.setName('Gurt')
   const template: MenuItemConstructorOptions[] = [
@@ -76,7 +124,8 @@ export function initAppMenu(): void {
     },
     { role: 'editMenu' },
     { role: 'viewMenu' },
-    { role: 'windowMenu' }
+    { role: 'windowMenu' },
+    { label: 'gurt-hotkeys', visible: false, submenu: workspaceCycleItems(hotkeys) }
   ]
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }

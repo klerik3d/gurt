@@ -24,6 +24,9 @@ declare global {
       onProxyTraffic(cb: (event: GurtEvents['proxy-traffic']) => void): () => void
       /** A session's local (stdio) MCP servers that did not start, and why. */
       onMcpFail(cb: (event: GurtEvents['mcp-fail']) => void): () => void
+      /** macOS's reserved ⌘`/⌘⇧` window-cycle, reclaimed by main and forwarded
+       *  here — see `GurtEvents['hotkey-cycle-workspace']`. */
+      onHotkeyCycleWorkspace(cb: (dir: GurtEvents['hotkey-cycle-workspace']) => void): () => void
     }
   }
 }

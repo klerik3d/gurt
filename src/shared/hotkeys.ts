@@ -133,6 +133,56 @@ export function bindingLabel(b: HotkeyBinding): string {
   return `${b.mod ? '⌘' : ''}${b.alt ? '⌥' : ''}${b.shift ? '⇧' : ''}${codeLabel(b.code)}`
 }
 
+/** `KeyboardEvent.code` → the key name Electron's `accelerator` strings use
+ *  (`Menu.buildFromTemplate`) — a different vocabulary from `CODE_LABEL`'s
+ *  display glyphs (`Return` not `↵`, `Up` not `↑`, and symbol keys spelled
+ *  with their literal character). */
+const ACCELERATOR_KEY: Record<string, string> = {
+  Backquote: '`',
+  Minus: '-',
+  Equal: '=',
+  BracketLeft: '[',
+  BracketRight: ']',
+  Backslash: '\\',
+  Semicolon: ';',
+  Quote: "'",
+  Comma: ',',
+  Period: '.',
+  Slash: '/',
+  Space: 'Space',
+  Enter: 'Return',
+  Escape: 'Escape',
+  Tab: 'Tab',
+  Backspace: 'Backspace',
+  ArrowUp: 'Up',
+  ArrowDown: 'Down',
+  ArrowLeft: 'Left',
+  ArrowRight: 'Right'
+}
+
+/** `HotkeyBinding` → an Electron `accelerator` string (`CmdOrCtrl+\``,
+ *  `CmdOrCtrl+Shift+N`, …). Only ever needed by main, and only for the
+ *  handful of combinations macOS reserves for itself (window cycling on
+ *  Cmd+`/Cmd+Shift+`) and would otherwise consume before a DOM keydown in
+ *  the renderer ever saw it — see `main/menu.ts`. Every other binding is
+ *  matched purely in the renderer via `bindingMatchesEvent` and never
+ *  reaches this. */
+export function bindingToAccelerator(b: HotkeyBinding): string {
+  const parts: string[] = []
+  if (b.mod) parts.push('CmdOrCtrl')
+  if (b.alt) parts.push('Alt')
+  if (b.shift) parts.push('Shift')
+  const key =
+    ACCELERATOR_KEY[b.code] ??
+    (b.code.startsWith('Key')
+      ? b.code.slice(3)
+      : b.code.startsWith('Digit')
+        ? b.code.slice(5)
+        : b.code)
+  parts.push(key)
+  return parts.join('+')
+}
+
 /** True when a live keydown event matches a stored binding — `code`
  *  (layout-independent), `mod` (either metaKey or ctrlKey, gurt's one
  *  cross-platform modifier), `shift` and `alt` exactly. */

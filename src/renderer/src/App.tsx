@@ -398,28 +398,41 @@ export default function App() {
     [ws, createDraft]
   )
 
+  // Shared with the ⌘`/⌘⇧` IPC path below — macOS reclaims that combination
+  // as a hidden menu accelerator (main/menu.ts) since the OS reserves it
+  // system-wide for window cycling and never delivers it as a DOM keydown, so
+  // this needs to be callable from outside the keydown handler too.
+  const cycleWorkspace = useCallback(
+    (dir: 1 | -1) => {
+      const wsList = treeRef.current?.workspaces ?? []
+      if (wsList.length < 2) return
+      const idx = wsList.findIndex((w) => w.name === ws?.name)
+      const next = wsList[(idx + dir + wsList.length) % wsList.length]
+      if (!next) return
+      // Same rule as the titlebar dropdown: leaving a workspace clears whatever
+      // session/task was open so the sidebar/breadcrumb don't show stale content.
+      if (next.name !== ws?.name) setSelection(null)
+      setCurWs(next.name)
+    },
+    [ws]
+  )
+
+  // macOS never lets ⌘`/⌘⇧` reach here as a keydown (see `cycleWorkspace`
+  // above) — main forwards it over IPC instead once its hidden accelerator
+  // fires. Harmless no-op on other platforms, which just never emit it.
+  useEffect(() => window.gurt.onHotkeyCycleWorkspace(cycleWorkspace), [cycleWorkspace])
+
   // Global hotkeys: palette · new session · new task · cycle workspaces
   // (default ⌘K / ⌘N / ⌘⇧N / ⌘` / ⌘⇧`, remappable in Settings → Hotkeys).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey)) return
-      const cycle = (dir: 1 | -1) => {
-        const wsList = treeRef.current?.workspaces ?? []
-        if (wsList.length < 2) return
-        const idx = wsList.findIndex((w) => w.name === ws?.name)
-        const next = wsList[(idx + dir + wsList.length) % wsList.length]
-        if (!next) return
-        // Same rule as the titlebar dropdown: leaving a workspace clears whatever
-        // session/task was open so the sidebar/breadcrumb don't show stale content.
-        if (next.name !== ws?.name) setSelection(null)
-        setCurWs(next.name)
-      }
       if (bindingMatchesEvent(hotkeys.workspaceNext, e)) {
         e.preventDefault()
-        cycle(1)
+        cycleWorkspace(1)
       } else if (bindingMatchesEvent(hotkeys.workspacePrev, e)) {
         e.preventDefault()
-        cycle(-1)
+        cycleWorkspace(-1)
       } else if (bindingMatchesEvent(hotkeys.palette, e)) {
         e.preventDefault()
         setPaletteOpen((o) => !o)
@@ -433,7 +446,7 @@ export default function App() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [ws, openNewSession, hotkeys])
+  }, [ws, openNewSession, hotkeys, cycleWorkspace])
 
   const positions = queuePositions(tree)
   const unreadCount = notifications.reduce((n, r) => n + (r.read ? 0 : 1), 0)

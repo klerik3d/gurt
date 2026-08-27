@@ -243,10 +243,15 @@ const electronStub = {
           getVersion: () => '0.0.0-test',
           getAppPath: () => ${JSON.stringify(ROOT)},
           isPackaged: false,
-          on() {}, whenReady: () => Promise.resolve()
+          on() {}, whenReady: () => Promise.resolve(),
+          setName() {}
         }
         export const Notification = class { show() {} static isSupported() { return false } }
-        export default { BrowserWindow, ipcMain, shell, dialog, app, Notification }
+        // menu.ts (pulled in transitively through ipc.ts's setHotkeys handler)
+        // needs these to exist; nothing here calls into either.
+        export const clipboard = { writeText() {} }
+        export const Menu = { buildFromTemplate: () => ({}), setApplicationMenu() {} }
+        export default { BrowserWindow, ipcMain, shell, dialog, app, Notification, clipboard, Menu }
       `
     }))
   }

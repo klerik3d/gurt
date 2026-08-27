@@ -406,4 +406,10 @@ export interface GurtEvents {
   /** The local MCP servers a session selected and did not get, with the reason
    *  — the whole set per session, an empty one clearing it. */
   'mcp-fail': DomainEvents['mcp.fail']
+  /** macOS reserves ⌘`/⌘⇧` system-wide for window cycling and never delivers
+   *  them to a DOM keydown handler — main reclaims them as a hidden menu
+   *  accelerator (see `main/menu.ts`) and forwards here instead. 1 = next
+   *  workspace, -1 = previous. Renderer-only on other platforms, where the
+   *  ordinary keydown listener already catches the combination. */
+  'hotkey-cycle-workspace': 1 | -1
 }
