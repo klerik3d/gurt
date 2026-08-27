@@ -5,7 +5,7 @@ import { loadSecrets, migrateAgentSecrets, sealPlaintextSecrets } from './creden
 import { createLogger, flushSync, logDir, logLevel } from './log'
 import { stopLocalMcpServers } from './mcp/manager'
 import { dockerVersion } from './provision'
-import { gurtRoot } from './store'
+import { getHotkeys, gurtRoot } from './store'
 import { initAutoUpdater } from './update'
 import { initAppMenu } from './menu'
 
@@ -118,7 +118,7 @@ void app.whenReady().then(async () => {
   await sealPlaintextSecrets().catch((e: unknown) => log.error('internal.fail', { site: 'credential-seal', err: e }))
   registerIpc()
   initAutoUpdater()
-  initAppMenu()
+  initAppMenu(await getHotkeys())
   createWindow()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

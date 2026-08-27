@@ -27,6 +27,7 @@ import * as store from './store'
 import * as changes from './changes'
 import { normalizeNotificationPrefs } from '../shared/notifications'
 import { sanitizeHotkeys } from '../shared/hotkeys'
+import { initAppMenu } from './menu'
 import { checkForUpdates } from './update'
 
 const log = createLogger('ipc')
@@ -360,6 +361,10 @@ export function registerIpc(): void {
       // every other action's remap.
       const normalized = sanitizeHotkeys(map, await store.getHotkeys())
       await store.setHotkeys(normalized)
+      // Live-rebuild the hidden accelerators macOS's window-cycle reservation
+      // needs (menu.ts) — otherwise a remap away from ⌘`/⌘⇧` would leave the
+      // old combination silently hijacked until the next launch.
+      initAppMenu(normalized)
     },
     getUsage: async () => {
       // The first read can beat the ledger's own load off disk; waiting on it
