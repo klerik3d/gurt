@@ -121,7 +121,9 @@ export interface EnvConfig {
   dockerfile?: string
   /** Repo-relative path `dockerfile` was seeded from — provenance only. */
   dockerfilePath?: string
-  /** Default repo, seeds new sessions on this env; not a runtime binding. */
+  /** Default repo, seeds new sessions on this env; not a runtime binding. Read
+   *  backwards too — `store.envsDefaultingToRepo` — to answer "which env does
+   *  this repo run in?", the default `create_session` drafts against. */
   repo?: string
 }
 
@@ -258,7 +260,8 @@ export const spawnableRoles = (role: SessionRole): SessionRole[] =>
  * A draft one session's agent asked for via the `gurt` MCP server's
  * `create_session` tool. It lands in the spawner's own task and never runs by
  * itself: the user reviewing and launching it *is* the approval step (§3).
- * Anything omitted is inherited from the spawning session.
+ * Anything omitted is inherited from the spawning session — `env` excepted, it
+ * follows the *target repo* instead (see below).
  */
 export interface AgentSessionRequest {
   role: SessionRole
@@ -273,8 +276,16 @@ export interface AgentSessionRequest {
   task?: string
   /** Display title; defaults to the usual `session N`. */
   title?: string
-  /** Env definition name; defaults to the spawner's. */
+  /** Env definition name. Omitted, it resolves to the **target repo's own**
+   *  default environment — the env whose `EnvConfig.repo` names `repos[0]` —
+   *  not the spawner's. A session drafted for a repo belongs in that repo's
+   *  container even when the spawner happens to run in an ad-hoc one, and
+   *  inheriting the spawner's env was silent drift nobody could see. */
   env?: string
+  /** Acknowledges that `env` names a container that is *not* the target repo's
+   *  default. Required for such a request and rejected without it, so the wrong
+   *  container can only ever be chosen on purpose, never drifted into. */
+  confirmNonDefaultEnv?: boolean
   /** Agent-instance id; defaults to the spawner's. */
   agent?: string
   autoAllow?: boolean

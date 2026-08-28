@@ -114,6 +114,21 @@ modal takes, everything editable afterward. The draft never runs by itself:
 the user reviewing and launching (or editing, or deleting) the draft *is* the
 approval step. A different approval mechanism may replace drafts later.
 
+The one thing a draft does **not** inherit is the environment. An omitted
+`env` resolves to the *target repo's own* default — the env whose
+`EnvConfig.repo` names `repos[0]`, the registry link read backwards
+(`store.envsDefaultingToRepo`) — and not to the container the spawning session
+happens to run in. Inheriting the spawner's env was silent drift: a researcher
+sitting in some ad-hoc container handed that container to every session it
+drafted, for any repo, and nothing in the request or the resulting draft said
+so. Naming a different env stays possible but never implicit — it takes
+`confirmNonDefaultEnv: true`, so the wrong container is always a decision and
+never an oversight. Where the registry offers no default to speak of, the
+caller names the env instead: a repo no env claims requires `env` (and then
+takes it as-is — there is no default for it to contradict), a repo several
+envs claim requires `env` from that set (any of them is a default, so no
+confirmation is asked for; anything outside it still needs the flag).
+
 A **researcher** (only) may aim the draft at another task via the optional
 `task` field, created on the spot if missing. This serves the "that's out of
 scope — spin it into its own task" moment mid-research: the tangent becomes a
@@ -237,7 +252,10 @@ otherwise have to re-derive from the diff:
   built from `spawnableRoles(spawner)`, so a reviewer's tool cannot even
   express anything but `executor`, and `repos` is exactly one entry (no
   draftable role may hold more). Everything else is optional and inherited from
-  the spawning session (env, agent, MCP selection, auto-allow, config values).
+  the spawning session (agent, MCP selection, auto-allow, config values) — the
+  `env` excepted, which follows the target repo (§3) and whose `.describe()`
+  text says so, with `confirmNonDefaultEnv` as the field that makes a
+  non-default container impossible to reach by inattention.
   Host-side rules that a schema cannot carry — role gating, a repo or env the
   agent invented — come back as an `isError` result with the message, so the
   agent self-corrects at the tool layer instead of the user finding a broken
@@ -267,21 +285,26 @@ otherwise have to re-derive from the diff:
 ## 9. Acceptance
 
 1. `npm run typecheck` is clean (both projects).
-2. `node scripts/session-roles.test.mjs` — the role table, the (role, repos)
+2. `node scripts/draft-env-default.test.mjs` — the `create_session` env rule:
+   omitted resolves to the repo's default (not the spawner's env), a matching
+   explicit env passes, a mismatching one is rejected without
+   `confirmNonDefaultEnv` and accepted with it, the no-default and
+   ambiguous-default repos, and that the interactive path is untouched.
+3. `node scripts/session-roles.test.mjs` — the role table, the (role, repos)
    rule, git access per role, reviewer-locks vs. researcher-locks-nothing
    (direct start *and* through the queue), draft role edits, the full
    `create_session` gating matrix, and the pre-roles migration.
-3. `node scripts/gurt-mcp.test.mjs` — per-role tool sets over real HTTP
+4. `node scripts/gurt-mcp.test.mjs` — per-role tool sets over real HTTP
    (`complete` for an executor only, `create_session` for the other two with a
    per-spawner `role` enum), plus the `create_session` rejection matrix.
-4. `node scripts/turn-contract.test.mjs` — the nudge matrix, including that a
+5. `node scripts/turn-contract.test.mjs` — the nudge matrix, including that a
    role without the contract never nudges and never marks `incomplete`.
-5. `npm run build && node scripts/smoke-roles.mjs` — the real modal: default
+6. `npm run build && node scripts/smoke-roles.mjs` — the real modal: default
    role, single vs. multi repo select, git access hidden for a read-only role,
    the role reaching `sessions.json` and the draft pane, and a draft's role
    being editable afterwards.
-6. The rest of `scripts/*.test.mjs` passes unmodified.
-7. **Not yet verified**: the `readonly` bind mounts against a real Docker
+7. The rest of `scripts/*.test.mjs` passes unmodified.
+8. **Not yet verified**: the `readonly` bind mounts against a real Docker
    daemon — this environment has none, the same gap
    `requirements-multirepo-sessions.md` §5.4 records for the wrapper-mount path
    it builds on. What to check on first real use: an agent in a researcher or
