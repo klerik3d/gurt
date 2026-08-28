@@ -40,6 +40,17 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* Chromium's default focus ring is a white double outline that reads orange-ish
+   against the warm graphite; use the same accent ring the inputs already wear.
+   `:focus-visible` only — clicking with the mouse leaves no ring behind. */
+:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
