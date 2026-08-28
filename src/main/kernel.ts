@@ -101,6 +101,14 @@ async function assertDraftTarget(ws: string, repos: string[], env?: string): Pro
     throw new Error(`environment "${env}" is not registered in "${ws}"`)
 }
 
+/** Env definitions that claim this repo as their default — the reverse of
+ *  `EnvConfig.repo`, read straight off the registry. `create_session` resolves
+ *  a drafted session's container through it (sessions.ts `resolveDraftEnv`), so
+ *  a draft runs where its repo runs and not where its spawner happens to. */
+async function defaultEnvsForRepo(ws: string, repo: string): Promise<string[]> {
+  return store.envsDefaultingToRepo(await store.getWorkspace(ws), repo)
+}
+
 export function createKernel(): Kernel {
   const bus = createBus()
 
@@ -153,6 +161,7 @@ export function createKernel(): Kernel {
       resolveGurtServer: ensureGurtServer,
       stopGurtServer,
       checkDraftTarget: assertDraftTarget,
+      defaultEnvsForRepo,
       isRepoLockedForReview: (ws, task, repo) => review.isLocked(ws, task, repo),
       // Cross-task `create_session`: the target task materializes (with its
       // `task.json` marker) before the draft's first persist can mkdir into it.

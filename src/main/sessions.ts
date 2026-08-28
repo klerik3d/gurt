@@ -272,7 +272,11 @@ export interface SessionEvents {
   /** Reject repos/env that are not registered in the workspace — the check
    *  `Kernel.editDraft` runs at the IPC boundary, reused for the drafts an
    *  agent asks for through `create_session` (which bypasses that boundary). */
-  checkDraftTarget: (ws: string, repos: string[], env: string) => Promise<void>
+  checkDraftTarget: (ws: string, repos: string[], env?: string) => Promise<void>
+  /** Env definition names claiming this repo as their default (`EnvConfig.repo`
+   *  read backwards). The source of the env a `create_session` draft runs in
+   *  when it names none — see `resolveDraftEnv`. */
+  defaultEnvsForRepo: (ws: string, repo: string) => Promise<string[]>
   /** Is this clone held by a manual review? Synchronous by contract: the
    *  scheduler asks on every pass and cannot await a disk read (see review.ts). */
   isRepoLockedForReview: (ws: string, task: string, repo: string) => boolean
@@ -1734,11 +1738,12 @@ export class SessionManager {
 
   /**
    * `create_session` (§3): one session's agent drafts another. The new session
-   * lands in the spawner's own task, inherits everything the request leaves out,
-   * and stays a **draft** — the user reviewing, editing or launching it *is* the
-   * approval step, which is why there is no spawn-graph limit, depth control or
-   * flow management to enforce here. Nothing flows back to the spawner beyond
-   * the id of the draft it just created.
+   * lands in the spawner's own task, inherits everything the request leaves out
+   * (the env excepted — see `resolveDraftEnv`), and stays a **draft** — the user
+   * reviewing, editing or launching it *is* the approval step, which is why
+   * there is no spawn-graph limit, depth control or flow management to enforce
+   * here. Nothing flows back to the spawner beyond the id of the draft it just
+   * created.
    */
   async createAgentDraft(
     spawnerId: string,
@@ -1763,13 +1768,15 @@ export class SessionManager {
       if (from !== 'researcher')
         throw new Error(`a ${from} session may only draft into its own task`)
     }
-    const env = req.env ?? spawner.info.env
     const agent = req.agent ?? spawner.info.agent
     if (!agent) throw new Error('no agent to draft with — this session has none either')
     // Repo/env names come from an agent, so they are untrusted the same way the
     // renderer's are; a draft naming a repo that does not exist would only fail
-    // much later, at the user's launch.
-    await this.events.checkDraftTarget(spawner.ref.workspace, req.repos, env)
+    // much later, at the user's launch. Checked *before* the env is resolved,
+    // since resolving reads the repo back out of the registry — an invented
+    // repo has to read as "not registered", not as "has no default env".
+    await this.events.checkDraftTarget(spawner.ref.workspace, req.repos, req.env)
+    const env = await this.resolveDraftEnv(spawner.ref.workspace, req)
     // The task name is agent-input too: `ensureTask` validates it and creates
     // the `task.json` marker if missing — the session's first persist would
     // otherwise mkdir its way into a directory that is not a task (invisible
@@ -1799,6 +1806,63 @@ export class SessionManager {
     const where = task !== spawner.ref.task ? ` in task "${task}"` : ''
     this.push(spawner, { kind: 'system', text: `create_session: drafted ${req.role} "${info.title}"${where}` })
     return { sessionId: info.id, title: info.title }
+  }
+
+  /**
+   * Which environment a `create_session` draft runs in. The answer follows the
+   * **repo being drafted for**, never the spawner: a researcher parked in some
+   * ad-hoc container drafts sessions for repos all day, and inheriting its own
+   * env handed every one of them the wrong container silently — nothing in the
+   * request said "env", so nothing in the result looked wrong either.
+   *
+   * So: the env is the one claiming this repo as its default (`EnvConfig.repo`,
+   * read backwards). Naming a different one is allowed but never implicit —
+   * `confirmNonDefaultEnv` has to say so, which is what makes the wrong
+   * container a decision rather than an oversight. The interactive New Session
+   * flow (`createSession`) keeps its own defaulting: a human picking an env in
+   * the modal sees what they picked.
+   *
+   * Two shapes have no default to speak of, and both end at the same place —
+   * the caller names the env:
+   *  - **no env claims the repo**: there is nothing to default to, so `env` is
+   *    required. Once given it stands on its own; there is no default for it to
+   *    contradict, so no confirmation to ask for.
+   *  - **several envs claim it**: the registry is ambiguous, so an omitted
+   *    `env` cannot be resolved for the caller. Any env *from that set* is then
+   *    taken as-is — none of them is more "the" default than the others, and
+   *    demanding a non-default confirmation for a genuine default would teach
+   *    the agent to set the flag by reflex, which is the one habit this guard
+   *    cannot survive. Anything outside the set still needs the flag.
+   */
+  private async resolveDraftEnv(ws: string, req: AgentSessionRequest): Promise<string> {
+    // `repos` is exactly one entry: the tool's schema says so and
+    // `assertRoleFitsRepos` has already refused a second one for every role
+    // that can be drafted at all. The empty case only the type system believes
+    // in, but the env hangs off this repo now — better a sentence than a crash.
+    const repo = req.repos[0]
+    if (!repo) throw new Error('a drafted session needs exactly one repo')
+    const defaults = await this.events.defaultEnvsForRepo(ws, repo)
+    if (!req.env) {
+      const [only, ...rest] = defaults
+      if (only && !rest.length) return only
+      throw new Error(
+        defaults.length
+          ? `repo "${repo}" is the default repo of several environments (${defaults.join(', ')}) — ` +
+            'pass `env` naming the one this session should run in'
+          : `repo "${repo}" is not the default repo of any environment, so there is nothing to ` +
+            'default to — pass `env` naming the one this session should run in'
+      )
+    }
+    if (defaults.includes(req.env) || !defaults.length || req.confirmNonDefaultEnv) return req.env
+    const named = defaults.map((e) => `"${e}"`).join(', ')
+    throw new Error(
+      defaults.length > 1
+        ? `env "${req.env}" is not among the default environments of repo "${repo}" (${named}) — ` +
+          'name one of those, or pass `confirmNonDefaultEnv: true` if running it elsewhere is deliberate'
+        : `env "${req.env}" is not the default environment of repo "${repo}" (that is ${named}) — ` +
+          'omit `env` to draft into the repo\'s default, or pass `confirmNonDefaultEnv: true` if ' +
+          'running it elsewhere is deliberate'
+    )
   }
 
   /** Newest stored proposal among this (task, repo)'s sessions (all outcome=changes). */

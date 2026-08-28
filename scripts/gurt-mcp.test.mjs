@@ -203,6 +203,29 @@ test('per-role tool sets', async () => {
     !('task' in reviewerTools.create_session.inputSchema.properties),
     'a reviewer has no `task` field at all'
   )
+  // The env rule is carried by the schema, not by a warning the agent has to
+  // remember: `env` says out loud that omitting it takes the *repo's* default,
+  // and the only way to name another container is a second, explicit field.
+  for (const [role, tools] of Object.entries({
+    researcher: researcherTools,
+    reviewer: reviewerTools
+  })) {
+    const props = tools.create_session.inputSchema.properties
+    assert.match(
+      props.env.description,
+      /target repo's own default environment/,
+      `${role}: \`env\` documents the repo-based default, not the caller's env`
+    )
+    assert.equal(
+      props.confirmNonDefaultEnv.type,
+      'boolean',
+      `${role}: a non-default container takes an explicit confirmation`
+    )
+    assert.ok(
+      !(tools.create_session.inputSchema.required ?? []).includes('confirmNonDefaultEnv'),
+      `${role}: which is optional — the common case names no env at all`
+    )
+  }
 })
 
 // --- create_session: valid call reaches the host, result names the draft ----

@@ -131,7 +131,10 @@ const PROPOSAL_SCHEMA = z
  * drafted is allowed more than one (only a researcher is, and no role may draft
  * a researcher). Only a researcher's schema carries `task` — a reviewer's draft
  * must fix the clone it holds, and that clone lives in the reviewer's own task.
- * Everything omitted is inherited from the calling session.
+ * Everything omitted is inherited from the calling session, except `env`: that
+ * one follows the repo being drafted for, and picking any other container takes
+ * an explicit `confirmNonDefaultEnv` — a caller running somewhere ad hoc must
+ * not be able to spread that container by simply not thinking about it.
  */
 function createSessionSchema(roles: SessionRole[], crossTask: boolean) {
   return z.strictObject({
@@ -154,7 +157,25 @@ function createSessionSchema(roles: SessionRole[], crossTask: boolean) {
         }
       : {}),
     title: z.string().min(1).max(80).optional().describe('display title, e.g. "fix review findings"'),
-    env: z.string().min(1).optional().describe("env definition name; defaults to this session's"),
+    env: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        "env definition name. OMIT IT unless you have a reason not to: it then resolves to " +
+          "the target repo's own default environment, which is where that repo is meant to " +
+          'run — NOT to whatever environment this session happens to be running in. Naming ' +
+          "any other env requires confirmNonDefaultEnv: true."
+      ),
+    confirmNonDefaultEnv: z
+      .boolean()
+      .optional()
+      .describe(
+        "confirms that `env` deliberately names a container other than the target repo's " +
+          'default. Set it only when running this repo somewhere other than its default is ' +
+          'the actual intent — if the mismatch is a surprise, drop `env` instead and take ' +
+          "the repo's default."
+      ),
     agent: z.string().min(1).optional().describe("agent instance id; defaults to this session's"),
     autoAllow: z.boolean().optional().describe('auto-allow the tool calls of the drafted session'),
     configValues: z
