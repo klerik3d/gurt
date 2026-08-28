@@ -97,6 +97,10 @@ const SAFE_ARGS = new Set([
   'updateRepo',
   'removeRepo',
   'removeEnv',
+  // A workspace and an agent-instance id (or a list of them) — identifiers,
+  // not prose.
+  'setDefaultAgent',
+  'setDeniedAgents',
   'getMcpServers',
   'removeMcpServer',
   // A workspace and an entry id — the package it reinstalls is read from the

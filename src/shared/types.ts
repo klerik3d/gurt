@@ -134,6 +134,15 @@ export interface WorkspaceFile {
   /** User-configured HTTP MCP servers, workspace-scoped like repos and envs
    *  (docs/requirements-mcp-proxy.md §3.1). Absent = none. */
   mcpServers?: McpRegistryEntry[]
+  /** Agent-instance id (an `AgentsFile` key), used when a session in this
+   *  workspace is created without an explicit `agent`. Absent = none — the
+   *  spawner/caller's own choice (or none) stands. */
+  defaultAgent?: string
+  /** Agent-instance ids (`AgentsFile` keys) that may not be used by a session
+   *  of this workspace. Keyed by instance, not by kind, so one configured
+   *  instance of a kind can be allowed while another is denied. Absent/empty
+   *  = every configured agent is allowed. */
+  deniedAgents?: string[]
 }
 
 /**
@@ -432,6 +441,12 @@ export interface Tree {
     repos: RepoConfig[]
     /** Environment definitions (listed in Settings and the New Session modal). */
     envs: EnvConfig[]
+    /** Agent instance id used when a session here is created without an
+     *  explicit `agent` — see `WorkspaceFile.defaultAgent`. */
+    defaultAgent?: string
+    /** Agent instance ids not allowed in this workspace — see
+     *  `WorkspaceFile.deniedAgents`. */
+    deniedAgents?: string[]
     tasks: {
       name: string
       /** Repos with a clone in this task (discovered on disk). A clone outlives

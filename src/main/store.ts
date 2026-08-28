@@ -466,7 +466,19 @@ export async function getWorkspace(ws: string): Promise<WorkspaceFile> {
   // Absent stays absent: an untouched workspace.json is not rewritten with an
   // empty array just because it was read (§3.1 — `getWorkspace` stays tolerant).
   const mcpServers = raw.mcpServers === undefined ? undefined : liftMcpServers(raw.mcpServers)
-  const data: WorkspaceFile = { repos, envs, ...(mcpServers ? { mcpServers } : {}) }
+  // Hand-edited like everything else here: a wrong-typed value degrades to
+  // "absent" rather than throwing.
+  const defaultAgent = typeof raw.defaultAgent === 'string' ? raw.defaultAgent : undefined
+  const deniedAgents = Array.isArray(raw.deniedAgents)
+    ? raw.deniedAgents.filter((a): a is string => typeof a === 'string')
+    : undefined
+  const data: WorkspaceFile = {
+    repos,
+    envs,
+    ...(mcpServers ? { mcpServers } : {}),
+    ...(defaultAgent ? { defaultAgent } : {}),
+    ...(deniedAgents?.length ? { deniedAgents } : {})
+  }
   if (migrated) await saveWorkspace(ws, data)
   return data
 }
@@ -597,6 +609,39 @@ export function removeEnv(ws: string, name: string): Promise<void> {
     data.envs = data.envs.filter((e) => e.name !== name)
     await saveWorkspace(ws, data)
     await fs.rm(overrideConfigPath(ws, name), { force: true })
+  })
+}
+
+// --- per-workspace agent policy: default agent + deny-list -----------------
+
+/** Set (or clear, passing `undefined`) the workspace's default agent — used to
+ *  resolve a session created here without an explicit `agent` (sessions.ts
+ *  `createAgentDraft`, ipc.ts `createSession`). Rejected if the id is on the
+ *  workspace's own deny-list — a default that is itself denied could never
+ *  actually be used. */
+export function setDefaultAgent(ws: string, agentId: string | undefined): Promise<void> {
+  return editWorkspace(ws, async () => {
+    const data = await getWorkspace(ws)
+    if (agentId && data.deniedAgents?.includes(agentId))
+      throw new Error(`agent "${agentId}" is denied in "${ws}" — allow it first`)
+    if (agentId) data.defaultAgent = agentId
+    else delete data.defaultAgent
+    await saveWorkspace(ws, data)
+  })
+}
+
+/** Replace the workspace's agent deny-list wholesale (empty = deny nothing).
+ *  Rejected if it would deny the workspace's own default agent — clear the
+ *  default first, so a workspace never ends up defaulting to an agent no
+ *  session of it may use. */
+export function setDeniedAgents(ws: string, agentIds: string[]): Promise<void> {
+  return editWorkspace(ws, async () => {
+    const data = await getWorkspace(ws)
+    if (data.defaultAgent && agentIds.includes(data.defaultAgent))
+      throw new Error(`"${data.defaultAgent}" is this workspace's default agent — change that first`)
+    if (agentIds.length) data.deniedAgents = agentIds
+    else delete data.deniedAgents
+    await saveWorkspace(ws, data)
   })
 }
 
@@ -1064,7 +1109,14 @@ export async function buildTree(): Promise<Tree> {
         ...(taskFile.maxConcurrentSessions ? { maxConcurrentSessions: taskFile.maxConcurrentSessions } : {})
       })
     }
-    tree.workspaces.push({ name: ws, repos: wsData.repos, envs: wsData.envs, tasks })
+    tree.workspaces.push({
+      name: ws,
+      repos: wsData.repos,
+      envs: wsData.envs,
+      ...(wsData.defaultAgent ? { defaultAgent: wsData.defaultAgent } : {}),
+      ...(wsData.deniedAgents?.length ? { deniedAgents: wsData.deniedAgents } : {}),
+      tasks
+    })
   }
   return tree
 }

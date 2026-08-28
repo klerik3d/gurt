@@ -55,7 +55,7 @@ import {
   isRecordable
 } from '../../../shared/hotkeys'
 import { AGENT_DEFS, agentDef } from '../../../shared/agents'
-import { refreshAgents } from '../useAgents'
+import { refreshAgents, useAgents } from '../useAgents'
 import { refreshHotkeys, useHotkeys } from '../useHotkeys'
 import { useOutsideClose } from '../hooks'
 import { confirmDialog } from '../dialog'
@@ -69,13 +69,17 @@ export type SettingsSection =
   | 'environments'
   | 'repos'
   | 'clients'
+  | 'agentAccess'
   | 'mcp'
   | 'credentials'
   | 'notifications'
   | 'hotkeys'
 
 /** Nav labels for sections whose id does not simply capitalize. */
-const SECTION_LABEL: Partial<Record<SettingsSection, string>> = { mcp: 'MCP servers' }
+const SECTION_LABEL: Partial<Record<SettingsSection, string>> = {
+  mcp: 'MCP servers',
+  agentAccess: 'Agent access'
+}
 
 /** Vendor tag shown beside each provider in the combobox (#4c). */
 const PROVIDER_VENDOR: Record<string, string> = {
@@ -110,6 +114,7 @@ export function SettingsPage({
               'environments',
               'repos',
               'clients',
+              'agentAccess',
               'mcp',
               'credentials',
               'notifications',
@@ -132,6 +137,7 @@ export function SettingsPage({
         {section === 'environments' && <EnvironmentsSection tree={tree} ws={ws} />}
         {section === 'repos' && <ReposSection tree={tree} ws={ws} />}
         {section === 'clients' && <ClientsSection />}
+        {section === 'agentAccess' && <AgentAccessSection tree={tree} ws={ws} />}
         {section === 'mcp' && <McpServersSection ws={ws} />}
         {section === 'credentials' && <CredentialsSection />}
         {section === 'notifications' && <NotificationsSection />}
@@ -991,6 +997,92 @@ const textToArgs = (text: string): string[] =>
     .split('\n')
     .map((a) => a.trim())
     .filter(Boolean)
+
+// ---- Agent access (workspace-scoped): default agent + deny-list ----
+// The agents themselves stay a global registry (see `ClientsSection`); this is
+// which of them a session in *this* workspace may use, and which one it gets
+// when it names none — the same "registry is global, use is per-workspace"
+// split `EnvironmentsSection`/`ReposSection` don't need because envs/repos
+// were workspace-scoped from the start.
+
+function AgentAccessSection({ tree, ws }: { tree: Tree | null; ws: string | null }) {
+  const agents = useAgents()
+  const [error, setError] = useState('')
+  const wsData = tree?.workspaces.find((w) => w.name === ws)
+  const defaultAgent = wsData?.defaultAgent
+  const denied = new Set(wsData?.deniedAgents ?? [])
+  const entries = Object.entries(agents)
+
+  const pickDefault = async (id: string | undefined) => {
+    if (!ws) return
+    setError('')
+    try {
+      await window.gurt.setDefaultAgent(ws, id)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  const toggleDenied = async (id: string) => {
+    if (!ws) return
+    setError('')
+    const next = denied.has(id) ? [...denied].filter((x) => x !== id) : [...denied, id]
+    try {
+      await window.gurt.setDeniedAgents(ws, next)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  return (
+    <>
+      <div className="set-head">
+        <div className="set-title-wrap">
+          <span className="set-title">Agent access</span>
+          <span className="set-count mono">
+            {entries.length} client{entries.length === 1 ? '' : 's'}
+            {ws ? ` · ${ws}` : ''}
+          </span>
+        </div>
+      </div>
+      <div className="set-list">
+        {entries.map(([id, a]) => {
+          const isDefault = defaultAgent === id
+          const isDenied = denied.has(id)
+          return (
+            <div key={id} className="set-row">
+              <span className="set-row-label">{a.label || id}</span>
+              <AgentTag kind={a.kind} name={agentDef(a.kind)?.label ?? a.kind} />
+              <span className="spacer" />
+              <button
+                type="button"
+                className={`btn-link ${isDefault ? 'active' : ''}`}
+                disabled={!ws || isDenied}
+                title={isDenied ? 'denied agents cannot be the default' : undefined}
+                onClick={() => void pickDefault(isDefault ? undefined : id)}
+              >
+                {isDefault ? 'default ✓' : 'set default'}
+              </button>
+              <button
+                type="button"
+                className={`btn-link ${isDenied ? 'active' : ''}`}
+                disabled={!ws || isDefault}
+                title={isDefault ? 'the default agent cannot be denied' : undefined}
+                onClick={() => void toggleDenied(id)}
+              >
+                {isDenied ? 'denied' : 'deny'}
+              </button>
+            </div>
+          )
+        })}
+        {entries.length === 0 && (
+          <div className="tp-dashed">no clients configured yet — add one in Settings → Clients</div>
+        )}
+      </div>
+      {error && <div className="error">{error}</div>}
+    </>
+  )
+}
 
 /** The workspace's MCP registry, plus the built-ins listed read-only so both
  *  sources of the composer's picker are visible in one place (§11). */

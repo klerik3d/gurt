@@ -93,17 +93,26 @@ export interface Kernel {
   ): Promise<{ sessionId: string }>
 }
 
-/** Reject a draft target that does not exist in the workspace. Shared by the
- *  IPC edit path and the agent-driven `create_session` one — both take repo/env
- *  names from outside the kernel, and a draft naming a missing one would only
- *  fail much later, at its start. */
-async function assertDraftTarget(ws: string, repos: string[], env?: string): Promise<void> {
+/** Reject a draft target that does not exist in the workspace, or an agent the
+ *  workspace denies. Shared by the IPC edit path and the agent-driven
+ *  `create_session` one — both take repo/env/agent names from outside the
+ *  kernel, and a draft naming a missing repo/env, or a denied agent, would
+ *  only fail much later (at its start, or silently run with an agent the
+ *  workspace does not allow). */
+async function assertDraftTarget(
+  ws: string,
+  repos: string[],
+  env?: string,
+  agent?: string
+): Promise<void> {
   const wsData = await store.getWorkspace(ws)
   for (const r of repos)
     if (!wsData.repos.some((c) => c.name === r))
       throw new Error(`repo "${r}" is not registered in "${ws}"`)
   if (env !== undefined && !wsData.envs.some((e) => e.name === env))
     throw new Error(`environment "${env}" is not registered in "${ws}"`)
+  if (agent && wsData.deniedAgents?.includes(agent))
+    throw new Error(`agent "${agent}" is not allowed in workspace "${ws}"`)
 }
 
 /** Env definitions that claim this repo as their default — the reverse of
@@ -167,6 +176,7 @@ export function createKernel(): Kernel {
       stopGurtServer,
       checkDraftTarget: assertDraftTarget,
       defaultEnvsForRepo,
+      defaultAgentForWorkspace: async (ws) => (await store.getWorkspace(ws)).defaultAgent,
       isRepoLockedForReview: (ws, task, repo) => review.isLocked(ws, task, repo),
       // Cross-task `create_session`: the target task materializes (with its
       // `task.json` marker) before the draft's first persist can mkdir into it.
@@ -446,7 +456,7 @@ export function createKernel(): Kernel {
       if (patch.role !== undefined && !isSessionRole(patch.role))
         throw new Error(`unknown session role "${String(patch.role)}"`)
       const info = sessions.snapshot(sessionId)?.info
-      if (info) await assertDraftTarget(info.workspace, patch.repos ?? [], patch.env)
+      if (info) await assertDraftTarget(info.workspace, patch.repos ?? [], patch.env, patch.agent)
       sessions.editDraft(sessionId, patch)
     },
 
