@@ -181,6 +181,11 @@ export interface TaskFile {
   /** Legacy per-env container records, folded onto their owning session at read
    *  and dropped from disk. Never written by the current code. */
   envs?: LegacyEnvState[]
+  /** Cap on sessions of this task the scheduler will run at once (see
+   *  `SessionManager.scheduleSync`). Unset/0 = unlimited, today's behavior.
+   *  Lets a user who expects to hit an external rate limit serialize a task's
+   *  sessions instead of having most of them fail together. */
+  maxConcurrentSessions?: number
 }
 
 /** Pre-1:1 shape of a `task.json` env record — read once, migrated, discarded. */
@@ -435,6 +440,9 @@ export interface Tree {
       /** Sessions of this task, primary tree nodes. Each carries its own
        *  container, so the task has no infrastructure of its own. */
       sessions: SessionInfo[]
+      /** Cap on concurrently running sessions of this task (see {@link TaskFile}).
+       *  Absent = unlimited. */
+      maxConcurrentSessions?: number
     }[]
   }[]
 }

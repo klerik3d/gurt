@@ -207,6 +207,8 @@ export function registerIpc(): void {
     removeTask: (ws, name) => kernel.deleteTask(ws, name),
     renameTask: (ws, name, newName) => kernel.renameTask(ws, name, newName),
     taskDirtyRepos: (ws, name) => kernel.taskDirtyRepos(ws, name),
+    setTaskMaxConcurrentSessions: (ws, name, max) =>
+      kernel.setTaskMaxConcurrentSessions(ws, name, max),
     stopContainer: (sessionId) => kernel.containers.stop(sessionId),
     releaseContainer: (sessionId) => kernel.containers.release(sessionId),
     sessionOpenVscode: (sessionId) => kernel.containers.openVscode(sessionId),

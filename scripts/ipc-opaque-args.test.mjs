@@ -84,6 +84,8 @@ const SAFE_ARGS = new Set([
   'getUsage',
   'getPlanUsage',
   'taskDirtyRepos',
+  // A workspace/task name and a number — the cap itself, nothing opaque.
+  'setTaskMaxConcurrentSessions',
   'envImageStatus',
   'discoverDevcontainer',
   'discoverDockerfiles',
