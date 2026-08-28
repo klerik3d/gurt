@@ -1001,33 +1001,45 @@ export class SessionManager {
 
   /**
    * Sessions whose live container is the only thing keeping a queued session
-   * off its clone, and which are not themselves working — the environments
-   * nobody is claiming right now. The queue handoff (kernel.ts) stops these
-   * immediately rather than letting them sit out the idle grace period, which
-   * is what turns "waiting for a repo" from ten minutes into seconds.
+   * off its clone *or* off its task's `maxConcurrentSessions` slot, and which
+   * are not themselves working — the environments nobody is claiming right
+   * now. The queue handoff (kernel.ts) stops these immediately rather than
+   * letting them sit out the idle grace period, which is what turns "waiting
+   * for a repo/slot" from ten minutes into seconds.
    *
    * A holder that is mid-start or mid-turn is doing real work and is never
    * listed: the queue waits for it exactly as before. Empty queue → empty list,
    * so with nothing waiting the plain idle policy applies untouched.
+   *
+   * The task-cap half is deliberately loose, same as the repo half: any idle
+   * running session of a capped task with something queued is listed, whether
+   * or not stopping it actually clears *this* queued item's way (it may be
+   * blocked by something else too, e.g. a review lock) — an idle container was
+   * headed down on its own regardless, so reaping it a little early never
+   * costs anything.
    */
   holdersBlockingQueue(): string[] {
-    const wanted = new Set<string>()
+    const wantedRepos = new Set<string>()
+    const wantedTasks = new Set<string>()
     for (const s of this.sessions.values()) {
       if (s.info.state !== 'queued') continue
       const rkey = this.repoKey(s)
-      if (rkey) wanted.add(rkey)
+      if (rkey) wantedRepos.add(rkey)
+      const tkey = taskKey(s.ref.workspace, s.ref.task)
+      if (this.taskCaps.has(tkey)) wantedTasks.add(tkey)
     }
-    if (!wanted.size) return []
+    if (!wantedRepos.size && !wantedTasks.size) return []
     const out: string[] = []
     for (const o of this.sessions.values()) {
       // A queued holder is the scheduler's business, not the reaper's: it owns
       // a container it is about to start into.
       if (o.info.state === 'queued' || o.info.state === 'starting' || o.busy) continue
-      const rkey = this.repoKey(o)
-      if (!rkey || !wanted.has(rkey)) continue
       // Only a fully-up container is stoppable — one still building/post is
       // mid-provision, and `starting` above already covers its session.
-      if (o.info.container?.status === 'running') out.push(o.info.id)
+      if (o.info.container?.status !== 'running') continue
+      const rkey = this.repoKey(o)
+      const tkey = taskKey(o.ref.workspace, o.ref.task)
+      if ((rkey && wantedRepos.has(rkey)) || wantedTasks.has(tkey)) out.push(o.info.id)
     }
     return out
   }

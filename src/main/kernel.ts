@@ -246,11 +246,12 @@ export function createKernel(): Kernel {
   bus.on('provision.log', ({ key, line }) => sessionLogLine(key, line))
 
   // Queue handoff: while something waits in the queue, an idle container is not
-  // resting, it is *blocking* — the clone it holds is exactly what the queued
-  // session needs, and the scheduler only ever advances when a container comes
-  // down. Stopping those the moment their session falls idle is what makes the
-  // queue run at turn speed instead of at grace-period speed. Sessions nobody
-  // is waiting on are not touched here: with an empty queue this is a no-op and
+  // resting, it is *blocking* — either the clone it holds or the task's
+  // maxConcurrentSessions slot it occupies is exactly what the queued session
+  // needs, and the scheduler only ever advances when a container comes down.
+  // Stopping those the moment their session falls idle is what makes the queue
+  // run at turn speed instead of at grace-period speed. Sessions nobody is
+  // waiting on are not touched here: with an empty queue this is a no-op and
   // the plain idle policy below is the whole behaviour, unchanged.
   const reaping = new Set<string>()
   const reapForQueue = (): void => {
