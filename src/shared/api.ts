@@ -121,6 +121,13 @@ export interface GurtApi {
   updateEnv(ws: string, env: EnvConfig): Promise<void>
   /** Remove an env definition (blocked while any session still runs it). */
   removeEnv(ws: string, name: string): Promise<void>
+  /** Set (or clear, passing `undefined`) the workspace's default agent — used
+   *  to resolve a session created here without an explicit `agent`. Rejects an
+   *  id the workspace's own deny-list already carries. */
+  setDefaultAgent(ws: string, agentId: string | undefined): Promise<void>
+  /** Replace the workspace's agent deny-list wholesale (empty = deny nothing).
+   *  Rejects a list that would deny the workspace's current default agent. */
+  setDeniedAgents(ws: string, agentIds: string[]): Promise<void>
   /** The workspace's user-configured MCP servers (§3.1). Built-ins are a
    *  separate, code-owned list — see `getMcpDefs`. */
   getMcpServers(ws: string): Promise<McpRegistryEntry[]>
@@ -318,6 +325,8 @@ const METHODS = {
   addEnv: true,
   updateEnv: true,
   removeEnv: true,
+  setDefaultAgent: true,
+  setDeniedAgents: true,
   getMcpServers: true,
   addMcpServer: true,
   updateMcpServer: true,

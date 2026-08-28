@@ -192,7 +192,10 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
   const wsData = tree.workspaces.find((w) => w.name === info.workspace)
   const envs = wsData?.envs ?? []
   const allRepos = wsData?.repos ?? []
-  const agentList = Object.entries(agents).map(([id, a]) => ({ id, label: a.label, kind: a.kind }))
+  const deniedAgents = wsData?.deniedAgents ?? []
+  const agentList = Object.entries(agents)
+    .filter(([id]) => !deniedAgents.includes(id))
+    .map(([id, a]) => ({ id, label: a.label, kind: a.kind }))
 
   // Load the chosen agent's cached config surface so the model/effort/command
   // controls can be offered before the container is up.
@@ -216,6 +219,17 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
       .sessionEditDraft(info.id, p)
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
   }
+
+  // A bare draft (App.tsx) names no agent up front — fill in the workspace's
+  // default the first time one is offered, so the picker doesn't sit empty for
+  // no reason. Never overrides an explicit pick, and never offers a denied one.
+  useEffect(() => {
+    if (info.agent || !wsData?.defaultAgent) return
+    if (deniedAgents.includes(wsData.defaultAgent)) return
+    patch({ agent: wsData.defaultAgent })
+    // patch is a fresh closure every render; only the id it would set matters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [info.agent, wsData?.defaultAgent])
 
   // Picking a (different) env re-seeds the session repo from that env's default.
   const pickEnv = (name: string) => {

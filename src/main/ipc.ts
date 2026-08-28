@@ -170,6 +170,14 @@ export function registerIpc(): void {
       dropSessionLog(`env-build:${ws}/${name}`)
       kernel.bus.emit('tree.changed', undefined)
     },
+    setDefaultAgent: async (ws, agentId) => {
+      await store.setDefaultAgent(ws, agentId)
+      kernel.bus.emit('tree.changed', undefined)
+    },
+    setDeniedAgents: async (ws, agentIds) => {
+      await store.setDeniedAgents(ws, agentIds)
+      kernel.bus.emit('tree.changed', undefined)
+    },
     getMcpServers: (ws) => store.getMcpServers(ws),
     addMcpServer: async (ws, entry) => {
       // Two checks that need main, done here rather than in the store
@@ -278,10 +286,19 @@ export function registerIpc(): void {
         throw new Error(`task "${ref.task}" not found in "${ref.workspace}"`)
       if (role !== undefined && !isSessionRole(role))
         throw new Error(`unknown session role "${String(role)}"`)
+      // A fresh draft (App.tsx) names no agent up front — it falls back to the
+      // workspace's default, same as an agent's own `create_session` request
+      // that leaves `agent` out. An explicit pick (a re-post, a duplicate) is
+      // checked against the deny-list either way: silently swapping it for the
+      // default would hide the denial instead of rejecting it.
+      const wsData = await store.getWorkspace(ref.workspace)
+      const agentId = agent || wsData.defaultAgent || ''
+      if (agentId && wsData.deniedAgents?.includes(agentId))
+        throw new Error(`agent "${agentId}" is not allowed in workspace "${ref.workspace}"`)
       return kernel.sessions.createSession(
         ref,
         repos,
-        agent,
+        agentId,
         prompt,
         action,
         mcp,

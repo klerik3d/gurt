@@ -269,14 +269,18 @@ export interface SessionEvents {
   ) => Promise<AcpHttpMcpServer>
   /** Tear down one session's `gurt` server (session deleted). */
   stopGurtServer: (sessionId: string) => void
-  /** Reject repos/env that are not registered in the workspace — the check
-   *  `Kernel.editDraft` runs at the IPC boundary, reused for the drafts an
-   *  agent asks for through `create_session` (which bypasses that boundary). */
-  checkDraftTarget: (ws: string, repos: string[], env?: string) => Promise<void>
+  /** Reject repos/env that are not registered in the workspace, or an agent the
+   *  workspace denies — the check `Kernel.editDraft` runs at the IPC boundary,
+   *  reused for the drafts an agent asks for through `create_session` (which
+   *  bypasses that boundary). */
+  checkDraftTarget: (ws: string, repos: string[], env?: string, agent?: string) => Promise<void>
   /** Env definition names claiming this repo as their default (`EnvConfig.repo`
    *  read backwards). The source of the env a `create_session` draft runs in
    *  when it names none — see `resolveDraftEnv`. */
   defaultEnvsForRepo: (ws: string, repo: string) => Promise<string[]>
+  /** Workspace's default agent (an `AgentsFile` key), used to resolve a
+   *  `create_session` request that names none — see `createAgentDraft`. */
+  defaultAgentForWorkspace: (ws: string) => Promise<string | undefined>
   /** Is this clone held by a manual review? Synchronous by contract: the
    *  scheduler asks on every pass and cannot await a disk read (see review.ts). */
   isRepoLockedForReview: (ws: string, task: string, repo: string) => boolean
@@ -1768,14 +1772,21 @@ export class SessionManager {
       if (from !== 'researcher')
         throw new Error(`a ${from} session may only draft into its own task`)
     }
-    const agent = req.agent ?? spawner.info.agent
+    // Explicit request wins; absent that, the workspace's own default (if any)
+    // beats inheriting the spawner's — a workspace that configured a default
+    // has made a choice for everything drafted into it, not just for sessions
+    // that name no agent of their own. Only with neither does the spawner's
+    // agent stand, as before.
+    const agent =
+      req.agent ?? (await this.events.defaultAgentForWorkspace(spawner.ref.workspace)) ?? spawner.info.agent
     if (!agent) throw new Error('no agent to draft with — this session has none either')
-    // Repo/env names come from an agent, so they are untrusted the same way the
-    // renderer's are; a draft naming a repo that does not exist would only fail
-    // much later, at the user's launch. Checked *before* the env is resolved,
-    // since resolving reads the repo back out of the registry — an invented
-    // repo has to read as "not registered", not as "has no default env".
-    await this.events.checkDraftTarget(spawner.ref.workspace, req.repos, req.env)
+    // Repo/env/agent names come from an agent, so they are untrusted the same
+    // way the renderer's are; a draft naming a repo that does not exist, or an
+    // agent the workspace denies, would only fail much later, at the user's
+    // launch. Checked *before* the env is resolved, since resolving reads the
+    // repo back out of the registry — an invented repo has to read as "not
+    // registered", not as "has no default env".
+    await this.events.checkDraftTarget(spawner.ref.workspace, req.repos, req.env, agent)
     const env = await this.resolveDraftEnv(spawner.ref.workspace, req)
     // The task name is agent-input too: `ensureTask` validates it and creates
     // the `task.json` marker if missing — the session's first persist would
