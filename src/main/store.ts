@@ -531,10 +531,20 @@ export async function tasksUsingEnv(ws: string, env: string): Promise<string[]> 
   return used
 }
 
+/**
+ * Env definitions that name this repo as their default (`EnvConfig.repo`) — the
+ * reverse of the only link the registry stores, since an env points at a repo
+ * and never the other way round. Two readers, one rule: deleting a repo an env
+ * still claims is refused here, and `create_session` resolves a drafted
+ * session's container through it (sessions.ts `resolveDraftEnv`).
+ */
+export const envsDefaultingToRepo = (data: WorkspaceFile, repo: string): string[] =>
+  data.envs.filter((e) => e.repo === repo).map((e) => e.name)
+
 export function removeRepo(ws: string, repo: string): Promise<void> {
   return editWorkspace(ws, async () => {
     const data = await getWorkspace(ws)
-    const defaultOf = data.envs.filter((e) => e.repo === repo).map((e) => e.name)
+    const defaultOf = envsDefaultingToRepo(data, repo)
     if (defaultOf.length)
       throw new Error(
         `repo "${repo}" is the default of env(s): ${defaultOf.join(', ')} — change those first`
