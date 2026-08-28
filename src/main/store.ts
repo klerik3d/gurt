@@ -802,7 +802,8 @@ export async function readSessions(ws: string, task: string): Promise<PersistedS
   // binding already existed as `EnvState.session`, it was just stored on the
   // wrong entity. A record whose owner is gone describes a container no session
   // can claim; it is dropped here and reaped by the boot reconcile.
-  const legacy = (await getTask(ws, task)).envs
+  const taskFile = await getTask(ws, task)
+  const legacy = taskFile.envs
   if (legacy?.length) {
     for (const e of legacy) {
       const owner = e.session ? records.find((r) => r.info.id === e.session) : undefined
@@ -819,7 +820,9 @@ export async function readSessions(ws: string, task: string): Promise<PersistedS
         error: e.error
       }
     }
-    await saveTask(ws, task, {})
+    // Drop the migrated `envs` but keep whatever else task.json carries.
+    const { envs: _envs, ...rest } = taskFile
+    await saveTask(ws, task, rest)
     migrated = true
   }
   // Migration: pre-queue records have no state — treat them as started.
@@ -1097,8 +1100,15 @@ export async function buildTree(): Promise<Tree> {
     if (!existsSync(path.join(wsDir(ws), 'workspace.json'))) continue
     const wsData = await getWorkspace(ws)
     const tasks: Tree['workspaces'][number]['tasks'] = []
-    for (const task of await listTasks(ws))
-      tasks.push({ name: task, repos: await taskClones(ws, task), sessions: [] })
+    for (const task of await listTasks(ws)) {
+      const taskFile = await getTask(ws, task)
+      tasks.push({
+        name: task,
+        repos: await taskClones(ws, task),
+        sessions: [],
+        ...(taskFile.maxConcurrentSessions ? { maxConcurrentSessions: taskFile.maxConcurrentSessions } : {})
+      })
+    }
     tree.workspaces.push({
       name: ws,
       repos: wsData.repos,

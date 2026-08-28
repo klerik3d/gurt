@@ -42,7 +42,18 @@ export function TaskPane({
   }, [ws, task, onRefreshChanges])
 
   const taskData = tree?.workspaces.find((w) => w.name === ws)?.tasks.find((t) => t.name === task)
+  const [capInput, setCapInput] = useState('')
+  useEffect(() => {
+    setCapInput(taskData?.maxConcurrentSessions ? String(taskData.maxConcurrentSessions) : '')
+  }, [taskData?.maxConcurrentSessions])
   if (!taskData) return <div className="placeholder">task not found</div>
+
+  const commitCap = (): void => {
+    const n = capInput.trim() === '' ? undefined : Number(capInput)
+    window.gurt
+      .setTaskMaxConcurrentSessions(ws, task, n !== undefined && n > 0 ? Math.floor(n) : undefined)
+      .catch((e: unknown) => alertDialog(String(e)))
+  }
 
   const queued = taskData.sessions
     .filter((s) => s.state === 'queued')
@@ -138,6 +149,20 @@ export function TaskPane({
           <div className="tp-sec-head">
             <span className="seclabel">QUEUE</span>
             <span className="tp-sec-hint">· starts when its repository is free</span>
+            <span className="spacer" />
+            <span className="tp-sec-hint">max concurrent</span>
+            <input
+              type="number"
+              min={1}
+              className="tp-cap-input"
+              placeholder="unlimited"
+              value={capInput}
+              onChange={(e) => setCapInput(e.target.value)}
+              onBlur={commitCap}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+              }}
+            />
           </div>
           {queued.length === 0 && <div className="tp-dashed">no queued sessions in this task</div>}
           {queued.map((s) => (

@@ -155,6 +155,9 @@ export interface GurtApi {
   /** Rename a task; stops its containers and best-effort renames its branch in every clone. */
   renameTask(ws: string, name: string, newName: string): Promise<void>
   taskDirtyRepos(ws: string, name: string): Promise<string[]>
+  /** Set/clear the task's cap on concurrently running sessions (undefined or
+   *  0 clears it — unlimited). */
+  setTaskMaxConcurrentSessions(ws: string, name: string, max: number | undefined): Promise<void>
   /** Stop a session's container; it keeps its filesystem and resumes on next use. */
   stopContainer(sessionId: string): Promise<void>
   /** Destroy a session's container. The clone (and its uncommitted work) stays. */
@@ -336,6 +339,7 @@ const METHODS = {
   removeTask: true,
   renameTask: true,
   taskDirtyRepos: true,
+  setTaskMaxConcurrentSessions: true,
   stopContainer: true,
   releaseContainer: true,
   sessionOpenVscode: true,

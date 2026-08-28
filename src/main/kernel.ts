@@ -66,6 +66,11 @@ export interface Kernel {
   renameTask(ws: string, task: string, newName: string): Promise<void>
   /** Repos in this task whose clone has uncommitted changes. */
   taskDirtyRepos(ws: string, task: string): Promise<string[]>
+  /** Set or clear the task's cap on concurrently running sessions (0/undefined
+   *  clears it — unlimited, today's behavior). Persists to `task.json`, updates
+   *  the scheduler's in-memory cache and re-runs it (a raised/cleared cap may
+   *  free something the queue was holding back). */
+  setTaskMaxConcurrentSessions(ws: string, task: string, max: number | undefined): Promise<void>
   /** sessions.editDraft behind a repo check — the UI constrains the choice, IPC must too. */
   editDraft(sessionId: string, patch: SessionDraftPatch): Promise<void>
   /** Forge compare URL for the task branch; when the latest proposal carries a PR,
@@ -355,6 +360,12 @@ export function createKernel(): Kernel {
     const allTasks: { ws: string; task: string }[] = []
     for (const ws of t.workspaces)
       for (const task of ws.tasks) allTasks.push({ ws: ws.name, task: task.name })
+    // Before the scheduler's first pass, same reason as the review lock above.
+    sessions.loadTaskCaps(
+      t.workspaces.flatMap((ws) =>
+        ws.tasks.map((task) => ({ ws: ws.name, task: task.name, max: task.maxConcurrentSessions }))
+      )
+    )
     let done = 0
     for (const { ws, task } of allTasks) {
       done++
@@ -463,6 +474,14 @@ export function createKernel(): Kernel {
         .then((f) => f.map((x) => x.path))
         .catch(() => undefined)
       return review.state(ws, task, repo, targetKey(target), files)
+    },
+
+    async setTaskMaxConcurrentSessions(ws: string, task: string, max: number | undefined): Promise<void> {
+      const clean = max !== undefined && Number.isFinite(max) && max > 0 ? Math.floor(max) : undefined
+      const { maxConcurrentSessions: _prev, ...rest } = await store.getTask(ws, task)
+      await store.saveTask(ws, task, clean === undefined ? rest : { ...rest, maxConcurrentSessions: clean })
+      sessions.setTaskCap(ws, task, clean)
+      bus.emit('tree.changed', undefined)
     },
 
     async setReviewLock(ws: string, task: string, repo: string, locked: boolean): Promise<void> {

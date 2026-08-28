@@ -392,6 +392,12 @@ export class SessionManager {
   private agentConfigWritten = new Map<string, string>()
   /** Last logged "why still queued" per session id (see `noteQueued`). */
   private queuedReasons = new Map<string, string>()
+  /** Per-task cap on concurrently running sessions (`TaskFile.maxConcurrentSessions`),
+   *  keyed by `taskKey(ws, task)`. Absent = unlimited. Mirrors `review.ts`'s
+   *  in-memory lock set: the scheduler asks synchronously on every pass and
+   *  cannot await a disk read, so this is seeded from disk at boot
+   *  (`loadTaskCaps`) and kept current by every later edit (`setTaskCap`). */
+  private taskCaps = new Map<string, number>()
   /** Per agent-instance id, its kind (`AgentDef.id`) — mirrors agents.json so
    *  a hardcoded default/the `fable` force-merge can resolve without a live
    *  container's launch context (see `loadAgentKinds`). */
@@ -605,16 +611,34 @@ export class SessionManager {
     this.emitState(this.sessions.get(info.id)!, 'created')
     this.schedulePersist(ref)
     if (action === 'queue') this.enqueue(info.id)
-    else if (action === 'run') void this.startSession(info.id, 'user')
+    else if (action === 'run') this.startNowOrQueue(info.id)
     return info
   }
 
-  /** Run now — bypass the queue and start immediately. */
+  /**
+   * Run now — bypass the queue and start immediately, unless the task's
+   * `maxConcurrentSessions` cap is already met: a user-initiated "run now" must
+   * not blow through the same limit enqueuing exists to protect, so it falls
+   * back to the queue exactly like a session the scheduler itself held back.
+   */
+  private startNowOrQueue(sessionId: string): void {
+    const s = this.sessions.get(sessionId)
+    if (!s) return
+    const cap = this.taskCaps.get(taskKey(s.ref.workspace, s.ref.task))
+    if (cap !== undefined && this.activeSessionCount(s.ref.workspace, s.ref.task) >= cap) {
+      this.enqueue(sessionId)
+      return
+    }
+    void this.startSession(sessionId, 'user')
+  }
+
+  /** Run now — bypass the queue and start immediately (see {@link startNowOrQueue}
+   *  for the one exception: a task already at its concurrency cap). */
   run(sessionId: string): void {
     const s = this.sessions.get(sessionId)
     if (!s || s.info.state === 'starting' || s.info.state === 'started') return
     if (!s.info.repos.length) throw new Error('session has no repository')
-    void this.startSession(sessionId, 'user')
+    this.startNowOrQueue(sessionId)
   }
 
   enqueue(sessionId: string): void {
@@ -797,14 +821,32 @@ export class SessionManager {
     // A pass may start several items; claim each started item's repo so a later
     // item over the same clone stays queued.
     const claimed = new Set<string>()
+    // Same idea, per task: a pass may start several items of a capped task, so
+    // each start counts against the cap for the rest of this same pass rather
+    // than only against `activeSessionCount`'s (pre-pass) snapshot.
+    const startedThisPass = new Map<string, number>()
     const still = new Set<string>()
     for (const s of queued) {
+      const tkey = taskKey(s.ref.workspace, s.ref.task)
+      const cap = this.taskCaps.get(tkey)
+      if (cap !== undefined) {
+        const running = this.activeSessionCount(s.ref.workspace, s.ref.task) + (startedThisPass.get(tkey) ?? 0)
+        if (running >= cap) {
+          still.add(s.info.id)
+          this.noteQueued(s, 'task-at-cap')
+          continue
+        }
+      }
+      const start = (): void => {
+        if (cap !== undefined) startedThisPass.set(tkey, (startedThisPass.get(tkey) ?? 0) + 1)
+        this.queuedReasons.delete(s.info.id)
+        void this.startSession(s.info.id, 'scheduler')
+      }
       // A researcher claims no clone (read-only, locks nothing) — start it
       // unconditionally, same pass, no FIFO contention to resolve. It still
       // needs a repo to read, so a repo-less one falls through to `no-repo`.
       if (!roleLocksClone(sessionRole(s.info)) && s.info.repos.length) {
-        this.queuedReasons.delete(s.info.id)
-        void this.startSession(s.info.id, 'scheduler')
+        start()
         continue
       }
       const rkey = this.repoKey(s)
@@ -834,8 +876,7 @@ export class SessionManager {
         continue
       }
       claimed.add(rkey)
-      this.queuedReasons.delete(s.info.id)
-      void this.startSession(s.info.id, 'scheduler')
+      start()
     }
     // Forget the reason of anything no longer waiting, so a session that queues
     // again later reports why from scratch.
@@ -885,11 +926,46 @@ export class SessionManager {
     if (!rkey) return undefined
     for (const o of this.sessions.values()) {
       if (o.info.id === s.info.id || this.repoKey(o) !== rkey) continue
-      const live = o.info.container?.status
-      const busyContainer = live === 'building' || live === 'post' || live === 'running'
-      if (o.info.state === 'starting' || busyContainer) return o
+      if (this.isActive(o)) return o
     }
     return undefined
+  }
+
+  /** "Able to touch its clone / count against its task's cap": mid-start, or
+   *  owning a container that is up. An idle session whose container has been
+   *  auto-stopped holds nothing — shared by {@link repoHolder}, {@link
+   *  repoHolderFor} and {@link activeSessionCount}. */
+  private isActive(s: Session): boolean {
+    const live = s.info.container?.status
+    const busyContainer = live === 'building' || live === 'post' || live === 'running'
+    return s.info.state === 'starting' || busyContainer
+  }
+
+  /** Sessions of `(ws, task)` currently active (see {@link isActive}) —
+   *  what a `maxConcurrentSessions` cap counts against. */
+  private activeSessionCount(ws: string, task: string): number {
+    let n = 0
+    for (const o of this.sessions.values())
+      if (o.ref.workspace === ws && o.ref.task === task && this.isActive(o)) n++
+    return n
+  }
+
+  /** Seed the per-task cap cache from disk. Called once at boot, before the
+   *  scheduler's first pass — mirrors `review.load()`. */
+  loadTaskCaps(entries: { ws: string; task: string; max?: number | undefined }[]): void {
+    this.taskCaps.clear()
+    for (const { ws, task, max } of entries)
+      if (max) this.taskCaps.set(taskKey(ws, task), max)
+  }
+
+  /** Set or clear one task's cap (0/undefined = unlimited) after an edit is
+   *  persisted, and re-run the scheduler — raising or clearing a cap may free
+   *  sessions the queue was holding back. */
+  setTaskCap(ws: string, task: string, max: number | undefined): void {
+    const key = taskKey(ws, task)
+    if (max) this.taskCaps.set(key, max)
+    else this.taskCaps.delete(key)
+    this.schedule()
   }
 
   /**
@@ -918,9 +994,7 @@ export class SessionManager {
     const want = `${taskKey(ws, task)}/${repo}`
     for (const o of this.sessions.values()) {
       if (this.repoKey(o) !== want) continue
-      const live = o.info.container?.status
-      const busyContainer = live === 'building' || live === 'post' || live === 'running'
-      if (o.info.state === 'starting' || busyContainer) return o.info
+      if (this.isActive(o)) return o.info
     }
     return undefined
   }
