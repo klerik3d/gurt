@@ -117,6 +117,13 @@ export default function App() {
   const [wsMenuOpen, setWsMenuOpen] = useState(false)
   const wsMenuRef = useRef<HTMLDivElement>(null)
   useOutsideClose(wsMenuOpen, wsMenuRef, () => setWsMenuOpen(false))
+  /** ⌘`/⌘⇧` hold-to-switch: while the modifier stays down, cycling only moves
+   *  this highlight (`order[index]`) and opens the same dropdown read-only —
+   *  `curWs` itself only changes once the modifier is released (see
+   *  `commitWsSwitch`), the same two-step gesture as macOS's own ⌘Tab. */
+  const [wsSwitcher, setWsSwitcher] = useState<{ order: string[]; index: number } | null>(null)
+  const wsSwitcherRef = useRef(wsSwitcher)
+  wsSwitcherRef.current = wsSwitcher
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     const saved = Number(localStorage.getItem(SIDEBAR_WIDTH_KEY))
     return saved ? clampSidebar(saved) : SIDEBAR_DEFAULT
@@ -419,10 +426,22 @@ export default function App() {
   // as a hidden menu accelerator (main/menu.ts) since the OS reserves it
   // system-wide for window cycling and never delivers it as a DOM keydown, so
   // this needs to be callable from outside the keydown handler too.
+  //
+  // Each call only moves the highlight — a held modifier means repeated
+  // presses (each its own call: real key-repeat off macOS, one accelerator
+  // fire per press on macOS) just walk it further. The first call in a
+  // fresh gesture opens the switcher from `ws`'s position; later calls
+  // advance whatever it's already showing. `commitWsSwitch` (below) is what
+  // actually changes `curWs`, once the modifier lifts.
   const cycleWorkspace = useCallback(
     (dir: 1 | -1) => {
       const wsList = treeRef.current?.workspaces ?? []
       if (wsList.length < 2) return
+      const cur = wsSwitcherRef.current
+      if (cur) {
+        setWsSwitcher({ order: cur.order, index: (cur.index + dir + cur.order.length) % cur.order.length })
+        return
+      }
       // Cycle by activation recency (mruRef), not tree/readdir order — a
       // workspace never yet activated this session falls back to its tree
       // position, appended after everything with a known MRU rank.
@@ -431,15 +450,38 @@ export default function App() {
         ...wsList.map((w) => w.name).filter((n) => !mruRef.current.includes(n))
       ]
       const idx = order.indexOf(ws?.name ?? '')
-      const next = order[(idx + dir + order.length) % order.length]
-      if (!next || next === ws?.name) return
-      // Same rule as the titlebar dropdown: leaving a workspace clears whatever
-      // session/task was open so the sidebar/breadcrumb don't show stale content.
-      setSelection(null)
-      setCurWs(next)
+      setWsSwitcher({ order, index: (idx + dir + order.length) % order.length })
     },
     [ws]
   )
+
+  // Applies the switcher's current highlight to `curWs` and closes it — the
+  // ⌘/Ctrl-up half of the gesture `cycleWorkspace` starts. Also fired on
+  // window blur so a focus change mid-hold (a native dialog, another app)
+  // can't strand the switcher open with a keyup that'll never arrive.
+  const commitWsSwitch = useCallback(() => {
+    const cur = wsSwitcherRef.current
+    setWsSwitcher(null)
+    if (!cur) return
+    const target = cur.order[cur.index]
+    if (!target || target === ws?.name) return
+    // Same rule as the titlebar dropdown: leaving a workspace clears whatever
+    // session/task was open so the sidebar/breadcrumb don't show stale content.
+    setSelection(null)
+    setCurWs(target)
+  }, [ws])
+
+  useEffect(() => {
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.key === 'Meta' || e.key === 'Control') commitWsSwitch()
+    }
+    window.addEventListener('keyup', onKeyUp)
+    window.addEventListener('blur', commitWsSwitch)
+    return () => {
+      window.removeEventListener('keyup', onKeyUp)
+      window.removeEventListener('blur', commitWsSwitch)
+    }
+  }, [commitWsSwitch])
 
   // macOS never lets ⌘`/⌘⇧` reach here as a keydown (see `cycleWorkspace`
   // above) — main forwards it over IPC instead once its hidden accelerator
@@ -473,6 +515,15 @@ export default function App() {
   }, [ws, openNewSession, hotkeys, cycleWorkspace])
 
   const positions = queuePositions(tree)
+  // The dropdown reads from whichever is driving it: the switcher's MRU
+  // order while a ⌘/Ctrl hold is in progress (so it shows the same reel
+  // `cycleWorkspace` is walking, in that order), the plain tree otherwise.
+  const wsMenuList = wsSwitcher
+    ? wsSwitcher.order
+        .map((n) => tree?.workspaces.find((w) => w.name === n))
+        .filter((w): w is NonNullable<typeof w> => !!w)
+    : (tree?.workspaces ?? [])
+  const wsMenuActiveName = wsSwitcher ? wsSwitcher.order[wsSwitcher.index] : ws?.name
   const unreadCount = notifications.reduce((n, r) => n + (r.read ? 0 : 1), 0)
   const unreadBadge = unreadCount > 9 ? '9+' : String(unreadCount)
 
@@ -532,15 +583,16 @@ export default function App() {
                 {ws?.name ?? 'gurt'}
                 <Icon name="chevron" size={12} className="faint" />
               </button>
-              {wsMenuOpen && (
+              {(wsMenuOpen || wsSwitcher) && (
                 <div className="menu tb-ws-menu">
-                  {tree?.workspaces.map((w) => (
+                  {wsMenuList.map((w) => (
                     <div
                       key={w.name}
-                      className={`menu-item ${w.name === ws?.name ? 'active' : ''}`}
+                      className={`menu-item ${w.name === wsMenuActiveName ? 'active' : ''}`}
                       onMouseDown={(e) => {
                         e.preventDefault()
                         setWsMenuOpen(false)
+                        setWsSwitcher(null)
                         // An explicit workspace switch closes whatever session/task is
                         // open — it belongs to the workspace being left, and leaving it
                         // selected would show stale content the sidebar no longer scopes
@@ -557,6 +609,7 @@ export default function App() {
                           e.preventDefault()
                           e.stopPropagation()
                           setWsMenuOpen(false)
+                          setWsSwitcher(null)
                           setDeletingWorkspace(w.name)
                         }}
                       >
@@ -570,6 +623,7 @@ export default function App() {
                     onMouseDown={(e) => {
                       e.preventDefault()
                       setWsMenuOpen(false)
+                      setWsSwitcher(null)
                       setNewWorkspace(true)
                     }}
                   >
