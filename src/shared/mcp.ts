@@ -276,6 +276,22 @@ export interface McpProbedTool {
 }
 
 /**
+ * One line of a probe's transcript (§4.6), in the order it happened.
+ *
+ * `npm`, `stdout` and `stderr` are the third-party process's own output —
+ * external, not gurt's record of anything. `gurt` lines are gurt's account of
+ * what it did around them: the argv it spawned, the variable *names* a launch
+ * added, the MCP calls it made, how the process ended.
+ */
+export interface McpProbeLine {
+  /** Milliseconds since the probe started. "What preceded what" is the question
+   *  a transcript exists to answer, so every line is placed on one clock. */
+  at: number
+  stream: 'gurt' | 'npm' | 'stdout' | 'stderr'
+  line: string
+}
+
+/**
  * What "start it and see" found (§4.6) — the result of actually launching an
  * entry, speaking MCP to it and stopping it again.
  *
@@ -298,6 +314,16 @@ export interface McpProbeResult {
   tools?: McpProbedTool[]
   /** Why there is no tool list although the handshake worked. */
   toolsError?: string
+  /**
+   * How the launch went, oldest first — what was installed, what was spawned,
+   * what the process printed, what MCP was asked and how it ended.
+   *
+   * Present on success too: "what did it actually run" is worth reading when
+   * the answer was yes. It is **displayed and not logged**: the process's own
+   * output is external, and gurt keeps no file of it beyond the `mcp.out` DBG
+   * lines it already wrote (§4.6).
+   */
+  transcript?: McpProbeLine[]
 }
 
 /** One entry of a session's MCP selection, paired with what its id resolves to
@@ -452,12 +478,17 @@ function localProblem(entry: McpLocalEntryDraft, kind: 'npm' | 'command'): strin
     const pkg = (entry as McpNpmEntryDraft).package?.trim() ?? ''
     if (!pkg) return 'package must not be empty'
     if (/\s/.test(pkg)) return `package "${pkg}" must not contain whitespace`
+    const version = (entry as McpNpmEntryDraft).version?.trim()
     // A scope's leading "@" is part of the name; any later one is a version,
     // and a version belongs in its own field or the reinstall check cannot see
-    // it change.
-    if (pkg.lastIndexOf('@') > 0)
-      return `package "${pkg}" must not carry a version — put it in the version field`
-    const version = (entry as McpNpmEntryDraft).version?.trim()
+    // it change. None of that applies to a `github:`/`git+`/`file:` spec, whose
+    // `@` is part of a URL and whose ref rides in the spec itself.
+    if (isPlainPackageName(pkg)) {
+      if (pkg.lastIndexOf('@') > 0)
+        return `package "${pkg}" must not carry a version — put it in the version field`
+    } else if (version) {
+      return `package "${pkg}" already says which revision to install — leave the version field empty`
+    }
     if (version !== undefined && version !== '' && /\s/.test(version))
       return `version "${version}" must not contain whitespace`
   } else {
@@ -650,12 +681,41 @@ export function mcpIdFromName(raw: string): string {
     .replace(/[-._]+$/, '')
 }
 
+/**
+ * Whether this is a *plain* npm name (`pkg`, `@scope/pkg`) rather than one of
+ * the other things `npm install` accepts in the same position —
+ * `github:user/repo`, `git+ssh://git@host/repo.git`, `file:../x`, a tarball
+ * URL. The `:` is what all of those have and no package name may have.
+ *
+ * The difference matters three times, and every one of them was a bug before
+ * this predicate existed: `git+ssh://git@host/...` must not be split on its
+ * `@` into a bogus version; the validator's "no version in the name" rule is
+ * about that same `@`; and — the one that actually bites — **the spec is not
+ * the installed name**. `npm install github:user/repo` puts the tree under the
+ * package's own name from its `package.json`, so nothing may look for it under
+ * the spec afterwards (see `ensureNpmPackage`).
+ */
+export const isPlainPackageName = (pkg: string): boolean => !pkg.includes(':')
+
 /** `@scope/pkg@1.2.3` → name + version; `@scope/pkg` and `pkg` → name only.
- *  The scope's `@` is at index 0, so only a later one separates a version. */
+ *  The scope's `@` is at index 0, so only a later one separates a version —
+ *  and a spec that is not a plain name has no version half at all, however
+ *  many `@` it carries. */
 export function splitPackageSpec(spec: string): { name: string; version: string } {
+  if (!isPlainPackageName(spec)) return { name: spec, version: '' }
   const at = spec.lastIndexOf('@')
   if (at > 0) return { name: spec.slice(0, at), version: spec.slice(at + 1) }
   return { name: spec, version: '' }
+}
+
+/** Something id-shaped out of a repo or URL spec: its last path segment, minus
+ *  a `#ref`, a `.git` and a tarball extension. The package's real name is
+ *  inside the package, and gurt cannot read it without installing — but
+ *  `github-user-jenkins-mcp` as an id is worse than the segment that is right
+ *  nearly every time and sits in an editable field. */
+function packageSpecTail(spec: string): string {
+  const bare = spec.split('#')[0]!.replace(/\.(tgz|tar\.gz)$/i, '').replace(/\.git$/i, '')
+  return bare.split('/').filter(Boolean).pop() || spec
 }
 
 /** `/usr/local/bin/npx`, `npx.cmd` and `npx` are all npx. */
@@ -744,8 +804,12 @@ function entryFromSnippetBody(rawId: string, body: Record<string, unknown>): Mcp
     const pkg = npxPackage(args.list!)
     if (pkg.error) return { error: pkg.error }
     const { name, version } = splitPackageSpec(pkg.spec!)
-    const id = mcpIdFromName(rawId || name)
-    if (!id) return { error: `could not derive an id from "${rawId || name}"` }
+    // `npx -y github:user/jenkins-mcp` is a real snippet shape, and squeezing
+    // the whole spec into an id gives `github-user-jenkins-mcp`. The tail is
+    // what the user would have typed.
+    const from = rawId || (isPlainPackageName(name) ? name : packageSpecTail(name))
+    const id = mcpIdFromName(from)
+    if (!id) return { error: `could not derive an id from "${from}"` }
     return finish(
       normalizeMcpEntry({
         kind: 'npm',
