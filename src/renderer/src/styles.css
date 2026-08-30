@@ -2865,6 +2865,32 @@ textarea.input {
   color: var(--dim);
   white-space: pre-wrap;
 }
+/* The probe's answer, under the MCP editor (stdio §4.6). One box for both
+   verdicts: a failure is the same kind of information as a tool list, and
+   moving the result around as the state changes loses the reader. */
+.mcp-probe {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 11px;
+  background: var(--app);
+  border: 1px solid var(--border2);
+  border-radius: 9px;
+}
+.mcp-probe-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11.5px;
+  color: var(--green);
+}
+.mcp-probe-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  font-size: 11px;
+  color: var(--dim);
+}
 .mcp-hdr .input:first-child {
   width: 190px;
   flex: none;

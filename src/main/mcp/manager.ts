@@ -226,8 +226,14 @@ function publishFailures(f: SessionMcpFailures): void {
  *  overlapping passes would each see the other's half-finished work. */
 let reconciling: Promise<void> = Promise.resolve()
 
-/** The environment a local entry's credential link contributes (§3.4). */
-async function credentialEnv(entry: McpLocalEntry): Promise<{ env: Record<string, string>; secret: string }> {
+/** The environment a local entry's credential link contributes (§3.4).
+ *
+ *  Exported for the probe (`mcp/probe.ts`, §4.6), which starts an entry the way
+ *  a session would and so has to resolve its credential the way a session does
+ *  — including the "block rather than start unauthenticated" rule below. It is
+ *  the resolution that is shared, not the lifecycle: the probe's own bridge is
+ *  outside the refcount this module keeps. */
+export async function credentialEnv(entry: McpLocalEntry): Promise<{ env: Record<string, string>; secret: string }> {
   if (!entry.credentialId || !entry.credentialEnvVar) return { env: {}, secret: '' }
   const { secret, error } = resolveMcpEnvSecret(await listCredentials(), entry.credentialId)
   // Blocks rather than starting unauthenticated — the same rule the proxy

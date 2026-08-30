@@ -24,6 +24,7 @@ import type {
   McpEntryKind,
   McpEnvRow,
   McpHeader,
+  McpProbeResult,
   McpRegistryEntry,
   McpSnippetResult
 } from '../../../shared/mcp'
@@ -1266,6 +1267,10 @@ function McpServerModal({
   const [snippetError, setSnippetError] = useState('')
   const [credentials, setCredentials] = useState<CredentialEntry[]>([])
   const [credMenu, setCredMenu] = useState(false)
+  const [probing, setProbing] = useState(false)
+  /** The last probe, keyed by the entry it was run against — an edit made after
+   *  it invalidates it, and a stale green tick is worse than none. */
+  const [probed, setProbed] = useState<{ key: string; result: McpProbeResult } | null>(null)
   const [note, setNote] = useState('')
   const [error, setError] = useState('')
   const credRef = useRef<HTMLDivElement>(null)
@@ -1276,24 +1281,43 @@ function McpServerModal({
   }, [])
 
   const isLocal = kind !== 'http'
-  const linkedId = credentialId || (pendingSecret ? PENDING_CREDENTIAL_ID : '')
-  const tail = {
-    id: id.trim(),
-    label,
-    ...(linkedId ? { credentialId: linkedId } : {})
-  }
-  const localTail = {
-    args: textToArgs(argsText),
-    env: mcpEnvRecord(envRows),
-    ...(credentialEnvVar ? { credentialEnvVar } : {})
-  }
-  const draft: McpEntryDraft =
-    kind === 'http'
+
+  /**
+   * The entry the form currently describes.
+   *
+   * `inlineSecret` is the probe's version of it (§4.6): a lifted-but-unsaved
+   * secret goes back into `env`, under the variable it will be injected as,
+   * because there is no credential to link to until Save — and a probe that
+   * always failed on "linked credential no longer exists" would be useless in
+   * exactly the flow it exists for.
+   */
+  const buildDraft = (inlineSecret: PendingSecret | null): McpEntryDraft => {
+    const linkedId = inlineSecret ? '' : credentialId || (pendingSecret ? PENDING_CREDENTIAL_ID : '')
+    const tail = {
+      id: id.trim(),
+      label,
+      ...(linkedId ? { credentialId: linkedId } : {})
+    }
+    const envVar = credentialEnvVar.trim() || inlineSecret?.name || ''
+    const localTail = {
+      args: textToArgs(argsText),
+      env: {
+        ...mcpEnvRecord(envRows),
+        ...(inlineSecret && envVar ? { [envVar]: inlineSecret.value } : {})
+      },
+      ...(!inlineSecret && credentialEnvVar ? { credentialEnvVar } : {})
+    }
+    return kind === 'http'
       ? { ...tail, url, headers }
       : kind === 'npm'
         ? { kind: 'npm', ...tail, ...localTail, package: pkg, version }
         : { kind: 'command', ...tail, ...localTail, command, cwd }
+  }
+
+  const draft = buildDraft(null)
   const entry = normalizeMcpEntry(draft)
+  const probeEntry = normalizeMcpEntry(buildDraft(pendingSecret))
+  const probeKey = JSON.stringify(probeEntry)
   // The same validator the store runs — the modal only previews its verdict.
   const invalid = validateMcpEntry(entry, { takenIds: taken })
   const linked = credentials.find((c) => c.id === credentialId)
@@ -1413,6 +1437,34 @@ function McpServerModal({
     }
   }
 
+  /**
+   * Run it. For a local entry that means installing the package if it is not
+   * installed, spawning the process on this machine, doing the MCP handshake,
+   * listing what it offers and stopping it again (§4.6) — every failure the
+   * static checks cannot see, moved to a button the user presses while the form
+   * that caused it is still open.
+   *
+   * Only ever from here. Nothing about saving an entry runs it: a local entry
+   * is third-party code with the user's privileges, which is what the notice
+   * above this form says, and "I typed a package name" must not quietly mean
+   * "I ran it" (§2).
+   */
+  const probe = async () => {
+    setError('')
+    setNote('')
+    setProbing(true)
+    const key = probeKey
+    try {
+      setProbed({ key, result: await window.gurt.probeMcpServer(ws, probeEntry) })
+    } catch (e) {
+      // The probe answers rather than throws, so this is the call itself
+      // failing — shown in the same place, so the button always resolves.
+      setProbed({ key, result: { ok: false, kind, error: e instanceof Error ? e.message : String(e) } })
+    } finally {
+      setProbing(false)
+    }
+  }
+
   /** Forget what is installed, so the next session start installs it again —
    *  the button behind a pinned `latest` (§4.2). A running process keeps
    *  running: gurt does not restart a local server under its holders (§10). */
@@ -1507,7 +1559,8 @@ function McpServerModal({
             ) : (
               <span className="fld-hint">
                 The block a README gives you — `mcpServers`, `servers`, or the bare body. A `uvx`
-                or `docker` invocation fills in the command form instead.
+                or `docker` invocation fills in the command form instead. <b>Test</b> then runs
+                exactly what it filled in, so you can see what the snippet meant before saving it.
               </span>
             )}
           </div>
@@ -1810,6 +1863,19 @@ function McpServerModal({
           </div>
         </div>
 
+        {/* Idle shows nothing: the probe has a button, and a form that
+            volunteered a verdict it did not earn would read as one. */}
+        {probing ? (
+          <div className="mcp-probe">
+            <span className="fld-hint">
+              {isLocal
+                ? 'starting it on this machine — an npm entry installs its package the first time…'
+                : 'connecting to the endpoint…'}
+            </span>
+          </div>
+        ) : (
+          probed?.key === probeKey && <McpProbeReport result={probed.result} />
+        )}
         {note && <div className="fld-hint">{note}</div>}
         {(error || (invalid && filledIn)) && <div className="error">{error || invalid}</div>}
       </div>
@@ -1828,6 +1894,18 @@ function McpServerModal({
             Reinstall
           </button>
         )}
+        <button
+          className="btn btn-text"
+          title={
+            isLocal
+              ? 'start this server on your machine now, do the MCP handshake, list its tools and stop it again'
+              : 'do the MCP handshake against this endpoint, with the headers a session would send'
+          }
+          disabled={probing || !!invalid || !!credError}
+          onClick={run(probe)}
+        >
+          {probing ? 'Testing…' : 'Test'}
+        </button>
         <span className="spacer" />
         <button className="btn" onClick={onClose}>
           Cancel
@@ -1841,6 +1919,67 @@ function McpServerModal({
         </button>
       </div>
     </Modal>
+  )
+}
+
+/** Tool names shown before the list is cut short. A server with a hundred tools
+ *  is a real thing; a dialog listing all hundred is not. What is dropped is
+ *  counted out loud. */
+const PROBE_TOOLS_SHOWN = 24
+
+/**
+ * What the probe found (§4.6) — the success and failure halves of the button's
+ * four states; idle and in-flight are rendered by the caller.
+ *
+ * The tool list is here to be *read*. It narrows nothing: `mcpHasModes` still
+ * says a registry entry has no read-only mode, because a name does not say
+ * whether the tool writes (§3.3).
+ */
+function McpProbeReport({ result }: { result: McpProbeResult }): JSX.Element {
+  if (!result.ok)
+    return (
+      <div className="mcp-probe">
+        <span className="error">
+          {result.error || 'it did not come up, and said nothing about why'}
+        </span>
+      </div>
+    )
+  const tools = result.tools ?? []
+  const shown = tools.slice(0, PROBE_TOOLS_SHOWN)
+  return (
+    <div className="mcp-probe">
+      <span className="mcp-probe-head">
+        <Icon name="plug" size={12} />
+        {result.kind === 'http'
+          ? 'the endpoint answered the MCP handshake'
+          : 'it started and answered the MCP handshake'}
+        {result.server ? ` · ${result.server}` : ''}
+      </span>
+      {result.tools &&
+        (tools.length ? (
+          <span className="mcp-probe-tools">
+            {shown.map((t, i) => (
+              // Keyed by position: nothing stops a server listing a name twice.
+              <span key={`${t.name}:${i}`} className="mono" title={t.summary}>
+                {t.name}
+              </span>
+            ))}
+            {tools.length > shown.length && (
+              <span className="faint">+{tools.length - shown.length} more</span>
+            )}
+          </span>
+        ) : (
+          <span className="fld-hint">it offers no tools</span>
+        ))}
+      {result.toolsError && (
+        <span className="fld-hint">it did not list its tools — {result.toolsError}</span>
+      )}
+      <span className="fld-hint">
+        {result.kind === 'http'
+          ? 'Checked from gurt, on this machine. A session reaches this endpoint through its own proxy, from the container — so this says the URL, the headers and the credential are right, not that a session can get there.'
+          : 'Started and stopped again just now. The list is what the server offers; gurt does not know which of them write, so it reports them and does not restrict them.'}
+      </span>
+    </div>
   )
 }
 

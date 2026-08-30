@@ -1,6 +1,6 @@
 # Requirements: local (stdio) MCP servers
 
-Status: implemented (phases 1 and 2) · Target: gurt Electron MVP (this repo)
+Status: implemented (phases 1, 2 and 3) · Target: gurt Electron MVP (this repo)
 
 This document is a work order for an implementing agent, and the
 as-built record of what landed. Read
@@ -8,9 +8,10 @@ as-built record of what landed. Read
 (§3.1) and of its routing (§4.3), and it changes neither. Key code:
 `src/shared/mcp.ts` (the entry model, the validator, the snippet
 parser), `src/main/mcp/stdioBridge.ts` (new), `src/main/mcp/manager.ts`
-(the built-in/local split and the refcount), `src/main/proxy/config.ts`
+(the built-in/local split and the refcount), `src/main/mcp/probe.ts`
+(new — phase 3, §4.6), `src/main/proxy/config.ts`
 (`planProxy`), `src/main/store.ts` (`liftMcpServers`), `src/main/ipc.ts`
-(the save-time checks and `reinstallMcpServer`), and — phase 2 —
+(the save-time checks, `reinstallMcpServer` and `probeMcpServer`), and — phase 2 —
 `src/renderer/src/components/SettingsPage.tsx` (the kind picker, the
 paste field and the per-kind editor), `src/renderer/src/useMcp.ts`
 (`useMcpFailures`) and `src/renderer/src/components/tags.tsx`
@@ -267,6 +268,12 @@ where the user put it, and `mcpEntryDetail` renders the full argv in the
 picker so the user can see it there. gurt reports it; gurt does not
 enforce it, and does not imply that it does.
 
+The probe (§4.6) ends with a real `tools/list`, so gurt does hold an
+upstream's tool *names* for as long as a dialog is open. That changes
+nothing here: a name is not a semantics, `readOnlyHint` is a hint the
+server writes about itself, and a list read once says nothing about
+what the server will expose tomorrow. Shown, not enforced.
+
 ### 3.4 The credential is an environment variable
 
 An http entry's `credentialId` resolves to a request header, injected by
@@ -467,6 +474,100 @@ command, the argv or the environment. The bridge's URL exists in the
 proxy's config file (0600, mounted only into the proxy) and in main's
 memory.
 
+### 4.6 The probe: start it and see
+
+Everything above §4.5 fails at *session start*. The save path checks two
+things — that a credential link resolves (`checkMcpEntryCredential`) and
+that a `command` exists on this machine (`checkMcpCommand`) — and every
+other way a local entry can be wrong is learned an hour later, from a
+banner in a session pane: an `npm install` that fails, a package with no
+bin, a process that dies for want of an authorization it never had, a
+`credentialEnvVar` the server does not read, argv mangled out of a
+pasted snippet.
+
+The comment §4.3 already states the principle — *"the failure it
+produces at session start, an hour later, in a log, is exactly the one
+worth moving to the moment the entry is saved"* — and implements it for
+one case out of that list. The probe finishes the job for the rest, by
+the only means that can find them: running the thing.
+
+`probeMcpServer(entry)` (`src/main/mcp/probe.ts`) takes an entry and
+answers "did it come up, and what does it offer":
+
+- a **local** entry is installed if it is not installed
+  (`ensureNpmPackage`), spawned on its own `StdioBridge`
+  (`startStdioBridge`), sent `initialize` and then `tools/list`, and
+  stopped;
+- an **http** entry is sent `initialize` with the headers `planProxy`
+  would send it — its static ones plus its resolved credential, the
+  credential winning a name collision, exactly as in §3.2 of the proxy
+  doc.
+
+Four properties, and they are the design:
+
+1. **Outside the refcount.** The probe starts its own one-shot bridge.
+   It never enters `localBridges` and never becomes a `LocalMcpHolder`,
+   so a session holding the same entry keeps the process it already has,
+   and the probe's process cannot outlive the call. §6's invariant — the
+   refcount is a function of the live sessions, computed and never
+   stored — is untouched by a probe, which is the point of not routing
+   it through the manager.
+2. **Bounded, and it kills what it started.** One budget covers install,
+   spawn, handshake and tool list; `stop()` (SIGTERM → grace → SIGKILL,
+   idempotent) runs in a `finally` on every path. A server sitting on an
+   interactive `tsh`/`gcloud` login never answers, and a dialog waiting
+   on it forever is worse than no button at all. A timeout during an
+   install needed one fix underneath: `spawnChild` now refuses to spawn
+   after a stop, so an `npm install` that finishes *after* the probe gave
+   up does not leave a server nothing is holding.
+3. **It answers, it does not throw.** Every outcome is an
+   `McpProbeResult` with a sentence written for a person. The entry
+   arrives over IPC from a form and may be nonsense, so it is normalized
+   and validated (`validateMcpEntry`, no `takenIds` — a probe is not a
+   save) before anything is spawned.
+4. **The secret does not come back.** The credential resolves through
+   the same `credentialEnv` a session start uses, into the child's
+   environment. Nothing on the result and nothing in the log
+   (`mcp.probe`: `id`, `kind`, `ok`, a tool *count*) comes from there.
+
+**It installs into the real place.** An `npm` entry's probe runs
+`ensureNpmPackage` against `~/.gurt/mcp/<id>/`, not a scratch copy: the
+point is to test what a session will actually run, and the side effect —
+a warm install, so the first session start is fast — is the one worth
+having. The cost is that probing an *edited* npm entry before saving it
+rewrites that id's install stamp; the next session start sees a spec
+that no longer matches and reinstalls, which is the same
+self-correction §4.2 already relies on.
+
+**Only on a button, never on save.** A local entry runs third-party code
+on the host with the user's privileges, and a `postinstall` script gets
+that before the first MCP request is made (§2). "I typed a package name"
+must not silently mean "I ran it". So the probe is an explicit action,
+on the same screen as `LOCAL_MCP_NOTICE`, taken by a user who has read
+it — and the save path stays static-only.
+
+**The tool list unlocks nothing.** It is tempting: gurt now has the tool
+names, so surely `read-only` could be offered for a registry entry. No,
+for the reason §3.3 gives and one more. A name does not say whether the
+tool writes; `readOnlyHint` is a hint the server writes about itself,
+optional and unverifiable; and a list read once in a dialog says nothing
+about what the server will expose to a session tomorrow. `mcpHasModes`
+stays `source === 'builtin'`. The list is there to be *read* — "is this
+the server I meant" — not to be enforced against.
+
+**The probe's network position is not the session's**, and the UI says
+so. Main dials an `http` entry from the host; a session reaches it
+through its proxy, from the container. A green probe therefore proves
+the URL, the headers and the credential, and does not prove the session
+can get there — the caveat is one line next to the result rather than
+something the user is left to discover. (A local entry has no such gap:
+the probe runs the process exactly where a session's bridge would.)
+
+The `http` probe stops at the handshake. A stateful Streamable HTTP
+server hands back an `Mcp-Session-Id` that every later call must carry,
+and a probe that got that wrong would report "no tools" about a healthy
+server — a worse answer than no list at all.
+
 ## 5. Pasting a snippet
 
 `parseMcpSnippet` (`src/shared/mcp.ts`) is a pure function from a
@@ -520,6 +621,18 @@ it out of the entry and the save turns it into an `mcp-token` credential
 linked by `credentialId` + `credentialEnvVar`. A placeholder
 (`<your token>`, `YOUR_API_KEY_HERE`) is explicitly not a secret — there
 is nothing to store, and storing it would be worse than leaving it.
+
+The paste is also where the probe (§4.6) earns its place. A user pasting
+six lines from a README cannot see what gurt read out of them — that an
+`npx -y pkg@latest --read-only` became an `npm` entry with the flag in
+`args`, that the `env` token was lifted into a credential, that the
+package really ships the bin it is about to be run through. **Test**
+runs exactly what the form now holds and shows what the server answers,
+which closes that loop at the moment it is open. A probe of an unsaved
+entry is the *main* case, not an afterthought: it is why the IPC method
+takes a whole entry rather than an id, and why a lifted-but-unsaved
+secret is put back inline for the probe's environment (there is no
+credential to link to until Save).
 
 ## 6. Lifecycle: one process per entry, refcounted from the live sessions
 
@@ -617,6 +730,7 @@ New slugs, for `docs/logging.md`'s dictionary:
 | `mcp.fail` | ERR | `id`, `kind`, `err` — could not start; the session log says the id is unroutable, this says why |
 | `mcp.out` | DBG | `id`, `stream`, `line` — the child's own output |
 | `mcp.drop` | DBG | `id`, `method` — a server-initiated message the bridge has no channel for (§4.1) |
+| `mcp.probe` | INF | `id`, `kind`, `ok`, `tools` (a *count*), `err`, `ms` — a user asked "does this start?" (§4.6). Never the tool names, never the environment |
 
 `mcp.start` and `mcp.stop` keep their existing shape and gain
 `kind`/`command`.
@@ -665,6 +779,21 @@ New slugs, for `docs/logging.md`'s dictionary:
    IPC method and the one event that a renderer cannot invent for
    itself.
 
+3. **The probe** (done). One IPC method (`probeMcpServer`), one main
+   module (`mcp/probe.ts`) and one button — **Test**, next to Reinstall
+   in the MCP editor — that starts the entry as it currently stands,
+   completes the MCP handshake, lists what the server offers and stops
+   it again (§4.6). Its states are idle, running, up (with the tool list
+   and, for an `http` entry, the line saying gurt checked it from the
+   host while a session goes through its proxy) and failed, with the
+   reason. Nothing runs on save, and the tool list unlocks no mode.
+
+   The one change underneath the renderer: `spawnChild` refuses to spawn
+   after a `stop()`, so a probe that times out during an `npm install`
+   cannot be handed a process afterwards. That closes the same latent
+   leak on the session path, where a reconcile can stop a bridge whose
+   install is still running.
+
 ## 9. Acceptance
 
 1. `npm run lint`, `npm run typecheck`, `npm test` are clean, and no
@@ -682,6 +811,18 @@ New slugs, for `docs/logging.md`'s dictionary:
    local entry); the refcount computed from live sessions; the JSON-RPC
    framing, against two fake streams; and the bridge end to end against
    a five-line echo server, which is where the id remapping is proven.
+
+   For the probe (§4.6), against real child processes: a server that
+   answers `initialize` and a non-empty `tools/list`; one that exits the
+   moment it is spawned; one that never answers *and* ignores SIGTERM,
+   which only passes if the budget fires and the teardown escalates to
+   SIGKILL; a command that is not installed; and a nonsense entry, which
+   must be an answer rather than a throw. Every one of those ends by
+   reading the server's own pidfile and asserting the process is gone —
+   "the probe leaves nothing running" is checked against the process
+   table, not inferred. The http half runs against a local listener that
+   demands a header, so both the composed headers and a quoted 401 are
+   covered.
 3. `git diff --stat resources/proxy/gurt-proxy.mjs` is empty (§4.4).
 4. A `kubernetes-mcp-server` entry, configured with a host `tsh`
    session, answers the agent's tool calls from inside an `internal:

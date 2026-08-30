@@ -27,7 +27,7 @@ import type {
 import type { CredentialsFile } from './credentials'
 import type { SessionTraffic } from './proxy'
 import type { DomainEvents } from './events'
-import type { McpDef, McpRegistryEntry } from './mcp'
+import type { McpDef, McpProbeResult, McpRegistryEntry } from './mcp'
 import type { TurnRecord } from './usage'
 import type { PlanUsage } from './planUsage'
 import type { NotificationPrefs, NotificationRecord } from './notifications'
@@ -150,6 +150,26 @@ export interface GurtApi {
    * under the sessions holding it (§10).
    */
   reinstallMcpServer(ws: string, id: string): Promise<void>
+  /**
+   * Start this entry the way a session would, speak MCP to it, and report what
+   * it answered — a local entry is installed, spawned, handshaken and stopped
+   * again; a remote one is handshaken with the headers the proxy would send
+   * (docs/requirements-mcp-stdio.md §4.6).
+   *
+   * Takes the whole entry, not an id, because the case it exists for is the
+   * one where there is no id to read yet: the snippet just pasted into the
+   * editor, checked before it is saved. `ws` addresses the workspace the entry
+   * belongs to, like every other method here; nothing about the probe is read
+   * from it — that is what makes an unsaved entry probeable.
+   *
+   * Never rejects for the server's own failure: the reason rides in the result
+   * as a sentence for the user. It rejects only for a broken call.
+   *
+   * Explicitly **not** run on save. A local entry executes third-party code on
+   * the host with the user's privileges (§2), so running it is a decision the
+   * user makes, next to the notice that says so.
+   */
+  probeMcpServer(ws: string, entry: McpRegistryEntry): Promise<McpProbeResult>
   createTask(ws: string, name: string): Promise<void>
   removeTask(ws: string, name: string): Promise<void>
   /** Rename a task; stops its containers and best-effort renames its branch in every clone. */
@@ -335,6 +355,7 @@ const METHODS = {
   updateMcpServer: true,
   removeMcpServer: true,
   reinstallMcpServer: true,
+  probeMcpServer: true,
   createTask: true,
   removeTask: true,
   renameTask: true,

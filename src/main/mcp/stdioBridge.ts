@@ -478,6 +478,11 @@ export function startStdioBridge(entry: McpLocalEntry, extraEnv: Record<string, 
   const spawnChild = async (): Promise<Child> => {
     launch ??= planLaunch(entry)
     const plan = await launch
+    // `planLaunch` can take a minute — it is where an `npm` entry's package is
+    // installed — and a stop during it must not be undone by the spawn that
+    // was already on its way. Without this, a probe that times out mid-install
+    // (§4.6) leaves a server process nothing is holding.
+    if (stopped) throw new Error('the local MCP server was stopped')
     const proc = spawn(plan.file, plan.args, {
       cwd: plan.cwd,
       env: childEnv(entry, extraEnv, plan.runAsNode),
