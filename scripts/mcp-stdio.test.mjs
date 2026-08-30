@@ -49,7 +49,7 @@ await bundle({
       export {
         parseMcpSnippet, validateMcpEntry, normalizeMcpEntry, mcpEntries, mcpEntry,
         mcpEntryDetail, mcpEntryKind, mcpHasModes, mcpIdFromName, isLocalMcpEntry,
-        isHttpMcpEntry, npmPackageSpec, splitPackageSpec, LOCAL_MCP_NOTICE,
+        isHttpMcpEntry, npmPackageSpec, splitPackageSpec, isPlainPackageName, LOCAL_MCP_NOTICE,
         mcpEnvRows, mcpEnvRecord, looksLikeSecretEnv
       } from ${S('src/shared/mcp.ts')}
       export { resolveMcpEnvSecret } from ${S('src/shared/credentials.ts')}
@@ -57,7 +57,7 @@ await bundle({
       export { localMcpWants, localMcpSpec } from ${S('src/main/mcp/manager.ts')}
       export {
         stdioFramer, encodeStdioMessage, isJsonRpcRequest, resolveHostCommand, hostPath,
-        checkMcpCommand, mcpInstallDir, startStdioBridge, clearNpmInstall
+        checkMcpCommand, mcpInstallDir, startStdioBridge, clearNpmInstall, installedName
       } from ${S('src/main/mcp/stdioBridge.ts')}
       export { probeMcpServer } from ${S('src/main/mcp/probe.ts')}
       export { addMcpServer, getMcpServers, createWorkspace } from ${S('src/main/store.ts')}
@@ -704,6 +704,97 @@ test('a command that is not on this machine is refused when the entry is saved',
   m.checkMcpCommand({ kind: 'npm', id: 'k8s', package: 'p' })
 })
 
+// --- a spec that is not a name (github:, git+, file:, a tarball) ------------
+//
+// `npx -y github:user/thing-mcp` is a snippet shape the ecosystem really
+// publishes, and it used to install correctly and then fail to be found: npm
+// unpacks the tree under the package's *own* name, and gurt went looking under
+// the spec it had installed with.
+
+test('a github: spec is a package spec, not a package name', () => {
+  assert.equal(m.isPlainPackageName('kubernetes-mcp-server'), true)
+  assert.equal(m.isPlainPackageName('@scope/pkg'), true)
+  assert.equal(m.isPlainPackageName('github:user/jenkins-mcp'), false)
+  assert.equal(m.isPlainPackageName('git+ssh://git@github.com/user/repo.git'), false)
+  assert.equal(m.isPlainPackageName('file:../local-mcp'), false)
+
+  // The `@` in a git URL is a host, not a version. Splitting it produced
+  // `git+ssh://git` as the package name, which is not a thing.
+  assert.deepEqual(m.splitPackageSpec('git+ssh://git@github.com/user/repo.git'), {
+    name: 'git+ssh://git@github.com/user/repo.git',
+    version: ''
+  })
+  assert.deepEqual(m.splitPackageSpec('github:user/jenkins-mcp#v2'), {
+    name: 'github:user/jenkins-mcp#v2',
+    version: ''
+  })
+  // And the plain case is untouched.
+  assert.deepEqual(m.splitPackageSpec('@scope/pkg@1.2.3'), { name: '@scope/pkg', version: '1.2.3' })
+})
+
+test('the npx snippet for a github repo saves, with an id off the repo name', () => {
+  // The whole spec squeezed into an id gives `github-user-jenkins-mcp`; the
+  // tail is what the user would have typed themselves.
+  assert.deepEqual(parsed({ command: 'npx', args: ['-y', 'github:user/jenkins-mcp'] }), {
+    kind: 'npm',
+    id: 'jenkins-mcp',
+    package: 'github:user/jenkins-mcp'
+  })
+  // A snippet that names the server keeps that name, as always.
+  assert.deepEqual(parsed({ mcpServers: { jenkins: { command: 'npx', args: ['-y', 'github:user/jenkins-mcp'] } } }), {
+    kind: 'npm',
+    id: 'jenkins',
+    package: 'github:user/jenkins-mcp'
+  })
+  // A ref belongs to the spec, and the id is not derived from it.
+  assert.equal(parsed({ command: 'npx', args: ['github:user/jenkins-mcp#v2.1'] }).id, 'jenkins-mcp')
+})
+
+test('the validator lets a spec through, and refuses a version beside it', () => {
+  assert.equal(m.validateMcpEntry({ kind: 'npm', id: 'j', package: 'github:user/jenkins-mcp' }), null)
+  assert.equal(
+    m.validateMcpEntry({ kind: 'npm', id: 'j', package: 'git+ssh://git@github.com/u/r.git' }),
+    null
+  )
+  // The ref rides in the spec; a version field beside it would be composed
+  // into `github:user/repo@1.0`, which npm reads as neither.
+  assert.match(
+    m.validateMcpEntry({ kind: 'npm', id: 'j', package: 'github:user/r', version: '1.0' }) ?? '',
+    /already says which revision/
+  )
+  // The plain rule still holds for a plain name.
+  assert.match(
+    m.validateMcpEntry({ kind: 'npm', id: 'j', package: 'pkg@1.0' }) ?? '',
+    /must not carry a version/
+  )
+})
+
+test('what to run is read from npm\'s own record of the install', async () => {
+  // `npm install github:user/jenkins-mcp` writes
+  // `dependencies: {"jenkins-mcp": "github:user/jenkins-mcp"}` and unpacks under
+  // `node_modules/jenkins-mcp`. The spec is not the name, and npm is the only
+  // authority on which name it chose.
+  const dir = path.join(GURT_ROOT, 'installed-name')
+  fs.mkdirSync(dir, { recursive: true })
+  fs.writeFileSync(
+    path.join(dir, 'package.json'),
+    JSON.stringify({ name: 'gurt-mcp-x', dependencies: { 'jenkins-mcp': 'github:user/jenkins-mcp' } })
+  )
+  assert.equal(await m.installedName(dir, 'github:user/jenkins-mcp'), 'jenkins-mcp')
+
+  // No record, or one gurt did not write: the spec is the best guess left, and
+  // for every plain package it is also the right one.
+  fs.writeFileSync(path.join(dir, 'package.json'), '{"name":"gurt-mcp-x"}')
+  assert.equal(await m.installedName(dir, 'pkg'), 'pkg')
+  fs.writeFileSync(path.join(dir, 'package.json'), 'not json')
+  assert.equal(await m.installedName(dir, 'pkg'), 'pkg')
+  fs.writeFileSync(
+    path.join(dir, 'package.json'),
+    JSON.stringify({ dependencies: { a: '1', b: '2' } })
+  )
+  assert.equal(await m.installedName(dir, 'pkg'), 'pkg')
+})
+
 test('an npm entry installs under ~/.gurt/mcp, keyed by its id', () => {
   assert.equal(m.mcpInstallDir('k8s'), path.join(GURT_ROOT, 'mcp', 'k8s'))
 })
@@ -979,6 +1070,7 @@ const WEDGED_SERVER = `
 const DYING_SERVER = `
   import fs from 'node:fs'
   fs.writeFileSync(process.argv[2], String(process.pid))
+  process.stderr.write('FATAL: no kubeconfig, run tsh login first\\n')
   process.exit(3)
 `
 
@@ -1026,6 +1118,14 @@ test('the probe starts a local server, reads its tools and stops it (§4.6)', as
   // One line of the description, for a tooltip — not the whole README.
   assert.equal(result.tools[0].summary, 'List pods in a namespace')
   assert.equal(result.error, undefined)
+  // Present on success too — "what did it actually run" is worth reading when
+  // the answer was yes, and the MCP calls are on the same clock as the output.
+  const own = result.transcript.filter((l) => l.stream === 'gurt').map((l) => l.line)
+  assert.ok(own.some((l) => l.startsWith('spawning ')))
+  assert.ok(own.includes('→ initialize'))
+  assert.ok(own.includes('→ tools/list'))
+  assert.ok(own.includes('← 2 tools'))
+  assert.ok(own.some((l) => /SIGTERM/.test(l)), 'and how the probe put it down again')
   await assertReaped(pidfile)
 })
 
@@ -1038,6 +1138,68 @@ test('a server that dies immediately is a failed probe, with a reason', async ()
   // A sentence, not a stack: this is what the dialog shows.
   assert.match(result.error, /exited/)
   assert.equal(result.tools, undefined)
+  await assertReaped(pidfile)
+
+  // And the half the one-line verdict cannot carry: what the process actually
+  // said before it went. That line exists nowhere else — `mcp.out` is DBG, and
+  // a packaged build logs at INF.
+  const said = result.transcript.filter((l) => l.stream === 'stderr').map((l) => l.line)
+  assert.ok(
+    said.some((l) => l.includes('run tsh login first')),
+    `the server's own words are missing from the transcript: ${JSON.stringify(said)}`
+  )
+  const own = result.transcript.filter((l) => l.stream === 'gurt').map((l) => l.line)
+  assert.ok(own.some((l) => l.startsWith('spawning ')), 'the argv it spawned')
+  assert.ok(own.some((l) => /exit code 3/.test(l)), 'how the process ended')
+  assert.ok(own.some((l) => l.startsWith('probe failed:')), 'why the probe stopped')
+  // One clock, ascending: "what preceded what" is the whole question.
+  const at = result.transcript.map((l) => l.at)
+  assert.deepEqual(at, [...at].sort((a, b) => a - b))
+})
+
+test('the transcript shows the names a launch injected and never the values', async () => {
+  // The motivating failure is a `credentialEnvVar` the server does not read,
+  // which is unanswerable without the names — and §3.4/§7's rule is that no
+  // surface shows the values. Both halves, in one assertion.
+  const { command, args, pidfile } = server('probe-env', MCP_SERVER)
+  const result = await m.probeMcpServer({
+    kind: 'command',
+    id: 'probe-env',
+    command,
+    args,
+    env: { KUBECONFIG: '/tmp/some-kubeconfig-value' }
+  })
+  assert.equal(result.ok, true, result.error)
+  const dump = JSON.stringify(result.transcript)
+  assert.match(dump, /KUBECONFIG/)
+  assert.doesNotMatch(dump, /some-kubeconfig-value/)
+  await assertReaped(pidfile)
+})
+
+test('a chatty server is capped, and the cap says so where it cut', async () => {
+  const { command, args, pidfile } = server(
+    'probe-chatty',
+    `
+      import fs from 'node:fs'
+      fs.writeFileSync(process.argv[2], String(process.pid))
+      for (let i = 0; i < 800; i++) process.stderr.write('noise line ' + i + '\\n')
+      // exitCode rather than exit(): writes to a pipe are queued, and exiting
+      // on the spot discards whatever has not drained — which is the very tail
+      // this test is about.
+      process.exitCode = 1
+    `
+  )
+  const result = await m.probeMcpServer({ kind: 'command', id: 'probe-chatty', command, args })
+
+  assert.equal(result.ok, false)
+  assert.ok(result.transcript.length < 300, `transcript was not capped: ${result.transcript.length}`)
+  // The head survives, because the argv is in it and nothing else has it.
+  assert.ok(result.transcript.some((l) => l.line.startsWith('spawning ')))
+  // The tail survives, because that is where a dying server explains itself.
+  const noise = result.transcript.filter((l) => l.stream === 'stderr')
+  assert.match(noise[noise.length - 1].line, /noise line 7\d\d/)
+  // And the gap is a line, not a silence.
+  assert.ok(result.transcript.some((l) => /lines not shown/.test(l.line)))
   await assertReaped(pidfile)
 })
 
@@ -1123,6 +1285,14 @@ test('an http entry is handshaken with the headers a session would send', async 
     // every later call has to carry, and "no tools" about a healthy server
     // would be a worse answer than none (§4.6).
     assert.equal(ok.tools, undefined)
+
+    // Same on the remote path: the request line and the header *names*, so a
+    // 401 can be read against what was actually sent.
+    const own = ok.transcript.map((l) => l.line)
+    assert.ok(own.some((l) => l === `POST ${url}`))
+    assert.ok(own.some((l) => /headers gurt sends: X-Workspace/.test(l)))
+    assert.ok(!JSON.stringify(ok.transcript).includes('acme'), 'header values are never shown')
+    assert.ok(own.some((l) => /← HTTP 200/.test(l)))
 
     const denied = await m.probeMcpServer({ id: 'remote', url })
     assert.equal(denied.ok, false)

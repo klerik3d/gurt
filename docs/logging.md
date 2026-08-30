@@ -150,7 +150,7 @@ escaped, and `\n` written as `\\n`, so one record stays one line.
 | `mcp.exit`                | WRN   | `id`, `command`, `code`, `signal` — a local MCP server died and gurt did not ask it to |
 | `mcp.fail`                | ERR   | `id`, `kind`, `err` — a local MCP server could not be started; the session log only says the id is unroutable |
 | `mcp.out`                 | DBG   | `id`, `stream`, `line` — a local MCP server's own stdout/stderr. Its **environment** is never logged at any level: that is where the credential lands |
-| `mcp.probe`               | INF   | `id`, `kind`, `ok`, `tools` (how many, never their names), `err`, `ms` — a user pressed Test in the MCP editor and gurt started the entry to see what it answers |
+| `mcp.probe`               | INF   | `id`, `kind`, `ok`, `tools` (how many, never their names), `err`, `ms` — a user pressed Test in the MCP editor and gurt started the entry to see what it answers. The launch transcript it shows the user is the server's own output: displayed there, never written here |
 | `gitbroker.start` / `.stop` | INF | `s`, `port`                                                |
 | `ipc.call`                | DBG   | `method`, `ms`, `args`                                     |
 | `ipc.fail`                | ERR   | `method`, `ms`, `err`, `args` (DBG only)                   |

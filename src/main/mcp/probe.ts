@@ -33,6 +33,7 @@ import type {
   McpEntryKind,
   McpHttpEntry,
   McpLocalEntry,
+  McpProbeLine,
   McpProbeResult,
   McpProbedTool,
   McpRegistryEntry
@@ -41,8 +42,8 @@ import { isLocalMcpEntry, mcpEntryKind, normalizeMcpEntry, validateMcpEntry } fr
 import { resolveMcpCredential } from '../../shared/credentials'
 import { listCredentials } from '../credentials'
 import { credentialEnv } from './manager'
-import { startStdioBridge, type JsonRpcMessage } from './stdioBridge'
-import { createLogger } from '../log'
+import { startStdioBridge, type JsonRpcMessage, type StdioTrace } from './stdioBridge'
+import { createLogger, sanitize } from '../log'
 
 const log = createLogger('mcp')
 
@@ -70,6 +71,19 @@ const PROTOCOL_VERSION = '2025-06-18'
  *  `{"error":"invalid token"}` that explains a 401, not enough to paste a page
  *  of HTML into a dialog. */
 const MAX_BODY_QUOTE = 300
+
+/** How many lines of the transcript survive the cap, and how they are split
+ *  between its two interesting ends. The head holds the launch itself (what was
+ *  installed, what was spawned, with which variable names); the tail holds
+ *  whatever the process was saying when it stopped saying it. A server in a
+ *  restart loop fills the middle, and the middle is what goes. */
+const TRANSCRIPT_HEAD = 30
+const TRANSCRIPT_TAIL = 170
+
+/** Bound on one transcript line. Long enough for a stack frame or an npm error,
+ *  short enough that a server printing a base64 blob per line cannot turn a
+ *  dialog into a download. */
+const TRANSCRIPT_LINE = 400
 
 /** What gurt calls itself in the handshake. */
 const CLIENT_INFO = { name: 'gurt', title: 'gurt (connection test)', version: '1' }
@@ -129,6 +143,52 @@ async function within<T>(work: Promise<T>, ms: number, what: string): Promise<T>
   }
 }
 
+/**
+ * The transcript, collected as the launch happens.
+ *
+ * Head plus a rolling tail rather than a plain ring: dropping the oldest lines
+ * would drop the argv, which is the one thing a person reading a pasted
+ * snippet's launch cannot get anywhere else. What is dropped is said in place,
+ * as a line, so a gap never reads as silence.
+ *
+ * Every line goes through the app log's `sanitize()` — ANSI out, stored
+ * credential secrets out in each of their encodings, control characters escaped
+ * — even though none of this reaches a log file. The output is a third party's,
+ * and the redactor is the only thing that knows what a secret looks like.
+ */
+function transcript(): { trace: StdioTrace; lines: () => McpProbeLine[] } {
+  const started = Date.now()
+  const head: McpProbeLine[] = []
+  const tail: McpProbeLine[] = []
+  let dropped = 0
+  const trace: StdioTrace = (stream, line) => {
+    const entry: McpProbeLine = {
+      at: Date.now() - started,
+      stream,
+      line: sanitize(line).slice(0, TRANSCRIPT_LINE)
+    }
+    if (head.length < TRANSCRIPT_HEAD) {
+      head.push(entry)
+      return
+    }
+    tail.push(entry)
+    if (tail.length > TRANSCRIPT_TAIL) {
+      tail.shift()
+      dropped++
+    }
+  }
+  return {
+    trace,
+    lines: () => [
+      ...head,
+      ...(dropped
+        ? [{ at: tail[0]?.at ?? 0, stream: 'gurt' as const, line: `… ${dropped} lines not shown …` }]
+        : []),
+      ...tail
+    ]
+  }
+}
+
 /** The sentence an unknown throw becomes. */
 const say = (e: unknown): string => (e instanceof Error ? e.message : String(e))
 
@@ -163,8 +223,10 @@ async function call(
   url: string,
   headers: Record<string, string>,
   msg: JsonRpcMessage,
-  ms: number
+  ms: number,
+  trace?: StdioTrace
 ): Promise<JsonRpcMessage> {
+  trace?.('gurt', `→ ${String(msg.method)}`)
   const res = await fetch(url, {
     method: 'POST',
     headers: {
@@ -177,6 +239,7 @@ async function call(
     signal: AbortSignal.timeout(Math.max(1, ms))
   })
   const body = await res.text()
+  trace?.('gurt', `← HTTP ${res.status} (${res.headers.get('content-type') ?? 'no content-type'})`)
   if (!res.ok) {
     const quoted = body.replace(/\s+/g, ' ').trim().slice(0, MAX_BODY_QUOTE)
     throw new Error(`the server answered HTTP ${res.status}${quoted ? ` — ${quoted}` : ''}`)
@@ -192,7 +255,13 @@ async function call(
 }
 
 /** Fire-and-forget notification; a server that dislikes it is not a failure. */
-async function notify(url: string, headers: Record<string, string>, ms: number): Promise<void> {
+async function notify(
+  url: string,
+  headers: Record<string, string>,
+  ms: number,
+  trace?: StdioTrace
+): Promise<void> {
+  trace?.('gurt', '→ notifications/initialized')
   try {
     await fetch(url, {
       method: 'POST',
@@ -210,7 +279,8 @@ async function notify(url: string, headers: Record<string, string>, ms: number):
 async function handshake(
   url: string,
   headers: Record<string, string>,
-  ms: number
+  ms: number,
+  trace?: StdioTrace
 ): Promise<string | undefined> {
   const reply = await call(
     url,
@@ -221,22 +291,26 @@ async function handshake(
       method: 'initialize',
       params: { protocolVersion: PROTOCOL_VERSION, capabilities: {}, clientInfo: CLIENT_INFO }
     },
-    ms
+    ms,
+    trace
   )
   const info = (reply.result as { serverInfo?: { name?: unknown; version?: unknown } } | undefined)
     ?.serverInfo
   const name = typeof info?.name === 'string' ? info.name.trim() : ''
   const version = typeof info?.version === 'string' ? info.version.trim() : ''
-  return name ? [name, version].filter(Boolean).join(' ') : undefined
+  const server = name ? [name, version].filter(Boolean).join(' ') : undefined
+  trace?.('gurt', `← it is ${server ?? 'a server that did not name itself'}`)
+  return server
 }
 
 /** `tools/list`, flattened to what the UI shows. */
 async function listTools(
   url: string,
   headers: Record<string, string>,
-  ms: number
+  ms: number,
+  trace?: StdioTrace
 ): Promise<McpProbedTool[]> {
-  const reply = await call(url, headers, { jsonrpc: '2.0', id: 2, method: 'tools/list' }, ms)
+  const reply = await call(url, headers, { jsonrpc: '2.0', id: 2, method: 'tools/list' }, ms, trace)
   const raw = (reply.result as { tools?: unknown } | undefined)?.tools
   if (!Array.isArray(raw)) throw new Error('the server answered without a tool list')
   const tools: McpProbedTool[] = []
@@ -247,6 +321,7 @@ async function listTools(
     const summary = typeof description === 'string' ? description.trim().split('\n')[0]?.trim() : ''
     tools.push({ name: name.trim(), ...(summary ? { summary } : {}) })
   }
+  trace?.('gurt', `← ${tools.length} tool${tools.length === 1 ? '' : 's'}`)
   return tools
 }
 
@@ -259,13 +334,14 @@ async function listTools(
  */
 async function probeLocal(
   entry: McpLocalEntry,
-  left: () => number
-): Promise<Omit<McpProbeResult, 'kind' | 'ok'>> {
+  left: () => number,
+  trace: StdioTrace
+): Promise<Omit<McpProbeResult, 'kind' | 'ok' | 'transcript'>> {
   // Throws with the same sentence a session start would fail with — a dangling
   // or wrong-kind credential link blocks here too, rather than probing an
   // unauthenticated process and calling the result representative.
   const { env } = await credentialEnv(entry)
-  const bridge = startStdioBridge(entry, env)
+  const bridge = startStdioBridge(entry, env, trace)
   try {
     const ready = await within(
       bridge.ready,
@@ -276,14 +352,14 @@ async function probeLocal(
     url.hostname = '127.0.0.1'
     const target = url.toString()
     const server = await within(
-      handshake(target, {}, Math.min(CALL_TIMEOUT_MS, left())),
+      handshake(target, {}, Math.min(CALL_TIMEOUT_MS, left()), trace),
       left(),
       'the server started but did not answer the MCP handshake in time — it may be waiting for an interactive authorization on this machine'
     )
-    await notify(target, {}, Math.min(CALL_TIMEOUT_MS, left()))
+    await notify(target, {}, Math.min(CALL_TIMEOUT_MS, left()), trace)
     try {
       const tools = await within(
-        listTools(target, {}, Math.min(CALL_TIMEOUT_MS, left())),
+        listTools(target, {}, Math.min(CALL_TIMEOUT_MS, left()), trace),
         left(),
         'the server did not answer tools/list in time'
       )
@@ -291,6 +367,7 @@ async function probeLocal(
     } catch (e) {
       // The handshake is what "it works" means; a server with no tools
       // capability is up, and says so.
+      trace('gurt', `← no tool list: ${say(e)}`)
       return { ...(server ? { server } : {}), toolsError: say(e) }
     }
   } finally {
@@ -311,10 +388,17 @@ async function probeLocal(
 async function probeHttp(
   url: string,
   headers: Record<string, string>,
-  left: () => number
-): Promise<Omit<McpProbeResult, 'kind' | 'ok'>> {
+  left: () => number,
+  trace: StdioTrace
+): Promise<Omit<McpProbeResult, 'kind' | 'ok' | 'transcript'>> {
+  trace('gurt', `POST ${url}`)
+  // Names, never values — the same rule the local path applies to the
+  // environment, for the same reason: one of these is the credential.
+  const names = Object.keys(headers)
+  if (names.length)
+    trace('gurt', `headers gurt sends: ${names.join(', ')} (names only — never values)`)
   const server = await within(
-    handshake(url, headers, Math.min(CALL_TIMEOUT_MS, left())),
+    handshake(url, headers, Math.min(CALL_TIMEOUT_MS, left()), trace),
     left(),
     'the endpoint did not answer the MCP handshake in time'
   )
@@ -337,6 +421,12 @@ async function httpHeaders(entry: McpHttpEntry): Promise<Record<string, string>>
   return out
 }
 
+/** Attach the transcript, unless there is nothing in it — a draft rejected by
+ *  the validator never launched anything, and an empty log invites the reader
+ *  to look for something that was never there. */
+const withTranscript = (lines: McpProbeLine[]): { transcript?: McpProbeLine[] } =>
+  lines.length ? { transcript: lines } : {}
+
 /**
  * Run one entry and report what it does. Never rejects.
  *
@@ -350,6 +440,7 @@ export async function probeMcpServer(
   { budgetMs = PROBE_BUDGET_MS }: ProbeOptions = {}
 ): Promise<McpProbeResult> {
   const started = Date.now()
+  const { trace, lines } = transcript()
   let kind: McpEntryKind = 'http'
   let id = ''
   try {
@@ -367,8 +458,12 @@ export async function probeMcpServer(
 
     const { left } = budget(budgetMs)
     const found = isLocalMcpEntry(normalized)
-      ? await probeLocal(normalized, left)
-      : await probeHttp(normalized.url, await httpHeaders(normalized), left)
+      ? await probeLocal(normalized, left, trace)
+      : await probeHttp(normalized.url, await httpHeaders(normalized), left, trace)
+    // The transcript is *not* in this record, and is in no other: it is the
+    // third-party process's own output, displayed to whoever asked for the
+    // launch and written to no file of gurt's. What is logged is that a probe
+    // happened and how it went — a count of tools, never their names.
     log.info('mcp.probe', {
       id,
       kind,
@@ -376,10 +471,13 @@ export async function probeMcpServer(
       tools: found.tools?.length,
       ms: Date.now() - started
     })
-    return { ok: true, kind, ...found }
+    return { ok: true, kind, ...found, ...withTranscript(lines()) }
   } catch (e) {
     const error = say(e)
+    // Said in the transcript too, so the last line of the launch is why it
+    // stopped rather than an unexplained silence after the last stderr line.
+    trace('gurt', `probe failed: ${error}`)
     log.info('mcp.probe', { id, kind, ok: false, err: error, ms: Date.now() - started })
-    return { ok: false, kind, error }
+    return { ok: false, kind, error, ...withTranscript(lines()) }
   }
 }

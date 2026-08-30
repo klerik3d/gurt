@@ -393,6 +393,28 @@ this path needs, it is needed once rather than per start, and its
 absence produces a clear error naming what gurt was trying to do. That
 is the whole remaining exposure of problem 1 on this path.
 
+**The `package` field is a spec, not a name.** `npm install` takes more
+than a registry name in that position, and the ecosystem publishes those
+too: `npx -y github:user/jenkins-mcp` is a real README line. gurt
+accepts them — but npm unpacks such a package under **its own name from
+its `package.json`**, not under the spec it was installed with, so
+`github:user/jenkins-mcp` lands in `node_modules/jenkins-mcp`. Deriving
+the name from the spec produced the worst kind of failure: the install
+succeeded and gurt then reported that the package it had just installed
+did not exist.
+
+So the name is read from npm's own record of the install — the
+`dependencies` entry npm writes into the `package.json` gurt keeps in
+that directory (`installedName`), which is exactly the
+name→spec mapping, straight from the tool that chose it. Three smaller
+consequences of the same distinction, all in `shared/mcp.ts` behind
+`isPlainPackageName`: a spec is never split on its `@`
+(`git+ssh://git@host/repo.git` is not a package called `git+ssh://git`),
+the "no version in the name" rule does not apply to it, and a `version`
+field *beside* such a spec is rejected — the ref rides in the spec, and
+composing `github:user/repo@1.0` would ask npm for something it cannot
+resolve.
+
 The bin to run comes from the installed package's `bin` field: a string
 is unambiguous, an object is resolved to the entry named after the
 package, or to the single entry if there is exactly one. More than one
@@ -539,6 +561,47 @@ rewrites that id's install stamp; the next session start sees a spec
 that no longer matches and reinstalls, which is the same
 self-correction §4.2 already relies on.
 
+**The verdict is one sentence; the launch is a transcript.** A single
+line ("the local MCP server exited") is the same thing the session
+pane's banner already said, and it is not what a person needs next. So
+the probe also returns the launch itself, in order: what was installed
+and under which name, the argv it spawned, the working directory, the
+*names* the environment gained, every line the process wrote to stdout
+and stderr, each MCP call and its answer, and how the process ended —
+each stamped with milliseconds since the probe began, because "what
+preceded what" is the actual question. `StdioTrace` is the seam
+(`stdioBridge.ts`); pass no trace and nothing about that module changes,
+which is what the session path does.
+
+This is the one piece of the feature that is otherwise **unobtainable**
+in a shipped build. The child's output is logged as `mcp.out` at DBG,
+and `logLevel` is `info` outside dev — so today a user would have to set
+`GURT_LOG=debug` and relaunch to see why their server died, which is
+also the moment the entry they were editing is gone.
+
+Three rules hold it in place:
+
+- **It is displayed, not logged.** The process's output is a third
+  party's, not gurt's record of anything: it goes to the person who
+  pressed the button and to no file of gurt's. `mcp.probe` keeps saying
+  `id`, `kind`, `ok`, a tool *count* and a duration, and the pre-existing
+  DBG `mcp.out` lines are unchanged. Closing the dialog is the end of
+  it, which is why the UI offers **copy**.
+- **Names, never values.** Both directions: the environment contributes
+  the names a launch added (`KUBECONFIG`, `LINEAR_API_KEY`), which is the
+  whole content of "the server does not read the variable you named"
+  (§3.4), and an `http` probe contributes its header names. No value
+  from either appears, exactly as §7 requires of the log.
+- **Bounded, and honest about it.** Head plus rolling tail: the head
+  holds the launch (the argv is in it, and nothing else has it), the tail
+  holds whatever the process was saying when it stopped. What the cap
+  drops is stated in place, as a line, so a gap never reads as silence.
+  Every line goes through the app log's `sanitize()` even though none of
+  it reaches a log — ANSI out, stored credential secrets out in each of
+  their encodings — because the redactor is the only thing that knows
+  what a secret looks like. A token a server mints and prints itself is
+  not something gurt can recognise, and the UI says whose output this is.
+
 **Only on a button, never on save.** A local entry runs third-party code
 on the host with the user's privileges, and a `postinstall` script gets
 that before the first MCP request is made (§2). "I typed a package name"
@@ -604,6 +667,13 @@ and pointing at `command`, which runs the invocation exactly as written.
 Every parse ends by running the entry through `validateMcpEntry`, so a
 snippet that parses but cannot be saved (a reserved id, an `ftp://` URL)
 fails at the paste rather than one click later.
+
+A spec that is not a plain name (`github:user/jenkins-mcp`, `git+ssh://…`,
+`file:../x`) parses to an `npm` entry the same way — npm installs it, and
+§4.2 reads back the name it chose. Only the *id* is derived differently:
+from the spec's last path segment (`jenkins-mcp`), because squeezing the
+whole spec would offer `github-user-jenkins-mcp` as the name of the
+server.
 
 Ids are squeezed into shape rather than rejected: `"Kubernetes MCP"`
 becomes `kubernetes-mcp`, `@scope/pkg` becomes `scope-pkg`. A snippet
@@ -720,6 +790,13 @@ and credential secrets are already registered with it
 (`addSecrets` in `main/credentials.ts`), but the environment itself is
 simply never passed to a logger.
 
+The probe's transcript (§4.6) does not change any of this, and is worth
+naming here because it looks like it should. It is not a log: it is the
+third-party process's own output, handed to the person who started it and
+written to no file. The log's share of a probe stays one `mcp.probe`
+record — `id`, `kind`, `ok`, a tool *count*, `ms` — and the child's lines
+keep going to `mcp.out` at DBG exactly as before.
+
 New slugs, for `docs/logging.md`'s dictionary:
 
 | slug | level | context |
@@ -788,11 +865,19 @@ New slugs, for `docs/logging.md`'s dictionary:
    host while a session goes through its proxy) and failed, with the
    reason. Nothing runs on save, and the tool list unlocks no mode.
 
-   The one change underneath the renderer: `spawnChild` refuses to spawn
+   Under the one-line verdict, the **launch log**: the install, the argv,
+   the process's own stdout/stderr, the MCP calls and how it ended, on one
+   clock, collapsible, copyable, and displayed rather than logged (§4.6).
+
+   Two changes underneath the renderer. `spawnChild` refuses to spawn
    after a `stop()`, so a probe that times out during an `npm install`
-   cannot be handed a process afterwards. That closes the same latent
-   leak on the session path, where a reconcile can stop a bridge whose
-   install is still running.
+   cannot be handed a process afterwards — the same latent leak existed
+   on the session path, where a reconcile can stop a bridge whose install
+   is still running. And `ensureNpmPackage` reads back the name npm
+   installed under instead of assuming it is the spec (§4.2), which is
+   what makes `npx -y github:user/thing-mcp` — a shape the ecosystem
+   really publishes — work at all: it used to install correctly and then
+   fail to be found.
 
 ## 9. Acceptance
 
@@ -822,7 +907,16 @@ New slugs, for `docs/logging.md`'s dictionary:
    "the probe leaves nothing running" is checked against the process
    table, not inferred. The http half runs against a local listener that
    demands a header, so both the composed headers and a quoted 401 are
-   covered.
+   covered. The transcript has its own: the dying server's last stderr
+   line is in it, the launch's argv is in it, the injected variable's
+   *name* is in it and its value is not, and a server that writes 800
+   lines is capped with the cut named in place.
+
+   For the spec/name distinction (§4.2): `isPlainPackageName` and
+   `splitPackageSpec` over `github:`, `git+ssh://` and `file:` specs; the
+   validator accepting a spec and refusing a `version` beside it; the npx
+   snippet for a repo taking its id from the repo's own tail; and
+   `installedName` against npm's record, its fallbacks included.
 3. `git diff --stat resources/proxy/gurt-proxy.mjs` is empty (§4.4).
 4. A `kubernetes-mcp-server` entry, configured with a host `tsh`
    session, answers the agent's tool calls from inside an `internal:

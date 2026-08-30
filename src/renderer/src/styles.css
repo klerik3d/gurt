@@ -2891,6 +2891,38 @@ textarea.input {
   font-size: 11px;
   color: var(--dim);
 }
+/* The launch log under a probe: the server's own output, shown and not stored.
+   Bounded and scrollable — a chatty server must not push the dialog's buttons
+   off the screen. */
+.mcp-probe-log {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.mcp-probe-lines {
+  max-height: 220px;
+  overflow: auto;
+  padding: 7px 9px;
+  font-size: 10.5px;
+  line-height: 1.55;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+.mcp-probe-row {
+  display: grid;
+  grid-template-columns: 58px 46px 1fr;
+  gap: 8px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* stderr is where a dying server says why, so it reads as the exception. */
+.mcp-probe-row.stderr > span:last-child {
+  color: var(--red);
+}
+.mcp-probe-row.gurt > span:last-child {
+  color: var(--dim);
+}
 .mcp-hdr .input:first-child {
   width: 190px;
   flex: none;

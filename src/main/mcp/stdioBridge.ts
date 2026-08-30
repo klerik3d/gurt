@@ -228,6 +228,24 @@ export const encodeStdioMessage = (msg: JsonRpcMessage): string => `${JSON.strin
 export const isJsonRpcRequest = (msg: JsonRpcMessage): boolean =>
   typeof msg.method === 'string' && msg.id !== undefined && msg.id !== null
 
+/**
+ * Where one launch narrates itself, for a caller that is watching this
+ * particular start — the probe (`mcp/probe.ts`, §4.6) and nothing else.
+ *
+ * Absent by default, and then nothing about this module changes: the session
+ * path passes no trace, the child's output goes where it always went (`mcp.out`
+ * at DBG), and this costs a branch per line.
+ *
+ * What rides on it is *not* gurt's record of the run. `npm`, `stdout` and
+ * `stderr` are the third-party process's own words, displayed to the person who
+ * asked for the launch and written to no file of gurt's; `gurt` lines are gurt's
+ * own account of what it did around them — the argv it spawned, the pid, how the
+ * process ended. The environment is not on it in any form but the *names* a
+ * launch added, which is the whole content of "the server does not read the
+ * variable you named" (§3.4). Values never.
+ */
+export type StdioTrace = (stream: 'gurt' | 'npm' | 'stdout' | 'stderr', line: string) => void
+
 // --- installing an npm entry ------------------------------------------------
 
 /** Where gurt keeps one local server's installed package. Per entry id, not per
@@ -259,8 +277,10 @@ async function readStamp(id: string): Promise<InstallStamp | null> {
   }
 }
 
-/** Run npm once, in the entry's own directory. */
-function runNpm(args: string[], cwd: string): Promise<void> {
+/** Run npm once, in the entry's own directory. `trace` gets its output line by
+ *  line as it lands — on a *successful* install that output exists nowhere else,
+ *  and "it installed something other than what I meant" is read out of it. */
+function runNpm(args: string[], cwd: string, trace?: StdioTrace): Promise<void> {
   const npm = resolveHostCommand('npm')
   if (!npm)
     return Promise.reject(
@@ -275,16 +295,49 @@ function runNpm(args: string[], cwd: string): Promise<void> {
       stdio: ['ignore', 'pipe', 'pipe']
     })
     let tail = ''
+    const lines = trace && lineBuffer((line) => trace('npm', line))
     const keep = (chunk: Buffer): void => {
       tail = `${tail}${chunk.toString('utf8')}`.slice(-4000)
+      lines?.push(chunk)
     }
     child.stdout?.on('data', keep)
     child.stderr?.on('data', keep)
     child.on('error', reject)
-    child.on('close', (code) =>
-      code === 0 ? resolve() : reject(new Error(`npm ${args[0]} failed (exit ${code})\n${tail.trim()}`))
-    )
+    child.on('close', (code) => {
+      lines?.flush()
+      if (code === 0) resolve()
+      else reject(new Error(`npm ${args[0]} failed (exit ${code})\n${tail.trim()}`))
+    })
   })
+}
+
+/**
+ * What npm actually installed, by name.
+ *
+ * `npm install <spec>` records `{ "<the package's own name>": "<spec>" }` in the
+ * dependencies of the package.json it was run against, and unpacks the tree
+ * under that name — which for `github:user/jenkins-mcp`, `git+ssh://…`, a
+ * `file:` path or a tarball URL is **not** the spec. Looking under the spec is
+ * how "the package installed fine and gurt then could not find it" happens; the
+ * only authority on the name is npm's own record of the install, so this reads
+ * that instead of deriving anything.
+ *
+ * Falls back to the spec, which is right for a plain `pkg` / `@scope/pkg` and
+ * is what a package.json we cannot read leaves us with anyway.
+ */
+export async function installedName(dir: string, spec: string): Promise<string> {
+  try {
+    const manifest = JSON.parse(await fs.readFile(path.join(dir, 'package.json'), 'utf8')) as {
+      dependencies?: Record<string, string>
+    }
+    // One entry, because gurt installs exactly one spec into a directory of its
+    // own (`mcpInstallDir`). More than one means a hand-edited tree, and then
+    // the spec is a better guess than an arbitrary key.
+    const names = Object.keys(manifest.dependencies ?? {})
+    return names.length === 1 ? names[0]! : spec
+  } catch {
+    return spec
+  }
 }
 
 /** The JS file a package's `bin` field points at, resolved through whatever
@@ -326,11 +379,17 @@ async function resolveBin(dir: string, pkg: string): Promise<string> {
  * that a button); a user who pins a version gets a reinstall when they change
  * it, and never otherwise.
  */
-export async function ensureNpmPackage(entry: McpNpmEntry): Promise<string> {
+export async function ensureNpmPackage(entry: McpNpmEntry, trace?: StdioTrace): Promise<string> {
   const dir = mcpInstallDir(entry.id)
   const spec = npmPackageSpec(entry)
   const stamp = await readStamp(entry.id)
-  if (stamp?.spec === spec) return stamp.script
+  if (stamp?.spec === spec) {
+    // Worth saying out loud to anyone watching a launch: "it did not install
+    // what I just typed" is the pin (§4.2) working, not a bug.
+    trace?.('gurt', `reusing the installed ${spec} (Reinstall forces a fresh resolve)`)
+    return stamp.script
+  }
+  trace?.('gurt', `installing ${spec} into ${dir}`)
 
   await fs.mkdir(dir, { recursive: true })
   // A package.json of our own stops npm walking up out of ~/.gurt and
@@ -340,8 +399,15 @@ export async function ensureNpmPackage(entry: McpNpmEntry): Promise<string> {
     `${JSON.stringify({ name: `gurt-mcp-${entry.id}`, private: true, version: '0.0.0' }, null, 2)}\n`
   )
   log.info('mcp.install', { id: entry.id, package: spec })
-  await runNpm(['install', '--no-audit', '--no-fund', '--omit=dev', '--install-strategy=shallow', spec], dir)
-  const script = await resolveBin(dir, entry.package)
+  await runNpm(
+    ['install', '--no-audit', '--no-fund', '--omit=dev', '--install-strategy=shallow', spec],
+    dir,
+    trace
+  )
+  const name = await installedName(dir, entry.package)
+  if (name !== entry.package) trace?.('gurt', `${spec} installed as the package "${name}"`)
+  const script = await resolveBin(dir, name)
+  trace?.('gurt', `${name} runs ${script}`)
   await fs.writeFile(stampPath(entry.id), `${JSON.stringify({ spec, script } satisfies InstallStamp, null, 2)}\n`)
   return script
 }
@@ -373,9 +439,9 @@ interface Launch {
   what: string
 }
 
-async function planLaunch(entry: McpLocalEntry): Promise<Launch> {
+async function planLaunch(entry: McpLocalEntry, trace?: StdioTrace): Promise<Launch> {
   if (entry.kind === 'npm') {
-    const script = await ensureNpmPackage(entry)
+    const script = await ensureNpmPackage(entry, trace)
     return {
       file: process.execPath,
       args: [script, ...(entry.args ?? [])],
@@ -458,7 +524,11 @@ export interface StdioBridge {
  * the MCP `initialize` handshake, which the client redoes on its next call —
  * the same thing that happens when a remote upstream restarts.
  */
-export function startStdioBridge(entry: McpLocalEntry, extraEnv: Record<string, string> = {}): StdioBridge {
+export function startStdioBridge(
+  entry: McpLocalEntry,
+  extraEnv: Record<string, string> = {},
+  trace?: StdioTrace
+): StdioBridge {
   const token = randomUUID()
   const prefix = `/mcp/${token}`
   let stopped = false
@@ -476,13 +546,23 @@ export function startStdioBridge(entry: McpLocalEntry, extraEnv: Record<string, 
   }
 
   const spawnChild = async (): Promise<Child> => {
-    launch ??= planLaunch(entry)
+    launch ??= planLaunch(entry, trace)
     const plan = await launch
     // `planLaunch` can take a minute — it is where an `npm` entry's package is
     // installed — and a stop during it must not be undone by the spawn that
     // was already on its way. Without this, a probe that times out mid-install
     // (§4.6) leaves a server process nothing is holding.
     if (stopped) throw new Error('the local MCP server was stopped')
+    // The argv as it is actually spawned, which is the one thing a pasted
+    // snippet's reader cannot see anywhere else. The environment contributes
+    // its *names* only: what a launch added is the answer to "the server does
+    // not read the variable you named", and the values are what §3.4 keeps out
+    // of every surface.
+    trace?.('gurt', `spawning ${[plan.file, ...plan.args].join(' ')}`)
+    trace?.('gurt', `working directory ${plan.cwd}`)
+    const added = [...Object.keys(entry.env ?? {}), ...Object.keys(extraEnv)]
+    if (added.length)
+      trace?.('gurt', `environment gurt added: ${added.join(', ')} (names only — never values)`)
     const proc = spawn(plan.file, plan.args, {
       cwd: plan.cwd,
       env: childEnv(entry, extraEnv, plan.runAsNode),
@@ -495,6 +575,7 @@ export function startStdioBridge(entry: McpLocalEntry, extraEnv: Record<string, 
         if (child === rec) child = null
         // A stop we asked for is not news; a death under load is.
         if (!stopped) log.warn('mcp.exit', { id: entry.id, command: plan.what, code, signal })
+        trace?.('gurt', `the process ended (exit code ${code ?? 'none'}, signal ${signal ?? 'none'})`)
         failAll('the local MCP server exited')
         resolve()
       })
@@ -507,13 +588,19 @@ export function startStdioBridge(entry: McpLocalEntry, extraEnv: Record<string, 
       (msg) => onUpstream(msg),
       // stdout noise is a real server's real diagnostics — worth having, not
       // worth the default log.
-      (line) => log.debug('mcp.out', { id: entry.id, stream: 'stdout', line })
+      (line) => {
+        log.debug('mcp.out', { id: entry.id, stream: 'stdout', line })
+        trace?.('stdout', line)
+      }
     )
     proc.stdout?.on('data', (chunk: Buffer) => frames.push(chunk))
     proc.stdout?.on('end', () => frames.flush())
     // stderr is diagnostics, not protocol — line-buffered, never framed, so a
     // server that happens to log JSON there is not silently swallowed.
-    const errLines = lineBuffer((line) => log.debug('mcp.out', { id: entry.id, stream: 'stderr', line }))
+    const errLines = lineBuffer((line) => {
+      log.debug('mcp.out', { id: entry.id, stream: 'stderr', line })
+      trace?.('stderr', line)
+    })
     proc.stderr?.on('data', (chunk: Buffer) => errLines.push(chunk))
     proc.stderr?.on('end', () => errLines.flush())
     log.info('mcp.start', { id: entry.id, kind: entry.kind, command: plan.what, pid: proc.pid })
@@ -661,6 +748,7 @@ export function startStdioBridge(entry: McpLocalEntry, extraEnv: Record<string, 
       // done" and exits on its own, which is a cleaner death than a signal.
       live.proc.stdin?.end()
       live.proc.kill('SIGTERM')
+      trace?.('gurt', 'closed its stdin and sent SIGTERM')
     }
     log.info('mcp.stop', { id: entry.id, kind: entry.kind, port: bridge.port })
     return live?.alive ? live : null
@@ -682,7 +770,9 @@ export function startStdioBridge(entry: McpLocalEntry, extraEnv: Record<string, 
         })
       ])
       if (timer) clearTimeout(timer)
-      if (live.alive) live.proc.kill('SIGKILL')
+      if (!live.alive) return
+      live.proc.kill('SIGKILL')
+      trace?.('gurt', `it was still running ${STOP_GRACE_MS}ms later — sent SIGKILL`)
     }
   }
 
