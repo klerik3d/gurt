@@ -16,6 +16,7 @@ import {
 } from './credentials'
 import { isLocalMcpEntry, mcpEntryKind } from '../shared/mcp'
 import { checkMcpCommand, clearNpmInstall } from './mcp/stdioBridge'
+import { probeMcpServer } from './mcp/probe'
 import {
   discoverDevcontainer,
   discoverDockerfiles,
@@ -66,7 +67,11 @@ const OPAQUE_ARGS = new Set<keyof GurtApi>([
   // user's to fill, and "never a secret" is a rule the store states, not one
   // the wire can enforce.
   'addMcpServer',
-  'updateMcpServer'
+  'updateMcpServer',
+  // The same payload, and one more reason: a probe of a not-yet-saved entry
+  // carries the pasted secret inline, because there is no credential to link
+  // to yet (§4.6).
+  'probeMcpServer'
 ])
 
 /** Args for the DBG trace: a count for the opaque methods, the (redacted,
@@ -208,6 +213,10 @@ export function registerIpc(): void {
         throw new Error(`MCP server "${id}" is not an npm entry — there is nothing to reinstall`)
       await clearNpmInstall(id)
     },
+    // No workspace read at all: the entry travels whole, which is what lets the
+    // editor check a draft it has not saved (§4.6). Whatever arrives is
+    // normalized and validated inside the probe before anything is spawned.
+    probeMcpServer: (_ws, entry) => probeMcpServer(entry),
     createTask: async (ws, name) => {
       await store.createTask(ws, name)
       kernel.bus.emit('tree.changed', undefined)

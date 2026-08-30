@@ -256,8 +256,49 @@ export function mcpEntry(
  * gurt spawning the process does not make it understand the process's tools;
  * a local server's own read-only flag lives in `args`, where the user put it.
  * Registry entries are off or on.
+ *
+ * The probe (§4.6) does not change this. It ends with a real `tools/list`, so
+ * gurt does hold an upstream's tool *names* for as long as a dialog is open —
+ * and a name is not a semantics. `readOnlyHint` is a hint the server writes
+ * about itself, unverifiable and optional; a list of names says nothing about
+ * which of them writes. The probe's list is there to be read by a person, not
+ * to unlock a mode.
  */
 export const mcpHasModes = (entry: McpEntry): boolean => entry.source === 'builtin'
+
+/** One tool a probe saw, in the only two fields a server is obliged to give.
+ *  Deliberately not `McpToolInfo`: that shape carries `write`, which gurt knows
+ *  for its own built-ins and cannot know for anybody else's server. */
+export interface McpProbedTool {
+  name: string
+  /** The server's own one-line description, trimmed; absent when it gives none. */
+  summary?: string
+}
+
+/**
+ * What "start it and see" found (§4.6) — the result of actually launching an
+ * entry, speaking MCP to it and stopping it again.
+ *
+ * Never carries a secret: the credential is resolved into the child's
+ * environment and nothing on this object comes from there.
+ */
+export interface McpProbeResult {
+  /** Whether the server came up and completed the MCP handshake. */
+  ok: boolean
+  /** Which transport was probed — what the result means differs per kind, and
+   *  the UI's caveat with it. */
+  kind: McpEntryKind
+  /** Why it did not come up, as a sentence written for the user. Set only when
+   *  `ok` is false. */
+  error?: string
+  /** `serverInfo` from the handshake (`name version`), when the server sent one. */
+  server?: string
+  /** What `tools/list` returned. Absent when the probe did not ask — an `http`
+   *  entry is only handshaken (§4.6) — or when the call failed. */
+  tools?: McpProbedTool[]
+  /** Why there is no tool list although the handshake worked. */
+  toolsError?: string
+}
 
 /** One entry of a session's MCP selection, paired with what its id resolves to
  *  *now*. `entry: undefined` is the id that has gone away — a registry entry

@@ -15,14 +15,19 @@
 //   4. **Lifecycle.** The refcount is computed from the live sessions, never
 //      stored (§6), and the JSON-RPC framing the bridge speaks is exercised
 //      against two fake streams rather than a real child process.
+//   5. **The probe** (§4.6). The one path that really starts a server: it is
+//      tested against real child processes — one that answers, one that dies,
+//      one that wedges — and every case ends by checking the process is gone.
 //
-// No docker, no electron, no spawned server.
+// No docker and no electron. The probe tests spawn a real (tiny) child; the
+// rest of the file spawns nothing.
 //
 //   node scripts/mcp-stdio.test.mjs
 import { test, after } from 'node:test'
 import { bundle } from './lib/bundle.mjs'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import { PassThrough } from 'node:stream'
+import { createServer } from 'node:http'
 import path from 'node:path'
 import os from 'node:os'
 import fs from 'node:fs'
@@ -54,6 +59,7 @@ await bundle({
         stdioFramer, encodeStdioMessage, isJsonRpcRequest, resolveHostCommand, hostPath,
         checkMcpCommand, mcpInstallDir, startStdioBridge, clearNpmInstall
       } from ${S('src/main/mcp/stdioBridge.ts')}
+      export { probeMcpServer } from ${S('src/main/mcp/probe.ts')}
       export { addMcpServer, getMcpServers, createWorkspace } from ${S('src/main/store.ts')}
     `,
     resolveDir: ROOT,
@@ -912,4 +918,219 @@ test('a command that cannot be spawned fails at start, with the reason', async (
   })
   await assert.rejects(bridge.ready, /was not found on this machine/)
   await bridge.stop()
+})
+
+// --- the probe: "start it and see" (§4.6) -----------------------------------
+//
+// The same tiny-server trick as above, one protocol level up: a script that
+// answers `initialize` and `tools/list` is enough to pin what the probe
+// promises — it really starts the thing, it really speaks MCP, and whatever
+// happens it leaves no process behind. Each server writes its pid to a file, so
+// "nothing is left running" is checked against the real process rather than
+// inferred from the absence of a complaint.
+
+/** A five-line MCP server: a handshake, two tools, nothing else. */
+const MCP_SERVER = `
+  import fs from 'node:fs'
+  if (process.argv[2]) fs.writeFileSync(process.argv[2], String(process.pid))
+  const TOOLS = [
+    { name: 'pods_list', description: 'List pods in a namespace\\nand more prose' },
+    { name: 'pods_delete', description: 'Delete a pod' }
+  ]
+  let rest = ''
+  process.stdin.on('data', (c) => {
+    rest += c
+    const lines = rest.split('\\n')
+    rest = lines.pop()
+    for (const line of lines) {
+      if (!line.trim()) continue
+      const msg = JSON.parse(line)
+      if (msg.id === undefined) continue
+      const result =
+        msg.method === 'initialize'
+          ? { protocolVersion: '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'tiny-mcp', version: '9.9' } }
+          : msg.method === 'tools/list'
+            ? { tools: TOOLS }
+            : null
+      process.stdout.write(
+        JSON.stringify(
+          result
+            ? { jsonrpc: '2.0', id: msg.id, result }
+            : { jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: 'no such method' } }
+        ) + '\\n'
+      )
+    }
+  })
+`
+
+/** Starts, records its pid, and never answers anything — the server sitting on
+ *  an interactive `tsh` login. It ignores SIGTERM too, so the probe's teardown
+ *  has to go all the way to SIGKILL to be rid of it. */
+const WEDGED_SERVER = `
+  import fs from 'node:fs'
+  fs.writeFileSync(process.argv[2], String(process.pid))
+  process.on('SIGTERM', () => {})
+  process.stdin.resume()
+  setInterval(() => {}, 1000)
+`
+
+/** Spawns, records its pid, and exits — the package that needs authorization it
+ *  does not have, or a bin that throws on load. */
+const DYING_SERVER = `
+  import fs from 'node:fs'
+  fs.writeFileSync(process.argv[2], String(process.pid))
+  process.exit(3)
+`
+
+/** Write one of the servers above to its own file and return the argv for it. */
+const server = (name, source) => {
+  const script = path.join(GURT_ROOT, `${name}.mjs`)
+  const pidfile = path.join(GURT_ROOT, `${name}.pid`)
+  fs.writeFileSync(script, source)
+  fs.rmSync(pidfile, { force: true })
+  return { command: process.execPath, args: [script, pidfile], pidfile }
+}
+
+const isAlive = (pid) => {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Assert the server the probe started is not running any more. Polled, not
+ *  sampled: SIGKILL is asynchronous, and a flaky assertion here would train
+ *  people to ignore the one check that catches a leaked process. */
+const assertReaped = async (pidfile) => {
+  const pid = Number(fs.readFileSync(pidfile, 'utf8'))
+  assert.ok(pid > 0, 'the probe never started the server at all')
+  for (let i = 0; i < 200 && isAlive(pid); i++) await new Promise((r) => setTimeout(r, 25))
+  assert.equal(isAlive(pid), false, `pid ${pid} outlived the probe`)
+}
+
+test('the probe starts a local server, reads its tools and stops it (§4.6)', async () => {
+  const { command, args, pidfile } = server('probe-ok', MCP_SERVER)
+  const result = await m.probeMcpServer({ kind: 'command', id: 'probe-ok', command, args })
+
+  assert.equal(result.ok, true, result.error)
+  assert.equal(result.kind, 'command')
+  // What the server calls itself, so the user can tell "it started" from "it
+  // started and it is the thing I meant".
+  assert.equal(result.server, 'tiny-mcp 9.9')
+  assert.deepEqual(
+    result.tools.map((t) => t.name),
+    ['pods_list', 'pods_delete']
+  )
+  // One line of the description, for a tooltip — not the whole README.
+  assert.equal(result.tools[0].summary, 'List pods in a namespace')
+  assert.equal(result.error, undefined)
+  await assertReaped(pidfile)
+})
+
+test('a server that dies immediately is a failed probe, with a reason', async () => {
+  const { command, args, pidfile } = server('probe-dies', DYING_SERVER)
+  const result = await m.probeMcpServer({ kind: 'command', id: 'probe-dies', command, args })
+
+  assert.equal(result.ok, false)
+  assert.equal(result.kind, 'command')
+  // A sentence, not a stack: this is what the dialog shows.
+  assert.match(result.error, /exited/)
+  assert.equal(result.tools, undefined)
+  await assertReaped(pidfile)
+})
+
+test('a wedged server hits the budget and is killed anyway', async () => {
+  const { command, args, pidfile } = server('probe-hangs', WEDGED_SERVER)
+  const started = Date.now()
+  // The budget is a parameter precisely so this case is a second, not a minute.
+  const result = await m.probeMcpServer(
+    { kind: 'command', id: 'probe-hangs', command, args },
+    { budgetMs: 1200 }
+  )
+
+  assert.equal(result.ok, false)
+  // The dialog has to come back: a server waiting on an interactive login never
+  // answers, and a button that waits for it forever is worse than no button.
+  assert.ok(Date.now() - started < 20_000, 'the probe did not respect its budget')
+  // Which of the probe's bounds fires first depends on how long the spawn took,
+  // and both say the same thing to the user. What matters is that it is a
+  // sentence someone wrote, not node's "The operation was aborted due to
+  // timeout" leaking out of a `fetch`.
+  assert.match(result.error, /in time/)
+  // It ignores SIGTERM, so this only passes if the teardown escalates (§4.1).
+  await assertReaped(pidfile)
+})
+
+test('a command that is not on this machine fails the probe rather than the app', async () => {
+  const result = await m.probeMcpServer({
+    kind: 'command',
+    id: 'probe-missing',
+    command: 'definitely-not-installed-xyz'
+  })
+  assert.equal(result.ok, false)
+  assert.match(result.error, /was not found on this machine/)
+})
+
+test('the probe validates what it is handed before it spawns anything', async () => {
+  // The entry arrives over IPC, from a form, and may never have been saved —
+  // that is the point (§4.6). So the validator runs here too, and garbage is an
+  // answer rather than a throw.
+  const bad = await m.probeMcpServer({ kind: 'npm', id: 'Bad Id', package: 'p' })
+  assert.equal(bad.ok, false)
+  assert.match(bad.error, /must be lowercase/)
+
+  const nonsense = await m.probeMcpServer({})
+  assert.equal(nonsense.ok, false)
+  assert.ok(nonsense.error, 'a rejected probe always says something')
+})
+
+test('an http entry is handshaken with the headers a session would send', async () => {
+  const seen = []
+  const http = createServer((req, res) => {
+    seen.push(req.headers['x-workspace'])
+    let body = ''
+    req.on('data', (c) => (body += c))
+    req.on('end', () => {
+      const msg = JSON.parse(body)
+      if (req.headers['x-workspace'] !== 'acme') {
+        res.writeHead(401, { 'content-type': 'application/json' }).end('{"error":"who are you"}')
+        return
+      }
+      res.writeHead(200, { 'content-type': 'application/json' }).end(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: msg.id,
+          result: { protocolVersion: '2025-06-18', capabilities: {}, serverInfo: { name: 'remote-mcp', version: '2' } }
+        })
+      )
+    })
+  })
+  await new Promise((done) => http.listen(0, '127.0.0.1', () => done(undefined)))
+  const { port } = /** @type {import('node:net').AddressInfo} */ (http.address())
+  const url = `http://127.0.0.1:${port}/mcp`
+  try {
+    const ok = await m.probeMcpServer({
+      id: 'remote',
+      url,
+      headers: [{ name: 'X-Workspace', value: 'acme' }]
+    })
+    assert.equal(ok.ok, true, ok.error)
+    assert.equal(ok.kind, 'http')
+    assert.equal(ok.server, 'remote-mcp 2')
+    // Handshake only, deliberately: a stateful endpoint hands out a session id
+    // every later call has to carry, and "no tools" about a healthy server
+    // would be a worse answer than none (§4.6).
+    assert.equal(ok.tools, undefined)
+
+    const denied = await m.probeMcpServer({ id: 'remote', url })
+    assert.equal(denied.ok, false)
+    // The endpoint's own words, quoted back: a 401 that says why is the whole
+    // value of asking.
+    assert.match(denied.error, /HTTP 401/)
+    assert.match(denied.error, /who are you/)
+  } finally {
+    http.close()
+  }
 })
