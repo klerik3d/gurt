@@ -125,6 +125,9 @@ export default function App() {
   selectionRef.current = selection
   const treeRef = useRef(tree)
   treeRef.current = tree
+  /** Workspace names, most-recently-activated first — drives ⌘`/⌘⇧` cycling
+   *  (see `cycleWorkspace`) instead of the tree's filesystem-readdir order. */
+  const mruRef = useRef<string[]>([])
   /** Tasks whose changes were already requested at least once (app-start lazy load). */
   const changesRequested = useRef<Set<string>>(new Set())
 
@@ -241,6 +244,20 @@ export default function App() {
     if (tree && !tree.workspaces.some((w) => w.name === curWs))
       setCurWs(tree.workspaces[0]?.name ?? null)
   }, [tree, curWs])
+
+  // Track activation order for cycleWorkspace: every time curWs changes (via
+  // any path — hotkey, titlebar dropdown, selectSession/selectTask jumping to
+  // a workspace, new-workspace creation) it becomes the new MRU head. Deleted
+  // workspaces are dropped whenever the tree changes so the list can't grow
+  // unbounded across create/delete churn.
+  useEffect(() => {
+    if (curWs) mruRef.current = [curWs, ...mruRef.current.filter((n) => n !== curWs)]
+  }, [curWs])
+  useEffect(() => {
+    if (!tree) return
+    const names = new Set(tree.workspaces.map((w) => w.name))
+    mruRef.current = mruRef.current.filter((n) => names.has(n))
+  }, [tree])
 
   // The tree is the source of truth for what still exists. A task or session
   // that was deleted can no longer be selected — otherwise ⌘N/⌘⇧N and the
@@ -406,13 +423,20 @@ export default function App() {
     (dir: 1 | -1) => {
       const wsList = treeRef.current?.workspaces ?? []
       if (wsList.length < 2) return
-      const idx = wsList.findIndex((w) => w.name === ws?.name)
-      const next = wsList[(idx + dir + wsList.length) % wsList.length]
-      if (!next) return
+      // Cycle by activation recency (mruRef), not tree/readdir order — a
+      // workspace never yet activated this session falls back to its tree
+      // position, appended after everything with a known MRU rank.
+      const order = [
+        ...mruRef.current.filter((n) => wsList.some((w) => w.name === n)),
+        ...wsList.map((w) => w.name).filter((n) => !mruRef.current.includes(n))
+      ]
+      const idx = order.indexOf(ws?.name ?? '')
+      const next = order[(idx + dir + order.length) % order.length]
+      if (!next || next === ws?.name) return
       // Same rule as the titlebar dropdown: leaving a workspace clears whatever
       // session/task was open so the sidebar/breadcrumb don't show stale content.
-      if (next.name !== ws?.name) setSelection(null)
-      setCurWs(next.name)
+      setSelection(null)
+      setCurWs(next)
     },
     [ws]
   )
