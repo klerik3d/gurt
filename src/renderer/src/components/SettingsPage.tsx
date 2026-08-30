@@ -1936,12 +1936,18 @@ const PROBE_TOOLS_SHOWN = 24
  * whether the tool writes (§3.3).
  */
 function McpProbeReport({ result }: { result: McpProbeResult }): JSX.Element {
+  // Open when it failed, because that is the question the reader now has;
+  // folded when it worked, because then the answer is the line above it.
+  const [openLog, setOpenLog] = useState(!result.ok)
+  const launchLog = <McpProbeLog result={result} open={openLog} onToggle={() => setOpenLog((o) => !o)} />
+
   if (!result.ok)
     return (
       <div className="mcp-probe">
         <span className="error">
           {result.error || 'it did not come up, and said nothing about why'}
         </span>
+        {launchLog}
       </div>
     )
   const tools = result.tools ?? []
@@ -1979,6 +1985,56 @@ function McpProbeReport({ result }: { result: McpProbeResult }): JSX.Element {
           ? 'Checked from gurt, on this machine. A session reaches this endpoint through its own proxy, from the container — so this says the URL, the headers and the credential are right, not that a session can get there.'
           : 'Started and stopped again just now. The list is what the server offers; gurt does not know which of them write, so it reports them and does not restrict them.'}
       </span>
+      {launchLog}
+    </div>
+  )
+}
+
+/**
+ * The launch itself, line by line: what was installed, what argv was spawned,
+ * what the process printed, which MCP calls were made, how it ended.
+ *
+ * This is the server's *own* output, shown where the person who started it is
+ * standing. gurt keeps no copy of it — closing the dialog is the end of it (see
+ * §4.6) — so **copy** is not a convenience here, it is the only way to carry it
+ * into an issue.
+ */
+function McpProbeLog({
+  result,
+  open,
+  onToggle
+}: {
+  result: McpProbeResult
+  open: boolean
+  onToggle: () => void
+}): JSX.Element | null {
+  const lines = result.transcript ?? []
+  if (!lines.length) return null
+  const text = lines.map((l) => `+${l.at}ms ${l.stream}\t${l.line}`).join('\n')
+  return (
+    <div className="mcp-probe-log">
+      <div className="fld-head">
+        <button className="btn-link" onClick={onToggle}>
+          {open ? 'hide' : 'show'} launch log ({lines.length} lines)
+        </button>
+        <span className="spacer" />
+        {open && (
+          <button className="btn-link" onClick={() => void navigator.clipboard.writeText(text)}>
+            copy
+          </button>
+        )}
+      </div>
+      {open && (
+        <div className="mcp-probe-lines mono">
+          {lines.map((l, i) => (
+            <div key={i} className={`mcp-probe-row ${l.stream}`}>
+              <span className="faint">+{l.at}ms</span>
+              <span className="faint">{l.stream}</span>
+              <span>{l.line}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
