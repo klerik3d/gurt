@@ -25,7 +25,7 @@ import { useSkillEntries } from '../useSkills'
 import { NetworkPicker } from './Network'
 import { useOutsideClose } from '../hooks'
 import { alertDialog } from '../dialog'
-import { Icon, Dot } from './icons'
+import { Icon, Dot, InfoDot } from './icons'
 import {
   AgentMark,
   AgentTag,
@@ -265,6 +265,10 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
   const repos = info.repos
   const mcp = info.mcp ?? []
   const skills = info.skills ?? []
+  // Only for a record that predates the setting: a draft created now always
+  // carries one (App.tsx), and it is internal. Absent reads as open everywhere
+  // downstream (proxy/manager.ts), so an old draft keeps the mode it has been
+  // running under instead of changing under it.
   const network = info.network ?? { internal: false }
   const autoAllow = info.autoAllow ?? true
   const configValues = info.configValues ?? {}
@@ -412,10 +416,15 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
       .filter(Boolean)
       .join(' · ') || 'no mcp, no skills'
 
+  // The picked option's description rides the label's info dot, not a note
+  // row — the hint is a hover away and the block stays one line of chips.
   const configBlock = (opt: SessionConfigOption): ReactNode =>
     opt.type === 'select' ? (
       <div key={opt.id} className="hc-block">
-        <span className="seclabel">{cfgLabel(opt)}</span>
+        <div className="seclabel-row">
+          <span className="seclabel">{cfgLabel(opt)}</span>
+          {selectedDescription(opt) && <InfoDot text={selectedDescription(opt)!} />}
+        </div>
         <div className="chip-row">
           {optionView.selectOptions(opt).map((o) => (
             <button
@@ -429,11 +438,13 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
             </button>
           ))}
         </div>
-        {selectedDescription(opt) && <div className="hc-note">{selectedDescription(opt)}</div>}
       </div>
     ) : (
       <div key={opt.id} className="hc-block">
-        <span className="seclabel">{cfgLabel(opt)}</span>
+        <div className="seclabel-row">
+          <span className="seclabel">{cfgLabel(opt)}</span>
+          {opt.description && <InfoDot text={opt.description} />}
+        </div>
         <div className="chip-row">
           <button
             type="button"
@@ -455,43 +466,90 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
 
   return (
     <div className="ns-body">
-      {/* role — what the session is for. It comes before the repository picker
-          because it governs it (docs/requirements-session-roles.md). */}
-      <div className="ns-section">
-        <span className="seclabel">ROLE</span>
-        <PickRow
-          open={picker === 'role'}
-          onToggle={() => setPicker(picker === 'role' ? null : 'role')}
-          onClose={() => setPicker(null)}
-          menu={SESSION_ROLES.map((r) => (
-            <div
-              key={r}
-              className={`menu-item ${r === role ? 'active' : ''}`}
-              onMouseDown={(e) => {
-                e.preventDefault()
-                pickRole(r)
-              }}
-            >
-              <Icon name={ROLE_INFO[r].icon} size={12} className="faint" />
-              {ROLE_INFO[r].label}
-            </div>
-          ))}
-        >
-          <Icon name={ROLE_INFO[role].icon} size={14} className="dim" style={{ flex: 'none' }} />
-          <span className="pick-value strong">{ROLE_INFO[role].label}</span>
-          <span className="spacer" />
-        </PickRow>
-        <div className="hc-note">{ROLE_INFO[role].hint}</div>
-      </div>
+      {/* role + agent, env + repo — packed two-up instead of four full-width
+          rows. Role still leads (it governs the repository picker,
+          docs/requirements-session-roles.md), and each field's explanation
+          lives behind the label's info dot rather than a note row. */}
+      <div className="cfg-grid">
+        <div className="cfg-cell">
+          <div className="seclabel-row">
+            <span className="seclabel">ROLE</span>
+            <InfoDot text={ROLE_INFO[role].hint} />
+          </div>
+          <PickRow
+            open={picker === 'role'}
+            onToggle={() => setPicker(picker === 'role' ? null : 'role')}
+            onClose={() => setPicker(null)}
+            menu={SESSION_ROLES.map((r) => (
+              <div
+                key={r}
+                className={`menu-item ${r === role ? 'active' : ''}`}
+                title={ROLE_INFO[r].hint}
+                onMouseDown={(e) => {
+                  e.preventDefault()
+                  pickRole(r)
+                }}
+              >
+                <Icon name={ROLE_INFO[r].icon} size={12} className="faint" />
+                {ROLE_INFO[r].label}
+              </div>
+            ))}
+          >
+            <Icon name={ROLE_INFO[role].icon} size={14} className="dim" style={{ flex: 'none' }} />
+            <span className="pick-value strong">{ROLE_INFO[role].label}</span>
+            <span className="spacer" />
+          </PickRow>
+        </div>
 
-      {/* env + repo: what the session runs against. Grouped as a pair — each
-          keeps its own label, a subtle rule marks the split between them —
-          rather than under one shared heading, since "workspace" already
-          names the envs/repos' parent in this codebase and would be
-          confusing reused here. */}
-      <div className="ns-section">
-        <div className="ns-subsection">
-          <span className="seclabel">ENVIRONMENT</span>
+        {/* agent — which client/harness runs the session */}
+        <div className="cfg-cell">
+          <div className="seclabel-row">
+            <span className="seclabel">AGENT</span>
+          </div>
+          <PickRow
+            open={picker === 'client'}
+            onToggle={() => setPicker(picker === 'client' ? null : 'client')}
+            onClose={() => setPicker(null)}
+            menu={
+              agentList.length ? (
+                agentList.map((a) => (
+                  <div
+                    key={a.id}
+                    className={`menu-item ${a.id === info.agent ? 'active' : ''}`}
+                    onMouseDown={(e) => {
+                      e.preventDefault()
+                      patch({ agent: a.id })
+                      setPicker(null)
+                    }}
+                  >
+                    <Dot tone="green" size={7} />
+                    <Icon name={agentIcon(a.kind)} size={12} className="faint" />
+                    {a.label}
+                  </div>
+                ))
+              ) : (
+                <div className="menu-empty">no clients — add one in Settings → Clients</div>
+              )
+            }
+          >
+            {info.agent ? (
+              <>
+                <Dot tone="green" size={7} />
+                <span className="pick-value strong">
+                  <AgentMark kind={agentKind(agents, info.agent)} name={agentName(agents, info.agent)} />
+                </span>
+              </>
+            ) : (
+              <span className="pick-value faint">pick a client</span>
+            )}
+            <span className="spacer" />
+          </PickRow>
+        </div>
+
+        <div className="cfg-cell">
+          <div className="seclabel-row">
+            <span className="seclabel">ENVIRONMENT</span>
+          </div>
           <PickRow
             open={picker === 'env'}
             onToggle={() => setPicker(picker === 'env' ? null : 'env')}
@@ -524,9 +582,13 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
         </div>
 
         {/* session repositories — seeded from the env's default, changeable
-            here. Multi-select for a researcher only. */}
-        <div className="ns-subsection">
-          <span className="seclabel">REPOSITORY</span>
+            here. Multi-select for a researcher only. The two notes stay
+            visible rather than moving behind the info dot: one blocks
+            Run/Queue and the other changes what the session may write. */}
+        <div className="cfg-cell">
+          <div className="seclabel-row">
+            <span className="seclabel">REPOSITORY</span>
+          </div>
           <PickRow
             open={picker === 'repo'}
             onToggle={() => setPicker(picker === 'repo' ? null : 'repo')}
@@ -577,55 +639,18 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
         </div>
       </div>
 
-      {/* agent — which client/harness runs the session */}
-      <div className="ns-section">
-        <span className="seclabel">AGENT</span>
-        <PickRow
-          open={picker === 'client'}
-          onToggle={() => setPicker(picker === 'client' ? null : 'client')}
-          onClose={() => setPicker(null)}
-          menu={
-            agentList.length ? (
-              agentList.map((a) => (
-                <div
-                  key={a.id}
-                  className={`menu-item ${a.id === info.agent ? 'active' : ''}`}
-                  onMouseDown={(e) => {
-                    e.preventDefault()
-                    patch({ agent: a.id })
-                    setPicker(null)
-                  }}
-                >
-                  <Dot tone="green" size={7} />
-                  <Icon name={agentIcon(a.kind)} size={12} className="faint" />
-                  {a.label}
-                </div>
-              ))
-            ) : (
-              <div className="menu-empty">no clients — add one in Settings → Clients</div>
-            )
-          }
-        >
-          <span className="pick-value">Client</span>
-          <span className="spacer" />
-          {info.agent && <Dot tone="green" size={7} />}
-          <span className="pick-meta">
-            {info.agent ? (
-              <AgentMark kind={agentKind(agents, info.agent)} name={agentName(agents, info.agent)} />
-            ) : (
-              'none'
-            )}
-          </span>
-        </PickRow>
-      </div>
-
       {/* behavior — the fields changed most often (model/effort) plus the
-          auto/manual safety toggle, always visible rather than a click away. */}
+          auto/manual safety toggle, always visible rather than a click away.
+          No "BEHAVIOR" umbrella label: it rendered identically to the block
+          labels under it and read as noise, and MODEL/EFFORT/MODE say enough
+          on their own. */}
       <div className="ns-section">
-        <span className="seclabel">BEHAVIOR</span>
         {behaviorOptions.map(configBlock)}
         <div className="hc-block">
-          <span className="seclabel">MODE</span>
+          <div className="seclabel-row">
+            <span className="seclabel">MODE</span>
+            <InfoDot text="auto lets the agent's tool calls run without asking; manual stops to confirm each one." />
+          </div>
           <div className="chip-row">
             <button
               className={`chip-btn ${autoAllow ? 'on' : ''}`}
@@ -645,10 +670,10 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
         </div>
       </div>
 
-      {/* permissions — network is a capability boundary like MODE, not tuning,
-          so it stays out of the collapsed panel too. */}
+      {/* network — a capability boundary like MODE, not tuning, so it stays
+          out of the collapsed panel. (Same umbrella-label removal as above:
+          "PERMISSIONS" duplicated the block labels' style for no information.) */}
       <div className="ns-section">
-        <span className="seclabel">PERMISSIONS</span>
         <NetworkPicker network={network} onChange={(next) => patch({ network: next })} />
       </div>
 
@@ -670,64 +695,68 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
           {advancedOpen && (
             <div className="hc-body">
               {advancedOptions.map(configBlock)}
-              {(mcpOffered.length > 0 || mcpOrphans.length > 0) && (
-                <div className="hc-block">
-                  <span className="seclabel">MCP SERVERS</span>
-                  {mcpOffered.map((entry) => (
-                    <McpRow
-                      key={entry.id}
-                      entry={entry}
-                      mode={mcpMode(entry.id)}
-                      onChange={(mode) => setMcpMode(entry.id, mode)}
-                    />
-                  ))}
-                  {mcpOrphans.map((sel) => (
-                    <McpMissingRow key={sel.id} id={sel.id} onRemove={() => setMcpMode(sel.id, null)} />
-                  ))}
-                </div>
-              )}
-              <div className="hc-block">
-                <span className="seclabel">SKILLS</span>
-                {skillsUnsupported ? (
-                  <div className="hc-note">
-                    {draftAgentDef?.label} does not support skills — nothing would be mounted.
-                    {skills.length
-                      ? ' Your selection is kept and applies if you pick an agent that does.'
-                      : ''}
-                  </div>
-                ) : (
-                  <>
-                    {skillsOffered.map((entry) => (
-                      <SkillRow
-                        key={entry.name}
+              {/* MCP and skills side by side — two short columns instead of
+                  two stacked full-width lists. */}
+              <div className="hc-cols">
+                {(mcpOffered.length > 0 || mcpOrphans.length > 0) && (
+                  <div className="hc-block">
+                    <span className="seclabel">MCP SERVERS</span>
+                    {mcpOffered.map((entry) => (
+                      <McpRow
+                        key={entry.id}
                         entry={entry}
-                        on={skills.some((k) => k.name === entry.name)}
-                        onChange={(on) => setSkill(entry.name, on)}
+                        mode={mcpMode(entry.id)}
+                        onChange={(mode) => setMcpMode(entry.id, mode)}
                       />
                     ))}
-                    {skillOrphans.map((sel) => (
-                      <SkillMissingRow
-                        key={sel.name}
-                        name={sel.name}
-                        onRemove={() => setSkill(sel.name, false)}
-                      />
+                    {mcpOrphans.map((sel) => (
+                      <McpMissingRow key={sel.id} id={sel.id} onRemove={() => setMcpMode(sel.id, null)} />
                     ))}
-                    {!skillsOffered.length && !skillOrphans.length && (
-                      <div className="hc-note">
-                        no skills in this workspace — add one in Settings &rarr; Skills. A skill in
-                        the repository&apos;s own .claude/skills is the repo&apos;s and is not listed
-                        here.
-                      </div>
-                    )}
-                  </>
+                  </div>
                 )}
+                <div className="hc-block">
+                  <span className="seclabel">SKILLS</span>
+                  {skillsUnsupported ? (
+                    <div className="hc-note">
+                      {draftAgentDef?.label} does not support skills — nothing would be mounted.
+                      {skills.length
+                        ? ' Your selection is kept and applies if you pick an agent that does.'
+                        : ''}
+                    </div>
+                  ) : (
+                    <>
+                      {skillsOffered.map((entry) => (
+                        <SkillRow
+                          key={entry.name}
+                          entry={entry}
+                          on={skills.some((k) => k.name === entry.name)}
+                          onChange={(on) => setSkill(entry.name, on)}
+                        />
+                      ))}
+                      {skillOrphans.map((sel) => (
+                        <SkillMissingRow
+                          key={sel.name}
+                          name={sel.name}
+                          onRemove={() => setSkill(sel.name, false)}
+                        />
+                      ))}
+                      {!skillsOffered.length && !skillOrphans.length && (
+                        <div className="hc-note">
+                          no skills in this workspace — add one in Settings &rarr; Skills. A skill
+                          in the repository&apos;s own .claude/skills is the repo&apos;s and is not
+                          listed here.
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
               </div>
               <div className="hc-foot">
                 <span className="spacer" />
                 <button
                   className="btn btn-sm"
                   onClick={() =>
-                    patch({ autoAllow: true, mcp: [], skills: [], network: { internal: false } })
+                    patch({ autoAllow: true, mcp: [], skills: [], network: { internal: true } })
                   }
                 >
                   Reset
@@ -786,6 +815,7 @@ function LiveConfig({ snapshot }: { snapshot: SessionSnapshot }) {
         {!skillsUnsupported &&
           skills.map((r) => <SkillTag key={r.selection.name} {...r} />)}
         <NetTag network={info.network} />
+        <InfoDot text="role, environment, repository, MCP, skills and network are fixed once a session leaves draft — duplicate it to change them and start over" />
       </div>
       {skillsUnsupported && skills.length > 0 && (
         <div className="hc-note">
@@ -793,10 +823,6 @@ function LiveConfig({ snapshot }: { snapshot: SessionSnapshot }) {
           {skills.length === 1 ? 'skill was' : 'skills were'} not mounted
         </div>
       )}
-      <div className="hc-note">
-        role, environment, repository, MCP, skills and network are fixed once a session leaves
-        draft — duplicate it to change them and start over
-      </div>
       {info.state === 'started' && (
         <LiveHarness
           sessionId={info.id}

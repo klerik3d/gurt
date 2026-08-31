@@ -66,8 +66,12 @@ page.on('console', (m) => {
 page.on('pageerror', (e) => console.log('[pageerror]', e.message))
 
 const shot = (name) => page.screenshot({ path: path.join(SHOT_DIR, `${name}.png`) })
-/** Each section of the Config tab is a `seclabel` followed by its picker. */
-const row = (label) => `.ns-body .seclabel:text-is("${label}") + .pick-wrap .pick-row`
+/** Each field of the Config tab is a label row — the `seclabel` plus, for some,
+ *  the info dot carrying its explanation — followed by its picker. Matching on
+ *  the row rather than the label itself is what survives a field gaining or
+ *  losing that dot. */
+const row = (label) =>
+  `.ns-body .seclabel-row:has(.seclabel:text-is("${label}")) + .pick-wrap .pick-row`
 const ROLE_ROW = row('ROLE')
 /** The role the Config tab currently shows, from the picker's own value. */
 const shownRole = async () => (await page.locator(`${ROLE_ROW} .pick-value`).innerText()).trim()

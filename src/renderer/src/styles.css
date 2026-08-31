@@ -1472,6 +1472,39 @@ textarea.input {
 
 /* ---- composer ---- */
 
+/* Prompts already sent that are waiting for the session — see the queue in
+   sessions.ts. Sits directly above the composer, in reading order between the
+   feed (what has happened) and the input (what has not been sent yet). */
+.pending-queue {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  background: var(--panel);
+  border: 1px dashed var(--border2);
+  border-radius: 10px;
+}
+.pending-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--dim);
+  min-width: 0;
+}
+.pending-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pending-note {
+  font-size: 10.5px;
+  color: var(--faint);
+}
+
 .composer-wrap {
   flex: none;
   padding: 12px 7% 16px;
@@ -1575,6 +1608,17 @@ textarea.input {
 }
 .send-btn:disabled {
   opacity: 0.45;
+}
+/* Same button, different promise: this one joins the queue instead of starting
+   a turn. Outlined rather than solid — it is still the primary action, but it
+   is not the one that makes something happen right now. */
+.send-btn.queued {
+  background: transparent;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+}
+.send-btn.queued:hover:not(:disabled) {
+  background: var(--hover);
 }
 .composer-mic-error {
   margin-top: 8px;
@@ -1836,16 +1880,6 @@ textarea.input {
   gap: 7px;
   margin-top: 14px;
 }
-.ns-subsection {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-}
-.ns-subsection + .ns-subsection {
-  margin-top: 12px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border2);
-}
 .ns-chips {
   display: flex;
   align-items: center;
@@ -1918,6 +1952,90 @@ textarea.input {
 .hc-note {
   font-size: 10.5px;
   color: var(--faint);
+}
+/* Section label plus the round 'i' that carries its explanation. */
+.seclabel-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 15px;
+}
+.info-dot {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  color: var(--faint);
+  outline: none;
+}
+.info-dot:hover,
+.info-dot:focus {
+  color: var(--dim);
+}
+.info-pop {
+  display: none;
+  position: absolute;
+  top: calc(100% + 7px);
+  left: -7px;
+  z-index: 60;
+  width: 260px;
+  padding: 8px 11px;
+  background: var(--surface);
+  border: 1px solid var(--border2);
+  border-radius: 9px;
+  font-family: var(--ui);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.55;
+  letter-spacing: normal;
+  text-transform: none;
+  white-space: normal;
+  color: var(--dim);
+  box-shadow: 0 12px 32px -12px rgba(0, 0, 0, 0.6);
+}
+.info-dot:hover .info-pop,
+.info-dot:focus .info-pop {
+  display: block;
+}
+/* Two-up field grid (role|agent, env|repo) — collapses to one column when
+   the pane is narrow. */
+.cfg-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 14px 16px;
+  margin-top: 14px;
+}
+.cfg-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+}
+/* Inline fold: a seclabel that opens its block, for lists worth hiding
+   (the built-in denylist) without spending a full field row on a header. */
+.subfold {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-family: var(--mono);
+  font-weight: 500;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+.subfold:hover {
+  color: var(--dim);
+}
+/* Side-by-side blocks in the advanced panel (MCP | skills). */
+.hc-cols {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+  align-items: start;
 }
 .hc-warn {
   color: var(--red);

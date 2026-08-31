@@ -8,7 +8,7 @@ import { alertDialog } from '../dialog'
 import { logErr } from '../log'
 import { SESSION_DOT } from '../status'
 import { Dot } from './icons'
-import { AgentMark, EnvRepoMarks, McpFailBanner, McpMarks, NetMark, RoleMark } from './tags'
+import { AgentMark, EnvRepoMarks, hasNetMark, McpFailBanner, McpMarks, NetMark, RoleMark } from './tags'
 import { TrafficPanel } from './Network'
 import { Chat } from './Chat'
 import { ConfigTab } from './ConfigTab'
@@ -103,7 +103,7 @@ function Header({
             · <McpMarks resolved={mcp} />
           </span>
         )}
-        {info.network?.internal && (
+        {hasNetMark(info.network) && (
           <span>
             · <NetMark network={info.network} />
           </span>
