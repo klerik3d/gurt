@@ -74,6 +74,9 @@ export default function App() {
   const [turnStarts, setTurnStarts] = useState<Record<string, number>>({})
   const [paletteOpen, setPaletteOpen] = useState(false)
   const hotkeys = useHotkeys()
+  /** Bumped on every ⌘2 (`gotoTasks`) — Sidebar focuses its tree whenever this
+   *  changes, including on the mount that follows switching into the work view. */
+  const [focusTasksSignal, setFocusTasksSignal] = useState(0)
   /** Boot restore progress — the footer bar while main is still restoring
    *  sessions / reconciling containers. Null until first heard from; hidden
    *  once `done`. */
@@ -488,8 +491,9 @@ export default function App() {
   // fires. Harmless no-op on other platforms, which just never emit it.
   useEffect(() => window.gurt.onHotkeyCycleWorkspace(cycleWorkspace), [cycleWorkspace])
 
-  // Global hotkeys: palette · new session · new task · cycle workspaces
-  // (default ⌘K / ⌘N / ⌘⇧N / ⌘` / ⌘⇧`, remappable in Settings → Hotkeys).
+  // Global hotkeys: palette · new session · new task · cycle workspaces ·
+  // go to dashboard/tasks/settings (default ⌘K / ⌘N / ⌘⇧N / ⌘` / ⌘⇧` /
+  // ⌘1 / ⌘2 / ⌘0, remappable in Settings → Hotkeys).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey)) return
@@ -508,6 +512,16 @@ export default function App() {
       } else if (bindingMatchesEvent(hotkeys.newSession, e)) {
         e.preventDefault()
         openNewSession()
+      } else if (bindingMatchesEvent(hotkeys.gotoDashboard, e)) {
+        e.preventDefault()
+        setView('dashboard')
+      } else if (bindingMatchesEvent(hotkeys.gotoTasks, e)) {
+        e.preventDefault()
+        setView('work')
+        setFocusTasksSignal((n) => n + 1)
+      } else if (bindingMatchesEvent(hotkeys.gotoSettings, e)) {
+        e.preventDefault()
+        setView('settings')
       }
     }
     window.addEventListener('keydown', onKey)
@@ -714,6 +728,7 @@ export default function App() {
               selection={selection}
               changes={changes}
               activity={activity}
+              focusSignal={focusTasksSignal}
               onNewSession={(w, t) => createDraft(w, t)}
               onSelectTask={selectTask}
               onSelectSession={selectSession}
