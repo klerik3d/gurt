@@ -202,7 +202,6 @@ test('a mixed selection is persisted verbatim', async () => {
       { id: 'linear', mode: 'full' }
     ],
     true,
-    false,
     {},
     'executor'
   )

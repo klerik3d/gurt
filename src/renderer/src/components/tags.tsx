@@ -5,10 +5,16 @@
 
 import { Fragment } from 'react'
 import type { JSX } from 'react'
-import type { McpSelection, SessionNetwork, SessionRole } from '../../../shared/types'
+import type {
+  McpSelection,
+  SessionNetwork,
+  SessionRole,
+  SkillSelection
+} from '../../../shared/types'
 import type { DomainPolicy } from '../../../shared/proxy'
 import { explicitAllows } from '../../../shared/proxy'
 import type { McpFailure, ResolvedMcpSelection } from '../../../shared/mcp'
+import type { ResolvedSkillSelection } from '../../../shared/skills'
 import { Icon, type IconName } from './icons'
 
 /** kind (an `AgentDef.id`) → glyph. Unmatched/custom kinds fall back to a
@@ -136,6 +142,34 @@ export function McpTag(resolved: ResolvedMcpSelection<McpSelection>): JSX.Elemen
       <Icon name="plug" size={10} />
       {mcpName(resolved)}
       {readOnly ? ' ᴿᴼ' : ''}
+      {entry ? '' : ' ?'}
+    </span>
+  )
+}
+
+/**
+ * One skill a session carries — same pill as `McpTag`.
+ *
+ * A skill is off or on, so there is no mode to mark. A name the registry no
+ * longer holds goes red rather than vanishing, for the reason an unresolvable
+ * MCP id does: the session still names it, and the start reports it as not
+ * mounted (docs/requirements-skills.md §4.4).
+ */
+export function SkillTag({
+  selection,
+  entry
+}: ResolvedSkillSelection<SkillSelection>): JSX.Element {
+  return (
+    <span
+      className={`tag tag-ico ${entry ? 'tag-accent' : 'tag-red'}`}
+      title={
+        entry
+          ? `Skill ${entry.name} — ${entry.problem ?? entry.description}`
+          : `Skill "${selection.name}" — selected, but this workspace no longer offers it (deleted from the registry?)`
+      }
+    >
+      <Icon name="file" size={10} />
+      {selection.name}
       {entry ? '' : ' ?'}
     </span>
   )
