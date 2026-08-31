@@ -213,6 +213,10 @@ export interface SessionContainer {
  * the clones live on disk as `<task>/<repo>` and are discovered from there.
  */
 export interface TaskFile {
+  /** ISO timestamp the task was created. Absent on tasks made before this was
+   *  recorded — `buildTree` stands in the marker file's own birth time there,
+   *  so the tree always carries one. */
+  createdAt?: string
   /** Legacy per-env container records, folded onto their owning session at read
    *  and dropped from disk. Never written by the current code. */
   envs?: LegacyEnvState[]
@@ -490,6 +494,10 @@ export interface Tree {
     defaultSkills?: string[]
     tasks: {
       name: string
+      /** ISO timestamp the task was created — see {@link TaskFile.createdAt}.
+       *  Always present here (backfilled from the filesystem when the file has
+       *  none); the sidebar orders by it. */
+      createdAt: string
       /** Repos with a clone in this task (discovered on disk). A clone outlives
        *  the sessions that used it — it holds their uncommitted work. */
       repos: string[]

@@ -800,6 +800,18 @@ textarea.input {
   right: 0;
   min-width: 200px;
 }
+.sb-sort {
+  position: relative;
+  flex: none;
+}
+/* Anchored to the right of the header rather than to its own button: the
+   sidebar is narrow enough that a left-anchored menu would hang off it. */
+.sb-sort-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 150px;
+}
 
 .sb-tree {
   flex: 1;
