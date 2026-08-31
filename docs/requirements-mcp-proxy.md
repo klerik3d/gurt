@@ -493,12 +493,21 @@ and adjustable while running (§5.2):
 ```ts
 // src/shared/types.ts — SessionInfo, AgentSessionRequest
 network?: {
-  internal?: boolean          // default false
+  internal?: boolean          // absent reads as false
   policy?: DomainPolicy       // default { allow: [] }, i.e. open
 }
 ```
 
-**`internal: false` (default).** `gurt-s-<session>` is a normal bridge.
+Absent and `false` mean the same thing everywhere the field is read, and
+they have to: a session recorded before this setting existed must keep
+running the way it always did. What the **UI** creates a new session with
+is a separate question, and the answer is `internal: true` — a draft born
+in gurt is isolated, and the Config tab's Network toggle is where one that
+needs its own route out (SSH git, tooling that ignores `HTTP_PROXY`) says
+so. Since the mark for it is only ever the exception, that inverts too: it
+is the *open* session the UI marks, not the internal one.
+
+**`internal: false`.** `gurt-s-<session>` is a normal bridge.
 The container has its own route to the internet; the proxy is there for
 MCP and for observability. `HTTP_PROXY`/`HTTPS_PROXY` are set, so
 well-behaved tooling is routed and logged — and a process that ignores

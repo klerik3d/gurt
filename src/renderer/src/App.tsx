@@ -399,7 +399,11 @@ export default function App() {
           // workspace's `defaultSkills` into a draft that has never chosen
           // (docs/requirements-skills.md §4.2).
           [],
-          { internal: false }
+          // Internal by default: the mode that actually enforces the allow list
+          // is the one a session gets without asking for it. A draft that needs
+          // its own route out (SSH git, a process that ignores HTTP_PROXY)
+          // turns it off on the Config tab's Network toggle.
+          { internal: true }
         )
         .then((s) => selectSession(s.id))
         .catch((e: unknown) => alertDialog(e instanceof Error ? e.message : String(e)))

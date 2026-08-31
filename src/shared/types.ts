@@ -354,11 +354,12 @@ export interface AgentSessionRequest {
  *
  * `policy` is the session's allow list, evaluated by the proxy on the host (and
  * port) a request names — empty means "everything but this machine's own
- * networks", non-empty means "only these" (§6.3). It is what the default mode
+ * networks", non-empty means "only these" (§6.3). It is what the open mode
  * *logs* and the internal mode *enforces*.
  */
 export interface SessionNetwork {
-  /** Default false. Setup (image build, features, `postCreate`, the adapter
+  /** Absent reads as false; the UI nevertheless creates every new session with
+   *  it *on* (App.tsx). Setup (image build, features, `postCreate`, the adapter
    *  install) always runs before this applies — see §7.3. */
   internal?: boolean
   policy?: DomainPolicy
@@ -704,6 +705,31 @@ export interface PromptContext {
   path: string
 }
 
+/**
+ * A prompt the user has sent that the session could not take yet, as the UI
+ * sees it (`SessionSnapshot.pending`).
+ *
+ * Two things put a prompt here: a turn already running, and a session whose
+ * clone another session is sitting on (the queue handoff stops an idle
+ * container out from under it — see `holdersBlockingQueue`). Both are waits,
+ * not errors, so the composer accepts the message and this is where it stands
+ * until the session is free.
+ *
+ * In-memory on main, deliberately: a queue that survived a restart would have
+ * the app wake a container and run a prompt nobody is watching.
+ */
+export interface PendingPromptInfo {
+  id: string
+  text: string
+  /** Context chips attached to it — carried so taking the prompt back out of
+   *  the queue can put them back in the composer with the text. */
+  context?: PromptContext[]
+  /** How many images ride with it. The images themselves stay on main: they
+   *  are base64, and this rides every `session-changed` broadcast. Taking the
+   *  prompt back out of the queue therefore drops them — the row says so. */
+  images?: number
+}
+
 /** Context-window usage, from ACP's `usage_update` session/update variant.
  *  Not every adapter sends it (e.g. codex-acp doesn't yet). */
 export interface SessionUsage {
@@ -741,6 +767,12 @@ export interface SessionSnapshot {
   startError?: string | undefined
   /** 1-based position in the global queue, present while queued. */
   queuePosition?: number | undefined
+  /** Prompts accepted but not yet run, oldest first — see {@link PendingPromptInfo}. */
+  pending?: PendingPromptInfo[] | undefined
+  /** Why the queue is not moving although no turn is running: the session's
+   *  clone is somebody else's right now. Absent while a turn is in flight —
+   *  then the reason is simply `busy`. */
+  pendingBlocked?: string | undefined
   /** Latest change proposal from a `complete` call (outcome=changes), if any. */
   proposal?: StoredProposal | undefined
   /** Latest context-window usage reported by the agent, if the adapter sends it. */

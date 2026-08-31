@@ -44,6 +44,12 @@ const openSettings = async (section) => {
   await page.click(`.set-nav-item:has-text("${section}")`)
 }
 const openWork = () => page.click('.activitybar .ab-item[title="Tasks & sessions"]')
+/** One field of the Config tab: a label row — the `seclabel` plus, for some
+ *  fields, the info dot carrying its explanation — followed by its picker.
+ *  Matching the row rather than the label itself is what survives a field
+ *  gaining or losing that dot (smoke-roles.mjs uses the same shape). */
+const cfgRow = (label) =>
+  `.ns-body .seclabel-row:has(.seclabel:text-is("${label}")) + .pick-wrap .pick-row`
 
 await page.waitForSelector('.sidebar', { timeout: 15000 })
 await page.screenshot({ path: path.join(SHOT_DIR, '01-initial.png') })
@@ -125,13 +131,13 @@ console.log('session draft created OK')
 // registered above to a session.
 await page.click('.tab-btn:has-text("Config")')
 await page.waitForSelector('.ns-body', { timeout: 5000 })
-await page.click('.ns-body .seclabel:text-is("ENVIRONMENT") + .pick-wrap .pick-row')
+await page.click(cfgRow('ENVIRONMENT'))
 await page.click('.ns-body .pick-menu .menu-item:has-text("dev")')
-await page.click('.ns-body .seclabel:text-is("REPOSITORY") + .pick-wrap .pick-row')
+await page.click(cfgRow('REPOSITORY'))
 await page.click('.ns-body .pick-menu .menu-item:has-text("demo")')
 await page.keyboard.press('Escape') // the repo menu stays open for multi-select
 await page.waitForSelector('.ns-body .chip-tag:has-text("octocat/Hello-World")', { timeout: 5000 })
-await page.click('.ns-body .seclabel:text-is("AGENT") + .pick-wrap .pick-row')
+await page.click(cfgRow('AGENT'))
 await page.click('.ns-body .pick-menu .menu-item:has-text("claude smoke")')
 await page.waitForSelector('.ns-body .pick-menu', { state: 'detached', timeout: 5000 })
 await page.screenshot({ path: path.join(SHOT_DIR, '03-config-tab.png') })
@@ -166,7 +172,7 @@ assert.equal(await page.locator('.draft-prompt').inputValue(), 'say hello', 'the
 await page.click('.tab-btn:has-text("Config")')
 await page.waitForSelector('.ns-body .chip-tag:has-text("octocat/Hello-World")', { timeout: 5000 })
 assert.equal(
-  await page.locator('.ns-body .seclabel:text-is("ENVIRONMENT") + .pick-wrap .pick-value').innerText(),
+  await page.locator(`${cfgRow('ENVIRONMENT')} .pick-value`).innerText(),
   'dev',
   'the picked environment survived'
 )

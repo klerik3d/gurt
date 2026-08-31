@@ -22,6 +22,7 @@ export type IconName =
   | 'key'
   | 'plug'
   | 'globe'
+  | 'globe-lock'
   | 'eye'
   | 'play'
   | 'file'
@@ -38,6 +39,7 @@ export type IconName =
   | 'bell'
   | 'fold'
   | 'sort'
+  | 'info'
 
 const PATHS: Record<IconName, JSX.Element> = {
   search: (
@@ -152,6 +154,20 @@ const PATHS: Record<IconName, JSX.Element> = {
       <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
     </>
   ),
+  // Isolated egress: `globe` again, moved up-left to free a corner for a lock.
+  // Both departures from the plain stroke recipe are for the same reason — this
+  // renders at 10-14px in the pills and on the composer bar. The lock body is
+  // filled (a stroked one closes into a blob at that size) and the grid is
+  // drawn a shade thinner than the outline, so the globe does not fill in.
+  'globe-lock': (
+    <>
+      <circle cx="10" cy="10" r="9" />
+      <line x1="1" y1="10" x2="19" y2="10" strokeWidth={1.4} />
+      <path d="M10 1a6 9 0 0 1 0 18 6 9 0 0 1 0-18z" strokeWidth={1.4} />
+      <rect x="16.6" y="17.8" width="6.8" height="5.2" rx="1.3" fill="currentColor" stroke="none" />
+      <path d="M18.2 17.8v-1.2a1.8 1.8 0 0 1 3.6 0v1.2" strokeWidth={1.6} />
+    </>
+  ),
   key: (
     <>
       <circle cx="8" cy="15" r="4" />
@@ -256,6 +272,13 @@ const PATHS: Record<IconName, JSX.Element> = {
       <polyline points="16 14 19 17.5 22 14" />
       <line x1="19" y1="6" x2="19" y2="17" />
     </>
+  ),
+  info: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <line x1="12" y1="11" x2="12" y2="16" />
+      <line x1="12" y1="7.6" x2="12.01" y2="7.6" />
+    </>
   )
 }
 
@@ -306,6 +329,17 @@ export function Icon({
     >
       {PATHS[name]}
     </svg>
+  )
+}
+
+/** Round 'i' mark hiding a hint until hovered or focused — how the config
+ *  surfaces keep their explanations without spending a layout line on each. */
+export function InfoDot({ text }: { text: string }): JSX.Element {
+  return (
+    <span className="info-dot" tabIndex={0} aria-label={text}>
+      <Icon name="info" size={13} />
+      <span className="info-pop">{text}</span>
+    </span>
   )
 }
 
