@@ -22,6 +22,7 @@ export type IconName =
   | 'key'
   | 'plug'
   | 'globe'
+  | 'globe-lock'
   | 'eye'
   | 'play'
   | 'file'
@@ -151,6 +152,20 @@ const PATHS: Record<IconName, JSX.Element> = {
       <circle cx="12" cy="12" r="10" />
       <line x1="2" y1="12" x2="22" y2="12" />
       <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+    </>
+  ),
+  // Isolated egress: `globe` again, moved up-left to free a corner for a lock.
+  // Both departures from the plain stroke recipe are for the same reason — this
+  // renders at 10-14px in the pills and on the composer bar. The lock body is
+  // filled (a stroked one closes into a blob at that size) and the grid is
+  // drawn a shade thinner than the outline, so the globe does not fill in.
+  'globe-lock': (
+    <>
+      <circle cx="10" cy="10" r="9" />
+      <line x1="1" y1="10" x2="19" y2="10" strokeWidth={1.4} />
+      <path d="M10 1a6 9 0 0 1 0 18 6 9 0 0 1 0-18z" strokeWidth={1.4} />
+      <rect x="16.6" y="17.8" width="6.8" height="5.2" rx="1.3" fill="currentColor" stroke="none" />
+      <path d="M18.2 17.8v-1.2a1.8 1.8 0 0 1 3.6 0v1.2" strokeWidth={1.6} />
     </>
   ),
   key: (

@@ -389,6 +389,8 @@ export function registerIpc(): void {
       await kernel.ready
       return kernel.sessions.prompt(id, text, context, images)
     },
+    sessionClearPending: async (id) => kernel.sessions.clearPending(id),
+    sessionCancelPending: async (id, promptId) => kernel.sessions.cancelPending(id, promptId),
     sessionCancel: async (id) => kernel.sessions.cancel(id),
     sessionSetMode: (id, modeId) => kernel.sessions.setMode(id, modeId),
     sessionSetConfigOption: async (id, configId, value) => {

@@ -67,7 +67,7 @@ export const ROLE_INFO: Record<SessionRole, { label: string; hint: string; icon:
   reviewer: {
     label: 'reviewer',
     hint: "judges one clone's uncommitted changes: writable, so it can install deps and run tests, but holds the lock so nothing moves under it",
-    icon: 'lock'
+    icon: 'globe-lock'
   }
 }
 
@@ -278,9 +278,11 @@ export function EnvRepoMarks({
  * §6.2), read by the composer's picker, the draft settings row and the chat
  * header — so the promise each mode makes is phrased once.
  *
- * The wording is deliberate on the default: it *logs*, it does not *enforce*.
+ * The wording is deliberate on the open mode: it *logs*, it does not *enforce*.
  * A process that ignores `HTTP_PROXY` goes straight out, and a UI that implied
- * otherwise would be selling a guarantee that is not there.
+ * otherwise would be selling a guarantee that is not there. That is also why
+ * the UI now creates sessions internal (App.tsx): the mode that keeps its
+ * promise is the one a session gets without asking for it.
  */
 export const NET_INFO: Record<'open' | 'internal', { label: string; hint: string; icon: IconName }> = {
   open: {
@@ -322,15 +324,21 @@ export function NetTag({ network }: { network?: SessionNetwork | undefined }): J
   )
 }
 
-/** Unpilled network mark for the header pills. Nothing at all in the default
- *  mode: every session is on an open network unless it says otherwise, and a
- *  mark that is always there marks nothing. */
+/** Unpilled network mark for the header pills. Only ever the exception, never
+ *  the norm — a mark that is always there marks nothing. New sessions are
+ *  internal, so the one worth pointing at is the session that can reach the
+ *  network on its own; a session predating the switch carries no `network` at
+ *  all and is open, which is exactly what this then says about it. */
 export function NetMark({ network }: { network?: SessionNetwork | undefined }): JSX.Element | null {
-  if (!network?.internal) return null
+  if (network?.internal) return null
   return (
     <span className="agent-mark" title={netTitle(network)}>
-      <Icon name={NET_INFO.internal.icon} size={11} className="faint" />
-      {NET_INFO.internal.label}
+      <Icon name={NET_INFO.open.icon} size={11} className="faint" />
+      {NET_INFO.open.label}
     </span>
   )
 }
+
+/** Whether {@link NetMark} would draw anything — the callers that put a `·`
+ *  separator in front of it need to know before they render one. */
+export const hasNetMark = (network?: SessionNetwork): boolean => !network?.internal

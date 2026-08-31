@@ -17,6 +17,7 @@ import type {
   RepoConfig,
   ReviewComment,
   ReviewState,
+  PendingPromptInfo,
   SessionInfo,
   SessionNetwork,
   SessionRole,
@@ -323,6 +324,12 @@ export interface GurtApi {
     images?: PromptImage[]
   ): Promise<void>
   sessionCancel(id: string): Promise<void>
+  /** Empty this session's prompt queue and return what was in it, so the caller
+   *  can put the text back in the composer instead of losing it (see
+   *  {@link PendingPromptInfo}). */
+  sessionClearPending(id: string): Promise<PendingPromptInfo[]>
+  /** The same for one queued prompt, by id; undefined if it already ran. */
+  sessionCancelPending(id: string, promptId: string): Promise<PendingPromptInfo | undefined>
   sessionSetMode(id: string, modeId: string): Promise<void>
   /** Change a live agent-reported config option (model, effort, fast-mode, …). */
   sessionSetConfigOption(id: string, configId: string, value: string | boolean): Promise<void>
@@ -438,6 +445,8 @@ const METHODS = {
   sessionTraffic: true,
   sessionPrompt: true,
   sessionCancel: true,
+  sessionClearPending: true,
+  sessionCancelPending: true,
   sessionSetMode: true,
   sessionSetConfigOption: true,
   sessionPermission: true,

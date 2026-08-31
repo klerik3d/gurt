@@ -11,6 +11,7 @@ import type {
   EnvRef,
   McpSelection,
   SkillSelection,
+  PendingPromptInfo,
   PermissionOption,
   PersistedSession,
   PromptCapabilities,
@@ -179,6 +180,14 @@ interface Connection {
   expectedExit?: boolean
 }
 
+/** One queued prompt, with the payload the UI never sees (the images). */
+interface PendingPrompt {
+  id: string
+  text: string
+  context?: PromptContext[] | undefined
+  images?: PromptImage[] | undefined
+}
+
 /**
  * Live, mutable state of one session in this process.
  *
@@ -207,6 +216,14 @@ interface Session {
    *  Used to turn repo-relative context paths into absolute `file://` resource links. */
   remoteCwd?: string | undefined
   busy: boolean
+  /** Prompts accepted while the session could not run them, oldest first — a
+   *  turn was in flight, or its clone was somebody else's. Drained by
+   *  {@link SessionManager.drainPending}. In memory only, on purpose: see
+   *  {@link PendingPromptInfo}. */
+  pending: PendingPrompt[]
+  /** The drain loop owns this session's turns right now — a second one would
+   *  race it for the queue. */
+  draining: boolean
   /** The current turn has seen its `complete` call; reset at each prompt start. */
   turnComplete: boolean
   /** Latest change proposal (outcome=changes) from a `complete` call; last wins. */
@@ -233,6 +250,15 @@ interface Session {
   /** entry id -> resolver of a pending permission request. */
   pendingPermissions: Map<number, (outcome: unknown) => void>
 }
+
+/** The wire form of a queued prompt: everything but the images, which stay
+ *  here (see {@link PendingPromptInfo}). */
+const pendingInfo = (p: PendingPrompt): PendingPromptInfo => ({
+  id: p.id,
+  text: p.text,
+  ...(p.context?.length ? { context: p.context } : {}),
+  ...(p.images?.length ? { images: p.images.length } : {})
+})
 
 /** Capabilities the session manager needs from the container/mcp/store layers.
  *  Notifications ride the domain bus instead. */
@@ -403,6 +429,10 @@ export class SessionManager {
   private agentConfigWritten = new Map<string, string>()
   /** Last logged "why still queued" per session id (see `noteQueued`). */
   private queuedReasons = new Map<string, string>()
+  /** Ids for queued prompts. Process-wide and monotonic — the renderer keys
+   *  rows on them and cancels by them, and reusing one across sessions would
+   *  make a stale cancel land on the wrong message. */
+  private pendingSeq = 0
   /** Per-task cap on concurrently running sessions (`TaskFile.maxConcurrentSessions`),
    *  keyed by `taskKey(ws, task)`. Absent = unlimited. Mirrors `review.ts`'s
    *  in-memory lock set: the scheduler asks synchronously on every pass and
@@ -447,6 +477,8 @@ export class SessionManager {
         entries,
         nextEntryId: Math.max(0, ...entries.map((e) => e.id)) + 1,
         busy: false,
+        pending: [],
+        draining: false,
         turnComplete: false,
         turns: 0,
         attached: false,
@@ -520,6 +552,16 @@ export class SessionManager {
     return i < 0 ? undefined : i + 1
   }
 
+  /** Why a queue that has something in it is not moving, when no turn is
+   *  running to explain it: the clone is somebody else's. Named, because
+   *  "waiting" without a who is the thing that reads as a hang. */
+  private pendingBlocked(s: Session): string | undefined {
+    if (!s.pending.length || s.busy) return undefined
+    const holder = this.repoHolder(s)
+    if (!holder) return undefined
+    return `session "${holder.info.title}" has "${s.info.repos[0]}" — this sends as soon as it lets go`
+  }
+
   snapshot(sessionId: string): SessionSnapshot | undefined {
     const s = this.sessions.get(sessionId)
     if (!s) return undefined
@@ -544,6 +586,8 @@ export class SessionManager {
       promptCapabilities: this.connections.get(sessionId)?.promptCapabilities,
       startError: s.startError,
       queuePosition: this.queuePosition(sessionId),
+      pending: s.pending.length ? s.pending.map(pendingInfo) : undefined,
+      pendingBlocked: this.pendingBlocked(s),
       proposal: s.proposal,
       usage: s.usage
     }
@@ -617,6 +661,8 @@ export class SessionManager {
       entries: [],
       nextEntryId: 1,
       busy: false,
+      pending: [],
+      draining: false,
       turnComplete: false,
       turns: 0,
       attached: false,
@@ -925,6 +971,11 @@ export class SessionManager {
     // Forget the reason of anything no longer waiting, so a session that queues
     // again later reports why from scratch.
     for (const id of [...this.queuedReasons.keys()]) if (!still.has(id)) this.queuedReasons.delete(id)
+    // Prompts waiting on a clone (`drainPending`) are the other thing a freed
+    // repo releases, and this pass is where a repo gets freed. Deliberately
+    // last: a queued draft that has been waiting its turn is never overtaken by
+    // a follow-up to a session that has already had one.
+    for (const s of this.sessions.values()) if (s.pending.length) void this.drainPending(s)
   }
 
   /**
@@ -1066,7 +1117,17 @@ export class SessionManager {
     const wantedRepos = new Set<string>()
     const wantedTasks = new Set<string>()
     for (const s of this.sessions.values()) {
-      if (s.info.state !== 'queued') continue
+      if (s.info.state !== 'queued') {
+        // A started session with a prompt waiting on a clone somebody else is
+        // sitting on is queueing in everything but the state: it wants exactly
+        // what a queued draft wants, and the same handoff is what gives it.
+        // Without this its message waits out the idle grace period instead.
+        if (s.pending.length && !s.busy && this.repoHolder(s)) {
+          const rkey = this.repoKey(s)
+          if (rkey) wantedRepos.add(rkey)
+        }
+        continue
+      }
       const rkey = this.repoKey(s)
       if (rkey) wantedRepos.add(rkey)
       const tkey = taskKey(s.ref.workspace, s.ref.task)
@@ -1847,14 +1908,21 @@ export class SessionManager {
     context?: PromptContext[],
     images?: PromptImage[]
   ): Promise<void> {
-    const first = await this.sendTurn(s, text, 'user', false, context, images)
-    if (this.decideTurn(s, first, false) !== 'nudge') return
-    const second = await this.sendTurn(s, NUDGE_PROMPT, 'system', true)
-    if (this.decideTurn(s, second, true) === 'incomplete') {
-      this.push(s, { kind: 'system', text: 'turn ended without complete' })
-      s.info.incomplete = true
-      this.bus.emit('session.changed', { sessionId: s.info.id })
-      this.schedulePersist(s.ref)
+    try {
+      const first = await this.sendTurn(s, text, 'user', false, context, images)
+      if (this.decideTurn(s, first, false) !== 'nudge') return
+      const second = await this.sendTurn(s, NUDGE_PROMPT, 'system', true)
+      if (this.decideTurn(s, second, true) === 'incomplete') {
+        this.push(s, { kind: 'system', text: 'turn ended without complete' })
+        s.info.incomplete = true
+        this.bus.emit('session.changed', { sessionId: s.info.id })
+        this.schedulePersist(s.ref)
+      }
+    } finally {
+      // Whatever was typed while this turn ran goes next. A no-op when the drain
+      // loop is what called this (it owns `draining` and continues on its own) —
+      // this is here for the one turn it does not drive, the start prompt.
+      void this.drainPending(s)
     }
   }
 
@@ -2076,12 +2144,85 @@ export class SessionManager {
     const s = this.sessions.get(sessionId)
     if (!s) throw new Error('unknown session')
     if (s.info.state !== 'started') throw new Error('session is not started')
-    // One turn at a time: overlapping prompts would share `turnComplete`, so a
-    // `complete` for one turn could silently satisfy the other (and both could
-    // nudge). The composer already disables send while busy — this makes the
-    // invariant hold for any caller.
-    if (s.busy) throw new Error('session is busy')
-    await this.runPrompt(s, text, context, images)
+    // Everything goes through the queue, including the send that could have run
+    // straight away — that is what keeps "one turn at a time" structural rather
+    // than a rule each caller has to remember. Overlapping prompts would share
+    // `turnComplete`, so a `complete` for one turn could silently satisfy the
+    // other (and both could nudge).
+    //
+    // Resolves once the prompt is *accepted*, not once it has run: a queued one
+    // may wait minutes for the clone, and the caller (the composer) needs its
+    // message cleared now. What happened to it afterwards is the timeline's to
+    // tell, and a failed turn writes itself there.
+    const id = `p${++this.pendingSeq}`
+    s.pending.push({
+      id,
+      text,
+      ...(context?.length ? { context } : {}),
+      ...(images?.length ? { images } : {})
+    })
+    void this.drainPending(s)
+    // Still queued after the drain had its synchronous chance at it: nothing
+    // else is going to announce it. A drain already in flight returns at its
+    // own guard without a word, and the turn it is waiting behind may run for
+    // minutes — the pane has to show the message now, not then. When the drain
+    // *did* take it, `sendTurn` has already emitted for the turn it started.
+    if (s.pending.some((p) => p.id === id))
+      this.bus.emit('session.changed', { sessionId: s.info.id })
+  }
+
+  /**
+   * Run everything this session has waiting, one turn at a time, for as long as
+   * it can: a queue that empties into a session whose clone was taken away
+   * mid-drain stops where it is and waits to be called again (`schedule()`).
+   *
+   * Never rejects — it is called for its effect from event handlers and from
+   * the tail of every turn, and a rejected floating promise here would be a
+   * crash the user could not connect to anything they did.
+   */
+  private async drainPending(s: Session): Promise<void> {
+    if (s.draining) return
+    s.draining = true
+    try {
+      // `busy` covers the one turn this loop does not own: the start prompt,
+      // which `startSession` runs directly. `repoHolder` is case two — the
+      // clone is elsewhere, and attaching would only fail with it.
+      while (s.pending.length && !s.busy && s.info.state === 'started' && !this.repoHolder(s)) {
+        const next = s.pending.shift()!
+        await this.runPrompt(s, next.text, next.context, next.images)
+      }
+    } catch (e) {
+      log.error('internal.fail', { site: 'pending-drain', s: s.info.id, err: e })
+    } finally {
+      s.draining = false
+      // One emit for both endings: the queue is empty, or it is stuck and the
+      // pane has to say why.
+      this.bus.emit('session.changed', { sessionId: s.info.id })
+    }
+  }
+
+  /** Take everything out of the queue and hand it back — the composer puts the
+   *  text (and chips) where it came from, so stopping a session never eats what
+   *  was typed behind it. Images are dropped; see {@link PendingPromptInfo}. */
+  clearPending(sessionId: string): PendingPromptInfo[] {
+    const s = this.sessions.get(sessionId)
+    if (!s?.pending.length) return []
+    const out = s.pending.map(pendingInfo)
+    s.pending = []
+    this.bus.emit('session.changed', { sessionId })
+    return out
+  }
+
+  /** The same for one entry, by id (a row's own cancel). Returns it so that
+   *  one, too, can go back to the composer rather than just vanishing. */
+  cancelPending(sessionId: string, promptId: string): PendingPromptInfo | undefined {
+    const s = this.sessions.get(sessionId)
+    if (!s) return undefined
+    const i = s.pending.findIndex((p) => p.id === promptId)
+    if (i < 0) return undefined
+    const [gone] = s.pending.splice(i, 1)
+    this.bus.emit('session.changed', { sessionId })
+    return gone ? pendingInfo(gone) : undefined
   }
 
   cancel(sessionId: string): void {

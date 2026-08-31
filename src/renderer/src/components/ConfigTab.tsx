@@ -265,6 +265,10 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
   const repos = info.repos
   const mcp = info.mcp ?? []
   const skills = info.skills ?? []
+  // Only for a record that predates the setting: a draft created now always
+  // carries one (App.tsx), and it is internal. Absent reads as open everywhere
+  // downstream (proxy/manager.ts), so an old draft keeps the mode it has been
+  // running under instead of changing under it.
   const network = info.network ?? { internal: false }
   const autoAllow = info.autoAllow ?? true
   const configValues = info.configValues ?? {}
@@ -752,7 +756,7 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
                 <button
                   className="btn btn-sm"
                   onClick={() =>
-                    patch({ autoAllow: true, mcp: [], skills: [], network: { internal: false } })
+                    patch({ autoAllow: true, mcp: [], skills: [], network: { internal: true } })
                   }
                 >
                   Reset

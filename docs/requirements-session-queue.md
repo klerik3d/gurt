@@ -99,6 +99,38 @@ start anyway (decision: allowed, user's risk).
   records (`state: "queued"` + `queuedAt` timestamp). On app start the
   scheduler runs once after sessions are restored.
 
+### 3.1 The other queue: prompts to a started session
+
+The queue above orders *sessions* onto a clone. A second, per-session queue
+orders *prompts* onto a session, and exists because the composer used to
+solve the same problem by refusing input: a disabled text field over a
+running turn is a dead end for the user who has already thought of the next
+instruction.
+
+- Every prompt goes through it, including one that can run immediately —
+  that is what keeps "one turn at a time" (the shared `turnComplete` flag of
+  `requirements-turn-contract.md`) a property of the code rather than a rule
+  each caller remembers. `sessions.prompt()` therefore never refuses a
+  started session; it accepts and returns.
+- Two things hold a prompt there: a turn already running, and the session's
+  clone being held by another session (§3's condition, seen from the other
+  side — the queue handoff stops an idle container out from under a session
+  that may still have prompts coming). The second is named in the UI, with
+  the holder's title: an unexplained wait reads as a hang.
+- It drains at turn speed: the tail of every turn drains it, and so does the
+  scheduler pass, which is what runs when a repo is freed. A session with a
+  waiting prompt counts as a queue member for the handoff (`holdersBlockingQueue`)
+  — otherwise its message would wait out the idle grace period instead.
+- **In memory only.** A queue that survived a restart would have the app
+  wake a container and run a prompt nobody is watching. This is the one
+  place where the session queue and the prompt queue deliberately differ.
+- Nothing leaves it silently. The rows are visible above the composer with a
+  per-row cancel, and both cancel paths (the row's, and Esc — which stops
+  the turn *and* empties the queue, so a stop is not immediately undone by
+  the next queued message) hand the prompt back to the caller so the
+  composer can restore the text. Images are the exception: they stay on main
+  and are dropped, which the row says.
+
 ## 4. Persistence
 
 `<ws>/<task>/sessions.json` records gain:

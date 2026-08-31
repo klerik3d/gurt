@@ -1472,6 +1472,39 @@ textarea.input {
 
 /* ---- composer ---- */
 
+/* Prompts already sent that are waiting for the session — see the queue in
+   sessions.ts. Sits directly above the composer, in reading order between the
+   feed (what has happened) and the input (what has not been sent yet). */
+.pending-queue {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  background: var(--panel);
+  border: 1px dashed var(--border2);
+  border-radius: 10px;
+}
+.pending-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--dim);
+  min-width: 0;
+}
+.pending-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pending-note {
+  font-size: 10.5px;
+  color: var(--faint);
+}
+
 .composer-wrap {
   flex: none;
   padding: 12px 7% 16px;
@@ -1575,6 +1608,17 @@ textarea.input {
 }
 .send-btn:disabled {
   opacity: 0.45;
+}
+/* Same button, different promise: this one joins the queue instead of starting
+   a turn. Outlined rather than solid — it is still the primary action, but it
+   is not the one that makes something happen right now. */
+.send-btn.queued {
+  background: transparent;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+}
+.send-btn.queued:hover:not(:disabled) {
+  background: var(--hover);
 }
 .composer-mic-error {
   margin-top: 8px;

@@ -6,6 +6,7 @@ import type {
   ChatPermission,
   ChatToolCall,
   CommandInfo,
+  PendingPromptInfo,
   PlanEntry,
   PromptCapabilities,
   PromptContext,
@@ -26,7 +27,7 @@ import { alertDialog } from '../dialog'
 import { createLogger, logErr } from '../log'
 import { SESSION_DOT } from '../status'
 import { Icon, Dot } from './icons'
-import { AgentMark, EnvRepoMarks, McpFailBanner, McpMarks, NetMark, RoleMark } from './tags'
+import { AgentMark, EnvRepoMarks, hasNetMark, McpFailBanner, McpMarks, NetMark, RoleMark } from './tags'
 import { NetButton } from './Network'
 import { ConfigTab } from './ConfigTab'
 import { SessionMenu } from './SessionActions'
@@ -227,19 +228,40 @@ export function Chat({
   // and while any modal/dialog is open — there Esc means "dismiss it", and both
   // listeners live on window, so this one must stand down explicitly.
   const busy = snapshot?.busy ?? false
+  const pending = snapshot?.pending ?? []
+  const pendingCount = pending.length
+  /** Text (and chips) handed back to the composer when a queued prompt is
+   *  pulled out of the queue — bumped by `at` so the same text twice still
+   *  registers as a second hand-back. */
+  const [restore, setRestore] = useState<{ text: string; context: PromptContext[]; at: number } | null>(null)
   useEffect(() => {
-    if (!busy) return
+    if (!busy && !pendingCount) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
       const t = e.target as HTMLElement | null
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return
       if (document.querySelector('.modal-backdrop, .cmp-menu, .gear-pop')) return
       e.preventDefault()
-      window.gurt.sessionCancel(sessionId).catch(logErr('sessionCancel'))
+      // Stop means stop. Anything queued behind this turn would otherwise fire
+      // the instant the turn it was waiting on ends, which is the opposite of
+      // what the key was pressed for — so it comes back to the composer, where
+      // the user can edit it, drop it, or send it again.
+      window.gurt
+        .sessionClearPending(sessionId)
+        .then((dropped) => {
+          if (!dropped.length) return
+          setRestore({
+            text: dropped.map((p) => p.text).join('\n\n'),
+            context: dropped.flatMap((p) => p.context ?? []),
+            at: Date.now()
+          })
+        })
+        .catch(logErr('sessionClearPending'))
+      if (busy) window.gurt.sessionCancel(sessionId).catch(logErr('sessionCancel'))
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [busy, sessionId])
+  }, [busy, pendingCount, sessionId])
 
   if (!snapshot) return <div className="placeholder">loading session…</div>
 
@@ -291,7 +313,7 @@ export function Chat({
               · <McpMarks resolved={mcp} />
             </span>
           )}
-          {info.network?.internal && (
+          {hasNetMark(info.network) && (
             <span>
               · <NetMark network={info.network} />
             </span>
@@ -302,7 +324,7 @@ export function Chat({
             is noticed — duplicate/delete belong on this header, not only on the
             draft pane the session has left behind. */}
         <SessionMenu info={info} onSelect={onSelect} onDeleted={onDeleted} />
-        {busy && <span className="chat-hint mono">esc to stop</span>}
+        {(busy || pendingCount > 0) && <span className="chat-hint mono">esc to stop</span>}
       </div>
 
       {/* A local MCP server that would not start does not fail the session
@@ -344,6 +366,9 @@ export function Chat({
             agentKind={agentKind(agents, info.agent)}
             network={info.network}
             busy={busy}
+            pending={pending}
+            pendingBlocked={snapshot.pendingBlocked}
+            restore={restore}
             flush={!hasPlan}
             modes={modes}
             commands={commands ?? []}
@@ -679,6 +704,9 @@ function Composer({
   agentKind,
   network,
   busy,
+  pending,
+  pendingBlocked,
+  restore,
   flush,
   modes,
   commands,
@@ -691,6 +719,13 @@ function Composer({
   /** The session's egress mode — what the network button on the bar reports (§8). */
   network?: SessionNetwork | undefined
   busy: boolean
+  /** Prompts already sent that are waiting their turn, oldest first. */
+  pending: PendingPromptInfo[]
+  /** Why the queue is not moving with no turn running (a clone held elsewhere). */
+  pendingBlocked?: string | undefined
+  /** A queued prompt pulled back out of the queue upstream (Esc) — its text and
+   *  chips land back in this composer. */
+  restore?: { text: string; context: PromptContext[]; at: number } | null
   /** No plan bar above — the composer sits flush against the feed. */
   flush: boolean
   modes?: SessionModes | undefined
@@ -729,6 +764,31 @@ function Composer({
   const imgRef = useRef<HTMLInputElement>(null)
   const recogRef = useRef<{ stop: () => void } | null>(null)
   const lastActivityPingRef = useRef(0)
+
+  /** Put a prompt that left the queue back where it was typed. Appended, never
+   *  overwritten: the user may well have started composing the next one while
+   *  it waited. */
+  const takeBack = (text: string, context: PromptContext[]) => {
+    setText((t) => (t.trim() ? `${t.replace(/\s+$/, '')}\n\n${text}` : text))
+    if (context.length)
+      setChips((c) => [...c, ...context.filter((x) => !c.some((y) => y.path === x.path))])
+    setTimeout(() => taRef.current?.focus(), 0)
+  }
+
+  // Esc upstream emptied the queue — this is where its contents come home.
+  useEffect(() => {
+    if (!restore) return
+    takeBack(restore.text, restore.context)
+    // takeBack is stable enough for this: it only ever closes over setState.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [restore?.at])
+
+  const cancelPending = (id: string) => {
+    window.gurt
+      .sessionCancelPending(sessionId, id)
+      .then((gone) => gone && takeBack(gone.text, gone.context ?? []))
+      .catch(logErr('sessionCancelPending'))
+  }
 
   const pingActivity = () => {
     const now = performance.now()
@@ -850,7 +910,7 @@ function Composer({
 
   const send = () => {
     const t = text.trim()
-    if ((!t && images.length === 0) || busy) return
+    if (!t && images.length === 0) return
     const context = chips.length ? chips : undefined
     const imgs = images.length ? images : undefined
     setText('')
@@ -991,12 +1051,43 @@ function Composer({
     }
   }
 
-  const canSend = !busy && (text.trim().length > 0 || images.length > 0)
+  const canSend = text.trim().length > 0 || images.length > 0
+  /** The send would join the queue rather than start a turn — a turn is running,
+   *  something is already waiting, or the session's clone is elsewhere. */
+  const queueing = busy || pending.length > 0 || !!pendingBlocked
   const hasGearContent = (!!modes && modes.availableModes.length > 0) || configOptions.length > 0
 
   return (
     <div className={`composer-wrap ${flush ? 'flush' : ''}`}>
-      <div className={`composer ${busy ? 'disabled' : ''} ${focused && !busy ? 'focused' : ''}`}>
+      {/* What has been sent and is waiting. Visible and cancellable on purpose:
+          a message that disappeared into an invisible queue is worse than a
+          send button that refuses — which is what this replaces. */}
+      {pending.length > 0 && (
+        <div className="pending-queue">
+          {pending.map((p) => (
+            <div className="pending-row" key={p.id}>
+              <Icon name="history" size={12} className="faint" />
+              <span className="pending-text">{p.text}</span>
+              {p.images ? (
+                <span className="dim" title="images ride with it and are lost if you take it back">
+                  {p.images} img
+                </span>
+              ) : null}
+              <button
+                className="icon-sq att"
+                title="take it back out of the queue (returns to the composer)"
+                onClick={() => cancelPending(p.id)}
+              >
+                <Icon name="x" size={12} />
+              </button>
+            </div>
+          ))}
+          <div className="pending-note">
+            {pendingBlocked ?? 'sends when the current turn ends'}
+          </div>
+        </div>
+      )}
+      <div className={`composer ${focused ? 'focused' : ''}`}>
         <input
           ref={imgRef}
           type="file"
@@ -1014,9 +1105,14 @@ function Composer({
             ref={taRef}
             rows={1}
             className="composer-input"
-            placeholder={busy ? 'agent is working…' : 'Ask gurt to change your code…'}
+            placeholder={
+              busy
+                ? 'agent is working — what you send now goes in the queue'
+                : pendingBlocked
+                  ? 'waiting for the repository — what you send now goes in the queue'
+                  : 'Ask gurt to change your code…'
+            }
             value={text}
-            disabled={busy}
             onFocus={() => setFocused(true)}
             onBlur={() => setFocused(false)}
             onChange={(e) => {
@@ -1032,7 +1128,6 @@ function Composer({
           <button
             className={`mic-btn ${micOn ? 'on' : ''}`}
             title={micOn ? 'Stop dictation' : 'Dictate'}
-            disabled={busy}
             onClick={toggleMic}
           >
             <Icon name="mic" size={14} />
@@ -1044,7 +1139,6 @@ function Composer({
             <button
               className={`icon-sq ${addOpen ? 'active' : ''}`}
               title="Add context"
-              disabled={busy}
               onClick={() => openAdd(!addOpen)}
             >
               <Icon name="plus" size={14} />
@@ -1129,7 +1223,7 @@ function Composer({
             <button
               className={`icon-sq ${showSlash ? 'active' : ''}`}
               title="Commands"
-              disabled={busy || commands.length === 0}
+              disabled={commands.length === 0}
               onClick={() => openSlash(!slashOpen)}
             >
               <Icon name="slash" size={14} />
@@ -1236,9 +1330,22 @@ function Composer({
               )}
             </span>
           )}
-          <button className="send-btn" disabled={!canSend} onClick={send} title="Send">
-            <Icon name="send" size={12} />
-            send
+          {/* Never disabled by the session's state, only by an empty message:
+              a blocked button over an input that accepts text is a dead end.
+              What changes is what it promises — send now, or take a place in
+              the queue. */}
+          <button
+            className={`send-btn ${queueing ? 'queued' : ''}`}
+            disabled={!canSend}
+            onClick={send}
+            title={
+              queueing
+                ? (pendingBlocked ?? 'the agent is working — this goes to the queue and sends when it is free')
+                : 'Send'
+            }
+          >
+            <Icon name={queueing ? 'history' : 'send'} size={12} />
+            {queueing ? 'queue' : 'send'}
           </button>
         </div>
       </div>
