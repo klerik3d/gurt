@@ -38,6 +38,7 @@ export type IconName =
   | 'bell'
   | 'fold'
   | 'sort'
+  | 'info'
 
 const PATHS: Record<IconName, JSX.Element> = {
   search: (
@@ -256,6 +257,13 @@ const PATHS: Record<IconName, JSX.Element> = {
       <polyline points="16 14 19 17.5 22 14" />
       <line x1="19" y1="6" x2="19" y2="17" />
     </>
+  ),
+  info: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <line x1="12" y1="11" x2="12" y2="16" />
+      <line x1="12" y1="7.6" x2="12.01" y2="7.6" />
+    </>
   )
 }
 
@@ -306,6 +314,17 @@ export function Icon({
     >
       {PATHS[name]}
     </svg>
+  )
+}
+
+/** Round 'i' mark hiding a hint until hovered or focused — how the config
+ *  surfaces keep their explanations without spending a layout line on each. */
+export function InfoDot({ text }: { text: string }): JSX.Element {
+  return (
+    <span className="info-dot" tabIndex={0} aria-label={text}>
+      <Icon name="info" size={13} />
+      <span className="info-pop">{text}</span>
+    </span>
   )
 }
 

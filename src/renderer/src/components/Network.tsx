@@ -10,7 +10,7 @@ import {
 } from '../../../shared/proxy'
 import { useSessionTraffic } from '../useTraffic'
 import { relativeTime } from '../time'
-import { Icon } from './icons'
+import { Icon, InfoDot } from './icons'
 import { NET_INFO, networkMode, policySummary } from './tags'
 
 // The session's view of its own egress (docs/requirements-mcp-proxy.md §8):
@@ -202,20 +202,21 @@ export function NetButton({
 }
 
 /**
- * The composer's network control: the two network modes, the built-in denylist
- * as a read-only statement of what is refused by default, and the one list the
- * user edits.
+ * The session's network control: internal isolation as an on/off toggle, the
+ * built-in denylist folded behind its label, and the one list the user edits.
  *
- * There is no mode picker, because there is no mode: the allow list being empty
- * or not *is* the policy (§6.3). Empty means the open internet minus this
- * machine's own networks; one entry means that entry and nothing else. The note
- * under the field says so, because it is the surprising half and a user who
- * adds `host.docker.internal:5173` to reach their dev server has also just cut
- * the session off from npm.
+ * There is no mode picker beyond that toggle, because there is no mode: the
+ * allow list being empty or not *is* the policy (§6.3). Empty means the open
+ * internet minus this machine's own networks; one entry means that entry and
+ * nothing else. That surprising half stays a visible warning under the field
+ * once the list has entries — a user who adds `host.docker.internal:5173` to
+ * reach their dev server has also just cut the session off from npm — while
+ * the rest of the explanation sits behind the label's info dot.
  *
- * The caveat is not in a tooltip. §7.3 makes surfacing it an obligation, and a
- * user choosing isolation has to read "setup runs before this applies" at the
- * moment they choose it, not after a `postinstall` has already had the network.
+ * The setup caveat is not in a tooltip either. §7.3 makes surfacing it an
+ * obligation, and a user choosing isolation has to read "setup runs before
+ * this applies" at the moment they choose it — the note appears next to the
+ * toggle the moment it is switched on.
  */
 export function NetworkPicker({
   network,
@@ -224,77 +225,100 @@ export function NetworkPicker({
   network: SessionNetwork
   onChange: (next: SessionNetwork) => void
 }): JSX.Element {
-  const mode = networkMode(network)
+  const internal = networkMode(network) === 'internal'
   const allow = explicitAllows(network.policy)
+  const [builtinOpen, setBuiltinOpen] = useState(false)
 
   return (
     <>
       <div className="hc-block">
-        <span className="seclabel">NETWORK</span>
+        <div className="seclabel-row">
+          <span className="seclabel">INTERNAL NETWORK</span>
+          <InfoDot text={`On — ${NET_INFO.internal.hint} Off — ${NET_INFO.open.hint}`} />
+        </div>
         <div className="chip-row">
           <button
             type="button"
-            className={`chip-btn ${mode === 'open' ? 'on' : ''}`}
-            title={NET_INFO.open.hint}
-            onClick={() => onChange({ ...network, internal: false })}
-          >
-            open
-          </button>
-          <button
-            type="button"
-            className={`chip-btn ${mode === 'internal' ? 'on' : ''}`}
+            className={`chip-btn ${internal ? 'on' : ''}`}
             title={NET_INFO.internal.hint}
             onClick={() => onChange({ ...network, internal: true })}
           >
-            internal
+            on
+          </button>
+          <button
+            type="button"
+            className={`chip-btn ${!internal ? 'on' : ''}`}
+            title={NET_INFO.open.hint}
+            onClick={() => onChange({ ...network, internal: false })}
+          >
+            off
           </button>
         </div>
-        <div className="hc-note">
-          {mode === 'internal'
-            ? 'Isolated: the session network gets no route out and the proxy is its only egress. Setup — image build, devcontainer features, postCreate, the agent install — still runs with an open network before the switch. SSH git is not supported; git goes over HTTPS through the github MCP.'
-            : 'Normal network, with MCP and anything that honours HTTP_PROXY routed through the session proxy and logged. Visibility, not enforcement: a process that ignores those variables reaches the internet directly.'}
-        </div>
+        {internal && (
+          <div className="hc-note">
+            Setup — image build, devcontainer features, postCreate, the agent install — still runs
+            with an open network before the isolation applies. SSH git is not supported; git goes
+            over HTTPS through the github MCP.
+          </div>
+        )}
       </div>
 
-      {/* Shown in both network modes, because both enforce it on proxied
-          traffic: the open mode still routes anything honouring HTTP_PROXY
-          through the proxy. Read-only for now — editing it per session is a
-          separate task (§6.4). */}
+      {/* Applies in both toggle states, because both enforce it on proxied
+          traffic: even non-internal sessions route anything honouring
+          HTTP_PROXY through the proxy. Read-only for now — editing it per
+          session is a separate task (§6.4) — and folded behind its label:
+          the list is a statement, not a decision, so it costs a click. */}
       <div className="hc-block">
-        <span className="seclabel">BLOCKED BY DEFAULT</span>
-        <div className="net-builtin">
-          {BUILTIN_DENY_ENTRIES.map((e) => (
-            <div className="net-row" key={e.label} title={e.detail}>
-              <span className="net-host mono">{e.label}</span>
-              <span className="spacer" />
-              <span className="dim">{e.detail}</span>
-            </div>
-          ))}
+        <div className="seclabel-row">
+          <button type="button" className="subfold" onClick={() => setBuiltinOpen((o) => !o)}>
+            <Icon
+              name="chevron"
+              size={11}
+              style={{ flex: 'none', transform: builtinOpen ? undefined : 'rotate(-90deg)' }}
+            />
+            blocked by default
+            <span className="dim">{BUILTIN_DENY_ENTRIES.length}</span>
+          </button>
+          <InfoDot
+            text={
+              allow.length
+                ? 'Not consulted while the allow list below has entries — what that list names is what this session can reach, and nothing else is.'
+                : 'Refused on the address a name resolves to, not just on the name. The one way to reach one of these is to name it in the allow list below.'
+            }
+          />
         </div>
-        <div className="hc-note">
-          {allow.length
-            ? 'Not consulted while the allow list below has entries — what that list names is what this session can reach, and nothing else is.'
-            : 'Refused on the address a name resolves to, not just on the name. The one way to reach one of these is to name it in the allow list below.'}
-        </div>
+        {builtinOpen && (
+          <div className="net-builtin">
+            {BUILTIN_DENY_ENTRIES.map((e) => (
+              <div className="net-row" key={e.label} title={e.detail}>
+                <span className="net-host mono">{e.label}</span>
+                <span className="spacer" />
+                <span className="dim">{e.detail}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="hc-block">
-        <span className="seclabel">ALLOW LIST</span>
+        <div className="seclabel-row">
+          <span className="seclabel">ALLOW LIST</span>
+          <InfoDot text="Empty means open: everything outward is allowed except what is blocked by default. Add at least one entry and the session is restricted to what is listed — nothing else gets out. A bare host covers every port on it and its subdomains (example.com also covers api.example.com); host:port narrows the entry to one port. No wildcards, and an IP literal matches exactly." />
+        </div>
         <HostList
           hosts={allow}
           placeholder={'one host per line\nexample.com also covers api.example.com\nhost.docker.internal:5173'}
           onChange={(next) => onChange({ ...network, policy: { allow: next } })}
         />
-        <div className={`hc-note ${allow.length ? 'hc-warn' : ''}`}>
-          {allow.length
-            ? `Only the ${allow.length === 1 ? 'entry' : `${allow.length} entries`} above can be reached — everything else is refused, the rest of the internet included. Each entry is connected exactly as written: dialled by name, with no address check, so a name that answers with a private address is still reached. Write the IP literal instead if that is not what you want.`
-            : 'Empty means open: everything outward is allowed except what is blocked by default above. Add at least one entry and the session is restricted to what is listed — nothing else gets out.'}
-        </div>
-        <div className="hc-note">
-          A bare host covers every port on it and its subdomains (example.com also covers
-          api.example.com); host:port narrows the entry to one port. No wildcards, and an IP literal
-          matches exactly.
-        </div>
+        {allow.length > 0 && (
+          <div className="hc-note hc-warn">
+            Only the {allow.length === 1 ? 'entry' : `${allow.length} entries`} above can be reached
+            — everything else is refused, the rest of the internet included. Each entry is connected
+            exactly as written: dialled by name, with no address check, so a name that answers with
+            a private address is still reached. Write the IP literal instead if that is not what you
+            want.
+          </div>
+        )}
       </div>
     </>
   )
