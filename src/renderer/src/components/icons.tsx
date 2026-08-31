@@ -37,6 +37,7 @@ export type IconName =
   | 'agent-generic'
   | 'bell'
   | 'fold'
+  | 'sort'
 
 const PATHS: Record<IconName, JSX.Element> = {
   search: (
@@ -242,6 +243,18 @@ const PATHS: Record<IconName, JSX.Element> = {
     <>
       <polyline points="7 6 12 11 17 6" />
       <polyline points="7 13 12 18 17 13" />
+    </>
+  ),
+  // Descending bars beside a down arrow — flipped vertically for the reverse
+  // direction (see the sidebar's sort button), which is why it is symmetric
+  // about neither axis on its own.
+  sort: (
+    <>
+      <line x1="4" y1="6" x2="14" y2="6" />
+      <line x1="4" y1="12" x2="11" y2="12" />
+      <line x1="4" y1="18" x2="8" y2="18" />
+      <polyline points="16 14 19 17.5 22 14" />
+      <line x1="19" y1="6" x2="19" y2="17" />
     </>
   )
 }
