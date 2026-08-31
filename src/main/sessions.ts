@@ -10,6 +10,7 @@ import type {
   ConfigSelectOption,
   EnvRef,
   McpSelection,
+  SkillSelection,
   PermissionOption,
   PersistedSession,
   PromptCapabilities,
@@ -38,6 +39,7 @@ import { defaultAgentConfig, withFable } from '../shared/agentConfig'
 import type { AgentDef } from '../shared/agents'
 import type { CreateAction } from '../shared/api'
 import { taskKey } from '../shared/keys'
+import { sanitizeSkillSelection } from '../shared/skills'
 import { limitResetAt, turnOutcome, usageFields } from '../shared/usage'
 import type { Bus } from './bus'
 import type { ContainerStatusReason, SessionStateReason } from '../shared/events'
@@ -305,6 +307,15 @@ export interface SessionEvents {
    *  (`.multirepo/<id>`), once its container is down. Only sessions with
    *  explicit repo mounts ever had one; removing a missing one is a no-op. */
   deleteScratch: (ws: string, task: string, sessionId: string) => void
+  /** Copy this session's selected skills into its scratch dir, ready for the
+   *  read-only bind provisioning adds. Answers with the selected names that
+   *  resolved to nothing (docs/requirements-skills.md §5). */
+  materializeSkills: (
+    ws: string,
+    task: string,
+    sessionId: string,
+    selection: readonly SkillSelection[] | undefined
+  ) => Promise<{ missing: string[] }>
 }
 
 /** A persisted session plus its read (or just-migrated) JSONL log. */
@@ -550,6 +561,10 @@ export class SessionManager {
     autoAllow = true,
     configValues: Record<string, string | boolean> = {},
     role: SessionRole = 'executor',
+    /** `undefined` = never chosen, which is what the draft's `defaultSkills`
+     *  seeding keys on; `[]` = chosen to be none, which it must not overwrite
+     *  (docs/requirements-skills.md §4.3). */
+    skills: SkillSelection[] | undefined = undefined,
     network?: SessionNetwork
   ): SessionInfo {
     const clean = sanitizeSessionNetwork(network)
@@ -577,6 +592,7 @@ export class SessionManager {
       autoAllow,
       state: 'draft',
       mcp,
+      ...(skills ? { skills } : {}),
       // Sanitized here rather than at each caller: this value decides how a
       // container is wired, and it arrives from a renderer form, from an
       // agent's `create_session` (through the spawner's record) and from a
@@ -689,6 +705,7 @@ export class SessionManager {
       repos?: string[]
       autoAllow?: boolean
       mcp?: McpSelection[]
+      skills?: SkillSelection[]
       network?: SessionNetwork
       startPrompt?: string
       configValues?: Record<string, string | boolean>
@@ -727,6 +744,19 @@ export class SessionManager {
       if (patch.role !== sessionRole(s.info)) void this.events.releaseContainer(s.info.id, 'user')
       s.info.role = patch.role
     }
+    // Structural like repos/env/role, not a runtime knob: the skills bind is
+    // part of the container's mount list, decided when it is created. A failed
+    // start can have left one provisioned against the previous selection, so a
+    // change here has to release it (docs/requirements-skills.md §5.2).
+    if (patch.skills !== undefined) {
+      const before = (s.info.skills ?? []).map((k) => k.name).join('\u0000')
+      const after = patch.skills.map((k) => k.name).join('\u0000')
+      if (before !== after) void this.events.releaseContainer(s.info.id, 'user')
+      // `[]` is written as `[]`, not cleared: it is the user saying "none", and
+      // clearing it back to absent would have the draft re-seed the workspace's
+      // defaults over the choice they just made.
+      s.info.skills = patch.skills
+    }
     if (patch.env !== undefined && patch.env !== s.info.env) {
       void this.events.releaseContainer(s.info.id, 'user')
       s.info.env = patch.env
@@ -759,6 +789,10 @@ export class SessionManager {
       source.autoAllow ?? true,
       { ...(source.configValues ?? {}) },
       sessionRole(source),
+      // Copied element by element, and `undefined` kept as `undefined`: the
+      // records are the copy's own, and a source that deliberately chose no
+      // skills must not have the workspace's defaults seeded back into its copy.
+      source.skills?.map((k) => ({ ...k })),
       // Through the sanitizer, which is also the deep copy: the two sessions
       // must not share a policy's domain array.
       sanitizeSessionNetwork(source.network)
@@ -1103,6 +1137,30 @@ export class SessionManager {
     return plan.mcpServers
   }
 
+  /**
+   * Stage this session's skills on the host, and say on its provision log which
+   * selected names resolved to nothing.
+   *
+   * Reported rather than thrown, the way `resolveProxyPlan`'s errors are: a
+   * skill deleted behind a draft is the user's to notice and fix, and refusing
+   * to start over it would strand the session on a problem the picker already
+   * shows as an error row (docs/requirements-skills.md §4.4).
+   */
+  private async materializeSkills(s: Session): Promise<void> {
+    if (!s.info.skills?.length) return
+    const { missing } = await this.events.materializeSkills(
+      s.ref.workspace,
+      s.ref.task,
+      s.info.id,
+      s.info.skills
+    )
+    for (const name of missing)
+      this.bus.emit('provision.log', {
+        key: s.info.id,
+        line: `[skills] "${name}" is not in this workspace's registry — not mounted`
+      })
+  }
+
   /** Provision (if needed), open the ACP session, and send the start prompt. */
   private async startSession(sessionId: string, by: 'user' | 'scheduler'): Promise<void> {
     const s = this.sessions.get(sessionId)
@@ -1131,6 +1189,12 @@ export class SessionManager {
         throw new Error(
           `repository "${s.info.repos[0]}" is locked for review — unlock it to run agents against it`
         )
+      // Before the container is resolved: `resolveLaunch` provisions it, and
+      // the read-only bind it adds points at the directory this call fills
+      // (docs/requirements-skills.md §5). Re-run on every start, so a skill
+      // edited in Settings between two starts of the same draft is delivered as
+      // it is now.
+      await this.materializeSkills(s)
       const ctx = await this.events.resolveLaunch(s.info.id)
       s.remoteCwd = ctx.remoteWorkspaceFolder
       // Before the adapter, not after: the agent must never observe a proxy
@@ -1889,6 +1953,12 @@ export class SessionManager {
       req.autoAllow ?? spawner.info.autoAllow ?? true,
       req.configValues ?? spawner.info.configValues ?? {},
       req.role,
+      // Inherited when the request says nothing, replaced outright when it does
+      // — including with `[]`, which is how an agent asks for none
+      // (docs/requirements-skills.md §6). The names were validated at the tool
+      // boundary; one that does not resolve stays in the draft as an error row,
+      // which is where a user can act on it.
+      req.skills ? sanitizeSkillSelection(req.skills) : spawner.info.skills?.map((k) => ({ ...k })),
       // Inherited, never chosen: a session running internal cannot draft one
       // with open egress (§6.2), and `AgentSessionRequest` has no field to ask
       // with — a rule the agent cannot express is one it cannot argue about.

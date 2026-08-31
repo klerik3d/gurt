@@ -122,7 +122,9 @@ const eventually = async (check, deadlineMs = 5000) => {
 
 /** A draft with the given network settings — the composer's create call. */
 const mk = (network, prompt = 'do the thing', role = 'executor') =>
-  kernel.sessions.createSession(ref, ['alpha'], 'a1', prompt, 'draft', [], true, {}, role, network)
+  // `undefined` in the skills slot: this fixture is about the network argument
+  // that follows it (see `SessionManager.createSession`).
+  kernel.sessions.createSession(ref, ['alpha'], 'a1', prompt, 'draft', [], true, {}, role, undefined, network)
 
 let internal
 

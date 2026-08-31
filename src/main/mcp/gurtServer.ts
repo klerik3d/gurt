@@ -178,6 +178,14 @@ function createSessionSchema(roles: SessionRole[], crossTask: boolean) {
       ),
     agent: z.string().min(1).optional().describe("agent instance id; defaults to this session's"),
     autoAllow: z.boolean().optional().describe('auto-allow the tool calls of the drafted session'),
+    skills: z
+      .array(z.string().min(1))
+      .optional()
+      .describe(
+        "skill names to mount in the drafted session, from this workspace's registry. " +
+          "OMIT IT to inherit this session's own skills, which is usually right. Pass a " +
+          'list to narrow or replace them; pass [] for none.'
+      ),
     configValues: z
       .record(z.string(), z.union([z.string(), z.boolean()]))
       .optional()

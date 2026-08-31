@@ -25,6 +25,14 @@ import { agentDef } from '../shared/agents'
 import { defaultAgentConfig } from '../shared/agentConfig'
 import { validateEnvConfig } from '../shared/envConfig'
 import { normalizeMcpEntry, validateMcpEntry } from '../shared/mcp'
+import type { SkillEntry } from '../shared/skills'
+import {
+  SKILL_FILE,
+  skillEntries,
+  skillNameProblem,
+  skillNames,
+  validateSkillDoc
+} from '../shared/skills'
 import type { NotificationPrefs } from '../shared/notifications'
 import type { TurnRecord } from '../shared/usage'
 import { NOTIFICATION_DEFAULTS } from '../shared/notifications'
@@ -71,17 +79,39 @@ export const cloneDir = (ws: string, task: string, repo: string) =>
  *  so existing sessions' containers keep pointing at the directory they were
  *  provisioned against. */
 export const mountedWorkspaceDir = (ws: string, task: string, sessionId: string) =>
-  path.join(gurtRoot, ws, task, '.multirepo', sessionId, 'repos')
+  path.join(sessionScratchDir(ws, task, sessionId), 'repos')
 /** Host-side file the env's materialized devcontainer config is written to. */
 export const overrideConfigPath = (ws: string, env: string) =>
   path.join(gurtRoot, ws, '.devcontainers', `${env}.json`)
+
+/** The workspace's skill registry: one directory per skill, each holding a
+ *  `SKILL.md` and whatever supporting files it references
+ *  (docs/requirements-skills.md §4.1). A sibling of `workspace.json` — the
+ *  registry is workspace data, like repos and envs. */
+export const skillsDir = (ws: string) => path.join(gurtRoot, ws, 'skills')
+export const skillDir = (ws: string, name: string) => path.join(skillsDir(ws), name)
+
+/** Per-session scratch: everything gurt stages for one session's container and
+ *  nothing else, removed with the session (`deleteSessionScratch`). Holds the
+ *  wrapper workspace dir, the merged devcontainer config, and the materialized
+ *  skills. The `.multirepo` segment predates all three and is kept so existing
+ *  sessions' containers keep pointing at the paths they were provisioned
+ *  against. */
+export const sessionScratchDir = (ws: string, task: string, sessionId: string) =>
+  path.join(gurtRoot, ws, task, '.multirepo', sessionId)
+
+/** Where a session's selected skills are copied before its container comes up,
+ *  and the source of the read-only bind that delivers them
+ *  (docs/requirements-skills.md §5). */
+export const sessionSkillsDir = (ws: string, task: string, sessionId: string) =>
+  path.join(sessionScratchDir(ws, task, sessionId), 'skills')
 
 /** Path segments gurt itself owns inside the parent dir of each kind — a repo
  *  named `sessions` would collide with the task's session-log dir, etc.
  *  Compared case-insensitively (macOS default FS is case-insensitive). */
 const RESERVED_NAMES: Record<string, string[]> = {
   workspace: ['agents.json', 'credentials.json', 'agent-config-cache.json'],
-  task: ['workspace.json', '.devcontainers'],
+  task: ['workspace.json', '.devcontainers', 'skills'],
   repo: ['task.json', 'sessions.json', 'review.json', 'sessions', '.multirepo'],
   // Env names only ever become `.devcontainers/<env>.json` — segment rules only.
   env: []
@@ -472,12 +502,16 @@ export async function getWorkspace(ws: string): Promise<WorkspaceFile> {
   const deniedAgents = Array.isArray(raw.deniedAgents)
     ? raw.deniedAgents.filter((a): a is string => typeof a === 'string')
     : undefined
+  const defaultSkills = Array.isArray(raw.defaultSkills)
+    ? raw.defaultSkills.filter((n): n is string => typeof n === 'string')
+    : undefined
   const data: WorkspaceFile = {
     repos,
     envs,
     ...(mcpServers ? { mcpServers } : {}),
     ...(defaultAgent ? { defaultAgent } : {}),
-    ...(deniedAgents?.length ? { deniedAgents } : {})
+    ...(deniedAgents?.length ? { deniedAgents } : {}),
+    ...(defaultSkills?.length ? { defaultSkills } : {})
   }
   if (migrated) await saveWorkspace(ws, data)
   return data
@@ -707,6 +741,197 @@ export function removeMcpServer(ws: string, id: string): Promise<void> {
     if (!data.mcpServers?.some((e) => e.id === id))
       throw new Error(`mcp server "${id}" not found in "${ws}"`)
     data.mcpServers = data.mcpServers.filter((e) => e.id !== id)
+    await saveWorkspace(ws, data)
+  })
+}
+
+// --- skill registry (workspace registry, docs/requirements-skills.md §4.1) ---
+//
+// The directory listing *is* the registry: a skill is a directory under
+// `~/.gurt/<ws>/skills/` holding a `SKILL.md`. There is no index file to keep
+// in sync with the tree, which is the whole reason a user may drop a skill in
+// by hand — copy the directory, and it is offered.
+//
+// `workspace.json` holds only `defaultSkills`, which is names.
+
+/** Read one skill directory. A directory that is there but does not parse comes
+ *  back as an entry carrying `problem`, never as nothing: it is still selected
+ *  by whatever selected it, still deletable, and the user cannot fix what the
+ *  UI refuses to show (§4.1). */
+async function readSkill(ws: string, name: string): Promise<SkillEntry> {
+  const dir = skillDir(ws, name)
+  let doc: string
+  try {
+    doc = await fs.readFile(path.join(dir, SKILL_FILE), 'utf8')
+  } catch {
+    return { name, description: '', files: [], problem: `no ${SKILL_FILE} in this directory` }
+  }
+  const files: string[] = []
+  for (const entry of await fs.readdir(dir, { withFileTypes: true }).catch(() => [])) {
+    if (entry.name !== SKILL_FILE) files.push(entry.isDirectory() ? `${entry.name}/` : entry.name)
+  }
+  files.sort()
+  const { frontmatter, error } = validateSkillDoc(name, doc)
+  return {
+    name,
+    description: frontmatter?.description ?? '',
+    files,
+    ...(error ? { problem: error } : {})
+  }
+}
+
+/** The workspace's skills ([] when the registry directory does not exist). */
+export async function getSkills(ws: string): Promise<SkillEntry[]> {
+  const names: string[] = []
+  for (const entry of await fs.readdir(skillsDir(ws), { withFileTypes: true }).catch(() => []))
+    if (entry.isDirectory() && !skillNameProblem(entry.name)) names.push(entry.name)
+  return skillEntries(await Promise.all(names.map((n) => readSkill(ws, n))))
+}
+
+/** One skill's `SKILL.md`, verbatim — what the editor opens and rewrites. */
+export async function getSkillDoc(ws: string, name: string): Promise<string> {
+  assertSkillName(name)
+  try {
+    return await fs.readFile(path.join(skillDir(ws, name), SKILL_FILE), 'utf8')
+  } catch {
+    throw new Error(`skill "${name}" has no ${SKILL_FILE} in "${ws}"`)
+  }
+}
+
+/** Task names with a session whose skill selection names this skill — the same
+ *  delete-blocking rule an MCP entry gets (`tasksUsingMcp`). */
+export async function tasksUsingSkill(ws: string, name: string): Promise<string[]> {
+  const used: string[] = []
+  for (const task of await listTasks(ws)) {
+    const sessions = await readJson<PersistedSession[]>(sessionsFile(ws, task), [])
+    if (sessions.some((s) => s.info.skills?.some((k) => k.name === name))) used.push(task)
+  }
+  return used
+}
+
+/** Reject a name the registry cannot hold. Split out from the document check
+ *  because a delete and a read need it too, and they have no document. */
+function assertSkillName(name: string, takenNames: readonly string[] = []): void {
+  const bad = skillNameProblem(name, takenNames)
+  if (bad) throw new Error(bad)
+}
+
+/** Write `SKILL.md` after checking that its frontmatter agrees with the name it
+ *  is being filed under — the one rule that cannot be checked from the name
+ *  alone (docs/requirements-skills.md §4.1). */
+async function writeSkillDoc(ws: string, name: string, doc: string): Promise<void> {
+  const { error } = validateSkillDoc(name, doc)
+  if (error) throw new Error(`skill "${name}": ${error}`)
+  const dir = skillDir(ws, name)
+  await fs.mkdir(dir, { recursive: true })
+  await fs.writeFile(path.join(dir, SKILL_FILE), doc)
+}
+
+/** Serialized against the registry, not against `workspace.json`: two adds
+ *  racing would otherwise both see "name is free". `defaultSkills` writes go
+ *  through `editWorkspace` as usual. */
+function editSkills<T>(ws: string, fn: () => Promise<T>): Promise<T> {
+  return chained(`skills:${ws}`, fn)
+}
+
+export function addSkill(ws: string, name: string, doc: string): Promise<void> {
+  return editSkills(ws, async () => {
+    const clean = name.trim()
+    assertSkillName(clean, (await getSkills(ws)).map((s) => s.name))
+    await writeSkillDoc(ws, clean, doc)
+  })
+}
+
+/** Update a skill, matched by its (immutable) name — renaming is not supported,
+ *  the name is what a session's selection stores and what the mount copies.
+ *  Only `SKILL.md` is written; supporting files beside it are left alone. */
+export function updateSkill(ws: string, name: string, doc: string): Promise<void> {
+  return editSkills(ws, async () => {
+    const clean = name.trim()
+    assertSkillName(clean)
+    if (!existsSync(skillDir(ws, clean))) throw new Error(`skill "${clean}" not found in "${ws}"`)
+    await writeSkillDoc(ws, clean, doc)
+  })
+}
+
+/** Delete a skill and everything in its directory. Blocked while a session
+ *  selects it: a materialization reads the registry at start, and a selection
+ *  pointing at nothing is a start that quietly delivers less than it says. */
+export function removeSkill(ws: string, name: string): Promise<void> {
+  return editSkills(ws, async () => {
+    const clean = name.trim()
+    assertSkillName(clean)
+    const used = await tasksUsingSkill(ws, clean)
+    if (used.length)
+      throw new Error(
+        `skill "${clean}" is selected by session(s) in task(s): ${used.join(', ')} — unselect it there first`
+      )
+    if (!existsSync(skillDir(ws, clean))) throw new Error(`skill "${clean}" not found in "${ws}"`)
+    await rmTree(skillDir(ws, clean))
+    // A deleted skill cannot stay on the default-on list: every new draft would
+    // seed a name that resolves to nothing.
+    await editWorkspace(ws, async () => {
+      const data = await getWorkspace(ws)
+      if (!data.defaultSkills?.includes(clean)) return
+      const next = data.defaultSkills.filter((n) => n !== clean)
+      if (next.length) data.defaultSkills = next
+      else delete data.defaultSkills
+      await saveWorkspace(ws, data)
+    })
+  })
+}
+
+/**
+ * Stage a session's selected skills for its container: wipe
+ * `.multirepo/<id>/skills/` and copy each *resolvable* selected skill directory
+ * into it. Returns the names that resolved to nothing, for the caller to report
+ * on the session's provision log (docs/requirements-skills.md §5).
+ *
+ * Copied rather than symlinked, and staged rather than bound straight off the
+ * registry, for one reason each: a bind follows the host directory, so a
+ * registry edit would reach into a running session's read-only mount, and a
+ * symlink farm would resolve to paths that do not exist inside the container.
+ * A copy is the only shape where "what this session got" is a fact fixed at
+ * start.
+ *
+ * The directory is (re)created even when nothing resolves — the mount's source
+ * has to exist, and an empty one is the honest answer to a selection that
+ * resolves to nothing.
+ */
+export async function materializeSessionSkills(
+  ws: string,
+  task: string,
+  sessionId: string,
+  selection: readonly { name: string }[] | undefined
+): Promise<{ missing: string[] }> {
+  const dir = sessionSkillsDir(ws, task, sessionId)
+  await rmTree(dir)
+  await fs.mkdir(dir, { recursive: true })
+  const missing: string[] = []
+  for (const name of skillNames(selection)) {
+    const src = skillDir(ws, name)
+    if (skillNameProblem(name) || !existsSync(path.join(src, SKILL_FILE))) {
+      missing.push(name)
+      continue
+    }
+    await fs.cp(src, path.join(dir, name), { recursive: true })
+  }
+  return { missing }
+}
+
+/** Replace the workspace's default-on skill set wholesale (empty = none).
+ *  Rejected if it names a skill the registry does not hold — the mirror of
+ *  `setDeniedAgents` refusing to deny the default agent: a default nothing
+ *  resolves to would seed every new draft with an error row. */
+export function setDefaultSkills(ws: string, names: string[]): Promise<void> {
+  return editWorkspace(ws, async () => {
+    const clean = [...new Set(names.map((n) => n.trim()).filter(Boolean))]
+    const known = new Set((await getSkills(ws)).map((s) => s.name))
+    for (const name of clean)
+      if (!known.has(name)) throw new Error(`skill "${name}" is not in this workspace's registry`)
+    const data = await getWorkspace(ws)
+    if (clean.length) data.defaultSkills = clean
+    else delete data.defaultSkills
     await saveWorkspace(ws, data)
   })
 }
@@ -1032,20 +1257,17 @@ export async function readSessionLog(
   return out
 }
 
-/** Remove the scratch directory a session's explicit repo mounts were staged
- *  in (`.multirepo/<id>`, see {@link mountedWorkspaceDir}) — it is gurt's own,
- *  holds only mount points, and has no owner once the session is deleted. Only
- *  sessions with explicit mounts ever had one; the rest hit a missing path,
- *  which `force` makes a no-op. */
+/** Remove the scratch directory gurt staged a session's own mounts in
+ *  (`.multirepo/<id>`, see {@link sessionScratchDir}): its repo mount points,
+ *  its merged devcontainer config and its materialized skills. All gurt's own,
+ *  with no owner once the session is deleted. A session that needed none of
+ *  them hits a missing path, which `force` makes a no-op. */
 export async function deleteSessionScratch(
   ws: string,
   task: string,
   sessionId: string
 ): Promise<void> {
-  await fs.rm(path.dirname(mountedWorkspaceDir(ws, task, sessionId)), {
-    recursive: true,
-    force: true
-  })
+  await fs.rm(sessionScratchDir(ws, task, sessionId), { recursive: true, force: true })
 }
 
 export async function deleteSessionLog(ws: string, task: string, sessionId: string): Promise<void> {
@@ -1115,6 +1337,7 @@ export async function buildTree(): Promise<Tree> {
       envs: wsData.envs,
       ...(wsData.defaultAgent ? { defaultAgent: wsData.defaultAgent } : {}),
       ...(wsData.deniedAgents?.length ? { deniedAgents: wsData.deniedAgents } : {}),
+      ...(wsData.defaultSkills?.length ? { defaultSkills: wsData.defaultSkills } : {}),
       tasks
     })
   }

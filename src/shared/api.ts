@@ -21,6 +21,7 @@ import type {
   SessionNetwork,
   SessionRole,
   SessionSnapshot,
+  SkillSelection,
   StoredProposal,
   Tree
 } from './types'
@@ -28,6 +29,7 @@ import type { CredentialsFile } from './credentials'
 import type { SessionTraffic } from './proxy'
 import type { DomainEvents } from './events'
 import type { McpDef, McpProbeResult, McpRegistryEntry } from './mcp'
+import type { SkillEntry } from './skills'
 import type { TurnRecord } from './usage'
 import type { PlanUsage } from './planUsage'
 import type { NotificationPrefs, NotificationRecord } from './notifications'
@@ -67,6 +69,11 @@ export interface SessionDraftPatch {
   repos?: string[]
   autoAllow?: boolean
   mcp?: McpSelection[]
+  /** Skills to mount when the session starts. Absent leaves them unchanged;
+   *  `[]` clears the selection. A change releases the draft's container — the
+   *  mount list is decided when the container is created
+   *  (docs/requirements-skills.md §5.2). */
+  skills?: SkillSelection[]
   /** Egress settings — the session network's `internal` flag and its domain
    *  policy. Absent leaves them unchanged. */
   network?: SessionNetwork
@@ -138,6 +145,33 @@ export interface GurtApi {
   updateMcpServer(ws: string, entry: McpRegistryEntry): Promise<void>
   /** Remove an MCP server (blocked while a session's selection names it). */
   removeMcpServer(ws: string, id: string): Promise<void>
+  /**
+   * The workspace's skill registry, read off disk
+   * (`~/.gurt/<ws>/skills/*`, docs/requirements-skills.md §4.1). An entry whose
+   * `SKILL.md` is unreadable or malformed comes back carrying a `problem`
+   * rather than being left out — it is still selectable, still deletable, and
+   * still the thing the user has to be shown to fix.
+   */
+  getSkills(ws: string): Promise<SkillEntry[]>
+  /** The one skill's `SKILL.md`, verbatim — what the editor opens. */
+  getSkillDoc(ws: string, name: string): Promise<string>
+  /** Create a skill directory with this `SKILL.md`. Rejects a bad or duplicate
+   *  name, and a document whose frontmatter does not carry a matching `name`
+   *  and a `description`. */
+  addSkill(ws: string, name: string, doc: string): Promise<void>
+  /** Rewrite a skill's `SKILL.md`, matched by its (immutable) name — renaming
+   *  is not supported, the name is what a session's selection stores. Supporting
+   *  files beside it are untouched. */
+  updateSkill(ws: string, name: string, doc: string): Promise<void>
+  /** Delete a skill directory and everything in it (blocked while a session's
+   *  selection names it). */
+  removeSkill(ws: string, name: string): Promise<void>
+  /** Task names with a session selecting this skill — what blocks a delete, and
+   *  what the confirm dialog names. */
+  skillUsedBy(ws: string, name: string): Promise<string[]>
+  /** Replace the workspace's default-on skill set wholesale (empty = none).
+   *  Rejects a name the registry does not hold. */
+  setDefaultSkills(ws: string, names: string[]): Promise<void>
   /**
    * Reinstall an `npm` entry's package: drops the install stamp, so the next
    * start resolves the spec against the registry again instead of reusing what
@@ -252,6 +286,8 @@ export interface GurtApi {
     configValues: Record<string, string | boolean>,
     /** What the session is for — executor unless told otherwise. */
     role: SessionRole,
+    /** Skills to mount at start (names of this workspace's registry). */
+    skills: SkillSelection[],
     /** Egress settings (`internal` + the allow list). Omitted = the defaults:
      *  a normal bridge, everything allowed and logged. */
     network?: SessionNetwork
@@ -354,6 +390,13 @@ const METHODS = {
   addMcpServer: true,
   updateMcpServer: true,
   removeMcpServer: true,
+  getSkills: true,
+  getSkillDoc: true,
+  addSkill: true,
+  updateSkill: true,
+  removeSkill: true,
+  skillUsedBy: true,
+  setDefaultSkills: true,
   reinstallMcpServer: true,
   probeMcpServer: true,
   createTask: true,

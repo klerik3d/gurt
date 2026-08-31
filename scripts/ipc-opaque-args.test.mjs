@@ -103,6 +103,14 @@ const SAFE_ARGS = new Set([
   'setDeniedAgents',
   'getMcpServers',
   'removeMcpServer',
+  // Skill registry reads and deletes: a workspace and a skill name, which is a
+  // directory name. The `SKILL.md` *body* enters through `addSkill`/
+  // `updateSkill`, which are opaque; `getSkillDoc` returns one but takes none.
+  'getSkills',
+  'getSkillDoc',
+  'removeSkill',
+  'skillUsedBy',
+  'setDefaultSkills',
   // A workspace and an entry id — the package it reinstalls is read from the
   // registry, not passed in.
   'reinstallMcpServer',

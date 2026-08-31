@@ -34,7 +34,9 @@ import {
   installAcpAdapter,
   materializeEnvConfig,
   overrideConfigArgs,
-  mountedConfigPath
+  sessionConfigPath,
+  linkContainerSkills,
+  SKILLS_MOUNT
 } from './provision'
 import type { Bus } from './bus'
 import { createLogger, errCtx } from './log'
@@ -67,6 +69,30 @@ function sameRepos(a: string[] | undefined, b: string[]): boolean {
  */
 function usesRepoMounts(info: SessionInfo): boolean {
   return info.repos.length > 1 || roleIsReadOnly(sessionRole(info))
+}
+
+/** Whether this session's container carries the skills bind — i.e. whether it
+ *  picked any skill at all (docs/requirements-skills.md §5). */
+function usesSkillMounts(info: SessionInfo): boolean {
+  return !!info.skills?.length
+}
+
+/**
+ * The `--override-config` pair every `up` and every `exec` of this session must
+ * resolve — they have to agree, since the config decides the exec cwd and the
+ * reported `remoteWorkspaceFolder`. It is the session's own merged copy
+ * whenever gurt added mounts of its own (sibling repos, the skills bind, or
+ * both), and the env's shared materialized file otherwise. The file behind it
+ * was written by `ensure`'s `up` and persists across app restarts, so the
+ * reattach path needs nothing.
+ */
+function sessionConfigArgs(info: SessionInfo, sessionId: string): string[] {
+  return usesRepoMounts(info) || usesSkillMounts(info)
+    ? [
+        '--override-config',
+        sessionConfigPath(store.sessionScratchDir(info.workspace, info.task, sessionId))
+      ]
+    : overrideConfigArgs({ workspace: info.workspace, task: info.task, env: info.env })
 }
 
 /**
@@ -350,6 +376,22 @@ export class ContainerManager {
         await fs.mkdir(workspaceFolder, { recursive: true })
         extraMounts = clones.map(({ cfg, dir }) => ({ hostDir: dir, name: cfg.name, readonly }))
       }
+      // The skills the session picked, staged into its scratch dir by
+      // `materializeSkills` just before this call, bound read-only at a fixed
+      // path (docs/requirements-skills.md §5). Added only when the session
+      // selected something, so a session with no skills provisions exactly as
+      // it did before this feature existed — and a draft that changes its
+      // selection releases its container, since the mount list is fixed at
+      // create time (§5.2).
+      const hostMounts = usesSkillMounts(info)
+        ? [
+            {
+              hostDir: store.sessionSkillsDir(info.workspace, info.task, sessionId),
+              target: SKILLS_MOUNT,
+              readonly: true
+            }
+          ]
+        : []
       const up = await devcontainerUp(
         sessionId,
         configArgs,
@@ -362,8 +404,15 @@ export class ContainerManager {
             { repos: info.repos, ...(this.container(sessionId) ?? {}), status: 'post' },
             'user'
           ),
-        extraMounts
+        extraMounts,
+        hostMounts,
+        store.sessionScratchDir(info.workspace, info.task, sessionId)
       )
+      // After `up`, before anything reports the container usable: the agent
+      // resolves its skills at startup, and the adapter is spawned from
+      // `launchContext` below.
+      if (hostMounts.length)
+        await linkContainerSkills(sessionId, sessionConfigArgs(info, sessionId), workspaceFolder, provisionLog)
       // Deleted mid-start: this container was born after its session's delete
       // had already looked for one to take down, so nothing owns it and nothing
       // records it (`patchContainer` on a gone session is a no-op). Remove it
@@ -556,13 +605,7 @@ export class ContainerManager {
       session: sessionId,
       containerId: c.id,
       hostWorkspaceFolder,
-      // The file behind these args was written by ensure's up (and persists
-      // across app restarts) — up and every exec resolve the same config: the
-      // env's materialized file, or the session's merged copy when the repos
-      // are mounted explicitly (extra mounts + wrapper workspaceFolder).
-      configArgs: mounted
-        ? ['--override-config', mountedConfigPath(hostWorkspaceFolder)]
-        : overrideConfigArgs(this.refOf(info))
+      configArgs: sessionConfigArgs(info, sessionId)
     }
     // Step 3 of the provisioning sequence (§7.1), and the reason it is here
     // rather than in the connection path: `npm install -g` needs the open

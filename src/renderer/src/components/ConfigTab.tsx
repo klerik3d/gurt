@@ -15,9 +15,12 @@ import { SESSION_ROLES, roleAllowsMultiRepo, sessionRole } from '../../../shared
 import type { SessionDraftPatch } from '../../../shared/api'
 import type { McpEntry } from '../../../shared/mcp'
 import { LOCAL_MCP_NOTICE, isLocalMcpEntry, mcpHasModes, resolveMcpSelection } from '../../../shared/mcp'
+import type { SkillEntry } from '../../../shared/skills'
+import { resolveSkillSelection } from '../../../shared/skills'
 import { agentOptionView } from '../../../shared/agentConfig'
 import { agentKind, agentName, useAgents } from '../useAgents'
 import { useMcpEntries } from '../useMcp'
+import { useSkillEntries } from '../useSkills'
 import { NetworkPicker } from './Network'
 import { useOutsideClose } from '../hooks'
 import { alertDialog } from '../dialog'
@@ -31,6 +34,7 @@ import {
   ROLE_INFO,
   RepoTag,
   RoleTag,
+  SkillTag,
   agentIcon
 } from './tags'
 import { run } from '../async'
@@ -164,6 +168,83 @@ function McpMissingRow({ id, onRemove }: { id: string; onRemove: () => void }) {
   )
 }
 
+/**
+ * One offered skill in the harness config: dot + name + description + menu.
+ *
+ * Two states, off and on. A skill has no `read-only`/`full` twin to
+ * `McpRow`'s — gurt hands the agent files, and there is no half of a file to
+ * grant (docs/requirements-skills.md §7). A skill whose `SKILL.md` does not
+ * parse is still listed and still selectable: it says what is wrong instead of
+ * what it does, and Settings is where it gets fixed.
+ */
+function SkillRow({
+  entry,
+  on,
+  onChange
+}: {
+  entry: SkillEntry
+  on: boolean
+  onChange: (on: boolean) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  useOutsideClose(open, ref, () => setOpen(false))
+  const label = on ? 'on' : 'off'
+  return (
+    <div className="pick-wrap" ref={ref}>
+      <button
+        type="button"
+        className="pick-row mcp-row"
+        title={entry.problem ?? entry.description}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <Dot tone={entry.problem ? 'red' : on ? 'green' : 'outline'} size={7} />
+        <span className={`mcp-name ${on ? '' : 'faint'}`}>{entry.name}</span>
+        <span className="mcp-desc faint">{entry.problem ?? entry.description}</span>
+        <span className="pick-meta">{label}</span>
+        <Icon name="chevron" size={12} className="faint" style={{ flex: 'none' }} />
+      </button>
+      {open && (
+        <div className="menu pick-menu">
+          {(['off', 'on'] as const).map((m) => (
+            <div
+              key={m}
+              className={`menu-item ${label === m ? 'active' : ''}`}
+              onMouseDown={(e) => {
+                e.preventDefault()
+                setOpen(false)
+                onChange(m === 'on')
+              }}
+            >
+              {m}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** A selected skill the workspace no longer holds. It stays on the list — and
+ *  stays in the selection until the user says otherwise — because the draft
+ *  still names it and a start would report it as not mounted, which is a thing
+ *  to see here rather than in the session log. */
+function SkillMissingRow({ name, onRemove }: { name: string; onRemove: () => void }) {
+  return (
+    <div
+      className="pick-row mcp-row"
+      title={`"${name}" is selected but this workspace no longer offers it — it is not in the skill registry`}
+    >
+      <Dot tone="red" size={7} />
+      <span className="mcp-name">{name}</span>
+      <span className="mcp-desc faint">unavailable — not in this workspace&apos;s skills</span>
+      <button type="button" className="btn-link" onClick={onRemove}>
+        remove
+      </button>
+    </div>
+  )
+}
+
 /** `https://github.com/acme/checkout-web.git` → `acme/checkout-web`. */
 function shortRepoUrl(url: string): string {
   const cleaned = url.replace(/\.git$/, '').replace(/\/+$/, '')
@@ -178,9 +259,11 @@ export function ConfigTab({ tree, snapshot }: { tree: Tree | null; snapshot: Ses
 function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
   const agents = useAgents()
   const mcpOffered = useMcpEntries(info.workspace)
+  const skillsOffered = useSkillEntries(info.workspace)
   const role = sessionRole(info)
   const repos = info.repos
   const mcp = info.mcp ?? []
+  const skills = info.skills ?? []
   const network = info.network ?? { internal: false }
   const autoAllow = info.autoAllow ?? true
   const configValues = info.configValues ?? {}
@@ -231,6 +314,20 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [info.agent, wsData?.defaultAgent])
 
+  // The workspace's default-on skills, seeded exactly once — `info.skills` is
+  // absent only on a draft nobody has touched, so a user who turns them all off
+  // gets `[]` and is not re-seeded (docs/requirements-skills.md §4.2). Seeded
+  // here rather than at create time so the draft *shows* what it will mount
+  // before Run is pressed. Names that no longer resolve come along and render
+  // as error rows, which is the same thing the picker does for any other stale
+  // selection.
+  useEffect(() => {
+    if (info.skills !== undefined || !wsData?.defaultSkills?.length) return
+    patch({ skills: wsData.defaultSkills.map((name) => ({ name })) })
+    // patch is a fresh closure every render; only the names it would set matter.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [info.skills, wsData?.defaultSkills?.join('\u0000')])
+
   // Picking a (different) env re-seeds the session repo from that env's default.
   const pickEnv = (name: string) => {
     const def = envs.find((e) => e.name === name)?.repo
@@ -270,6 +367,16 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
   }
   const mcpOrphans = mcp.filter((sel) => !mcpOffered.some((e) => e.id === sel.id))
 
+  const setSkill = (name: string, on: boolean): void =>
+    patch({
+      skills: on
+        ? skills.some((k) => k.name === name)
+          ? skills
+          : [...skills, { name }]
+        : skills.filter((k) => k.name !== name)
+    })
+  const skillOrphans = skills.filter((sel) => !skillsOffered.some((e) => e.name === sel.name))
+
   const setConfig = (opt: SessionConfigOption, value: string | boolean) =>
     patch({ configValues: { ...configValues, [opt.id]: value } })
   const optionView = agentOptionView(agentKind(agents, info.agent))
@@ -286,8 +393,10 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
   // the collapsed panel with MCP and the rest.
   const behaviorOptions = cfgOptions.filter((o) => o.category === 'model' || o.category === 'thought_level')
   const advancedOptions = cfgOptions.filter((o) => o.category !== 'model' && o.category !== 'thought_level')
-  const mcpCount = mcp.length
-  const advancedSummary = mcpCount ? `${mcpCount} mcp` : 'no mcp'
+  const advancedSummary =
+    [mcp.length ? `${mcp.length} mcp` : '', skills.length ? `${skills.length} skills` : '']
+      .filter(Boolean)
+      .join(' · ') || 'no mcp, no skills'
 
   const configBlock = (opt: SessionConfigOption): ReactNode =>
     opt.type === 'select' ? (
@@ -565,13 +674,35 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
               )}
               <div className="hc-block">
                 <span className="seclabel">SKILLS</span>
-                <div className="hc-stub">Skills, hooks, tool policy — coming later</div>
+                {skillsOffered.map((entry) => (
+                  <SkillRow
+                    key={entry.name}
+                    entry={entry}
+                    on={skills.some((k) => k.name === entry.name)}
+                    onChange={(on) => setSkill(entry.name, on)}
+                  />
+                ))}
+                {skillOrphans.map((sel) => (
+                  <SkillMissingRow
+                    key={sel.name}
+                    name={sel.name}
+                    onRemove={() => setSkill(sel.name, false)}
+                  />
+                ))}
+                {!skillsOffered.length && !skillOrphans.length && (
+                  <div className="hc-note">
+                    no skills in this workspace — add one in Settings &rarr; Skills. A skill in the
+                    repository&apos;s own .claude/skills is the repo&apos;s and is not listed here.
+                  </div>
+                )}
               </div>
               <div className="hc-foot">
                 <span className="spacer" />
                 <button
                   className="btn btn-sm"
-                  onClick={() => patch({ autoAllow: true, mcp: [], network: { internal: false } })}
+                  onClick={() =>
+                    patch({ autoAllow: true, mcp: [], skills: [], network: { internal: false } })
+                  }
                 >
                   Reset
                 </button>
@@ -594,7 +725,9 @@ function LiveConfig({ snapshot }: { snapshot: SessionSnapshot }) {
   const { info } = snapshot
   const agents = useAgents()
   const mcpOffered = useMcpEntries(info.workspace)
+  const skillsOffered = useSkillEntries(info.workspace)
   const mcp = resolveMcpSelection(info.mcp, mcpOffered)
+  const skills = resolveSkillSelection(info.skills, skillsOffered)
   return (
     <div className="ns-body">
       <div className="draft-settings">
@@ -614,11 +747,18 @@ function LiveConfig({ snapshot }: { snapshot: SessionSnapshot }) {
         {mcp.map((r) => (
           <McpTag key={r.selection.id} {...r} />
         ))}
+        {/* Read-only, like everything else here, and for a reason of its own:
+            the files are already bind-mounted into a running container, so
+            there is nothing a picker could change (docs/requirements-skills.md
+            §2). */}
+        {skills.map((r) => (
+          <SkillTag key={r.selection.name} {...r} />
+        ))}
         <NetTag network={info.network} />
       </div>
       <div className="hc-note">
-        role, environment, repository, MCP and network are fixed once a session leaves draft —
-        duplicate it to change them and start over
+        role, environment, repository, MCP, skills and network are fixed once a session leaves
+        draft — duplicate it to change them and start over
       </div>
       {info.state === 'started' && (
         <LiveHarness

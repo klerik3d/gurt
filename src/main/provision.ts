@@ -597,17 +597,25 @@ function writeOverrideConfig(ref: EnvRef, content: string): Promise<void> {
  *  `materializeEnvConfig` at `up` (it persists on disk across app restarts, so
  *  the reattach path needs nothing). The same args must go to `up` and to each
  *  `exec` — exec re-resolves the config. Mounted sessions instead resolve the
- *  per-session merged copy at `mountedConfigPath` (written by `devcontainerUp`,
+ *  per-session merged copy at `sessionConfigPath` (written by `devcontainerUp`,
  *  same persistence). */
 export function overrideConfigArgs(ref: EnvRef): string[] {
   return ['--override-config', overrideConfigPath(ref.workspace, ref.env)]
 }
 
-/** The mounted session's merged devcontainer config — sibling of its wrapper
- *  workspace dir (`.multirepo/<sessionId>/devcontainer.json`), so it is
- *  per-session and lives exactly as long as the session's wrapper. */
-export const mountedConfigPath = (mountedWorkspaceFolder: string): string =>
-  path.join(path.dirname(mountedWorkspaceFolder), 'devcontainer.json')
+/** A session's merged devcontainer config — inside its scratch dir
+ *  (`.multirepo/<sessionId>/devcontainer.json`, see `store.sessionScratchDir`),
+ *  so it is per-session and lives exactly as long as the session does.
+ *
+ *  Written whenever gurt has mounts of its own to add: the sibling repo binds
+ *  of a multi-repo or read-only session, the read-only skills bind, or both.
+ *  Addressed off the scratch dir rather than off the wrapper workspace dir it
+ *  used to be derived from — a single-repo executor has no wrapper, and its
+ *  workspace folder is the clone, whose parent is the task directory every
+ *  session of the task shares. Same path as before for every session that
+ *  already had one. */
+export const sessionConfigPath = (scratchDir: string): string =>
+  path.join(scratchDir, 'devcontainer.json')
 
 /** True if an image with this tag exists in the local Docker image store. */
 export function dockerImageExists(tag: string): Promise<boolean> {
@@ -892,7 +900,18 @@ export async function devcontainerUp(
    *  read-only role — `readonly` is what the CLI's own workspace mount can never
    *  be (per-mount `readonly` now only set for researcher, see `containers.ts`).
    *  Empty for a plain read-write single-repo session. */
-  extraMounts: { hostDir: string; name: string; readonly?: boolean }[] = []
+  extraMounts: { hostDir: string; name: string; readonly?: boolean }[] = [],
+  /** Binds with an **absolute container target**, which is what the skills
+   *  delivery needs and what a repo sibling can never be
+   *  (docs/requirements-skills.md §5.1). A separate list rather than a flag on
+   *  `extraMounts` because two rules key off that one — a single entry
+   *  re-points `workspaceFolder`, and any read-only entry strips the
+   *  create-time hooks — and neither may fire for a skills bind. */
+  hostMounts: { hostDir: string; target: string; readonly?: boolean }[] = [],
+  /** Where the merged config goes when one is needed — the session's scratch
+   *  dir. Defaults to the wrapper workspace folder's parent, which is the same
+   *  directory for every session that has a wrapper. */
+  scratchDir = path.dirname(workspaceFolder)
 ): Promise<UpResult> {
   // The container is agent-agnostic: only the node feature is injected. No
   // forge CLI — the container authenticates to nothing, so a `gh` in it would
@@ -911,7 +930,7 @@ export async function devcontainerUp(
   // and every `exec` of a mounted session must resolve it too (the config
   // decides the exec cwd and the reported remoteWorkspaceFolder).
   let mountConfigArgs = configArgs
-  if (extraMounts.length) {
+  if (extraMounts.length || hostMounts.length) {
     // `configArgs` is always the ['--override-config', path] pair built by
     // materializeEnvConfig — the flag is there, and so is its value.
     const envConfigPath = configArgs[configArgs.indexOf('--override-config') + 1] ?? ''
@@ -948,6 +967,10 @@ export async function devcontainerUp(
         ...extraMounts.map(
           (m) =>
             `type=bind,source=${m.hostDir},target=${mountRoot}/${m.name}${m.readonly ? ',readonly' : ''}`
+        ),
+        ...hostMounts.map(
+          (m) =>
+            `type=bind,source=${m.hostDir},target=${m.target}${m.readonly ? ',readonly' : ''}`
         )
       ]
     }
@@ -967,8 +990,9 @@ export async function devcontainerUp(
           'hooks (this role does not install dependencies)'
       )
     }
-    await fs.writeFile(mountedConfigPath(workspaceFolder), JSON.stringify(merged, null, 2))
-    mountConfigArgs = ['--override-config', mountedConfigPath(workspaceFolder)]
+    await fs.mkdir(scratchDir, { recursive: true })
+    await fs.writeFile(sessionConfigPath(scratchDir), JSON.stringify(merged, null, 2))
+    mountConfigArgs = ['--override-config', sessionConfigPath(scratchDir)]
   }
   const args = [
     'up',
@@ -1043,7 +1067,12 @@ export async function devcontainerUp(
           // Warm every bind source of this `up`, not just the reported one: the
           // staleness covers a whole subtree, so the next path would fail next.
           await warmBindPaths(
-            [workspaceFolder, ...extraMounts.map((m) => m.hostDir), ...stalePaths],
+            [
+              workspaceFolder,
+              ...extraMounts.map((m) => m.hostDir),
+              ...hostMounts.map((m) => m.hostDir),
+              ...stalePaths
+            ],
             log
           )
           await new Promise((r) => setTimeout(r, BACKOFF_MS[staleAttempts - 1] ?? 5_000))
@@ -1088,6 +1117,55 @@ export async function devcontainerUp(
       remoteWorkspaceFolder: result.remoteWorkspaceFolder ?? remoteRoot
     }
   }
+}
+
+/**
+ * Where a session's materialized skills are bound inside its container.
+ *
+ * A fixed absolute path rather than the `$HOME/.claude/skills` the agent
+ * actually reads, because a devcontainer's `mounts` are evaluated *to create*
+ * the container: `${containerEnv:HOME}` is substituted in a later pass, and the
+ * remote user — hence the home directory — is the image's choice, not gurt's.
+ * {@link linkContainerSkills} closes the gap once the container is up.
+ */
+export const SKILLS_MOUNT = '/gurt/skills'
+
+/**
+ * Point the agent's `~/.claude/skills` at the read-only bind
+ * (docs/requirements-skills.md §5).
+ *
+ * Run by gurt through `devcontainer exec`, deliberately not as a devcontainer
+ * lifecycle hook: a read-only role has its `onCreate`/`updateContent`/
+ * `postCreate` commands stripped (see `devcontainerUp`), so a hook-based
+ * delivery would skip exactly the roles most likely to be handed a read-only
+ * procedure. Writes into the container's home, which is writable for every
+ * role — only the repo mounts and this bind are read-only.
+ *
+ * Replaces whatever was at that path: the enabled set is the whole set the
+ * session sees, which is the promise the picker makes. Idempotent, and re-run
+ * after every `up`, so a container the CLI rebuilt is relinked.
+ */
+export async function linkContainerSkills(
+  session: string,
+  configArgs: string[],
+  workspaceFolder: string,
+  log: LogSink
+): Promise<void> {
+  const { code } = await runNodeCli(
+    [
+      'exec',
+      '--workspace-folder', workspaceFolder,
+      ...idLabelArgs(session),
+      ...configArgs,
+      'sh', '-c',
+      `mkdir -p "$HOME/.claude" && rm -rf "$HOME/.claude/skills" && ln -s ${SKILLS_MOUNT} "$HOME/.claude/skills"`
+    ],
+    log
+  )
+  // Not fatal: the skills are mounted either way, and a session that starts
+  // without them beats one that does not start. The line above says which.
+  if (code !== 0) log(`could not link ${SKILLS_MOUNT} into the agent's home (exit ${code})`)
+  else log(`skills mounted read-only at ${SKILLS_MOUNT}, linked as ~/.claude/skills`)
 }
 
 /** True when the agent's adapter binary is already on PATH inside the
