@@ -22,6 +22,82 @@ type Row =
 
 const rowKey = (r: Row) => (r.kind === 'task' ? `t:${r.ws}/${r.task}` : `s:${r.id}`)
 
+/** What the task list is ordered by, and which way round. */
+export type TaskSortKey = 'name' | 'created'
+export type TaskSortDir = 'asc' | 'desc'
+export interface TaskSort {
+  key: TaskSortKey
+  dir: TaskSortDir
+}
+
+const TASK_SORT_KEY = 'gurt.sidebar.taskSort'
+const DEFAULT_SORT: TaskSort = { key: 'name', dir: 'asc' }
+
+export const SORT_KEY_LABEL: Record<TaskSortKey, string> = {
+  name: 'Name',
+  created: 'Created'
+}
+
+/** Direction reads as what the order *is*: "Z → A" and "Newest first" are the
+ *  same `desc`, but nobody picking one thinks of it as descending. */
+export const SORT_DIR_LABEL: Record<TaskSortKey, Record<TaskSortDir, string>> = {
+  name: { asc: 'A → Z', desc: 'Z → A' },
+  created: { asc: 'Oldest first', desc: 'Newest first' }
+}
+
+/** Case- and digit-aware, then exact — `sensitivity: 'base'` calls "api" and
+ *  "API" equal, and a tie left to sort's stability would order them by whatever
+ *  `readdir` returned that time. */
+const byName = (a: string, b: string): number =>
+  a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }) ||
+  (a < b ? -1 : a > b ? 1 : 0)
+
+/**
+ * Order the sidebar draws tasks in. `desc` reverses the whole comparison,
+ * tiebreak included, so flipping direction flips exactly what is on screen —
+ * the one thing the user is asking for when they press it.
+ */
+export function sortTasks<T extends { name: string; createdAt?: string }>(
+  tasks: readonly T[],
+  sort: TaskSort
+): T[] {
+  const cmp =
+    sort.key === 'name'
+      ? (a: T, b: T) => byName(a.name, b.name)
+      : // Tasks created within the same second are a real case (a script, a
+        // duplicate) — name keeps them from swapping places between renders.
+        (a: T, b: T) =>
+          (a.createdAt ?? '').localeCompare(b.createdAt ?? '') || byName(a.name, b.name)
+  const out = [...tasks].sort(cmp)
+  return sort.dir === 'desc' ? out.reverse() : out
+}
+
+/** Sidebar-local and persisted: an ordering preference is not part of the tree,
+ *  and one that resets on every launch is worse than not offering it. */
+function useTaskSort(): [TaskSort, (s: TaskSort) => void] {
+  const [sort, setSort] = useState<TaskSort>(() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem(TASK_SORT_KEY) ?? 'null') as Partial<TaskSort>
+      const key = raw?.key
+      const dir = raw?.dir
+      if ((key === 'name' || key === 'created') && (dir === 'asc' || dir === 'desc'))
+        return { key, dir }
+    } catch {
+      // unreadable preference — the default order is a fine place to land
+    }
+    return DEFAULT_SORT
+  })
+  const update = (next: TaskSort): void => {
+    setSort(next)
+    try {
+      localStorage.setItem(TASK_SORT_KEY, JSON.stringify(next))
+    } catch {
+      // a full/blocked store costs the preference, not the sort
+    }
+  }
+  return [sort, update]
+}
+
 export function Sidebar({
   width,
   tree,
@@ -68,6 +144,16 @@ export function Sidebar({
   const selectedRef = useRef<HTMLDivElement>(null)
 
   const wsData = tree?.workspaces.find((w) => w.name === ws)
+  const [sort, setSort] = useTaskSort()
+  const [sortOpen, setSortOpen] = useState(false)
+  const sortPopRef = useRef<HTMLDivElement>(null)
+  useOutsideClose(sortOpen, sortPopRef, () => setSortOpen(false))
+  /** The one ordering everything below reads — rendering and the arrow-key row
+   *  list both, or navigation would walk a list the user cannot see. */
+  const tasks = sortTasks(wsData?.tasks ?? [], sort)
+  /** Owner of every task in `tasks`. Empty only when there is no workspace, and
+   *  then `tasks` is empty too, so nothing below ever reads the empty string. */
+  const wsName = wsData?.name ?? ''
 
   // Keyboard navigation can walk the selection out of view — follow it.
   useEffect(() => {
@@ -90,7 +176,7 @@ export function Sidebar({
   }
 
   /** Every task's collapse key, for the header's fold-all toggle. */
-  const allTaskKeys = wsData?.tasks.map((t) => `${wsData.name}/${t.name}`) ?? []
+  const allTaskKeys = tasks.map((t) => `${wsName}/${t.name}`)
   const allCollapsed = allTaskKeys.length > 0 && allTaskKeys.every((k) => collapsed.has(k))
   const toggleCollapseAll = () => {
     if (!wsData || !allTaskKeys.length) return
@@ -141,11 +227,11 @@ export function Sidebar({
   // The tree as the user sees it, top to bottom — collapsed tasks contribute
   // only their own row. Arrow keys walk this list; nothing else needs the shape.
   const rows: Row[] = []
-  for (const task of wsData?.tasks ?? []) {
-    rows.push({ kind: 'task', ws: wsData!.name, task: task.name })
-    if (!collapsed.has(`${wsData!.name}/${task.name}`))
+  for (const task of tasks) {
+    rows.push({ kind: 'task', ws: wsName, task: task.name })
+    if (!collapsed.has(`${wsName}/${task.name}`))
       for (const s of task.sessions)
-        rows.push({ kind: 'session', id: s.id, ws: wsData!.name, task: task.name })
+        rows.push({ kind: 'session', id: s.id, ws: wsName, task: task.name })
   }
   const isSelected = (r: Row) =>
     r.kind === 'task'
@@ -280,6 +366,50 @@ export function Sidebar({
           <span className="sb-ws-name">Tasks</span>
         </div>
         <span className="spacer" />
+        <div className="sb-sort" ref={sortPopRef}>
+          <button
+            className={`icon-sq ${sortOpen ? 'active' : ''}`}
+            title={`Sort tasks · ${SORT_KEY_LABEL[sort.key]}, ${SORT_DIR_LABEL[sort.key][sort.dir]}`}
+            disabled={!allTaskKeys.length}
+            onClick={() => setSortOpen((o) => !o)}
+          >
+            {/* The glyph flips with the direction, so the current order is
+                readable from the closed button and not only from its tooltip. */}
+            <Icon
+              name="sort"
+              size={14}
+              style={sort.dir === 'desc' ? { transform: 'scaleY(-1)' } : undefined}
+            />
+          </button>
+          {sortOpen && (
+            <div className="menu sb-sort-menu">
+              {/* Key and direction stay in one open menu: switching the key
+                  relabels the directions under it ("A → Z" becomes "Oldest
+                  first"), which is how the pair explains itself. */}
+              {(['name', 'created'] as TaskSortKey[]).map((k) => (
+                <div
+                  key={k}
+                  className={`menu-item ${sort.key === k ? 'active' : ''}`}
+                  onClick={() => setSort({ ...sort, key: k })}
+                >
+                  <Dot tone={sort.key === k ? 'accent' : 'outline'} size={6} />
+                  {SORT_KEY_LABEL[k]}
+                </div>
+              ))}
+              <div className="menu-sep" />
+              {(['asc', 'desc'] as TaskSortDir[]).map((d) => (
+                <div
+                  key={d}
+                  className={`menu-item ${sort.dir === d ? 'active' : ''}`}
+                  onClick={() => setSort({ ...sort, dir: d })}
+                >
+                  <Dot tone={sort.dir === d ? 'accent' : 'outline'} size={6} />
+                  {SORT_DIR_LABEL[sort.key][d]}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
         <button
           className="icon-sq"
           title={allCollapsed ? 'Expand all' : 'Collapse all'}
@@ -314,10 +444,10 @@ export function Sidebar({
       </div>
 
       <div className="sb-tree" ref={treeRef} tabIndex={0} role="tree" onKeyDown={onTreeKey}>
-        {wsData?.tasks.map((task) => {
-          const tkey = `${wsData.name}/${task.name}`
+        {tasks.map((task) => {
+          const tkey = `${wsName}/${task.name}`
           const isCollapsed = collapsed.has(tkey)
-          const row: Row = { kind: 'task', ws: wsData.name, task: task.name }
+          const row: Row = { kind: 'task', ws: wsName, task: task.name }
           const taskSelected = isSelected(row)
           const editing = renaming && rowKey(renaming) === rowKey(row)
           return (
@@ -328,14 +458,14 @@ export function Sidebar({
                 role="treeitem"
                 aria-expanded={!isCollapsed}
                 aria-selected={taskSelected}
-                onClick={() => onSelectTask(wsData.name, task.name)}
+                onClick={() => onSelectTask(wsName, task.name)}
                 onDoubleClick={() => startRename(row)}
               >
                 <span
                   className="sb-chev"
                   onClick={(e) => {
                     e.stopPropagation()
-                    setCollapse(wsData.name, task.name, !isCollapsed)
+                    setCollapse(wsName, task.name, !isCollapsed)
                   }}
                 >
                   <Icon
@@ -361,7 +491,7 @@ export function Sidebar({
                       title="new session"
                       onClick={(e) => {
                         e.stopPropagation()
-                        onNewSession(wsData.name, task.name)
+                        onNewSession(wsName, task.name)
                       }}
                     >
                       <Icon name="message" size={13} />
@@ -383,7 +513,7 @@ export function Sidebar({
                 task.sessions.map((s) => {
                   const status = sessionStatus({ ...s, ...activity[s.id] })
                   const dot = SESSION_DOT[status]
-                  const srow: Row = { kind: 'session', id: s.id, ws: wsData.name, task: task.name }
+                  const srow: Row = { kind: 'session', id: s.id, ws: wsName, task: task.name }
                   const selected = isSelected(srow)
                   const renamingThis = renaming && rowKey(renaming) === rowKey(srow)
                   return (

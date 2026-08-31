@@ -720,7 +720,18 @@ export function taskExists(ws: string, task: string): boolean {
 export async function createTask(ws: string, task: string): Promise<void> {
   validateName('task', task)
   if (taskExists(ws, task)) throw new Error(`task "${task}" already exists in "${ws}"`)
-  await writeJson(path.join(taskDir(ws, task), 'task.json'), {} satisfies TaskFile)
+  await writeJson(path.join(taskDir(ws, task), 'task.json'), {
+    createdAt: new Date().toISOString()
+  } satisfies TaskFile)
+}
+
+/** Creation time of a task whose `task.json` predates {@link TaskFile.createdAt}:
+ *  the marker file's own birth time. Filesystems that record none report 0 —
+ *  mtime stands in there, and the epoch if even the stat fails, which only puts
+ *  the task first in oldest-first order rather than dropping it from the tree. */
+async function taskBirthTime(ws: string, task: string): Promise<string> {
+  const st = await fs.stat(path.join(taskDir(ws, task), 'task.json')).catch(() => null)
+  return new Date(st ? st.birthtimeMs || st.mtimeMs : 0).toISOString()
 }
 
 /** Renames the task's whole directory (config, clones, session logs move with
@@ -1104,6 +1115,7 @@ export async function buildTree(): Promise<Tree> {
       const taskFile = await getTask(ws, task)
       tasks.push({
         name: task,
+        createdAt: taskFile.createdAt ?? (await taskBirthTime(ws, task)),
         repos: await taskClones(ws, task),
         sessions: [],
         ...(taskFile.maxConcurrentSessions ? { maxConcurrentSessions: taskFile.maxConcurrentSessions } : {})
