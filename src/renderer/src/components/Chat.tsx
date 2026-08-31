@@ -33,6 +33,7 @@ import { SessionMenu } from './SessionActions'
 import { TabBar, type SessionTab } from './SessionTabs'
 import { VscodeButton } from './VscodeButton'
 import { run } from '../async'
+import { elapsedClock } from '../time'
 
 const log = createLogger('chat')
 
@@ -455,13 +456,30 @@ function Msg({
   }
 }
 
+/** Fallback progress readout for a live row: how long it has been up. Agents
+ *  that stream no thinking text give nothing to count tokens from, so without
+ *  this the row sits there with no sign of movement — the clock answers the
+ *  only question it raises, is this still going. Its own component so the 1s
+ *  interval exists only while such a row is on screen. */
+function Elapsed() {
+  const startRef = useRef(Date.now())
+  const [secs, setSecs] = useState(0)
+  useEffect(() => {
+    const id = setInterval(() => setSecs(Math.round((Date.now() - startRef.current) / 1000)), 1000)
+    return () => clearInterval(id)
+  }, [])
+  return <span>· {elapsedClock(secs)}</span>
+}
+
 function ThoughtMsg({ text, live }: { text: string; live?: boolean | undefined }) {
   const [open, setOpen] = useState(false)
+  const tokens = live ? approxTokens(text) : 0
   return (
     <div className="msg">
       <span className="msg-dot" style={{ background: 'var(--yellow)' }} />
       <div className="thought-head mono" onClick={() => setOpen((o) => !o)}>
-        {open ? '▾' : '▸'} thinking…{live ? ` · ~${approxTokens(text)} tokens` : ''}
+        {open ? '▾' : '▸'} thinking…
+        {live && (tokens > 0 ? ` · ~${tokens} tokens` : <Elapsed />)}
       </div>
       {open && <div className="thought-text">{text}</div>}
     </div>
@@ -473,7 +491,10 @@ function ThinkingLive({ label }: { label: string }) {
   return (
     <div className="msg">
       <span className="msg-dot dot-pulse" style={{ background: 'var(--yellow)' }} />
-      <div className="thought-head mono">{label}</div>
+      <div className="thought-head mono">
+        {label}
+        <Elapsed />
+      </div>
     </div>
   )
 }
