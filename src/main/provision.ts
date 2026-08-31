@@ -1131,8 +1131,11 @@ export async function devcontainerUp(
 export const SKILLS_MOUNT = '/gurt/skills'
 
 /**
- * Point the agent's `~/.claude/skills` at the read-only bind
- * (docs/requirements-skills.md §5).
+ * Point the agent's own skills directory — `AgentDef.skillsDir`, `$HOME`-
+ * relative, e.g. claude-code's `.claude/skills` — at the read-only bind
+ * (docs/requirements-skills.md §5). Where the link lands is the agent kind's
+ * to say; callers skip both the mount and this link for a kind whose
+ * `skillsDir` is `null`.
  *
  * Run by gurt through `devcontainer exec`, deliberately not as a devcontainer
  * lifecycle hook: a read-only role has its `onCreate`/`updateContent`/
@@ -1149,8 +1152,10 @@ export async function linkContainerSkills(
   session: string,
   configArgs: string[],
   workspaceFolder: string,
+  skillsDir: string,
   log: LogSink
 ): Promise<void> {
+  const parent = path.posix.dirname(skillsDir)
   const { code } = await runNodeCli(
     [
       'exec',
@@ -1158,14 +1163,14 @@ export async function linkContainerSkills(
       ...idLabelArgs(session),
       ...configArgs,
       'sh', '-c',
-      `mkdir -p "$HOME/.claude" && rm -rf "$HOME/.claude/skills" && ln -s ${SKILLS_MOUNT} "$HOME/.claude/skills"`
+      `mkdir -p "$HOME/${parent}" && rm -rf "$HOME/${skillsDir}" && ln -s ${SKILLS_MOUNT} "$HOME/${skillsDir}"`
     ],
     log
   )
   // Not fatal: the skills are mounted either way, and a session that starts
   // without them beats one that does not start. The line above says which.
   if (code !== 0) log(`could not link ${SKILLS_MOUNT} into the agent's home (exit ${code})`)
-  else log(`skills mounted read-only at ${SKILLS_MOUNT}, linked as ~/.claude/skills`)
+  else log(`skills mounted read-only at ${SKILLS_MOUNT}, linked as ~/${skillsDir}`)
 }
 
 /** True when the agent's adapter binary is already on PATH inside the

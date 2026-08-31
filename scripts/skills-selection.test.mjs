@@ -41,6 +41,8 @@ await bundle({
     contents: `
       export { createKernel } from ${S('src/main/kernel.ts')}
       export { skillEntries, resolveSkillSelection, sanitizeSkillSelection, validateSkillDoc, skillNameProblem } from ${S('src/shared/skills.ts')}
+      export { AGENT_DEFS, agentDef } from ${S('src/shared/agents.ts')}
+      export { usesSkillMounts } from ${S('src/main/containers.ts')}
       export {
         addSkill, getSkills, getSkillDoc, updateSkill, removeSkill, setDefaultSkills,
         tasksUsingSkill, materializeSessionSkills, readSessions, sessionSkillsDir, getWorkspace
@@ -226,6 +228,44 @@ test('a restart restores the selection', async () => {
   const next = m.createKernel()
   await next.ready
   assert.deepEqual(next.sessions.sessionInfo(session.id).skills, [{ name: 'house-style' }])
+})
+
+// --- delivery is a function of the agent kind ----------------------------
+
+test('every agent kind says where it reads skills, or that it does not', () => {
+  for (const def of m.AGENT_DEFS)
+    assert.ok('skillsDir' in def, `"${def.id}" must declare skillsDir`)
+  // The paths provisioning links against, pinned here so a bump of an adapter
+  // pin that moves (or grows/loses) a skills directory has to come back and
+  // re-verify — the values are facts about the pinned CLIs (agents.ts).
+  assert.equal(m.agentDef('claude-code').skillsDir, '.claude/skills')
+  assert.equal(m.agentDef('codex').skillsDir, '.agents/skills')
+  assert.equal(m.agentDef('gemini').skillsDir, '.gemini/skills')
+  assert.equal(m.agentDef('opencode').skillsDir, '.config/opencode/skills')
+})
+
+test('a kind that reads no skills directory mounts nothing', () => {
+  const picked = { skills: [{ name: 'house-style' }] }
+  assert.equal(m.usesSkillMounts(picked, '.claude/skills'), true)
+  // null = the agent never looks: no mount, the session provisions as if the
+  // feature did not exist — the UI says so instead (ConfigTab.tsx).
+  assert.equal(m.usesSkillMounts(picked, null), false)
+  // And no selection means no mount regardless of the agent.
+  assert.equal(m.usesSkillMounts({ skills: [] }, '.claude/skills'), false)
+  assert.equal(m.usesSkillMounts({}, '.claude/skills'), false)
+})
+
+test('the selection survives an agent change, there and back', () => {
+  const s = draft([{ name: 'house-style' }])
+  kernel.sessions.editDraft(s.id, { agent: 'a2' })
+  assert.deepEqual(kernel.sessions.sessionInfo(s.id).skills, [{ name: 'house-style' }])
+  kernel.sessions.editDraft(s.id, { agent: 'a1' })
+  assert.deepEqual(kernel.sessions.sessionInfo(s.id).skills, [{ name: 'house-style' }])
+  // A deliberate "none" survives the same switch as "none", not as "never
+  // chosen" — which would have the config tab re-seed the defaults over it.
+  kernel.sessions.editDraft(s.id, { skills: [] })
+  kernel.sessions.editDraft(s.id, { agent: 'a2' })
+  assert.deepEqual(kernel.sessions.sessionInfo(s.id).skills, [])
 })
 
 // --- defaultSkills: what a new draft starts with -------------------------

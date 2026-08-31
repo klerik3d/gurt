@@ -18,6 +18,7 @@ import { LOCAL_MCP_NOTICE, isLocalMcpEntry, mcpHasModes, resolveMcpSelection } f
 import type { SkillEntry } from '../../../shared/skills'
 import { resolveSkillSelection } from '../../../shared/skills'
 import { agentOptionView } from '../../../shared/agentConfig'
+import { agentDef } from '../../../shared/agents'
 import { agentKind, agentName, useAgents } from '../useAgents'
 import { useMcpEntries } from '../useMcp'
 import { useSkillEntries } from '../useSkills'
@@ -367,6 +368,14 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
   }
   const mcpOrphans = mcp.filter((sel) => !mcpOffered.some((e) => e.id === sel.id))
 
+  // The `mcpHasModes` rule again: gurt does not claim what it cannot deliver.
+  // A kind whose pinned CLI reads no skills directory (`AgentDef.skillsDir` is
+  // null, agents.ts) gets a plain statement instead of pickers. The stored
+  // selection is left exactly as it is — absent/[] semantics included — so
+  // switching to a supporting agent and back loses nothing.
+  const draftAgentDef = agentDef(agentKind(agents, info.agent) ?? '')
+  const skillsUnsupported = !!draftAgentDef && draftAgentDef.skillsDir === null
+
   const setSkill = (name: string, on: boolean): void =>
     patch({
       skills: on
@@ -394,7 +403,12 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
   const behaviorOptions = cfgOptions.filter((o) => o.category === 'model' || o.category === 'thought_level')
   const advancedOptions = cfgOptions.filter((o) => o.category !== 'model' && o.category !== 'thought_level')
   const advancedSummary =
-    [mcp.length ? `${mcp.length} mcp` : '', skills.length ? `${skills.length} skills` : '']
+    [
+      mcp.length ? `${mcp.length} mcp` : '',
+      // An unsupported agent's count would read as "these are active" — say
+      // the honest thing in the same number of characters.
+      skillsUnsupported ? 'no skills' : skills.length ? `${skills.length} skills` : ''
+    ]
       .filter(Boolean)
       .join(' · ') || 'no mcp, no skills'
 
@@ -674,26 +688,38 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
               )}
               <div className="hc-block">
                 <span className="seclabel">SKILLS</span>
-                {skillsOffered.map((entry) => (
-                  <SkillRow
-                    key={entry.name}
-                    entry={entry}
-                    on={skills.some((k) => k.name === entry.name)}
-                    onChange={(on) => setSkill(entry.name, on)}
-                  />
-                ))}
-                {skillOrphans.map((sel) => (
-                  <SkillMissingRow
-                    key={sel.name}
-                    name={sel.name}
-                    onRemove={() => setSkill(sel.name, false)}
-                  />
-                ))}
-                {!skillsOffered.length && !skillOrphans.length && (
+                {skillsUnsupported ? (
                   <div className="hc-note">
-                    no skills in this workspace — add one in Settings &rarr; Skills. A skill in the
-                    repository&apos;s own .claude/skills is the repo&apos;s and is not listed here.
+                    {draftAgentDef?.label} does not support skills — nothing would be mounted.
+                    {skills.length
+                      ? ' Your selection is kept and applies if you pick an agent that does.'
+                      : ''}
                   </div>
+                ) : (
+                  <>
+                    {skillsOffered.map((entry) => (
+                      <SkillRow
+                        key={entry.name}
+                        entry={entry}
+                        on={skills.some((k) => k.name === entry.name)}
+                        onChange={(on) => setSkill(entry.name, on)}
+                      />
+                    ))}
+                    {skillOrphans.map((sel) => (
+                      <SkillMissingRow
+                        key={sel.name}
+                        name={sel.name}
+                        onRemove={() => setSkill(sel.name, false)}
+                      />
+                    ))}
+                    {!skillsOffered.length && !skillOrphans.length && (
+                      <div className="hc-note">
+                        no skills in this workspace — add one in Settings &rarr; Skills. A skill in
+                        the repository&apos;s own .claude/skills is the repo&apos;s and is not listed
+                        here.
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
               <div className="hc-foot">
@@ -728,6 +754,11 @@ function LiveConfig({ snapshot }: { snapshot: SessionSnapshot }) {
   const skillsOffered = useSkillEntries(info.workspace)
   const mcp = resolveMcpSelection(info.mcp, mcpOffered)
   const skills = resolveSkillSelection(info.skills, skillsOffered)
+  // Same honesty as the draft picker: a kind whose pinned CLI reads no skills
+  // directory got no mount (containers.ts), so its selection must not appear
+  // as active tags — the note below says what happened to it instead.
+  const liveAgentDef = agentDef(agentKind(agents, info.agent) ?? '')
+  const skillsUnsupported = !!liveAgentDef && liveAgentDef.skillsDir === null
   return (
     <div className="ns-body">
       <div className="draft-settings">
@@ -750,12 +781,18 @@ function LiveConfig({ snapshot }: { snapshot: SessionSnapshot }) {
         {/* Read-only, like everything else here, and for a reason of its own:
             the files are already bind-mounted into a running container, so
             there is nothing a picker could change (docs/requirements-skills.md
-            §2). */}
-        {skills.map((r) => (
-          <SkillTag key={r.selection.name} {...r} />
-        ))}
+            §2). Not rendered at all for an agent that cannot see them — a tag
+            here says "mounted", and for that kind nothing was. */}
+        {!skillsUnsupported &&
+          skills.map((r) => <SkillTag key={r.selection.name} {...r} />)}
         <NetTag network={info.network} />
       </div>
+      {skillsUnsupported && skills.length > 0 && (
+        <div className="hc-note">
+          {liveAgentDef?.label} does not support skills — the {skills.length} selected{' '}
+          {skills.length === 1 ? 'skill was' : 'skills were'} not mounted
+        </div>
+      )}
       <div className="hc-note">
         role, environment, repository, MCP, skills and network are fixed once a session leaves
         draft — duplicate it to change them and start over

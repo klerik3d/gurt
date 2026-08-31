@@ -262,10 +262,13 @@ workspace can switch some on for every new draft (`defaultSkills`, the row's
 
 Delivery is files, not configuration. At start the selected skills are copied
 into the session's own scratch dir and bind-mounted **read-only** into its
-container, linked as the agent's `~/.claude/skills`. A skill that was not picked
-is physically absent, and nothing gurt writes ever lands in a clone. It works
-for every role: the mount is made before any devcontainer lifecycle hook runs,
-and read-only roles have those hooks stripped.
+container, linked at the agent kind's own skills directory (`AgentDef.skillsDir`
+— `~/.claude/skills` for claude code, `~/.config/opencode/skills` for opencode).
+A kind whose pinned CLI reads no such directory gets neither mount nor link, and
+the config tab says "does not support skills" instead of offering the pickers.
+A skill that was not picked is physically absent, and nothing gurt writes ever
+lands in a clone. It works for every role: the mount is made before any
+devcontainer lifecycle hook runs, and read-only roles have those hooks stripped.
 
 A repository's own `.claude/skills` is the repository's — gurt does not list,
 merge or disable it.

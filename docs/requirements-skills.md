@@ -162,7 +162,8 @@ At `startSession`, before the container is resolved:
    log (`[skills] …`), the way `resolveProxyPlan`'s errors are.
 3. Provisioning binds that directory **read-only** at `/gurt/skills` in
    the container, and — right after `up` — links it into the agent's
-   home:
+   home, at **the agent kind's own skills directory**
+   (`AgentDef.skillsDir`, `$HOME`-relative; for claude-code):
 
    ```sh
    mkdir -p "$HOME/.claude" && rm -rf "$HOME/.claude/skills" \
@@ -179,6 +180,42 @@ At `startSession`, before the container is resolved:
 
    A session that selected no skill gets neither the mount nor the link,
    and its container config is byte-for-byte what it is today.
+
+   **Where the link lands is a property of the agent kind.** gurt runs
+   four kinds of agents, and "skills" is a Claude Code convention the
+   others adopted unevenly, so `AgentDef` carries a `skillsDir` — the
+   `$HOME`-relative directory the *pinned* CLI actually reads, or `null`
+   for one that reads none. `null` means no mount and no link at all:
+   the session provisions exactly as it would with an empty selection
+   (`usesSkillMounts`, containers.ts), a `[skills]` line on the
+   provision log says the selection was not mounted, and the UI says so
+   too (§7) — mounting files the agent never looks at would let gurt
+   claim a delivery that does not happen. The kind is resolved from the
+   session's agent instance (`AgentInstance.kind` via agents.json),
+   falling back to the workspace's `defaultAgent` when a draft names
+   none, the same way the create path resolves it.
+
+   The values, verified against the pinned adapter versions (a pin bump
+   re-verifies; details in `src/shared/agents.ts` comments):
+
+   | kind | pinned package | `skillsDir` |
+   |---|---|---|
+   | claude-code | claude-agent-acp@0.70.0 | `.claude/skills` |
+   | opencode | opencode-ai@1.18.21 | `.config/opencode/skills` — the CLI's native global directory; it *also* auto-reads `~/.claude/skills`, but that compat scan is env-var opt-out, so the link targets the unconditional path |
+   | codex | codex-acp@1.6.2 (bundles @openai/codex@0.148.0) | `.agents/skills` — default-on skills subsystem; the canonical directory (the `~/.codex/skills` twin is deprecated), never `~/.claude/skills` |
+   | gemini | @google/gemini-cli@0.56.0 | `.gemini/skills` — Agent Skills (agentskills.io), default-on since its v0.26.0; also reads the `~/.agents/skills` alias, never `~/.claude/skills` |
+
+   As of these pins every kind reads *some* skills directory — the
+   research behind the table found default-on SKILL.md support in all
+   four — so no kind is `null` today. The `null` path is still real: it
+   is what a future pin (or kind) that reads nothing gets, it is covered
+   by the selection tests, and it is why the field is `string | null`
+   rather than a string with a default.
+
+   Because the mount's presence now depends on the agent, editing a
+   draft's *agent* while it has a skill selection releases its container
+   the same way editing the selection does (§5.2) — the selection itself
+   is untouched and survives a switch away and back.
 
 ### 5.1 Where the merged config goes
 
@@ -227,11 +264,18 @@ a user can act on it.
 `MCP SERVERS`: one row per offered skill (dot, name, description,
 `off`/`on` menu), then a row per unresolvable selection. Identical
 mechanics to `McpRow`/`McpMissingRow`; a skill has no modes, so it is
-the two-option variant.
+the two-option variant. When the draft's agent kind has
+`skillsDir: null`, the block shows a plain "does not support skills"
+note instead of the pickers — the `mcpHasModes` rule: gurt does not
+offer a switch it cannot honor. The stored selection is left exactly as
+it is (absent/`[]` semantics of §4.3 included), so picking a supporting
+agent again restores the pickers with the selection intact.
 
 **Config tab, live** — the enabled skills of a started session, as tags
 in the frozen summary beside the MCP ones, and named by the same "fixed
-once a session leaves draft" note.
+once a session leaves draft" note. For a `skillsDir: null` agent the
+tags are not rendered — a tag there reads as "mounted", and nothing
+was; a note says the selection was not mounted instead.
 
 **Settings → Skills** — the workspace's registry: a list, a `+ Add`
 button, and a modal with the name, a `SKILL.md` textarea validated on

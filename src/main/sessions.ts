@@ -717,7 +717,17 @@ export class SessionManager {
     // before anything is written — a rejected edit must leave the draft intact.
     const role = patch.role ?? sessionRole(s.info)
     assertRoleFitsRepos(role, patch.repos ?? s.info.repos)
-    if (patch.agent !== undefined) s.info.agent = patch.agent
+    if (patch.agent !== undefined) {
+      // With a skill selection in place the agent pick is structural too: the
+      // skills bind exists only for a kind that reads one (`AgentDef.skillsDir`,
+      // containers.ts), so a failed start can have left a container whose mount
+      // list the new agent invalidates. Without a selection every kind gets the
+      // same (empty) mount list and the container can stay. The selection
+      // itself is untouched — it survives a switch away and back.
+      if (patch.agent !== s.info.agent && s.info.skills?.length)
+        void this.events.releaseContainer(s.info.id, 'user')
+      s.info.agent = patch.agent
+    }
     if (patch.autoAllow !== undefined) s.info.autoAllow = patch.autoAllow
     if (patch.mcp !== undefined) s.info.mcp = patch.mcp
     // Takes effect at the next start: the network flag decides how the session's
