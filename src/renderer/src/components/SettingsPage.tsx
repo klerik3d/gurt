@@ -55,7 +55,8 @@ import {
   bindingFromEvent,
   bindingLabel,
   conflictsFor,
-  isRecordable
+  isRecordable,
+  modKeyLabel
 } from '../../../shared/hotkeys'
 import { AGENT_DEFS, agentDef } from '../../../shared/agents'
 import { refreshAgents, useAgents } from '../useAgents'
@@ -2818,7 +2819,7 @@ function HotkeysSection() {
       if (!isRecordable(e.code)) return // a bare modifier — keep waiting
       const binding = bindingFromEvent(e)
       if (!binding.mod) {
-        setHint('hold ⌘ (or Ctrl) while pressing a key')
+        setHint(`hold ${modKeyLabel()} while pressing a key`)
         return
       }
       const id = recording.id

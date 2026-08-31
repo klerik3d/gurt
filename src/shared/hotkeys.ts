@@ -1,6 +1,17 @@
 // Global keyboard shortcuts + user overrides — shared between main (persists
 // the override file) and renderer (the App-level listener, the settings UI).
 
+/** True in a macOS renderer, false everywhere else (including main, and Node
+ *  generally, which either has no `navigator` or a bare `Node.js/xx` one) —
+ *  the one thing that differs between platforms is how `mod`/`alt` are
+ *  *drawn* (⌘/⌥ vs Ctrl/Alt); matching and the Electron accelerator
+ *  (`CmdOrCtrl`, see `bindingToAccelerator`) are already the same on every
+ *  OS. Read live rather than cached at module load so tests can swap
+ *  `navigator` between assertions (see scripts/hotkeys.test.mjs). */
+function isMac(): boolean {
+  return typeof navigator !== 'undefined' && /Mac/.test(navigator.platform ?? navigator.userAgent ?? '')
+}
+
 /** One combination: `code` is a `KeyboardEvent.code` (layout-independent —
  *  `Backquote` stays the physical key left of "1" on any layout), `mod` is
  *  either metaKey or ctrlKey (gurt treats them as the same modifier, the way
@@ -18,6 +29,9 @@ export type HotkeyActionId =
   | 'newTask'
   | 'workspaceNext'
   | 'workspacePrev'
+  | 'gotoDashboard'
+  | 'gotoTasks'
+  | 'gotoSettings'
 
 export interface HotkeyDef {
   id: HotkeyActionId
@@ -33,7 +47,10 @@ export const HOTKEY_DEFS: HotkeyDef[] = [
   { id: 'newSession', label: 'New session', hint: 'start a new session draft in the current task' },
   { id: 'newTask', label: 'New task', hint: 'create a new task in the current workspace' },
   { id: 'workspaceNext', label: 'Next workspace', hint: 'cycle to the next workspace' },
-  { id: 'workspacePrev', label: 'Previous workspace', hint: 'cycle to the previous workspace' }
+  { id: 'workspacePrev', label: 'Previous workspace', hint: 'cycle to the previous workspace' },
+  { id: 'gotoDashboard', label: 'Go to dashboard', hint: 'open the dashboard' },
+  { id: 'gotoTasks', label: 'Go to tasks', hint: 'open tasks & sessions, focusing the list' },
+  { id: 'gotoSettings', label: 'Go to settings', hint: 'open settings' }
 ]
 
 export const HOTKEY_DEFAULTS: Record<HotkeyActionId, HotkeyBinding> = {
@@ -41,7 +58,10 @@ export const HOTKEY_DEFAULTS: Record<HotkeyActionId, HotkeyBinding> = {
   newSession: { code: 'KeyN', mod: true, shift: false, alt: false },
   newTask: { code: 'KeyN', mod: true, shift: true, alt: false },
   workspaceNext: { code: 'Backquote', mod: true, shift: false, alt: false },
-  workspacePrev: { code: 'Backquote', mod: true, shift: true, alt: false }
+  workspacePrev: { code: 'Backquote', mod: true, shift: true, alt: false },
+  gotoDashboard: { code: 'Digit1', mod: true, shift: false, alt: false },
+  gotoTasks: { code: 'Digit2', mod: true, shift: false, alt: false },
+  gotoSettings: { code: 'Digit0', mod: true, shift: false, alt: false }
 }
 
 export type HotkeyMap = Record<HotkeyActionId, HotkeyBinding>
@@ -126,11 +146,35 @@ export function codeLabel(code: string): string {
   return code
 }
 
-/** `⌘⇧N`-style display string, the app's existing convention for a
- *  combination (see the composer, the command palette, the sidebar's "new
- *  task" tooltip). */
+/** `⌘⇧N`-style display string on macOS, `Ctrl+Shift+N` elsewhere — the app's
+ *  existing convention for a combination (see the composer, the command
+ *  palette, the sidebar's "new task" tooltip). */
 export function bindingLabel(b: HotkeyBinding): string {
-  return `${b.mod ? '⌘' : ''}${b.alt ? '⌥' : ''}${b.shift ? '⇧' : ''}${codeLabel(b.code)}`
+  if (isMac()) return `${b.mod ? '⌘' : ''}${b.alt ? '⌥' : ''}${b.shift ? '⇧' : ''}${codeLabel(b.code)}`
+  const parts: string[] = []
+  if (b.mod) parts.push('Ctrl')
+  if (b.alt) parts.push('Alt')
+  if (b.shift) parts.push('Shift')
+  parts.push(codeLabel(b.code))
+  return parts.join('+')
+}
+
+/** Everything in `bindingLabel` except the modifier — what a corner badge
+ *  shows once the user is already holding it down (App's activity-bar
+ *  hint: hold ⌘/Ctrl, see which key finishes each icon's shortcut). */
+export function bindingRestLabel(b: HotkeyBinding): string {
+  if (isMac()) return `${b.alt ? '⌥' : ''}${b.shift ? '⇧' : ''}${codeLabel(b.code)}`
+  const parts: string[] = []
+  if (b.alt) parts.push('Alt')
+  if (b.shift) parts.push('Shift')
+  parts.push(codeLabel(b.code))
+  return parts.join('+')
+}
+
+/** `hold ⌘` on macOS, `hold Ctrl` elsewhere — the modifier-prompt half of the
+ *  Settings → Hotkeys recording hint. */
+export function modKeyLabel(): string {
+  return isMac() ? '⌘' : 'Ctrl'
 }
 
 /** `KeyboardEvent.code` → the key name Electron's `accelerator` strings use

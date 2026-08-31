@@ -105,6 +105,7 @@ export function Sidebar({
   selection,
   changes,
   activity,
+  focusSignal,
   onNewSession,
   onSelectTask,
   onSelectSession
@@ -119,6 +120,9 @@ export function Sidebar({
   changes: Record<string, RepoChanges[]>
   /** Live runtime overlay per session id — splits `started` into running/waiting/idle. */
   activity: Record<string, SessionActivity>
+  /** Bumped by App on ⌘2 (`gotoTasks`) — focuses the tree, including on the
+   *  mount that follows switching into the work view from elsewhere. */
+  focusSignal?: number
   onNewSession: (ws: string, task: string) => void
   onSelectTask: (ws: string, task: string) => void
   onSelectSession: (id: string) => void
@@ -159,6 +163,13 @@ export function Sidebar({
   useEffect(() => {
     selectedRef.current?.scrollIntoView({ block: 'nearest' })
   }, [selection])
+
+  // ⌘2: focus the tree so arrow keys work immediately, no click first. Fires
+  // on mount too (App bumps the signal before the work view has mounted this
+  // component when switching in from dashboard/settings).
+  useEffect(() => {
+    if (focusSignal) treeRef.current?.focus()
+  }, [focusSignal])
 
   const setCollapse = (ws2: string, task: string, on: boolean) => {
     setCollapsed((prev) => {

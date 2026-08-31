@@ -106,10 +106,10 @@ const modalGone = () => page.waitForSelector('.modal', { state: 'detached', time
 // The two views in the activity bar. Repos, environments and clients live in
 // Settings; tasks and sessions in the work view.
 const openSettings = async (section) => {
-  await page.click('.activitybar .ab-item[title="Settings"]')
+  await page.click('.activitybar .ab-item[title^="Settings"]')
   await page.click(`.set-nav-item:has-text("${section}")`)
 }
-const openWork = () => page.click('.activitybar .ab-item[title="Tasks & sessions"]')
+const openWork = () => page.click('.activitybar .ab-item[title^="Tasks & sessions"]')
 
 /** Add a repo through Settings → Repos. */
 async function addRepo(name, url) {
@@ -154,7 +154,7 @@ await addEnv('hello-env', 'hello')
 
 // --- task --------------------------------------------------------------
 await openWork()
-await page.click('button[title="New task · ⌘⇧N"]')
+await page.click('button[title^="New task"]')
 await page.waitForSelector('.sb-newtask-menu input', { timeout: 5000 })
 await page.fill('.sb-newtask-menu input', 'try-electron')
 await page.press('.sb-newtask-menu input', 'Enter')

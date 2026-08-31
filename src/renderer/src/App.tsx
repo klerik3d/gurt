@@ -26,7 +26,7 @@ import { markSeen } from './reviewed'
 import { DialogHost, alertDialog } from './dialog'
 import { logErr } from './log'
 import { run } from './async'
-import { bindingLabel, bindingMatchesEvent } from '../../shared/hotkeys'
+import { bindingLabel, bindingMatchesEvent, bindingRestLabel } from '../../shared/hotkeys'
 import { useHotkeys } from './useHotkeys'
 
 export type Selection =
@@ -46,6 +46,10 @@ const SIDEBAR_WIDTH_KEY = 'gurt.sidebarWidth'
 const SIDEBAR_LEFT_OFFSET = 52
 
 const clampSidebar = (w: number) => Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, w))
+
+// How long ⌘/Ctrl must be held alone before the activity bar's shortcut
+// badges appear — long enough that typing a chord (⌘K, ⌘N, …) never shows them.
+const MOD_HOLD_DELAY_MS = 350
 
 /** Global FIFO positions (1-based) of every queued session, keyed by id. */
 export function queuePositions(tree: Tree | null): Record<string, number> {
@@ -74,6 +78,13 @@ export default function App() {
   const [turnStarts, setTurnStarts] = useState<Record<string, number>>({})
   const [paletteOpen, setPaletteOpen] = useState(false)
   const hotkeys = useHotkeys()
+  /** Bumped on every ⌘2 (`gotoTasks`) — Sidebar focuses its tree whenever this
+   *  changes, including on the mount that follows switching into the work view. */
+  const [focusTasksSignal, setFocusTasksSignal] = useState(0)
+  /** ⌘/Ctrl held alone, past `MOD_HOLD_DELAY_MS` — drives the activity bar's
+   *  "hold to see the shortcut" badges (below). Delayed so a quick chord
+   *  (⌘K, ⌘N, …) never flashes them; see `MOD_HOLD_DELAY_MS`. */
+  const [modHeld, setModHeld] = useState(false)
   /** Boot restore progress — the footer bar while main is still restoring
    *  sessions / reconciling containers. Null until first heard from; hidden
    *  once `done`. */
@@ -491,13 +502,51 @@ export default function App() {
     }
   }, [commitWsSwitch])
 
+  // Activity-bar shortcut badges: ⌘/Ctrl held alone for MOD_HOLD_DELAY_MS
+  // shows each icon's ⌘1/⌘2/⌘0. `timer` only ever arms once per hold — a held
+  // modifier key can itself repeat keydown events, and a chord (⌘K) fires a
+  // second keydown for the letter, not another one for the modifier.
+  useEffect(() => {
+    let timer: number | null = null
+    const clearTimer = () => {
+      if (timer !== null) {
+        window.clearTimeout(timer)
+        timer = null
+      }
+    }
+    const release = () => {
+      clearTimer()
+      setModHeld(false)
+    }
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.key !== 'Meta' && e.key !== 'Control') || timer !== null) return
+      timer = window.setTimeout(() => {
+        timer = null
+        setModHeld(true)
+      }, MOD_HOLD_DELAY_MS)
+    }
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.key === 'Meta' || e.key === 'Control') release()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    window.addEventListener('keyup', onKeyUp)
+    window.addEventListener('blur', release)
+    return () => {
+      clearTimer()
+      window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('keyup', onKeyUp)
+      window.removeEventListener('blur', release)
+    }
+  }, [])
+
   // macOS never lets ⌘`/⌘⇧` reach here as a keydown (see `cycleWorkspace`
   // above) — main forwards it over IPC instead once its hidden accelerator
   // fires. Harmless no-op on other platforms, which just never emit it.
   useEffect(() => window.gurt.onHotkeyCycleWorkspace(cycleWorkspace), [cycleWorkspace])
 
-  // Global hotkeys: palette · new session · new task · cycle workspaces
-  // (default ⌘K / ⌘N / ⌘⇧N / ⌘` / ⌘⇧`, remappable in Settings → Hotkeys).
+  // Global hotkeys: palette · new session · new task · cycle workspaces ·
+  // go to dashboard/tasks/settings (default ⌘K / ⌘N / ⌘⇧N / ⌘` / ⌘⇧` /
+  // ⌘1 / ⌘2 / ⌘0, remappable in Settings → Hotkeys).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey)) return
@@ -516,6 +565,16 @@ export default function App() {
       } else if (bindingMatchesEvent(hotkeys.newSession, e)) {
         e.preventDefault()
         openNewSession()
+      } else if (bindingMatchesEvent(hotkeys.gotoDashboard, e)) {
+        e.preventDefault()
+        setView('dashboard')
+      } else if (bindingMatchesEvent(hotkeys.gotoTasks, e)) {
+        e.preventDefault()
+        setView('work')
+        setFocusTasksSignal((n) => n + 1)
+      } else if (bindingMatchesEvent(hotkeys.gotoSettings, e)) {
+        e.preventDefault()
+        setView('settings')
       }
     }
     window.addEventListener('keydown', onKey)
@@ -691,25 +750,28 @@ export default function App() {
         <div className="activitybar">
           <button
             className={`ab-item ${view === 'dashboard' ? 'active' : ''}`}
-            title="Dashboard"
+            title={`Dashboard · ${bindingLabel(hotkeys.gotoDashboard)}`}
             onClick={() => setView('dashboard')}
           >
             <Icon name="grid" size={17} />
+            {modHeld && <span className="ab-badge">{bindingRestLabel(hotkeys.gotoDashboard)}</span>}
           </button>
           <button
             className={`ab-item ${view === 'work' ? 'active' : ''}`}
-            title="Tasks & sessions"
+            title={`Tasks & sessions · ${bindingLabel(hotkeys.gotoTasks)}`}
             onClick={() => setView('work')}
           >
             <Icon name="message" size={17} />
+            {modHeld && <span className="ab-badge">{bindingRestLabel(hotkeys.gotoTasks)}</span>}
           </button>
           <span className="spacer" />
           <button
             className={`ab-item ${view === 'settings' ? 'active' : ''}`}
-            title="Settings"
+            title={`Settings · ${bindingLabel(hotkeys.gotoSettings)}`}
             onClick={() => setView('settings')}
           >
             <Icon name="gear" size={17} />
+            {modHeld && <span className="ab-badge">{bindingRestLabel(hotkeys.gotoSettings)}</span>}
           </button>
         </div>
 
@@ -722,6 +784,7 @@ export default function App() {
               selection={selection}
               changes={changes}
               activity={activity}
+              focusSignal={focusTasksSignal}
               onNewSession={(w, t) => createDraft(w, t)}
               onSelectTask={selectTask}
               onSelectSession={selectSession}

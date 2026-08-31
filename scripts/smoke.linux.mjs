@@ -39,7 +39,7 @@ await page.screenshot({ path: path.join(SHOT_DIR, '01-initial.png') })
 console.log('initial render OK')
 
 // The client registry (Settings → Clients) starts empty — no seeded kinds.
-await page.click('.activitybar .ab-item[title="Settings"]')
+await page.click('.activitybar .ab-item[title^="Settings"]')
 await page.click('.set-nav-item:has-text("Clients")')
 await page.waitForSelector('.tp-dashed:has-text("no clients yet")', { timeout: 5000 })
 assert.equal(await page.locator('.set-row').count(), 0, 'client registry starts empty')
