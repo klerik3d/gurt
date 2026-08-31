@@ -155,6 +155,18 @@ export function bindingLabel(b: HotkeyBinding): string {
   return parts.join('+')
 }
 
+/** Everything in `bindingLabel` except the modifier — what a corner badge
+ *  shows once the user is already holding it down (App's activity-bar
+ *  hint: hold ⌘/Ctrl, see which key finishes each icon's shortcut). */
+export function bindingRestLabel(b: HotkeyBinding): string {
+  if (isMac) return `${b.alt ? '⌥' : ''}${b.shift ? '⇧' : ''}${codeLabel(b.code)}`
+  const parts: string[] = []
+  if (b.alt) parts.push('Alt')
+  if (b.shift) parts.push('Shift')
+  parts.push(codeLabel(b.code))
+  return parts.join('+')
+}
+
 /** `hold ⌘` on macOS, `hold Ctrl` elsewhere — the modifier-prompt half of the
  *  Settings → Hotkeys recording hint. */
 export function modKeyLabel(): string {
