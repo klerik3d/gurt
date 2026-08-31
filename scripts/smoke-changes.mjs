@@ -104,11 +104,13 @@ async function open(app) {
 
 // Throws on a miss: a silently swallowed click surfaces much later as a
 // timeout on whatever the click was supposed to open, which is a lot harder to
-// read than "no button titled X".
+// read than "no button titled X". Prefix match: several of these titles carry
+// a platform-dependent hotkey suffix (⌘⇧N vs Ctrl+Shift+N — see
+// shared/hotkeys.ts's bindingLabel), so match on the stable label only.
 const clickTitle = (page, t) =>
   page.evaluate((x) => {
-    const el = document.querySelector(`button[title="${x}"]`)
-    if (!el) throw new Error(`no button titled ${JSON.stringify(x)}`)
+    const el = [...document.querySelectorAll('button')].find((b) => b.title.startsWith(x))
+    if (!el) throw new Error(`no button titled ${JSON.stringify(x)}*`)
     el.click()
   }, t)
 const modalGone = (page) => page.waitForSelector('.modal', { state: 'detached' })
@@ -267,7 +269,7 @@ await page.fill('.modal input', 'personal')
 await page.click('.modal .btn-primary')
 await modalGone(page)
 // The task popover is inline — no modal, commit with Enter.
-await clickTitle(page, 'New task · ⌘⇧N')
+await clickTitle(page, 'New task')
 await page.waitForSelector('.sb-newtask-menu input')
 await page.fill('.sb-newtask-menu input', 't1')
 await page.press('.sb-newtask-menu input', 'Enter')

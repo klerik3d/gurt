@@ -1,12 +1,16 @@
 // Global keyboard shortcuts + user overrides — shared between main (persists
 // the override file) and renderer (the App-level listener, the settings UI).
 
-/** True in a macOS renderer, false everywhere else (including main, which
- *  has no `navigator`) — the one thing that differs between platforms is how
- *  `mod`/`alt` are *drawn* (⌘/⌥ vs Ctrl/Alt); matching and the Electron
- *  accelerator (`CmdOrCtrl`, see `bindingToAccelerator`) are already the same
- *  on every OS. */
-const isMac = typeof navigator !== 'undefined' && /Mac/.test(navigator.platform ?? navigator.userAgent ?? '')
+/** True in a macOS renderer, false everywhere else (including main, and Node
+ *  generally, which either has no `navigator` or a bare `Node.js/xx` one) —
+ *  the one thing that differs between platforms is how `mod`/`alt` are
+ *  *drawn* (⌘/⌥ vs Ctrl/Alt); matching and the Electron accelerator
+ *  (`CmdOrCtrl`, see `bindingToAccelerator`) are already the same on every
+ *  OS. Read live rather than cached at module load so tests can swap
+ *  `navigator` between assertions (see scripts/hotkeys.test.mjs). */
+function isMac(): boolean {
+  return typeof navigator !== 'undefined' && /Mac/.test(navigator.platform ?? navigator.userAgent ?? '')
+}
 
 /** One combination: `code` is a `KeyboardEvent.code` (layout-independent —
  *  `Backquote` stays the physical key left of "1" on any layout), `mod` is
@@ -146,7 +150,7 @@ export function codeLabel(code: string): string {
  *  existing convention for a combination (see the composer, the command
  *  palette, the sidebar's "new task" tooltip). */
 export function bindingLabel(b: HotkeyBinding): string {
-  if (isMac) return `${b.mod ? '⌘' : ''}${b.alt ? '⌥' : ''}${b.shift ? '⇧' : ''}${codeLabel(b.code)}`
+  if (isMac()) return `${b.mod ? '⌘' : ''}${b.alt ? '⌥' : ''}${b.shift ? '⇧' : ''}${codeLabel(b.code)}`
   const parts: string[] = []
   if (b.mod) parts.push('Ctrl')
   if (b.alt) parts.push('Alt')
@@ -159,7 +163,7 @@ export function bindingLabel(b: HotkeyBinding): string {
  *  shows once the user is already holding it down (App's activity-bar
  *  hint: hold ⌘/Ctrl, see which key finishes each icon's shortcut). */
 export function bindingRestLabel(b: HotkeyBinding): string {
-  if (isMac) return `${b.alt ? '⌥' : ''}${b.shift ? '⇧' : ''}${codeLabel(b.code)}`
+  if (isMac()) return `${b.alt ? '⌥' : ''}${b.shift ? '⇧' : ''}${codeLabel(b.code)}`
   const parts: string[] = []
   if (b.alt) parts.push('Alt')
   if (b.shift) parts.push('Shift')
@@ -170,7 +174,7 @@ export function bindingRestLabel(b: HotkeyBinding): string {
 /** `hold ⌘` on macOS, `hold Ctrl` elsewhere — the modifier-prompt half of the
  *  Settings → Hotkeys recording hint. */
 export function modKeyLabel(): string {
-  return isMac ? '⌘' : 'Ctrl'
+  return isMac() ? '⌘' : 'Ctrl'
 }
 
 /** `KeyboardEvent.code` → the key name Electron's `accelerator` strings use
