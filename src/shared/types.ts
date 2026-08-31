@@ -25,6 +25,24 @@ export interface McpSelection {
   mode: McpMode
 }
 
+/**
+ * A skill the user picked for a session (docs/requirements-skills.md §4.3).
+ *
+ * `name` names a directory of the workspace's skill registry
+ * (`~/.gurt/<ws>/skills/<name>/`), resolved through `resolveSkillSelection`.
+ * Like `McpSelection` the union is not closed at write time: a skill can be
+ * deleted after the fact, so every reader treats an unknown name as "selected
+ * but unavailable" rather than as corruption.
+ *
+ * A skill is off or on — there is no `mode` twin to `McpSelection`'s, because
+ * gurt hands the agent the files and nothing about them is a capability gurt
+ * grants by halves. The record shape stays a record anyway, so the two
+ * selections read the same way everywhere they are handled together.
+ */
+export interface SkillSelection {
+  name: string
+}
+
 /** ACP http-transport MCP server descriptor, passed in session/new & session/load. */
 export interface AcpHttpMcpServer {
   type: 'http'
@@ -143,6 +161,14 @@ export interface WorkspaceFile {
    *  instance of a kind can be allowed while another is denied. Absent/empty
    *  = every configured agent is allowed. */
   deniedAgents?: string[]
+  /** Skill names (directories under `~/.gurt/<ws>/skills/`) switched on in
+   *  every new draft of this workspace — the skills twin of `defaultAgent`.
+   *  Seeded into the draft by the config tab, and the user's to change from
+   *  there on (docs/requirements-skills.md §4.2). Absent/empty = none. The
+   *  skills themselves live on disk, not here; a name that no longer resolves
+   *  is the same "selected but unavailable" case a session's own selection
+   *  already has to hold. */
+  defaultSkills?: string[]
 }
 
 /**
@@ -308,6 +334,11 @@ export interface AgentSessionRequest {
   agent?: string
   autoAllow?: boolean
   configValues?: Record<string, string | boolean>
+  /** Skill names for the draft. Omitted, the spawner's own set is inherited —
+   *  a drafted session runs with the procedures the drafting one was given
+   *  unless the agent deliberately narrows them. `[]` is how it says "none"
+   *  (docs/requirements-skills.md §6). */
+  skills?: string[]
 }
 
 /**
@@ -379,6 +410,13 @@ export interface SessionInfo {
   state: SessionState
   /** MCP servers to attach when this session starts (empty/undefined = none). */
   mcp?: McpSelection[]
+  /** Skills mounted into the container when this session starts (empty/undefined
+   *  = none). Chosen while the session is a draft and frozen at start: the files
+   *  are bind-mounted, so there is nothing to change on a live session
+   *  (docs/requirements-skills.md §2). Absent means "never chosen" — which is
+   *  what the draft's `defaultSkills` seeding keys on — while `[]` means the
+   *  user chose none and is not re-seeded. */
+  skills?: SkillSelection[]
   /** Egress settings for this session's network (absent = the defaults:
    *  a normal bridge, everything allowed and logged). */
   network?: SessionNetwork
@@ -451,6 +489,9 @@ export interface Tree {
     /** Agent instance ids not allowed in this workspace — see
      *  `WorkspaceFile.deniedAgents`. */
     deniedAgents?: string[]
+    /** Skill names switched on in every new draft here — see
+     *  `WorkspaceFile.defaultSkills`. */
+    defaultSkills?: string[]
     tasks: {
       name: string
       /** ISO timestamp the task was created — see {@link TaskFile.createdAt}.

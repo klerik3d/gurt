@@ -15,6 +15,7 @@ import {
   checkMcpEntryCredential
 } from './credentials'
 import { isLocalMcpEntry, mcpEntryKind } from '../shared/mcp'
+import { sanitizeSkillSelection } from '../shared/skills'
 import { checkMcpCommand, clearNpmInstall } from './mcp/stdioBridge'
 import { probeMcpServer } from './mcp/probe'
 import {
@@ -51,6 +52,9 @@ function broadcast(channel: string, ...args: unknown[]): void {
  */
 const OPAQUE_ARGS = new Set<keyof GurtApi>([
   'createSession',
+  // A SKILL.md is a whole document the user wrote — prose, like a prompt.
+  'addSkill',
+  'updateSkill',
   'sessionPrompt',
   'sessionEditPrompt',
   'sessionEditDraft',
@@ -203,6 +207,28 @@ export function registerIpc(): void {
       await store.removeMcpServer(ws, id)
       kernel.bus.emit('tree.changed', undefined)
     },
+    // The registry lives in directories, not in workspace.json, so these ride
+    // `tree.changed` the way the MCP writes do — it is the signal the picker
+    // and the Settings list already re-read on (docs/requirements-skills.md §7).
+    getSkills: (ws) => store.getSkills(ws),
+    getSkillDoc: (ws, name) => store.getSkillDoc(ws, name),
+    addSkill: async (ws, name, doc) => {
+      await store.addSkill(ws, name, doc)
+      kernel.bus.emit('tree.changed', undefined)
+    },
+    updateSkill: async (ws, name, doc) => {
+      await store.updateSkill(ws, name, doc)
+      kernel.bus.emit('tree.changed', undefined)
+    },
+    removeSkill: async (ws, name) => {
+      await store.removeSkill(ws, name)
+      kernel.bus.emit('tree.changed', undefined)
+    },
+    skillUsedBy: (ws, name) => store.tasksUsingSkill(ws, name),
+    setDefaultSkills: async (ws, names) => {
+      await store.setDefaultSkills(ws, sanitizeSkillSelection(names).map((k) => k.name))
+      kernel.bus.emit('tree.changed', undefined)
+    },
     reinstallMcpServer: async (ws, id) => {
       // Read the entry rather than trusting the caller's word for its kind:
       // "reinstall" means nothing for a command or an http entry, and clearing
@@ -281,6 +307,7 @@ export function registerIpc(): void {
       autoAllow,
       configValues,
       role,
+      skills,
       network
     ) => {
       // Anything that can bring a container up waits out the boot restore: the
@@ -316,6 +343,14 @@ export function registerIpc(): void {
         autoAllow,
         configValues,
         role,
+        // Names become directories under the session's scratch dir; a name that
+        // could never be one is refused where it arrives. Whether it *resolves*
+        // is not checked — that is the draft's to show
+        // (docs/requirements-skills.md §4.4). An empty list over this boundary
+        // is a bare draft that has picked nothing *yet*, so it stays absent and
+        // the config tab seeds the workspace's defaults into it; only an edit
+        // can record a deliberate "none".
+        skills?.length ? sanitizeSkillSelection(skills) : undefined,
         // Not validated here: `SessionManager.createSession` sanitizes it, and
         // it has to — the agent-drafted and duplicate paths never pass this
         // boundary at all.

@@ -384,6 +384,10 @@ export default function App() {
           true,
           {},
           'executor',
+          // Nothing picked yet, not "none picked": the config tab seeds the
+          // workspace's `defaultSkills` into a draft that has never chosen
+          // (docs/requirements-skills.md §4.2).
+          [],
           { internal: false }
         )
         .then((s) => selectSession(s.id))
