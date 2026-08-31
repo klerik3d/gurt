@@ -6,6 +6,7 @@ import type { DiffTarget, ReviewState, Tree } from '../shared/types'
 import { isSessionRole, targetKey } from '../shared/types'
 import type { BootProgress, SessionDraftPatch } from '../shared/api'
 import { NOTIFICATION_DEFAULTS } from '../shared/notifications'
+import { sanitizeSkillSelection } from '../shared/skills'
 import { onMcpFailures, resolveMcpServers, stopMcpServers } from './mcp/manager'
 import { ensureGurtServer, stopGurtServer } from './mcp/gurtServer'
 import { isDirty } from './provision'
@@ -208,7 +209,9 @@ export function createKernel(): Kernel {
         store
           .deleteSessionScratch(ws, task, sessionId)
           .catch((e: unknown) => log.error('internal.fail', { site: 'session-scratch-delete', s: sessionId, err: e }))
-      }
+      },
+      materializeSkills: (ws, task, sessionId, selection) =>
+        store.materializeSessionSkills(ws, task, sessionId, selection)
     },
     bus
   )
@@ -458,7 +461,16 @@ export function createKernel(): Kernel {
         throw new Error(`unknown session role "${String(patch.role)}"`)
       const info = sessions.snapshot(sessionId)?.info
       if (info) await assertDraftTarget(info.workspace, patch.repos ?? [], patch.env, patch.agent)
-      sessions.editDraft(sessionId, patch)
+      // Names become directories under the session's scratch dir, so the shape
+      // is checked here rather than at the copy. Resolvability is not: a name
+      // that could exist and does not is the draft's to show
+      // (docs/requirements-skills.md §4.4).
+      sessions.editDraft(
+        sessionId,
+        patch.skills === undefined
+          ? patch
+          : { ...patch, skills: sanitizeSkillSelection(patch.skills) }
+      )
     },
 
     async reviewState(

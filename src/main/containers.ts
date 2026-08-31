@@ -34,7 +34,9 @@ import {
   installAcpAdapter,
   materializeEnvConfig,
   overrideConfigArgs,
-  mountedConfigPath
+  sessionConfigPath,
+  linkContainerSkills,
+  SKILLS_MOUNT
 } from './provision'
 import type { Bus } from './bus'
 import { createLogger, errCtx } from './log'
@@ -67,6 +69,34 @@ function sameRepos(a: string[] | undefined, b: string[]): boolean {
  */
 function usesRepoMounts(info: SessionInfo): boolean {
   return info.repos.length > 1 || roleIsReadOnly(sessionRole(info))
+}
+
+/** Whether this session's container carries the skills bind: it picked a skill
+ *  at all, *and* its agent kind reads a skills directory (`AgentDef.skillsDir`,
+ *  resolved by the caller — docs/requirements-skills.md §5). A `null` dir means
+ *  the pinned CLI never looks: mounting files it cannot see would let the UI
+ *  claim a delivery that does not happen, so such a session provisions exactly
+ *  as it would with no selection. Exported for the selection tests. */
+export function usesSkillMounts(info: SessionInfo, skillsDir: string | null): boolean {
+  return !!info.skills?.length && skillsDir !== null
+}
+
+/**
+ * The `--override-config` pair every `up` and every `exec` of this session must
+ * resolve — they have to agree, since the config decides the exec cwd and the
+ * reported `remoteWorkspaceFolder`. It is the session's own merged copy
+ * whenever gurt added mounts of its own (sibling repos, the skills bind, or
+ * both), and the env's shared materialized file otherwise. The file behind it
+ * was written by `ensure`'s `up` and persists across app restarts, so the
+ * reattach path needs nothing.
+ */
+function sessionConfigArgs(info: SessionInfo, sessionId: string, skillsDir: string | null): string[] {
+  return usesRepoMounts(info) || usesSkillMounts(info, skillsDir)
+    ? [
+        '--override-config',
+        sessionConfigPath(store.sessionScratchDir(info.workspace, info.task, sessionId))
+      ]
+    : overrideConfigArgs({ workspace: info.workspace, task: info.task, env: info.env })
 }
 
 /**
@@ -350,6 +380,34 @@ export class ContainerManager {
         await fs.mkdir(workspaceFolder, { recursive: true })
         extraMounts = clones.map(({ cfg, dir }) => ({ hostDir: dir, name: cfg.name, readonly }))
       }
+      // Whether the selection is *deliverable* is the agent kind's to say
+      // (`AgentDef.skillsDir`): resolve the draft's instance to its kind,
+      // falling back to the workspace default the way the create path does
+      // (ipc.ts). An id that resolves to nothing mounts nothing — gurt cannot
+      // link a directory for an agent it cannot name.
+      const agentId = info.agent || ws.defaultAgent
+      const kind = agentId ? (await store.getAgents())[agentId]?.kind : undefined
+      const skillsDir = (kind ? agentDef(kind)?.skillsDir : null) ?? null
+      if (info.skills?.length && skillsDir === null)
+        provisionLog(
+          `[skills] agent "${kind ?? agentId ?? 'unknown'}" does not read skills — selection not mounted`
+        )
+      // The skills the session picked, staged into its scratch dir by
+      // `materializeSkills` just before this call, bound read-only at a fixed
+      // path (docs/requirements-skills.md §5). Added only when the session
+      // selected something *and* its agent reads skills, so any other session
+      // provisions exactly as it did before this feature existed — and a draft
+      // that changes its selection (or, with one, its agent) releases its
+      // container, since the mount list is fixed at create time (§5.2).
+      const hostMounts = usesSkillMounts(info, skillsDir)
+        ? [
+            {
+              hostDir: store.sessionSkillsDir(info.workspace, info.task, sessionId),
+              target: SKILLS_MOUNT,
+              readonly: true
+            }
+          ]
+        : []
       const up = await devcontainerUp(
         sessionId,
         configArgs,
@@ -362,8 +420,21 @@ export class ContainerManager {
             { repos: info.repos, ...(this.container(sessionId) ?? {}), status: 'post' },
             'user'
           ),
-        extraMounts
+        extraMounts,
+        hostMounts,
+        store.sessionScratchDir(info.workspace, info.task, sessionId)
       )
+      // After `up`, before anything reports the container usable: the agent
+      // resolves its skills at startup, and the adapter is spawned from
+      // `launchContext` below.
+      if (skillsDir !== null && hostMounts.length)
+        await linkContainerSkills(
+          sessionId,
+          sessionConfigArgs(info, sessionId, skillsDir),
+          workspaceFolder,
+          skillsDir,
+          provisionLog
+        )
       // Deleted mid-start: this container was born after its session's delete
       // had already looked for one to take down, so nothing owns it and nothing
       // records it (`patchContainer` on a gone session is a no-op). Remove it
@@ -556,13 +627,7 @@ export class ContainerManager {
       session: sessionId,
       containerId: c.id,
       hostWorkspaceFolder,
-      // The file behind these args was written by ensure's up (and persists
-      // across app restarts) — up and every exec resolve the same config: the
-      // env's materialized file, or the session's merged copy when the repos
-      // are mounted explicitly (extra mounts + wrapper workspaceFolder).
-      configArgs: mounted
-        ? ['--override-config', mountedConfigPath(hostWorkspaceFolder)]
-        : overrideConfigArgs(this.refOf(info))
+      configArgs: sessionConfigArgs(info, sessionId, def.skillsDir)
     }
     // Step 3 of the provisioning sequence (§7.1), and the reason it is here
     // rather than in the connection path: `npm install -g` needs the open

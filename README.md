@@ -112,8 +112,8 @@ draft/queued/starting pane, and from the ⋯ menu in the pane header (the only o
 a chat has):
 
 - **duplicate** copies the session into a new **draft** of the same task, named
-  `<title> (copy)`: role, env, repos, agent, MCP/git/auto-allow, config picks
-  and the first prompt all come along, nothing runtime-derived does. Fix the
+  `<title> (copy)`: role, env, repos, agent, MCP/skills/git/auto-allow, config
+  picks and the first prompt all come along, nothing runtime-derived does. Fix the
   setting that was wrong, then run it.
 - **delete** removes the session in any state — running or mid-start included —
   and everything it owns: its container, its adapter, its host servers, its chat
@@ -245,6 +245,33 @@ start and resume: `mcp/manager.ts` starts, restarts and stops the *host* servers
 per (session, mcp id), and `proxy/config.ts` (`planProxy`) turns the same
 selection into the per-session proxy's routes, where registry entries get their
 credentials injected.
+
+## Skills
+
+A **skill** is a Claude Code skill directory — `SKILL.md` (YAML frontmatter over
+a markdown body) plus whatever supporting files it references. gurt keeps a
+registry of them per workspace under `~/.gurt/<ws>/skills/<name>/`, edited in
+Settings → Skills — see
+[docs/requirements-skills.md](docs/requirements-skills.md).
+
+The draft's config tab lists them off / on, and what is picked there is
+`SessionInfo.skills`: persisted with the session, carried by a duplicate, and
+frozen once the session leaves draft — by then the files are mounted. A
+workspace can switch some on for every new draft (`defaultSkills`, the row's
+"enable by default").
+
+Delivery is files, not configuration. At start the selected skills are copied
+into the session's own scratch dir and bind-mounted **read-only** into its
+container, linked at the agent kind's own skills directory (`AgentDef.skillsDir`
+— `~/.claude/skills` for claude code, `~/.config/opencode/skills` for opencode).
+A kind whose pinned CLI reads no such directory gets neither mount nor link, and
+the config tab says "does not support skills" instead of offering the pickers.
+A skill that was not picked is physically absent, and nothing gurt writes ever
+lands in a clone. It works for every role: the mount is made before any
+devcontainer lifecycle hook runs, and read-only roles have those hooks stripped.
+
+A repository's own `.claude/skills` is the repository's — gurt does not list,
+merge or disable it.
 
 ## Session network & observed traffic
 
@@ -454,7 +481,7 @@ node scripts/smoke.linux.mjs                      # linux variant of smoke.mjs: 
 
 Unit tests are pure node — no Electron, no Playwright, no docker; the TS under
 test is bundled on the fly with esbuild. `npm test` runs every
-`scripts/*.test.mjs` (currently 37) and is the canonical way to run them; a single
+`scripts/*.test.mjs` (currently 46) and is the canonical way to run them; a single
 file can also be run directly. A few, to show what they cover:
 
 ```bash
@@ -468,6 +495,7 @@ node scripts/proposal-store.test.mjs   # turn contract: proposal restore, latest
 node scripts/env-config.test.mjs       # env normal form: JSONC parse/validation, envImageTag identity, migration
 node scripts/mcp-registry.test.mjs     # workspace MCP registry: validation, built-in/registry lookup, store CRUD, mcp-token links
 node scripts/mcp-selection.test.mjs    # per-session MCP selection: persistence over both sources, scope resolution, a deleted entry
+node scripts/skills-selection.test.mjs # per-session skills: the on-disk registry, selection/inheritance/defaults, what gets materialized
 node scripts/proxy-policy.test.mjs     # session proxy: the domain matcher, the policy modes, route/config parsing
 node scripts/proxy-server.test.mjs     # session proxy, live: MCP routing + credential injection, CONNECT, config reload
 node scripts/proxy-config.test.mjs     # host side of the proxy contract: scope + ACP descriptors, and what never reaches the container

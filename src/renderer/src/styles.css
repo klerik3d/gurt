@@ -1922,13 +1922,6 @@ textarea.input {
 .hc-warn {
   color: var(--red);
 }
-.hc-stub {
-  padding: 9px 12px;
-  border: 1px dashed var(--border2);
-  border-radius: 8px;
-  font-size: 11.5px;
-  color: var(--faint);
-}
 .hc-foot {
   display: flex;
   align-items: center;
