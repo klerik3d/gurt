@@ -28,6 +28,7 @@ const SMOKES = [
   'smoke-delete-row.mjs',
   'smoke-session-copy.mjs',
   'smoke-roles.mjs',
+  'smoke-operator.mjs',
   'smoke-deleted-task.mjs',
   'smoke-newtask.mjs',
 ]

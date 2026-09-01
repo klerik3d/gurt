@@ -173,6 +173,11 @@ export interface GurtApi {
   /** Replace the workspace's default-on skill set wholesale (empty = none).
    *  Rejects a name the registry does not hold. */
   setDefaultSkills(ws: string, names: string[]): Promise<void>
+  /** Point the workspace's operator sessions at one of its own envs, or back
+   *  at the bundled default (`undefined`) — the operator twin of
+   *  `setDefaultAgent` (docs/requirements-session-operator.md §2.2). Rejects
+   *  an env the registry does not hold. */
+  setOperatorEnv(ws: string, env: string | undefined): Promise<void>
   /**
    * Reinstall an `npm` entry's package: drops the install stamp, so the next
    * start resolves the spec against the registry again instead of reusing what
@@ -368,106 +373,146 @@ export interface GurtApi {
   getBootProgress(): Promise<BootProgress>
 }
 
-/** Compile-checked to cover `GurtApi` exactly: a missing method fails the
- *  `Record` requirement, an extra one fails the `satisfies` excess check. */
+/**
+ * What the operator's admin surface may do with a method
+ * (docs/requirements-session-operator.md §3.1):
+ *
+ *   read  — exposed as an MCP tool on the operator's `gurt` server;
+ *   write — exposed the same way once writes land (phase 2 of that document —
+ *           until then a `write` annotation is treated as `none`);
+ *   none  — never reachable by any tool name, for the reasons its §3.4 groups.
+ *
+ * The annotation says nothing about the renderer: every method stays on IPC
+ * regardless.
+ */
+export type Exposure = 'read' | 'write' | 'none'
+
+/**
+ * Compile-checked to cover `GurtApi` exactly: a missing method fails the
+ * `Record` requirement, an extra one fails the `satisfies` excess check — and
+ * an *unannotated* method fails it too, which is the point: there is no
+ * default exposure. A new API method does not compile until someone decides
+ * what the agent may do with it; when that decision is unclear the answer is
+ * `none` (the surface fails closed), and widening it later is a one-word diff
+ * with a reviewer on it. The full rationale, method by method, is
+ * docs/requirements-session-operator.md §13 question 1.
+ */
 const METHODS = {
-  getTree: true,
-  getMcpDefs: true,
-  getAgents: true,
-  setAgents: true,
-  getAgentConfig: true,
-  getCredentials: true,
-  setCredentials: true,
-  credentialUsedBy: true,
-  createWorkspace: true,
-  removeWorkspace: true,
-  addRepo: true,
-  discoverDevcontainer: true,
-  discoverDockerfiles: true,
-  envImageStatus: true,
-  envBuildImage: true,
-  updateRepo: true,
-  removeRepo: true,
-  addEnv: true,
-  updateEnv: true,
-  removeEnv: true,
-  setDefaultAgent: true,
-  setDeniedAgents: true,
-  getMcpServers: true,
-  addMcpServer: true,
-  updateMcpServer: true,
-  removeMcpServer: true,
-  getSkills: true,
-  getSkillDoc: true,
-  addSkill: true,
-  updateSkill: true,
-  removeSkill: true,
-  skillUsedBy: true,
-  setDefaultSkills: true,
-  reinstallMcpServer: true,
-  probeMcpServer: true,
-  createTask: true,
-  removeTask: true,
-  renameTask: true,
-  taskDirtyRepos: true,
-  setTaskMaxConcurrentSessions: true,
-  stopContainer: true,
-  releaseContainer: true,
-  sessionOpenVscode: true,
-  getTaskChanges: true,
-  getFileDiff: true,
-  getCommitDiff: true,
-  getDiffFiles: true,
-  getDiffPair: true,
-  getReviewState: true,
-  getReviewLocks: true,
-  setReviewLock: true,
-  addReviewComment: true,
-  resolveReviewComment: true,
-  deleteReviewComment: true,
-  launchReviewFix: true,
-  changesCommit: true,
-  changesPush: true,
-  changesUpdateFromMain: true,
-  latestProposal: true,
-  changesOpenPr: true,
-  changesOpenVscode: true,
-  createSession: true,
-  sessionRun: true,
-  sessionEnqueue: true,
-  sessionCancelQueue: true,
-  sessionEditPrompt: true,
-  renameSession: true,
-  sessionEditDraft: true,
-  sessionDuplicate: true,
-  sessionDelete: true,
-  sessionSnapshot: true,
-  sessionTraffic: true,
-  sessionPrompt: true,
-  sessionCancel: true,
-  sessionClearPending: true,
-  sessionCancelPending: true,
-  sessionSetMode: true,
-  sessionSetConfigOption: true,
-  sessionPermission: true,
-  sessionActivity: true,
-  openLogsFolder: true,
-  checkForUpdates: true,
-  getNotifications: true,
-  markNotificationRead: true,
-  markAllRead: true,
-  dismissNotification: true,
-  getNotificationPrefs: true,
-  setNotificationPrefs: true,
-  getHotkeys: true,
-  setHotkeys: true,
-  getUsage: true,
-  getPlanUsage: true,
-  getBootProgress: true
-} as const satisfies Record<keyof GurtApi, true>
+  getTree: 'read', //           scoped host-side to the operator's workspace
+  getMcpDefs: 'read',
+  getAgents: 'read', //         credential links only; values scrubbed (§8)
+  setAgents: 'write', //        wholesale replace
+  getAgentConfig: 'read',
+  getCredentials: 'read', //    ids, labels, kinds — no values (§5.1)
+  setCredentials: 'none', //    §5.1: no write path into the credential store
+  credentialUsedBy: 'read',
+  createWorkspace: 'none', //   bootstrap (§10); binds the operator's authority
+  removeWorkspace: 'none', //   destroys clones and their uncommitted work
+  addRepo: 'write',
+  discoverDevcontainer: 'read', // repo file contents, by the §2.4 exception
+  discoverDockerfiles: 'read', //  repo file contents, by the §2.4 exception
+  envImageStatus: 'read',
+  envBuildImage: 'write',
+  updateRepo: 'write',
+  removeRepo: 'write',
+  addEnv: 'write',
+  updateEnv: 'write',
+  removeEnv: 'write', //        already blocked while a session runs it
+  setDefaultAgent: 'write',
+  setDeniedAgents: 'write',
+  getMcpServers: 'read',
+  addMcpServer: 'write',
+  updateMcpServer: 'write',
+  removeMcpServer: 'write',
+  getSkills: 'read',
+  getSkillDoc: 'read',
+  addSkill: 'write',
+  updateSkill: 'write',
+  removeSkill: 'write',
+  skillUsedBy: 'read',
+  setDefaultSkills: 'write',
+  setOperatorEnv: 'write', //   configuring gurt is the point
+  reinstallMcpServer: 'write',
+  probeMcpServer: 'read', //    narrowed by kind at the host (§6): local kinds by saved id only
+  createTask: 'write',
+  removeTask: 'none', //        destroys clones holding uncommitted work
+  renameTask: 'none', //        rewrites clones (branch renames)
+  taskDirtyRepos: 'read',
+  setTaskMaxConcurrentSessions: 'write',
+  stopContainer: 'none', //     §2.4: does not drive other sessions
+  releaseContainer: 'none', //  §2.4
+  sessionOpenVscode: 'none', // host GUI
+  getTaskChanges: 'read', //    counts and states, not content
+  getFileDiff: 'none', //       repo content (§2.4)
+  getCommitDiff: 'none', //     repo content (§2.4)
+  getDiffFiles: 'none', //      repo content (§2.4)
+  getDiffPair: 'none', //       repo content (§2.4)
+  getReviewState: 'none', //    comments quote code
+  getReviewLocks: 'read', //    why a session cannot start — diagnostics
+  setReviewLock: 'none',
+  addReviewComment: 'none',
+  resolveReviewComment: 'none',
+  deleteReviewComment: 'none',
+  launchReviewFix: 'none', //   drafts a session (§2.4)
+  changesCommit: 'none', //     writes to repos and remotes
+  changesPush: 'none', //       writes to repos and remotes
+  changesUpdateFromMain: 'none',
+  latestProposal: 'none', //    repo content
+  changesOpenPr: 'none', //     host browser
+  changesOpenVscode: 'none', // host GUI
+  createSession: 'none', //     phase 1; §13 question 2
+  sessionRun: 'none', //        §2.4: does not start sessions
+  sessionEnqueue: 'none', //    §2.4
+  sessionCancelQueue: 'none', // §2.4
+  sessionEditPrompt: 'none', // §2.4
+  renameSession: 'none', //     §2.4
+  sessionEditDraft: 'none', //  §2.4
+  sessionDuplicate: 'none', //  §2.4
+  sessionDelete: 'none', //     §2.4
+  sessionSnapshot: 'read', //   narrowed: state and diagnostics, no chat (§3.2)
+  sessionTraffic: 'read', //    blocked hosts — the diagnostic the operator exists for
+  sessionPrompt: 'none', //     driving another agent
+  sessionCancel: 'none', //     driving another agent
+  sessionClearPending: 'none',
+  sessionCancelPending: 'none',
+  sessionSetMode: 'none',
+  sessionSetConfigOption: 'none',
+  sessionPermission: 'none',
+  sessionActivity: 'none',
+  openLogsFolder: 'none', //    host GUI
+  checkForUpdates: 'none', //   native dialog / update path
+  getNotifications: 'read', //  scrubbed, scoped to the operator's workspace
+  markNotificationRead: 'none', // the user's own read state
+  markAllRead: 'none', //       the user's own read state
+  dismissNotification: 'none', // the user's own read state
+  getNotificationPrefs: 'read',
+  setNotificationPrefs: 'write',
+  getHotkeys: 'read',
+  setHotkeys: 'write',
+  getUsage: 'read',
+  getPlanUsage: 'read',
+  getBootProgress: 'read'
+} as const satisfies Record<keyof GurtApi, Exposure>
 
 /** Runtime method list; `api:<method>` is the IPC channel per entry. */
 export const API_METHODS = Object.keys(METHODS) as readonly (keyof GurtApi)[]
+
+/** The annotation at runtime — what the generator, the admin surface and the
+ *  acceptance tests read. */
+export const METHOD_EXPOSURE: Record<keyof GurtApi, Exposure> = METHODS
+
+/** Methods annotated `read` — the admin surface must bind exactly these
+ *  (`Pick<GurtApi, ReadMethod>` in main/adminSurface.ts), so annotating a
+ *  method `read` without binding it is a compile error, not a silent gap. */
+export type ReadMethod = {
+  [K in keyof GurtApi]: (typeof METHODS)[K] extends 'read' ? K : never
+}[keyof GurtApi]
+
+/** Methods annotated `write` — phase 2's surface; generated already so the
+ *  schema machinery is complete, unreachable until then. */
+export type WriteMethod = {
+  [K in keyof GurtApi]: (typeof METHODS)[K] extends 'write' ? K : never
+}[keyof GurtApi]
 
 /** Push channels main broadcasts to the renderer, with their payloads. */
 export interface GurtEvents {

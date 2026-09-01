@@ -11,7 +11,14 @@ import type {
   SessionSnapshot,
   Tree
 } from '../../../shared/types'
-import { SESSION_ROLES, roleAllowsMultiRepo, sessionRole } from '../../../shared/types'
+import {
+  OPERATOR_ENV_NAME,
+  SESSION_ROLES,
+  operatorEnvName,
+  roleAllowsMultiRepo,
+  roleNeedsRepo,
+  sessionRole
+} from '../../../shared/types'
 import type { SessionDraftPatch } from '../../../shared/api'
 import type { McpEntry } from '../../../shared/mcp'
 import { LOCAL_MCP_NOTICE, isLocalMcpEntry, mcpHasModes, resolveMcpSelection } from '../../../shared/mcp'
@@ -333,18 +340,32 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [info.skills, wsData?.defaultSkills?.join('\u0000')])
 
-  // Picking a (different) env re-seeds the session repo from that env's default.
+  // Picking a (different) env re-seeds the session repo from that env's
+  // default — except for an operator, which holds no repo to seed.
   const pickEnv = (name: string) => {
+    if (role === 'operator') {
+      patch({ env: name })
+      setPicker(null)
+      return
+    }
     const def = envs.find((e) => e.name === name)?.repo
     patch({ env: name, repos: def ? [def] : [] })
     setPicker(null)
   }
 
   // Only a researcher may hold several repos, so leaving that role drops the
-  // extras rather than letting an invalid pair reach the IPC boundary.
+  // extras rather than letting an invalid pair reach the IPC boundary. An
+  // operator holds exactly zero — the pick clears the repos and points the
+  // draft at the workspace's operator env (its own, or the bundled default —
+  // docs/requirements-session-operator.md §2.2).
   const pickRole = (next: SessionRole) => {
     const p: SessionDraftPatch = { role: next }
-    if (!roleAllowsMultiRepo(next) && repos.length > 1) p.repos = repos.slice(0, 1)
+    if (!roleNeedsRepo(next)) {
+      p.repos = []
+      p.env = operatorEnvName(wsData ?? {})
+    } else if (!roleAllowsMultiRepo(next) && repos.length > 1) {
+      p.repos = repos.slice(0, 1)
+    }
     patch(p)
     setPicker(null)
   }
@@ -555,24 +576,42 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
             onToggle={() => setPicker(picker === 'env' ? null : 'env')}
             onClose={() => setPicker(null)}
             menu={
-              envs.length ? (
-                envs.map((e) => (
+              <>
+                {/* The bundled operator default shares the env name space and
+                    is always startable (docs/requirements-session-operator.md
+                    §2.2) — offered to the role it exists for. */}
+                {role === 'operator' && (
                   <div
-                    key={e.name}
-                    className={`menu-item ${e.name === info.env ? 'active' : ''}`}
+                    className={`menu-item ${info.env === OPERATOR_ENV_NAME ? 'active' : ''}`}
                     onMouseDown={(ev) => {
                       ev.preventDefault()
-                      pickEnv(e.name)
+                      pickEnv(OPERATOR_ENV_NAME)
                     }}
                   >
                     <Icon name="box" size={13} className="dim" />
-                    {e.name}
-                    {e.repo && <span className="menu-meta mono">{e.repo}</span>}
+                    {OPERATOR_ENV_NAME}
+                    <span className="menu-meta mono">bundled default</span>
                   </div>
-                ))
-              ) : (
-                <div className="menu-empty">no environments — add one in Settings → Environments</div>
-              )
+                )}
+                {envs.length ? (
+                  envs.map((e) => (
+                    <div
+                      key={e.name}
+                      className={`menu-item ${e.name === info.env ? 'active' : ''}`}
+                      onMouseDown={(ev) => {
+                        ev.preventDefault()
+                        pickEnv(e.name)
+                      }}
+                    >
+                      <Icon name="box" size={13} className="dim" />
+                      {e.name}
+                      {e.repo && <span className="menu-meta mono">{e.repo}</span>}
+                    </div>
+                  ))
+                ) : role !== 'operator' ? (
+                  <div className="menu-empty">no environments — add one in Settings → Environments</div>
+                ) : null}
+              </>
             }
           >
             <Icon name="box" size={14} className="dim" style={{ flex: 'none' }} />
@@ -588,7 +627,18 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
         <div className="cfg-cell">
           <div className="seclabel-row">
             <span className="seclabel">REPOSITORY</span>
+            {role === 'operator' && (
+              <InfoDot text="an operator session holds no repository at all — its subject is gurt's configuration, not a clone" />
+            )}
           </div>
+          {role === 'operator' ? (
+            // Disabled, not hidden: the row saying *why* there is nothing to
+            // pick beats a layout that quietly lost a field.
+            <button type="button" className="pick-row" disabled aria-disabled="true">
+              <span className="chip-dashed">no repository — an operator holds none</span>
+              <span className="spacer" />
+            </button>
+          ) : (
           <PickRow
             open={picker === 'repo'}
             onToggle={() => setPicker(picker === 'repo' ? null : 'repo')}
@@ -632,7 +682,8 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
             )}
             <span className="spacer" />
           </PickRow>
-          {!repos.length && (
+          )}
+          {role !== 'operator' && !repos.length && (
             <div className="hc-note">no repository — Run/Queue disabled until you pick one</div>
           )}
           {repos.length > 1 && <div className="hc-note">{repos.length} repos — mounted read-only</div>}
