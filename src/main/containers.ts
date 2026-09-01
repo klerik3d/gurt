@@ -12,7 +12,7 @@
 import { spawn } from 'node:child_process'
 import { promises as fs } from 'node:fs'
 import type { EnvRef, RepoConfig, SessionContainer, SessionInfo } from '../shared/types'
-import { roleIsReadOnly, sessionRole } from '../shared/types'
+import { OPERATOR_ENV_NAME, roleIsReadOnly, roleNeedsRepo, sessionRole } from '../shared/types'
 import type { ContainerStatusReason } from '../shared/events'
 import type { AgentDef } from '../shared/agents'
 import { agentDef } from '../shared/agents'
@@ -38,6 +38,7 @@ import {
   linkContainerSkills,
   SKILLS_MOUNT
 } from './provision'
+import { bundledOperatorEnv } from './operatorEnv'
 import type { Bus } from './bus'
 import { createLogger, errCtx } from './log'
 import { proxies, type ProxyRuntime } from './proxy/manager'
@@ -255,7 +256,11 @@ export class ContainerManager {
   private async ensureUncoalesced(sessionId: string): Promise<SessionContainer> {
     const info = this.deps.session(sessionId)
     if (!info) throw new Error('session no longer exists')
-    if (!info.repos.length) throw new Error('session has no repository')
+    // The guard the doc calls "the anchor guard": every role but the operator
+    // needs a clone to build against (docs/requirements-session-operator.md
+    // §2.1 — repo-less start is that role's definition, not a missing pick).
+    if (roleNeedsRepo(sessionRole(info)) && !info.repos.length)
+      throw new Error('session has no repository')
     const provisionLog = this.logFor(sessionId)
 
     // Its own container, still up → just reuse it. (Probe the daemon: a Docker
@@ -276,7 +281,13 @@ export class ContainerManager {
       if (!cfg) throw new Error(`repo "${name}" is not registered in "${info.workspace}"`)
       return cfg
     })
-    const envCfg = ws.envs.find((e) => e.name === info.env)
+    // The bundled operator default shares the env name space (its name is
+    // reserved against workspace envs), so it resolves by name exactly where a
+    // workspace env would — no role check: an operator pointed at a workspace
+    // env is an ordinary session on an ordinary env (§2.2).
+    const envCfg =
+      ws.envs.find((e) => e.name === info.env) ??
+      (info.env === OPERATOR_ENV_NAME ? await bundledOperatorEnv() : undefined)
     if (!envCfg) throw new Error(`env "${info.env}" is not registered in "${info.workspace}"`)
 
     // A container this session owns but can no longer use — it was built for a
@@ -336,17 +347,22 @@ export class ContainerManager {
         }))
       )
       // repos[0] is the build anchor, same role a normal session's only repo
-      // plays today — every other repo (if any) is a sibling mount only. A
-      // session with no repo never reaches provisioning (the start gate rejects
-      // it), so this is a guard on that invariant, not a path.
+      // plays today — every other repo (if any) is a sibling mount only. Absent
+      // only for the operator (zero repos is that role's definition); for every
+      // other role the start gate has already rejected an empty list, so this
+      // stays a guard on that invariant.
       const [anchor] = clones
-      if (!anchor) throw new Error('session has no repository')
+      if (!anchor && roleNeedsRepo(sessionRole(info)))
+        throw new Error('session has no repository')
       enter('image')
+      // With no anchor, an env with a `build` section is refused inside with
+      // its own sentence — image-only is structural for a repo-less session
+      // (docs/requirements-session-operator.md §2.1).
       const configArgs = await materializeEnvConfig(
         this.refOf(info),
         envCfg,
-        anchor.cfg,
-        anchor.dir,
+        anchor?.cfg ?? null,
+        anchor?.dir ?? null,
         provisionLog
       )
       enter('up')
@@ -372,13 +388,20 @@ export class ContainerManager {
       // IS the clone, exactly as before. Otherwise `--workspace-folder` is an
       // empty wrapper dir and every repo (anchor included) is mounted into it
       // explicitly, so none of them sits at the container's top-level workspace
-      // folder and each carries its own read-only flag.
-      let workspaceFolder = anchor.dir
+      // folder and each carries its own read-only flag. An operator is the
+      // mounted case with zero mounts: the wrapper stages an empty directory
+      // and `remoteRoot` derives from its basename, not from a repo name
+      // (docs/requirements-session-operator.md §2.1).
+      let workspaceFolder: string
       let extraMounts: { hostDir: string; name: string; readonly?: boolean }[] = []
       if (mounted) {
         workspaceFolder = store.mountedWorkspaceDir(info.workspace, info.task, sessionId)
         await fs.mkdir(workspaceFolder, { recursive: true })
         extraMounts = clones.map(({ cfg, dir }) => ({ hostDir: dir, name: cfg.name, readonly }))
+      } else {
+        // Not mounted ⇒ a plain read-write single-repo session, whose anchor
+        // the gate above guarantees.
+        workspaceFolder = anchor!.dir
       }
       // Whether the selection is *deliverable* is the agent kind's to say
       // (`AgentDef.skillsDir`): resolve the draft's instance to its kind,
@@ -413,7 +436,7 @@ export class ContainerManager {
         configArgs,
         workspaceFolder,
         provisionLog,
-        mounted ? 'repos' : anchor.cfg.name,
+        mounted ? 'repos' : anchor!.cfg.name,
         () =>
           this.setStatus(
             sessionId,
@@ -606,10 +629,14 @@ export class ContainerManager {
     )
     if (credError) throw new Error(`agent "${cfg.label}": ${credError}`)
     const [anchorRepo] = info.repos
-    if (!anchorRepo) throw new Error('session has no repository')
+    // Same rule as `ensure`'s gate: only the operator legally launches with no
+    // repo — and then there is no repo config to resolve an identity from.
+    if (!anchorRepo && roleNeedsRepo(sessionRole(info)))
+      throw new Error('session has no repository')
     const ws = await store.getWorkspace(info.workspace)
-    const repoCfg = ws.repos.find((r) => r.name === anchorRepo)
-    if (!repoCfg) throw new Error(`repo "${anchorRepo}" is not registered in "${info.workspace}"`)
+    const repoCfg = anchorRepo ? ws.repos.find((r) => r.name === anchorRepo) : undefined
+    if (anchorRepo && !repoCfg)
+      throw new Error(`repo "${anchorRepo}" is not registered in "${info.workspace}"`)
 
     const c = await this.ensure(sessionId)
     if (c.status !== 'running' || !c.id || !c.remoteWorkspaceFolder)
@@ -618,10 +645,12 @@ export class ContainerManager {
     const mounted = usesRepoMounts(info)
     // Must match whatever `ensureUncoalesced` passed as `--workspace-folder`
     // for this same session — the wrapper dir whenever the repos are mounted
-    // explicitly, the plain clone dir otherwise.
+    // explicitly (a repo-less operator included), the plain clone dir
+    // otherwise. `anchorRepo` is non-null on the unmounted path: that is the
+    // plain single-repo executor.
     const hostWorkspaceFolder = mounted
       ? store.mountedWorkspaceDir(info.workspace, info.task, sessionId)
-      : cloneDir(info.workspace, info.task, anchorRepo)
+      : cloneDir(info.workspace, info.task, anchorRepo!)
     const target: AdapterTarget = {
       agent: def,
       session: sessionId,
@@ -645,8 +674,10 @@ export class ContainerManager {
       // Identity is injected unconditionally — it carries no authority, and a
       // local commit an agent does make should still be attributed. Anchored on
       // the session's first repo: with several, that is the one the identity is
-      // resolved from, and they normally share a forge account anyway.
-      gitIdentityEnv: await this.resolveGitIdentity(repoCfg)
+      // resolved from, and they normally share a forge account anyway. A
+      // repo-less operator has no repo to resolve one from, and nothing to
+      // commit to either.
+      ...(repoCfg ? { gitIdentityEnv: await this.resolveGitIdentity(repoCfg) } : {})
     }
   }
 

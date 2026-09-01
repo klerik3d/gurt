@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { SessionSnapshot, Tree } from '../../../shared/types'
-import { roleLocksClone, sessionRole, sessionStatus } from '../../../shared/types'
+import { roleLocksClone, roleNeedsRepo, sessionRole, sessionStatus } from '../../../shared/types'
 import { agentKind, agentName, useAgents } from '../useAgents'
 import { useMcpEntries, useMcpFailures } from '../useMcp'
 import { resolveMcpSelection } from '../../../shared/mcp'
@@ -155,8 +155,15 @@ function NonStartedPane({
 
   // A start needs an environment, a repository and an agent — a bare draft
   // (created with none of these picked) has all three blank until the Config
-  // tab fills them in.
-  const missing = !info.env ? 'an environment' : !info.repos.length ? 'a repository' : !info.agent ? 'an agent' : null
+  // tab fills them in. An operator never holds a repository, so only the
+  // other two gate it (docs/requirements-session-operator.md §2.1).
+  const missing = !info.env
+    ? 'an environment'
+    : roleNeedsRepo(sessionRole(info)) && !info.repos.length
+      ? 'a repository'
+      : !info.agent
+        ? 'an agent'
+        : null
   const canRun = !!text.trim() && !missing
 
   return (

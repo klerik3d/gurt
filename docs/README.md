@@ -1,32 +1,34 @@
-# docs/ — индекс
+# docs/ — index
 
-Здесь лежат исторические спеки и дизайн-заметки (work orders), по которым gurt
-строился; актуальная документация — в корневом [README.md](../README.md).
-Многие файлы частично перекрыты более поздними (пометки «Superseded in part
-by…» внутри) — самый поздний «главный» док модели контейнеров/сессий:
+These are the historical specs and design notes (work orders) gurt was built
+from; the current documentation lives in the root [README.md](../README.md).
+Many files are partly superseded by later ones (look for the "Superseded in
+part by…" notes inside) — the latest "main" document of the container/session
+model is
 [requirements-session-container.md](requirements-session-container.md).
 
-| Документ | О чём | Статус |
+| Document | What it covers | Status |
 | --- | --- | --- |
-| [design-orchestration.md](design-orchestration.md) | Заметки об оркестрации: пайплайны поверх сессий, типизированные артефакты. Помечен «UNDER DISCUSSION — DO NOT IMPLEMENT»; вместо него принят простой путь ролей (requirements-session-roles.md). Из описанного реализован только turn contract. | план |
-| [logging.md](logging.md) | Локальное логирование: `~/.gurt/logs`, уровни, редакция секретов, словарь слагов. Описание as-built; кнопка «Send Report» — заглушка. | реализовано |
-| [requirements-changes-panel.md](requirements-changes-panel.md) | Первая версия панели Changes в task pane (dirty/ahead, Commit/Push/PR). Модель и layout (§2, §3.1–3.2) заменены requirements-changes-thread.md, остальное действует. | частично |
-| [requirements-changes-thread.md](requirements-changes-thread.md) | Панель Changes как «delivery thread» ветки `gurt/<task>`: Uncommitted / On gurt/<task>, состояния pushed/local/integrated. | реализовано |
-| [requirements-dashboard.md](requirements-dashboard.md) | Дашборд: карточки агентов с лимитами плана, доска сессий, turn-ledger. | реализовано |
-| [requirements-env-devcontainer.md](requirements-env-devcontainer.md) | Нормальная форма env: обязательный devcontainer.json в gurt, сборка образа по content-tag, pre-build из Settings. | реализовано |
-| [requirements-env-repo-split.md](requirements-env-repo-split.md) | Разделение Env и Repo на уровне workspace. Split сделан, но модель контейнеров и стартовый гейт заменены requirements-session-container.md. | история (superseded) |
-| [requirements-event-bus.md](requirements-event-bus.md) | Доменная шина событий в main (`src/main/bus.ts`) + карта `src/shared/events.ts`. Шина работает, но env-события переименованы в session-scoped более поздним доком. | история (superseded) |
-| [requirements-git-access.md](requirements-git-access.md) | Git-креды и host-side git: store, host-брокер, forge-провайдеры, резолюция для github MCP. Контейнерная половина (ssh, контейнерный брокер, шимы) удалена — см. requirements-mcp-proxy.md §10. GitHub App (phase 3) не подключён к рантайму. | частично |
-| [requirements-kernel.md](requirements-kernel.md) | Вынос ядра из `ipc.ts` в electron-независимый `kernel.ts`, типизированный IPC через `src/shared/api.ts`. Сделано, но `EnvManager` из §3 стал `ContainerManager`, а `KernelEvents` заменён шиной. | история (superseded) |
-| [requirements-manual-review.md](requirements-manual-review.md) | Ручное ревью: split-diff, инлайновые комментарии, review-lock, «Launch fix». Содержит секцию «As built». | реализовано |
-| [requirements-mcp-proxy.md](requirements-mcp-proxy.md) | Реестр MCP-серверов в workspace.json и прокси-контейнер на сессию: маршрутизация MCP с подстановкой кредов, CONNECT-егресс с доменной политикой, сеть на сессию, отказ от ssh и контейнерного git-брокера. | план |
-| [requirements-mcp-stdio.md](requirements-mcp-stdio.md) | Локальные (stdio) MCP-серверы: `McpRegistryEntry` как union по `kind` (`http`/`npm`/`command`), мост stdio↔HTTP в main, установка npm-пакета в `~/.gurt/mcp`, разбор вставленного сниппета, один процесс на запись реестра с refcount из живых сессий. Модель угроз: чужой код исполняется на хосте без песочницы. UI (фаза 2) не сделан. | частично |
-| [requirements-multirepo-sessions.md](requirements-multirepo-sessions.md) | Несколько репозиториев в одной сессии (ныне роль researcher); монтирование клонов сиблингами. | реализовано |
-| [requirements-notifications.md](requirements-notifications.md) | Уведомления: подписчик шины, колокольчик, матрица настроек. Внешняя доставка (Slack/email/push) — заявленная заглушка. | реализовано |
-| [requirements-session-container.md](requirements-session-container.md) | Модель «один контейнер = одна сессия» 1:1, reconcile при старте. Самый поздний док модели — перекрывает части env-repo-split, kernel, event-bus, session-queue, stable-keys. | реализовано |
-| [requirements-session-log.md](requirements-session-log.md) | Append-only лог сессии: seq-записи entry/append/patch, JSONL, дельты вместо полного снапшота. | реализовано |
-| [requirements-session-queue.md](requirements-session-queue.md) | Сессия как первичная сущность, состояния draft→started, FIFO-очередь. Очередь живёт, но условия старта и модель ACP-соединений переписаны requirements-session-container.md. | история (superseded) |
-| [requirements-session-roles.md](requirements-session-roles.md) | Роли сессий (executor / researcher / reviewer): монтирования, клон-лок, набор MCP-инструментов от роли. | реализовано |
-| [requirements-skills.md](requirements-skills.md) | Claude Code skills: реестр на уровне workspace (`~/.gurt/<ws>/skills/<name>/`), выбор per-session в драфте, `defaultSkills` в workspace.json, доставка копированием в scratch сессии и read-only bind-монтированием в контейнер. Скилы из самого репозитория (`.claude/skills`) — явный non-goal. | реализовано |
-| [requirements-stable-keys.md](requirements-stable-keys.md) | Централизация ключей сущностей в `src/shared/keys.ts`. Правило действует, но половина инвентаря (`envKey`, `connKey`) удалена session-container'ом. | частично |
-| [requirements-turn-contract.md](requirements-turn-contract.md) | Контракт хода: MCP-сервер `gurt` с инструментом `complete`, артефакт ChangeProposal, авто-nudge. Форма сервера уточнена requirements-session-roles.md. | реализовано |
+| [design-orchestration.md](design-orchestration.md) | Orchestration notes: pipelines on top of sessions, typed artifacts. Marked "UNDER DISCUSSION — DO NOT IMPLEMENT"; the simpler roles path was taken instead (requirements-session-roles.md). Of what it describes, only the turn contract was built. | planned |
+| [logging.md](logging.md) | Local logging: `~/.gurt/logs`, levels, secret redaction, the slug dictionary. An as-built description; the "Send Report" button is a stub. | implemented |
+| [requirements-changes-panel.md](requirements-changes-panel.md) | The first version of the Changes panel in the task pane (dirty/ahead, Commit/Push/PR). Its model and layout (§2, §3.1–3.2) are replaced by requirements-changes-thread.md; the rest still holds. | partial |
+| [requirements-changes-thread.md](requirements-changes-thread.md) | The Changes panel as a "delivery thread" for the `gurt/<task>` branch: Uncommitted / On gurt/<task>, the pushed/local/integrated states. | implemented |
+| [requirements-dashboard.md](requirements-dashboard.md) | The dashboard: agent cards with plan limits, the session board, the turn ledger. | implemented |
+| [requirements-env-devcontainer.md](requirements-env-devcontainer.md) | Env normal form: a mandatory devcontainer.json in gurt, image builds by content tag, pre-build from Settings. | implemented |
+| [requirements-env-repo-split.md](requirements-env-repo-split.md) | Splitting Env and Repo at the workspace level. The split landed, but the container model and the start gate are replaced by requirements-session-container.md. | historical (superseded) |
+| [requirements-event-bus.md](requirements-event-bus.md) | The domain event bus in main (`src/main/bus.ts`) plus the map in `src/shared/events.ts`. The bus works, but a later document renamed the env events to session-scoped ones. | historical (superseded) |
+| [requirements-git-access.md](requirements-git-access.md) | Git credentials and host-side git: the store, the host broker, forge providers, resolution for the github MCP. The container half (ssh, the container broker, the shims) is removed — see requirements-mcp-proxy.md §10. The GitHub App (phase 3) is not wired into the runtime. | partial |
+| [requirements-kernel.md](requirements-kernel.md) | Moving the core out of `ipc.ts` into an Electron-independent `kernel.ts`, with typed IPC through `src/shared/api.ts`. Done, but §3's `EnvManager` became `ContainerManager` and `KernelEvents` was replaced by the bus. | historical (superseded) |
+| [requirements-manual-review.md](requirements-manual-review.md) | Manual review: split diff, inline comments, the review lock, "Launch fix". Contains an "As built" section. | implemented |
+| [requirements-mcp-proxy.md](requirements-mcp-proxy.md) | The MCP server registry in workspace.json and a per-session proxy container: MCP routing with credential injection, CONNECT egress with a domain policy, a network per session, and dropping ssh and the container-side git broker. | planned |
+| [requirements-mcp-stdio.md](requirements-mcp-stdio.md) | Local (stdio) MCP servers: `McpRegistryEntry` as a union on `kind` (`http`/`npm`/`command`), a stdio↔HTTP bridge in main, npm package installation into `~/.gurt/mcp`, pasted-snippet parsing, one process per registry entry with a refcount from the live sessions. Threat model: third-party code runs on the host, unsandboxed. The UI (phase 2) is not done. | partial |
+| [requirements-multirepo-sessions.md](requirements-multirepo-sessions.md) | Several repositories in one session (now the researcher role); mounting clones as siblings. | implemented |
+| [requirements-notifications.md](requirements-notifications.md) | Notifications: the bus subscriber, the bell, the settings matrix. External delivery (Slack/email/push) is a declared stub. | implemented |
+| [requirements-session-container.md](requirements-session-container.md) | The "one container = one session" 1:1 model, with reconcile at startup. The latest document of the model — it supersedes parts of env-repo-split, kernel, event-bus, session-queue and stable-keys. | implemented |
+| [requirements-session-log.md](requirements-session-log.md) | The append-only session log: seq records of entry/append/patch, JSONL, deltas instead of a full snapshot. | implemented |
+| [requirements-session-operator.md](requirements-session-operator.md) | The `operator` role: a repo-less session in a bundled env that configures gurt and works out its errors. The admin MCP surface is derived from `src/shared/api.ts` (an exposure annotation per method); writes are CRUD with optimistic locking; devcontainer fields that execute on the host are held back and applied only through a confirmation exempt from auto-allow; credential values never cross the boundary; the config journal is git in `~/.gurt`. Phase 1 (the role, the read-only surface, the scrub, the journal) is implemented — see its §16; writes, held fields and composite verbs are pending. | partial |
+| [requirements-session-queue.md](requirements-session-queue.md) | The session as the primary entity, the draft→started states, the FIFO queue. The queue lives on, but the start conditions and the ACP connection model were rewritten by requirements-session-container.md. | historical (superseded) |
+| [requirements-session-roles.md](requirements-session-roles.md) | Session roles (executor / researcher / reviewer): mounts, the clone lock, the MCP tool set as a function of the role. | implemented |
+| [requirements-skills.md](requirements-skills.md) | Claude Code skills: a workspace-level registry (`~/.gurt/<ws>/skills/<name>/`), per-session selection in the draft, `defaultSkills` in workspace.json, delivery by copying into the session's scratch and a read-only bind mount into the container. Skills from the repository itself (`.claude/skills`) are an explicit non-goal. | implemented |
+| [requirements-stable-keys.md](requirements-stable-keys.md) | Centralizing entity keys in `src/shared/keys.ts`. The rule still holds, but half the inventory (`envKey`, `connKey`) was removed by session-container. | partial |
+| [requirements-turn-contract.md](requirements-turn-contract.md) | The turn contract: the `gurt` MCP server with the `complete` tool, the ChangeProposal artifact, the auto-nudge. The server's shape is refined by requirements-session-roles.md. | implemented |

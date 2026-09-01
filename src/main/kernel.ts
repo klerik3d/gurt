@@ -3,7 +3,7 @@
 // both. Importable without an Electron app (headless runs, orchestrator,
 // tests).
 import type { DiffTarget, ReviewState, Tree } from '../shared/types'
-import { isSessionRole, targetKey } from '../shared/types'
+import { OPERATOR_ENV_NAME, isSessionRole, targetKey } from '../shared/types'
 import type { BootProgress, SessionDraftPatch } from '../shared/api'
 import { NOTIFICATION_DEFAULTS } from '../shared/notifications'
 import { sanitizeSkillSelection } from '../shared/skills'
@@ -17,6 +17,7 @@ import { createBus, type Bus } from './bus'
 import { ContainerManager } from './containers'
 import { traffic } from './proxy/traffic'
 import { SessionManager, type RestoredSession } from './sessions'
+import { createAdminSurface, type AdminSurface } from './adminSurface'
 import { createReview, fixPrompt, type ReviewManager } from './review'
 import { createNotifications, type Notifications } from './notifications'
 import { createUsageLedger, type UsageLedger } from './usage'
@@ -110,7 +111,10 @@ async function assertDraftTarget(
   for (const r of repos)
     if (!wsData.repos.some((c) => c.name === r))
       throw new Error(`repo "${r}" is not registered in "${ws}"`)
-  if (env !== undefined && !wsData.envs.some((e) => e.name === env))
+  // The bundled operator default resolves by name wherever a workspace env
+  // would — the two share one name space, and the store reserves the name
+  // (docs/requirements-session-operator.md §2.2).
+  if (env !== undefined && env !== OPERATOR_ENV_NAME && !wsData.envs.some((e) => e.name === env))
     throw new Error(`environment "${env}" is not registered in "${ws}"`)
   if (agent && wsData.deniedAgents?.includes(agent))
     throw new Error(`agent "${agent}" is not allowed in workspace "${ws}"`)
@@ -175,6 +179,11 @@ export function createKernel(): Kernel {
       stopMcpServers,
       resolveGurtServer: ensureGurtServer,
       stopGurtServer,
+      // The admin surface is built over the finished kernel (below) — these
+      // closures read `admin` at call time, long after both exist, the same
+      // knot-untying as the `sessions` references above.
+      adminCall: (ws, method, args) => admin.call(ws, method, args),
+      adminProvisioningLog: (ws, key, tail) => admin.provisioningLog(ws, key, tail),
       checkDraftTarget: assertDraftTarget,
       defaultEnvsForRepo,
       defaultAgentForWorkspace: async (ws) => (await store.getWorkspace(ws)).defaultAgent,
@@ -405,7 +414,7 @@ export function createKernel(): Kernel {
     // usable; a footer stuck at 60% would read as a hang.
     .finally(() => progress(100, 'ready', true))
 
-  return {
+  const kernel: Kernel = {
     bus,
     containers,
     sessions,
@@ -562,4 +571,12 @@ export function createKernel(): Kernel {
       return `${url}${url.includes('?') ? '&' : '?'}${parts.join('&')}`
     }
   }
+
+  // The operator's ws-bound read surface (docs/requirements-session-operator.md
+  // §3), built over the finished kernel so its bindings read the same tree,
+  // sessions and diagnostics everything else does. The session manager's
+  // adminCall closures above resolve it lazily.
+  const admin: AdminSurface = createAdminSurface(kernel)
+
+  return kernel
 }

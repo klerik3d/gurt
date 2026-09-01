@@ -229,6 +229,10 @@ export function registerIpc(): void {
       await store.setDefaultSkills(ws, sanitizeSkillSelection(names).map((k) => k.name))
       kernel.bus.emit('tree.changed', undefined)
     },
+    setOperatorEnv: async (ws, env) => {
+      await store.setOperatorEnv(ws, env)
+      kernel.bus.emit('tree.changed', undefined)
+    },
     reinstallMcpServer: async (ws, id) => {
       // Read the entry rather than trusting the caller's word for its kind:
       // "reinstall" means nothing for a command or an http entry, and clearing

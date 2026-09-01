@@ -68,6 +68,11 @@ export const ROLE_INFO: Record<SessionRole, { label: string; hint: string; icon:
     label: 'reviewer',
     hint: "judges one clone's uncommitted changes: writable, so it can install deps and run tests, but holds the lock so nothing moves under it",
     icon: 'globe-lock'
+  },
+  operator: {
+    label: 'operator',
+    hint: 'configures gurt itself: holds no repository, reads this workspace’s config and session diagnostics through admin tools (read-only for now)',
+    icon: 'sliders'
   }
 }
 

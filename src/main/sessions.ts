@@ -32,6 +32,7 @@ import {
   roleAllowsMultiRepo,
   roleHasTurnContract,
   roleLocksClone,
+  roleNeedsRepo,
   sanitizeSessionNetwork,
   sessionRole,
   spawnableRoles
@@ -293,8 +294,20 @@ export interface SessionEvents {
       role: SessionRole
       onComplete: (p: ChangeProposal) => void
       onCreateSession: (req: AgentSessionRequest) => Promise<{ sessionId: string; title: string }>
+      /** Present only for an operator session — routes its admin tools into
+       *  the ws-bound admin surface (docs/requirements-session-operator.md §3). */
+      admin?: {
+        call(method: string, args: Record<string, unknown>): Promise<unknown>
+        provisioningLog(key: string, tail: number | undefined): Promise<string>
+      }
     }
   ) => Promise<AcpHttpMcpServer>
+  /** Execute one admin API call for an operator session of `ws` — the
+   *  workspace binding of docs/requirements-session-operator.md §3.2: the
+   *  session manager passes its own workspace, never anything the agent said. */
+  adminCall: (ws: string, method: string, args: Record<string, unknown>) => Promise<unknown>
+  /** The provisioning-log read behind `get_provisioning_log`, same binding. */
+  adminProvisioningLog: (ws: string, key: string, tail: number | undefined) => Promise<string>
   /** Tear down one session's `gurt` server (session deleted). */
   stopGurtServer: (sessionId: string) => void
   /** Reject repos/env that are not registered in the workspace, or an agent the
@@ -368,15 +381,21 @@ export const NUDGE_PROMPT =
   'nothing else.'
 
 /**
- * The one structural rule a role puts on the repo list: more than one repo is a
+ * The structural rules a role puts on the repo list: more than one repo is a
  * researcher-only shape (docs/requirements-session-roles.md §2 — the former
- * discovery session *is* that role). Pure and unit-tested; the message it throws
- * is what the modal, the IPC boundary and the `create_session` tool all surface.
+ * discovery session *is* that role), and an operator holds exactly zero
+ * (docs/requirements-session-operator.md §2.1 — zero is its definition, not a
+ * default). Pure and unit-tested; the messages it throws are what the modal,
+ * the IPC boundary and the `create_session` tool all surface.
  */
 export function assertRoleFitsRepos(role: SessionRole, repos: string[]): void {
   if (repos.length > 1 && !roleAllowsMultiRepo(role))
     throw new Error(
       `a ${role} session takes a single repository — only a researcher may hold more than one`
+    )
+  if (repos.length > 0 && !roleNeedsRepo(role))
+    throw new Error(
+      `an ${role} session holds no repository at all — its subject is gurt's configuration, not a clone`
     )
 }
 
@@ -612,9 +631,11 @@ export class SessionManager {
     network?: SessionNetwork
   ): SessionInfo {
     const clean = sanitizeSessionNetwork(network)
-    // A session cannot run or enqueue without a repo (the UI disables those, but
-    // the IPC boundary enforces it too). A draft with no repo is allowed.
-    if ((action === 'run' || action === 'queue') && !repos.length)
+    // Gate 1 of four (docs/requirements-session-operator.md §2.1): a session
+    // cannot run or enqueue without a repo (the UI disables those, but the IPC
+    // boundary enforces it too) — unless its role never holds one. A draft
+    // with no repo is allowed for every role.
+    if ((action === 'run' || action === 'queue') && roleNeedsRepo(role) && !repos.length)
       throw new Error('session has no repository')
     assertRoleFitsRepos(role, repos)
     // Named after the role, not a flat "session N" — the role is the one thing
@@ -699,14 +720,18 @@ export class SessionManager {
   run(sessionId: string): void {
     const s = this.sessions.get(sessionId)
     if (!s || s.info.state === 'starting' || s.info.state === 'started') return
-    if (!s.info.repos.length) throw new Error('session has no repository')
+    // Gate 2 (see createSession's gate 1 for the rule).
+    if (roleNeedsRepo(sessionRole(s.info)) && !s.info.repos.length)
+      throw new Error('session has no repository')
     this.startNowOrQueue(sessionId)
   }
 
   enqueue(sessionId: string): void {
     const s = this.sessions.get(sessionId)
     if (!s || s.info.state === 'starting' || s.info.state === 'started') return
-    if (!s.info.repos.length) throw new Error('session has no repository')
+    // Gate 3 (see createSession's gate 1 for the rule).
+    if (roleNeedsRepo(sessionRole(s.info)) && !s.info.repos.length)
+      throw new Error('session has no repository')
     s.info.state = 'queued'
     s.info.queuedAt = new Date().toISOString()
     s.startError = undefined
@@ -935,7 +960,11 @@ export class SessionManager {
       // A researcher claims no clone (read-only, locks nothing) — start it
       // unconditionally, same pass, no FIFO contention to resolve. It still
       // needs a repo to read, so a repo-less one falls through to `no-repo`.
-      if (!roleLocksClone(sessionRole(s.info)) && s.info.repos.length) {
+      // An operator claims no clone either AND needs no repo — it can always
+      // run, which matters for the session whose job is to fix the reason the
+      // other sessions cannot (docs/requirements-session-operator.md §2.1).
+      const role = sessionRole(s.info)
+      if (!roleLocksClone(role) && (s.info.repos.length || !roleNeedsRepo(role))) {
         start()
         continue
       }
@@ -1246,9 +1275,11 @@ export class SessionManager {
     this.emitState(s, by)
     this.bus.emit('session.changed', { sessionId })
     try {
-      // Every start path funnels here, so the gate is checked once, here: the
-      // scheduler pre-checks it to pick queue items, "Run now" doesn't need to.
-      if (!s.info.repos.length) throw new Error('session has no repository')
+      // Gate 4: every start path funnels here, so the gate is checked once,
+      // here — the scheduler pre-checks it to pick queue items, "Run now"
+      // doesn't need to. An operator legally starts with zero repos.
+      if (roleNeedsRepo(sessionRole(s.info)) && !s.info.repos.length)
+        throw new Error('session has no repository')
       const holder = this.repoHolder(s)
       if (holder)
         throw new Error(
@@ -1960,11 +1991,29 @@ export class SessionManager {
     role: SessionRole
     onComplete: (p: ChangeProposal) => void
     onCreateSession: (req: AgentSessionRequest) => Promise<{ sessionId: string; title: string }>
+    admin?: {
+      call(method: string, args: Record<string, unknown>): Promise<unknown>
+      provisioningLog(key: string, tail: number | undefined): Promise<string>
+    }
   } {
+    const role = sessionRole(s.info)
     return {
-      role: sessionRole(s.info),
+      role,
       onComplete: (p) => this.onComplete(s.info.id, p),
-      onCreateSession: (req) => this.createAgentDraft(s.info.id, req)
+      onCreateSession: (req) => this.createAgentDraft(s.info.id, req),
+      // The workspace is bound here, from the session's own record — the one
+      // parameter the agent can never express (§3.2 of
+      // docs/requirements-session-operator.md).
+      ...(role === 'operator'
+        ? {
+            admin: {
+              call: (method: string, args: Record<string, unknown>) =>
+                this.events.adminCall(s.ref.workspace, method, args),
+              provisioningLog: (key: string, tail: number | undefined) =>
+                this.events.adminProvisioningLog(s.ref.workspace, key, tail)
+            }
+          }
+        : {})
     }
   }
 

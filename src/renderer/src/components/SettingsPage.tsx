@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { JSX } from 'react'
 import type { AgentInstance, AgentsFile, EnvConfig, RepoConfig, Tree } from '../../../shared/types'
+import { OPERATOR_ENV_NAME } from '../../../shared/types'
 import type { EnvImageStatus } from '../../../shared/api'
 import { parseEnvDevcontainer, validateEnvConfig } from '../../../shared/envConfig'
 import type {
@@ -165,6 +166,7 @@ function stripProtocol(url: string): string {
 function EnvironmentsSection({ tree, ws }: { tree: Tree | null; ws: string | null }) {
   const [editing, setEditing] = useState<EnvConfig | null>(null)
   const [adding, setAdding] = useState(false)
+  const [operatorError, setOperatorError] = useState('')
   const [statuses, setStatuses] = useState<Record<string, EnvImageStatus>>({})
   const [building, setBuilding] = useState<Set<string>>(new Set())
   const [buildLogs, setBuildLogs] = useState<Record<string, string[]>>({})
@@ -256,6 +258,47 @@ function EnvironmentsSection({ tree, ws }: { tree: Tree | null; ws: string | nul
           + New environment
         </button>
       </div>
+      {/* Which env the workspace's operator sessions run on — the twin of the
+          default agent, beside the thing it points at
+          (docs/requirements-session-operator.md §2.2). Absent = the bundled,
+          always-startable default. */}
+      {ws && (
+        <div className="set-row">
+          <span className="set-row-label">Operator environment</span>
+          <span className="spacer" />
+          <button
+            type="button"
+            className={`btn-link ${!wsData?.operatorEnv ? 'active' : ''}`}
+            title={`the image-only default gurt ships (${OPERATOR_ENV_NAME}) — needs no repo and no setup`}
+            onClick={() =>
+              void window.gurt
+                .setOperatorEnv(ws, undefined)
+                .then(() => setOperatorError(''))
+                .catch((e: unknown) => setOperatorError(e instanceof Error ? e.message : String(e)))
+            }
+          >
+            {!wsData?.operatorEnv ? 'bundled default ✓' : 'bundled default'}
+          </button>
+          {envs.map((e) => (
+            <button
+              key={e.name}
+              type="button"
+              className={`btn-link ${wsData?.operatorEnv === e.name ? 'active' : ''}`}
+              onClick={() =>
+                void window.gurt
+                  .setOperatorEnv(ws, e.name)
+                  .then(() => setOperatorError(''))
+                  .catch((err: unknown) =>
+                    setOperatorError(err instanceof Error ? err.message : String(err))
+                  )
+              }
+            >
+              {wsData?.operatorEnv === e.name ? `${e.name} ✓` : e.name}
+            </button>
+          ))}
+        </div>
+      )}
+      {operatorError && <div className="error">{operatorError}</div>}
       <div className="set-list">
         {envs.map((e) => {
           const st = statuses[e.name]

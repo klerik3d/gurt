@@ -145,6 +145,22 @@ export interface EnvConfig {
   repo?: string
 }
 
+/**
+ * Name of the bundled default operator environment
+ * (docs/requirements-session-operator.md §2.2). It is code, not user data —
+ * the config lives under `resources/env/` beside the proxy script — but it
+ * shares the env name space, so the store validator reserves the name: a
+ * workspace env may not take it.
+ */
+export const OPERATOR_ENV_NAME = 'operator'
+
+/** The env an operator session of this workspace runs on: the workspace's
+ *  `operatorEnv` when set, else the bundled default (§2.2). The role does not
+ *  check which env it got — an operator pointed at a workspace env is an
+ *  ordinary session on an ordinary env. */
+export const operatorEnvName = (ws: Pick<WorkspaceFile, 'operatorEnv'>): string =>
+  ws.operatorEnv ?? OPERATOR_ENV_NAME
+
 /** <workspace>/workspace.json */
 export interface WorkspaceFile {
   repos: RepoConfig[]
@@ -169,6 +185,11 @@ export interface WorkspaceFile {
    *  is the same "selected but unavailable" case a session's own selection
    *  already has to hold. */
   defaultSkills?: string[]
+  /** Env definition name this workspace's operator sessions run on; absent =
+   *  the bundled default (`OPERATOR_ENV_NAME`). Set from Settings, beside
+   *  `defaultAgent` and `defaultSkills`, which it is the twin of
+   *  (docs/requirements-session-operator.md §2.2). */
+  operatorEnv?: string
 }
 
 /**
@@ -247,10 +268,11 @@ export interface LegacyEnvState {
 export type SessionState = 'draft' | 'queued' | 'starting' | 'started'
 
 /**
- * What a session is *for* — see docs/requirements-session-roles.md. Chosen at
- * creation (changeable while it is still a draft, like its repos and env, never
- * after it has started); mounts, clone locking and the `gurt` tool set follow
- * from it instead of from the repo count they used to be inferred from.
+ * What a session is *for* — see docs/requirements-session-roles.md and, for the
+ * operator, docs/requirements-session-operator.md. Chosen at creation
+ * (changeable while it is still a draft, like its repos and env, never after it
+ * has started); mounts, clone locking and the `gurt` tool set follow from it
+ * instead of from the repo count they used to be inferred from.
  *
  * executor   — today's worker: one repo, read-write, holds the exclusive clone
  *              lock, ends every turn with `complete`.
@@ -260,10 +282,19 @@ export type SessionState = 'draft' | 'queued' | 'starting' | 'started'
  * reviewer   — read-only *and* holding the clone lock: it judges one clone's
  *              uncommitted changes while nothing may mutate that working tree.
  *              Its verdict is plain chat text and gates nothing.
+ * operator   — configures gurt itself: holds exactly ZERO repos (a researcher's
+ *              N taken to 0), mounts nothing, locks nothing, and reads the
+ *              workspace configuration through the admin tools of its `gurt`
+ *              MCP server instead of through a clone.
  */
-export type SessionRole = 'executor' | 'researcher' | 'reviewer'
+export type SessionRole = 'executor' | 'researcher' | 'reviewer' | 'operator'
 
-export const SESSION_ROLES: readonly SessionRole[] = ['executor', 'researcher', 'reviewer']
+export const SESSION_ROLES: readonly SessionRole[] = [
+  'executor',
+  'researcher',
+  'reviewer',
+  'operator'
+]
 
 /** Guard for a role arriving from outside the kernel (the renderer over IPC).
  *  An unknown string must be rejected, not silently treated as some role: every
@@ -284,8 +315,16 @@ export const roleIsReadOnly = (role: SessionRole): boolean => role !== 'executor
 
 /** Takes the scheduler's exclusive clone lock. A researcher never blocks (and
  *  is never blocked by) another session; a reviewer excludes writers exactly
- *  the way an executor does. */
-export const roleLocksClone = (role: SessionRole): boolean => role !== 'researcher'
+ *  the way an executor does. An operator holds no clone at all, so there is
+ *  nothing for a lock to protect. */
+export const roleLocksClone = (role: SessionRole): boolean =>
+  role === 'executor' || role === 'reviewer'
+
+/** Needs at least one repository to start. Every role but the operator does;
+ *  the operator's zero repos is its definition, not a missing pick — the four
+ *  start gates and the container manager's anchor guard all read this instead
+ *  of assuming a repo (docs/requirements-session-operator.md §2.1). */
+export const roleNeedsRepo = (role: SessionRole): boolean => role !== 'operator'
 
 /** Bound by the turn contract — offered `complete`, nudged when a turn ends
  *  without it (docs/requirements-turn-contract.md). */
@@ -493,6 +532,9 @@ export interface Tree {
     /** Skill names switched on in every new draft here — see
      *  `WorkspaceFile.defaultSkills`. */
     defaultSkills?: string[]
+    /** Env the workspace's operator sessions run on — see
+     *  `WorkspaceFile.operatorEnv`. Absent = the bundled default. */
+    operatorEnv?: string
     tasks: {
       name: string
       /** ISO timestamp the task was created — see {@link TaskFile.createdAt}.
