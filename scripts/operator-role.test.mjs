@@ -38,6 +38,7 @@ await bundle({
       `export { assertRoleFitsRepos, postTurnDecision } from ${S('src/main/sessions.ts')}\n` +
       `export { addEnv, getWorkspace, setOperatorEnv } from ${S('src/main/store.ts')}\n` +
       `export { bundledOperatorEnv } from ${S('src/main/operatorEnv.ts')}\n` +
+      `export { sessionConfigArgs } from ${S('src/main/containers.ts')}\n` +
       `export { OPERATOR_ENV_NAME, operatorEnvName, roleHasTurnContract, roleIsReadOnly, roleLocksClone, roleNeedsRepo, spawnableRoles } from ${S('src/shared/types.ts')}`,
     resolveDir: ROOT,
     loader: 'ts',
@@ -308,6 +309,36 @@ test('the bundled env resolves at start (env lookup passes)', async () => {
   assert.ok(fs.existsSync(wrapper), 'empty wrapper dir staged as --workspace-folder')
   assert.deepEqual(fs.readdirSync(wrapper), [], 'and it holds no mounts')
   kernel.sessions.deleteSession(op.id)
+})
+
+// --- up and exec resolve the same config (the first-real-run regression) ----
+
+test('exec resolves exactly the config up wrote — zero mounts included', () => {
+  const info = (role, repos, skills) => ({
+    id: 's1', env: 'dev', role, repos, task, workspace: ws, title: 't',
+    state: 'draft', startPrompt: '', ...(skills ? { skills } : {})
+  })
+  const envConfig = ['--override-config', path.join(GURT_ROOT, ws, '.devcontainers', 'dev.json')]
+  const sessionConfig = [
+    '--override-config',
+    path.join(GURT_ROOT, ws, task, '.multirepo', 's1', 'devcontainer.json')
+  ]
+  // A repo-less operator's `up` runs on the env's own materialized file and
+  // writes no per-session merged copy — every exec (the adapter probe, the
+  // install, the spawn) must resolve that same file, not a merged copy that
+  // was never written. This is the "ACP adapter install failed (exit 1)" of
+  // the first real repo-less start.
+  assert.deepEqual(m.sessionConfigArgs(info('operator', []), 's1', '.claude/skills'), envConfig)
+  // With a skills bind there IS a merged copy (the bind is a mount of gurt's
+  // own), and both sides resolve it.
+  assert.deepEqual(
+    m.sessionConfigArgs(info('operator', [], [{ name: 'greet' }]), 's1', '.claude/skills'),
+    sessionConfig
+  )
+  // The existing pairings are untouched: a mounted role WITH repos merges, a
+  // plain single-repo executor stays on the env's file.
+  assert.deepEqual(m.sessionConfigArgs(info('researcher', ['alpha']), 's1', null), sessionConfig)
+  assert.deepEqual(m.sessionConfigArgs(info('executor', ['alpha']), 's1', null), envConfig)
 })
 
 /** A ref on another env of the same task. */
