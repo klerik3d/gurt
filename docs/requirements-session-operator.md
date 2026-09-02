@@ -1077,6 +1077,21 @@ tests are `scripts/operator-role.test.mjs`, `scripts/admin-surface.test.mjs`,
   generated (so §12 item 3's "read+write set" holds for the file) but never
   registered on the MCP server, and the admin surface's chokepoint refuses
   them again if reached by another route.
+- **First-real-run fix: `exec` must resolve exactly the config `up` wrote,
+  and "zero mounts" is the case that broke it.** `devcontainerUp` writes the
+  per-session merged config only when gurt added mounts of its own; the
+  exec-side resolver (`sessionConfigArgs` in containers.ts) picked the
+  merged copy for every mounted *role*. Those agreed for every prior role —
+  mounted implied at least one repo — and disagreed exactly for the
+  repo-less operator: its `up` came up on the env's own materialized file
+  (confirming, on a real daemon, that a repo-less `devcontainer up` against
+  the empty wrapper works — §12 item 10's first check), and then the
+  adapter probe/install exec'd against a merged copy that was never
+  written, failing the start with "ACP adapter install failed (exit 1)".
+  The resolver now mirrors `up`'s write condition literally (repo mounts
+  present, or the skills bind); regression in
+  `scripts/operator-role.test.mjs` ("exec resolves exactly the config up
+  wrote").
 - **Journal mechanics.** Commits run with a fixed committer
   (`-c user.name=gurt`), signing off (`-c commit.gpgsign=false`) and hooks
   off (`--no-verify`) — a machine-written journal must commit the same way

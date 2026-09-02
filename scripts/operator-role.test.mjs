@@ -21,6 +21,21 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 // GURT_ROOT must be set before the store module loads (read at import time).
 const GURT_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'gurt-operator-'))
 process.env.GURT_ROOT = GURT_ROOT
+
+// Docker must not be reachable from these tests: they assert host-side gates
+// and refusals, and on a machine WITH a daemon (CI's ubuntu runner) a start
+// that gets past them would run a real `devcontainer up` — slow, networked,
+// and failing on the fake image only after a feature fetch and a pull, well
+// past `settle`'s patience. A stub that refuses instantly makes the path
+// identical everywhere; every child inherits PATH through `run`/`runNodeCli`.
+const stubBin = path.join(GURT_ROOT, 'stub-bin')
+fs.mkdirSync(stubBin, { recursive: true })
+fs.writeFileSync(
+  path.join(stubBin, 'docker'),
+  '#!/bin/sh\necho "docker stub: no daemon here" >&2\nexit 1\n'
+)
+fs.chmodSync(path.join(stubBin, 'docker'), 0o755)
+process.env.PATH = `${stubBin}${path.delimiter}${process.env.PATH}`
 // The bundled env's on-disk home resolves relative to the real module dir,
 // which a bundled test does not have — the same seam GURT_PROXY_SCRIPT gives
 // the proxy points the tests at a config they control.
@@ -38,6 +53,7 @@ await bundle({
       `export { assertRoleFitsRepos, postTurnDecision } from ${S('src/main/sessions.ts')}\n` +
       `export { addEnv, getWorkspace, setOperatorEnv } from ${S('src/main/store.ts')}\n` +
       `export { bundledOperatorEnv } from ${S('src/main/operatorEnv.ts')}\n` +
+      `export { sessionConfigArgs } from ${S('src/main/containers.ts')}\n` +
       `export { OPERATOR_ENV_NAME, operatorEnvName, roleHasTurnContract, roleIsReadOnly, roleLocksClone, roleNeedsRepo, spawnableRoles } from ${S('src/shared/types.ts')}`,
     resolveDir: ROOT,
     loader: 'ts',
@@ -308,6 +324,36 @@ test('the bundled env resolves at start (env lookup passes)', async () => {
   assert.ok(fs.existsSync(wrapper), 'empty wrapper dir staged as --workspace-folder')
   assert.deepEqual(fs.readdirSync(wrapper), [], 'and it holds no mounts')
   kernel.sessions.deleteSession(op.id)
+})
+
+// --- up and exec resolve the same config (the first-real-run regression) ----
+
+test('exec resolves exactly the config up wrote — zero mounts included', () => {
+  const info = (role, repos, skills) => ({
+    id: 's1', env: 'dev', role, repos, task, workspace: ws, title: 't',
+    state: 'draft', startPrompt: '', ...(skills ? { skills } : {})
+  })
+  const envConfig = ['--override-config', path.join(GURT_ROOT, ws, '.devcontainers', 'dev.json')]
+  const sessionConfig = [
+    '--override-config',
+    path.join(GURT_ROOT, ws, task, '.multirepo', 's1', 'devcontainer.json')
+  ]
+  // A repo-less operator's `up` runs on the env's own materialized file and
+  // writes no per-session merged copy — every exec (the adapter probe, the
+  // install, the spawn) must resolve that same file, not a merged copy that
+  // was never written. This is the "ACP adapter install failed (exit 1)" of
+  // the first real repo-less start.
+  assert.deepEqual(m.sessionConfigArgs(info('operator', []), 's1', '.claude/skills'), envConfig)
+  // With a skills bind there IS a merged copy (the bind is a mount of gurt's
+  // own), and both sides resolve it.
+  assert.deepEqual(
+    m.sessionConfigArgs(info('operator', [], [{ name: 'greet' }]), 's1', '.claude/skills'),
+    sessionConfig
+  )
+  // The existing pairings are untouched: a mounted role WITH repos merges, a
+  // plain single-repo executor stays on the env's file.
+  assert.deepEqual(m.sessionConfigArgs(info('researcher', ['alpha']), 's1', null), sessionConfig)
+  assert.deepEqual(m.sessionConfigArgs(info('executor', ['alpha']), 's1', null), envConfig)
 })
 
 /** A ref on another env of the same task. */

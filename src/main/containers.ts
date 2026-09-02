@@ -90,9 +90,22 @@ export function usesSkillMounts(info: SessionInfo, skillsDir: string | null): bo
  * both), and the env's shared materialized file otherwise. The file behind it
  * was written by `ensure`'s `up` and persists across app restarts, so the
  * reattach path needs nothing.
+ *
+ * "Added mounts of its own" is literal, and must mirror `devcontainerUp`'s
+ * write condition exactly: a repo-less operator is the mounted case with ZERO
+ * mounts (docs/requirements-session-operator.md §2.1), so its `up` ran on the
+ * env's own materialized file and wrote no merged copy — an exec resolving
+ * the per-session path there would point at a file that does not exist, and
+ * the adapter install would die on it (the first real repo-less start did).
+ * Exported for the regression test in scripts/operator-role.test.mjs.
  */
-function sessionConfigArgs(info: SessionInfo, sessionId: string, skillsDir: string | null): string[] {
-  return usesRepoMounts(info) || usesSkillMounts(info, skillsDir)
+export function sessionConfigArgs(
+  info: SessionInfo,
+  sessionId: string,
+  skillsDir: string | null
+): string[] {
+  const hasRepoMounts = usesRepoMounts(info) && info.repos.length > 0
+  return hasRepoMounts || usesSkillMounts(info, skillsDir)
     ? [
         '--override-config',
         sessionConfigPath(store.sessionScratchDir(info.workspace, info.task, sessionId))
