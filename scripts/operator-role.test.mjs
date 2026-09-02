@@ -21,6 +21,21 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 // GURT_ROOT must be set before the store module loads (read at import time).
 const GURT_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'gurt-operator-'))
 process.env.GURT_ROOT = GURT_ROOT
+
+// Docker must not be reachable from these tests: they assert host-side gates
+// and refusals, and on a machine WITH a daemon (CI's ubuntu runner) a start
+// that gets past them would run a real `devcontainer up` — slow, networked,
+// and failing on the fake image only after a feature fetch and a pull, well
+// past `settle`'s patience. A stub that refuses instantly makes the path
+// identical everywhere; every child inherits PATH through `run`/`runNodeCli`.
+const stubBin = path.join(GURT_ROOT, 'stub-bin')
+fs.mkdirSync(stubBin, { recursive: true })
+fs.writeFileSync(
+  path.join(stubBin, 'docker'),
+  '#!/bin/sh\necho "docker stub: no daemon here" >&2\nexit 1\n'
+)
+fs.chmodSync(path.join(stubBin, 'docker'), 0o755)
+process.env.PATH = `${stubBin}${path.delimiter}${process.env.PATH}`
 // The bundled env's on-disk home resolves relative to the real module dir,
 // which a bundled test does not have — the same seam GURT_PROXY_SCRIPT gives
 // the proxy points the tests at a config they control.
