@@ -1,6 +1,6 @@
 # Requirements: domain event bus
 
-Status: draft for review · Target: gurt Electron MVP (this repo)
+Status: historical (superseded) · Target: gurt Electron MVP (this repo)
 
 This document is a work order for an implementing agent. Read `README.md`
 first. Key code: `src/main/{kernel,envs,sessions,ipc}.ts`,

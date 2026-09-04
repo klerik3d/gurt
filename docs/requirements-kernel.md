@@ -1,6 +1,6 @@
 # Requirements: kernel extraction + typed IPC
 
-Status: draft for review · Target: gurt Electron MVP (this repo)
+Status: historical (superseded) · Target: gurt Electron MVP (this repo)
 
 This document is a work order for an implementing agent. Read `README.md`
 first. Key code: `src/main/ipc.ts` (everything moves out of here),
