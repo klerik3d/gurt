@@ -1,6 +1,6 @@
 # Requirements: Changes panel → delivery thread (follow-up)
 
-Status: draft for review · Follow-up to
+Status: implemented · Follow-up to
 `requirements-changes-panel.md` (PR #10, `src/main/changes.ts`).
 Supersedes its §2 (model), §3.1 (layout), §3.2 (badge); the rest stays.
 Do not change this contract without asking the owner.

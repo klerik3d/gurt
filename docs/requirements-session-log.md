@@ -1,6 +1,6 @@
 # Requirements: append-only session log
 
-Status: draft for review · Target: gurt Electron MVP (this repo)
+Status: implemented · Target: gurt Electron MVP (this repo)
 
 This document is a work order for an implementing agent. Read `README.md`
 first. Key code: `src/main/{sessions,store}.ts`, `src/shared/types.ts`,

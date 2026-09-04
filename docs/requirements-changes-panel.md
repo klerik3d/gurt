@@ -1,6 +1,6 @@
 # Requirements: task Changes panel (product surface)
 
-Status: draft for review · Target: gurt Electron MVP (this repo)
+Status: partial · Target: gurt Electron MVP (this repo)
 
 This document is a work order for an implementing agent. Read `README.md`
 first. Key code: `src/main/provision.ts` (clone + `gurt/<task>` branch,

@@ -49,8 +49,10 @@ npm run build    # electron-vite build → out/
 npm run dist     # build + electron-builder package → release/
 ```
 
-Packaging is currently configured for **macOS only** (unsigned dmg — see
-`electron-builder.yml` and the "Packaging" section of the README).
+`npm run dist` packages macOS (unsigned dmg + zip) and `npm run
+dist:linux` packages Linux (AppImage + deb); the release workflow runs
+both, one job per runner. See `electron-builder.yml` and the "Packaging"
+section of the README.
 
 ## Type-checking and lint
 
