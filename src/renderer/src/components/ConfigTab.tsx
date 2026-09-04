@@ -99,52 +99,38 @@ function McpRow({
   mode: McpMode | undefined
   onChange: (mode: McpMode | null) => void
 }) {
-  const [open, setOpen] = useState(false)
-  const ref = useRef<HTMLDivElement>(null)
-  useOutsideClose(open, ref, () => setOpen(false))
   const modes = mcpHasModes(entry)
   // Selecting this runs a process on the user's machine, so the picker says so
   // where the choice is made — not only in Settings, and not only as a tooltip
   // (docs/requirements-mcp-stdio.md §2).
   const local = entry.source === 'registry' && isLocalMcpEntry(entry.entry)
   const on = mode != null
+  // A plain on/off reads as a single toggle; a built-in with enforcement
+  // levels gets a three-way bar instead of a nested menu (§3.3) — one click
+  // either way, no popup step.
   const options = modes ? (['off', 'read-only', 'full'] as const) : (['off', 'on'] as const)
-  const label = !on ? 'off' : modes ? mode : 'on'
-  const pick = (m: (typeof options)[number]) => {
-    setOpen(false)
-    onChange(m === 'off' ? null : m === 'on' ? 'full' : m)
-  }
+  const current = !on ? 'off' : modes ? mode : 'on'
+  const pick = (m: (typeof options)[number]) => onChange(m === 'off' ? null : m === 'on' ? 'full' : m)
   return (
-    <div className="pick-wrap" ref={ref}>
-      <button
-        type="button"
-        className="pick-row mcp-row"
-        title={entry.description}
-        onClick={() => setOpen((o) => !o)}
-      >
+    <div className="pick-wrap">
+      <div className="pick-row mcp-row" title={entry.description}>
         <Dot tone={on ? 'green' : 'outline'} size={7} />
         <span className={`mcp-name ${on ? '' : 'faint'}`}>{entry.label}</span>
         <span className="mcp-desc faint">{entry.description}</span>
-        <span className="pick-meta">{label}</span>
-        <Icon name="chevron" size={12} className="faint" style={{ flex: 'none' }} />
-      </button>
-      {local && <div className="mcp-local-note">{LOCAL_MCP_NOTICE}</div>}
-      {open && (
-        <div className="menu pick-menu">
+        <div className="chip-row" style={{ flex: 'none' }}>
           {options.map((m) => (
-            <div
+            <button
               key={m}
-              className={`menu-item ${label === m ? 'active' : ''}`}
-              onMouseDown={(e) => {
-                e.preventDefault()
-                pick(m)
-              }}
+              type="button"
+              className={`chip-btn ${current === m ? 'on' : ''}`}
+              onClick={() => pick(m)}
             >
               {m}
-            </div>
+            </button>
           ))}
         </div>
-      )}
+      </div>
+      {local && <div className="mcp-local-note">{LOCAL_MCP_NOTICE}</div>}
     </div>
   )
 }
@@ -187,41 +173,24 @@ function SkillRow({
   on: boolean
   onChange: (on: boolean) => void
 }) {
-  const [open, setOpen] = useState(false)
-  const ref = useRef<HTMLDivElement>(null)
-  useOutsideClose(open, ref, () => setOpen(false))
-  const label = on ? 'on' : 'off'
+  const current = on ? 'on' : 'off'
   return (
-    <div className="pick-wrap" ref={ref}>
-      <button
-        type="button"
-        className="pick-row mcp-row"
-        title={entry.problem ?? entry.description}
-        onClick={() => setOpen((o) => !o)}
-      >
-        <Dot tone={entry.problem ? 'red' : on ? 'green' : 'outline'} size={7} />
-        <span className={`mcp-name ${on ? '' : 'faint'}`}>{entry.name}</span>
-        <span className="mcp-desc faint">{entry.problem ?? entry.description}</span>
-        <span className="pick-meta">{label}</span>
-        <Icon name="chevron" size={12} className="faint" style={{ flex: 'none' }} />
-      </button>
-      {open && (
-        <div className="menu pick-menu">
-          {(['off', 'on'] as const).map((m) => (
-            <div
-              key={m}
-              className={`menu-item ${label === m ? 'active' : ''}`}
-              onMouseDown={(e) => {
-                e.preventDefault()
-                setOpen(false)
-                onChange(m === 'on')
-              }}
-            >
-              {m}
-            </div>
-          ))}
-        </div>
-      )}
+    <div className="pick-row mcp-row" title={entry.problem ?? entry.description}>
+      <Dot tone={entry.problem ? 'red' : on ? 'green' : 'outline'} size={7} />
+      <span className={`mcp-name ${on ? '' : 'faint'}`}>{entry.name}</span>
+      <span className="mcp-desc faint">{entry.problem ?? entry.description}</span>
+      <div className="chip-row" style={{ flex: 'none' }}>
+        {(['off', 'on'] as const).map((m) => (
+          <button
+            key={m}
+            type="button"
+            className={`chip-btn ${current === m ? 'on' : ''}`}
+            onClick={() => onChange(m === 'on')}
+          >
+            {m}
+          </button>
+        ))}
+      </div>
     </div>
   )
 }
@@ -275,6 +244,7 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
   const [agentConfig, setAgentConfig] = useState<AgentConfig | null>(null)
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [picker, setPicker] = useState<'env' | 'repo' | 'client' | 'role' | null>(null)
+  const [repoFilter, setRepoFilter] = useState('')
   const [error, setError] = useState('')
 
   const wsData = tree.workspaces.find((w) => w.name === info.workspace)
@@ -348,6 +318,15 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
     patch(p)
     setPicker(null)
   }
+
+  const repoQuery = repoFilter.trim().toLowerCase()
+  const filteredRepos = repoQuery
+    ? allRepos.filter(
+        (r) =>
+          r.name.toLowerCase().includes(repoQuery) ||
+          shortRepoUrl(r.url).toLowerCase().includes(repoQuery)
+      )
+    : allRepos
 
   // Multi-select for a researcher, plain single pick for the roles that work in
   // exactly one clone.
@@ -565,7 +544,7 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
                       pickEnv(e.name)
                     }}
                   >
-                    <Icon name="box" size={13} className="dim" />
+                    <Icon name="box" size={13} className="dim" style={{ flex: 'none' }} />
                     {e.name}
                     {e.repo && <span className="menu-meta mono">{e.repo}</span>}
                   </div>
@@ -592,26 +571,49 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
           <PickRow
             open={picker === 'repo'}
             onToggle={() => setPicker(picker === 'repo' ? null : 'repo')}
-            onClose={() => setPicker(null)}
+            onClose={() => {
+              setPicker(null)
+              setRepoFilter('')
+            }}
             menu={
               allRepos.length ? (
-                allRepos.map((r) => {
-                  const active = repos.includes(r.name)
-                  return (
-                    <div
-                      key={r.name}
-                      className={`menu-item ${active ? 'active' : ''}`}
-                      onMouseDown={(e) => {
-                        e.preventDefault()
-                        toggleRepo(r.name)
-                      }}
-                    >
-                      <Icon name="branch" size={11} className="faint" />
-                      {r.name}
-                      <span className="menu-meta mono">{shortRepoUrl(r.url)}</span>
-                    </div>
-                  )
-                })
+                <>
+                  {/* Only worth the extra row once there's enough repos that
+                      scanning the list by eye stops being faster than typing. */}
+                  {allRepos.length > 6 && (
+                    <input
+                      autoFocus
+                      type="text"
+                      className="menu-filter"
+                      placeholder="filter repositories…"
+                      value={repoFilter}
+                      onChange={(e) => setRepoFilter(e.target.value)}
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onKeyDown={(e) => e.stopPropagation()}
+                    />
+                  )}
+                  {filteredRepos.length ? (
+                    filteredRepos.map((r) => {
+                      const active = repos.includes(r.name)
+                      return (
+                        <div
+                          key={r.name}
+                          className={`menu-item ${active ? 'active' : ''}`}
+                          onMouseDown={(e) => {
+                            e.preventDefault()
+                            toggleRepo(r.name)
+                          }}
+                        >
+                          <Icon name="branch" size={11} className="faint" style={{ flex: 'none' }} />
+                          {r.name}
+                          <span className="menu-meta mono">{shortRepoUrl(r.url)}</span>
+                        </div>
+                      )
+                    })
+                  ) : (
+                    <div className="menu-empty">no repositories match &quot;{repoFilter}&quot;</div>
+                  )}
+                </>
               ) : (
                 <div className="menu-empty">no repositories — add one in Settings</div>
               )
@@ -622,7 +624,7 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
                 const cfg = allRepos.find((r) => r.name === name)
                 return (
                   <span className="chip-tag" key={name}>
-                    <Icon name="branch" size={11} className="faint" />
+                    <Icon name="branch" size={11} className="faint" style={{ flex: 'none' }} />
                     {cfg ? shortRepoUrl(cfg.url) : name}
                   </span>
                 )

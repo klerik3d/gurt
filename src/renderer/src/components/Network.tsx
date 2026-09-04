@@ -228,6 +228,11 @@ export function NetworkPicker({
   const internal = networkMode(network) === 'internal'
   const allow = explicitAllows(network.policy)
   const [builtinOpen, setBuiltinOpen] = useState(false)
+  // Everything past the on/off toggle — the built-in denylist and the allow
+  // list — is detail most sessions never touch. Folded behind one label so the
+  // block reads as a single toggle at a glance; auto-opens once there is an
+  // allow list to show, so an edited draft doesn't look like it lost its list.
+  const [detailsOpen, setDetailsOpen] = useState(allow.length > 0)
 
   return (
     <>
@@ -263,63 +268,77 @@ export function NetworkPicker({
         )}
       </div>
 
-      {/* Applies in both toggle states, because both enforce it on proxied
-          traffic: even non-internal sessions route anything honouring
-          HTTP_PROXY through the proxy. Read-only for now — editing it per
-          session is a separate task (§6.4) — and folded behind its label:
-          the list is a statement, not a decision, so it costs a click. */}
-      <div className="hc-block">
-        <div className="seclabel-row">
-          <button type="button" className="subfold" onClick={() => setBuiltinOpen((o) => !o)}>
-            <Icon
-              name="chevron"
-              size={11}
-              style={{ flex: 'none', transform: builtinOpen ? undefined : 'rotate(-90deg)' }}
-            />
-            blocked by default
-            <span className="dim">{BUILTIN_DENY_ENTRIES.length}</span>
-          </button>
-          <InfoDot
-            text={
-              allow.length
-                ? 'Not consulted while the allow list below has entries — what that list names is what this session can reach, and nothing else is.'
-                : 'Refused on the address a name resolves to, not just on the name. The one way to reach one of these is to name it in the allow list below.'
-            }
-          />
-        </div>
-        {builtinOpen && (
-          <div className="net-builtin">
-            {BUILTIN_DENY_ENTRIES.map((e) => (
-              <div className="net-row" key={e.label} title={e.detail}>
-                <span className="net-host mono">{e.label}</span>
-                <span className="spacer" />
-                <span className="dim">{e.detail}</span>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      <div className="hc-block">
-        <div className="seclabel-row">
-          <span className="seclabel">ALLOW LIST</span>
-          <InfoDot text="Empty means open: everything outward is allowed except what is blocked by default. Add at least one entry and the session is restricted to what is listed — nothing else gets out. A bare host covers every port on it and its subdomains (example.com also covers api.example.com); host:port narrows the entry to one port. No wildcards, and an IP literal matches exactly." />
-        </div>
-        <HostList
-          hosts={allow}
-          placeholder={'one host per line\nexample.com also covers api.example.com\nhost.docker.internal:5173'}
-          onChange={(next) => onChange({ ...network, policy: { allow: next } })}
+      <button type="button" className="subfold" onClick={() => setDetailsOpen((o) => !o)}>
+        <Icon
+          name="chevron"
+          size={11}
+          style={{ flex: 'none', transform: detailsOpen ? undefined : 'rotate(-90deg)' }}
         />
-        {allow.length > 0 && (
-          <div className="hc-note hc-warn">
-            Only the {allow.length === 1 ? 'entry' : `${allow.length} entries`} above can be reached
-            — everything else is refused, the rest of the internet included. Each entry is connected
-            exactly as written: dialled by name, with no address check, so a name that answers with
-            a private address is still reached. Write the IP literal instead if that is not what you
-            want.
+        allow / block list
+        {allow.length > 0 && <span className="dim">{allow.length} allowed</span>}
+      </button>
+
+      {detailsOpen && (
+        <>
+          {/* Applies in both toggle states, because both enforce it on proxied
+              traffic: even non-internal sessions route anything honouring
+              HTTP_PROXY through the proxy. Read-only for now — editing it per
+              session is a separate task (§6.4) — and folded behind its label:
+              the list is a statement, not a decision, so it costs a click. */}
+          <div className="hc-block">
+            <div className="seclabel-row">
+              <button type="button" className="subfold" onClick={() => setBuiltinOpen((o) => !o)}>
+                <Icon
+                  name="chevron"
+                  size={11}
+                  style={{ flex: 'none', transform: builtinOpen ? undefined : 'rotate(-90deg)' }}
+                />
+                blocked by default
+                <span className="dim">{BUILTIN_DENY_ENTRIES.length}</span>
+              </button>
+              <InfoDot
+                text={
+                  allow.length
+                    ? 'Not consulted while the allow list below has entries — what that list names is what this session can reach, and nothing else is.'
+                    : 'Refused on the address a name resolves to, not just on the name. The one way to reach one of these is to name it in the allow list below.'
+                }
+              />
+            </div>
+            {builtinOpen && (
+              <div className="net-builtin">
+                {BUILTIN_DENY_ENTRIES.map((e) => (
+                  <div className="net-row" key={e.label} title={e.detail}>
+                    <span className="net-host mono">{e.label}</span>
+                    <span className="spacer" />
+                    <span className="dim">{e.detail}</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
-        )}
-      </div>
+
+          <div className="hc-block">
+            <div className="seclabel-row">
+              <span className="seclabel">ALLOW LIST</span>
+              <InfoDot text="Empty means open: everything outward is allowed except what is blocked by default. Add at least one entry and the session is restricted to what is listed — nothing else gets out. A bare host covers every port on it and its subdomains (example.com also covers api.example.com); host:port narrows the entry to one port. No wildcards, and an IP literal matches exactly." />
+            </div>
+            <HostList
+              hosts={allow}
+              placeholder={'one host per line\nexample.com also covers api.example.com\nhost.docker.internal:5173'}
+              onChange={(next) => onChange({ ...network, policy: { allow: next } })}
+            />
+            {allow.length > 0 && (
+              <div className="hc-note hc-warn">
+                Only the {allow.length === 1 ? 'entry' : `${allow.length} entries`} above can be
+                reached — everything else is refused, the rest of the internet included. Each entry
+                is connected exactly as written: dialled by name, with no address check, so a name
+                that answers with a private address is still reached. Write the IP literal instead
+                if that is not what you want.
+              </div>
+            )}
+          </div>
+        </>
+      )}
     </>
   )
 }

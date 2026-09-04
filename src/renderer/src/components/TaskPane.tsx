@@ -4,6 +4,7 @@ import type { DiffTarget, RepoChanges, Tree } from '../../../shared/types'
 import { isActionable, isDelivered } from '../../../shared/types'
 import { agentKind, agentName, useAgents } from '../useAgents'
 import { alertDialog, confirmDialog } from '../dialog'
+import { useOutsideClose } from '../hooks'
 import { containerDot } from '../status'
 import { Icon, Dot } from './icons'
 import { AgentTag, EnvTag, RepoTag } from './tags'
@@ -102,19 +103,18 @@ export function TaskPane({
                   </span>
                   {c.error && <span className="env-err mono">{c.error}</span>}
                   <span className="spacer" />
-                  {c.status !== 'stopped' && c.status !== 'error' && (
-                    <button
-                      className="btn btn-xs"
-                      onClick={run(() =>
-                        window.gurt.stopContainer(s.id).catch((e: unknown) => alertDialog(String(e)))
-                      )}
-                    >
-                      Stop
-                    </button>
-                  )}
                   <button
-                    className="btn btn-xs"
-                    onClick={run(async () => {
+                    className="btn-log mono"
+                    onClick={() => setOpenLog(openLog === s.id ? null : s.id)}
+                  >
+                    {openLog === s.id ? 'hide' : 'log'}
+                  </button>
+                  <ContainerActionsMenu
+                    canStop={c.status !== 'stopped' && c.status !== 'error'}
+                    onStop={run(() =>
+                      window.gurt.stopContainer(s.id).catch((e: unknown) => alertDialog(String(e)))
+                    )}
+                    onDelete={run(async () => {
                       if (
                         await confirmDialog(
                           `Delete the container of "${s.title}"? The session and its clone are kept — it re-provisions on the next run.`,
@@ -123,15 +123,7 @@ export function TaskPane({
                       )
                         window.gurt.releaseContainer(s.id).catch((e: unknown) => alertDialog(String(e)))
                     })}
-                  >
-                    Delete
-                  </button>
-                  <button
-                    className="btn-log mono"
-                    onClick={() => setOpenLog(openLog === s.id ? null : s.id)}
-                  >
-                    {openLog === s.id ? 'hide' : 'log'}
-                  </button>
+                  />
                 </div>
                 {openLog === s.id && (
                   <pre className="env-log">
@@ -187,6 +179,60 @@ export function TaskPane({
           ))}
         </div>
       </div>
+    </div>
+  )
+}
+
+/** Overflow menu for a container row — stop / delete — behind a click instead
+ *  of two bare buttons sitting in the row at all times. */
+function ContainerActionsMenu({
+  canStop,
+  onStop,
+  onDelete
+}: {
+  canStop: boolean
+  onStop: () => void
+  onDelete: () => void
+}): JSX.Element {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  useOutsideClose(open, ref, () => setOpen(false))
+
+  return (
+    <div className="session-menu" ref={ref}>
+      <button
+        className={`icon-sq ${open ? 'active' : ''}`}
+        title="container actions"
+        onClick={() => setOpen((o) => !o)}
+      >
+        <Icon name="dots" size={14} />
+      </button>
+      {open && (
+        <div className="menu session-menu-pop">
+          {canStop && (
+            <div
+              className="menu-item"
+              onMouseDown={(e) => {
+                e.preventDefault()
+                setOpen(false)
+                onStop()
+              }}
+            >
+              <span>Stop</span>
+            </div>
+          )}
+          <div
+            className="menu-item danger"
+            onMouseDown={(e) => {
+              e.preventDefault()
+              setOpen(false)
+              onDelete()
+            }}
+          >
+            <span>Delete</span>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

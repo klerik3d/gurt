@@ -11,7 +11,7 @@ import { alertDialog, confirmDialog } from '../dialog'
 import { SESSION_DOT } from '../status'
 import { Icon, Dot } from './icons'
 import { AgentMark } from './tags'
-import { deleteSession, duplicateSession } from './SessionActions'
+import { deleteSession, SessionMenu } from './SessionActions'
 import { Modal } from './Modal'
 import { fire, run } from '../async'
 
@@ -486,26 +486,10 @@ export function Sidebar({
                     <span className="sb-task-name">{task.name}</span>
                     <TaskBadge repos={changes[tkey] ?? []} />
                     <span className="spacer" />
-                    <button
-                      className="icon-sq sb-act"
-                      title="new session"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        onNewSession(wsName, task.name)
-                      }}
-                    >
-                      <Icon name="message" size={13} />
-                    </button>
-                    <button
-                      className="icon-sq sb-act"
-                      title="delete task"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        fire(() => deleteTask(task.name))
-                      }}
-                    >
-                      <Icon name="trash" size={13} />
-                    </button>
+                    <TaskRowMenu
+                      onNewSession={() => onNewSession(wsName, task.name)}
+                      onDelete={() => fire(() => deleteTask(task.name))}
+                    />
                   </>
                 )}
               </div>
@@ -547,27 +531,8 @@ export function Sidebar({
                               <AgentMark kind={agentKind(agents, s.agent)} name={agentName(agents, s.agent)} />
                             )}
                           </span>
-                          <span className="sb-session-acts">
-                            <button
-                              className="icon-sq sb-act"
-                              title="duplicate as draft"
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                void duplicateSession(s.id, (copy) => onSelectSession(copy.id))
-                              }}
-                            >
-                              <Icon name="copy" size={13} />
-                            </button>
-                            <button
-                              className="icon-sq sb-act"
-                              title="delete session"
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                void deleteSession(s)
-                              }}
-                            >
-                              <Icon name="trash" size={13} />
-                            </button>
+                          <span className="sb-session-acts" onClick={(e) => e.stopPropagation()}>
+                            <SessionMenu info={s} onSelect={onSelectSession} onDeleted={() => {}} />
                           </span>
                         </>
                       )}
@@ -624,6 +589,59 @@ function RenameInput({
         else if (e.key === 'Escape') onCancel()
       }}
     />
+  )
+}
+
+/** Overflow menu for a task row — new session / delete task — behind a click
+ *  rather than two bare buttons, matching the session row's own menu. */
+function TaskRowMenu({
+  onNewSession,
+  onDelete
+}: {
+  onNewSession: () => void
+  onDelete: () => void
+}) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  useOutsideClose(open, ref, () => setOpen(false))
+
+  return (
+    <div className="session-menu" ref={ref} onClick={(e) => e.stopPropagation()}>
+      <button
+        className={`icon-sq sb-act ${open ? 'active' : ''}`}
+        title="task actions"
+        onClick={() => setOpen((o) => !o)}
+      >
+        <Icon name="dots" size={13} />
+      </button>
+      {open && (
+        <div className="menu session-menu-pop">
+          <div
+            className="menu-item"
+            onMouseDown={(e) => {
+              e.preventDefault()
+              setOpen(false)
+              onNewSession()
+            }}
+          >
+            <Icon name="message" size={13} className="faint" />
+            <span>New session</span>
+          </div>
+          <div className="menu-sep" />
+          <div
+            className="menu-item danger"
+            onMouseDown={(e) => {
+              e.preventDefault()
+              setOpen(false)
+              onDelete()
+            }}
+          >
+            <Icon name="trash" size={13} className="faint" />
+            <span>Delete task</span>
+          </div>
+        </div>
+      )}
+    </div>
   )
 }
 
