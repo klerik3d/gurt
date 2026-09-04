@@ -567,7 +567,7 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
                       pickEnv(OPERATOR_ENV_NAME)
                     }}
                   >
-                    <Icon name="box" size={13} className="dim" />
+                    <Icon name="box" size={13} className="dim" style={{ flex: 'none' }} />
                     {OPERATOR_ENV_NAME}
                     <span className="menu-meta mono">bundled default</span>
                   </div>
@@ -582,7 +582,7 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
                         pickEnv(e.name)
                       }}
                     >
-                      <Icon name="box" size={13} className="dim" />
+                      <Icon name="box" size={13} className="dim" style={{ flex: 'none' }} />
                       {e.name}
                       {e.repo && <span className="menu-meta mono">{e.repo}</span>}
                     </div>
