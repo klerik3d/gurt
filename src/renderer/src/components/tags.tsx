@@ -50,8 +50,8 @@ export function RepoTag({ name, title }: { name: string; title?: string }): JSX.
  * What each session role means, in the UI's own words — the new-session picker,
  * the draft settings row and the chat header all read from here, so the wording
  * stays one thing. Glyphs follow the trade-off, not the name: `play` = it does
- * the work, `eye` = it only looks, `eye-lock` = it only looks but nobody else
- * may touch the tree while it does. See docs/requirements-session-roles.md.
+ * the work, `search` = it only reads and hunts, `eye` = it only judges. See
+ * docs/requirements-session-roles.md.
  */
 export const ROLE_INFO: Record<SessionRole, { label: string; hint: string; icon: IconName }> = {
   executor: {
@@ -62,12 +62,12 @@ export const ROLE_INFO: Record<SessionRole, { label: string; hint: string; icon:
   researcher: {
     label: 'researcher',
     hint: 'reads only: any number of repos, locks nothing, answers in chat, can draft other sessions',
-    icon: 'eye'
+    icon: 'search'
   },
   reviewer: {
     label: 'reviewer',
     hint: "judges one clone's uncommitted changes: writable, so it can install deps and run tests, but holds the lock so nothing moves under it",
-    icon: 'eye-lock'
+    icon: 'eye'
   },
   operator: {
     label: 'operator',
