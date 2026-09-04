@@ -142,10 +142,9 @@ await page.press('.sb-newtask-menu input', 'Enter')
 await page.waitForSelector('.sb-task-name:text-is("t")', { timeout: 10000 })
 
 // --- codex session — this is what provisions the container -------------
-await page.hover('.sb-task:has(.sb-task-name:text-is("t"))')
-await page.click('.sb-task:has(.sb-task-name:text-is("t")) .icon-sq[title="task actions"]')
-await page.waitForSelector('.session-menu-pop', { timeout: 5000 })
-await page.click('.session-menu-pop .menu-item:has-text("New session")')
+await page.click('.sb-task:has(.sb-task-name:text-is("t"))', { button: 'right' })
+await page.waitForSelector('.ctx-menu', { timeout: 5000 })
+await page.click('.ctx-menu .menu-item:has-text("New session")')
 await page.waitForSelector('.modal:has-text("New session")', { timeout: 5000 })
 // environment first: picking it seeds the session's repo from the env default
 await page.click('.modal .seclabel:text-is("ENVIRONMENT") + .pick-wrap .pick-row')

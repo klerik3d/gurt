@@ -125,10 +125,9 @@ const waitState = (page, title, states, timeout = 600000) =>
 /** Compose a session off the task row and finish it with `action`'s button. */
 async function newSession(page, task, prompt, action) {
   await openWork(page)
-  await page.hover(`.sb-task:has(.sb-task-name:text-is("${task}"))`)
-  await page.click(`.sb-task:has(.sb-task-name:text-is("${task}")) .icon-sq[title="task actions"]`)
-  await page.waitForSelector('.session-menu-pop', { timeout: 5000 })
-  await page.click('.session-menu-pop .menu-item:has-text("New session")')
+  await page.click(`.sb-task:has(.sb-task-name:text-is("${task}"))`, { button: 'right' })
+  await page.waitForSelector('.ctx-menu', { timeout: 5000 })
+  await page.click('.ctx-menu .menu-item:has-text("New session")')
   await page.waitForSelector('.modal:has-text("New session")', { timeout: 5000 })
   // environment first: picking it seeds the session's repo from the env default
   await page.click('.modal .seclabel:text-is("ENVIRONMENT") + .pick-wrap .pick-row')
