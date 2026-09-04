@@ -495,6 +495,13 @@ textarea.input {
   top: calc(100% + 6px);
   right: 0;
 }
+/* Row context menu (right-click / two-finger tap) — anchored to the pointer
+   instead of a button, so it reads as a normal OS menu. */
+.ctx-menu {
+  position: fixed;
+  z-index: 50;
+  min-width: 170px;
+}
 .menu-empty {
   padding: 10px 9px;
   font-size: 12px;
@@ -919,15 +926,6 @@ textarea.input {
   padding: 1px 5px;
   outline: none;
 }
-.sb-task .sb-act {
-  visibility: hidden;
-  width: 18px;
-  height: 18px;
-}
-.sb-task:hover .sb-act,
-.sb-task .sb-act.active {
-  visibility: visible;
-}
 .task-badge {
   width: 6px;
   height: 6px;
@@ -945,8 +943,6 @@ textarea.input {
   align-items: center;
   gap: 9px;
   padding: 2px 18px 2px 34px;
-  /* Hold the row at the height of the 18px hover actions so revealing them
-     doesn't grow the row and nudge the rest of the tree down. */
   min-height: 22px;
   cursor: pointer;
 }
@@ -974,26 +970,6 @@ textarea.input {
   font-size: 10.5px;
   color: var(--faint);
   flex: none;
-}
-/* Row actions take the agent mark's place on hover rather than reserving space
-   next to it — the tree is narrow, and the title should keep every pixel it can
-   while nobody is pointing at the row. */
-.sb-session-acts {
-  display: none;
-  margin-left: auto;
-  flex: none;
-  align-items: center;
-}
-.sb-session:hover .sb-session-acts {
-  display: flex;
-}
-.sb-session:hover .sb-session-client {
-  display: none;
-}
-.sb-session-acts .sb-act,
-.sb-session-acts .icon-sq {
-  width: 18px;
-  height: 18px;
 }
 .sb-empty {
   padding: 3px 18px 3px 34px;
@@ -2852,6 +2828,16 @@ textarea.input {
   height: 1px;
   background: var(--border);
   margin: 6px 8px;
+}
+/* Group heading (Registry): the same typographic key as .set-nav-fold, minus
+   the chevron and the pointer — it labels a block, it doesn't toggle one. */
+.set-nav-group {
+  padding: 7px 10px 5px;
+  color: var(--faint);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 /* Advanced disclosure: mcp/skills registries, folded behind one click so the
    everyday-config list above isn't sharing space with them. */

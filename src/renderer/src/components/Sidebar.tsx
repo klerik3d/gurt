@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
-import type { KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, ReactNode } from 'react'
 import type { RepoChanges, SessionActivity, Tree } from '../../../shared/types'
 import { isActionable, isDelivered, sessionStatus } from '../../../shared/types'
 import type { Selection } from '../App'
@@ -11,7 +11,7 @@ import { alertDialog, confirmDialog } from '../dialog'
 import { SESSION_DOT } from '../status'
 import { Icon, Dot } from './icons'
 import { AgentMark } from './tags'
-import { deleteSession, SessionMenu } from './SessionActions'
+import { deleteSession, duplicateSession } from './SessionActions'
 import { Modal } from './Modal'
 import { fire, run } from '../async'
 
@@ -140,6 +140,10 @@ export function Sidebar({
   /** The row whose name is currently swapped for a text field, if any. */
   const [renaming, setRenaming] = useState<Row | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
+  /** Right-click (or two-finger tap) target — a row's actions, at the pointer
+   *  instead of behind a dedicated button, so hovering the tree never has to
+   *  reserve or reveal space for one and the list holds still under the mouse. */
+  const [ctxMenu, setCtxMenu] = useState<{ row: Row; x: number; y: number } | null>(null)
   /** Guards the edit against resolving twice: both Escape and a keyboard commit
    *  move focus off the input, and the blur that follows would otherwise run the
    *  commit a second time — against a name that no longer exists. */
@@ -218,6 +222,78 @@ export function Sidebar({
   const deleteRow = async (id: string): Promise<boolean> => {
     const s = wsData?.tasks.flatMap((t) => t.sessions).find((x) => x.id === id)
     return s ? deleteSession(s) : false
+  }
+
+  /** Right-click opens the row's menu at the pointer and selects the row under
+   *  it — same as clicking, so the menu always acts on what it's next to. */
+  const openContextMenu = (e: ReactMouseEvent, row: Row) => {
+    e.preventDefault()
+    e.stopPropagation()
+    selectRow(row)
+    setCtxMenu({ row, x: e.clientX, y: e.clientY })
+  }
+
+  /** The open context menu's contents — a task gets "new session" / "delete
+   *  task", a session gets "duplicate as draft" / "delete session". */
+  const renderCtxMenu = (menu: { row: Row; x: number; y: number }, close: () => void) => {
+    const { row } = menu
+    return (
+      <RowContextMenu x={menu.x} y={menu.y} onClose={close}>
+        {row.kind === 'task' ? (
+          <>
+            <div
+              className="menu-item"
+              onMouseDown={(e) => {
+                e.preventDefault()
+                close()
+                onNewSession(row.ws, row.task)
+              }}
+            >
+              <Icon name="message" size={13} className="faint" />
+              <span>New session</span>
+            </div>
+            <div className="menu-sep" />
+            <div
+              className="menu-item danger"
+              onMouseDown={(e) => {
+                e.preventDefault()
+                close()
+                fire(() => deleteTask(row.task))
+              }}
+            >
+              <Icon name="trash" size={13} className="faint" />
+              <span>Delete task</span>
+            </div>
+          </>
+        ) : (
+          <>
+            <div
+              className="menu-item"
+              onMouseDown={(e) => {
+                e.preventDefault()
+                close()
+                void duplicateSession(row.id, (copy) => onSelectSession(copy.id))
+              }}
+            >
+              <Icon name="copy" size={13} className="faint" />
+              <span>Duplicate as draft</span>
+            </div>
+            <div className="menu-sep" />
+            <div
+              className="menu-item danger"
+              onMouseDown={(e) => {
+                e.preventDefault()
+                close()
+                fire(() => deleteRow(row.id))
+              }}
+            >
+              <Icon name="trash" size={13} className="faint" />
+              <span>Delete session</span>
+            </div>
+          </>
+        )}
+      </RowContextMenu>
+    )
   }
 
   // Creates the task right from the header "+", no modal round-trip — click,
@@ -471,6 +547,7 @@ export function Sidebar({
                 aria-selected={taskSelected}
                 onClick={() => onSelectTask(wsName, task.name)}
                 onDoubleClick={() => startRename(row)}
+                onContextMenu={editing ? undefined : (e) => openContextMenu(e, row)}
               >
                 <span
                   className="sb-chev"
@@ -497,10 +574,6 @@ export function Sidebar({
                     <span className="sb-task-name">{task.name}</span>
                     <TaskBadge repos={changes[tkey] ?? []} />
                     <span className="spacer" />
-                    <TaskRowMenu
-                      onNewSession={() => onNewSession(wsName, task.name)}
-                      onDelete={() => fire(() => deleteTask(task.name))}
-                    />
                   </>
                 )}
               </div>
@@ -521,6 +594,7 @@ export function Sidebar({
                       title={dot.label}
                       onClick={() => onSelectSession(s.id)}
                       onDoubleClick={() => startRename(srow)}
+                      onContextMenu={renamingThis ? undefined : (e) => openContextMenu(e, srow)}
                     >
                       <Dot tone={dot.tone} pulse={dot.pulse} />
                       {renamingThis ? (
@@ -533,17 +607,10 @@ export function Sidebar({
                       ) : (
                         <>
                           <span className="sb-session-name">{s.title}</span>
-                          {/* Agent mark and row actions share the right edge:
-                              hovering swaps one for the other, so the actions
-                              cost the title no width when nobody is reaching
-                              for them. */}
                           <span className="sb-session-client">
                             {s.agent && (
                               <AgentMark kind={agentKind(agents, s.agent)} name={agentName(agents, s.agent)} />
                             )}
-                          </span>
-                          <span className="sb-session-acts" onClick={(e) => e.stopPropagation()}>
-                            <SessionMenu info={s} onSelect={onSelectSession} onDeleted={() => {}} />
                           </span>
                         </>
                       )}
@@ -567,7 +634,47 @@ export function Sidebar({
           </div>
         )}
       </div>
+      {ctxMenu && renderCtxMenu(ctxMenu, () => setCtxMenu(null))}
     </aside>
+  )
+}
+
+/** A row's actions at the pointer instead of behind a button — opened by
+ *  right-click (or a trackpad's two-finger tap, which the browser already
+ *  maps to the same `contextmenu` event). Closes like any other dropdown:
+ *  outside click or Escape. */
+function RowContextMenu({
+  x,
+  y,
+  onClose,
+  children
+}: {
+  x: number
+  y: number
+  onClose: () => void
+  children: ReactNode
+}) {
+  const ref = useRef<HTMLDivElement>(null)
+  useOutsideClose(true, ref, onClose)
+  // Anchored at the raw pointer position first, then nudged back on-screen
+  // once its real size is known — a menu that opens near the window edge
+  // should still land fully inside it, not spill off.
+  const [pos, setPos] = useState({ x, y })
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const margin = 6
+    const rect = el.getBoundingClientRect()
+    setPos({
+      x: Math.max(margin, Math.min(x, window.innerWidth - rect.width - margin)),
+      y: Math.max(margin, Math.min(y, window.innerHeight - rect.height - margin))
+    })
+  }, [x, y])
+
+  return (
+    <div className="menu ctx-menu" ref={ref} style={{ left: pos.x, top: pos.y }}>
+      {children}
+    </div>
   )
 }
 
@@ -600,59 +707,6 @@ function RenameInput({
         else if (e.key === 'Escape') onCancel()
       }}
     />
-  )
-}
-
-/** Overflow menu for a task row — new session / delete task — behind a click
- *  rather than two bare buttons, matching the session row's own menu. */
-function TaskRowMenu({
-  onNewSession,
-  onDelete
-}: {
-  onNewSession: () => void
-  onDelete: () => void
-}) {
-  const [open, setOpen] = useState(false)
-  const ref = useRef<HTMLDivElement>(null)
-  useOutsideClose(open, ref, () => setOpen(false))
-
-  return (
-    <div className="session-menu" ref={ref} onClick={(e) => e.stopPropagation()}>
-      <button
-        className={`icon-sq sb-act ${open ? 'active' : ''}`}
-        title="task actions"
-        onClick={() => setOpen((o) => !o)}
-      >
-        <Icon name="dots" size={13} />
-      </button>
-      {open && (
-        <div className="menu session-menu-pop">
-          <div
-            className="menu-item"
-            onMouseDown={(e) => {
-              e.preventDefault()
-              setOpen(false)
-              onNewSession()
-            }}
-          >
-            <Icon name="message" size={13} className="faint" />
-            <span>New session</span>
-          </div>
-          <div className="menu-sep" />
-          <div
-            className="menu-item danger"
-            onMouseDown={(e) => {
-              e.preventDefault()
-              setOpen(false)
-              onDelete()
-            }}
-          >
-            <Icon name="trash" size={13} className="faint" />
-            <span>Delete task</span>
-          </div>
-        </div>
-      )}
-    </div>
   )
 }
 
