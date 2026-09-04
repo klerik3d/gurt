@@ -195,7 +195,10 @@ export function McpMarks({
       title={`MCP servers\n${resolved.map((r) => mcpTitle(r)).join('\n')}`}
     >
       <Icon name="plug" size={11} className={missing ? undefined : 'faint'} />
-      {resolved.map(mcpName).join(', ')}
+      {resolved.slice(0, MARK_NAMES_SHOWN).map(mcpName).join(', ')}
+      {resolved.length > MARK_NAMES_SHOWN && (
+        <span className="dim">+{resolved.length - MARK_NAMES_SHOWN}</span>
+      )}
     </span>
   )
 }
@@ -246,11 +249,23 @@ export function AgentMark({
   )
 }
 
+/**
+ * How many names a header mark spells out before the rest collapses into a
+ * "+N" counter — the full list stays one hover away in the mark's tooltip.
+ *
+ * The header row is fixed height and holds real controls (VS Code, the session
+ * menu) to the right of these marks: a session on eight repositories used to
+ * push those controls off the pane rather than clip itself.
+ */
+const MARK_NAMES_SHOWN = 2
+
 /** The same pair unpilled, for the header pills and the footer — the chip around
  *  them already carries the frame, and both lay their children out with a gap.
  *  `task`, when given alongside `repos`, appends the task's branch name — every
  *  clone's task branch is named `<task>` (see `branchFor` in changes.ts).
- *  More than one repo (a discovery session) shows one branch mark per repo. */
+ *  More than one repo (a discovery session) shows a branch mark per repo, up to
+ *  `MARK_NAMES_SHOWN` — the rest become "+N", with the whole list in the
+ *  tooltip. */
 export function EnvRepoMarks({
   env,
   repos,
@@ -261,16 +276,23 @@ export function EnvRepoMarks({
   task?: string
 }): JSX.Element {
   const list = repos ?? []
+  const shown = list.slice(0, MARK_NAMES_SHOWN)
+  const rest = list.length - shown.length
   return (
     <>
       <Icon name="box" size={11} className="faint" />
       {env || 'no env'}
-      {list.map((r) => (
-        <Fragment key={r}>
-          <Icon name="branch" size={11} className="faint" />
-          {r}
-        </Fragment>
-      ))}
+      {list.length > 0 && (
+        <span className="repo-marks" title={`repositories\n${list.join('\n')}`}>
+          {shown.map((r) => (
+            <Fragment key={r}>
+              <Icon name="branch" size={11} className="faint" />
+              {r}
+            </Fragment>
+          ))}
+          {rest > 0 && <span className="dim">+{rest}</span>}
+        </span>
+      )}
       {list.length > 0 && task && <span className="dim">{task}</span>}
     </>
   )

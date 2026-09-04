@@ -479,6 +479,14 @@ textarea.input {
 .menu-item.danger:hover {
   color: var(--red);
 }
+/* Lets the name give way to the menu's fixed width instead of forcing a
+   horizontal scrollbar on the dropdown (.pick-menu below). */
+.menu-item-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex: 1 1 auto;
+}
 .menu-item-input {
   padding: 3px;
 }
@@ -1044,6 +1052,22 @@ textarea.input {
   border-radius: 20px;
   padding: 3px 10px;
   white-space: nowrap;
+  /* Last line of defence: the marks inside already collapse long lists into
+     "+N", but an unusually long env or agent name must still clip here rather
+     than shove the VS Code and menu buttons off the right of the pane. */
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+/* The repo run inside a pill: its own row so it can carry one tooltip listing
+   every repository, while keeping the pill's own 6px rhythm. */
+.repo-marks {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.repo-marks svg {
   flex: none;
 }
 .chat-hint {
@@ -1524,6 +1548,20 @@ textarea.input {
   font-size: 10.5px;
   color: var(--faint);
 }
+/* A queue that is actually a queue — the turn has ended and these prompts are
+   waiting their turn behind another session — reads blue, like every other
+   waiting-its-turn mark in the app (see status.ts). Prompts piled onto a turn
+   that is still running keep the plain dashed look. */
+.pending-queue.waiting {
+  border-color: var(--accent);
+}
+.pending-row .dot {
+  flex: none;
+  margin: 0 2px;
+}
+.pending-queue.waiting .pending-note {
+  color: var(--accent);
+}
 
 .composer-wrap {
   flex: none;
@@ -1822,6 +1860,10 @@ textarea.input {
   right: 0;
   max-height: 240px;
   overflow-y: auto;
+  /* Without this, overflow-y: auto alone makes overflow-x compute to auto
+     too (spec quirk), so a too-wide menu-item grows a horizontal scrollbar
+     instead of just truncating via .menu-item-name. */
+  overflow-x: hidden;
 }
 .provider-row {
   background: var(--app);

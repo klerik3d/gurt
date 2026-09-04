@@ -655,7 +655,7 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
                           }}
                         >
                           <Icon name="branch" size={11} className="faint" style={{ flex: 'none' }} />
-                          {r.name}
+                          <span className="menu-item-name">{r.name}</span>
                           <span className="menu-meta mono">{shortRepoUrl(r.url)}</span>
                         </div>
                       )
@@ -669,7 +669,13 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
               )
             }
           >
-            {repos.length ? (
+            {roleAllowsMultiRepo(role) ? (
+              <>
+                <Icon name="branch" size={14} className="dim" style={{ flex: 'none' }} />
+                <span className="pick-value">{repos.length ? 'add another repository' : 'pick a repository'}</span>
+                {repos.length > 0 && <span className="pick-meta">{repos.length} selected</span>}
+              </>
+            ) : repos.length ? (
               repos.map((name) => {
                 const cfg = allRepos.find((r) => r.name === name)
                 return (
@@ -684,6 +690,34 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
             )}
             <span className="spacer" />
           </PickRow>
+          )}
+          {/* Selected repos move here instead of packing the pick-row itself:
+              a researcher can rack up enough of them that inline chips would
+              overrun the row and hang off the edge of the screen. Below the
+              row they wrap, and each carries its own remove — the familiar
+              tag-input shape. */}
+          {roleAllowsMultiRepo(role) && repos.length > 0 && (
+            <div className="chip-row">
+              {repos.map((name) => {
+                const cfg = allRepos.find((r) => r.name === name)
+                return (
+                  <span className="chip-tag" key={name}>
+                    <Icon name="branch" size={11} className="faint" style={{ flex: 'none' }} />
+                    {cfg ? shortRepoUrl(cfg.url) : name}
+                    <span
+                      className="chip-x"
+                      title="remove"
+                      onMouseDown={(e) => {
+                        e.preventDefault()
+                        toggleRepo(name)
+                      }}
+                    >
+                      ×
+                    </span>
+                  </span>
+                )
+              })}
+            </div>
           )}
           {role !== 'operator' && !repos.length && (
             <div className="hc-note">no repository — Run/Queue disabled until you pick one</div>

@@ -1063,10 +1063,15 @@ function Composer({
           a message that disappeared into an invisible queue is worse than a
           send button that refuses — which is what this replaces. */}
       {pending.length > 0 && (
-        <div className="pending-queue">
+        <div className={`pending-queue ${busy ? '' : 'waiting'}`}>
           {pending.map((p) => (
             <div className="pending-row" key={p.id}>
-              <Icon name="history" size={12} className="faint" />
+              {/* Blue only when this really is a queue: the session's own turn
+                  is over and the prompt sits waiting for something else (the
+                  clone's holder) to let go — the same grammar as a queued
+                  session's dot. Piled onto a turn that is still running, it is
+                  just the next thing to say, so it stays faint. */}
+              {busy ? <Icon name="history" size={12} className="faint" /> : <Dot tone="accent" size={7} />}
               <span className="pending-text">{p.text}</span>
               {p.images ? (
                 <span className="dim" title="images ride with it and are lost if you take it back">

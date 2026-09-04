@@ -136,12 +136,18 @@ function NonStartedPane({
   const mcpFailures = useMcpFailures(sessionId)
   const [text, setText] = useState(info.startPrompt)
   const [activeTab, setActiveTab] = useState<SessionTab>('chat')
+  // Run/queue both flip `info.state` away from 'draft', which normally swaps
+  // this whole body out on its own — but that swap rides the same IPC round
+  // trip the click kicked off, so for a beat the draft view (and its buttons)
+  // just sits there with nothing to show the click landed. This is the beat.
+  const [submitting, setSubmitting] = useState<'run' | 'queue' | null>(null)
 
   // Keep the editor in sync when the persisted prompt changes elsewhere, and
   // land back on the chat tab when the selection switches to another session.
   useEffect(() => {
     setText(info.startPrompt)
     setActiveTab('chat')
+    setSubmitting(null)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId])
   useEffect(() => {
@@ -207,25 +213,37 @@ function NonStartedPane({
           <div className="row-buttons">
             <button
               className="btn btn-primary"
-              disabled={!canRun}
+              disabled={!canRun || submitting !== null}
               title={missing ? `pick ${missing} first (Config tab)` : undefined}
               onClick={run(async () => {
-                if (text !== info.startPrompt) await window.gurt.sessionEditPrompt(sessionId, text)
-                window.gurt.sessionRun(sessionId).catch((e: unknown) => alertDialog(String(e)))
+                setSubmitting('run')
+                try {
+                  if (text !== info.startPrompt) await window.gurt.sessionEditPrompt(sessionId, text)
+                  await window.gurt.sessionRun(sessionId)
+                } catch (e) {
+                  await alertDialog(String(e))
+                  setSubmitting(null)
+                }
               })}
             >
-              Run now
+              {submitting === 'run' ? 'Starting…' : 'Run now'}
             </button>
             <button
               className="btn"
-              disabled={!canRun}
+              disabled={!canRun || submitting !== null}
               title={missing ? `pick ${missing} first (Config tab)` : undefined}
               onClick={run(async () => {
-                if (text !== info.startPrompt) await window.gurt.sessionEditPrompt(sessionId, text)
-                window.gurt.sessionEnqueue(sessionId).catch((e: unknown) => alertDialog(String(e)))
+                setSubmitting('queue')
+                try {
+                  if (text !== info.startPrompt) await window.gurt.sessionEditPrompt(sessionId, text)
+                  await window.gurt.sessionEnqueue(sessionId)
+                } catch (e) {
+                  await alertDialog(String(e))
+                  setSubmitting(null)
+                }
               })}
             >
-              Add to queue
+              {submitting === 'queue' ? 'Adding…' : 'Add to queue'}
             </button>
             <span className="spacer" />
             <button className="btn" onClick={run(copy)} title="copy these settings and prompt into a new draft">
