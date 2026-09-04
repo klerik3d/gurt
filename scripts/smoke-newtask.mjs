@@ -61,7 +61,7 @@ await page.screenshot({ path: path.join(SHOT_DIR, '01-task-created.png') })
 console.log('confirmed: task created, no session leaked in')
 
 // A second task, to confirm the popover isn't confused with the per-row
-// "new session" button — and that the two are now visually distinct (message
+// task-actions menu — and that the two triggers are visually distinct (dots
 // icon vs plus icon) rather than two identical plus buttons.
 await page.click('button[title^="New task"]')
 await page.fill('.sb-newtask-menu input', 'second-task')
@@ -71,13 +71,15 @@ assert.equal(await page.locator('.sb-task').count(), 2, 'two independent tasks e
 assert.equal(await page.locator('.sb-session').count(), 0, 'still no sessions after a second task')
 console.log('second task created independently OK')
 
-// The per-task "new session" button is a distinct message icon, not a second
-// identical plus — click it and confirm it makes a *session* (not another
-// task). It's only visible on row hover. Since the New Session modal was
-// replaced by instant drafts, the session appears in the tree straight away
-// and its pane opens on the Chat tab — no popup in between.
+// The per-task actions menu is a distinct dots icon, not a second identical
+// plus — open it and pick "New session", confirming it makes a *session* (not
+// another task). It's only visible on row hover. Since the New Session modal
+// was replaced by instant drafts, the session appears in the tree straight
+// away and its pane opens on the Chat tab — no popup in between.
 await page.hover('.sb-task >> nth=0')
-await page.click('.sb-task .icon-sq[title="new session"] >> nth=0')
+await page.click('.sb-task .icon-sq[title="task actions"] >> nth=0')
+await page.waitForSelector('.session-menu-pop', { timeout: 5000 })
+await page.click('.session-menu-pop .menu-item:has-text("New session")')
 await page.waitForSelector('.session-pane .tab-bar', { timeout: 5000 })
 await page.waitForSelector('.sb-session', { timeout: 5000 })
 assert.equal(await page.locator('.modal').count(), 0, 'a new session is a bare draft, no modal')

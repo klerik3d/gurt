@@ -1,11 +1,11 @@
-// Duplicating and deleting a session from the UI: the sidebar row's hover
-// actions and the session pane's ⋯ menu.
+// Duplicating and deleting a session from the UI: the sidebar row's ⋯ menu
+// and the session pane's own ⋯ menu — the same component, two mount points.
 //
 // Drives the real app (Electron + the renderer), because what is under test is
-// the wiring: the row action has to appear on hover and not swallow the row's
-// own click, the copy has to land in the tree already selected and carrying the
-// source's prompt, and the pane's menu has to offer the same two actions to a
-// session whose pane is not the draft body.
+// the wiring: the row's menu trigger has to appear on hover and not swallow the
+// row's own click, the copy has to land in the tree already selected and
+// carrying the source's prompt, and the pane's menu has to offer the same two
+// actions to a session whose pane is not the draft body.
 //
 // Sessions are seeded as drafts straight into GURT_ROOT — no agent, no clone,
 // no container, so nothing here needs docker.
@@ -86,12 +86,15 @@ try {
   await page.waitForSelector('.sb-session', { timeout: 10000 })
   assert.deepEqual(await titles(), ['Alpha', 'Bravo'], 'both seeded drafts are in the tree')
 
-  // --- the row's duplicate button ---
-  // Hidden until the row is hovered, so the hover is part of the flow, not a
-  // convenience: clicking it without one would be clicking something invisible.
+  // --- the row's ⋯ menu, duplicate ---
+  // The trigger is hidden until the row is hovered, so the hover is part of
+  // the flow, not a convenience: clicking it without one would be clicking
+  // something invisible.
   await row('Alpha').hover()
   await shot('01-row-hover')
-  await row('Alpha').locator('button[title="duplicate as draft"]').click()
+  await row('Alpha').locator('button[title="Session actions"]').click()
+  await page.waitForSelector('.sb-session .session-menu-pop', { timeout: 5000 })
+  await row('Alpha').locator('.session-menu-pop .menu-item:has-text("Duplicate as draft")').click()
   await page.waitForFunction(() => document.querySelectorAll('.sb-session').length === 3, null, {
     timeout: 5000
   })
@@ -134,9 +137,11 @@ try {
   assert.deepEqual(await titles(), ['Alpha', 'Bravo', 'Alpha (copy)'], 'the copy of the copy is gone')
   console.log('the pane menu deletes the open session OK')
 
-  // --- delete from the row's trash button ---
+  // --- delete from the row's ⋯ menu ---
   await row('Alpha (copy)').hover()
-  await row('Alpha (copy)').locator('button[title="delete session"]').click()
+  await row('Alpha (copy)').locator('button[title="Session actions"]').click()
+  await page.waitForSelector('.sb-session .session-menu-pop', { timeout: 5000 })
+  await row('Alpha (copy)').locator('.session-menu-pop .menu-item:has-text("Delete session")').click()
   await page.waitForSelector('.dialog', { timeout: 5000 })
   await page.click('.dialog-ok')
   await page.waitForFunction(() => document.querySelectorAll('.sb-session').length === 2, null, {
