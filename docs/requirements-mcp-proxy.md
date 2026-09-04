@@ -1,6 +1,6 @@
 # Requirements: MCP registry & the per-session proxy container
 
-Status: draft for review · Target: gurt Electron MVP (this repo)
+Status: implemented · Target: gurt Electron MVP (this repo)
 
 This document is a work order for an implementing agent. Read `README.md`
 first, then `requirements-session-container.md` (the container model this
@@ -240,19 +240,25 @@ Startup, in this order — the order matters (§6.2):
 docker run -d \
   --name gurt-proxy-<session> \
   --label gurt.proxy=<session> \
+  --label gurt.managed=1 \
   --network gurt-egress \
-  --publish 127.0.0.1::8101 \                 # control, host loopback only
   --add-host host.docker.internal:host-gateway \
   --mount type=bind,source=<resources>/proxy/gurt-proxy.mjs,target=/opt/gurt/proxy.mjs,readonly \
+  --mount type=bind,source=<gurtRoot>/proxy/<session>,target=/etc/gurt,readonly \
   --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges \
   node:22-alpine@sha256:... node /opt/gurt/proxy.mjs
 docker network connect --alias gurt-proxy gurt-s-<session> gurt-proxy-<session>
 ```
 
-No docker socket, no other mount, no workspace access. The agent cannot
-`docker exec` into it (there is no docker client in the session
-container, and no socket to use one on): the credentials the proxy holds
-live in its heap and die with it.
+No docker socket, no port published to the host, no other mount, no
+workspace access. The second mount is the session's scope (§5.4); it is
+the *directory* rather than the file, because the host writes the scope
+through a temp file and a rename and a file mount would pin the old
+inode. The second label is the same `gurt.managed=1` §6.1 gives the
+shared egress network — the proxy container and that network are what
+carry it. The agent cannot `docker exec` into the proxy (there is no
+docker client in the session container, and no socket to use one on):
+the credentials the proxy holds live in its heap and die with it.
 
 **The label key is `gurt.proxy`, not `gurt.session`.** Deliberate:
 `dockerSessionContainers()` and `dockerSessionContainerIds()` build the
@@ -265,16 +271,20 @@ negative filter every call site must remember. Networks are a different
 docker namespace and cannot collide, so they do carry
 `gurt.session=<id>` as agreed.
 
-### 4.2 Two listeners
+### 4.2 The one listener
 
 | port | reachable from | purpose |
 |---|---|---|
 | 8100 | the session network only | MCP routing + `CONNECT` egress, for the agent |
-| 8101 | host loopback (published) *and* the session network | control plane, guarded by a separate token (§5.3) |
 
-Both are on the same container, so both are dialable from the session
-network — port separation is not isolation. The control token is what
-separates them (§5.3).
+There is one listener and it is not published: nothing on the host can
+dial it, and nothing outside the session's own network can either. The
+proxy is reached by container name (`gurt-proxy:8100`), which is why the
+network connect in §4.1 carries that alias. The host does not need a way
+in, because it does not talk to the proxy at all — it writes the scope to
+a file the proxy reads (§5.4). Everything the agent could reach on this
+container it is already meant to reach, so there is no second port to
+separate and no second token separating it.
 
 ### 4.3 MCP routing
 
@@ -391,6 +401,13 @@ in the module header, because the next reader will reach for JWT too.
 
 ### 5.3 Scope, and how it gets there
 
+> **This section is the design as originally specified, and the delivery
+> half of it was not built.** §5.4, two screens below, records what
+> landed instead: the scope reaches the proxy as a bind-mounted file, and
+> there is no control listener and no control token anywhere in the code.
+> The *reasoning* here is why, so it is kept; read it as the proposal
+> §5.4 argues against, not as a description of the system.
+
 ```ts
 interface ProxyScope {
   session: string
@@ -400,10 +417,13 @@ interface ProxyScope {
 type DomainPolicy = { allow: string[] }   // empty = open (default), §6.3
 ```
 
-The host **pushes** the scope; the proxy holds it in memory and answers
-from it with no host round-trip on the hot path (an MCP call must not
-depend on the main process being responsive, and an SSE stream must not
-be re-authorized per event).
+As originally specified, the host **pushed** the scope; the proxy holds
+it in memory and answers from it with no host round-trip on the hot path
+(an MCP call must not depend on the main process being responsive, and an
+SSE stream must not be re-authorized per event). That second half still
+holds; the push is what §5.4 replaced.
+
+The proposed control plane was three endpoints on a second listener:
 
 ```
 POST   /control/<controlToken>/scope    { token, scope }   → 204
@@ -411,12 +431,15 @@ DELETE /control/<controlToken>/scope    { token }          → 204   (revoke)
 GET    /control/<controlToken>/health                      → 200
 ```
 
-`controlToken` is a second, disjoint 32-byte secret that exists only in
-the main process and in the proxy — never in the session container's
-environment, never in an ACP descriptor. It is what stops the agent, who
-is on the same network as port 8101, from granting itself a scope. The
-host reaches the control plane over the published loopback port, so it
-works whether or not the daemon is local-socket or remote-context.
+`controlToken` was to be a second, disjoint 32-byte secret existing only
+in the main process and in the proxy — never in the session container's
+environment, never in an ACP descriptor. It was what would have stopped
+the agent, who would have been on the same network as that listener, from
+granting itself a scope. The host would have reached the control plane
+over a published loopback port, so it would work whether the daemon was
+local-socket or remote-context. None of this was built: the file mount
+needs no second secret, because a mount the agent has no path to is not
+something it can write.
 
 Before any scope is pushed, `/mcp/*` answers `503` and `CONNECT` is
 refused: a proxy that starts before its scope arrives must fail closed.
@@ -733,12 +756,21 @@ not a superset — a leftover `bridge` endpoint is the thing being checked
 for). It costs one docker call and turns any future converge bug into a
 visible startup error instead of an invisible open network.
 
-Same shape for the proxy: a running proxy whose `/control/.../health`
-answers is reused and re-pushed; one that is stopped, unhealthy, or
-mounted from a stale script path is removed and recreated. A network that
-exists with the wrong `internal` flag cannot be edited in place — it is
-recreated, which requires disconnecting its endpoints first, which is why
-the recreate path lives next to the converge planner and not in `ensure`.
+Same shape for the proxy, and it is adopted by inspection rather than by
+asking it anything: a container labelled for this session is reused when
+it is `Running`, was started from *this* build's image, and has both of
+its binds pointing where this process would point them — the script path
+and the session's config directory. Anything else — stopped, an older
+image, a mount from a different `GURT_ROOT` — is removed and recreated,
+which costs ~200ms. There is no health check beyond `Running` because the
+proxy exposes nothing to ask (§5.4); a proxy that is up but wedged is
+caught by the first MCP call failing. A reused proxy keeps the token of
+the scope it is already serving, so that scope stays valid.
+
+A network that exists with the wrong `internal` flag cannot be edited in
+place — it is recreated, which requires disconnecting its endpoints
+first, which is why the recreate path lives next to the converge planner
+and not in `ensure`.
 
 ### 7.3 The open-network window — a known, accepted caveat
 
@@ -788,7 +820,8 @@ parses each line, and:
   allows, INF for denies (hostnames only — never a path, never a header,
   never the token);
 - keeps a bounded per-session ring buffer of the recent records;
-- emits a bus event so the UI updates live (`proxy.blocked`, alongside
+- emits a bus event so the UI updates live (`proxy.traffic`, carrying the
+  session's whole `SessionTraffic` rather than the one record, alongside
   the existing session events in `src/shared/events.ts`).
 
 The session pane surfaces **blocked attempts** first: a count badge while
@@ -800,7 +833,7 @@ click has to say what it costs, because the first entry closes everything
 else (§6.3, rule 2). Allowed traffic is available in the same panel, collapsed.
 
 Never logged, under any mode: request paths, request or response bodies,
-headers, the session token, the control token, the injected credential.
+headers, the session token, the injected credential.
 
 ## 9. Lifecycle
 
@@ -960,20 +993,32 @@ It matches `store.ts`'s session migration, which deletes the legacy key
 from disk and has to name it to do so. Everything else the acceptance
 grep looks for is gone.
 
-### 10.4 `mcp/manager.ts`
+### 10.4 `mcp/manager.ts` — not built
 
-The per-(session, mcp id) listener map is replaced by **one host listener
-per session**, multiplexing gurt's built-in servers by id
+The multiplexing below did not land. `mcp/manager.ts` still runs one host
+listener per (session, mcp id), and the scope carries them as
+`hostMcpUrls`, a map from mcp id to a URL that already has its own token
+(`src/main/proxy/config.ts:130`, written at `src/main/sessions.ts:1229`).
+The single-listener shape survives only as an unused seam: `hostMcpUrl`
+is still on `ProxyPlanInput` and is still the fallback the per-id map
+takes precedence over (`config.ts:122`, `config.ts:183-198`). Nothing
+sets it, so the fallback is dead code holding the door open.
+
+What was specified, and would replace that: **one host listener per
+session**, multiplexing gurt's built-in servers by id
 (`/mcp/<hostToken>/github`, `/mcp/<hostToken>/gurt`) and reached only by
 that session's proxy. `buildGithubHttpServer` and `buildGurtHttpServer`
-keep building handlers; what they stop owning is a listener and a port
-each. `gurtServer.ts`'s `ensureGurtServer`/`stopGurtServer` bookkeeping
-folds into the same per-session record.
+would keep building handlers; what they would stop owning is a listener
+and a port each, and `gurtServer.ts`'s `ensureGurtServer`/`stopGurtServer`
+bookkeeping would fold into the same per-session record.
 
-The agent's `AcpHttpMcpServer` descriptors change from
-`http://host.docker.internal:<port>/mcp/<uuid>` to
+The half that did land is the descriptor: the agent's
+`AcpHttpMcpServer` entries are
 `http://gurt-proxy:8100/mcp/<sessionToken>/<id>` for every server,
-built-in and registry alike. `AcpHttpMcpServer` itself is unchanged.
+built-in and registry alike, rather than
+`http://host.docker.internal:<port>/mcp/<uuid>`. `AcpHttpMcpServer`
+itself is unchanged. Collapsing the listeners is invisible from there,
+which is why it could be left.
 
 ## 11. UI surface
 
@@ -984,27 +1029,34 @@ built-in and registry alike. `AcpHttpMcpServer` itself is unchanged.
   read-only, so the picker's two sources are visible in one place.
 - **Settings → Credentials**: the `mcp-token` kind, secret masked exactly
   as the others.
-- **Composer** (`Sidebar.tsx`): the MCP list gains registry entries
+- **Composer** (`ConfigTab.tsx`): the MCP list gains registry entries
   (on/off; built-ins keep off/read-only/full), and a **network** control
-  next to it — `open` / `internal`, the read-only built-in deny list, and
-  the editable allow list with its "one entry closes the rest" note.
-  There is no mode picker: the allow list being empty or not is the whole
-  of the policy (§6.3).
+  next to it (`NetworkPicker` in `Network.tsx`) — `open` / `internal`,
+  the read-only built-in deny list, and the editable allow list with its
+  "one entry closes the rest" note. There is no mode picker: the allow
+  list being empty or not is the whole of the policy (§6.3).
   The `git access` toggle is removed (§10.2).
-- **Session pane**: a `net` tag when the session is internal; the blocked
-  attempts panel (§8); the setup-window note (§7.3).
+- **Session pane**: a `net` tag on the **open** sessions, not the
+  internal ones — a new session is internal, so that is the norm and the
+  mark is the exception (§6.2, `tags.tsx`'s `NetMark`/`hasNetMark`); the
+  blocked attempts panel (§8, `TrafficPanel` in `Network.tsx`); the
+  setup-window note (§7.3).
 
 ## 12. Phases
 
-1. **Registry + proxy + MCP routing, default network only.** Registry in
-   `workspace.json`, `mcp-token`, proxy container, session network,
-   scope push, all MCP (built-in and registry) routed through the proxy,
-   `HTTP_PROXY` set, logging + blocked panel. No internal mode yet —
-   nothing is enforced, everything is observed, and the whole MCP path
-   moves in one step.
-2. **Internal mode.** `--internal` networks, the provisioning switch and
-   the converge planner, the egress policy engine, the network control in
-   the composer, the setup-window disclosure.
+1. **Registry + proxy + MCP routing, default network only** (done —
+   §5.4). Registry in `workspace.json` (`store.ts`'s `mcpServers`),
+   `mcp-token`, proxy container (`proxy/manager.ts`), session network
+   (`proxy/network.ts`), all MCP (built-in and registry) routed through
+   the proxy, `HTTP_PROXY` set (`src/shared/proxy.ts`), logging + blocked
+   panel (`proxy/traffic.ts`, `Network.tsx`). The one deviation is the
+   scope: it is a watched file, not a push — see §5.4, and §4.2 for the
+   listener that consequently does not exist.
+2. **Internal mode** (done). `--internal` networks, the provisioning
+   switch and the converge planner (`planNetworkConverge` in
+   `proxy/network.ts`), the egress policy engine (`policyDecision` /
+   `vetTarget` in `gurt-proxy.mjs`), the network control in the composer
+   (`NetworkPicker`, §11), the setup-window disclosure.
 3. **Removals** (done — §10.3.1). SSH kind, container broker + shims +
    wrappers + features, `gitAccess`, `hostCredBroker.ts` split,
    identity-only injection. Last on purpose: it is the step that cannot
@@ -1014,9 +1066,9 @@ built-in and registry alike. `AcpHttpMcpServer` itself is unchanged.
 ## 13. Acceptance
 
 1. A registry MCP server configured with an `mcp-token` credential works
-   end to end from an agent, and neither the secret nor the proxy's
-   control token appears in the session container's environment,
-   `devcontainer exec` argv, the session log, or the app log.
+   end to end from an agent, and the secret appears in none of the
+   session container's environment, the `devcontainer exec` argv, the
+   session log, or the app log.
 2. `scripts/proxy-policy.test.mjs` (new, pure node): the domain matcher —
    subdomain match, no mid-label wildcards, IP literals exact, name rules
    never match literals — and scope lookup, including 404 for an id not
@@ -1029,12 +1081,15 @@ built-in and registry alike. `AcpHttpMcpServer` itself is unchanged.
    retried and then throws (never a silent no-op), a container the daemon
    says is gone is a no-op, and the internal-mode post-condition rejects
    a container left on the default bridge.
-4. `scripts/smoke-mcp-proxy.mjs` (docker): an internal session reaches
+4. `scripts/smoke-proxy-net.mjs` (docker): an internal session reaches
    its MCP servers and the github MCP tools, is refused by an allow list
    for anything else, the refusal appears in the session's blocked list,
-   adding the host there unblocks it **without restarting the agent**,
-   and a session teardown leaves no `gurt.proxy` container and no
-   `gurt.session` network behind.
+   adding the host there unblocks it **at the session's next start** —
+   not mid-run: the edit lands on the session record and the scope is
+   written on the start and resume paths only (§5.3,
+   `src/main/sessions.ts:804`), which is what the panel's own wording
+   says (`Network.tsx:108`) — and a session teardown leaves no
+   `gurt.proxy` container and no `gurt.session` network behind.
 5. `grep -rn "GURT_GIT_BROKER\|git-ssh-key\|gurt-ssh-agent-proxy\|gitAccess" src`
    returns nothing.
 6. The rest of `scripts/*.test.mjs` still passes; `npm run typecheck` and

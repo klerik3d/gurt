@@ -1,6 +1,6 @@
 # Requirements: centralized entity keys
 
-Status: draft for review · Target: gurt Electron MVP (this repo)
+Status: partial · Target: gurt Electron MVP (this repo)
 
 This document is a work order for an implementing agent. Read `README.md`
 first. Key code: `src/main/sessions.ts`, `src/main/ipc.ts`,
