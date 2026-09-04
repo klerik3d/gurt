@@ -20,7 +20,9 @@ import type {
   Tree,
   WorkspaceFile
 } from '../shared/types'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import type { McpRegistryEntry } from '../shared/mcp'
+import { OPERATOR_ENV_NAME } from '../shared/types'
 import { agentDef } from '../shared/agents'
 import { defaultAgentConfig } from '../shared/agentConfig'
 import { validateEnvConfig } from '../shared/envConfig'
@@ -113,8 +115,10 @@ const RESERVED_NAMES: Record<string, string[]> = {
   workspace: ['agents.json', 'credentials.json', 'agent-config-cache.json'],
   task: ['workspace.json', '.devcontainers', 'skills'],
   repo: ['task.json', 'sessions.json', 'review.json', 'sessions', '.multirepo'],
-  // Env names only ever become `.devcontainers/<env>.json` — segment rules only.
-  env: []
+  // Env names become `.devcontainers/<env>.json`, and one name is spoken for:
+  // the bundled operator env shares the env name space, so a workspace env may
+  // not take its name (docs/requirements-session-operator.md §2.2).
+  env: [OPERATOR_ENV_NAME]
 }
 
 /** Names become path segments on disk, so reject anything that isn't a single, safe segment. */
@@ -368,6 +372,7 @@ export async function getAgents(): Promise<AgentsFile> {
 
 export async function setAgents(agents: AgentsFile): Promise<void> {
   await writeJson(agentsFile(), agents)
+  await journal('agents: registry replaced', 'setAgents', 'agents')
 }
 
 /** Per-key promise chain for read-modify-write cycles on one JSON file — two
@@ -384,6 +389,106 @@ function chained<T>(key: string, fn: () => Promise<T>): Promise<T> {
     next.catch(() => {})
   )
   return next
+}
+
+// --- config journal: ~/.gurt is a git repository ----------------------------
+// docs/requirements-session-operator.md §7. Every config mutation auto-commits
+// from here, after its write succeeded; the journal is a record, not a gate —
+// a failure (missing git binary, deleted .git, stale lock) is logged and the
+// user's edit stands.
+
+/**
+ * Allow-list ignore: adding a file to the journal is a decision, not an
+ * oversight. In: agents.json, every workspace.json, every workspace's skills/
+ * tree (which can never be a task directory — `skills` is a reserved task
+ * name above, and that reservation is a dependency of this file, not a
+ * naming nicety). Out, each for a stated reason in §7: credentials.json
+ * (secrets never enter a git history), runtime state and derived artifacts
+ * (sessions, logs, caches, .devcontainers), and the clones (git repositories
+ * themselves, excluded by construction).
+ */
+const JOURNAL_GITIGNORE = `/*
+!/.gitignore
+!/agents.json
+!/*/
+/*/*
+!/*/workspace.json
+!/*/skills/
+`
+
+/** Who performed the mutation being journaled — lands in the commit author, so
+ *  `git log --author=operator` answers "what has the agent done to my setup"
+ *  whether or not gurt is running (§7). */
+export interface JournalActor {
+  kind: 'ui' | 'operator'
+  /** Operator session id — rides in the author's address. */
+  id?: string
+}
+
+const journalActor = new AsyncLocalStorage<JournalActor>()
+
+/** Run `fn` with its journal commits attributed to `actor` instead of the
+ *  default `gurt-ui`. Context-based rather than a parameter on every mutator,
+ *  so the write paths stay identical for both callers. */
+export function withJournalActor<T>(actor: JournalActor, fn: () => Promise<T>): Promise<T> {
+  return journalActor.run(actor, fn)
+}
+
+/** git against the journal repo. Never inherits identity or signing from the
+ *  user's config — a machine-written journal must commit the same way on
+ *  every machine, hooks and gpg included. */
+function journalGit(args: string[]): Promise<{ stdout: string }> {
+  return pexecFile(
+    'git',
+    ['-C', gurtRoot, '-c', 'user.name=gurt', '-c', 'user.email=journal@gurt.local', '-c', 'commit.gpgsign=false', ...args],
+    { env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } }
+  )
+}
+
+async function ensureJournalRepo(): Promise<void> {
+  if (!existsSync(path.join(gurtRoot, '.git'))) {
+    await fs.mkdir(gurtRoot, { recursive: true })
+    await journalGit(['init', '-q'])
+  }
+  // The ignore file is part of the design (§7) — restore it when missing, but
+  // never overwrite one the user edited.
+  const ignore = path.join(gurtRoot, '.gitignore')
+  if (!existsSync(ignore)) await fs.writeFile(ignore, JOURNAL_GITIGNORE)
+}
+
+/**
+ * Record one config mutation as a journal commit: subject line for humans, the
+ * op and entity as trailers for `git log --grep`, the actor in the author.
+ * Serialized on its own chain (git shares one index) and never throws — see
+ * the section comment. A mutation that changed no tracked bytes (a same-value
+ * save) commits nothing.
+ */
+export function journal(subject: string, op: string, entity: string): Promise<void> {
+  const actor = journalActor.getStore() ?? { kind: 'ui' }
+  return chained('journal', async () => {
+    try {
+      await ensureJournalRepo()
+      await journalGit(['add', '-A'])
+      const dirty = await journalGit(['diff', '--cached', '--quiet']).then(
+        () => false,
+        () => true
+      )
+      if (!dirty) return
+      const author =
+        actor.kind === 'operator'
+          ? `gurt-operator <${actor.id ?? 'operator'}@gurt.local>`
+          : 'gurt-ui <user@gurt.local>'
+      await journalGit([
+        'commit', '-q', '--no-verify',
+        '--author', author,
+        '-m', subject,
+        '-m', `Op: ${op}\nEntity: ${entity}`
+      ])
+    } catch (e) {
+      // The journal is a record, not a gate: the write already stands.
+      log.warn('journal.fail', { op, entity, err: e })
+    }
+  })
 }
 
 const agentConfigFile = () => path.join(gurtRoot, 'agent-config-cache.json')
@@ -453,6 +558,7 @@ export async function createWorkspace(name: string): Promise<void> {
   const file = path.join(wsDir(name), 'workspace.json')
   if (existsSync(file)) throw new Error(`workspace "${name}" already exists`)
   await writeJson(file, { repos: [], envs: [] } satisfies WorkspaceFile)
+  await journal(`workspace "${name}": created`, 'createWorkspace', name)
 }
 
 /** A pre-split RepoConfig carried an inline `devcontainer`; it moves to the env. */
@@ -505,13 +611,15 @@ export async function getWorkspace(ws: string): Promise<WorkspaceFile> {
   const defaultSkills = Array.isArray(raw.defaultSkills)
     ? raw.defaultSkills.filter((n): n is string => typeof n === 'string')
     : undefined
+  const operatorEnv = typeof raw.operatorEnv === 'string' ? raw.operatorEnv : undefined
   const data: WorkspaceFile = {
     repos,
     envs,
     ...(mcpServers ? { mcpServers } : {}),
     ...(defaultAgent ? { defaultAgent } : {}),
     ...(deniedAgents?.length ? { deniedAgents } : {}),
-    ...(defaultSkills?.length ? { defaultSkills } : {})
+    ...(defaultSkills?.length ? { defaultSkills } : {}),
+    ...(operatorEnv ? { operatorEnv } : {})
   }
   if (migrated) await saveWorkspace(ws, data)
   return data
@@ -546,6 +654,7 @@ export function addRepo(ws: string, repo: RepoConfig): Promise<void> {
       throw new Error(`repo "${repo.name}" already exists in "${ws}"`)
     data.repos.push(repo)
     await saveWorkspace(ws, data)
+    await journal(`repo "${repo.name}": added`, 'addRepo', `${ws}/repo/${repo.name}`)
   })
 }
 
@@ -556,6 +665,7 @@ export function updateRepo(ws: string, repo: RepoConfig): Promise<void> {
     if (i < 0) throw new Error(`repo "${repo.name}" not found in "${ws}"`)
     data.repos[i] = repo
     await saveWorkspace(ws, data)
+    await journal(`repo "${repo.name}": updated`, 'updateRepo', `${ws}/repo/${repo.name}`)
   })
 }
 
@@ -600,6 +710,7 @@ export function removeRepo(ws: string, repo: string): Promise<void> {
       throw new Error(`repo "${repo}" has a clone in task(s): ${used.join(', ')} — delete those tasks first`)
     data.repos = data.repos.filter((r) => r.name !== repo)
     await saveWorkspace(ws, data)
+    await journal(`repo "${repo}": removed`, 'removeRepo', `${ws}/repo/${repo}`)
   })
 }
 
@@ -615,6 +726,7 @@ export function addEnv(ws: string, env: EnvConfig): Promise<void> {
       throw new Error(`env "${env.name}" already exists in "${ws}"`)
     data.envs.push(env)
     await saveWorkspace(ws, data)
+    await journal(`env "${env.name}": added`, 'addEnv', `${ws}/env/${env.name}`)
   })
 }
 
@@ -629,6 +741,7 @@ export function updateEnv(ws: string, env: EnvConfig): Promise<void> {
     if (i < 0) throw new Error(`env "${env.name}" not found in "${ws}"`)
     data.envs[i] = env
     await saveWorkspace(ws, data)
+    await journal(`env "${env.name}": updated`, 'updateEnv', `${ws}/env/${env.name}`)
   })
 }
 
@@ -643,6 +756,7 @@ export function removeEnv(ws: string, name: string): Promise<void> {
     data.envs = data.envs.filter((e) => e.name !== name)
     await saveWorkspace(ws, data)
     await fs.rm(overrideConfigPath(ws, name), { force: true })
+    await journal(`env "${name}": removed`, 'removeEnv', `${ws}/env/${name}`)
   })
 }
 
@@ -661,6 +775,11 @@ export function setDefaultAgent(ws: string, agentId: string | undefined): Promis
     if (agentId) data.defaultAgent = agentId
     else delete data.defaultAgent
     await saveWorkspace(ws, data)
+    await journal(
+      `workspace "${ws}": default agent ${agentId ? `set to "${agentId}"` : 'cleared'}`,
+      'setDefaultAgent',
+      ws
+    )
   })
 }
 
@@ -676,6 +795,30 @@ export function setDeniedAgents(ws: string, agentIds: string[]): Promise<void> {
     if (agentIds.length) data.deniedAgents = agentIds
     else delete data.deniedAgents
     await saveWorkspace(ws, data)
+    await journal(`workspace "${ws}": agent deny-list updated`, 'setDeniedAgents', ws)
+  })
+}
+
+/**
+ * Point the workspace's operator sessions at one of its own envs, or back at
+ * the bundled default (`undefined`) — the operator twin of `setDefaultAgent`
+ * (docs/requirements-session-operator.md §2.2). Rejects a name the registry
+ * does not hold: a default nothing resolves to would fail every operator
+ * start.
+ */
+export function setOperatorEnv(ws: string, env: string | undefined): Promise<void> {
+  return editWorkspace(ws, async () => {
+    const data = await getWorkspace(ws)
+    if (env !== undefined && !data.envs.some((e) => e.name === env))
+      throw new Error(`env "${env}" is not registered in "${ws}"`)
+    if (env) data.operatorEnv = env
+    else delete data.operatorEnv
+    await saveWorkspace(ws, data)
+    await journal(
+      `workspace "${ws}": operator env ${env ? `set to "${env}"` : 'reset to the bundled default'}`,
+      'setOperatorEnv',
+      ws
+    )
   })
 }
 
@@ -712,6 +855,7 @@ export function addMcpServer(ws: string, entry: McpRegistryEntry): Promise<void>
     assertValidMcp(entry, servers)
     data.mcpServers = [...servers, normalizeMcpEntry(entry)]
     await saveWorkspace(ws, data)
+    await journal(`mcp server "${entry.id}": added`, 'addMcpServer', `${ws}/mcp/${entry.id}`)
   })
 }
 
@@ -727,6 +871,7 @@ export function updateMcpServer(ws: string, entry: McpRegistryEntry): Promise<vo
     servers[i] = normalizeMcpEntry(entry)
     data.mcpServers = servers
     await saveWorkspace(ws, data)
+    await journal(`mcp server "${entry.id}": updated`, 'updateMcpServer', `${ws}/mcp/${entry.id}`)
   })
 }
 
@@ -742,6 +887,7 @@ export function removeMcpServer(ws: string, id: string): Promise<void> {
       throw new Error(`mcp server "${id}" not found in "${ws}"`)
     data.mcpServers = data.mcpServers.filter((e) => e.id !== id)
     await saveWorkspace(ws, data)
+    await journal(`mcp server "${id}": removed`, 'removeMcpServer', `${ws}/mcp/${id}`)
   })
 }
 
@@ -839,6 +985,7 @@ export function addSkill(ws: string, name: string, doc: string): Promise<void> {
     const clean = name.trim()
     assertSkillName(clean, (await getSkills(ws)).map((s) => s.name))
     await writeSkillDoc(ws, clean, doc)
+    await journal(`skill "${clean}": added`, 'addSkill', `${ws}/skill/${clean}`)
   })
 }
 
@@ -851,6 +998,7 @@ export function updateSkill(ws: string, name: string, doc: string): Promise<void
     assertSkillName(clean)
     if (!existsSync(skillDir(ws, clean))) throw new Error(`skill "${clean}" not found in "${ws}"`)
     await writeSkillDoc(ws, clean, doc)
+    await journal(`skill "${clean}": updated`, 'updateSkill', `${ws}/skill/${clean}`)
   })
 }
 
@@ -878,6 +1026,7 @@ export function removeSkill(ws: string, name: string): Promise<void> {
       else delete data.defaultSkills
       await saveWorkspace(ws, data)
     })
+    await journal(`skill "${clean}": removed`, 'removeSkill', `${ws}/skill/${clean}`)
   })
 }
 
@@ -933,6 +1082,7 @@ export function setDefaultSkills(ws: string, names: string[]): Promise<void> {
     if (clean.length) data.defaultSkills = clean
     else delete data.defaultSkills
     await saveWorkspace(ws, data)
+    await journal(`workspace "${ws}": default skills updated`, 'setDefaultSkills', ws)
   })
 }
 
@@ -1026,6 +1176,7 @@ export async function removeWorkspaceDir(ws: string): Promise<void> {
   const dir = wsDir(ws)
   await drainAppends(dir)
   await rmTree(dir)
+  await journal(`workspace "${ws}": removed`, 'removeWorkspace', ws)
 }
 
 const sessionsFile = (ws: string, task: string) => path.join(taskDir(ws, task), 'sessions.json')
@@ -1350,6 +1501,7 @@ export async function buildTree(): Promise<Tree> {
       ...(wsData.defaultAgent ? { defaultAgent: wsData.defaultAgent } : {}),
       ...(wsData.deniedAgents?.length ? { deniedAgents: wsData.deniedAgents } : {}),
       ...(wsData.defaultSkills?.length ? { defaultSkills: wsData.defaultSkills } : {}),
+      ...(wsData.operatorEnv ? { operatorEnv: wsData.operatorEnv } : {}),
       tasks
     })
   }

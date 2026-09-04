@@ -13,6 +13,7 @@ import type {
   SessionRole
 } from '../../shared/types'
 import { roleHasTurnContract, spawnableRoles } from '../../shared/types'
+import { ADMIN_TOOLS } from '../../shared/adminTools.generated'
 import { createLogger } from '../log'
 
 const log = createLogger('mcp')
@@ -73,10 +74,31 @@ const REVIEWER_INSTRUCTIONS =
   'launches it, and your session keeps the clone locked until the user stops\n' +
   'or deletes it — so never wait for the fixer.'
 
+/**
+ * The operator's subject is gurt itself (docs/requirements-session-operator.md
+ * §1): it holds no repository and reads the workspace configuration and the
+ * other sessions' diagnostics through the admin tools below. Phase 1 is
+ * read-only — the write half of the surface lands with its own guardrails.
+ */
+const OPERATOR_INSTRUCTIONS =
+  'You are the OPERATOR session: your subject is gurt itself — this\n' +
+  "workspace's configuration (repos, environments, MCP servers, skills,\n" +
+  'defaults) and its sessions\' diagnostics. You hold NO repository, no\n' +
+  'clone and no lock; there is no working tree to edit and no `complete`\n' +
+  'tool to call — answer in chat.\n' +
+  'Read the configuration and the diagnostics through the admin tools\n' +
+  '(`get_tree`, `get_mcp_servers`, `session_snapshot`, `session_traffic`,\n' +
+  '`get_provisioning_log`, …) and explain what is wrong and how to fix it.\n' +
+  'In this phase the surface is READ-ONLY: you cannot change any\n' +
+  'configuration — name the exact Settings change the user should make\n' +
+  'instead. Credential VALUES are never available, to you or through you;\n' +
+  'you can see which credentials exist and what links to them, nothing more.'
+
 /** Server `instructions` for a session of this role, delivered via MCP init. */
 export function instructionsFor(role: SessionRole): string {
   if (role === 'researcher') return RESEARCHER_INSTRUCTIONS
   if (role === 'reviewer') return REVIEWER_INSTRUCTIONS
+  if (role === 'operator') return OPERATOR_INSTRUCTIONS
   return EXECUTOR_INSTRUCTIONS
 }
 
@@ -199,6 +221,16 @@ export interface AgentSessionDraft {
   title: string
 }
 
+/** How an operator session's tool calls reach the admin surface — already
+ *  bound to that session's workspace by the session manager
+ *  (docs/requirements-session-operator.md §3.2). */
+export interface AdminHooks {
+  /** Execute one admin API call; `args` are the tool's named arguments. */
+  call(method: string, args: Record<string, unknown>): Promise<unknown>
+  /** §3.2's one extra tool — the provisioning log has no `GurtApi` twin. */
+  provisioningLog(key: string, tail: number | undefined): Promise<string>
+}
+
 /** What the host does with a tool call; re-resolved on every re-attach so the
  *  server always routes into the live session manager. */
 export interface GurtHooks {
@@ -206,6 +238,85 @@ export interface GurtHooks {
   role: SessionRole
   onComplete: (p: ChangeProposal) => void
   onCreateSession: (req: AgentSessionRequest) => Promise<AgentSessionDraft>
+  /** Present only for an operator session. */
+  admin?: AdminHooks
+}
+
+/** What the agent may pass `get_provisioning_log` — the one admin tool with no
+ *  `GurtApi` twin (docs/requirements-session-operator.md §3.2): the renderer
+ *  receives provisioning output by subscribing to the `provision-log` event,
+ *  and an agent cannot subscribe. */
+const PROVISIONING_LOG_INPUT = {
+  key: z
+    .string()
+    .min(1)
+    .describe(
+      "a session id of this workspace, or `env-build:<env>` for an environment's image-build log"
+    ),
+  tail: z
+    .number()
+    .int()
+    .positive()
+    .max(2000)
+    .optional()
+    .describe('trailing lines to return (default 200, max 2000)')
+}
+
+/** JSON text is the result format — the scrub filter rewrites values, so a
+ *  structured output contract would fight the redaction. An absent result
+ *  (an unknown session's snapshot, say) reads `null`, never as success prose. */
+const resultText = (result: unknown): string => JSON.stringify(result ?? null, null, 2)
+
+/**
+ * The derived admin tools (docs/requirements-session-operator.md §3): one per
+ * `read`-annotated `GurtApi` method, plus `get_provisioning_log`. Phase 1 of
+ * that document treats every other annotation as `none` — the write tools are
+ * not registered at all, so no tool name reaches them.
+ */
+function registerAdminTools(server: McpServer, admin: AdminHooks): void {
+  for (const def of ADMIN_TOOLS) {
+    if (def.exposure !== 'read') continue
+    server.registerTool(
+      def.name,
+      { description: def.description, inputSchema: def.input },
+      async (raw) => {
+        try {
+          const result = await admin.call(def.method, raw)
+          return { content: [{ type: 'text' as const, text: resultText(result) }] }
+        } catch (e) {
+          // Host-side rules the schema cannot carry (the workspace binding,
+          // the probe-by-kind narrowing) come back at the tool layer, the
+          // `create_session` precedent — the agent self-corrects instead of
+          // the user finding out later.
+          return {
+            isError: true,
+            content: [{ type: 'text' as const, text: e instanceof Error ? e.message : String(e) }]
+          }
+        }
+      }
+    )
+  }
+  server.registerTool(
+    'get_provisioning_log',
+    {
+      description:
+        "The tail of a session's provisioning log (clone, image build, `devcontainer up`, " +
+        'lifecycle hooks, adapter stderr) — where the reason a start failed is written. ' +
+        "Also serves an env image build's log via `env-build:<env>`.",
+      inputSchema: PROVISIONING_LOG_INPUT
+    },
+    async ({ key, tail }) => {
+      try {
+        const text = await admin.provisioningLog(key, tail)
+        return { content: [{ type: 'text' as const, text }] }
+      } catch (e) {
+        return {
+          isError: true,
+          content: [{ type: 'text' as const, text: e instanceof Error ? e.message : String(e) }]
+        }
+      }
+    }
+  )
 }
 
 /** Build the MCP server for one role: `complete` for an executor,
@@ -277,6 +388,11 @@ function makeMcpServer(hooks: GurtHooks): McpServer {
         }
       }
     )
+  // The admin tools are the operator's whole surface, offered to that role
+  // alone — "the tool set is a function of the role"
+  // (docs/requirements-session-roles.md §5), with one more role in the
+  // function.
+  if (hooks.role === 'operator' && hooks.admin) registerAdminTools(server, hooks.admin)
   return server
 }
 
@@ -380,7 +496,18 @@ export async function ensureGurtServer(
   rec.http = buildGurtHttpServer(token, {
     role: hooks.role,
     onComplete: (p) => rec.hooks.onComplete(p),
-    onCreateSession: (req) => rec.hooks.onCreateSession(req)
+    onCreateSession: (req) => rec.hooks.onCreateSession(req),
+    // Forwarded through `rec.hooks` like the two above, so a re-attach's fresh
+    // closures are the ones that run. Present iff the role is operator, and
+    // the role never changes under one server (a role edit replaces it).
+    ...(hooks.admin
+      ? {
+          admin: {
+            call: (method, args) => rec.hooks.admin!.call(method, args),
+            provisioningLog: (key, tail) => rec.hooks.admin!.provisioningLog(key, tail)
+          } satisfies AdminHooks
+        }
+      : {})
   })
   // The record enters the map before any await, so a concurrent ensure for the
   // same session reuses this server instead of racing a second one into a leak.

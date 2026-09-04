@@ -696,12 +696,18 @@ export async function buildEnvImage(
  * (`git archive`; the working clone is never touched) — and the materialized
  * config has `build` replaced by `image: tag`, all other fields preserved.
  * Comments are lost only in that materialized file, never in the stored config.
+ *
+ * `repo`/`cloneDir` are null for a repo-less operator session
+ * (docs/requirements-session-operator.md §2.1): the build branch needs a clone
+ * to `git archive` and a commit to tag the image with, so an env with a
+ * `build` section is structurally unreachable there — refused here with its
+ * own sentence, not at the anchor guard with "session has no repository".
  */
 export async function materializeEnvConfig(
   ref: EnvRef,
   envCfg: EnvConfig,
-  repo: RepoConfig,
-  cloneDir: string,
+  repo: RepoConfig | null,
+  cloneDir: string | null,
   log: LogSink
 ): Promise<string[]> {
   const invalid = validateEnvConfig(envCfg)
@@ -711,6 +717,11 @@ export async function materializeEnvConfig(
     await writeOverrideConfig(ref, envCfg.devcontainer)
     return overrideConfigArgs(ref)
   }
+  if (!repo || !cloneDir)
+    throw new Error(
+      `env "${envCfg.name}" has a build section, which needs a repository to build from — ` +
+        'a repo-less operator session needs an image-only env'
+    )
   const scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'gurt-env-snapshot-'))
   try {
     const tarFile = path.join(scratch, 'src.tar')

@@ -44,7 +44,7 @@ console.log('workspace created OK')
 
 // The fix under test: header "+" opens an inline popover, not a modal — one
 // click + Enter, no second "Create" click, and no modal at all.
-await page.click('button[title="New task · ⌘⇧N"]')
+await page.click('button[title^="New task"]')
 await page.waitForSelector('.sb-newtask-menu input', { timeout: 5000 })
 assert.equal(await page.locator('.modal').count(), 0, 'no modal opened for inline task creation')
 await page.fill('.sb-newtask-menu input', 'first-task')
@@ -63,7 +63,7 @@ console.log('confirmed: task created, no session leaked in')
 // A second task, to confirm the popover isn't confused with the per-row
 // "new session" button — and that the two are now visually distinct (message
 // icon vs plus icon) rather than two identical plus buttons.
-await page.click('button[title="New task · ⌘⇧N"]')
+await page.click('button[title^="New task"]')
 await page.fill('.sb-newtask-menu input', 'second-task')
 await page.press('.sb-newtask-menu input', 'Enter')
 await page.waitForSelector('.sb-task-name:has-text("second-task")', { timeout: 5000 })

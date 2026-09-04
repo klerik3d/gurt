@@ -40,10 +40,10 @@ page.on('console', (m) => {
 // The two views in the activity bar. Settings sections are picked by their
 // nav label, so a renamed section fails here rather than three steps later.
 const openSettings = async (section) => {
-  await page.click('.activitybar .ab-item[title="Settings"]')
+  await page.click('.activitybar .ab-item[title^="Settings"]')
   await page.click(`.set-nav-item:has-text("${section}")`)
 }
-const openWork = () => page.click('.activitybar .ab-item[title="Tasks & sessions"]')
+const openWork = () => page.click('.activitybar .ab-item[title^="Tasks & sessions"]')
 /** One field of the Config tab: a label row — the `seclabel` plus, for some
  *  fields, the info dot carrying its explanation — followed by its picker.
  *  Matching the row rather than the label itself is what survives a field
@@ -97,7 +97,7 @@ console.log('environment defined OK')
 
 // create a task — an inline popover in the sidebar header, no modal
 await openWork()
-await page.click('button[title="New task · ⌘⇧N"]')
+await page.click('button[title^="New task"]')
 await page.waitForSelector('.sb-newtask-menu input', { timeout: 5000 })
 await page.fill('.sb-newtask-menu input', 'demo-task')
 await page.press('.sb-newtask-menu input', 'Enter')

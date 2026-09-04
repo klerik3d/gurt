@@ -79,10 +79,10 @@ await page.waitForSelector('.sidebar', { timeout: 15000 })
 console.log('initial render OK')
 
 const openSettings = async (section) => {
-  await page.click('.activitybar .ab-item[title="Settings"]')
+  await page.click('.activitybar .ab-item[title^="Settings"]')
   await page.click(`.set-nav-item:has-text("${section}")`)
 }
-const openWork = () => page.click('.activitybar .ab-item[title="Tasks & sessions"]')
+const openWork = () => page.click('.activitybar .ab-item[title^="Tasks & sessions"]')
 
 // --- credentials: the stored secret is served masked, never plaintext ---
 await openSettings('Credentials')

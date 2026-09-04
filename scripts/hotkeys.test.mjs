@@ -32,6 +32,8 @@ const {
   bindingEquals,
   conflictsFor,
   bindingLabel,
+  bindingRestLabel,
+  modKeyLabel,
   codeLabel,
   bindingMatchesEvent,
   bindingFromEvent,
@@ -39,6 +41,16 @@ const {
 } = await import(pathToFileURL(outfile).href)
 
 const evt = (over) => ({ code: 'KeyK', metaKey: false, ctrlKey: false, shiftKey: false, altKey: false, ...over })
+
+// bindingLabel/bindingRestLabel/modKeyLabel read the platform live off
+// `navigator` (see shared/hotkeys.ts) so a renderer running on Windows/Linux
+// doesn't get Mac-only ⌘/⌥ glyphs. Node's own global `navigator` (Node 21+)
+// reports as neither — force it per-test instead of relying on whatever host
+// this suite happens to run on.
+const MAC_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
+const WIN_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+const setPlatform = (userAgent) =>
+  Object.defineProperty(globalThis, 'navigator', { value: { userAgent }, configurable: true, writable: true })
 
 // --- defaults: every action has one, and none collide out of the box -----
 test('every default action has a binding, and no two collide', () => {
@@ -85,6 +97,7 @@ test('conflictsFor finds the collision and only the collision', () => {
 
 // --- bindingLabel / codeLabel: the app's existing ⌘⇧N-style convention ---
 test('bindingLabel renders the app convention, codeLabel strips Key/Digit prefixes', () => {
+  setPlatform(MAC_UA)
   assert.equal(bindingLabel(HOTKEY_DEFAULTS.palette), '⌘K')
   assert.equal(bindingLabel(HOTKEY_DEFAULTS.newTask), '⌘⇧N')
   assert.equal(bindingLabel(HOTKEY_DEFAULTS.workspacePrev), '⌘⇧`')
@@ -92,6 +105,20 @@ test('bindingLabel renders the app convention, codeLabel strips Key/Digit prefix
   assert.equal(codeLabel('Digit1'), '1')
   assert.equal(codeLabel('Backquote'), '`')
   assert.equal(codeLabel('F5'), 'F5', 'an unmapped code falls back to itself rather than vanishing')
+})
+
+// --- bindingLabel / modKeyLabel: Ctrl/Alt text off macOS, live per-call ---
+test('bindingLabel, bindingRestLabel and modKeyLabel switch to Ctrl/Alt text off macOS', () => {
+  setPlatform(WIN_UA)
+  assert.equal(bindingLabel(HOTKEY_DEFAULTS.palette), 'Ctrl+K')
+  assert.equal(bindingLabel(HOTKEY_DEFAULTS.newTask), 'Ctrl+Shift+N')
+  assert.equal(bindingRestLabel(HOTKEY_DEFAULTS.newTask), 'Shift+N')
+  assert.equal(modKeyLabel(), 'Ctrl')
+
+  setPlatform(MAC_UA)
+  assert.equal(bindingLabel(HOTKEY_DEFAULTS.newTask), '⌘⇧N')
+  assert.equal(bindingRestLabel(HOTKEY_DEFAULTS.newTask), '⇧N')
+  assert.equal(modKeyLabel(), '⌘')
 })
 
 // --- sanitizeHotkeys: untrusted input never crashes/corrupts -------------
