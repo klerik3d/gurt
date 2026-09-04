@@ -274,7 +274,9 @@ try {
     'the panel shows the repo as locked')
 
   await page.hover(`.sb-task:has(.sb-task-name:text-is("${TASK}"))`)
-  await page.click(`.sb-task:has(.sb-task-name:text-is("${TASK}")) button[title="new session"]`)
+  await page.click(`.sb-task:has(.sb-task-name:text-is("${TASK}")) button[title="task actions"]`)
+  await page.waitForSelector('.session-menu-pop', { timeout: 5000 })
+  await page.click('.session-menu-pop .menu-item:has-text("New session")')
   await page.waitForSelector('.modal:has-text("New session")', { timeout: 5000 })
   await page.fill('textarea[placeholder="What should the agent do?"]', 'do the fix')
   await page.click('.modal .btn-primary:has-text("Run now")')

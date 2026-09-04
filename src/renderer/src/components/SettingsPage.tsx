@@ -64,6 +64,7 @@ import { refreshAgents, useAgents } from '../useAgents'
 import { refreshHotkeys, useHotkeys } from '../useHotkeys'
 import { useOutsideClose } from '../hooks'
 import { confirmDialog } from '../dialog'
+import type { IconName } from './icons'
 import { Icon } from './icons'
 import { AgentTag, agentIcon } from './tags'
 import { Modal } from './Modal'
@@ -87,12 +88,66 @@ const SECTION_LABEL: Partial<Record<SettingsSection, string>> = {
   agentAccess: 'Agent access'
 }
 
+/** One icon per nav item, so the list reads at a glance instead of as a wall
+ *  of text. */
+const SECTION_ICON: Record<SettingsSection, IconName> = {
+  general: 'gear',
+  environments: 'box',
+  repos: 'branch',
+  clients: 'plug',
+  agentAccess: 'sliders',
+  mcp: 'globe',
+  skills: 'folder',
+  credentials: 'key',
+  notifications: 'bell',
+  hotkeys: 'grid'
+}
+
+/** The main nav list, in order. `mcp` and `skills` sit apart, under the
+ *  Advanced disclosure below — both are registries of pluggable capability
+ *  (external servers, filesystem-backed skill packs) rather than everyday
+ *  workspace config, so they cost a click instead of always taking up room. */
+const MAIN_SECTIONS = [
+  'environments',
+  'repos',
+  'clients',
+  'agentAccess',
+  'credentials',
+  'notifications',
+  'hotkeys'
+] as const satisfies readonly SettingsSection[]
+
+const ADVANCED_SECTIONS = ['mcp', 'skills'] as const satisfies readonly SettingsSection[]
+
 /** Vendor tag shown beside each provider in the combobox (#4c). */
 const PROVIDER_VENDOR: Record<string, string> = {
   'claude-code': 'Anthropic',
   codex: 'OpenAI',
   gemini: 'Google',
   opencode: 'local'
+}
+
+/** Nav label for a section — the id capitalized, unless {@link SECTION_LABEL}
+ *  overrides it. */
+function sectionLabel(s: SettingsSection): string {
+  return SECTION_LABEL[s] ?? s.slice(0, 1).toUpperCase() + s.slice(1)
+}
+
+function NavItem({
+  section: s,
+  active,
+  onSection
+}: {
+  section: SettingsSection
+  active: boolean
+  onSection: (s: SettingsSection) => void
+}): JSX.Element {
+  return (
+    <div className={`set-nav-item ${active ? 'active' : ''}`} onClick={() => onSection(s)}>
+      <Icon name={SECTION_ICON[s]} size={14} style={{ flex: 'none' }} />
+      {sectionLabel(s)}
+    </div>
+  )
 }
 
 export function SettingsPage({
@@ -106,37 +161,38 @@ export function SettingsPage({
   section: SettingsSection
   onSection: (s: SettingsSection) => void
 }) {
+  const [advancedOpen, setAdvancedOpen] = useState(
+    (ADVANCED_SECTIONS as readonly SettingsSection[]).includes(section)
+  )
   return (
     <div className="settings">
       <div className="set-nav">
         <div className="set-nav-head">Settings</div>
         <div className="set-nav-list">
           <div className="set-nav-item disabled" title="coming later">
+            <Icon name={SECTION_ICON.general} size={14} style={{ flex: 'none' }} />
             General
           </div>
           <div className="set-nav-sep" />
-          {(
-            [
-              'environments',
-              'repos',
-              'clients',
-              'agentAccess',
-              'mcp',
-              'skills',
-              'credentials',
-              'notifications',
-              'hotkeys'
-            ] as const
-          ).map(
-            (s) => (
-              <div
-                key={s}
-                className={`set-nav-item ${section === s ? 'active' : ''}`}
-                onClick={() => onSection(s)}
-              >
-                {SECTION_LABEL[s] ?? s.slice(0, 1).toUpperCase() + s.slice(1)}
-              </div>
-            )
+          {MAIN_SECTIONS.map((s) => (
+            <NavItem key={s} section={s} active={section === s} onSection={onSection} />
+          ))}
+          <div className="set-nav-sep" />
+          <div className="set-nav-item set-nav-fold" onClick={() => setAdvancedOpen((o) => !o)}>
+            <Icon
+              name="chevron"
+              size={12}
+              className="faint"
+              style={{ flex: 'none', transform: advancedOpen ? undefined : 'rotate(-90deg)' }}
+            />
+            Advanced
+          </div>
+          {advancedOpen && (
+            <div className="set-nav-sub">
+              {ADVANCED_SECTIONS.map((s) => (
+                <NavItem key={s} section={s} active={section === s} onSection={onSection} />
+              ))}
+            </div>
           )}
         </div>
       </div>

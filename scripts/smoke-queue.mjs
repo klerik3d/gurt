@@ -126,7 +126,9 @@ const waitState = (page, title, states, timeout = 600000) =>
 async function newSession(page, task, prompt, action) {
   await openWork(page)
   await page.hover(`.sb-task:has(.sb-task-name:text-is("${task}"))`)
-  await page.click(`.sb-task:has(.sb-task-name:text-is("${task}")) .icon-sq[title="new session"]`)
+  await page.click(`.sb-task:has(.sb-task-name:text-is("${task}")) .icon-sq[title="task actions"]`)
+  await page.waitForSelector('.session-menu-pop', { timeout: 5000 })
+  await page.click('.session-menu-pop .menu-item:has-text("New session")')
   await page.waitForSelector('.modal:has-text("New session")', { timeout: 5000 })
   // environment first: picking it seeds the session's repo from the env default
   await page.click('.modal .seclabel:text-is("ENVIRONMENT") + .pick-wrap .pick-row')
@@ -265,7 +267,10 @@ await page.screenshot({ path: path.join(SHOT_DIR, 'q2-taskpane.png') })
 // goes idle — and stopping its container is the manual way to force that. Do the
 // manual stop when A is still holding a live container; if the turn already
 // ended, the scheduler has released B on its own and there is nothing to stop.
-const stopA = page.locator('.env-row:has(.env-name:text-is("executor 2")) button:text-is("Stop")')
+await page.click('.env-row:has(.env-name:text-is("executor 2")) button[title="container actions"]')
+const stopA = page.locator(
+  '.env-row:has(.env-name:text-is("executor 2")) .session-menu-pop .menu-item:text-is("Stop")'
+)
 if (await stopA.count()) {
   await stopA.click()
   await page.waitForSelector(
@@ -274,6 +279,7 @@ if (await stopA.count()) {
   )
   console.log('A container stopped by hand; scheduler should release B')
 } else {
+  await page.keyboard.press('Escape')
   console.log('A already went idle and released the repo — no container to stop')
 }
 

@@ -399,6 +399,14 @@ export function assertRoleFitsRepos(role: SessionRole, repos: string[]): void {
     )
 }
 
+/** True when `title` is still the auto-generated default for `role` — the
+ *  bare role name, or role name + index — rather than something the user
+ *  typed themselves. Used to decide whether a role change should carry the
+ *  title along with it. */
+export function isDefaultSessionTitle(title: string, role: SessionRole): boolean {
+  return title === role || new RegExp(`^${role} \\d+$`).test(title)
+}
+
 export type PostTurnAction = 'none' | 'nudge' | 'incomplete'
 
 /**
@@ -554,6 +562,16 @@ export class SessionManager {
       .map((s) => this.infoWithRuntime(s))
   }
 
+  /** First of its role in the task carries no index; each further one counts
+   *  up from there. `excludeId` leaves the session being renamed itself out
+   *  of the count. */
+  private defaultTitleForRole(ref: EnvRef, role: SessionRole, excludeId?: string): string {
+    const sameRole = this.listForTask(ref.workspace, ref.task).filter(
+      (s) => s.id !== excludeId && sessionRole(s) === role
+    ).length
+    return sameRole === 0 ? role : `${role} ${sameRole + 1}`
+  }
+
   /** `info` plus the non-persisted runtime overlay the tree renders as status. */
   private infoWithRuntime(s: Session): SessionInfo {
     return {
@@ -641,10 +659,7 @@ export class SessionManager {
     // Named after the role, not a flat "session N" — the role is the one thing
     // every session now declares. First of its role in the task carries no
     // index; each further one counts up from there.
-    const sameRole = this.listForTask(ref.workspace, ref.task).filter(
-      (s) => sessionRole(s) === role
-    ).length
-    const title = sameRole === 0 ? role : `${role} ${sameRole + 1}`
+    const title = this.defaultTitleForRole(ref, role)
     const info: SessionInfo = {
       id: randomUUID(),
       env: ref.env,
@@ -822,7 +837,13 @@ export class SessionManager {
       s.info.repos = patch.repos
     }
     if (patch.role !== undefined) {
-      if (patch.role !== sessionRole(s.info)) void this.events.releaseContainer(s.info.id, 'user')
+      const prevRole = sessionRole(s.info)
+      if (patch.role !== prevRole) void this.events.releaseContainer(s.info.id, 'user')
+      // The title still reads as the auto-generated default (e.g. "executor",
+      // untouched by the user) — carry it along to the new role instead of
+      // leaving it stuck reading like the old one.
+      if (isDefaultSessionTitle(s.info.title, prevRole))
+        s.info.title = this.defaultTitleForRole(s.ref, patch.role, s.info.id)
       s.info.role = patch.role
     }
     // Structural like repos/env/role, not a runtime knob: the skills bind is

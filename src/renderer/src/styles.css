@@ -501,6 +501,27 @@ textarea.input {
   color: var(--faint);
   white-space: normal;
 }
+/* Filter box at the top of a long picker menu — pinned above the scrolling
+   options rather than scrolling away with them. */
+.menu-filter {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  width: 100%;
+  height: 28px;
+  margin-bottom: 4px;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border2);
+  border-radius: 7px;
+  padding: 0 9px;
+  font-size: 12.5px;
+  font-family: inherit;
+}
+.menu-filter:focus {
+  outline: none;
+  border-color: var(--accent);
+}
 .menu-meta {
   margin-left: auto;
   font-size: 10.5px;
@@ -903,7 +924,8 @@ textarea.input {
   width: 18px;
   height: 18px;
 }
-.sb-task:hover .sb-act {
+.sb-task:hover .sb-act,
+.sb-task .sb-act.active {
   visibility: visible;
 }
 .task-badge {
@@ -968,7 +990,8 @@ textarea.input {
 .sb-session:hover .sb-session-client {
   display: none;
 }
-.sb-session-acts .sb-act {
+.sb-session-acts .sb-act,
+.sb-session-acts .icon-sq {
   width: 18px;
   height: 18px;
 }
@@ -1800,6 +1823,8 @@ textarea.input {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  min-width: 0;
+  flex: 1 1 auto;
 }
 .pick-value.strong {
   font-weight: 600;
@@ -2802,6 +2827,9 @@ textarea.input {
   padding: 10px 8px;
 }
 .set-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
   padding: 7px 10px;
   border-radius: 7px;
   font-size: 13px;
@@ -2824,6 +2852,23 @@ textarea.input {
   height: 1px;
   background: var(--border);
   margin: 6px 8px;
+}
+/* Advanced disclosure: mcp/skills registries, folded behind one click so the
+   everyday-config list above isn't sharing space with them. */
+.set-nav-fold {
+  color: var(--faint);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.set-nav-sub {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.set-nav-sub .set-nav-item {
+  padding-left: 20px;
 }
 
 .set-content {
