@@ -143,8 +143,10 @@ const waitSession = async (title, labels, timeout = 900000) => {
 
 // Task-pane CONTAINERS rows, matched by the owning session's title.
 const CONTAINER_ROW = (title) => `.env-row:has(.env-name:text-is("${title}"))`
-const containerAction = (title, action) =>
-  page.click(`${CONTAINER_ROW(title)} button:text-is("${action}")`)
+const containerAction = async (title, action) => {
+  await page.click(`${CONTAINER_ROW(title)} button[title="container actions"]`)
+  await page.click(`${CONTAINER_ROW(title)} .session-menu-pop .menu-item:text-is("${action}")`)
+}
 const waitContainerStatus = (title, status, timeout = 180000) =>
   page.waitForSelector(`${CONTAINER_ROW(title)} .env-status:text-is("${status}")`, { timeout })
 
@@ -191,7 +193,9 @@ async function addEnv(name, repo) {
 async function newSession(task, envName, agentLabel, prompt) {
   await openWork()
   await page.hover(`.sb-task:has(.sb-task-name:text-is("${task}"))`)
-  await page.click(`.sb-task:has(.sb-task-name:text-is("${task}")) .icon-sq[title="new session"]`)
+  await page.click(`.sb-task:has(.sb-task-name:text-is("${task}")) .icon-sq[title="task actions"]`)
+  await page.waitForSelector('.session-menu-pop', { timeout: 5000 })
+  await page.click('.session-menu-pop .menu-item:has-text("New session")')
   await page.waitForSelector('.modal:has-text("New session")', { timeout: 5000 })
   // environment first: picking it seeds the session's repo from the env default
   await page.click('.modal .seclabel:text-is("ENVIRONMENT") + .pick-wrap .pick-row')
@@ -331,7 +335,9 @@ if (await page.locator(CONTAINER_ROW('executor 2')).count()) {
 // --- task delete -------------------------------------------------------
 await openWork()
 await page.hover('.sb-task:has(.sb-task-name:text-is("try2"))')
-await page.click('.sb-task:has(.sb-task-name:text-is("try2")) .icon-sq[title="delete task"]')
+await page.click('.sb-task:has(.sb-task-name:text-is("try2")) .icon-sq[title="task actions"]')
+await page.waitForSelector('.session-menu-pop', { timeout: 5000 })
+await page.click('.session-menu-pop .menu-item:has-text("Delete task")')
 await confirm()
 await page.waitForFunction(() => document.querySelectorAll('.sb-task').length === 0, undefined, {
   timeout: 120000
