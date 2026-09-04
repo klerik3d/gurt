@@ -24,6 +24,7 @@ export type IconName =
   | 'globe'
   | 'globe-lock'
   | 'eye'
+  | 'eye-lock'
   | 'play'
   | 'file'
   | 'folder'
@@ -180,6 +181,17 @@ const PATHS: Record<IconName, JSX.Element> = {
     <>
       <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
       <circle cx="12" cy="12" r="3" />
+    </>
+  ),
+  // Reviewer's mark: `eye` again (it only judges), moved up-left to free the
+  // same corner `globe-lock` frees, and carrying the same filled lock — it
+  // looks, and it holds the clone's lock while it does.
+  'eye-lock': (
+    <>
+      <path d="M0.8 10.5s3.35-6.5 9.2-6.5 9.2 6.5 9.2 6.5-3.35 6.5-9.2 6.5-9.2-6.5-9.2-6.5z" />
+      <circle cx="10" cy="10.5" r="2.6" />
+      <rect x="16.6" y="17.8" width="6.8" height="5.2" rx="1.3" fill="currentColor" stroke="none" />
+      <path d="M18.2 17.8v-1.2a1.8 1.8 0 0 1 3.6 0v1.2" strokeWidth={1.6} />
     </>
   ),
   play: <polygon points="6 4 20 12 6 20 6 4" />,

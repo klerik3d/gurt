@@ -50,8 +50,8 @@ export function RepoTag({ name, title }: { name: string; title?: string }): JSX.
  * What each session role means, in the UI's own words — the new-session picker,
  * the draft settings row and the chat header all read from here, so the wording
  * stays one thing. Glyphs follow the trade-off, not the name: `play` = it does
- * the work, `eye` = it only looks, `lock` = it only looks but nobody else may
- * touch the tree while it does. See docs/requirements-session-roles.md.
+ * the work, `eye` = it only looks, `eye-lock` = it only looks but nobody else
+ * may touch the tree while it does. See docs/requirements-session-roles.md.
  */
 export const ROLE_INFO: Record<SessionRole, { label: string; hint: string; icon: IconName }> = {
   executor: {
@@ -67,7 +67,7 @@ export const ROLE_INFO: Record<SessionRole, { label: string; hint: string; icon:
   reviewer: {
     label: 'reviewer',
     hint: "judges one clone's uncommitted changes: writable, so it can install deps and run tests, but holds the lock so nothing moves under it",
-    icon: 'globe-lock'
+    icon: 'eye-lock'
   },
   operator: {
     label: 'operator',
@@ -298,7 +298,7 @@ export const NET_INFO: Record<'open' | 'internal', { label: string; hint: string
   internal: {
     label: 'internal',
     hint: "isolated: the session network is created with no route out, so the proxy is the session's only egress and the allow list is enforced on every host it asks for. Two caveats: setup (image build, devcontainer features, postCreate, the agent install) runs before the switch, with unrestricted network; and SSH git is unsupported — git over the proxy is HTTPS, via the github MCP.",
-    icon: 'lock'
+    icon: 'globe-lock'
   }
 }
 
