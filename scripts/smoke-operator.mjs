@@ -98,10 +98,10 @@ async function persisted(pred, label) {
 try {
   await page.waitForSelector('.sidebar', { timeout: 15000 })
   await page.waitForSelector('.sb-task', { timeout: 10000 })
-  // The row action is hover-only, so click it directly rather than hovering.
-  await page.evaluate(() => document.querySelector('button[title="task actions"]').click())
-  await page.waitForSelector('.session-menu-pop', { timeout: 5000 })
-  await page.click('.session-menu-pop .menu-item:has-text("New session")')
+  // The row's actions live behind its right-click menu.
+  await page.click('.sb-task', { button: 'right' })
+  await page.waitForSelector('.ctx-menu', { timeout: 5000 })
+  await page.click('.ctx-menu .menu-item:has-text("New session")')
   await page.waitForSelector('.session-pane .tab-bar', { timeout: 10000 })
   await openConfig()
 

@@ -228,38 +228,51 @@ export function NetworkPicker({
   const internal = networkMode(network) === 'internal'
   const allow = explicitAllows(network.policy)
   const [builtinOpen, setBuiltinOpen] = useState(false)
-  // Everything past the on/off toggle — the built-in denylist and the allow
-  // list — is detail most sessions never touch. Folded behind one label so the
-  // block reads as a single toggle at a glance; auto-opens once there is an
-  // allow list to show, so an edited draft doesn't look like it lost its list.
+  // The whole block — the on/off toggle, the built-in denylist, the allow list
+  // — is detail most sessions never touch, so the section is folded behind its
+  // own label and costs one line until it is asked for. The label carries what
+  // it hides: a folded block still says which mode the session is on. Opens
+  // already open when there is an allow list, so an edited draft doesn't look
+  // like it lost its list.
+  const [open, setOpen] = useState(allow.length > 0)
   const [detailsOpen, setDetailsOpen] = useState(allow.length > 0)
 
   return (
     <>
       <div className="hc-block">
         <div className="seclabel-row">
-          <span className="seclabel">INTERNAL NETWORK</span>
+          <button type="button" className="subfold" onClick={() => setOpen((o) => !o)}>
+            <Icon
+              name="chevron"
+              size={11}
+              style={{ flex: 'none', transform: open ? undefined : 'rotate(-90deg)' }}
+            />
+            internal network
+            <span className="dim">{internal ? 'on' : 'off'}</span>
+          </button>
           <InfoDot text={`On — ${NET_INFO.internal.hint} Off — ${NET_INFO.open.hint}`} />
         </div>
-        <div className="chip-row">
-          <button
-            type="button"
-            className={`chip-btn ${internal ? 'on' : ''}`}
-            title={NET_INFO.internal.hint}
-            onClick={() => onChange({ ...network, internal: true })}
-          >
-            on
-          </button>
-          <button
-            type="button"
-            className={`chip-btn ${!internal ? 'on' : ''}`}
-            title={NET_INFO.open.hint}
-            onClick={() => onChange({ ...network, internal: false })}
-          >
-            off
-          </button>
-        </div>
-        {internal && (
+        {open && (
+          <div className="chip-row">
+            <button
+              type="button"
+              className={`chip-btn ${internal ? 'on' : ''}`}
+              title={NET_INFO.internal.hint}
+              onClick={() => onChange({ ...network, internal: true })}
+            >
+              on
+            </button>
+            <button
+              type="button"
+              className={`chip-btn ${!internal ? 'on' : ''}`}
+              title={NET_INFO.open.hint}
+              onClick={() => onChange({ ...network, internal: false })}
+            >
+              off
+            </button>
+          </div>
+        )}
+        {open && internal && (
           <div className="hc-note">
             Setup — image build, devcontainer features, postCreate, the agent install — still runs
             with an open network before the isolation applies. SSH git is not supported; git goes
@@ -268,75 +281,88 @@ export function NetworkPicker({
         )}
       </div>
 
-      <button type="button" className="subfold" onClick={() => setDetailsOpen((o) => !o)}>
-        <Icon
-          name="chevron"
-          size={11}
-          style={{ flex: 'none', transform: detailsOpen ? undefined : 'rotate(-90deg)' }}
-        />
-        allow / block list
-        {allow.length > 0 && <span className="dim">{allow.length} allowed</span>}
-      </button>
-
-      {detailsOpen && (
+      {open && (
         <>
-          {/* Applies in both toggle states, because both enforce it on proxied
-              traffic: even non-internal sessions route anything honouring
-              HTTP_PROXY through the proxy. Read-only for now — editing it per
-              session is a separate task (§6.4) — and folded behind its label:
-              the list is a statement, not a decision, so it costs a click. */}
-          <div className="hc-block">
-            <div className="seclabel-row">
-              <button type="button" className="subfold" onClick={() => setBuiltinOpen((o) => !o)}>
-                <Icon
-                  name="chevron"
-                  size={11}
-                  style={{ flex: 'none', transform: builtinOpen ? undefined : 'rotate(-90deg)' }}
-                />
-                blocked by default
-                <span className="dim">{BUILTIN_DENY_ENTRIES.length}</span>
-              </button>
-              <InfoDot
-                text={
-                  allow.length
-                    ? 'Not consulted while the allow list below has entries — what that list names is what this session can reach, and nothing else is.'
-                    : 'Refused on the address a name resolves to, not just on the name. The one way to reach one of these is to name it in the allow list below.'
-                }
-              />
-            </div>
-            {builtinOpen && (
-              <div className="net-builtin">
-                {BUILTIN_DENY_ENTRIES.map((e) => (
-                  <div className="net-row" key={e.label} title={e.detail}>
-                    <span className="net-host mono">{e.label}</span>
-                    <span className="spacer" />
-                    <span className="dim">{e.detail}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <div className="hc-block">
-            <div className="seclabel-row">
-              <span className="seclabel">ALLOW LIST</span>
-              <InfoDot text="Empty means open: everything outward is allowed except what is blocked by default. Add at least one entry and the session is restricted to what is listed — nothing else gets out. A bare host covers every port on it and its subdomains (example.com also covers api.example.com); host:port narrows the entry to one port. No wildcards, and an IP literal matches exactly." />
-            </div>
-            <HostList
-              hosts={allow}
-              placeholder={'one host per line\nexample.com also covers api.example.com\nhost.docker.internal:5173'}
-              onChange={(next) => onChange({ ...network, policy: { allow: next } })}
+          <button type="button" className="subfold" onClick={() => setDetailsOpen((o) => !o)}>
+            <Icon
+              name="chevron"
+              size={11}
+              style={{ flex: 'none', transform: detailsOpen ? undefined : 'rotate(-90deg)' }}
             />
-            {allow.length > 0 && (
-              <div className="hc-note hc-warn">
-                Only the {allow.length === 1 ? 'entry' : `${allow.length} entries`} above can be
-                reached — everything else is refused, the rest of the internet included. Each entry
-                is connected exactly as written: dialled by name, with no address check, so a name
-                that answers with a private address is still reached. Write the IP literal instead
-                if that is not what you want.
+            allow / block list
+            {allow.length > 0 && <span className="dim">{allow.length} allowed</span>}
+          </button>
+
+          {detailsOpen && (
+            <>
+              {/* Applies in both toggle states, because both enforce it on proxied
+                  traffic: even non-internal sessions route anything honouring
+                  HTTP_PROXY through the proxy. Read-only for now — editing it per
+                  session is a separate task (§6.4) — and folded behind its label:
+                  the list is a statement, not a decision, so it costs a click. */}
+              <div className="hc-block">
+                <div className="seclabel-row">
+                  <button
+                    type="button"
+                    className="subfold"
+                    onClick={() => setBuiltinOpen((o) => !o)}
+                  >
+                    <Icon
+                      name="chevron"
+                      size={11}
+                      style={{
+                        flex: 'none',
+                        transform: builtinOpen ? undefined : 'rotate(-90deg)'
+                      }}
+                    />
+                    blocked by default
+                    <span className="dim">{BUILTIN_DENY_ENTRIES.length}</span>
+                  </button>
+                  <InfoDot
+                    text={
+                      allow.length
+                        ? 'Not consulted while the allow list below has entries — what that list names is what this session can reach, and nothing else is.'
+                        : 'Refused on the address a name resolves to, not just on the name. The one way to reach one of these is to name it in the allow list below.'
+                    }
+                  />
+                </div>
+                {builtinOpen && (
+                  <div className="net-builtin">
+                    {BUILTIN_DENY_ENTRIES.map((e) => (
+                      <div className="net-row" key={e.label} title={e.detail}>
+                        <span className="net-host mono">{e.label}</span>
+                        <span className="spacer" />
+                        <span className="dim">{e.detail}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
-            )}
-          </div>
+
+              <div className="hc-block">
+                <div className="seclabel-row">
+                  <span className="seclabel">ALLOW LIST</span>
+                  <InfoDot text="Empty means open: everything outward is allowed except what is blocked by default. Add at least one entry and the session is restricted to what is listed — nothing else gets out. A bare host covers every port on it and its subdomains (example.com also covers api.example.com); host:port narrows the entry to one port. No wildcards, and an IP literal matches exactly." />
+                </div>
+                <HostList
+                  hosts={allow}
+                  placeholder={
+                    'one host per line\nexample.com also covers api.example.com\nhost.docker.internal:5173'
+                  }
+                  onChange={(next) => onChange({ ...network, policy: { allow: next } })}
+                />
+                {allow.length > 0 && (
+                  <div className="hc-note hc-warn">
+                    Only the {allow.length === 1 ? 'entry' : `${allow.length} entries`} above can be
+                    reached — everything else is refused, the rest of the internet included. Each
+                    entry is connected exactly as written: dialled by name, with no address check,
+                    so a name that answers with a private address is still reached. Write the IP
+                    literal instead if that is not what you want.
+                  </div>
+                )}
+              </div>
+            </>
+          )}
         </>
       )}
     </>

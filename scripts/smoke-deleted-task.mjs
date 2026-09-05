@@ -95,10 +95,9 @@ try {
 
   // Delete the task behind the confirmation.
   await page.click('.sb-task-name:has-text("t")')
-  await page.hover('.sb-task')
-  await page.click('.sb-task .icon-sq[title="task actions"]')
-  await page.waitForSelector('.session-menu-pop', { timeout: 5000 })
-  await page.click('.session-menu-pop .menu-item:has-text("Delete task")')
+  await page.click('.sb-task', { button: 'right' })
+  await page.waitForSelector('.ctx-menu', { timeout: 5000 })
+  await page.click('.ctx-menu .menu-item:has-text("Delete task")')
   await page.waitForSelector('.dialog', { timeout: 5000 })
   await page.click('.dialog-ok')
   await page.waitForFunction(() => document.querySelectorAll('.sb-task').length === 0, null, {

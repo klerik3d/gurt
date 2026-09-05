@@ -71,22 +71,21 @@ assert.equal(await page.locator('.sb-task').count(), 2, 'two independent tasks e
 assert.equal(await page.locator('.sb-session').count(), 0, 'still no sessions after a second task')
 console.log('second task created independently OK')
 
-// The per-task actions menu is a distinct dots icon, not a second identical
-// plus — open it and pick "New session", confirming it makes a *session* (not
-// another task). It's only visible on row hover. Since the New Session modal
-// was replaced by instant drafts, the session appears in the tree straight
-// away and its pane opens on the Chat tab — no popup in between.
-await page.hover('.sb-task >> nth=0')
-await page.click('.sb-task .icon-sq[title="task actions"] >> nth=0')
-await page.waitForSelector('.session-menu-pop', { timeout: 5000 })
-await page.click('.session-menu-pop .menu-item:has-text("New session")')
+// The per-task actions live behind the row's right-click menu, not behind a
+// second identical plus — open it and pick "New session", confirming it makes
+// a *session* (not another task). Since the New Session modal was replaced by
+// instant drafts, the session appears in the tree straight away and its pane
+// opens on the Chat tab — no popup in between.
+await page.click('.sb-task >> nth=0', { button: 'right' })
+await page.waitForSelector('.ctx-menu', { timeout: 5000 })
+await page.click('.ctx-menu .menu-item:has-text("New session")')
 await page.waitForSelector('.session-pane .tab-bar', { timeout: 5000 })
 await page.waitForSelector('.sb-session', { timeout: 5000 })
 assert.equal(await page.locator('.modal').count(), 0, 'a new session is a bare draft, no modal')
 assert.equal(await page.locator('.sb-task').count(), 2, 'still two tasks — no task was created')
 assert.equal(await page.locator('.sb-session').count(), 1, 'exactly one session, under the hovered task')
 await page.screenshot({ path: path.join(SHOT_DIR, '02-new-session-draft.png') })
-console.log('per-task message icon creates a session draft, distinct from task creation OK')
+console.log('the task row menu creates a session draft, distinct from task creation OK')
 
 await app.close()
 console.log('DONE')

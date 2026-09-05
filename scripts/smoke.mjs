@@ -115,14 +115,13 @@ await page.waitForSelector('.set-row-label:has-text("claude smoke")', { timeout:
 await page.screenshot({ path: path.join(SHOT_DIR, '02-client.png') })
 console.log('client configured OK')
 
-// create a session draft off the task row (the button only shows on hover).
-// There is no modal any more: the draft exists the moment the button is
-// clicked, and its pane opens on the Chat tab.
+// create a session draft off the task row: the row actions live behind a
+// right-click context menu. There is no modal any more: the draft exists the
+// moment "New session" is picked, and its pane opens on the Chat tab.
 await openWork()
-await page.hover('.sb-task >> nth=0')
-await page.click('.sb-task .icon-sq[title="task actions"] >> nth=0')
-await page.waitForSelector('.session-menu-pop', { timeout: 5000 })
-await page.click('.session-menu-pop .menu-item:has-text("New session")')
+await page.click('.sb-task >> nth=0', { button: 'right' })
+await page.waitForSelector('.ctx-menu', { timeout: 5000 })
+await page.click('.ctx-menu .menu-item:has-text("New session")')
 await page.waitForSelector('.session-pane .tab-bar', { timeout: 5000 })
 await page.waitForSelector('.sb-session', { timeout: 5000 })
 assert.equal(await page.locator('.modal').count(), 0, 'a new session is a bare draft, not a modal')

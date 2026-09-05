@@ -50,8 +50,8 @@ export function RepoTag({ name, title }: { name: string; title?: string }): JSX.
  * What each session role means, in the UI's own words — the new-session picker,
  * the draft settings row and the chat header all read from here, so the wording
  * stays one thing. Glyphs follow the trade-off, not the name: `play` = it does
- * the work, `eye` = it only looks, `eye-lock` = it only looks but nobody else
- * may touch the tree while it does. See docs/requirements-session-roles.md.
+ * the work, `search` = it only reads and hunts, `eye` = it only judges. See
+ * docs/requirements-session-roles.md.
  */
 export const ROLE_INFO: Record<SessionRole, { label: string; hint: string; icon: IconName }> = {
   executor: {
@@ -62,12 +62,12 @@ export const ROLE_INFO: Record<SessionRole, { label: string; hint: string; icon:
   researcher: {
     label: 'researcher',
     hint: 'reads only: any number of repos, locks nothing, answers in chat, can draft other sessions',
-    icon: 'eye'
+    icon: 'search'
   },
   reviewer: {
     label: 'reviewer',
     hint: "judges one clone's uncommitted changes: writable, so it can install deps and run tests, but holds the lock so nothing moves under it",
-    icon: 'eye-lock'
+    icon: 'eye'
   },
   operator: {
     label: 'operator',
@@ -195,7 +195,10 @@ export function McpMarks({
       title={`MCP servers\n${resolved.map((r) => mcpTitle(r)).join('\n')}`}
     >
       <Icon name="plug" size={11} className={missing ? undefined : 'faint'} />
-      {resolved.map(mcpName).join(', ')}
+      {resolved.slice(0, MARK_NAMES_SHOWN).map(mcpName).join(', ')}
+      {resolved.length > MARK_NAMES_SHOWN && (
+        <span className="dim">+{resolved.length - MARK_NAMES_SHOWN}</span>
+      )}
     </span>
   )
 }
@@ -246,11 +249,23 @@ export function AgentMark({
   )
 }
 
+/**
+ * How many names a header mark spells out before the rest collapses into a
+ * "+N" counter — the full list stays one hover away in the mark's tooltip.
+ *
+ * The header row is fixed height and holds real controls (VS Code, the session
+ * menu) to the right of these marks: a session on eight repositories used to
+ * push those controls off the pane rather than clip itself.
+ */
+const MARK_NAMES_SHOWN = 2
+
 /** The same pair unpilled, for the header pills and the footer — the chip around
  *  them already carries the frame, and both lay their children out with a gap.
  *  `task`, when given alongside `repos`, appends the task's branch name — every
  *  clone's task branch is named `<task>` (see `branchFor` in changes.ts).
- *  More than one repo (a discovery session) shows one branch mark per repo. */
+ *  More than one repo (a discovery session) shows a branch mark per repo, up to
+ *  `MARK_NAMES_SHOWN` — the rest become "+N", with the whole list in the
+ *  tooltip. */
 export function EnvRepoMarks({
   env,
   repos,
@@ -261,16 +276,23 @@ export function EnvRepoMarks({
   task?: string
 }): JSX.Element {
   const list = repos ?? []
+  const shown = list.slice(0, MARK_NAMES_SHOWN)
+  const rest = list.length - shown.length
   return (
     <>
       <Icon name="box" size={11} className="faint" />
       {env || 'no env'}
-      {list.map((r) => (
-        <Fragment key={r}>
-          <Icon name="branch" size={11} className="faint" />
-          {r}
-        </Fragment>
-      ))}
+      {list.length > 0 && (
+        <span className="repo-marks" title={`repositories\n${list.join('\n')}`}>
+          {shown.map((r) => (
+            <Fragment key={r}>
+              <Icon name="branch" size={11} className="faint" />
+              {r}
+            </Fragment>
+          ))}
+          {rest > 0 && <span className="dim">+{rest}</span>}
+        </span>
+      )}
       {list.length > 0 && task && <span className="dim">{task}</span>}
     </>
   )

@@ -84,12 +84,16 @@ const shownRole = async () => (await page.locator(`${ROLE_ROW} .pick-value`).inn
 // race that a loaded CI runner loses. These wait for the value instead.
 const untilRole = (role) =>
   page.waitForSelector(`${ROLE_ROW} .pick-value:text-is("${role}")`, { timeout: 5000 })
-/** The repo chips, once they read exactly `want` — same round-trip, same wait. */
+/** The repo chips, once they read exactly `want` — same round-trip, same wait.
+ *  A researcher's chips now live below the pick row with a remove "×" on each
+ *  (too many overran the row); strip it so the label comparison doesn't care
+ *  which role rendered the chip. */
+const stripChipX = (s) => s.replace(/\s*×\s*$/, '').trim()
 const untilChips = (want) =>
   page.waitForFunction(
     (expected) => {
       const got = [...document.querySelectorAll('.ns-body .chip-tag')].map((e) =>
-        (e.innerText ?? '').trim()
+        (e.innerText ?? '').replace(/\s*×\s*$/, '').trim()
       )
       return got.length === expected.length && got.every((g, i) => g === expected[i])
     },
@@ -103,7 +107,11 @@ const pickRole = async (role) => {
   await page.waitForSelector('.ns-body .pick-menu', { state: 'detached', timeout: 5000 })
   await untilRole(role)
 }
-const repoChips = () => page.locator('.ns-body .chip-tag').allInnerTexts()
+const repoChips = () =>
+  page
+    .locator('.ns-body .chip-tag')
+    .allInnerTexts()
+    .then((ts) => ts.map(stripChipX))
 const pickRepo = async (name) => {
   await page.click(row('REPOSITORY'))
   await page.click(`.ns-body .pick-menu .menu-item:has-text("${name}")`)
@@ -138,10 +146,10 @@ async function persisted(pred, label) {
 try {
   await page.waitForSelector('.sidebar', { timeout: 15000 })
   await page.waitForSelector('.sb-task', { timeout: 10000 })
-  // The row action is hover-only, so click it directly rather than hovering.
-  await page.evaluate(() => document.querySelector('button[title="task actions"]').click())
-  await page.waitForSelector('.session-menu-pop', { timeout: 5000 })
-  await page.click('.session-menu-pop .menu-item:has-text("New session")')
+  // The row's actions live behind its right-click menu.
+  await page.click('.sb-task', { button: 'right' })
+  await page.waitForSelector('.ctx-menu', { timeout: 5000 })
+  await page.click('.ctx-menu .menu-item:has-text("New session")')
   await page.waitForSelector('.session-pane .tab-bar', { timeout: 10000 })
   await openConfig()
 

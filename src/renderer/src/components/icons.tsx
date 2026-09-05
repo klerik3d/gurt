@@ -183,9 +183,8 @@ const PATHS: Record<IconName, JSX.Element> = {
       <circle cx="12" cy="12" r="3" />
     </>
   ),
-  // Reviewer's mark: `eye` again (it only judges), moved up-left to free the
-  // same corner `globe-lock` frees, and carrying the same filled lock — it
-  // looks, and it holds the clone's lock while it does.
+  // `eye` moved up-left to free the same corner `globe-lock` frees, carrying
+  // the same filled lock — it looks, and it holds a lock while it does.
   'eye-lock': (
     <>
       <path d="M0.8 10.5s3.35-6.5 9.2-6.5 9.2 6.5 9.2 6.5-3.35 6.5-9.2 6.5-9.2-6.5-9.2-6.5z" />

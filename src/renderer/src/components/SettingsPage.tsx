@@ -103,19 +103,24 @@ const SECTION_ICON: Record<SettingsSection, IconName> = {
   hotkeys: 'grid'
 }
 
-/** The main nav list, in order. `mcp` and `skills` sit apart, under the
- *  Advanced disclosure below — both are registries of pluggable capability
- *  (external servers, filesystem-backed skill packs) rather than everyday
- *  workspace config, so they cost a click instead of always taking up room. */
-const MAIN_SECTIONS = [
+/** Registry group — the sections that define *what the workspace has*: the
+ *  envs it can build, the repos and clients it knows, who may reach them, and
+ *  the secrets behind that. Grouped under one heading so they read as one
+ *  subject rather than five peers of Notifications/Hotkeys. */
+const REGISTRY_SECTIONS = [
   'environments',
   'repos',
   'clients',
   'agentAccess',
-  'credentials',
-  'notifications',
-  'hotkeys'
+  'credentials'
 ] as const satisfies readonly SettingsSection[]
+
+/** Everything else in the main list — per-user preferences, not registry
+ *  entries. `mcp` and `skills` sit apart, under the Advanced disclosure below
+ *  — both are registries of pluggable capability (external servers,
+ *  filesystem-backed skill packs) rather than everyday workspace config, so
+ *  they cost a click instead of always taking up room. */
+const MAIN_SECTIONS = ['notifications', 'hotkeys'] as const satisfies readonly SettingsSection[]
 
 const ADVANCED_SECTIONS = ['mcp', 'skills'] as const satisfies readonly SettingsSection[]
 
@@ -173,6 +178,11 @@ export function SettingsPage({
             <Icon name={SECTION_ICON.general} size={14} style={{ flex: 'none' }} />
             General
           </div>
+          <div className="set-nav-sep" />
+          <div className="set-nav-group">Registry</div>
+          {REGISTRY_SECTIONS.map((s) => (
+            <NavItem key={s} section={s} active={section === s} onSection={onSection} />
+          ))}
           <div className="set-nav-sep" />
           {MAIN_SECTIONS.map((s) => (
             <NavItem key={s} section={s} active={section === s} onSection={onSection} />
