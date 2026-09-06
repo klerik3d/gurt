@@ -2871,7 +2871,7 @@ textarea.input {
   background: var(--border);
   margin: 6px 8px;
 }
-/* Group heading (Registry): the same typographic key as .set-nav-fold, minus
+/* Group heading (General, Registry): the same typographic key as .set-nav-fold, minus
    the chevron and the pointer — it labels a block, it doesn't toggle one. */
 .set-nav-group {
   padding: 7px 10px 5px;

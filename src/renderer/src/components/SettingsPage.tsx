@@ -71,7 +71,6 @@ import { Modal } from './Modal'
 import { run } from '../async'
 
 export type SettingsSection =
-  | 'general'
   | 'environments'
   | 'repos'
   | 'clients'
@@ -91,7 +90,6 @@ const SECTION_LABEL: Partial<Record<SettingsSection, string>> = {
 /** One icon per nav item, so the list reads at a glance instead of as a wall
  *  of text. */
 const SECTION_ICON: Record<SettingsSection, IconName> = {
-  general: 'gear',
   environments: 'box',
   repos: 'branch',
   clients: 'plug',
@@ -106,7 +104,7 @@ const SECTION_ICON: Record<SettingsSection, IconName> = {
 /** Registry group — the sections that define *what the workspace has*: the
  *  envs it can build, the repos and clients it knows, who may reach them, and
  *  the secrets behind that. Grouped under one heading so they read as one
- *  subject rather than five peers of Notifications/Hotkeys. */
+ *  subject rather than five peers of the General group. */
 const REGISTRY_SECTIONS = [
   'environments',
   'repos',
@@ -115,12 +113,13 @@ const REGISTRY_SECTIONS = [
   'credentials'
 ] as const satisfies readonly SettingsSection[]
 
-/** Everything else in the main list — per-user preferences, not registry
- *  entries. `mcp` and `skills` sit apart, under the Advanced disclosure below
- *  — both are registries of pluggable capability (external servers,
- *  filesystem-backed skill packs) rather than everyday workspace config, so
- *  they cost a click instead of always taking up room. */
-const MAIN_SECTIONS = ['notifications', 'hotkeys'] as const satisfies readonly SettingsSection[]
+/** General group — per-user preferences rather than registry entries. They
+ *  head the list under their own heading instead of floating unlabelled
+ *  between Registry and Advanced. `mcp` and `skills` sit apart, under the
+ *  Advanced disclosure below — both are registries of pluggable capability
+ *  (external servers, filesystem-backed skill packs) rather than everyday
+ *  workspace config, so they cost a click instead of always taking up room. */
+const GENERAL_SECTIONS = ['notifications', 'hotkeys'] as const satisfies readonly SettingsSection[]
 
 const ADVANCED_SECTIONS = ['mcp', 'skills'] as const satisfies readonly SettingsSection[]
 
@@ -174,17 +173,13 @@ export function SettingsPage({
       <div className="set-nav">
         <div className="set-nav-head">Settings</div>
         <div className="set-nav-list">
-          <div className="set-nav-item disabled" title="coming later">
-            <Icon name={SECTION_ICON.general} size={14} style={{ flex: 'none' }} />
-            General
-          </div>
-          <div className="set-nav-sep" />
-          <div className="set-nav-group">Registry</div>
-          {REGISTRY_SECTIONS.map((s) => (
+          <div className="set-nav-group">General</div>
+          {GENERAL_SECTIONS.map((s) => (
             <NavItem key={s} section={s} active={section === s} onSection={onSection} />
           ))}
           <div className="set-nav-sep" />
-          {MAIN_SECTIONS.map((s) => (
+          <div className="set-nav-group">Registry</div>
+          {REGISTRY_SECTIONS.map((s) => (
             <NavItem key={s} section={s} active={section === s} onSection={onSection} />
           ))}
           <div className="set-nav-sep" />
@@ -216,7 +211,6 @@ export function SettingsPage({
         {section === 'credentials' && <CredentialsSection />}
         {section === 'notifications' && <NotificationsSection />}
         {section === 'hotkeys' && <HotkeysSection />}
-        {section === 'general' && <div className="placeholder">general settings — coming soon</div>}
       </div>
     </div>
   )
@@ -329,42 +323,46 @@ function EnvironmentsSection({ tree, ws }: { tree: Tree | null; ws: string | nul
           (docs/requirements-session-operator.md §2.2). Absent = the bundled,
           always-startable default. */}
       {ws && (
-        <div className="set-row">
-          <span className="set-row-label">Operator environment</span>
-          <span className="spacer" />
-          <button
-            type="button"
-            className={`btn-link ${!wsData?.operatorEnv ? 'active' : ''}`}
-            title={`the image-only default gurt ships (${OPERATOR_ENV_NAME}) — needs no repo and no setup`}
-            onClick={() =>
-              void window.gurt
-                .setOperatorEnv(ws, undefined)
-                .then(() => setOperatorError(''))
-                .catch((e: unknown) => setOperatorError(e instanceof Error ? e.message : String(e)))
-            }
-          >
-            {!wsData?.operatorEnv ? 'bundled default ✓' : 'bundled default'}
-          </button>
-          {envs.map((e) => (
+        <div className="set-list">
+          <div className="set-row">
+            <span className="set-row-label">Operator environment</span>
+            <span className="spacer" />
             <button
-              key={e.name}
               type="button"
-              className={`btn-link ${wsData?.operatorEnv === e.name ? 'active' : ''}`}
+              className={`btn-link ${!wsData?.operatorEnv ? 'active' : ''}`}
+              title={`the image-only default gurt ships (${OPERATOR_ENV_NAME}) — needs no repo and no setup`}
               onClick={() =>
                 void window.gurt
-                  .setOperatorEnv(ws, e.name)
+                  .setOperatorEnv(ws, undefined)
                   .then(() => setOperatorError(''))
-                  .catch((err: unknown) =>
-                    setOperatorError(err instanceof Error ? err.message : String(err))
+                  .catch((e: unknown) =>
+                    setOperatorError(e instanceof Error ? e.message : String(e))
                   )
               }
             >
-              {wsData?.operatorEnv === e.name ? `${e.name} ✓` : e.name}
+              {!wsData?.operatorEnv ? 'bundled default ✓' : 'bundled default'}
             </button>
-          ))}
+            {envs.map((e) => (
+              <button
+                key={e.name}
+                type="button"
+                className={`btn-link ${wsData?.operatorEnv === e.name ? 'active' : ''}`}
+                onClick={() =>
+                  void window.gurt
+                    .setOperatorEnv(ws, e.name)
+                    .then(() => setOperatorError(''))
+                    .catch((err: unknown) =>
+                      setOperatorError(err instanceof Error ? err.message : String(err))
+                    )
+                }
+              >
+                {wsData?.operatorEnv === e.name ? `${e.name} ✓` : e.name}
+              </button>
+            ))}
+          </div>
+          {operatorError && <div className="error">{operatorError}</div>}
         </div>
       )}
-      {operatorError && <div className="error">{operatorError}</div>}
       <div className="set-list">
         {envs.map((e) => {
           const st = statuses[e.name]
