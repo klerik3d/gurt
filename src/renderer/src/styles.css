@@ -2863,18 +2863,8 @@ textarea.input {
   background: var(--border);
   margin: 6px 8px;
 }
-/* Group heading (General, Registry): the same typographic key as .set-nav-fold, minus
-   the chevron and the pointer — it labels a block, it doesn't toggle one. */
-.set-nav-group {
-  padding: 7px 10px 5px;
-  color: var(--faint);
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-/* Advanced disclosure: mcp/skills registries, folded behind one click so the
-   everyday-config list above isn't sharing space with them. */
+/* Group heading (General, Registry, Advanced): each one is its own disclosure,
+   open by default — click to fold/unfold the sections under it. */
 .set-nav-fold {
   color: var(--faint);
   font-size: 11px;

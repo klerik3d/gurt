@@ -154,6 +154,36 @@ function NavItem({
   )
 }
 
+type NavGroup = 'general' | 'registry' | 'advanced'
+
+/** A group heading doubling as its own disclosure — click to fold/unfold the
+ *  sections under it. Every group starts open; nothing here is hidden until
+ *  the user chooses to hide it. */
+function GroupFold({
+  label,
+  icon,
+  open,
+  onToggle
+}: {
+  label: string
+  icon?: IconName
+  open: boolean
+  onToggle: () => void
+}): JSX.Element {
+  return (
+    <div className="set-nav-item set-nav-fold" onClick={onToggle}>
+      <Icon
+        name="chevron"
+        size={12}
+        className="faint"
+        style={{ flex: 'none', transform: open ? undefined : 'rotate(-90deg)' }}
+      />
+      {icon && <Icon name={icon} size={14} className="faint" style={{ flex: 'none' }} />}
+      {label}
+    </div>
+  )
+}
+
 export function SettingsPage({
   tree,
   ws,
@@ -165,34 +195,36 @@ export function SettingsPage({
   section: SettingsSection
   onSection: (s: SettingsSection) => void
 }) {
-  const [advancedOpen, setAdvancedOpen] = useState(
-    (ADVANCED_SECTIONS as readonly SettingsSection[]).includes(section)
-  )
+  const [openGroups, setOpenGroups] = useState<Record<NavGroup, boolean>>({
+    general: true,
+    registry: true,
+    advanced: true
+  })
+  const toggleGroup = (g: NavGroup) => setOpenGroups((prev) => ({ ...prev, [g]: !prev[g] }))
   return (
     <div className="settings">
       <div className="set-nav">
         <div className="set-nav-head">Settings</div>
         <div className="set-nav-list">
-          <div className="set-nav-group">General</div>
-          {GENERAL_SECTIONS.map((s) => (
-            <NavItem key={s} section={s} active={section === s} onSection={onSection} />
-          ))}
+          <GroupFold label="General" open={openGroups.general} onToggle={() => toggleGroup('general')} />
+          {openGroups.general &&
+            GENERAL_SECTIONS.map((s) => (
+              <NavItem key={s} section={s} active={section === s} onSection={onSection} />
+            ))}
           <div className="set-nav-sep" />
-          <div className="set-nav-group">Registry</div>
-          {REGISTRY_SECTIONS.map((s) => (
-            <NavItem key={s} section={s} active={section === s} onSection={onSection} />
-          ))}
+          <GroupFold label="Registry" open={openGroups.registry} onToggle={() => toggleGroup('registry')} />
+          {openGroups.registry &&
+            REGISTRY_SECTIONS.map((s) => (
+              <NavItem key={s} section={s} active={section === s} onSection={onSection} />
+            ))}
           <div className="set-nav-sep" />
-          <div className="set-nav-item set-nav-fold" onClick={() => setAdvancedOpen((o) => !o)}>
-            <Icon
-              name="chevron"
-              size={12}
-              className="faint"
-              style={{ flex: 'none', transform: advancedOpen ? undefined : 'rotate(-90deg)' }}
-            />
-            Advanced
-          </div>
-          {advancedOpen && (
+          <GroupFold
+            label="Advanced"
+            icon="gear"
+            open={openGroups.advanced}
+            onToggle={() => toggleGroup('advanced')}
+          />
+          {openGroups.advanced && (
             <div className="set-nav-sub">
               {ADVANCED_SECTIONS.map((s) => (
                 <NavItem key={s} section={s} active={section === s} onSection={onSection} />
