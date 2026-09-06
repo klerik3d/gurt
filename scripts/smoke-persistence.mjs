@@ -105,10 +105,10 @@ const modalGone = () => page.waitForSelector('.modal', { state: 'detached', time
 // The two views in the activity bar. Repos and environments live in Settings;
 // tasks and sessions in the work view.
 const openSettings = async (section) => {
-  await page.click('.activitybar .ab-item[title="Settings"]')
+  await page.click('.activitybar .ab-item[title^="Settings"]')
   await page.click(`.set-nav-item:has-text("${section}")`)
 }
-const openWork = () => page.click('.activitybar .ab-item[title="Tasks & sessions"]')
+const openWork = () => page.click('.activitybar .ab-item[title^="Tasks & sessions"]')
 
 // Sessions are named after their role, and the sidebar row carries its status as
 // the row title (see SESSION_DOT). Resolves when the session reaches one of
@@ -129,7 +129,7 @@ const waitStarted = async (timeout = 600000) => {
 }
 
 // --- workspace ---------------------------------------------------------
-await page.click('.sb-ws-btn')
+await page.click('.tb-ws-btn')
 await page.click('.menu-item:has-text("+ new workspace")')
 await page.waitForSelector('.modal input', { timeout: 5000 })
 await page.fill('.modal input', 'personal')
@@ -161,15 +161,16 @@ await page.waitForSelector('.set-row-label:text-is("hello-env")', { timeout: 500
 
 // --- task --------------------------------------------------------------
 await openWork()
-await page.click('button[title="New task · ⌘⇧N"]')
+await page.click('button[title^="New task"]')
 await page.waitForSelector('.sb-newtask-menu input', { timeout: 5000 })
 await page.fill('.sb-newtask-menu input', 'try-electron')
 await page.press('.sb-newtask-menu input', 'Enter')
 await page.waitForSelector('.sb-task-name:text-is("try-electron")', { timeout: 10000 })
 
 // --- session -----------------------------------------------------------
-await page.hover('.sb-task:has(.sb-task-name:text-is("try-electron"))')
-await page.click('.sb-task:has(.sb-task-name:text-is("try-electron")) .icon-sq[title="new session"]')
+await page.click('.sb-task:has(.sb-task-name:text-is("try-electron"))', { button: 'right' })
+await page.waitForSelector('.ctx-menu', { timeout: 5000 })
+await page.click('.ctx-menu .menu-item:has-text("New session")')
 await page.waitForSelector('.modal:has-text("New session")', { timeout: 5000 })
 // environment first: picking it seeds the session's repo from the env default
 await page.click('.modal .seclabel:text-is("ENVIRONMENT") + .pick-wrap .pick-row')

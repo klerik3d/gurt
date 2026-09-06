@@ -2,11 +2,20 @@ import { randomUUID } from 'node:crypto'
 import type { AddressInfo } from 'node:net'
 import type { Server } from 'node:http'
 import type { AcpHttpMcpServer, EnvRef, McpMode, McpSelection } from '../../shared/types'
-import { mcpDef } from '../../shared/mcp'
+import type {
+  McpFailure,
+  McpLocalEntry,
+  McpRegistryEntry,
+  SessionMcpFailures
+} from '../../shared/mcp'
+import { RESERVED_MCP_IDS, isLocalMcpEntry, mcpDef } from '../../shared/mcp'
+import { resolveMcpEnvSecret } from '../../shared/credentials'
 import { mcpServerKey } from '../../shared/keys'
-import { cloneDir } from '../store'
+import { cloneDir, getMcpServers } from '../store'
+import { listCredentials } from '../credentials'
 import { createLogger } from '../log'
 import { buildGithubHttpServer } from './githubServer'
+import { startStdioBridge, type StdioBridge } from './stdioBridge'
 
 const log = createLogger('mcp')
 
@@ -22,7 +31,10 @@ interface Running {
 }
 
 /** One host MCP server per (session, mcp id). Servers operate on the session's
- *  clone, and are torn down with the session's container. */
+ *  clone, and are torn down with the session's container.
+ *
+ *  Built-ins only. A *local* registry entry is not per-session — see
+ *  {@link localBridges} and docs/requirements-mcp-stdio.md §6. */
 const running = new Map<string, Running>()
 
 function listen(server: Server): Promise<number> {
@@ -39,9 +51,10 @@ function listen(server: Server): Promise<number> {
   })
 }
 
-/** Build and start one server. The record is complete before any await, so the
- *  caller can enter it into `running` ahead of the listen — two concurrent
- *  resolves for one key must share one server, not race a second into a leak. */
+/** Build and start one built-in server. The record is complete before any
+ *  await, so the caller can enter it into `running` ahead of the listen — two
+ *  concurrent resolves for one key must share one server, not race a second
+ *  into a leak. */
 function startServer(
   sessionId: string,
   ref: EnvRef,
@@ -51,7 +64,9 @@ function startServer(
 ): Running {
   const dir = cloneDir(ref.workspace, ref.task, repo)
   const token = randomUUID()
-  // Only github is implemented; the registry is the extension point for more.
+  // `github` is the only built-in with a clone-scoped server; a local registry
+  // entry never reaches here (it has no clone, and one process serves every
+  // session — `resolveLocalServers`).
   const http = buildGithubHttpServer(ref, repo, dir, mode, token)
   const rec = { id, mode, http } as Running
   rec.ready = listen(http).then((port): AcpHttpMcpServer => {
@@ -77,9 +92,257 @@ function stopServer(sessionId: string, key: string, rec: Running): void {
   running.delete(key)
 }
 
+/** Stop this session's servers that its selection no longer names — the other
+ *  half of "the selection is the scope". Without it, narrowing a session's MCP
+ *  set would leave the dropped server listening for the container's lifetime,
+ *  and the agent's own descriptor list is not what keeps it out. */
+function pruneServers(sessionId: string, keep: Set<string>): void {
+  const prefix = `${sessionId}::`
+  for (const [key, rec] of running) {
+    if (!key.startsWith(prefix) || keep.has(rec.id)) continue
+    stopServer(sessionId, key, rec)
+  }
+}
+
+// --- local (stdio) registry entries, shared across sessions -----------------
+//
+// A local entry is one process per *registry entry*, not per session
+// (docs/requirements-mcp-stdio.md §6): three sessions that all selected
+// `kubernetes` talk to one `kubernetes-mcp-server`. So the lifetime question is
+// a refcount — and, per requirements-mcp-proxy.md §7.2, the refcount is never
+// stored. It is recomputed from the live holders on every change, so a gurt
+// restart, a crashed session or a hand-edited registry all converge instead of
+// leaving a number on disk that nothing can be checked against.
+
+/** A registry entry is workspace-scoped, so its identity is too. */
+const localKey = (workspace: string, id: string): string => `${workspace}::${id}`
+
+/** One live session and the MCP ids it has selected — the ground truth the
+ *  refcount is derived from. */
+export interface LocalMcpHolder {
+  sessionId: string
+  workspace: string
+  ids: readonly string[]
+}
+
+/** One local server that at least one live session wants, and who wants it. */
+export interface LocalMcpWant {
+  key: string
+  workspace: string
+  entry: McpLocalEntry
+  /** Session ids, in first-seen order. Its length is the refcount. */
+  sessions: string[]
+}
+
+/**
+ * Which local servers should be running, given who is live right now. Pure, and
+ * the whole of the lifecycle decision: a key in the result must have a process,
+ * a key absent from it must not.
+ *
+ * Ids that resolve to nothing, or to a remote entry, are simply not here —
+ * a remote entry has no process to refcount, and a dangling id is reported by
+ * `planProxy`, which is the layer that talks to the session log.
+ */
+export function localMcpWants(
+  holders: readonly LocalMcpHolder[],
+  registries: ReadonlyMap<string, readonly McpRegistryEntry[]>
+): Map<string, LocalMcpWant> {
+  const wants = new Map<string, LocalMcpWant>()
+  for (const holder of holders) {
+    const registry = registries.get(holder.workspace) ?? []
+    for (const id of holder.ids) {
+      // A reserved id never resolves to a registry entry, however a
+      // hand-edited file spells it — `mcpEntries` makes the built-in win the
+      // lookup, so nothing may hold a process under that name either.
+      if (RESERVED_MCP_IDS.includes(id)) continue
+      const entry = registry.find((e) => e.id === id)
+      if (!entry || !isLocalMcpEntry(entry)) continue
+      const key = localKey(holder.workspace, id)
+      const want = wants.get(key)
+      if (!want) {
+        wants.set(key, { key, workspace: holder.workspace, entry, sessions: [holder.sessionId] })
+      } else if (!want.sessions.includes(holder.sessionId)) {
+        want.sessions.push(holder.sessionId)
+      }
+    }
+  }
+  return wants
+}
+
+/**
+ * The identity of a *running* process, as opposed to of a registry entry: every
+ * field that would have made gurt spawn something else. An entry edited in any
+ * of these restarts its process on the next reconcile; a relabelled entry does
+ * not.
+ */
+export function localMcpSpec(entry: McpLocalEntry): string {
+  const common = { args: entry.args ?? [], env: entry.env ?? {}, cred: entry.credentialEnvVar ?? '' }
+  return JSON.stringify(
+    entry.kind === 'npm'
+      ? { kind: 'npm', package: entry.package, version: entry.version ?? '', ...common }
+      : { kind: 'command', command: entry.command, cwd: entry.cwd ?? '', ...common }
+  )
+}
+
+interface RunningLocal {
+  bridge: StdioBridge
+  spec: string
+  /** Whatever secret this process was started with — a credential rotated in
+   *  the store has to reach the child, and the child only reads its env once. */
+  secret: string
+}
+
+const localBridges = new Map<string, RunningLocal>()
+/** sessionId → what it holds. Written by `resolveMcpServers`, cleared by
+ *  `stopMcpServers`; never persisted (see the note above). */
+const localHolders = new Map<string, LocalMcpHolder>()
+/** key → why its last start failed. Set beside every `mcp.fail`, deleted the
+ *  moment a process for that key is running, so it never outlives the failure it
+ *  describes. This is the *reason* half of what the session pane shows (§8.2):
+ *  a session only ever learns "the process is not running" from `planProxy`. */
+const localFails = new Map<string, string>()
+
+const failureSinks = new Set<(f: SessionMcpFailures) => void>()
+
+/** Subscribe to the per-session failure sets. The one seam between this module
+ *  and the bus — `kernel.ts` wires it to `mcp.fail`, the way it wires the proxy
+ *  watcher to `proxy.traffic`. */
+export function onMcpFailures(fn: (f: SessionMcpFailures) => void): () => void {
+  failureSinks.add(fn)
+  return () => failureSinks.delete(fn)
+}
+
+function publishFailures(f: SessionMcpFailures): void {
+  for (const sink of failureSinks) {
+    try {
+      sink(f)
+    } catch (e) {
+      log.error('internal.fail', { site: 'mcp-failure-sink', err: e })
+    }
+  }
+}
+
+/** Reconciles run one at a time: they start and stop processes, and two
+ *  overlapping passes would each see the other's half-finished work. */
+let reconciling: Promise<void> = Promise.resolve()
+
+/** The environment a local entry's credential link contributes (§3.4).
+ *
+ *  Exported for the probe (`mcp/probe.ts`, §4.6), which starts an entry the way
+ *  a session would and so has to resolve its credential the way a session does
+ *  — including the "block rather than start unauthenticated" rule below. It is
+ *  the resolution that is shared, not the lifecycle: the probe's own bridge is
+ *  outside the refcount this module keeps. */
+export async function credentialEnv(entry: McpLocalEntry): Promise<{ env: Record<string, string>; secret: string }> {
+  if (!entry.credentialId || !entry.credentialEnvVar) return { env: {}, secret: '' }
+  const { secret, error } = resolveMcpEnvSecret(await listCredentials(), entry.credentialId)
+  // Blocks rather than starting unauthenticated — the same rule the proxy
+  // applies to a remote entry's header (requirements-mcp-proxy.md §3.2).
+  if (error) throw new Error(`MCP server "${entry.id}": ${error}`)
+  return { env: { [entry.credentialEnvVar]: secret ?? '' }, secret: secret ?? '' }
+}
+
+/**
+ * Converge the running local servers on what the live holders want: start what
+ * is missing, stop what nothing holds any more, and restart what has been
+ * edited into a different process.
+ *
+ * Never throws. A server that will not start (its package will not install, its
+ * command is gone, its credential does not resolve) is logged and left out; the
+ * session that wanted it gets no descriptor, and `planProxy` reports the id as
+ * unroutable in the session log.
+ */
+async function reconcileLocal(): Promise<void> {
+  const holders = [...localHolders.values()]
+  const workspaces = [...new Set(holders.map((h) => h.workspace))]
+  const registries = new Map<string, readonly McpRegistryEntry[]>()
+  await Promise.all(
+    workspaces.map(async (ws) => registries.set(ws, await getMcpServers(ws).catch(() => [])))
+  )
+  const wants = localMcpWants(holders, registries)
+
+  // Resolve each want's credential up front: the secret is both what the child
+  // is started with and half of "is the running process still the right one" —
+  // a stdio server reads its environment once, so a rotated credential reaches
+  // it only through a restart.
+  const desired = new Map<
+    string,
+    { want: LocalMcpWant; spec: string; env: Record<string, string>; secret: string; error?: string }
+  >()
+  for (const want of wants.values()) {
+    const base = { want, spec: localMcpSpec(want.entry) }
+    try {
+      const { env, secret } = await credentialEnv(want.entry)
+      desired.set(want.key, { ...base, env, secret })
+    } catch (e) {
+      desired.set(want.key, {
+        ...base,
+        env: {},
+        secret: '',
+        error: e instanceof Error ? e.message : String(e)
+      })
+    }
+  }
+
+  // Stops first: an entry edited in place must not hold two processes open, and
+  // an unheld one should be gone even if a replacement then fails to start.
+  for (const [key, rec] of [...localBridges]) {
+    const next = desired.get(key)
+    if (next && !next.error && next.spec === rec.spec && next.secret === rec.secret) continue
+    localBridges.delete(key)
+    await rec.bridge.stop().catch(() => {})
+  }
+
+  for (const [key, next] of desired) {
+    if (localBridges.has(key)) {
+      localFails.delete(key)
+      continue
+    }
+    if (next.error) {
+      fail(key, next.want.entry, next.error)
+      continue
+    }
+    const bridge = startStdioBridge(next.want.entry, next.env)
+    localBridges.set(key, { bridge, spec: next.spec, secret: next.secret })
+    try {
+      await bridge.ready
+      localFails.delete(key)
+    } catch (e) {
+      localBridges.delete(key)
+      fail(key, next.want.entry, e instanceof Error ? e.message : String(e))
+    }
+  }
+  // Nothing wants this key any more, so its old failure describes nothing.
+  for (const key of [...localFails.keys()]) if (!desired.has(key)) localFails.delete(key)
+}
+
+/** Log the failure and keep its reason for the sessions that asked (§8.2). */
+function fail(key: string, entry: McpLocalEntry, err: string): void {
+  localFails.set(key, err)
+  log.error('mcp.fail', { id: entry.id, kind: entry.kind, err })
+}
+
+/** Queue a reconcile behind any in flight. */
+function scheduleReconcile(): Promise<void> {
+  reconciling = reconciling.then(() => reconcileLocal()).catch(() => {})
+  return reconciling
+}
+
 /**
  * Ensure the host MCP servers for `selection` are running for this session and
- * return their ACP descriptors. Restarts a server whose granted mode changed.
+ * return their ACP descriptors. Restarts a server whose granted mode changed,
+ * and stops one the selection dropped — this runs again on every start and
+ * resume, so it is where a mid-session scope change takes effect.
+ *
+ * Two kinds of host server come back from here:
+ *
+ *   - gurt's **built-ins** (`github`), one listener per (session, id), scoped to
+ *     the session's clone;
+ *   - the registry's **local** entries (`npm` / `command`), one shared process
+ *     per entry, refcounted across every live session (§6).
+ *
+ * A *remote* registry entry is neither: the proxy calls it directly, and this
+ * path leaves it to `planProxy`.
  */
 export async function resolveMcpServers(
   ref: EnvRef,
@@ -87,12 +350,49 @@ export async function resolveMcpServers(
   repo: string | undefined,
   selection: McpSelection[] | undefined
 ): Promise<AcpHttpMcpServer[]> {
-  if (!selection?.length) return []
-  // The servers operate on the session's clone; without a repo there is none.
-  if (!repo) return []
+  const registry = await getMcpServers(ref.workspace).catch(() => [] as McpRegistryEntry[])
+  const picked = selection ?? []
+
+  // Record what this session holds before the reconcile, so the refcount is
+  // computed from a set that already includes it. Local entries need no repo:
+  // the process runs on the host, against whatever the user's host auth
+  // reaches, not against the session's clone.
+  //
+  // A reserved id is excluded here as well as in the store validator: a
+  // hand-edited `workspace.json` must not be able to put a process behind
+  // `github`, which is the same shadowing rule `mcpEntries` enforces for the
+  // lookup. Duplicates collapse — selecting an id twice is one hold and one
+  // descriptor.
+  const localIds = [
+    ...new Set(
+      picked
+        .filter((sel) => {
+          if (RESERVED_MCP_IDS.includes(sel.id)) return false
+          const entry = registry.find((e) => e.id === sel.id)
+          return !!entry && isLocalMcpEntry(entry)
+        })
+        .map((sel) => sel.id)
+    )
+  ]
+  localHolders.set(sessionId, { sessionId, workspace: ref.workspace, ids: localIds })
+  await scheduleReconcile()
+
   const out: AcpHttpMcpServer[] = []
-  for (const sel of selection) {
-    if (!mcpDef(sel.id)) continue
+
+  // The built-ins operate on the session's clone; without a repo there is none —
+  // and the prune still runs, so this revokes rather than leaks.
+  const wanted = repo
+    ? picked.filter((sel) => {
+        if (mcpDef(sel.id)) return true
+        if (!localIds.includes(sel.id))
+          log.info('mcp.skip', { id: sel.id, s: sessionId, why: 'not-builtin' })
+        return false
+      })
+    : []
+  // Before the starts, so a selection that swapped one built-in for another does
+  // not hold both open for the moment in between.
+  pruneServers(sessionId, new Set(wanted.map((sel) => sel.id)))
+  for (const sel of wanted) {
     const key = mcpServerKey(sessionId, sel.id)
     let rec = running.get(key)
     if (rec && rec.mode !== sel.mode) {
@@ -100,7 +400,7 @@ export async function resolveMcpServers(
       rec = undefined
     }
     if (!rec) {
-      const started = startServer(sessionId, ref, repo, sel.id, sel.mode)
+      const started = startServer(sessionId, ref, repo!, sel.id, sel.mode)
       rec = started
       running.set(key, started)
       // A failed listen must not poison the key for every later resolve.
@@ -110,14 +410,68 @@ export async function resolveMcpServers(
     }
     out.push(await rec.ready)
   }
+
+  // In the user's order, and only the ones whose process actually came up: a
+  // descriptor without a live bridge is a route the agent cannot use.
+  //
+  // The ones that did not come up are this session's failures, published as a
+  // set: the reason lives in the app log, and this is how it reaches the pane
+  // the user is actually looking at (§8.2). Publishing even when the set is
+  // empty is what clears a failure a restart fixed.
+  const served = new Set<string>()
+  const failures: McpFailure[] = []
+  for (const sel of picked) {
+    if (!localIds.includes(sel.id) || served.has(sel.id)) continue
+    served.add(sel.id)
+    const key = localKey(ref.workspace, sel.id)
+    const rec = localBridges.get(key)
+    const url = rec ? await rec.bridge.ready.catch(() => null) : null
+    if (url) {
+      out.push({ type: 'http', name: sel.id, url, headers: [] })
+      continue
+    }
+    // `localIds` was filtered out of this same registry read, so the entry is
+    // here and it is local — the fallback is a type-level one, not a case.
+    const entry = registry.find((e) => e.id === sel.id)
+    failures.push({
+      id: sel.id,
+      kind: entry && isLocalMcpEntry(entry) ? entry.kind : 'npm',
+      // Absent when nothing failed *this* pass — the process was stopped
+      // between the reconcile and here, or another session's reconcile took it
+      // down. The session still gets a reason, just a coarser one.
+      err: localFails.get(key) ?? 'the server process is not running'
+    })
+  }
+  publishFailures({ sessionId, failures })
   return out
 }
 
-/** Tear down every host MCP server of a session (its container is going away). */
+/** Tear down every host MCP server of a session (its container is going away),
+ *  and release its share of the local servers — the last release is what stops
+ *  a shared process. */
 export function stopMcpServers(sessionId: string): void {
-  const prefix = `${sessionId}::`
-  for (const [key, rec] of running) {
-    if (!key.startsWith(prefix)) continue
-    stopServer(sessionId, key, rec)
+  pruneServers(sessionId, new Set())
+  // Whatever it could not get, it is no longer asking for: a detached session
+  // showing a failure from its last start would be describing a scope it does
+  // not have.
+  publishFailures({ sessionId, failures: [] })
+  if (!localHolders.delete(sessionId)) return
+  void scheduleReconcile()
+}
+
+/**
+ * Stop every shared local server, synchronously. The app is quitting: nothing
+ * holds them, and nothing will get a turn to await.
+ *
+ * Called from `before-quit`, which is why it does not go through the reconcile
+ * — a promise scheduled there is not reliably given a turn before the process
+ * exits, and an orphaned `kubernetes-mcp-server` holding a `tsh` session is not
+ * something a user would think to go looking for.
+ */
+export function stopLocalMcpServers(): void {
+  localHolders.clear()
+  for (const [key, rec] of [...localBridges]) {
+    localBridges.delete(key)
+    rec.bridge.kill()
   }
 }

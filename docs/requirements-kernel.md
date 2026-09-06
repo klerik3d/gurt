@@ -1,6 +1,6 @@
 # Requirements: kernel extraction + typed IPC
 
-Status: draft for review · Target: gurt Electron MVP (this repo)
+Status: historical (superseded) · Target: gurt Electron MVP (this repo)
 
 This document is a work order for an implementing agent. Read `README.md`
 first. Key code: `src/main/ipc.ts` (everything moves out of here),
@@ -12,6 +12,14 @@ asking the owner. Depends on: `requirements-stable-keys.md` (merged first).
 > (`src/main/envs.ts`) is now `ContainerManager` (`src/main/containers.ts`) and
 > manages one container per session rather than per-task env instances. §3 below
 > describes the former shape.
+
+> **Superseded in part** by `requirements-mcp-proxy.md` §10: the
+> container-side git credential broker (`src/main/git/broker.ts`), the
+> container shims, ssh git support and the `gitAccess` session flag are
+> removed. Wherever this document treats those as live, read: the container
+> holds no credentials at all, and authenticated git is exclusively the
+> host-side github MCP tools. The host credential broker survives as
+> `src/main/git/hostCredBroker.ts`.
 
 ## 1. Motivation
 

@@ -1,6 +1,6 @@
 # Requirements: notification system
 
-Status: draft for review · Target: gurt Electron MVP (this repo)
+Status: implemented · Target: gurt Electron MVP (this repo)
 
 This document is a work order for an implementing agent. Read `README.md`
 first. Key code: `src/shared/events.ts` (domain bus event map),

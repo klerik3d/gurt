@@ -1,0 +1,15 @@
+{
+  // The bundled default operator environment
+  // (docs/requirements-session-operator.md §2.2). Image-only and pinned by
+  // digest — no build section, no repo, no features beyond the base node
+  // feature the container model already injects. Minimal on purpose: it holds
+  // an agent CLI (installed lazily, like every session's adapter) and nothing
+  // else, because everything it would otherwise need is on the host side of
+  // an MCP call.
+  //
+  // Digest = node:22-bookworm-slim as of 2026-09-01; bump deliberately with
+  // gurt releases (`docker manifest inspect node:22-bookworm-slim`). Debian
+  // rather than alpine because the pinned devcontainer node feature installs
+  // via bash/apt and does not support musl images.
+  "image": "node:22-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5"
+}

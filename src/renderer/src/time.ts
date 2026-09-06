@@ -22,3 +22,14 @@ export function resetClock(iso: string): string {
   if (new Date().toDateString() === d.toDateString()) return time
   return `${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} at ${time}`
 }
+
+/** Wall clock since something started: `12s`, `1:05`, `1:02:03`. Shown where a
+ *  live row has no better progress signal than the time it has been up. */
+export function elapsedClock(seconds: number): string {
+  const s = Math.max(0, Math.floor(seconds))
+  const pad = (n: number): string => String(n).padStart(2, '0')
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}:${pad(s % 60)}`
+  return `${Math.floor(m / 60)}:${pad(m % 60)}:${pad(s % 60)}`
+}

@@ -17,18 +17,24 @@ import type {
   RepoConfig,
   ReviewComment,
   ReviewState,
+  PendingPromptInfo,
   SessionInfo,
+  SessionNetwork,
   SessionRole,
   SessionSnapshot,
+  SkillSelection,
   StoredProposal,
   Tree
 } from './types'
 import type { CredentialsFile } from './credentials'
+import type { SessionTraffic } from './proxy'
 import type { DomainEvents } from './events'
-import type { McpDef } from './mcp'
+import type { McpDef, McpProbeResult, McpRegistryEntry } from './mcp'
+import type { SkillEntry } from './skills'
 import type { TurnRecord } from './usage'
 import type { PlanUsage } from './planUsage'
 import type { NotificationPrefs, NotificationRecord } from './notifications'
+import type { HotkeyMap } from './hotkeys'
 
 export type CreateAction = 'run' | 'queue' | 'draft'
 
@@ -63,8 +69,15 @@ export interface SessionDraftPatch {
    *  to leave them unchanged. */
   repos?: string[]
   autoAllow?: boolean
-  gitAccess?: boolean
   mcp?: McpSelection[]
+  /** Skills to mount when the session starts. Absent leaves them unchanged;
+   *  `[]` clears the selection. A change releases the draft's container — the
+   *  mount list is decided when the container is created
+   *  (docs/requirements-skills.md §5.2). */
+  skills?: SkillSelection[]
+  /** Egress settings — the session network's `internal` flag and its domain
+   *  policy. Absent leaves them unchanged. */
+  network?: SessionNetwork
   startPrompt?: string
   /** Config-option picks (model, effort, …), keyed by option id. */
   configValues?: Record<string, string | boolean>
@@ -116,11 +129,95 @@ export interface GurtApi {
   updateEnv(ws: string, env: EnvConfig): Promise<void>
   /** Remove an env definition (blocked while any session still runs it). */
   removeEnv(ws: string, name: string): Promise<void>
+  /** Set (or clear, passing `undefined`) the workspace's default agent — used
+   *  to resolve a session created here without an explicit `agent`. Rejects an
+   *  id the workspace's own deny-list already carries. */
+  setDefaultAgent(ws: string, agentId: string | undefined): Promise<void>
+  /** Replace the workspace's agent deny-list wholesale (empty = deny nothing).
+   *  Rejects a list that would deny the workspace's current default agent. */
+  setDeniedAgents(ws: string, agentIds: string[]): Promise<void>
+  /** The workspace's user-configured MCP servers (§3.1). Built-ins are a
+   *  separate, code-owned list — see `getMcpDefs`. */
+  getMcpServers(ws: string): Promise<McpRegistryEntry[]>
+  /** Register an MCP server in the workspace. Rejects a reserved or duplicate
+   *  id, a non-http(s) url, or a credential link that is not an mcp-token. */
+  addMcpServer(ws: string, entry: McpRegistryEntry): Promise<void>
+  /** Update an MCP server, matched by its (immutable) id. */
+  updateMcpServer(ws: string, entry: McpRegistryEntry): Promise<void>
+  /** Remove an MCP server (blocked while a session's selection names it). */
+  removeMcpServer(ws: string, id: string): Promise<void>
+  /**
+   * The workspace's skill registry, read off disk
+   * (`~/.gurt/<ws>/skills/*`, docs/requirements-skills.md §4.1). An entry whose
+   * `SKILL.md` is unreadable or malformed comes back carrying a `problem`
+   * rather than being left out — it is still selectable, still deletable, and
+   * still the thing the user has to be shown to fix.
+   */
+  getSkills(ws: string): Promise<SkillEntry[]>
+  /** The one skill's `SKILL.md`, verbatim — what the editor opens. */
+  getSkillDoc(ws: string, name: string): Promise<string>
+  /** Create a skill directory with this `SKILL.md`. Rejects a bad or duplicate
+   *  name, and a document whose frontmatter does not carry a matching `name`
+   *  and a `description`. */
+  addSkill(ws: string, name: string, doc: string): Promise<void>
+  /** Rewrite a skill's `SKILL.md`, matched by its (immutable) name — renaming
+   *  is not supported, the name is what a session's selection stores. Supporting
+   *  files beside it are untouched. */
+  updateSkill(ws: string, name: string, doc: string): Promise<void>
+  /** Delete a skill directory and everything in it (blocked while a session's
+   *  selection names it). */
+  removeSkill(ws: string, name: string): Promise<void>
+  /** Task names with a session selecting this skill — what blocks a delete, and
+   *  what the confirm dialog names. */
+  skillUsedBy(ws: string, name: string): Promise<string[]>
+  /** Replace the workspace's default-on skill set wholesale (empty = none).
+   *  Rejects a name the registry does not hold. */
+  setDefaultSkills(ws: string, names: string[]): Promise<void>
+  /** Point the workspace's operator sessions at one of its own envs, or back
+   *  at the bundled default (`undefined`) — the operator twin of
+   *  `setDefaultAgent` (docs/requirements-session-operator.md §2.2). Rejects
+   *  an env the registry does not hold. */
+  setOperatorEnv(ws: string, env: string | undefined): Promise<void>
+  /**
+   * Reinstall an `npm` entry's package: drops the install stamp, so the next
+   * start resolves the spec against the registry again instead of reusing what
+   * is already under `~/.gurt/mcp/<id>/`.
+   *
+   * This is the button behind `version: 'latest'` — the pin is deliberate
+   * (docs/requirements-mcp-stdio.md §4.2), so "get a newer latest" has to be
+   * something the user asks for. Like every other registry change it takes
+   * effect the next time the server starts; a running process is not restarted
+   * under the sessions holding it (§10).
+   */
+  reinstallMcpServer(ws: string, id: string): Promise<void>
+  /**
+   * Start this entry the way a session would, speak MCP to it, and report what
+   * it answered — a local entry is installed, spawned, handshaken and stopped
+   * again; a remote one is handshaken with the headers the proxy would send
+   * (docs/requirements-mcp-stdio.md §4.6).
+   *
+   * Takes the whole entry, not an id, because the case it exists for is the
+   * one where there is no id to read yet: the snippet just pasted into the
+   * editor, checked before it is saved. `ws` addresses the workspace the entry
+   * belongs to, like every other method here; nothing about the probe is read
+   * from it — that is what makes an unsaved entry probeable.
+   *
+   * Never rejects for the server's own failure: the reason rides in the result
+   * as a sentence for the user. It rejects only for a broken call.
+   *
+   * Explicitly **not** run on save. A local entry executes third-party code on
+   * the host with the user's privileges (§2), so running it is a decision the
+   * user makes, next to the notice that says so.
+   */
+  probeMcpServer(ws: string, entry: McpRegistryEntry): Promise<McpProbeResult>
   createTask(ws: string, name: string): Promise<void>
   removeTask(ws: string, name: string): Promise<void>
   /** Rename a task; stops its containers and best-effort renames its branch in every clone. */
   renameTask(ws: string, name: string, newName: string): Promise<void>
   taskDirtyRepos(ws: string, name: string): Promise<string[]>
+  /** Set/clear the task's cap on concurrently running sessions (undefined or
+   *  0 clears it — unlimited). */
+  setTaskMaxConcurrentSessions(ws: string, name: string, max: number | undefined): Promise<void>
   /** Stop a session's container; it keeps its filesystem and resumes on next use. */
   stopContainer(sessionId: string): Promise<void>
   /** Destroy a session's container. The clone (and its uncommitted work) stays. */
@@ -192,10 +289,14 @@ export interface GurtApi {
     action: CreateAction,
     mcp: McpSelection[],
     autoAllow: boolean,
-    gitAccess: boolean,
     configValues: Record<string, string | boolean>,
     /** What the session is for — executor unless told otherwise. */
-    role: SessionRole
+    role: SessionRole,
+    /** Skills to mount at start (names of this workspace's registry). */
+    skills: SkillSelection[],
+    /** Egress settings (`internal` + the allow list). Omitted = the defaults:
+     *  a normal bridge, everything allowed and logged. */
+    network?: SessionNetwork
   ): Promise<SessionInfo>
   sessionRun(id: string): Promise<void>
   sessionEnqueue(id: string): Promise<void>
@@ -203,7 +304,7 @@ export interface GurtApi {
   sessionEditPrompt(id: string, text: string): Promise<void>
   /** Rename a session's display title (sidebar/pane header) — cosmetic only. */
   renameSession(id: string, title: string): Promise<void>
-  /** Change a draft's settings (agent, repo, mode, git, MCP, prompt) before it starts. */
+  /** Change a draft's settings (agent, repo, mode, MCP, prompt) before it starts. */
   sessionEditDraft(id: string, patch: SessionDraftPatch): Promise<void>
   /** Copy a session into a fresh **draft** of the same task: its role, env,
    *  repos, agent, MCP/git/auto-allow picks, config values and first prompt come
@@ -215,6 +316,12 @@ export interface GurtApi {
    *  The clone (and any uncommitted work in it) stays. */
   sessionDelete(id: string): Promise<void>
   sessionSnapshot(id: string): Promise<SessionSnapshot | undefined>
+  /** What this session's proxy has been seen doing — the blocked attempts the
+   *  session pane leads with, and the observed hosts under them
+   *  (docs/requirements-mcp-proxy.md §8). Empty, never absent: a session with
+   *  no proxy yet has observed nothing, which is an answer. Live updates ride
+   *  `proxy-traffic`; this is the pull for a pane that mounted after them. */
+  sessionTraffic(id: string): Promise<SessionTraffic>
   sessionPrompt(
     id: string,
     text: string,
@@ -222,6 +329,12 @@ export interface GurtApi {
     images?: PromptImage[]
   ): Promise<void>
   sessionCancel(id: string): Promise<void>
+  /** Empty this session's prompt queue and return what was in it, so the caller
+   *  can put the text back in the composer instead of losing it (see
+   *  {@link PendingPromptInfo}). */
+  sessionClearPending(id: string): Promise<PendingPromptInfo[]>
+  /** The same for one queued prompt, by id; undefined if it already ran. */
+  sessionCancelPending(id: string, promptId: string): Promise<PendingPromptInfo | undefined>
   sessionSetMode(id: string, modeId: string): Promise<void>
   /** Change a live agent-reported config option (model, effort, fast-mode, …). */
   sessionSetConfigOption(id: string, configId: string, value: string | boolean): Promise<void>
@@ -250,6 +363,10 @@ export interface GurtApi {
   dismissNotification(id: string): Promise<void>
   getNotificationPrefs(): Promise<NotificationPrefs>
   setNotificationPrefs(prefs: NotificationPrefs): Promise<void>
+  /** User overrides for the global keyboard shortcuts, keyed by action —
+   *  an action missing from the stored file uses its built-in default. */
+  getHotkeys(): Promise<HotkeyMap>
+  setHotkeys(map: HotkeyMap): Promise<void>
   /** The retained usage ledger, oldest first — one record per agent turn.
    *  Survives relaunches (unlike the notification ring): it is what puts a
    *  finished session on the dashboard's DONE column and marks its failures. */
@@ -263,87 +380,148 @@ export interface GurtApi {
   getBootProgress(): Promise<BootProgress>
 }
 
-/** Compile-checked to cover `GurtApi` exactly: a missing method fails the
- *  `Record` requirement, an extra one fails the `satisfies` excess check. */
+/**
+ * What the operator's admin surface may do with a method
+ * (docs/requirements-session-operator.md §3.1):
+ *
+ *   read  — exposed as an MCP tool on the operator's `gurt` server;
+ *   write — exposed the same way once writes land (phase 2 of that document —
+ *           until then a `write` annotation is treated as `none`);
+ *   none  — never reachable by any tool name, for the reasons its §3.4 groups.
+ *
+ * The annotation says nothing about the renderer: every method stays on IPC
+ * regardless.
+ */
+export type Exposure = 'read' | 'write' | 'none'
+
+/**
+ * Compile-checked to cover `GurtApi` exactly: a missing method fails the
+ * `Record` requirement, an extra one fails the `satisfies` excess check — and
+ * an *unannotated* method fails it too, which is the point: there is no
+ * default exposure. A new API method does not compile until someone decides
+ * what the agent may do with it; when that decision is unclear the answer is
+ * `none` (the surface fails closed), and widening it later is a one-word diff
+ * with a reviewer on it. The full rationale, method by method, is
+ * docs/requirements-session-operator.md §13 question 1.
+ */
 const METHODS = {
-  getTree: true,
-  getMcpDefs: true,
-  getAgents: true,
-  setAgents: true,
-  getAgentConfig: true,
-  getCredentials: true,
-  setCredentials: true,
-  credentialUsedBy: true,
-  createWorkspace: true,
-  removeWorkspace: true,
-  addRepo: true,
-  discoverDevcontainer: true,
-  discoverDockerfiles: true,
-  envImageStatus: true,
-  envBuildImage: true,
-  updateRepo: true,
-  removeRepo: true,
-  addEnv: true,
-  updateEnv: true,
-  removeEnv: true,
-  createTask: true,
-  removeTask: true,
-  renameTask: true,
-  taskDirtyRepos: true,
-  stopContainer: true,
-  releaseContainer: true,
-  sessionOpenVscode: true,
-  getTaskChanges: true,
-  getFileDiff: true,
-  getCommitDiff: true,
-  getDiffFiles: true,
-  getDiffPair: true,
-  getReviewState: true,
-  getReviewLocks: true,
-  setReviewLock: true,
-  addReviewComment: true,
-  resolveReviewComment: true,
-  deleteReviewComment: true,
-  launchReviewFix: true,
-  changesCommit: true,
-  changesPush: true,
-  changesUpdateFromMain: true,
-  latestProposal: true,
-  changesOpenPr: true,
-  changesOpenVscode: true,
-  createSession: true,
-  sessionRun: true,
-  sessionEnqueue: true,
-  sessionCancelQueue: true,
-  sessionEditPrompt: true,
-  renameSession: true,
-  sessionEditDraft: true,
-  sessionDuplicate: true,
-  sessionDelete: true,
-  sessionSnapshot: true,
-  sessionPrompt: true,
-  sessionCancel: true,
-  sessionSetMode: true,
-  sessionSetConfigOption: true,
-  sessionPermission: true,
-  sessionActivity: true,
-  openLogsFolder: true,
-  checkForUpdates: true,
-  getUpdateStatus: true,
-  installUpdate: true,
-  getNotifications: true,
-  markNotificationRead: true,
-  markAllRead: true,
-  dismissNotification: true,
-  getNotificationPrefs: true,
-  setNotificationPrefs: true,
-  getUsage: true,
-  getPlanUsage: true,
-  getBootProgress: true
-} as const satisfies Record<keyof GurtApi, true>
+  getTree: 'read', //           scoped host-side to the operator's workspace
+  getMcpDefs: 'read',
+  getAgents: 'read', //         credential links only; values scrubbed (§8)
+  setAgents: 'write', //        wholesale replace
+  getAgentConfig: 'read',
+  getCredentials: 'read', //    ids, labels, kinds — no values (§5.1)
+  setCredentials: 'none', //    §5.1: no write path into the credential store
+  credentialUsedBy: 'read',
+  createWorkspace: 'none', //   bootstrap (§10); binds the operator's authority
+  removeWorkspace: 'none', //   destroys clones and their uncommitted work
+  addRepo: 'write',
+  discoverDevcontainer: 'read', // repo file contents, by the §2.4 exception
+  discoverDockerfiles: 'read', //  repo file contents, by the §2.4 exception
+  envImageStatus: 'read',
+  envBuildImage: 'write',
+  updateRepo: 'write',
+  removeRepo: 'write',
+  addEnv: 'write',
+  updateEnv: 'write',
+  removeEnv: 'write', //        already blocked while a session runs it
+  setDefaultAgent: 'write',
+  setDeniedAgents: 'write',
+  getMcpServers: 'read',
+  addMcpServer: 'write',
+  updateMcpServer: 'write',
+  removeMcpServer: 'write',
+  getSkills: 'read',
+  getSkillDoc: 'read',
+  addSkill: 'write',
+  updateSkill: 'write',
+  removeSkill: 'write',
+  skillUsedBy: 'read',
+  setDefaultSkills: 'write',
+  setOperatorEnv: 'write', //   configuring gurt is the point
+  reinstallMcpServer: 'write',
+  probeMcpServer: 'read', //    narrowed by kind at the host (§6): local kinds by saved id only
+  createTask: 'write',
+  removeTask: 'none', //        destroys clones holding uncommitted work
+  renameTask: 'none', //        rewrites clones (branch renames)
+  taskDirtyRepos: 'read',
+  setTaskMaxConcurrentSessions: 'write',
+  stopContainer: 'none', //     §2.4: does not drive other sessions
+  releaseContainer: 'none', //  §2.4
+  sessionOpenVscode: 'none', // host GUI
+  getTaskChanges: 'read', //    counts and states, not content
+  getFileDiff: 'none', //       repo content (§2.4)
+  getCommitDiff: 'none', //     repo content (§2.4)
+  getDiffFiles: 'none', //      repo content (§2.4)
+  getDiffPair: 'none', //       repo content (§2.4)
+  getReviewState: 'none', //    comments quote code
+  getReviewLocks: 'read', //    why a session cannot start — diagnostics
+  setReviewLock: 'none',
+  addReviewComment: 'none',
+  resolveReviewComment: 'none',
+  deleteReviewComment: 'none',
+  launchReviewFix: 'none', //   drafts a session (§2.4)
+  changesCommit: 'none', //     writes to repos and remotes
+  changesPush: 'none', //       writes to repos and remotes
+  changesUpdateFromMain: 'none',
+  latestProposal: 'none', //    repo content
+  changesOpenPr: 'none', //     host browser
+  changesOpenVscode: 'none', // host GUI
+  createSession: 'none', //     phase 1; §13 question 2
+  sessionRun: 'none', //        §2.4: does not start sessions
+  sessionEnqueue: 'none', //    §2.4
+  sessionCancelQueue: 'none', // §2.4
+  sessionEditPrompt: 'none', // §2.4
+  renameSession: 'none', //     §2.4
+  sessionEditDraft: 'none', //  §2.4
+  sessionDuplicate: 'none', //  §2.4
+  sessionDelete: 'none', //     §2.4
+  sessionSnapshot: 'read', //   narrowed: state and diagnostics, no chat (§3.2)
+  sessionTraffic: 'read', //    blocked hosts — the diagnostic the operator exists for
+  sessionPrompt: 'none', //     driving another agent
+  sessionCancel: 'none', //     driving another agent
+  sessionClearPending: 'none',
+  sessionCancelPending: 'none',
+  sessionSetMode: 'none',
+  sessionSetConfigOption: 'none',
+  sessionPermission: 'none',
+  sessionActivity: 'none',
+  openLogsFolder: 'none', //    host GUI
+  checkForUpdates: 'none', //   native dialog / update path
+  getUpdateStatus: 'none', //   the update path is the user's, not an operator's
+  installUpdate: 'none', //     restarts the app
+  getNotifications: 'read', //  scrubbed, scoped to the operator's workspace
+  markNotificationRead: 'none', // the user's own read state
+  markAllRead: 'none', //       the user's own read state
+  dismissNotification: 'none', // the user's own read state
+  getNotificationPrefs: 'read',
+  setNotificationPrefs: 'write',
+  getHotkeys: 'read',
+  setHotkeys: 'write',
+  getUsage: 'read',
+  getPlanUsage: 'read',
+  getBootProgress: 'read'
+} as const satisfies Record<keyof GurtApi, Exposure>
 
 /** Runtime method list; `api:<method>` is the IPC channel per entry. */
 export const API_METHODS = Object.keys(METHODS) as readonly (keyof GurtApi)[]
+
+/** The annotation at runtime — what the generator, the admin surface and the
+ *  acceptance tests read. */
+export const METHOD_EXPOSURE: Record<keyof GurtApi, Exposure> = METHODS
+
+/** Methods annotated `read` — the admin surface must bind exactly these
+ *  (`Pick<GurtApi, ReadMethod>` in main/adminSurface.ts), so annotating a
+ *  method `read` without binding it is a compile error, not a silent gap. */
+export type ReadMethod = {
+  [K in keyof GurtApi]: (typeof METHODS)[K] extends 'read' ? K : never
+}[keyof GurtApi]
+
+/** Methods annotated `write` — phase 2's surface; generated already so the
+ *  schema machinery is complete, unreachable until then. */
+export type WriteMethod = {
+  [K in keyof GurtApi]: (typeof METHODS)[K] extends 'write' ? K : never
+}[keyof GurtApi]
 
 /** Push channels main broadcasts to the renderer, with their payloads. */
 export interface GurtEvents {
@@ -362,6 +540,18 @@ export interface GurtEvents {
   'usage-changed': DomainEvents['usage.changed']
   /** Boot restore progress — the footer's startup bar (see `BootProgress`). */
   'boot-progress': DomainEvents['boot.progress']
-  /** An update finished downloading — the sidebar's "update" button appears. */
+  /** An update finished downloading — the titlebar's "update" button appears. */
   'update-ready': { version: string }
+  /** One session's observed traffic changed — coalesced in main, so this is a
+   *  few per second at worst even under an `npm install`. */
+  'proxy-traffic': DomainEvents['proxy.traffic']
+  /** The local MCP servers a session selected and did not get, with the reason
+   *  — the whole set per session, an empty one clearing it. */
+  'mcp-fail': DomainEvents['mcp.fail']
+  /** macOS reserves ⌘`/⌘⇧` system-wide for window cycling and never delivers
+   *  them to a DOM keydown handler — main reclaims them as a hidden menu
+   *  accelerator (see `main/menu.ts`) and forwards here instead. 1 = next
+   *  workspace, -1 = previous. Renderer-only on other platforms, where the
+   *  ordinary keydown listener already catches the combination. */
+  'hotkey-cycle-workspace': 1 | -1
 }

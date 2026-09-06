@@ -37,7 +37,10 @@ const api: Record<string, unknown> = {
   onNotificationRead: subscribe('notification-read'),
   onUsageChanged: subscribe('usage-changed'),
   onBootProgress: subscribe('boot-progress'),
-  onUpdateReady: subscribe('update-ready')
+  onUpdateReady: subscribe('update-ready'),
+  onProxyTraffic: subscribe('proxy-traffic'),
+  onMcpFail: subscribe('mcp-fail'),
+  onHotkeyCycleWorkspace: subscribe('hotkey-cycle-workspace')
 }
 for (const m of API_METHODS) api[m] = (...args: unknown[]) => ipcRenderer.invoke(`api:${m}`, ...args)
 

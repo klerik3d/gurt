@@ -12,9 +12,9 @@ import { applyLog, sessionStatus } from '../../shared/types'
 import type { NotificationRecord } from '../../shared/notifications'
 import { NOTIFICATION_RING_CAP } from '../../shared/notifications'
 import { SESSION_DOT, containerDot } from './status'
-import { Icon } from './components/icons'
+import { Icon, Logo } from './components/icons'
 import { EnvRepoMarks } from './components/tags'
-import { Sidebar, NameModal, DeleteWorkspaceModal, NewSessionModal } from './components/Sidebar'
+import { Sidebar, NameModal, DeleteWorkspaceModal } from './components/Sidebar'
 import { SessionPane } from './components/SessionPane'
 import { TaskPane } from './components/TaskPane'
 import { SettingsPage, type SettingsSection } from './components/SettingsPage'
@@ -26,6 +26,8 @@ import { markSeen } from './reviewed'
 import { DialogHost, alertDialog } from './dialog'
 import { logErr } from './log'
 import { run } from './async'
+import { bindingLabel, bindingMatchesEvent, bindingRestLabel } from '../../shared/hotkeys'
+import { useHotkeys } from './useHotkeys'
 
 export type Selection =
   | { type: 'session'; id: string }
@@ -39,8 +41,15 @@ const SIDEBAR_MIN = 200
 const SIDEBAR_MAX = 600
 const SIDEBAR_DEFAULT = 284
 const SIDEBAR_WIDTH_KEY = 'gurt.sidebarWidth'
+// Distance from the window edge to the sidebar's left border: .workbench's
+// 4px padding + the 44px activity bar + its 4px margin-right (styles.css).
+const SIDEBAR_LEFT_OFFSET = 52
 
 const clampSidebar = (w: number) => Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, w))
+
+// How long ⌘/Ctrl must be held alone before the activity bar's shortcut
+// badges appear — long enough that typing a chord (⌘K, ⌘N, …) never shows them.
+const MOD_HOLD_DELAY_MS = 350
 
 /** Global FIFO positions (1-based) of every queued session, keyed by id. */
 export function queuePositions(tree: Tree | null): Record<string, number> {
@@ -68,6 +77,14 @@ export default function App() {
    *  main does not persist turn starts, and inventing one would misreport. */
   const [turnStarts, setTurnStarts] = useState<Record<string, number>>({})
   const [paletteOpen, setPaletteOpen] = useState(false)
+  const hotkeys = useHotkeys()
+  /** Bumped on every ⌘2 (`gotoTasks`) — Sidebar focuses its tree whenever this
+   *  changes, including on the mount that follows switching into the work view. */
+  const [focusTasksSignal, setFocusTasksSignal] = useState(0)
+  /** ⌘/Ctrl held alone, past `MOD_HOLD_DELAY_MS` — drives the activity bar's
+   *  "hold to see the shortcut" badges (below). Delayed so a quick chord
+   *  (⌘K, ⌘N, …) never flashes them; see `MOD_HOLD_DELAY_MS`. */
+  const [modHeld, setModHeld] = useState(false)
   /** Boot restore progress — the footer bar while main is still restoring
    *  sessions / reconciling containers. Null until first heard from; hidden
    *  once `done`. */
@@ -102,12 +119,36 @@ export default function App() {
   const [notifOpen, setNotifOpen] = useState(false)
   const notifRef = useRef<HTMLDivElement>(null)
   useOutsideClose(notifOpen, notifRef, () => setNotifOpen(false))
-  /** New-session modal context; task empty → the modal's task picker chooses. */
-  const [newSession, setNewSession] = useState<{ ws: string; task: string } | null>(null)
   const [newTask, setNewTask] = useState<string | null>(null)
   const [newWorkspace, setNewWorkspace] = useState(false)
   const [deletingWorkspace, setDeletingWorkspace] = useState<string | null>(null)
   const [curWs, setCurWs] = useState<string | null>(null)
+  /** Titlebar workspace-switcher dropdown — the single place to change `curWs`
+   *  now, visible from every view (see the sidebar's now-static readout). */
+  const [wsMenuOpen, setWsMenuOpen] = useState(false)
+  const wsMenuRef = useRef<HTMLDivElement>(null)
+  useOutsideClose(wsMenuOpen, wsMenuRef, () => setWsMenuOpen(false))
+  /** Version of a downloaded-and-ready app update — shows the titlebar's
+   *  "update" button (see main/update.ts). Null in dev and while up to date. */
+  const [updateVersion, setUpdateVersion] = useState<string | null>(null)
+  useEffect(() => {
+    const off = window.gurt.onUpdateReady((u) => setUpdateVersion(u.version))
+    // Pull the current value too — this window may have opened after the push.
+    window.gurt
+      .getUpdateStatus()
+      .then((u) => {
+        if (u) setUpdateVersion(u.version)
+      })
+      .catch(logErr('getUpdateStatus'))
+    return off
+  }, [])
+  /** ⌘`/⌘⇧` hold-to-switch: while the modifier stays down, cycling only moves
+   *  this highlight (`order[index]`) and opens the same dropdown read-only —
+   *  `curWs` itself only changes once the modifier is released (see
+   *  `commitWsSwitch`), the same two-step gesture as macOS's own ⌘Tab. */
+  const [wsSwitcher, setWsSwitcher] = useState<{ order: string[]; index: number } | null>(null)
+  const wsSwitcherRef = useRef(wsSwitcher)
+  wsSwitcherRef.current = wsSwitcher
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     const saved = Number(localStorage.getItem(SIDEBAR_WIDTH_KEY))
     return saved ? clampSidebar(saved) : SIDEBAR_DEFAULT
@@ -116,6 +157,9 @@ export default function App() {
   selectionRef.current = selection
   const treeRef = useRef(tree)
   treeRef.current = tree
+  /** Workspace names, most-recently-activated first — drives ⌘`/⌘⇧` cycling
+   *  (see `cycleWorkspace`) instead of the tree's filesystem-readdir order. */
+  const mruRef = useRef<string[]>([])
   /** Tasks whose changes were already requested at least once (app-start lazy load). */
   const changesRequested = useRef<Set<string>>(new Set())
 
@@ -233,6 +277,20 @@ export default function App() {
       setCurWs(tree.workspaces[0]?.name ?? null)
   }, [tree, curWs])
 
+  // Track activation order for cycleWorkspace: every time curWs changes (via
+  // any path — hotkey, titlebar dropdown, selectSession/selectTask jumping to
+  // a workspace, new-workspace creation) it becomes the new MRU head. Deleted
+  // workspaces are dropped whenever the tree changes so the list can't grow
+  // unbounded across create/delete churn.
+  useEffect(() => {
+    if (curWs) mruRef.current = [curWs, ...mruRef.current.filter((n) => n !== curWs)]
+  }, [curWs])
+  useEffect(() => {
+    if (!tree) return
+    const names = new Set(tree.workspaces.map((w) => w.name))
+    mruRef.current = mruRef.current.filter((n) => names.has(n))
+  }, [tree])
+
   // The tree is the source of truth for what still exists. A task or session
   // that was deleted can no longer be selected — otherwise ⌘N/⌘⇧N and the
   // header actions keep silently targeting it, e.g. a new-session modal
@@ -259,11 +317,12 @@ export default function App() {
     treeKnown.current = alive
   }, [tree, selection])
 
-  // Drag the divider between sidebar and main; the sidebar's left edge sits
-  // after the 52px activity bar, so the new width is clientX minus that.
+  // Drag the divider between sidebar and main; the new width is clientX
+  // minus the sidebar's left offset (see SIDEBAR_LEFT_OFFSET).
   const startSidebarResize = useCallback((e: ReactMouseEvent) => {
     e.preventDefault()
-    const onMove = (ev: MouseEvent) => setSidebarWidth(clampSidebar(ev.clientX - 52))
+    const onMove = (ev: MouseEvent) =>
+      setSidebarWidth(clampSidebar(ev.clientX - SIDEBAR_LEFT_OFFSET))
     const onUp = () => {
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
@@ -333,10 +392,43 @@ export default function App() {
     window.gurt.dismissNotification(id).catch(logErr('dismissNotification'))
   }, [])
 
+  // A new session is a bare draft from the moment it exists — nothing to pick
+  // up front, no modal round-trip. Its env/repo/agent/harness get filled in on
+  // the draft's own Config tab; only its task is decided here, since a session
+  // cannot exist outside one (the IPC boundary requires it, ipc.ts).
+  const createDraft = useCallback(
+    (wsName: string, task: string) => {
+      window.gurt
+        .createSession(
+          { workspace: wsName, task, env: '' },
+          [],
+          '',
+          '',
+          'draft',
+          [],
+          true,
+          {},
+          'executor',
+          // Nothing picked yet, not "none picked": the config tab seeds the
+          // workspace's `defaultSkills` into a draft that has never chosen
+          // (docs/requirements-skills.md §4.2).
+          [],
+          // Internal by default: the mode that actually enforces the allow list
+          // is the one a session gets without asking for it. A draft that needs
+          // its own route out (SSH git, a process that ignores HTTP_PROXY)
+          // turns it off on the Config tab's Network toggle.
+          { internal: true }
+        )
+        .then((s) => selectSession(s.id))
+        .catch((e: unknown) => alertDialog(e instanceof Error ? e.message : String(e)))
+    },
+    [selectSession]
+  )
+
   const openNewSession = useCallback(
     (ctx?: { ws: string; task: string }) => {
       if (ctx) {
-        setNewSession(ctx)
+        createDraft(ctx.ws, ctx.task)
         return
       }
       if (!ws) return
@@ -347,36 +439,172 @@ export default function App() {
       else if (sel?.type === 'session')
         task = ws.tasks.find((t) => t.sessions.some((s) => s.id === sel.id))?.name ?? ''
       // The selection can lag the tree (a task deleted while selected). Never
-      // prefill a task that no longer exists — the session would be created
+      // target a task that no longer exists — the session would be created
       // inside a task that isn't there.
       if (task && !ws.tasks.some((t) => t.name === task)) task = ''
-      setNewSession({ ws: ws.name, task })
+      // Still nothing — fall back to the workspace's first task.
+      if (!task) task = ws.tasks[0]?.name ?? ''
+      // No tasks at all: a session cannot exist outside one, so send the user
+      // through the ordinary "new task" flow first instead of failing silently.
+      if (!task) {
+        setNewTask(ws.name)
+        return
+      }
+      createDraft(ws.name, task)
+    },
+    [ws, createDraft]
+  )
+
+  // Shared with the ⌘`/⌘⇧` IPC path below — macOS reclaims that combination
+  // as a hidden menu accelerator (main/menu.ts) since the OS reserves it
+  // system-wide for window cycling and never delivers it as a DOM keydown, so
+  // this needs to be callable from outside the keydown handler too.
+  //
+  // Each call only moves the highlight — a held modifier means repeated
+  // presses (each its own call: real key-repeat off macOS, one accelerator
+  // fire per press on macOS) just walk it further. The first call in a
+  // fresh gesture opens the switcher from `ws`'s position; later calls
+  // advance whatever it's already showing. `commitWsSwitch` (below) is what
+  // actually changes `curWs`, once the modifier lifts.
+  const cycleWorkspace = useCallback(
+    (dir: 1 | -1) => {
+      const wsList = treeRef.current?.workspaces ?? []
+      if (wsList.length < 2) return
+      const cur = wsSwitcherRef.current
+      if (cur) {
+        setWsSwitcher({ order: cur.order, index: (cur.index + dir + cur.order.length) % cur.order.length })
+        return
+      }
+      // Cycle by activation recency (mruRef), not tree/readdir order — a
+      // workspace never yet activated this session falls back to its tree
+      // position, appended after everything with a known MRU rank.
+      const order = [
+        ...mruRef.current.filter((n) => wsList.some((w) => w.name === n)),
+        ...wsList.map((w) => w.name).filter((n) => !mruRef.current.includes(n))
+      ]
+      const idx = order.indexOf(ws?.name ?? '')
+      setWsSwitcher({ order, index: (idx + dir + order.length) % order.length })
     },
     [ws]
   )
 
-  // Global hotkeys: ⌘K palette · ⌘N new session · ⌘⇧N new task.
+  // Applies the switcher's current highlight to `curWs` and closes it — the
+  // ⌘/Ctrl-up half of the gesture `cycleWorkspace` starts. Also fired on
+  // window blur so a focus change mid-hold (a native dialog, another app)
+  // can't strand the switcher open with a keyup that'll never arrive.
+  const commitWsSwitch = useCallback(() => {
+    const cur = wsSwitcherRef.current
+    setWsSwitcher(null)
+    if (!cur) return
+    const target = cur.order[cur.index]
+    if (!target || target === ws?.name) return
+    // Same rule as the titlebar dropdown: leaving a workspace clears whatever
+    // session/task was open so the sidebar/breadcrumb don't show stale content.
+    setSelection(null)
+    setCurWs(target)
+  }, [ws])
+
+  useEffect(() => {
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.key === 'Meta' || e.key === 'Control') commitWsSwitch()
+    }
+    window.addEventListener('keyup', onKeyUp)
+    window.addEventListener('blur', commitWsSwitch)
+    return () => {
+      window.removeEventListener('keyup', onKeyUp)
+      window.removeEventListener('blur', commitWsSwitch)
+    }
+  }, [commitWsSwitch])
+
+  // Activity-bar shortcut badges: ⌘/Ctrl held alone for MOD_HOLD_DELAY_MS
+  // shows each icon's ⌘1/⌘2/⌘0. `timer` only ever arms once per hold — a held
+  // modifier key can itself repeat keydown events, and a chord (⌘K) fires a
+  // second keydown for the letter, not another one for the modifier.
+  useEffect(() => {
+    let timer: number | null = null
+    const clearTimer = () => {
+      if (timer !== null) {
+        window.clearTimeout(timer)
+        timer = null
+      }
+    }
+    const release = () => {
+      clearTimer()
+      setModHeld(false)
+    }
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.key !== 'Meta' && e.key !== 'Control') || timer !== null) return
+      timer = window.setTimeout(() => {
+        timer = null
+        setModHeld(true)
+      }, MOD_HOLD_DELAY_MS)
+    }
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.key === 'Meta' || e.key === 'Control') release()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    window.addEventListener('keyup', onKeyUp)
+    window.addEventListener('blur', release)
+    return () => {
+      clearTimer()
+      window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('keyup', onKeyUp)
+      window.removeEventListener('blur', release)
+    }
+  }, [])
+
+  // macOS never lets ⌘`/⌘⇧` reach here as a keydown (see `cycleWorkspace`
+  // above) — main forwards it over IPC instead once its hidden accelerator
+  // fires. Harmless no-op on other platforms, which just never emit it.
+  useEffect(() => window.gurt.onHotkeyCycleWorkspace(cycleWorkspace), [cycleWorkspace])
+
+  // Global hotkeys: palette · new session · new task · cycle workspaces ·
+  // go to dashboard/tasks/settings (default ⌘K / ⌘N / ⌘⇧N / ⌘` / ⌘⇧` /
+  // ⌘1 / ⌘2 / ⌘0, remappable in Settings → Hotkeys).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey)) return
-      const k = e.key.toLowerCase()
-      if (k === 'k') {
+      if (bindingMatchesEvent(hotkeys.workspaceNext, e)) {
+        e.preventDefault()
+        cycleWorkspace(1)
+      } else if (bindingMatchesEvent(hotkeys.workspacePrev, e)) {
+        e.preventDefault()
+        cycleWorkspace(-1)
+      } else if (bindingMatchesEvent(hotkeys.palette, e)) {
         e.preventDefault()
         setPaletteOpen((o) => !o)
-      } else if (k === 'n') {
+      } else if (bindingMatchesEvent(hotkeys.newTask, e)) {
         e.preventDefault()
-        if (e.shiftKey) {
-          if (ws) setNewTask(ws.name)
-        } else {
-          openNewSession()
-        }
+        if (ws) setNewTask(ws.name)
+      } else if (bindingMatchesEvent(hotkeys.newSession, e)) {
+        e.preventDefault()
+        openNewSession()
+      } else if (bindingMatchesEvent(hotkeys.gotoDashboard, e)) {
+        e.preventDefault()
+        setView('dashboard')
+      } else if (bindingMatchesEvent(hotkeys.gotoTasks, e)) {
+        e.preventDefault()
+        setView('work')
+        setFocusTasksSignal((n) => n + 1)
+      } else if (bindingMatchesEvent(hotkeys.gotoSettings, e)) {
+        e.preventDefault()
+        setView('settings')
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [ws, openNewSession])
+  }, [ws, openNewSession, hotkeys, cycleWorkspace])
 
   const positions = queuePositions(tree)
+  // The dropdown reads from whichever is driving it: the switcher's MRU
+  // order while a ⌘/Ctrl hold is in progress (so it shows the same reel
+  // `cycleWorkspace` is walking, in that order), the plain tree otherwise.
+  const wsMenuList = wsSwitcher
+    ? wsSwitcher.order
+        .map((n) => tree?.workspaces.find((w) => w.name === n))
+        .filter((w): w is NonNullable<typeof w> => !!w)
+    : (tree?.workspaces ?? [])
+  const wsMenuActiveName = wsSwitcher ? wsSwitcher.order[wsSwitcher.index] : ws?.name
   const unreadCount = notifications.reduce((n, r) => n + (r.read ? 0 : 1), 0)
   const unreadBadge = unreadCount > 9 ? '9+' : String(unreadCount)
 
@@ -407,16 +635,22 @@ export default function App() {
     ? sessionStatus({ ...activeInfo, ...activity[activeInfo.id] })
     : null
 
-  const crumb =
+  // The workspace name itself is now the interactive `.tb-ws` button — this is
+  // only the rest of the breadcrumb, shown as plain text after it. Dropping
+  // `activeInfo.workspace` / `selection.ws` here is safe: selectSession/
+  // selectTask already keep curWs in step with whatever's open (see the note
+  // in selectSession about cross-workspace jumps), so the button's label is
+  // always in sync.
+  const crumbRest =
     view === 'settings'
-      ? `${ws?.name ?? 'gurt'} / settings`
+      ? 'settings'
       : view === 'dashboard'
-        ? `${ws?.name ?? 'gurt'} / dashboard`
+        ? 'dashboard'
         : activeInfo
-          ? `${activeInfo.workspace} / ${activeInfo.task} · ${activeInfo.title}`
+          ? `${activeInfo.task} · ${activeInfo.title}`
           : selection?.type === 'task'
-            ? `${selection.ws} / ${selection.task}`
-            : (ws?.name ?? 'gurt')
+            ? selection.task
+            : null
 
   const crumbDot = view === 'work' && activeStatus ? SESSION_DOT[activeStatus] : null
 
@@ -425,18 +659,90 @@ export default function App() {
       <div className="titlebar">
         <div className="tb-center">
           <div className="tb-crumb">
-            {crumbDot && (
-              <span
-                className={`dot dot-${crumbDot.tone}${crumbDot.pulse ? ' dot-pulse' : ''}`}
-                title={crumbDot.label}
-                style={{ width: 7, height: 7 }}
-              />
+            <div className="tb-ws" ref={wsMenuRef}>
+              <button className="tb-ws-btn" onClick={() => setWsMenuOpen((o) => !o)}>
+                {ws?.name ?? 'gurt'}
+                <Icon name="chevron" size={12} className="faint" />
+              </button>
+              {(wsMenuOpen || wsSwitcher) && (
+                <div className="menu tb-ws-menu">
+                  {wsMenuList.map((w) => (
+                    <div
+                      key={w.name}
+                      className={`menu-item ${w.name === wsMenuActiveName ? 'active' : ''}`}
+                      onMouseDown={(e) => {
+                        e.preventDefault()
+                        setWsMenuOpen(false)
+                        setWsSwitcher(null)
+                        // An explicit workspace switch closes whatever session/task is
+                        // open — it belongs to the workspace being left, and leaving it
+                        // selected would show stale content the sidebar no longer scopes
+                        // to, and a breadcrumb that no longer matches the sidebar tree.
+                        if (w.name !== ws?.name) setSelection(null)
+                        setCurWs(w.name)
+                      }}
+                    >
+                      <span style={{ flex: 1 }}>{w.name}</span>
+                      <button
+                        className="icon-sq sb-act"
+                        title="delete workspace"
+                        onMouseDown={(e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          setWsMenuOpen(false)
+                          setWsSwitcher(null)
+                          setDeletingWorkspace(w.name)
+                        }}
+                      >
+                        <Icon name="trash" size={13} />
+                      </button>
+                    </div>
+                  ))}
+                  <div className="menu-sep" />
+                  <div
+                    className="menu-item"
+                    onMouseDown={(e) => {
+                      e.preventDefault()
+                      setWsMenuOpen(false)
+                      setWsSwitcher(null)
+                      setNewWorkspace(true)
+                    }}
+                  >
+                    + new workspace
+                  </div>
+                </div>
+              )}
+            </div>
+            {updateVersion && (
+              <button
+                className="tb-update-btn"
+                title={`Restart to update gurt to ${updateVersion}`}
+                onClick={() => void window.gurt.installUpdate().catch(logErr('installUpdate'))}
+              >
+                update
+              </button>
             )}
-            {crumb}
+            {crumbRest && (
+              <>
+                <span className="tb-crumb-sep">/</span>
+                {crumbDot && (
+                  <span
+                    className={`dot dot-${crumbDot.tone}${crumbDot.pulse ? ' dot-pulse' : ''}`}
+                    title={crumbDot.label}
+                    style={{ width: 7, height: 7 }}
+                  />
+                )}
+                <span className="tb-crumb-rest">{crumbRest}</span>
+              </>
+            )}
           </div>
         </div>
         <div className="tb-icons">
-          <button className="icon-sq tb-btn" title="Search · ⌘K" onClick={() => setPaletteOpen(true)}>
+          <button
+            className="icon-sq tb-btn"
+            title={`Search · ${bindingLabel(hotkeys.palette)}`}
+            onClick={() => setPaletteOpen(true)}
+          >
             <Icon name="search" size={16} />
           </button>
           <div className="notif-wrap" ref={notifRef}>
@@ -467,25 +773,28 @@ export default function App() {
         <div className="activitybar">
           <button
             className={`ab-item ${view === 'dashboard' ? 'active' : ''}`}
-            title="Dashboard"
+            title={`Dashboard · ${bindingLabel(hotkeys.gotoDashboard)}`}
             onClick={() => setView('dashboard')}
           >
             <Icon name="grid" size={17} />
+            {modHeld && <span className="ab-badge">{bindingRestLabel(hotkeys.gotoDashboard)}</span>}
           </button>
           <button
             className={`ab-item ${view === 'work' ? 'active' : ''}`}
-            title="Tasks & sessions"
+            title={`Tasks & sessions · ${bindingLabel(hotkeys.gotoTasks)}`}
             onClick={() => setView('work')}
           >
             <Icon name="message" size={17} />
+            {modHeld && <span className="ab-badge">{bindingRestLabel(hotkeys.gotoTasks)}</span>}
           </button>
           <span className="spacer" />
           <button
             className={`ab-item ${view === 'settings' ? 'active' : ''}`}
-            title="Settings"
+            title={`Settings · ${bindingLabel(hotkeys.gotoSettings)}`}
             onClick={() => setView('settings')}
           >
-            <Icon name="sliders" size={17} />
+            <Icon name="gear" size={17} />
+            {modHeld && <span className="ab-badge">{bindingRestLabel(hotkeys.gotoSettings)}</span>}
           </button>
         </div>
 
@@ -498,13 +807,10 @@ export default function App() {
               selection={selection}
               changes={changes}
               activity={activity}
-              onPickWorkspace={setCurWs}
-              onNewWorkspace={() => setNewWorkspace(true)}
-              onDeleteWorkspace={setDeletingWorkspace}
-              onNewSession={(w, t) => setNewSession({ ws: w, task: t })}
+              focusSignal={focusTasksSignal}
+              onNewSession={(w, t) => createDraft(w, t)}
               onSelectTask={selectTask}
               onSelectSession={selectSession}
-              onOpenPalette={() => setPaletteOpen(true)}
             />
             <div className="sidebar-resizer" onMouseDown={startSidebarResize} />
             <main className="main">
@@ -533,8 +839,13 @@ export default function App() {
               )}
               {!selection && (
                 <div className="placeholder">
-                  select a session on the left, or press <span className="kbd">⌘K</span> to get
-                  started
+                  <div className="placeholder-logo">
+                    <Logo size={240} />
+                  </div>
+                  <div className="placeholder-text">
+                    select a session on the left, or press{' '}
+                    <span className="kbd">{bindingLabel(hotkeys.palette)}</span> to get started
+                  </div>
                 </div>
               )}
             </main>
@@ -614,18 +925,6 @@ export default function App() {
           onSelectTask={(w, t) => {
             setPaletteOpen(false)
             selectTask(w, t)
-          }}
-        />
-      )}
-      {newSession && tree && (
-        <NewSessionModal
-          tree={tree}
-          ws={newSession.ws}
-          task={newSession.task}
-          onClose={() => setNewSession(null)}
-          onCreated={(s) => {
-            setNewSession(null)
-            selectSession(s.id)
           }}
         />
       )}

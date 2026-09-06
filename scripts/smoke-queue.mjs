@@ -90,10 +90,10 @@ const modalGone = (page) => page.waitForSelector('.modal', { state: 'detached', 
 // The two views in the activity bar. Repos and environments live in Settings;
 // tasks and sessions in the work view.
 const openSettings = async (page, section) => {
-  await page.click('.activitybar .ab-item[title="Settings"]')
+  await page.click('.activitybar .ab-item[title^="Settings"]')
   await page.click(`.set-nav-item:has-text("${section}")`)
 }
-const openWork = (page) => page.click('.activitybar .ab-item[title="Tasks & sessions"]')
+const openWork = (page) => page.click('.activitybar .ab-item[title^="Tasks & sessions"]')
 
 // Sessions are named after their role ("executor", "executor 2", …) and the
 // sidebar row carries its status as the row title (see SESSION_DOT). `started`
@@ -125,8 +125,9 @@ const waitState = (page, title, states, timeout = 600000) =>
 /** Compose a session off the task row and finish it with `action`'s button. */
 async function newSession(page, task, prompt, action) {
   await openWork(page)
-  await page.hover(`.sb-task:has(.sb-task-name:text-is("${task}"))`)
-  await page.click(`.sb-task:has(.sb-task-name:text-is("${task}")) .icon-sq[title="new session"]`)
+  await page.click(`.sb-task:has(.sb-task-name:text-is("${task}"))`, { button: 'right' })
+  await page.waitForSelector('.ctx-menu', { timeout: 5000 })
+  await page.click('.ctx-menu .menu-item:has-text("New session")')
   await page.waitForSelector('.modal:has-text("New session")', { timeout: 5000 })
   // environment first: picking it seeds the session's repo from the env default
   await page.click('.modal .seclabel:text-is("ENVIRONMENT") + .pick-wrap .pick-row')
@@ -166,7 +167,7 @@ app.process().stdout.on('data', (d) => process.stdout.write(`[main] ${d}`))
 let page = await open(app)
 
 // --- workspace ---------------------------------------------------------
-await page.click('.sb-ws-btn')
+await page.click('.tb-ws-btn')
 await page.click('.menu-item:has-text("+ new workspace")')
 await page.waitForSelector('.modal input', { timeout: 5000 })
 await page.fill('.modal input', 'personal')
@@ -199,7 +200,7 @@ console.log('ws + repo + env ready')
 
 // --- task --------------------------------------------------------------
 await openWork(page)
-await page.click('button[title="New task · ⌘⇧N"]')
+await page.click('button[title^="New task"]')
 await page.waitForSelector('.sb-newtask-menu input', { timeout: 5000 })
 await page.fill('.sb-newtask-menu input', 'q')
 await page.press('.sb-newtask-menu input', 'Enter')
@@ -265,7 +266,10 @@ await page.screenshot({ path: path.join(SHOT_DIR, 'q2-taskpane.png') })
 // goes idle — and stopping its container is the manual way to force that. Do the
 // manual stop when A is still holding a live container; if the turn already
 // ended, the scheduler has released B on its own and there is nothing to stop.
-const stopA = page.locator('.env-row:has(.env-name:text-is("executor 2")) button:text-is("Stop")')
+await page.click('.env-row:has(.env-name:text-is("executor 2")) button[title="container actions"]')
+const stopA = page.locator(
+  '.env-row:has(.env-name:text-is("executor 2")) .session-menu-pop .menu-item:text-is("Stop")'
+)
 if (await stopA.count()) {
   await stopA.click()
   await page.waitForSelector(
@@ -274,6 +278,7 @@ if (await stopA.count()) {
   )
   console.log('A container stopped by hand; scheduler should release B')
 } else {
+  await page.keyboard.press('Escape')
   console.log('A already went idle and released the repo — no container to stop')
 }
 

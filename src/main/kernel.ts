@@ -3,10 +3,11 @@
 // both. Importable without an Electron app (headless runs, orchestrator,
 // tests).
 import type { DiffTarget, ReviewState, Tree } from '../shared/types'
-import { isSessionRole, targetKey } from '../shared/types'
+import { OPERATOR_ENV_NAME, isSessionRole, targetKey } from '../shared/types'
 import type { BootProgress, SessionDraftPatch } from '../shared/api'
 import { NOTIFICATION_DEFAULTS } from '../shared/notifications'
-import { resolveMcpServers, stopMcpServers } from './mcp/manager'
+import { sanitizeSkillSelection } from '../shared/skills'
+import { onMcpFailures, resolveMcpServers, stopMcpServers } from './mcp/manager'
 import { ensureGurtServer, stopGurtServer } from './mcp/gurtServer'
 import { isDirty } from './provision'
 import * as store from './store'
@@ -14,7 +15,9 @@ import { cloneDir } from './store'
 import * as changes from './changes'
 import { createBus, type Bus } from './bus'
 import { ContainerManager } from './containers'
+import { traffic } from './proxy/traffic'
 import { SessionManager, type RestoredSession } from './sessions'
+import { createAdminSurface, type AdminSurface } from './adminSurface'
 import { createReview, fixPrompt, type ReviewManager } from './review'
 import { createNotifications, type Notifications } from './notifications'
 import { createUsageLedger, type UsageLedger } from './usage'
@@ -65,6 +68,11 @@ export interface Kernel {
   renameTask(ws: string, task: string, newName: string): Promise<void>
   /** Repos in this task whose clone has uncommitted changes. */
   taskDirtyRepos(ws: string, task: string): Promise<string[]>
+  /** Set or clear the task's cap on concurrently running sessions (0/undefined
+   *  clears it — unlimited, today's behavior). Persists to `task.json`, updates
+   *  the scheduler's in-memory cache and re-runs it (a raised/cleared cap may
+   *  free something the queue was holding back). */
+  setTaskMaxConcurrentSessions(ws: string, task: string, max: number | undefined): Promise<void>
   /** sessions.editDraft behind a repo check — the UI constrains the choice, IPC must too. */
   editDraft(sessionId: string, patch: SessionDraftPatch): Promise<void>
   /** Forge compare URL for the task branch; when the latest proposal carries a PR,
@@ -87,21 +95,53 @@ export interface Kernel {
   ): Promise<{ sessionId: string }>
 }
 
-/** Reject a draft target that does not exist in the workspace. Shared by the
- *  IPC edit path and the agent-driven `create_session` one — both take repo/env
- *  names from outside the kernel, and a draft naming a missing one would only
- *  fail much later, at its start. */
-async function assertDraftTarget(ws: string, repos: string[], env?: string): Promise<void> {
+/** Reject a draft target that does not exist in the workspace, or an agent the
+ *  workspace denies. Shared by the IPC edit path and the agent-driven
+ *  `create_session` one — both take repo/env/agent names from outside the
+ *  kernel, and a draft naming a missing repo/env, or a denied agent, would
+ *  only fail much later (at its start, or silently run with an agent the
+ *  workspace does not allow). */
+async function assertDraftTarget(
+  ws: string,
+  repos: string[],
+  env?: string,
+  agent?: string
+): Promise<void> {
   const wsData = await store.getWorkspace(ws)
   for (const r of repos)
     if (!wsData.repos.some((c) => c.name === r))
       throw new Error(`repo "${r}" is not registered in "${ws}"`)
-  if (env !== undefined && !wsData.envs.some((e) => e.name === env))
+  // The bundled operator default resolves by name wherever a workspace env
+  // would — the two share one name space, and the store reserves the name
+  // (docs/requirements-session-operator.md §2.2).
+  if (env !== undefined && env !== OPERATOR_ENV_NAME && !wsData.envs.some((e) => e.name === env))
     throw new Error(`environment "${env}" is not registered in "${ws}"`)
+  if (agent && wsData.deniedAgents?.includes(agent))
+    throw new Error(`agent "${agent}" is not allowed in workspace "${ws}"`)
+}
+
+/** Env definitions that claim this repo as their default — the reverse of
+ *  `EnvConfig.repo`, read straight off the registry. `create_session` resolves
+ *  a drafted session's container through it (sessions.ts `resolveDraftEnv`), so
+ *  a draft runs where its repo runs and not where its spawner happens to. */
+async function defaultEnvsForRepo(ws: string, repo: string): Promise<string[]> {
+  return store.envsDefaultingToRepo(await store.getWorkspace(ws), repo)
 }
 
 export function createKernel(): Kernel {
   const bus = createBus()
+
+  // The proxy watcher is a module singleton (the proxy manager feeds it from
+  // wherever a session's container is ensured); this is the one seam between it
+  // and the bus, so a coalesced traffic change reaches the renderer the same
+  // way every other session event does (§8).
+  traffic.onChange((t) => bus.emit('proxy.traffic', t))
+
+  // Same seam for the local MCP servers: `mcp/manager.ts` is a module singleton
+  // too, and a server that would not start is a thing the session pane has to
+  // say out loud rather than leave in ~/.gurt/logs (requirements-mcp-stdio.md
+  // §8.2). The reason travels; the environment never does (§7).
+  onMcpFailures((f) => bus.emit('mcp.fail', f))
 
   // Review state is standalone (no dependency back into sessions — the kernel
   // itself joins the two where they meet, at lock acquisition).
@@ -126,6 +166,7 @@ export function createKernel(): Kernel {
   const sessions: SessionManager = new SessionManager(
     {
       resolveLaunch: (sessionId) => containers.resolveLaunch(sessionId),
+      pushProxyScope: (sessionId, config) => containers.pushProxyScope(sessionId, config),
       // Never rejects: the session record is gone by the time this settles, so
       // a failure has nowhere to surface — it is logged, and the delete's own
       // follow-up (the scratch dir) still runs.
@@ -138,7 +179,14 @@ export function createKernel(): Kernel {
       stopMcpServers,
       resolveGurtServer: ensureGurtServer,
       stopGurtServer,
+      // The admin surface is built over the finished kernel (below) — these
+      // closures read `admin` at call time, long after both exist, the same
+      // knot-untying as the `sessions` references above.
+      adminCall: (ws, method, args) => admin.call(ws, method, args),
+      adminProvisioningLog: (ws, key, tail) => admin.provisioningLog(ws, key, tail),
       checkDraftTarget: assertDraftTarget,
+      defaultEnvsForRepo,
+      defaultAgentForWorkspace: async (ws) => (await store.getWorkspace(ws)).defaultAgent,
       isRepoLockedForReview: (ws, task, repo) => review.isLocked(ws, task, repo),
       // Cross-task `create_session`: the target task materializes (with its
       // `task.json` marker) before the draft's first persist can mkdir into it.
@@ -170,7 +218,9 @@ export function createKernel(): Kernel {
         store
           .deleteSessionScratch(ws, task, sessionId)
           .catch((e: unknown) => log.error('internal.fail', { site: 'session-scratch-delete', s: sessionId, err: e }))
-      }
+      },
+      materializeSkills: (ws, task, sessionId, selection) =>
+        store.materializeSessionSkills(ws, task, sessionId, selection)
     },
     bus
   )
@@ -208,11 +258,12 @@ export function createKernel(): Kernel {
   bus.on('provision.log', ({ key, line }) => sessionLogLine(key, line))
 
   // Queue handoff: while something waits in the queue, an idle container is not
-  // resting, it is *blocking* — the clone it holds is exactly what the queued
-  // session needs, and the scheduler only ever advances when a container comes
-  // down. Stopping those the moment their session falls idle is what makes the
-  // queue run at turn speed instead of at grace-period speed. Sessions nobody
-  // is waiting on are not touched here: with an empty queue this is a no-op and
+  // resting, it is *blocking* — either the clone it holds or the task's
+  // maxConcurrentSessions slot it occupies is exactly what the queued session
+  // needs, and the scheduler only ever advances when a container comes down.
+  // Stopping those the moment their session falls idle is what makes the queue
+  // run at turn speed instead of at grace-period speed. Sessions nobody is
+  // waiting on are not touched here: with an empty queue this is a no-op and
   // the plain idle policy below is the whole behaviour, unchanged.
   const reaping = new Set<string>()
   const reapForQueue = (): void => {
@@ -322,6 +373,12 @@ export function createKernel(): Kernel {
     const allTasks: { ws: string; task: string }[] = []
     for (const ws of t.workspaces)
       for (const task of ws.tasks) allTasks.push({ ws: ws.name, task: task.name })
+    // Before the scheduler's first pass, same reason as the review lock above.
+    sessions.loadTaskCaps(
+      t.workspaces.flatMap((ws) =>
+        ws.tasks.map((task) => ({ ws: ws.name, task: task.name, max: task.maxConcurrentSessions }))
+      )
+    )
     let done = 0
     for (const { ws, task } of allTasks) {
       done++
@@ -357,7 +414,7 @@ export function createKernel(): Kernel {
     // usable; a footer stuck at 60% would read as a hang.
     .finally(() => progress(100, 'ready', true))
 
-  return {
+  const kernel: Kernel = {
     bus,
     containers,
     sessions,
@@ -412,8 +469,17 @@ export function createKernel(): Kernel {
       if (patch.role !== undefined && !isSessionRole(patch.role))
         throw new Error(`unknown session role "${String(patch.role)}"`)
       const info = sessions.snapshot(sessionId)?.info
-      if (info) await assertDraftTarget(info.workspace, patch.repos ?? [], patch.env)
-      sessions.editDraft(sessionId, patch)
+      if (info) await assertDraftTarget(info.workspace, patch.repos ?? [], patch.env, patch.agent)
+      // Names become directories under the session's scratch dir, so the shape
+      // is checked here rather than at the copy. Resolvability is not: a name
+      // that could exist and does not is the draft's to show
+      // (docs/requirements-skills.md §4.4).
+      sessions.editDraft(
+        sessionId,
+        patch.skills === undefined
+          ? patch
+          : { ...patch, skills: sanitizeSkillSelection(patch.skills) }
+      )
     },
 
     async reviewState(
@@ -430,6 +496,14 @@ export function createKernel(): Kernel {
         .then((f) => f.map((x) => x.path))
         .catch(() => undefined)
       return review.state(ws, task, repo, targetKey(target), files)
+    },
+
+    async setTaskMaxConcurrentSessions(ws: string, task: string, max: number | undefined): Promise<void> {
+      const clean = max !== undefined && Number.isFinite(max) && max > 0 ? Math.floor(max) : undefined
+      const { maxConcurrentSessions: _prev, ...rest } = await store.getTask(ws, task)
+      await store.saveTask(ws, task, clean === undefined ? rest : { ...rest, maxConcurrentSessions: clean })
+      sessions.setTaskCap(ws, task, clean)
+      bus.emit('tree.changed', undefined)
     },
 
     async setReviewLock(ws: string, task: string, repo: string, locked: boolean): Promise<void> {
@@ -480,7 +554,6 @@ export function createKernel(): Kernel {
         'draft',
         prior?.mcp ?? [],
         prior?.autoAllow ?? true,
-        prior?.gitAccess ?? false,
         prior?.configValues ?? {},
         'executor'
       )
@@ -498,4 +571,12 @@ export function createKernel(): Kernel {
       return `${url}${url.includes('?') ? '&' : '?'}${parts.join('&')}`
     }
   }
+
+  // The operator's ws-bound read surface (docs/requirements-session-operator.md
+  // §3), built over the finished kernel so its bindings read the same tree,
+  // sessions and diagnostics everything else does. The session manager's
+  // adminCall closures above resolve it lazily.
+  const admin: AdminSurface = createAdminSurface(kernel)
+
+  return kernel
 }

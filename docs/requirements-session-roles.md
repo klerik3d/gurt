@@ -17,6 +17,14 @@ sketch; this document is the simpler path actually taken — roles are session
 configuration, verdicts are plain chat text, and the only orchestration
 primitive is "an agent drafts another session, the user launches it".
 
+> **Superseded in part** by `requirements-mcp-proxy.md` §10: the
+> container-side git credential broker (`src/main/git/broker.ts`), the
+> container shims, ssh git support and the `gitAccess` session flag are
+> removed. Wherever this document treats those as live, read: the container
+> holds no credentials at all, and authenticated git is exclusively the
+> host-side github MCP tools. The host credential broker survives as
+> `src/main/git/hostCredBroker.ts`.
+
 ## 1. Motivation
 
 Today a session's behavior is inferred: `repos.length > 1` makes it a
@@ -74,10 +82,21 @@ drafted.
 
 Input: a review prompt carrying the requirements and pointing at one clone.
 The reviewer judges the clone's **uncommitted changes** against those
-requirements. The repo is mounted read-only, but the reviewer **holds the
-exclusive clone lock** — while the review runs nothing may mutate the working
-tree, exactly the way an executor excludes parallel writers today. Read-only
-plus locked is the one new mount/lock combination this document introduces.
+requirements. The repo was intended to be mounted read-only, with the reviewer
+**holding the exclusive clone lock** so that while the review runs nothing may
+mutate the working tree, exactly the way an executor excludes parallel writers
+today. Read-only plus locked is the one new mount/lock combination this
+document introduces.
+
+*Stopgap, 2026-08-24:* the read-only mount left a reviewer unable to install
+dependencies or run typecheck/tests against the diff it judges — a real loss
+for the role's whole purpose, and there was no writable-scratch-mount
+mechanism to give it deps without full write access (see §4). Until that
+mechanism exists, the reviewer's mount is plain read-write, same as an
+executor's; only researcher keeps the filesystem-level read-only bind. The
+lock, the missing `complete`/git broker, and everything else about the role
+are unchanged — this narrows one flag, not the role. Revisit once a writable
+subpath (or similar) mechanism lets a read-only mount host installed deps.
 
 The verdict is the reviewer's plain chat reply — no structured artifact, no
 tool call, and it gates nothing: whether to commit anyway is always the
@@ -95,6 +114,21 @@ modal takes, everything editable afterward. The draft never runs by itself:
 the user reviewing and launching (or editing, or deleting) the draft *is* the
 approval step. A different approval mechanism may replace drafts later.
 
+The one thing a draft does **not** inherit is the environment. An omitted
+`env` resolves to the *target repo's own* default — the env whose
+`EnvConfig.repo` names `repos[0]`, the registry link read backwards
+(`store.envsDefaultingToRepo`) — and not to the container the spawning session
+happens to run in. Inheriting the spawner's env was silent drift: a researcher
+sitting in some ad-hoc container handed that container to every session it
+drafted, for any repo, and nothing in the request or the resulting draft said
+so. Naming a different env stays possible but never implicit — it takes
+`confirmNonDefaultEnv: true`, so the wrong container is always a decision and
+never an oversight. Where the registry offers no default to speak of, the
+caller names the env instead: a repo no env claims requires `env` (and then
+takes it as-is — there is no default for it to contradict), a repo several
+envs claim requires `env` from that set (any of them is a default, so no
+confirmation is asked for; anything outside it still needs the flag).
+
 A **researcher** (only) may aim the draft at another task via the optional
 `task` field, created on the spot if missing. This serves the "that's out of
 scope — spin it into its own task" moment mid-research: the tangent becomes a
@@ -111,11 +145,23 @@ this pass.
 
 - Read-only is enforced at the mount level (Docker `readonly` bind mounts),
   not by convention — this closes the deferral recorded in
-  `requirements-multirepo-sessions.md` §3 for researcher and reviewer
-  sessions. Executors keep plain read-write mounts.
-- Reviewer needs the read-only mount on a *single* clone — today read-only
-  thinking exists only in the multi-repo wrapper path, so the single-repo
-  mount path gains a read-only mode.
+  `requirements-multirepo-sessions.md` §3 for researcher sessions.
+  *(Since narrowed to researcher only, 2026-08-24 — see the reviewer stopgap
+  in §2: reviewer's mount is plain read-write, no writable-subpath mechanism
+  existing yet to give it deps without full write access.)* Executors keep
+  plain read-write mounts.
+- Reviewer needs the single-repo mount path a discovery session's wrapper
+  mechanism generalized (today read-only thinking exists only in the
+  multi-repo wrapper path) — but not, for now, its read-only mode (see above).
+- A mounted session with exactly one repo gets its container-side
+  `workspaceFolder` pointed at that repo's mount, not the wrapper root, so
+  lifecycle hooks and `exec` land with the checkout as cwd
+  (`provision.ts` `devcontainerUp`). A read-only mount (researcher) additionally
+  has `onCreateCommand`/`updateContentCommand`/`postCreateCommand` stripped
+  from its merged config before `up` — those hooks exist to prepare a writable
+  checkout and would otherwise fail deterministically against the read-only
+  bind, burning a retry `CREATE_HOOK_RE` cannot tell apart from a transient
+  one. Reviewer runs its env's hooks unmodified.
 - Locking is unchanged mechanically: the scheduler's exclusive clone lock is
   taken by executors (as today) and reviewers (new), skipped for researchers
   (as discovery sessions do today). Lifetimes are managed by the user.
@@ -206,7 +252,10 @@ otherwise have to re-derive from the diff:
   built from `spawnableRoles(spawner)`, so a reviewer's tool cannot even
   express anything but `executor`, and `repos` is exactly one entry (no
   draftable role may hold more). Everything else is optional and inherited from
-  the spawning session (env, agent, MCP selection, auto-allow, config values).
+  the spawning session (agent, MCP selection, auto-allow, config values) — the
+  `env` excepted, which follows the target repo (§3) and whose `.describe()`
+  text says so, with `confirmNonDefaultEnv` as the field that makes a
+  non-default container impossible to reach by inattention.
   Host-side rules that a schema cannot carry — role gating, a repo or env the
   agent invented — come back as an `isError` result with the message, so the
   agent self-corrects at the tool layer instead of the user finding a broken
@@ -236,21 +285,26 @@ otherwise have to re-derive from the diff:
 ## 9. Acceptance
 
 1. `npm run typecheck` is clean (both projects).
-2. `node scripts/session-roles.test.mjs` — the role table, the (role, repos)
+2. `node scripts/draft-env-default.test.mjs` — the `create_session` env rule:
+   omitted resolves to the repo's default (not the spawner's env), a matching
+   explicit env passes, a mismatching one is rejected without
+   `confirmNonDefaultEnv` and accepted with it, the no-default and
+   ambiguous-default repos, and that the interactive path is untouched.
+3. `node scripts/session-roles.test.mjs` — the role table, the (role, repos)
    rule, git access per role, reviewer-locks vs. researcher-locks-nothing
    (direct start *and* through the queue), draft role edits, the full
    `create_session` gating matrix, and the pre-roles migration.
-3. `node scripts/gurt-mcp.test.mjs` — per-role tool sets over real HTTP
+4. `node scripts/gurt-mcp.test.mjs` — per-role tool sets over real HTTP
    (`complete` for an executor only, `create_session` for the other two with a
    per-spawner `role` enum), plus the `create_session` rejection matrix.
-4. `node scripts/turn-contract.test.mjs` — the nudge matrix, including that a
+5. `node scripts/turn-contract.test.mjs` — the nudge matrix, including that a
    role without the contract never nudges and never marks `incomplete`.
-5. `npm run build && node scripts/smoke-roles.mjs` — the real modal: default
+6. `npm run build && node scripts/smoke-roles.mjs` — the real modal: default
    role, single vs. multi repo select, git access hidden for a read-only role,
    the role reaching `sessions.json` and the draft pane, and a draft's role
    being editable afterwards.
-6. The rest of `scripts/*.test.mjs` passes unmodified.
-7. **Not yet verified**: the `readonly` bind mounts against a real Docker
+7. The rest of `scripts/*.test.mjs` passes unmodified.
+8. **Not yet verified**: the `readonly` bind mounts against a real Docker
    daemon — this environment has none, the same gap
    `requirements-multirepo-sessions.md` §5.4 records for the wrapper-mount path
    it builds on. What to check on first real use: an agent in a researcher or

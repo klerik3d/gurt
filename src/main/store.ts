@@ -20,12 +20,26 @@ import type {
   Tree,
   WorkspaceFile
 } from '../shared/types'
+import { AsyncLocalStorage } from 'node:async_hooks'
+import type { McpRegistryEntry } from '../shared/mcp'
+import { OPERATOR_ENV_NAME } from '../shared/types'
 import { agentDef } from '../shared/agents'
 import { defaultAgentConfig } from '../shared/agentConfig'
 import { validateEnvConfig } from '../shared/envConfig'
+import { normalizeMcpEntry, validateMcpEntry } from '../shared/mcp'
+import type { SkillEntry } from '../shared/skills'
+import {
+  SKILL_FILE,
+  skillEntries,
+  skillNameProblem,
+  skillNames,
+  validateSkillDoc
+} from '../shared/skills'
 import type { NotificationPrefs } from '../shared/notifications'
 import type { TurnRecord } from '../shared/usage'
 import { NOTIFICATION_DEFAULTS } from '../shared/notifications'
+import type { HotkeyMap } from '../shared/hotkeys'
+import { HOTKEY_DEFAULTS, sanitizeHotkeys } from '../shared/hotkeys'
 import { createLogger } from './log'
 
 const pexecFile = promisify(execFile)
@@ -67,20 +81,44 @@ export const cloneDir = (ws: string, task: string, repo: string) =>
  *  so existing sessions' containers keep pointing at the directory they were
  *  provisioned against. */
 export const mountedWorkspaceDir = (ws: string, task: string, sessionId: string) =>
-  path.join(gurtRoot, ws, task, '.multirepo', sessionId, 'repos')
+  path.join(sessionScratchDir(ws, task, sessionId), 'repos')
 /** Host-side file the env's materialized devcontainer config is written to. */
 export const overrideConfigPath = (ws: string, env: string) =>
   path.join(gurtRoot, ws, '.devcontainers', `${env}.json`)
+
+/** The workspace's skill registry: one directory per skill, each holding a
+ *  `SKILL.md` and whatever supporting files it references
+ *  (docs/requirements-skills.md §4.1). A sibling of `workspace.json` — the
+ *  registry is workspace data, like repos and envs. */
+export const skillsDir = (ws: string) => path.join(gurtRoot, ws, 'skills')
+export const skillDir = (ws: string, name: string) => path.join(skillsDir(ws), name)
+
+/** Per-session scratch: everything gurt stages for one session's container and
+ *  nothing else, removed with the session (`deleteSessionScratch`). Holds the
+ *  wrapper workspace dir, the merged devcontainer config, and the materialized
+ *  skills. The `.multirepo` segment predates all three and is kept so existing
+ *  sessions' containers keep pointing at the paths they were provisioned
+ *  against. */
+export const sessionScratchDir = (ws: string, task: string, sessionId: string) =>
+  path.join(gurtRoot, ws, task, '.multirepo', sessionId)
+
+/** Where a session's selected skills are copied before its container comes up,
+ *  and the source of the read-only bind that delivers them
+ *  (docs/requirements-skills.md §5). */
+export const sessionSkillsDir = (ws: string, task: string, sessionId: string) =>
+  path.join(sessionScratchDir(ws, task, sessionId), 'skills')
 
 /** Path segments gurt itself owns inside the parent dir of each kind — a repo
  *  named `sessions` would collide with the task's session-log dir, etc.
  *  Compared case-insensitively (macOS default FS is case-insensitive). */
 const RESERVED_NAMES: Record<string, string[]> = {
   workspace: ['agents.json', 'credentials.json', 'agent-config-cache.json'],
-  task: ['workspace.json', '.devcontainers'],
+  task: ['workspace.json', '.devcontainers', 'skills'],
   repo: ['task.json', 'sessions.json', 'review.json', 'sessions', '.multirepo'],
-  // Env names only ever become `.devcontainers/<env>.json` — segment rules only.
-  env: []
+  // Env names become `.devcontainers/<env>.json`, and one name is spoken for:
+  // the bundled operator env shares the env name space, so a workspace env may
+  // not take its name (docs/requirements-session-operator.md §2.2).
+  env: [OPERATOR_ENV_NAME]
 }
 
 /** Names become path segments on disk, so reject anything that isn't a single, safe segment. */
@@ -108,21 +146,74 @@ function jsonParseErrCtx(e: unknown): { name: string; code?: string | number; po
   }
 }
 
+let degraded = false
+
+/** True when a store file failed to parse this run and was quarantined. Boot
+ *  paths that delete things on "nothing is known" must not run on that. */
+export const storeDegraded = (): boolean => degraded
+
 async function readJson<T>(file: string, fallback: T): Promise<T> {
   try {
     return JSON.parse(await fs.readFile(file, 'utf8')) as T
   } catch (e) {
-    // A missing file is the normal "nothing stored yet" path; anything else is
-    // a file we are about to silently replace with the fallback — say so.
-    if ((e as NodeJS.ErrnoException)?.code !== 'ENOENT')
-      log.warn('unreadable json — falling back to defaults', { file, err: jsonParseErrCtx(e) })
+    // A missing file is the normal "nothing stored yet" path. Anything else is
+    // a file we are about to shadow with defaults: move it aside first, so the
+    // next write cannot make the loss permanent and the bytes stay for recovery.
+    if ((e as NodeJS.ErrnoException)?.code === 'ENOENT') return fallback
+    degraded = true
+    const quarantine = `${file}.corrupt-${new Date().toISOString().replace(/[:.]/g, '-')}`
+    try {
+      await fs.rename(file, quarantine)
+    } catch {
+      // Quarantine is best-effort; the degraded flag is what gates the damage.
+    }
+    log.error('unreadable json — quarantined, using defaults', {
+      file,
+      quarantine,
+      err: jsonParseErrCtx(e)
+    })
     return fallback
   }
 }
 
-async function writeJson(file: string, data: unknown): Promise<void> {
-  await fs.mkdir(path.dirname(file), { recursive: true })
-  await fs.writeFile(file, JSON.stringify(data, null, 2) + '\n')
+/** Per-file write chain, so overlapping writes never race on the temp file. */
+const writeChains = new Map<string, Promise<void>>()
+
+/**
+ * Write JSON durably: a complete temp file, fsync'd, renamed over the target
+ * (atomic on POSIX), then the directory fsync'd so the rename itself survives a
+ * power loss. `fs.writeFile` truncates in place and never fsyncs — a crash
+ * between the truncate and the flush leaves a 0-byte file, which is how one
+ * task lost every session record on 2026-08-27.
+ */
+function writeJson(file: string, data: unknown): Promise<void> {
+  const prev = writeChains.get(file) ?? Promise.resolve()
+  const next = prev.then(async () => {
+    const dir = path.dirname(file)
+    await fs.mkdir(dir, { recursive: true })
+    const tmp = path.join(dir, `.${path.basename(file)}.tmp`)
+    const fh = await fs.open(tmp, 'w')
+    try {
+      await fh.writeFile(JSON.stringify(data, null, 2) + '\n')
+      await fh.sync()
+    } finally {
+      await fh.close()
+    }
+    await fs.rename(tmp, file)
+    if (process.platform !== 'win32') {
+      const dh = await fs.open(dir, 'r')
+      try {
+        await dh.sync()
+      } finally {
+        await dh.close()
+      }
+    }
+  })
+  writeChains.set(
+    file,
+    next.catch(() => {})
+  )
+  return next
 }
 
 const agentsFile = () => path.join(gurtRoot, 'agents.json')
@@ -149,6 +240,98 @@ export type StoredAgent = z.infer<typeof STORED_AGENT>
 /** agents.json itself: an id → record map. Records stay `unknown` so one bad
  *  entry is skipped instead of emptying the registry. */
 export const STORED_AGENTS = z.record(z.string(), z.unknown()).catch({})
+
+/**
+ * One `workspace.json` MCP registry entry as it may actually be on disk —
+ * hand-edited, like agents.json, so nothing is trusted. A malformed field
+ * degrades to "absent" (`.catch`) and an entry missing what its kind requires
+ * is dropped by `liftMcpServers` rather than emptying the registry.
+ *
+ * One schema per kind, dispatched on `kind` by hand rather than through a zod
+ * discriminated union, because the discriminant is *optional*: a record with no
+ * `kind` is an http entry written before the local kinds existed, and reading
+ * those unchanged is the whole compatibility promise
+ * (docs/requirements-mcp-stdio.md §3.1).
+ */
+const STORED_MCP_COMMON = {
+  id: z.string(),
+  label: z.string().optional().catch(undefined),
+  credentialId: z.string().optional().catch(undefined)
+}
+
+const STORED_MCP_HTTP = z.looseObject({
+  ...STORED_MCP_COMMON,
+  kind: z.literal('http').optional().catch(undefined),
+  url: z.string(),
+  headers: z
+    .array(z.object({ name: z.string(), value: z.string() }))
+    .optional()
+    .catch(undefined)
+})
+
+/** The fields the two local kinds share. `env` degrades as a whole: a single
+ *  non-string value makes the map unreadable, and half an environment is worse
+ *  than none. */
+const STORED_MCP_LOCAL = {
+  ...STORED_MCP_COMMON,
+  args: z.array(z.string()).optional().catch(undefined),
+  env: z.record(z.string(), z.string()).optional().catch(undefined),
+  credentialEnvVar: z.string().optional().catch(undefined)
+}
+
+const STORED_MCP_NPM = z.looseObject({
+  ...STORED_MCP_LOCAL,
+  kind: z.literal('npm'),
+  package: z.string(),
+  version: z.string().optional().catch(undefined)
+})
+
+const STORED_MCP_COMMAND = z.looseObject({
+  ...STORED_MCP_LOCAL,
+  kind: z.literal('command'),
+  command: z.string(),
+  cwd: z.string().optional().catch(undefined)
+})
+
+/** The `mcpServers` array itself: entries stay `unknown` so one bad record is
+ *  skipped, and a non-array (or absent) field reads as "no registry". */
+const STORED_MCP_SERVERS = z.array(z.unknown()).catch([])
+
+/** Lift one stored record, or nothing when it is not a readable entry of any
+ *  kind. An unknown `kind` is dropped rather than read as http: a record whose
+ *  transport this build does not understand must not be spawned or called. */
+function liftMcpServer(record: unknown): McpRegistryEntry | undefined {
+  const kind = (record as { kind?: unknown } | null)?.kind ?? 'http'
+  if (kind === 'npm') {
+    const parsed = STORED_MCP_NPM.safeParse(record)
+    if (!parsed.success || !parsed.data.package) return undefined
+    return normalizeMcpEntry(parsed.data)
+  }
+  if (kind === 'command') {
+    const parsed = STORED_MCP_COMMAND.safeParse(record)
+    if (!parsed.success || !parsed.data.command) return undefined
+    return normalizeMcpEntry(parsed.data)
+  }
+  if (kind !== 'http') return undefined
+  const parsed = STORED_MCP_HTTP.safeParse(record)
+  if (!parsed.success || !parsed.data.url) return undefined
+  return normalizeMcpEntry(parsed.data)
+}
+
+/** Lift the stored array into entries, dropping records that are not one. */
+function liftMcpServers(raw: unknown): McpRegistryEntry[] {
+  const out: McpRegistryEntry[] = []
+  const seen = new Set<string>()
+  for (const record of STORED_MCP_SERVERS.parse(raw)) {
+    const entry = liftMcpServer(record)
+    // A duplicate id would make `mcpServers` ambiguous for every consumer; the
+    // first one wins, exactly as `mcpEntries` resolves it.
+    if (!entry || !entry.id || seen.has(entry.id)) continue
+    seen.add(entry.id)
+    out.push(entry)
+  }
+  return out
+}
 
 /**
  * Lift one stored record into an agent instance, or nothing when it is not one.
@@ -189,6 +372,7 @@ export async function getAgents(): Promise<AgentsFile> {
 
 export async function setAgents(agents: AgentsFile): Promise<void> {
   await writeJson(agentsFile(), agents)
+  await journal('agents: registry replaced', 'setAgents', 'agents')
 }
 
 /** Per-key promise chain for read-modify-write cycles on one JSON file — two
@@ -205,6 +389,106 @@ function chained<T>(key: string, fn: () => Promise<T>): Promise<T> {
     next.catch(() => {})
   )
   return next
+}
+
+// --- config journal: ~/.gurt is a git repository ----------------------------
+// docs/requirements-session-operator.md §7. Every config mutation auto-commits
+// from here, after its write succeeded; the journal is a record, not a gate —
+// a failure (missing git binary, deleted .git, stale lock) is logged and the
+// user's edit stands.
+
+/**
+ * Allow-list ignore: adding a file to the journal is a decision, not an
+ * oversight. In: agents.json, every workspace.json, every workspace's skills/
+ * tree (which can never be a task directory — `skills` is a reserved task
+ * name above, and that reservation is a dependency of this file, not a
+ * naming nicety). Out, each for a stated reason in §7: credentials.json
+ * (secrets never enter a git history), runtime state and derived artifacts
+ * (sessions, logs, caches, .devcontainers), and the clones (git repositories
+ * themselves, excluded by construction).
+ */
+const JOURNAL_GITIGNORE = `/*
+!/.gitignore
+!/agents.json
+!/*/
+/*/*
+!/*/workspace.json
+!/*/skills/
+`
+
+/** Who performed the mutation being journaled — lands in the commit author, so
+ *  `git log --author=operator` answers "what has the agent done to my setup"
+ *  whether or not gurt is running (§7). */
+export interface JournalActor {
+  kind: 'ui' | 'operator'
+  /** Operator session id — rides in the author's address. */
+  id?: string
+}
+
+const journalActor = new AsyncLocalStorage<JournalActor>()
+
+/** Run `fn` with its journal commits attributed to `actor` instead of the
+ *  default `gurt-ui`. Context-based rather than a parameter on every mutator,
+ *  so the write paths stay identical for both callers. */
+export function withJournalActor<T>(actor: JournalActor, fn: () => Promise<T>): Promise<T> {
+  return journalActor.run(actor, fn)
+}
+
+/** git against the journal repo. Never inherits identity or signing from the
+ *  user's config — a machine-written journal must commit the same way on
+ *  every machine, hooks and gpg included. */
+function journalGit(args: string[]): Promise<{ stdout: string }> {
+  return pexecFile(
+    'git',
+    ['-C', gurtRoot, '-c', 'user.name=gurt', '-c', 'user.email=journal@gurt.local', '-c', 'commit.gpgsign=false', ...args],
+    { env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } }
+  )
+}
+
+async function ensureJournalRepo(): Promise<void> {
+  if (!existsSync(path.join(gurtRoot, '.git'))) {
+    await fs.mkdir(gurtRoot, { recursive: true })
+    await journalGit(['init', '-q'])
+  }
+  // The ignore file is part of the design (§7) — restore it when missing, but
+  // never overwrite one the user edited.
+  const ignore = path.join(gurtRoot, '.gitignore')
+  if (!existsSync(ignore)) await fs.writeFile(ignore, JOURNAL_GITIGNORE)
+}
+
+/**
+ * Record one config mutation as a journal commit: subject line for humans, the
+ * op and entity as trailers for `git log --grep`, the actor in the author.
+ * Serialized on its own chain (git shares one index) and never throws — see
+ * the section comment. A mutation that changed no tracked bytes (a same-value
+ * save) commits nothing.
+ */
+export function journal(subject: string, op: string, entity: string): Promise<void> {
+  const actor = journalActor.getStore() ?? { kind: 'ui' }
+  return chained('journal', async () => {
+    try {
+      await ensureJournalRepo()
+      await journalGit(['add', '-A'])
+      const dirty = await journalGit(['diff', '--cached', '--quiet']).then(
+        () => false,
+        () => true
+      )
+      if (!dirty) return
+      const author =
+        actor.kind === 'operator'
+          ? `gurt-operator <${actor.id ?? 'operator'}@gurt.local>`
+          : 'gurt-ui <user@gurt.local>'
+      await journalGit([
+        'commit', '-q', '--no-verify',
+        '--author', author,
+        '-m', subject,
+        '-m', `Op: ${op}\nEntity: ${entity}`
+      ])
+    } catch (e) {
+      // The journal is a record, not a gate: the write already stands.
+      log.warn('journal.fail', { op, entity, err: e })
+    }
+  })
 }
 
 const agentConfigFile = () => path.join(gurtRoot, 'agent-config-cache.json')
@@ -255,11 +539,26 @@ export async function setNotificationPrefs(prefs: NotificationPrefs): Promise<vo
   await writeJson(notificationsFile(), prefs)
 }
 
+const hotkeysFile = () => path.join(gurtRoot, 'hotkeys.json')
+
+/** A missing/partial file (fresh install, or an action added later) falls
+ *  back per-action to the built-in default, the same tolerance as
+ *  `getNotificationPrefs`. */
+export async function getHotkeys(): Promise<HotkeyMap> {
+  const raw = await readJson<Partial<HotkeyMap>>(hotkeysFile(), {})
+  return sanitizeHotkeys(raw, HOTKEY_DEFAULTS)
+}
+
+export async function setHotkeys(map: HotkeyMap): Promise<void> {
+  await writeJson(hotkeysFile(), map)
+}
+
 export async function createWorkspace(name: string): Promise<void> {
   validateName('workspace', name)
   const file = path.join(wsDir(name), 'workspace.json')
   if (existsSync(file)) throw new Error(`workspace "${name}" already exists`)
   await writeJson(file, { repos: [], envs: [] } satisfies WorkspaceFile)
+  await journal(`workspace "${name}": created`, 'createWorkspace', name)
 }
 
 /** A pre-split RepoConfig carried an inline `devcontainer`; it moves to the env. */
@@ -300,7 +599,28 @@ export async function getWorkspace(ws: string): Promise<WorkspaceFile> {
       migrated = true
     }
   }
-  const data: WorkspaceFile = { repos, envs }
+  // Absent stays absent: an untouched workspace.json is not rewritten with an
+  // empty array just because it was read (§3.1 — `getWorkspace` stays tolerant).
+  const mcpServers = raw.mcpServers === undefined ? undefined : liftMcpServers(raw.mcpServers)
+  // Hand-edited like everything else here: a wrong-typed value degrades to
+  // "absent" rather than throwing.
+  const defaultAgent = typeof raw.defaultAgent === 'string' ? raw.defaultAgent : undefined
+  const deniedAgents = Array.isArray(raw.deniedAgents)
+    ? raw.deniedAgents.filter((a): a is string => typeof a === 'string')
+    : undefined
+  const defaultSkills = Array.isArray(raw.defaultSkills)
+    ? raw.defaultSkills.filter((n): n is string => typeof n === 'string')
+    : undefined
+  const operatorEnv = typeof raw.operatorEnv === 'string' ? raw.operatorEnv : undefined
+  const data: WorkspaceFile = {
+    repos,
+    envs,
+    ...(mcpServers ? { mcpServers } : {}),
+    ...(defaultAgent ? { defaultAgent } : {}),
+    ...(deniedAgents?.length ? { deniedAgents } : {}),
+    ...(defaultSkills?.length ? { defaultSkills } : {}),
+    ...(operatorEnv ? { operatorEnv } : {})
+  }
   if (migrated) await saveWorkspace(ws, data)
   return data
 }
@@ -334,6 +654,7 @@ export function addRepo(ws: string, repo: RepoConfig): Promise<void> {
       throw new Error(`repo "${repo.name}" already exists in "${ws}"`)
     data.repos.push(repo)
     await saveWorkspace(ws, data)
+    await journal(`repo "${repo.name}": added`, 'addRepo', `${ws}/repo/${repo.name}`)
   })
 }
 
@@ -344,6 +665,7 @@ export function updateRepo(ws: string, repo: RepoConfig): Promise<void> {
     if (i < 0) throw new Error(`repo "${repo.name}" not found in "${ws}"`)
     data.repos[i] = repo
     await saveWorkspace(ws, data)
+    await journal(`repo "${repo.name}": updated`, 'updateRepo', `${ws}/repo/${repo.name}`)
   })
 }
 
@@ -365,10 +687,20 @@ export async function tasksUsingEnv(ws: string, env: string): Promise<string[]> 
   return used
 }
 
+/**
+ * Env definitions that name this repo as their default (`EnvConfig.repo`) — the
+ * reverse of the only link the registry stores, since an env points at a repo
+ * and never the other way round. Two readers, one rule: deleting a repo an env
+ * still claims is refused here, and `create_session` resolves a drafted
+ * session's container through it (sessions.ts `resolveDraftEnv`).
+ */
+export const envsDefaultingToRepo = (data: WorkspaceFile, repo: string): string[] =>
+  data.envs.filter((e) => e.repo === repo).map((e) => e.name)
+
 export function removeRepo(ws: string, repo: string): Promise<void> {
   return editWorkspace(ws, async () => {
     const data = await getWorkspace(ws)
-    const defaultOf = data.envs.filter((e) => e.repo === repo).map((e) => e.name)
+    const defaultOf = envsDefaultingToRepo(data, repo)
     if (defaultOf.length)
       throw new Error(
         `repo "${repo}" is the default of env(s): ${defaultOf.join(', ')} — change those first`
@@ -378,6 +710,7 @@ export function removeRepo(ws: string, repo: string): Promise<void> {
       throw new Error(`repo "${repo}" has a clone in task(s): ${used.join(', ')} — delete those tasks first`)
     data.repos = data.repos.filter((r) => r.name !== repo)
     await saveWorkspace(ws, data)
+    await journal(`repo "${repo}": removed`, 'removeRepo', `${ws}/repo/${repo}`)
   })
 }
 
@@ -393,6 +726,7 @@ export function addEnv(ws: string, env: EnvConfig): Promise<void> {
       throw new Error(`env "${env.name}" already exists in "${ws}"`)
     data.envs.push(env)
     await saveWorkspace(ws, data)
+    await journal(`env "${env.name}": added`, 'addEnv', `${ws}/env/${env.name}`)
   })
 }
 
@@ -407,6 +741,7 @@ export function updateEnv(ws: string, env: EnvConfig): Promise<void> {
     if (i < 0) throw new Error(`env "${env.name}" not found in "${ws}"`)
     data.envs[i] = env
     await saveWorkspace(ws, data)
+    await journal(`env "${env.name}": updated`, 'updateEnv', `${ws}/env/${env.name}`)
   })
 }
 
@@ -421,6 +756,333 @@ export function removeEnv(ws: string, name: string): Promise<void> {
     data.envs = data.envs.filter((e) => e.name !== name)
     await saveWorkspace(ws, data)
     await fs.rm(overrideConfigPath(ws, name), { force: true })
+    await journal(`env "${name}": removed`, 'removeEnv', `${ws}/env/${name}`)
+  })
+}
+
+// --- per-workspace agent policy: default agent + deny-list -----------------
+
+/** Set (or clear, passing `undefined`) the workspace's default agent — used to
+ *  resolve a session created here without an explicit `agent` (sessions.ts
+ *  `createAgentDraft`, ipc.ts `createSession`). Rejected if the id is on the
+ *  workspace's own deny-list — a default that is itself denied could never
+ *  actually be used. */
+export function setDefaultAgent(ws: string, agentId: string | undefined): Promise<void> {
+  return editWorkspace(ws, async () => {
+    const data = await getWorkspace(ws)
+    if (agentId && data.deniedAgents?.includes(agentId))
+      throw new Error(`agent "${agentId}" is denied in "${ws}" — allow it first`)
+    if (agentId) data.defaultAgent = agentId
+    else delete data.defaultAgent
+    await saveWorkspace(ws, data)
+    await journal(
+      `workspace "${ws}": default agent ${agentId ? `set to "${agentId}"` : 'cleared'}`,
+      'setDefaultAgent',
+      ws
+    )
+  })
+}
+
+/** Replace the workspace's agent deny-list wholesale (empty = deny nothing).
+ *  Rejected if it would deny the workspace's own default agent — clear the
+ *  default first, so a workspace never ends up defaulting to an agent no
+ *  session of it may use. */
+export function setDeniedAgents(ws: string, agentIds: string[]): Promise<void> {
+  return editWorkspace(ws, async () => {
+    const data = await getWorkspace(ws)
+    if (data.defaultAgent && agentIds.includes(data.defaultAgent))
+      throw new Error(`"${data.defaultAgent}" is this workspace's default agent — change that first`)
+    if (agentIds.length) data.deniedAgents = agentIds
+    else delete data.deniedAgents
+    await saveWorkspace(ws, data)
+    await journal(`workspace "${ws}": agent deny-list updated`, 'setDeniedAgents', ws)
+  })
+}
+
+/**
+ * Point the workspace's operator sessions at one of its own envs, or back at
+ * the bundled default (`undefined`) — the operator twin of `setDefaultAgent`
+ * (docs/requirements-session-operator.md §2.2). Rejects a name the registry
+ * does not hold: a default nothing resolves to would fail every operator
+ * start.
+ */
+export function setOperatorEnv(ws: string, env: string | undefined): Promise<void> {
+  return editWorkspace(ws, async () => {
+    const data = await getWorkspace(ws)
+    if (env !== undefined && !data.envs.some((e) => e.name === env))
+      throw new Error(`env "${env}" is not registered in "${ws}"`)
+    if (env) data.operatorEnv = env
+    else delete data.operatorEnv
+    await saveWorkspace(ws, data)
+    await journal(
+      `workspace "${ws}": operator env ${env ? `set to "${env}"` : 'reset to the bundled default'}`,
+      'setOperatorEnv',
+      ws
+    )
+  })
+}
+
+// --- MCP registry (workspace registry, docs/requirements-mcp-proxy.md §3) ---
+
+/** The workspace's user-configured MCP servers ([] when the field is absent). */
+export async function getMcpServers(ws: string): Promise<McpRegistryEntry[]> {
+  return (await getWorkspace(ws)).mcpServers ?? []
+}
+
+/** Task names with a session whose MCP selection names this entry — the same
+ *  delete-blocking rule a linked credential gets (§3.1). */
+export async function tasksUsingMcp(ws: string, id: string): Promise<string[]> {
+  const used: string[] = []
+  for (const task of await listTasks(ws)) {
+    const sessions = await readJson<PersistedSession[]>(sessionsFile(ws, task), [])
+    if (sessions.some((s) => s.info.mcp?.some((m) => m.id === id))) used.push(task)
+  }
+  return used
+}
+
+/** Reject an entry the registry cannot hold: bad id/url/headers, a reserved
+ *  built-in id, or an id another entry already has (§3.3). The credential link
+ *  is checked by the caller — see `checkMcpCredential` in main/credentials.ts. */
+function assertValidMcp(entry: McpRegistryEntry, others: McpRegistryEntry[]): void {
+  const invalid = validateMcpEntry(entry, { takenIds: others.map((e) => e.id) })
+  if (invalid) throw new Error(`mcp server "${entry.id}": ${invalid}`)
+}
+
+export function addMcpServer(ws: string, entry: McpRegistryEntry): Promise<void> {
+  return editWorkspace(ws, async () => {
+    const data = await getWorkspace(ws)
+    const servers = data.mcpServers ?? []
+    assertValidMcp(entry, servers)
+    data.mcpServers = [...servers, normalizeMcpEntry(entry)]
+    await saveWorkspace(ws, data)
+    await journal(`mcp server "${entry.id}": added`, 'addMcpServer', `${ws}/mcp/${entry.id}`)
+  })
+}
+
+/** Update an entry, matched by its (immutable) id — renaming is not supported,
+ *  the id is what a session's selection and the proxy route are keyed by. */
+export function updateMcpServer(ws: string, entry: McpRegistryEntry): Promise<void> {
+  return editWorkspace(ws, async () => {
+    const data = await getWorkspace(ws)
+    const servers = data.mcpServers ?? []
+    const i = servers.findIndex((e) => e.id === entry.id)
+    if (i < 0) throw new Error(`mcp server "${entry.id}" not found in "${ws}"`)
+    assertValidMcp(entry, servers.filter((_, j) => j !== i))
+    servers[i] = normalizeMcpEntry(entry)
+    data.mcpServers = servers
+    await saveWorkspace(ws, data)
+    await journal(`mcp server "${entry.id}": updated`, 'updateMcpServer', `${ws}/mcp/${entry.id}`)
+  })
+}
+
+export function removeMcpServer(ws: string, id: string): Promise<void> {
+  return editWorkspace(ws, async () => {
+    const used = await tasksUsingMcp(ws, id)
+    if (used.length)
+      throw new Error(
+        `mcp server "${id}" is selected by session(s) in task(s): ${used.join(', ')} — unselect it there first`
+      )
+    const data = await getWorkspace(ws)
+    if (!data.mcpServers?.some((e) => e.id === id))
+      throw new Error(`mcp server "${id}" not found in "${ws}"`)
+    data.mcpServers = data.mcpServers.filter((e) => e.id !== id)
+    await saveWorkspace(ws, data)
+    await journal(`mcp server "${id}": removed`, 'removeMcpServer', `${ws}/mcp/${id}`)
+  })
+}
+
+// --- skill registry (workspace registry, docs/requirements-skills.md §4.1) ---
+//
+// The directory listing *is* the registry: a skill is a directory under
+// `~/.gurt/<ws>/skills/` holding a `SKILL.md`. There is no index file to keep
+// in sync with the tree, which is the whole reason a user may drop a skill in
+// by hand — copy the directory, and it is offered.
+//
+// `workspace.json` holds only `defaultSkills`, which is names.
+
+/** Read one skill directory. A directory that is there but does not parse comes
+ *  back as an entry carrying `problem`, never as nothing: it is still selected
+ *  by whatever selected it, still deletable, and the user cannot fix what the
+ *  UI refuses to show (§4.1). */
+async function readSkill(ws: string, name: string): Promise<SkillEntry> {
+  const dir = skillDir(ws, name)
+  let doc: string
+  try {
+    doc = await fs.readFile(path.join(dir, SKILL_FILE), 'utf8')
+  } catch {
+    return { name, description: '', files: [], problem: `no ${SKILL_FILE} in this directory` }
+  }
+  const files: string[] = []
+  for (const entry of await fs.readdir(dir, { withFileTypes: true }).catch(() => [])) {
+    if (entry.name !== SKILL_FILE) files.push(entry.isDirectory() ? `${entry.name}/` : entry.name)
+  }
+  files.sort()
+  const { frontmatter, error } = validateSkillDoc(name, doc)
+  return {
+    name,
+    description: frontmatter?.description ?? '',
+    files,
+    ...(error ? { problem: error } : {})
+  }
+}
+
+/** The workspace's skills ([] when the registry directory does not exist). */
+export async function getSkills(ws: string): Promise<SkillEntry[]> {
+  const names: string[] = []
+  for (const entry of await fs.readdir(skillsDir(ws), { withFileTypes: true }).catch(() => []))
+    if (entry.isDirectory() && !skillNameProblem(entry.name)) names.push(entry.name)
+  return skillEntries(await Promise.all(names.map((n) => readSkill(ws, n))))
+}
+
+/** One skill's `SKILL.md`, verbatim — what the editor opens and rewrites. */
+export async function getSkillDoc(ws: string, name: string): Promise<string> {
+  assertSkillName(name)
+  try {
+    return await fs.readFile(path.join(skillDir(ws, name), SKILL_FILE), 'utf8')
+  } catch {
+    throw new Error(`skill "${name}" has no ${SKILL_FILE} in "${ws}"`)
+  }
+}
+
+/** Task names with a session whose skill selection names this skill — the same
+ *  delete-blocking rule an MCP entry gets (`tasksUsingMcp`). */
+export async function tasksUsingSkill(ws: string, name: string): Promise<string[]> {
+  const used: string[] = []
+  for (const task of await listTasks(ws)) {
+    const sessions = await readJson<PersistedSession[]>(sessionsFile(ws, task), [])
+    if (sessions.some((s) => s.info.skills?.some((k) => k.name === name))) used.push(task)
+  }
+  return used
+}
+
+/** Reject a name the registry cannot hold. Split out from the document check
+ *  because a delete and a read need it too, and they have no document. */
+function assertSkillName(name: string, takenNames: readonly string[] = []): void {
+  const bad = skillNameProblem(name, takenNames)
+  if (bad) throw new Error(bad)
+}
+
+/** Write `SKILL.md` after checking that its frontmatter agrees with the name it
+ *  is being filed under — the one rule that cannot be checked from the name
+ *  alone (docs/requirements-skills.md §4.1). */
+async function writeSkillDoc(ws: string, name: string, doc: string): Promise<void> {
+  const { error } = validateSkillDoc(name, doc)
+  if (error) throw new Error(`skill "${name}": ${error}`)
+  const dir = skillDir(ws, name)
+  await fs.mkdir(dir, { recursive: true })
+  await fs.writeFile(path.join(dir, SKILL_FILE), doc)
+}
+
+/** Serialized against the registry, not against `workspace.json`: two adds
+ *  racing would otherwise both see "name is free". `defaultSkills` writes go
+ *  through `editWorkspace` as usual. */
+function editSkills<T>(ws: string, fn: () => Promise<T>): Promise<T> {
+  return chained(`skills:${ws}`, fn)
+}
+
+export function addSkill(ws: string, name: string, doc: string): Promise<void> {
+  return editSkills(ws, async () => {
+    const clean = name.trim()
+    assertSkillName(clean, (await getSkills(ws)).map((s) => s.name))
+    await writeSkillDoc(ws, clean, doc)
+    await journal(`skill "${clean}": added`, 'addSkill', `${ws}/skill/${clean}`)
+  })
+}
+
+/** Update a skill, matched by its (immutable) name — renaming is not supported,
+ *  the name is what a session's selection stores and what the mount copies.
+ *  Only `SKILL.md` is written; supporting files beside it are left alone. */
+export function updateSkill(ws: string, name: string, doc: string): Promise<void> {
+  return editSkills(ws, async () => {
+    const clean = name.trim()
+    assertSkillName(clean)
+    if (!existsSync(skillDir(ws, clean))) throw new Error(`skill "${clean}" not found in "${ws}"`)
+    await writeSkillDoc(ws, clean, doc)
+    await journal(`skill "${clean}": updated`, 'updateSkill', `${ws}/skill/${clean}`)
+  })
+}
+
+/** Delete a skill and everything in its directory. Blocked while a session
+ *  selects it: a materialization reads the registry at start, and a selection
+ *  pointing at nothing is a start that quietly delivers less than it says. */
+export function removeSkill(ws: string, name: string): Promise<void> {
+  return editSkills(ws, async () => {
+    const clean = name.trim()
+    assertSkillName(clean)
+    const used = await tasksUsingSkill(ws, clean)
+    if (used.length)
+      throw new Error(
+        `skill "${clean}" is selected by session(s) in task(s): ${used.join(', ')} — unselect it there first`
+      )
+    if (!existsSync(skillDir(ws, clean))) throw new Error(`skill "${clean}" not found in "${ws}"`)
+    await rmTree(skillDir(ws, clean))
+    // A deleted skill cannot stay on the default-on list: every new draft would
+    // seed a name that resolves to nothing.
+    await editWorkspace(ws, async () => {
+      const data = await getWorkspace(ws)
+      if (!data.defaultSkills?.includes(clean)) return
+      const next = data.defaultSkills.filter((n) => n !== clean)
+      if (next.length) data.defaultSkills = next
+      else delete data.defaultSkills
+      await saveWorkspace(ws, data)
+    })
+    await journal(`skill "${clean}": removed`, 'removeSkill', `${ws}/skill/${clean}`)
+  })
+}
+
+/**
+ * Stage a session's selected skills for its container: wipe
+ * `.multirepo/<id>/skills/` and copy each *resolvable* selected skill directory
+ * into it. Returns the names that resolved to nothing, for the caller to report
+ * on the session's provision log (docs/requirements-skills.md §5).
+ *
+ * Copied rather than symlinked, and staged rather than bound straight off the
+ * registry, for one reason each: a bind follows the host directory, so a
+ * registry edit would reach into a running session's read-only mount, and a
+ * symlink farm would resolve to paths that do not exist inside the container.
+ * A copy is the only shape where "what this session got" is a fact fixed at
+ * start.
+ *
+ * The directory is (re)created even when nothing resolves — the mount's source
+ * has to exist, and an empty one is the honest answer to a selection that
+ * resolves to nothing.
+ */
+export async function materializeSessionSkills(
+  ws: string,
+  task: string,
+  sessionId: string,
+  selection: readonly { name: string }[] | undefined
+): Promise<{ missing: string[] }> {
+  const dir = sessionSkillsDir(ws, task, sessionId)
+  await rmTree(dir)
+  await fs.mkdir(dir, { recursive: true })
+  const missing: string[] = []
+  for (const name of skillNames(selection)) {
+    const src = skillDir(ws, name)
+    if (skillNameProblem(name) || !existsSync(path.join(src, SKILL_FILE))) {
+      missing.push(name)
+      continue
+    }
+    await fs.cp(src, path.join(dir, name), { recursive: true })
+  }
+  return { missing }
+}
+
+/** Replace the workspace's default-on skill set wholesale (empty = none).
+ *  Rejected if it names a skill the registry does not hold — the mirror of
+ *  `setDeniedAgents` refusing to deny the default agent: a default nothing
+ *  resolves to would seed every new draft with an error row. */
+export function setDefaultSkills(ws: string, names: string[]): Promise<void> {
+  return editWorkspace(ws, async () => {
+    const clean = [...new Set(names.map((n) => n.trim()).filter(Boolean))]
+    const known = new Set((await getSkills(ws)).map((s) => s.name))
+    for (const name of clean)
+      if (!known.has(name)) throw new Error(`skill "${name}" is not in this workspace's registry`)
+    const data = await getWorkspace(ws)
+    if (clean.length) data.defaultSkills = clean
+    else delete data.defaultSkills
+    await saveWorkspace(ws, data)
+    await journal(`workspace "${ws}": default skills updated`, 'setDefaultSkills', ws)
   })
 }
 
@@ -433,7 +1095,18 @@ export function taskExists(ws: string, task: string): boolean {
 export async function createTask(ws: string, task: string): Promise<void> {
   validateName('task', task)
   if (taskExists(ws, task)) throw new Error(`task "${task}" already exists in "${ws}"`)
-  await writeJson(path.join(taskDir(ws, task), 'task.json'), {} satisfies TaskFile)
+  await writeJson(path.join(taskDir(ws, task), 'task.json'), {
+    createdAt: new Date().toISOString()
+  } satisfies TaskFile)
+}
+
+/** Creation time of a task whose `task.json` predates {@link TaskFile.createdAt}:
+ *  the marker file's own birth time. Filesystems that record none report 0 —
+ *  mtime stands in there, and the epoch if even the stat fails, which only puts
+ *  the task first in oldest-first order rather than dropping it from the tree. */
+async function taskBirthTime(ws: string, task: string): Promise<string> {
+  const st = await fs.stat(path.join(taskDir(ws, task), 'task.json')).catch(() => null)
+  return new Date(st ? st.birthtimeMs || st.mtimeMs : 0).toISOString()
 }
 
 /** Renames the task's whole directory (config, clones, session logs move with
@@ -503,6 +1176,7 @@ export async function removeWorkspaceDir(ws: string): Promise<void> {
   const dir = wsDir(ws)
   await drainAppends(dir)
   await rmTree(dir)
+  await journal(`workspace "${ws}": removed`, 'removeWorkspace', ws)
 }
 
 const sessionsFile = (ws: string, task: string) => path.join(taskDir(ws, task), 'sessions.json')
@@ -515,7 +1189,8 @@ export async function readSessions(ws: string, task: string): Promise<PersistedS
   // binding already existed as `EnvState.session`, it was just stored on the
   // wrong entity. A record whose owner is gone describes a container no session
   // can claim; it is dropped here and reaped by the boot reconcile.
-  const legacy = (await getTask(ws, task)).envs
+  const taskFile = await getTask(ws, task)
+  const legacy = taskFile.envs
   if (legacy?.length) {
     for (const e of legacy) {
       const owner = e.session ? records.find((r) => r.info.id === e.session) : undefined
@@ -532,7 +1207,9 @@ export async function readSessions(ws: string, task: string): Promise<PersistedS
         error: e.error
       }
     }
-    await saveTask(ws, task, {})
+    // Drop the migrated `envs` but keep whatever else task.json carries.
+    const { envs: _envs, ...rest } = taskFile
+    await saveTask(ws, task, rest)
     migrated = true
   }
   // Migration: pre-queue records have no state — treat them as started.
@@ -549,6 +1226,14 @@ export async function readSessions(ws: string, task: string): Promise<PersistedS
     }
     if (legacyKey in info) {
       delete info[legacyKey]
+      migrated = true
+    }
+    // Pre-MCP-proxy records carried `gitAccess` — the container's native git
+    // broker toggle. The broker is gone (docs/requirements-mcp-proxy.md §10.2)
+    // and authenticated git is the host-side github MCP only, so the flag is
+    // dropped from disk rather than left as a setting nothing reads.
+    if ('gitAccess' in info) {
+      delete info['gitAccess']
       migrated = true
     }
     // Pre-multirepo records carried a single `repo?: string` field; fold it
@@ -666,12 +1351,31 @@ function appendJsonl(file: string, records: unknown[]): Promise<void> {
 }
 
 /** Replace a JSONL file's contents, waiting for pending appends first so a
- *  rewrite can never land between an append's mkdir and its write. */
+ *  rewrite can never land between an append's mkdir and its write. Same
+ *  tmp+fsync+rename durability as `writeJson` — `fs.writeFile` in place would
+ *  be just as vulnerable to a crash leaving a 0-byte file. */
 function rewriteJsonl(file: string, records: unknown[]): Promise<void> {
   const prev = appendChains.get(file) ?? Promise.resolve()
   const next = prev.then(async () => {
-    await fs.mkdir(path.dirname(file), { recursive: true })
-    await fs.writeFile(file, records.map((r) => JSON.stringify(r) + '\n').join(''))
+    const dir = path.dirname(file)
+    await fs.mkdir(dir, { recursive: true })
+    const tmp = path.join(dir, `.${path.basename(file)}.tmp`)
+    const fh = await fs.open(tmp, 'w')
+    try {
+      await fh.writeFile(records.map((r) => JSON.stringify(r) + '\n').join(''))
+      await fh.sync()
+    } finally {
+      await fh.close()
+    }
+    await fs.rename(tmp, file)
+    if (process.platform !== 'win32') {
+      const dh = await fs.open(dir, 'r')
+      try {
+        await dh.sync()
+      } finally {
+        await dh.close()
+      }
+    }
   })
   appendChains.set(
     file,
@@ -715,20 +1419,17 @@ export async function readSessionLog(
   return out
 }
 
-/** Remove the scratch directory a session's explicit repo mounts were staged
- *  in (`.multirepo/<id>`, see {@link mountedWorkspaceDir}) — it is gurt's own,
- *  holds only mount points, and has no owner once the session is deleted. Only
- *  sessions with explicit mounts ever had one; the rest hit a missing path,
- *  which `force` makes a no-op. */
+/** Remove the scratch directory gurt staged a session's own mounts in
+ *  (`.multirepo/<id>`, see {@link sessionScratchDir}): its repo mount points,
+ *  its merged devcontainer config and its materialized skills. All gurt's own,
+ *  with no owner once the session is deleted. A session that needed none of
+ *  them hits a missing path, which `force` makes a no-op. */
 export async function deleteSessionScratch(
   ws: string,
   task: string,
   sessionId: string
 ): Promise<void> {
-  await fs.rm(path.dirname(mountedWorkspaceDir(ws, task, sessionId)), {
-    recursive: true,
-    force: true
-  })
+  await fs.rm(sessionScratchDir(ws, task, sessionId), { recursive: true, force: true })
 }
 
 export async function deleteSessionLog(ws: string, task: string, sessionId: string): Promise<void> {
@@ -783,9 +1484,26 @@ export async function buildTree(): Promise<Tree> {
     if (!existsSync(path.join(wsDir(ws), 'workspace.json'))) continue
     const wsData = await getWorkspace(ws)
     const tasks: Tree['workspaces'][number]['tasks'] = []
-    for (const task of await listTasks(ws))
-      tasks.push({ name: task, repos: await taskClones(ws, task), sessions: [] })
-    tree.workspaces.push({ name: ws, repos: wsData.repos, envs: wsData.envs, tasks })
+    for (const task of await listTasks(ws)) {
+      const taskFile = await getTask(ws, task)
+      tasks.push({
+        name: task,
+        createdAt: taskFile.createdAt ?? (await taskBirthTime(ws, task)),
+        repos: await taskClones(ws, task),
+        sessions: [],
+        ...(taskFile.maxConcurrentSessions ? { maxConcurrentSessions: taskFile.maxConcurrentSessions } : {})
+      })
+    }
+    tree.workspaces.push({
+      name: ws,
+      repos: wsData.repos,
+      envs: wsData.envs,
+      ...(wsData.defaultAgent ? { defaultAgent: wsData.defaultAgent } : {}),
+      ...(wsData.deniedAgents?.length ? { deniedAgents: wsData.deniedAgents } : {}),
+      ...(wsData.defaultSkills?.length ? { defaultSkills: wsData.defaultSkills } : {}),
+      ...(wsData.operatorEnv ? { operatorEnv: wsData.operatorEnv } : {}),
+      tasks
+    })
   }
   return tree
 }

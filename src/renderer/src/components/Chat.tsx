@@ -6,6 +6,7 @@ import type {
   ChatPermission,
   ChatToolCall,
   CommandInfo,
+  PendingPromptInfo,
   PlanEntry,
   PromptCapabilities,
   PromptContext,
@@ -13,19 +14,27 @@ import type {
   SessionConfigOption,
   SessionMode,
   SessionModes,
-  SessionSnapshot
+  SessionNetwork,
+  SessionSnapshot,
+  Tree
 } from '../../../shared/types'
 import { sessionRole, sessionStatus } from '../../../shared/types'
 import { agentOptionView } from '../../../shared/agentConfig'
 import { agentKind, agentName, useAgents } from '../useAgents'
+import { useMcpEntries, useMcpFailures } from '../useMcp'
+import { resolveMcpSelection } from '../../../shared/mcp'
 import { alertDialog } from '../dialog'
 import { createLogger, logErr } from '../log'
 import { SESSION_DOT } from '../status'
 import { Icon, Dot } from './icons'
-import { AgentMark, EnvRepoMarks, RoleMark } from './tags'
+import { AgentMark, EnvRepoMarks, hasNetMark, McpFailBanner, McpMarks, NetMark, RoleMark } from './tags'
+import { NetButton } from './Network'
+import { ConfigTab } from './ConfigTab'
 import { SessionMenu } from './SessionActions'
+import { TabBar, type SessionTab } from './SessionTabs'
 import { VscodeButton } from './VscodeButton'
 import { run } from '../async'
+import { elapsedClock } from '../time'
 
 const log = createLogger('chat')
 
@@ -55,18 +64,31 @@ const formatTokens = (n: number): string => (n >= 1000 ? `${(n / 1000).toFixed(1
  *  when jumping back to that message. */
 const PIN_BAR_CLEARANCE = 36
 
+/** Unsent composer text/context/images, kept outside React state so they survive
+ *  the remount `key={sessionId}` forces on every session switch (that key exists
+ *  to stop a *different* bug — stale text bleeding into the next session). Entries
+ *  are dropped once a draft goes back to empty, so switching away after sending
+ *  doesn't leak an entry per session for the life of the app. */
+const composerDrafts = new Map<string, { text: string; chips: PromptContext[]; images: PromptImage[] }>()
+
 export function Chat({
+  tree,
   snapshot,
   sessionId,
+  log,
   onSelect,
   onDeleted
 }: {
+  tree: Tree | null
   snapshot?: SessionSnapshot | undefined
   sessionId: string
+  log: string[]
   /** Select another session — where a duplicate's fresh draft is handed to. */
   onSelect: (id: string) => void
   onDeleted: () => void
 }) {
+  const [activeTab, setActiveTab] = useState<SessionTab>('chat')
+  useEffect(() => setActiveTab('chat'), [sessionId])
   const feedRef = useRef<HTMLDivElement>(null)
   const innerRef = useRef<HTMLDivElement>(null)
   /** Follow-the-tail flag: true until the user scrolls away from the bottom. */
@@ -74,6 +96,9 @@ export function Chat({
   const [pinnedId, setPinnedId] = useState<number | undefined>(undefined)
   const pinnedTextRef = useRef('')
   const agents = useAgents()
+  // Up here with the other hooks: the snapshot guard below is an early return.
+  const mcpOffered = useMcpEntries(snapshot?.info.workspace)
+  const mcpFailures = useMcpFailures(sessionId)
 
   const entries = snapshot?.entries ?? []
   const hasSnapshot = !!snapshot
@@ -203,23 +228,45 @@ export function Chat({
   // and while any modal/dialog is open — there Esc means "dismiss it", and both
   // listeners live on window, so this one must stand down explicitly.
   const busy = snapshot?.busy ?? false
+  const pending = snapshot?.pending ?? []
+  const pendingCount = pending.length
+  /** Text (and chips) handed back to the composer when a queued prompt is
+   *  pulled out of the queue — bumped by `at` so the same text twice still
+   *  registers as a second hand-back. */
+  const [restore, setRestore] = useState<{ text: string; context: PromptContext[]; at: number } | null>(null)
   useEffect(() => {
-    if (!busy) return
+    if (!busy && !pendingCount) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
       const t = e.target as HTMLElement | null
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return
       if (document.querySelector('.modal-backdrop, .cmp-menu, .gear-pop')) return
       e.preventDefault()
-      window.gurt.sessionCancel(sessionId).catch(logErr('sessionCancel'))
+      // Stop means stop. Anything queued behind this turn would otherwise fire
+      // the instant the turn it was waiting on ends, which is the opposite of
+      // what the key was pressed for — so it comes back to the composer, where
+      // the user can edit it, drop it, or send it again.
+      window.gurt
+        .sessionClearPending(sessionId)
+        .then((dropped) => {
+          if (!dropped.length) return
+          setRestore({
+            text: dropped.map((p) => p.text).join('\n\n'),
+            context: dropped.flatMap((p) => p.context ?? []),
+            at: Date.now()
+          })
+        })
+        .catch(logErr('sessionClearPending'))
+      if (busy) window.gurt.sessionCancel(sessionId).catch(logErr('sessionCancel'))
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [busy, sessionId])
+  }, [busy, pendingCount, sessionId])
 
   if (!snapshot) return <div className="placeholder">loading session…</div>
 
   const { info, modes, plan, commands, configOptions, promptCapabilities } = snapshot
+  const mcp = resolveMcpSelection(info.mcp, mcpOffered)
 
   const hasPlan = !!plan && plan.length > 0
 
@@ -246,11 +293,12 @@ export function Chat({
   return (
     <div className="chat">
       <div className="chat-head">
+        <TabBar active={activeTab} onChange={setActiveTab} />
+        <span className="spacer" />
         <Dot tone={headDot.tone} pulse={headDot.pulse} />
         <span className="chat-title">
           {info.task} / {info.title}
         </span>
-        <span className="spacer" />
         <span className="chat-pill">{sizeLabel}</span>
         <span className="chat-pill">
           <RoleMark role={sessionRole(info)} />
@@ -260,46 +308,75 @@ export function Chat({
               · <AgentMark kind={agentKind(agents, info.agent)} name={agentName(agents, info.agent)} />
             </span>
           )}
+          {mcp.length > 0 && (
+            <span>
+              · <McpMarks resolved={mcp} />
+            </span>
+          )}
+          {hasNetMark(info.network) && (
+            <span>
+              · <NetMark network={info.network} />
+            </span>
+          )}
         </span>
         <VscodeButton info={info} />
         {/* A session already running is exactly where "this was set up wrong"
             is noticed — duplicate/delete belong on this header, not only on the
             draft pane the session has left behind. */}
         <SessionMenu info={info} onSelect={onSelect} onDeleted={onDeleted} />
-        {busy && <span className="chat-hint mono">esc to stop</span>}
+        {(busy || pendingCount > 0) && <span className="chat-hint mono">esc to stop</span>}
       </div>
 
-      <div className="feed-wrap">
-        {lastUserEntry && (
-          <PinnedRequest
-            text={pinnedTextRef.current || lastUserEntry.text}
-            visible={pinnedId !== undefined}
-            onNavigate={scrollToPinned}
-          />
-        )}
-        <div className="feed" ref={feedRef} onScroll={onFeedScroll}>
-          <div className="feed-inner" ref={innerRef}>
-            {entries.map((e, i) => (
-              <Msg key={e.id} entry={e} sessionId={sessionId} live={busy && i === entries.length - 1} />
-            ))}
-            {liveTail && <ThinkingLive label={liveTail} />}
+      {/* A local MCP server that would not start does not fail the session
+          (§6): without this the agent would simply be missing tools, and the
+          reason would be in ~/.gurt/logs. */}
+      <McpFailBanner failures={mcpFailures} />
+
+      {activeTab === 'config' && <ConfigTab tree={tree} snapshot={snapshot} />}
+
+      {activeTab === 'logs' && (
+        <pre className="env-log">{log.length ? log.join('\n') : 'no logs yet'}</pre>
+      )}
+
+      {activeTab === 'chat' && (
+        <>
+          <div className="feed-wrap">
+            {lastUserEntry && (
+              <PinnedRequest
+                text={pinnedTextRef.current || lastUserEntry.text}
+                visible={pinnedId !== undefined}
+                onNavigate={scrollToPinned}
+              />
+            )}
+            <div className="feed" ref={feedRef} onScroll={onFeedScroll}>
+              <div className="feed-inner" ref={innerRef}>
+                {entries.map((e, i) => (
+                  <Msg key={e.id} entry={e} sessionId={sessionId} live={busy && i === entries.length - 1} />
+                ))}
+                {liveTail && <ThinkingLive label={liveTail} />}
+              </div>
+            </div>
           </div>
-        </div>
-      </div>
 
-      {plan && plan.length > 0 && <PlanPinned plan={plan} />}
+          {plan && plan.length > 0 && <PlanPinned plan={plan} />}
 
-      <Composer
-        key={sessionId}
-        sessionId={sessionId}
-        agentKind={agentKind(agents, info.agent)}
-        busy={busy}
-        flush={!hasPlan}
-        modes={modes}
-        commands={commands ?? []}
-        configOptions={configOptions ?? []}
-        promptCaps={promptCapabilities}
-      />
+          <Composer
+            key={sessionId}
+            sessionId={sessionId}
+            agentKind={agentKind(agents, info.agent)}
+            network={info.network}
+            busy={busy}
+            pending={pending}
+            pendingBlocked={snapshot.pendingBlocked}
+            restore={restore}
+            flush={!hasPlan}
+            modes={modes}
+            commands={commands ?? []}
+            configOptions={configOptions ?? []}
+            promptCaps={promptCapabilities}
+          />
+        </>
+      )}
     </div>
   )
 }
@@ -404,13 +481,30 @@ function Msg({
   }
 }
 
+/** Fallback progress readout for a live row: how long it has been up. Agents
+ *  that stream no thinking text give nothing to count tokens from, so without
+ *  this the row sits there with no sign of movement — the clock answers the
+ *  only question it raises, is this still going. Its own component so the 1s
+ *  interval exists only while such a row is on screen. */
+function Elapsed() {
+  const startRef = useRef(Date.now())
+  const [secs, setSecs] = useState(0)
+  useEffect(() => {
+    const id = setInterval(() => setSecs(Math.round((Date.now() - startRef.current) / 1000)), 1000)
+    return () => clearInterval(id)
+  }, [])
+  return <span>· {elapsedClock(secs)}</span>
+}
+
 function ThoughtMsg({ text, live }: { text: string; live?: boolean | undefined }) {
   const [open, setOpen] = useState(false)
+  const tokens = live ? approxTokens(text) : 0
   return (
     <div className="msg">
       <span className="msg-dot" style={{ background: 'var(--yellow)' }} />
       <div className="thought-head mono" onClick={() => setOpen((o) => !o)}>
-        {open ? '▾' : '▸'} thinking…{live ? ` · ~${approxTokens(text)} tokens` : ''}
+        {open ? '▾' : '▸'} thinking…
+        {live && (tokens > 0 ? ` · ~${tokens} tokens` : <Elapsed />)}
       </div>
       {open && <div className="thought-text">{text}</div>}
     </div>
@@ -422,7 +516,10 @@ function ThinkingLive({ label }: { label: string }) {
   return (
     <div className="msg">
       <span className="msg-dot dot-pulse" style={{ background: 'var(--yellow)' }} />
-      <div className="thought-head mono">{label}</div>
+      <div className="thought-head mono">
+        {label}
+        <Elapsed />
+      </div>
     </div>
   )
 }
@@ -605,7 +702,11 @@ function fileToBase64(file: File): Promise<string> {
 function Composer({
   sessionId,
   agentKind,
+  network,
   busy,
+  pending,
+  pendingBlocked,
+  restore,
   flush,
   modes,
   commands,
@@ -615,7 +716,16 @@ function Composer({
   sessionId: string
   /** The session agent's kind (`AgentDef.id`) — scopes agent-specific UI fixups. */
   agentKind?: string | undefined
+  /** The session's egress mode — what the network button on the bar reports (§8). */
+  network?: SessionNetwork | undefined
   busy: boolean
+  /** Prompts already sent that are waiting their turn, oldest first. */
+  pending: PendingPromptInfo[]
+  /** Why the queue is not moving with no turn running (a clone held elsewhere). */
+  pendingBlocked?: string | undefined
+  /** A queued prompt pulled back out of the queue upstream (Esc) — its text and
+   *  chips land back in this composer. */
+  restore?: { text: string; context: PromptContext[]; at: number } | null
   /** No plan bar above — the composer sits flush against the feed. */
   flush: boolean
   modes?: SessionModes | undefined
@@ -623,13 +733,15 @@ function Composer({
   configOptions: SessionConfigOption[]
   promptCaps?: PromptCapabilities | undefined
 }) {
-  const [text, setText] = useState('')
+  const draft = composerDrafts.get(sessionId)
+  const [text, setText] = useState(draft?.text ?? '')
   const [focused, setFocused] = useState(false)
-  const [chips, setChips] = useState<PromptContext[]>([])
-  const [images, setImages] = useState<PromptImage[]>([])
+  const [chips, setChips] = useState<PromptContext[]>(draft?.chips ?? [])
+  const [images, setImages] = useState<PromptImage[]>(draft?.images ?? [])
   const [slashOpen, setSlashOpen] = useState(false)
   const [addOpen, setAddOpen] = useState(false)
   const [gearOpen, setGearOpen] = useState(false)
+  const [netOpen, setNetOpen] = useState(false)
   const [cmdQuery, setCmdQuery] = useState('')
   const [cmdIdx, setCmdIdx] = useState(0)
   /** null → the add-context item list; 'file'/'folder' → an inline path input. */
@@ -648,9 +760,35 @@ function Composer({
   const addAnchorRef = useRef<HTMLSpanElement>(null)
   const slashAnchorRef = useRef<HTMLSpanElement>(null)
   const gearAnchorRef = useRef<HTMLSpanElement>(null)
+  const netAnchorRef = useRef<HTMLSpanElement>(null)
   const imgRef = useRef<HTMLInputElement>(null)
   const recogRef = useRef<{ stop: () => void } | null>(null)
   const lastActivityPingRef = useRef(0)
+
+  /** Put a prompt that left the queue back where it was typed. Appended, never
+   *  overwritten: the user may well have started composing the next one while
+   *  it waited. */
+  const takeBack = (text: string, context: PromptContext[]) => {
+    setText((t) => (t.trim() ? `${t.replace(/\s+$/, '')}\n\n${text}` : text))
+    if (context.length)
+      setChips((c) => [...c, ...context.filter((x) => !c.some((y) => y.path === x.path))])
+    setTimeout(() => taRef.current?.focus(), 0)
+  }
+
+  // Esc upstream emptied the queue — this is where its contents come home.
+  useEffect(() => {
+    if (!restore) return
+    takeBack(restore.text, restore.context)
+    // takeBack is stable enough for this: it only ever closes over setState.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [restore?.at])
+
+  const cancelPending = (id: string) => {
+    window.gurt
+      .sessionCancelPending(sessionId, id)
+      .then((gone) => gone && takeBack(gone.text, gone.context ?? []))
+      .catch(logErr('sessionCancelPending'))
+  }
 
   const pingActivity = () => {
     const now = performance.now()
@@ -669,14 +807,29 @@ function Composer({
   // Re-fit whenever the value changes (send clears it, pickCommand extends it).
   useEffect(autoGrow, [text])
 
+  // Mirror the draft into the module-level cache on every change, so it
+  // survives this component's remount on session switch. An empty draft is
+  // removed rather than stored, so a sent (or never-started) message doesn't
+  // leave a dangling entry behind.
+  useEffect(() => {
+    if (!text && chips.length === 0 && images.length === 0) composerDrafts.delete(sessionId)
+    else composerDrafts.set(sessionId, { text, chips, images })
+  }, [sessionId, text, chips, images])
+
   // Close the open popup on any click outside it (mousedown on the trigger
   // button lands inside the anchor, so it falls through to the button's own
   // toggle instead of double-closing) and on Esc. The textarea/slash input
   // also handle their own Esc; this document listener covers the rest (e.g.
   // focus left on the button that opened the menu).
   useEffect(() => {
-    if (!slashOpen && !addOpen && !gearOpen) return
-    const anchorRef = slashOpen ? slashAnchorRef : addOpen ? addAnchorRef : gearAnchorRef
+    if (!slashOpen && !addOpen && !gearOpen && !netOpen) return
+    const anchorRef = slashOpen
+      ? slashAnchorRef
+      : addOpen
+        ? addAnchorRef
+        : gearOpen
+          ? gearAnchorRef
+          : netAnchorRef
     const onDown = (e: MouseEvent) => {
       const anchor = anchorRef.current
       if (anchor && !anchor.contains(e.target as Node)) closeMenus()
@@ -690,7 +843,7 @@ function Composer({
       document.removeEventListener('mousedown', onDown)
       document.removeEventListener('keydown', onKey)
     }
-  }, [slashOpen, addOpen, gearOpen])
+  }, [slashOpen, addOpen, gearOpen, netOpen])
 
   // Stop any live dictation when the composer unmounts (session switch).
   useEffect(() => () => recogRef.current?.stop(), [])
@@ -731,6 +884,7 @@ function Composer({
     setSlashOpen(false)
     setAddOpen(false)
     setGearOpen(false)
+    setNetOpen(false)
     setAddKind(null)
     setAddPath('')
   }
@@ -738,6 +892,7 @@ function Composer({
   const openSlash = (open: boolean) => {
     setAddOpen(false)
     setGearOpen(false)
+    setNetOpen(false)
     setSlashOpen(open)
     setCmdQuery('')
     setCmdIdx(0)
@@ -747,6 +902,7 @@ function Composer({
   const openAdd = (open: boolean) => {
     setSlashOpen(false)
     setGearOpen(false)
+    setNetOpen(false)
     setAddKind(null)
     setAddPath('')
     setAddOpen(open)
@@ -754,7 +910,7 @@ function Composer({
 
   const send = () => {
     const t = text.trim()
-    if ((!t && images.length === 0) || busy) return
+    if (!t && images.length === 0) return
     const context = chips.length ? chips : undefined
     const imgs = images.length ? images : undefined
     setText('')
@@ -895,12 +1051,48 @@ function Composer({
     }
   }
 
-  const canSend = !busy && (text.trim().length > 0 || images.length > 0)
+  const canSend = text.trim().length > 0 || images.length > 0
+  /** The send would join the queue rather than start a turn — a turn is running,
+   *  something is already waiting, or the session's clone is elsewhere. */
+  const queueing = busy || pending.length > 0 || !!pendingBlocked
   const hasGearContent = (!!modes && modes.availableModes.length > 0) || configOptions.length > 0
 
   return (
     <div className={`composer-wrap ${flush ? 'flush' : ''}`}>
-      <div className={`composer ${busy ? 'disabled' : ''} ${focused && !busy ? 'focused' : ''}`}>
+      {/* What has been sent and is waiting. Visible and cancellable on purpose:
+          a message that disappeared into an invisible queue is worse than a
+          send button that refuses — which is what this replaces. */}
+      {pending.length > 0 && (
+        <div className={`pending-queue ${busy ? '' : 'waiting'}`}>
+          {pending.map((p) => (
+            <div className="pending-row" key={p.id}>
+              {/* Blue only when this really is a queue: the session's own turn
+                  is over and the prompt sits waiting for something else (the
+                  clone's holder) to let go — the same grammar as a queued
+                  session's dot. Piled onto a turn that is still running, it is
+                  just the next thing to say, so it stays faint. */}
+              {busy ? <Icon name="history" size={12} className="faint" /> : <Dot tone="accent" size={7} />}
+              <span className="pending-text">{p.text}</span>
+              {p.images ? (
+                <span className="dim" title="images ride with it and are lost if you take it back">
+                  {p.images} img
+                </span>
+              ) : null}
+              <button
+                className="icon-sq att"
+                title="take it back out of the queue (returns to the composer)"
+                onClick={() => cancelPending(p.id)}
+              >
+                <Icon name="x" size={12} />
+              </button>
+            </div>
+          ))}
+          <div className="pending-note">
+            {pendingBlocked ?? 'sends when the current turn ends'}
+          </div>
+        </div>
+      )}
+      <div className={`composer ${focused ? 'focused' : ''}`}>
         <input
           ref={imgRef}
           type="file"
@@ -918,9 +1110,14 @@ function Composer({
             ref={taRef}
             rows={1}
             className="composer-input"
-            placeholder={busy ? 'agent is working…' : 'Ask gurt to change your code…'}
+            placeholder={
+              busy
+                ? 'agent is working — what you send now goes in the queue'
+                : pendingBlocked
+                  ? 'waiting for the repository — what you send now goes in the queue'
+                  : 'Ask gurt to change your code…'
+            }
             value={text}
-            disabled={busy}
             onFocus={() => setFocused(true)}
             onBlur={() => setFocused(false)}
             onChange={(e) => {
@@ -936,7 +1133,6 @@ function Composer({
           <button
             className={`mic-btn ${micOn ? 'on' : ''}`}
             title={micOn ? 'Stop dictation' : 'Dictate'}
-            disabled={busy}
             onClick={toggleMic}
           >
             <Icon name="mic" size={14} />
@@ -948,7 +1144,6 @@ function Composer({
             <button
               className={`icon-sq ${addOpen ? 'active' : ''}`}
               title="Add context"
-              disabled={busy}
               onClick={() => openAdd(!addOpen)}
             >
               <Icon name="plus" size={14} />
@@ -1033,7 +1228,7 @@ function Composer({
             <button
               className={`icon-sq ${showSlash ? 'active' : ''}`}
               title="Commands"
-              disabled={busy || commands.length === 0}
+              disabled={commands.length === 0}
               onClick={() => openSlash(!slashOpen)}
             >
               <Icon name="slash" size={14} />
@@ -1101,6 +1296,21 @@ function Composer({
             </button>
           ))}
           <span className="spacer" />
+          {/* What the session can reach, on the bar rather than above it: the
+              icon is the mode, the click is the whole traffic ledger (§8). */}
+          <span className="pop-anchor" ref={netAnchorRef}>
+            <NetButton
+              sessionId={sessionId}
+              network={network}
+              open={netOpen}
+              onToggle={() => {
+                setSlashOpen(false)
+                setAddOpen(false)
+                setGearOpen(false)
+                setNetOpen((o) => !o)
+              }}
+            />
+          </span>
           {hasGearContent && (
             <span className="pop-anchor" ref={gearAnchorRef}>
               <button
@@ -1109,6 +1319,7 @@ function Composer({
                 onClick={() => {
                   setSlashOpen(false)
                   setAddOpen(false)
+                  setNetOpen(false)
                   setGearOpen((o) => !o)
                 }}
               >
@@ -1124,9 +1335,22 @@ function Composer({
               )}
             </span>
           )}
-          <button className="send-btn" disabled={!canSend} onClick={send} title="Send">
-            <Icon name="send" size={12} />
-            send
+          {/* Never disabled by the session's state, only by an empty message:
+              a blocked button over an input that accepts text is a dead end.
+              What changes is what it promises — send now, or take a place in
+              the queue. */}
+          <button
+            className={`send-btn ${queueing ? 'queued' : ''}`}
+            disabled={!canSend}
+            onClick={send}
+            title={
+              queueing
+                ? (pendingBlocked ?? 'the agent is working — this goes to the queue and sends when it is free')
+                : 'Send'
+            }
+          >
+            <Icon name={queueing ? 'history' : 'send'} size={12} />
+            {queueing ? 'queue' : 'send'}
           </button>
         </div>
       </div>

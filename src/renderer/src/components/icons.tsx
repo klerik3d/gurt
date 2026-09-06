@@ -20,7 +20,11 @@ export type IconName =
   | 'send'
   | 'x'
   | 'key'
+  | 'plug'
+  | 'globe'
+  | 'globe-lock'
   | 'eye'
+  | 'eye-lock'
   | 'play'
   | 'file'
   | 'folder'
@@ -34,6 +38,9 @@ export type IconName =
   | 'agent-opencode'
   | 'agent-generic'
   | 'bell'
+  | 'fold'
+  | 'sort'
+  | 'info'
 
 const PATHS: Record<IconName, JSX.Element> = {
   search: (
@@ -133,6 +140,35 @@ const PATHS: Record<IconName, JSX.Element> = {
       <line x1="6" y1="6" x2="18" y2="18" />
     </>
   ),
+  plug: (
+    <>
+      <path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8z" />
+      <line x1="9" y1="2" x2="9" y2="8" />
+      <line x1="15" y1="2" x2="15" y2="8" />
+      <line x1="12" y1="17" x2="12" y2="22" />
+    </>
+  ),
+  globe: (
+    <>
+      <circle cx="12" cy="12" r="10" />
+      <line x1="2" y1="12" x2="22" y2="12" />
+      <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+    </>
+  ),
+  // Isolated egress: `globe` again, moved up-left to free a corner for a lock.
+  // Both departures from the plain stroke recipe are for the same reason — this
+  // renders at 10-14px in the pills and on the composer bar. The lock body is
+  // filled (a stroked one closes into a blob at that size) and the grid is
+  // drawn a shade thinner than the outline, so the globe does not fill in.
+  'globe-lock': (
+    <>
+      <circle cx="10" cy="10" r="9" />
+      <line x1="1" y1="10" x2="19" y2="10" strokeWidth={1.4} />
+      <path d="M10 1a6 9 0 0 1 0 18 6 9 0 0 1 0-18z" strokeWidth={1.4} />
+      <rect x="16.6" y="17.8" width="6.8" height="5.2" rx="1.3" fill="currentColor" stroke="none" />
+      <path d="M18.2 17.8v-1.2a1.8 1.8 0 0 1 3.6 0v1.2" strokeWidth={1.6} />
+    </>
+  ),
   key: (
     <>
       <circle cx="8" cy="15" r="4" />
@@ -145,6 +181,16 @@ const PATHS: Record<IconName, JSX.Element> = {
     <>
       <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
       <circle cx="12" cy="12" r="3" />
+    </>
+  ),
+  // `eye` moved up-left to free the same corner `globe-lock` frees, carrying
+  // the same filled lock — it looks, and it holds a lock while it does.
+  'eye-lock': (
+    <>
+      <path d="M0.8 10.5s3.35-6.5 9.2-6.5 9.2 6.5 9.2 6.5-3.35 6.5-9.2 6.5-9.2-6.5-9.2-6.5z" />
+      <circle cx="10" cy="10.5" r="2.6" />
+      <rect x="16.6" y="17.8" width="6.8" height="5.2" rx="1.3" fill="currentColor" stroke="none" />
+      <path d="M18.2 17.8v-1.2a1.8 1.8 0 0 1 3.6 0v1.2" strokeWidth={1.6} />
     </>
   ),
   play: <polygon points="6 4 20 12 6 20 6 4" />,
@@ -217,6 +263,33 @@ const PATHS: Record<IconName, JSX.Element> = {
       <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" />
       <path d="M13.73 21a2 2 0 0 1-3.46 0" />
     </>
+  ),
+  // Two stacked chevrons — collapse/expand-all toggle for the task tree.
+  // Rotated 180° in place for the opposite (expand) state.
+  fold: (
+    <>
+      <polyline points="7 6 12 11 17 6" />
+      <polyline points="7 13 12 18 17 13" />
+    </>
+  ),
+  // Descending bars beside a down arrow — flipped vertically for the reverse
+  // direction (see the sidebar's sort button), which is why it is symmetric
+  // about neither axis on its own.
+  sort: (
+    <>
+      <line x1="4" y1="6" x2="14" y2="6" />
+      <line x1="4" y1="12" x2="11" y2="12" />
+      <line x1="4" y1="18" x2="8" y2="18" />
+      <polyline points="16 14 19 17.5 22 14" />
+      <line x1="19" y1="6" x2="19" y2="17" />
+    </>
+  ),
+  info: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <line x1="12" y1="11" x2="12" y2="16" />
+      <line x1="12" y1="7.6" x2="12.01" y2="7.6" />
+    </>
   )
 }
 
@@ -266,6 +339,32 @@ export function Icon({
       style={style}
     >
       {PATHS[name]}
+    </svg>
+  )
+}
+
+/** Round 'i' mark hiding a hint until hovered or focused — how the config
+ *  surfaces keep their explanations without spending a layout line on each. */
+export function InfoDot({ text }: { text: string }): JSX.Element {
+  return (
+    <span className="info-dot" tabIndex={0} aria-label={text}>
+      <Icon name="info" size={13} />
+      <span className="info-pop">{text}</span>
+    </span>
+  )
+}
+
+/** App mark — the same four-dot layout as the window/dock icon (three filled,
+ *  one outlined), redrawn flat for in-UI use (e.g. the session placeholder's
+ *  watermark) rather than embedding the packaged app-icon image. */
+export function Logo({ size = 64, className }: { size?: number; className?: string }): JSX.Element {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" className={className}>
+      <rect x="1" y="1" width="22" height="22" rx="5" fill="none" stroke="var(--faint)" strokeWidth="1.2" />
+      <circle cx="7.5" cy="7.5" r="3.4" fill="var(--green)" />
+      <circle cx="16.5" cy="7.5" r="3.4" fill="var(--accent)" />
+      <circle cx="7.5" cy="16.5" r="3.4" fill="var(--accent)" />
+      <circle cx="16.5" cy="16.5" r="3.4" fill="none" stroke="var(--faint)" strokeWidth="1.75" />
     </svg>
   )
 }

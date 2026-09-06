@@ -1,6 +1,6 @@
-// Pure-logic tests for the native-git contract (no docker, no electron):
-// repo identity, credential resolution, the transport rewrite matrix, the
-// container injection env, and the github forge provider. Bundles the TS with
+// Pure-logic tests for the git contract (no docker, no electron): repo
+// identity, credential resolution, the transport rewrite matrix, the container
+// identity injection, and the github forge provider. Bundles the TS with
 // esbuild on the fly, then asserts against the real modules.
 //
 //   node scripts/git-logic.test.mjs
@@ -20,8 +20,8 @@ const S = (rel) => JSON.stringify(path.join(ROOT, rel))
 const entry = `
 export * from ${S('src/shared/repoId.ts')}
 export * from ${S('src/shared/credentials.ts')}
-export { rewriteRules, containerGitEnv, CRED_HELPER_BIN } from ${S('src/main/git/config.ts')}
-export { providerForHost, forgeFeatures, forgeWrappers } from ${S('src/main/git/providers.ts')}
+export { rewriteRules, containerGitEnv } from ${S('src/main/git/config.ts')}
+export { providerForHost } from ${S('src/main/git/providers.ts')}
 `
 
 await bundle({
@@ -96,6 +96,32 @@ test('unverified entries are blocked, never served (§3.2)', () => {
   assert.equal(m.credentialIdentity(unverified), null)
 })
 
+// --- retired kinds resolve as an error, never silently (§10.1) ---
+test('a stored git-ssh-key entry blocks with a migration message (§10.1)', () => {
+  // ssh support is gone, but an entry written by an older gurt survives in
+  // credentials.json — resolving it must say so rather than fall through to
+  // ambient auth (or, worse, look like "no credential configured").
+  const ssh = { id: 's1', label: 'my key', kind: 'git-ssh-key', hosts: ['github.com'], data: {} }
+  assert.equal(m.isRetiredKind('git-ssh-key'), true)
+  assert.equal(m.isRetiredKind('git-token'), false)
+  // The kind is gone from the pickable set, so no new one can be created.
+  assert.equal(
+    m.CREDENTIAL_KINDS.some((k) => k.kind === 'git-ssh-key'),
+    false,
+    'the kind is not offered in the credentials editor'
+  )
+  for (const [how, cfg] of [
+    ['auto-matched by host', repo('https://github.com/me/app')],
+    ['linked explicitly', repo('https://github.com/me/app', 's1')]
+  ]) {
+    const r = m.resolveCredential([ssh], cfg, 'github.com')
+    assert.ok(r.error, `${how} → an error`)
+    assert.ok(r.error.includes('unsupported credential kind'), `${how} names the cause`)
+    assert.ok(r.error.includes('token'), `${how} says what to do instead`)
+    assert.equal(m.hasManagedCredential(r), false, `${how} is never usable`)
+  }
+})
+
 // --- agent-token is never a git credential ---
 test('agent-token is never a git credential', () => {
   // Hosts on an agent-token (e.g. left behind by a kind switch) never auto-match.
@@ -127,36 +153,33 @@ test('rewrite matrix (§6.1)', () => {
     ['url.https://github.com/.insteadOf', 'git@github.com:'],
     ['url.https://github.com/.insteadOf', 'ssh://git@github.com/']
   ])
-  assert.deepEqual(m.rewriteRules('github.com', 'git-ssh-key'), [
-    ['url.ssh://git@github.com/.insteadOf', 'https://github.com/']
-  ])
   assert.deepEqual(m.rewriteRules('github.com', 'git-host'), [])
   assert.deepEqual(m.rewriteRules('github.com', 'agent-token'), [])
 })
 
-// --- container injection env (§6) ---
-test('container injection env (§6)', () => {
-  const env = m.containerGitEnv('http://host.docker.internal:5000/git/abc', 'github.com', 'git-token')
-  assert.equal(env.GURT_GIT_BROKER, 'http://host.docker.internal:5000/git/abc')
+// --- container injection env (§10.3): commit identity, and nothing else ---
+test('container injection env is identity-only (§10.3)', () => {
+  const env = m.containerGitEnv({ name: 'Me', email: '42+me@users.noreply.github.com' })
   assert.equal(env.GIT_TERMINAL_PROMPT, '0')
-  assert.equal(env.GIT_CONFIG_COUNT, '4') // reset helper, helper, 2 rewrites
-  assert.equal(env.GIT_CONFIG_KEY_0, 'credential.helper')
-  assert.equal(env.GIT_CONFIG_VALUE_0, '')
-  assert.equal(env.GIT_CONFIG_KEY_1, 'credential.helper')
-  assert.equal(env.GIT_CONFIG_VALUE_1, m.CRED_HELPER_BIN)
-  assert.equal(env.GIT_CONFIG_KEY_2, 'url.https://github.com/.insteadOf')
-  // git-host injects only the (204-ing) helper, no rewrites.
-  assert.equal(m.containerGitEnv('http://h/git/x', 'github.com', 'git-host').GIT_CONFIG_COUNT, '2')
-  // Commit identity rides in as config pairs (§3.2); absent → nothing injected.
-  const envId = m.containerGitEnv('http://h/git/x', 'github.com', 'git-token', {
-    name: 'Me',
-    email: '42+me@users.noreply.github.com'
-  })
-  assert.equal(envId.GIT_CONFIG_COUNT, '6')
-  assert.equal(envId.GIT_CONFIG_KEY_4, 'user.name')
-  assert.equal(envId.GIT_CONFIG_VALUE_4, 'Me')
-  assert.equal(envId.GIT_CONFIG_KEY_5, 'user.email')
-  assert.equal(envId.GIT_CONFIG_VALUE_5, '42+me@users.noreply.github.com')
+  assert.equal(env.GIT_CONFIG_COUNT, '2', 'identity only — no helper, no rewrites')
+  assert.equal(env.GIT_CONFIG_KEY_0, 'user.name')
+  assert.equal(env.GIT_CONFIG_VALUE_0, 'Me')
+  assert.equal(env.GIT_CONFIG_KEY_1, 'user.email')
+  assert.equal(env.GIT_CONFIG_VALUE_1, '42+me@users.noreply.github.com')
+  // The container authenticates to nothing: no credential helper is ever set,
+  // and no broker URL exists to point one at.
+  const keys = Object.keys(env)
+  assert.ok(
+    !keys.some((k) => k.startsWith('GURT_')),
+    'no broker URL or credential handle reaches the container'
+  )
+  assert.ok(
+    !Object.values(env).some((v) => String(v).includes('credential.helper')),
+    'no credential helper is injected'
+  )
+  // No resolved identity (unverified or errored entry) → nothing to inject.
+  assert.equal(m.containerGitEnv(null).GIT_CONFIG_COUNT, '0')
+  assert.equal(m.containerGitEnv().GIT_CONFIG_COUNT, '0')
 })
 
 // --- github forge provider (§7) ---
@@ -168,17 +191,14 @@ test('github forge provider (§7)', async () => {
   assert.equal(fe.GH_HOST, undefined)
   const fee = await p.forgeEnv({ ...tok, data: { secret: 'SEC' } }, 'ghe.corp.com')
   assert.equal(fee.GH_HOST, 'ghe.corp.com')
-  const ssh = await p.forgeEnv({ id: 'k', label: 'k', kind: 'git-ssh-key', hosts: [], data: {} }, 'github.com')
-  assert.equal(ssh, null)
-  // The feature is pinned by digest (supply chain) — assert on the repo id,
-  // not the exact digest, so routine pin bumps don't break this test.
-  assert.ok(
-    Object.keys(m.forgeFeatures('github.com')).some((k) =>
-      k.startsWith('ghcr.io/devcontainers/features/github-cli@sha256:')
-    )
-  )
-  assert.deepEqual(m.forgeWrappers('github.com'), ['gh'])
-  assert.deepEqual(m.forgeFeatures('gitlab.com'), {})
+  // A kind that cannot serve the forge API resolves to nothing, never to a
+  // partial env the caller might use anyway.
+  const ambient = await p.forgeEnv({ id: 'h', label: 'h', kind: 'git-host', hosts: [], data: {} }, 'github.com')
+  assert.equal(ambient, null)
+  // The provider is host-side only now: no container wrappers, no devcontainer
+  // features (docs/requirements-mcp-proxy.md §10.2).
+  assert.equal(p.wrappers, undefined)
+  assert.equal(p.features, undefined)
 })
 
 // --- identity lookup (§3.2), fetch mocked ---

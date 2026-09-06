@@ -104,10 +104,10 @@ const modalGone = () => page.waitForSelector('.modal', { state: 'detached', time
 // The two views in the activity bar. Repos, environments and clients live in
 // Settings; tasks and sessions in the work view.
 const openSettings = async (section) => {
-  await page.click('.activitybar .ab-item[title="Settings"]')
+  await page.click('.activitybar .ab-item[title^="Settings"]')
   await page.click(`.set-nav-item:has-text("${section}")`)
 }
-const openWork = () => page.click('.activitybar .ab-item[title="Tasks & sessions"]')
+const openWork = () => page.click('.activitybar .ab-item[title^="Tasks & sessions"]')
 
 /** Confirms are an in-app dialog (dialog.tsx), not the OS one. */
 const confirm = async () => {
@@ -143,8 +143,10 @@ const waitSession = async (title, labels, timeout = 900000) => {
 
 // Task-pane CONTAINERS rows, matched by the owning session's title.
 const CONTAINER_ROW = (title) => `.env-row:has(.env-name:text-is("${title}"))`
-const containerAction = (title, action) =>
-  page.click(`${CONTAINER_ROW(title)} button:text-is("${action}")`)
+const containerAction = async (title, action) => {
+  await page.click(`${CONTAINER_ROW(title)} button[title="container actions"]`)
+  await page.click(`${CONTAINER_ROW(title)} .session-menu-pop .menu-item:text-is("${action}")`)
+}
 const waitContainerStatus = (title, status, timeout = 180000) =>
   page.waitForSelector(`${CONTAINER_ROW(title)} .env-status:text-is("${status}")`, { timeout })
 
@@ -190,8 +192,9 @@ async function addEnv(name, repo) {
 /** Compose and run a session off the task row's "new session" button. */
 async function newSession(task, envName, agentLabel, prompt) {
   await openWork()
-  await page.hover(`.sb-task:has(.sb-task-name:text-is("${task}"))`)
-  await page.click(`.sb-task:has(.sb-task-name:text-is("${task}")) .icon-sq[title="new session"]`)
+  await page.click(`.sb-task:has(.sb-task-name:text-is("${task}"))`, { button: 'right' })
+  await page.waitForSelector('.ctx-menu', { timeout: 5000 })
+  await page.click('.ctx-menu .menu-item:has-text("New session")')
   await page.waitForSelector('.modal:has-text("New session")', { timeout: 5000 })
   // environment first: picking it seeds the session's repo from the env default
   await page.click('.modal .seclabel:text-is("ENVIRONMENT") + .pick-wrap .pick-row')
@@ -206,7 +209,7 @@ async function newSession(task, envName, agentLabel, prompt) {
 await page.waitForSelector('.sidebar', { timeout: 15000 })
 
 // --- workspace ---------------------------------------------------------
-await page.click('.sb-ws-btn')
+await page.click('.tb-ws-btn')
 await page.click('.menu-item:has-text("+ new workspace")')
 await page.waitForSelector('.modal input', { timeout: 5000 })
 await page.fill('.modal input', 'personal')
@@ -247,7 +250,7 @@ console.log('envs defined')
 
 // --- task --------------------------------------------------------------
 await openWork()
-await page.click('button[title="New task · ⌘⇧N"]')
+await page.click('button[title^="New task"]')
 await page.waitForSelector('.sb-newtask-menu input', { timeout: 5000 })
 await page.fill('.sb-newtask-menu input', 'try2')
 await page.press('.sb-newtask-menu input', 'Enter')
@@ -330,8 +333,9 @@ if (await page.locator(CONTAINER_ROW('executor 2')).count()) {
 
 // --- task delete -------------------------------------------------------
 await openWork()
-await page.hover('.sb-task:has(.sb-task-name:text-is("try2"))')
-await page.click('.sb-task:has(.sb-task-name:text-is("try2")) .icon-sq[title="delete task"]')
+await page.click('.sb-task:has(.sb-task-name:text-is("try2"))', { button: 'right' })
+await page.waitForSelector('.ctx-menu', { timeout: 5000 })
+await page.click('.ctx-menu .menu-item:has-text("Delete task")')
 await confirm()
 await page.waitForFunction(() => document.querySelectorAll('.sb-task').length === 0, undefined, {
   timeout: 120000

@@ -13,9 +13,6 @@ import type { EnvImageStatus } from '../shared/api'
 import { cloneDir, getWorkspace, gurtRoot, overrideConfigPath, taskDir } from './store'
 import { listCredentials } from './credentials'
 import { hostGitAccess } from './git/env'
-import { forgeFeatures, forgeWrappers } from './git/providers'
-import { BASE_SHIMS, shimInstallScript } from './git/shims'
-import { LAUNCH_BIN } from './git/config'
 import { createLogger } from './log'
 
 const require = createRequire(import.meta.url)
@@ -295,18 +292,18 @@ export function run(cmd: string, args: string[], sink: LogSink, opts: RunOpts = 
   })
 }
 
-/** True if `refs/heads/<branch>` exists in the clone. Fully qualified on
- *  purpose: the short name would also match a tag or a remote-tracking ref
+/** True if `ref` exists in the clone. Callers pass a fully qualified ref on
+ *  purpose: a short name would also match a tag or a remote-tracking ref
  *  through rev-parse's DWIM rules, and the answer decides create-vs-switch. */
-async function localBranchExists(
+async function refExists(
   dir: string,
   gitArgs: string[],
   env: NodeJS.ProcessEnv,
-  branch: string
+  ref: string
 ): Promise<boolean> {
   const out = await run(
     'git',
-    ['-C', dir, ...gitArgs, 'rev-parse', '--verify', '--quiet', `refs/heads/${branch}`],
+    ['-C', dir, ...gitArgs, 'rev-parse', '--verify', '--quiet', ref],
     () => {},
     { env, okCodes: [0, 1] }
   )
@@ -407,8 +404,25 @@ async function provisionClone(
   // Create vs switch, never one masking the other: a `checkout` that fails on
   // its own (dirty tree, missing ref) must surface that error, not retry as
   // `checkout -b` and report the misleading "branch already exists".
-  if (await localBranchExists(dir, gitArgs, env, branch))
+  if (await refExists(dir, gitArgs, env, `refs/heads/${branch}`))
     await run('git', ['-C', dir, ...gitArgs, 'checkout', branch], log, { env })
+  // A remote branch of the task's name *is* the task's branch, so continue it
+  // instead of forking a second one off the default branch: changes.ts already
+  // reads `origin/<task>` as this task's remote branch — it fetches and prunes
+  // it, publishes with `push -u`, and splits pushed from local commits against
+  // it — so provisioning has to agree, or a task whose branch already exists on
+  // the remote would start from the wrong commit and report every commit
+  // already on that branch as missing. `--track origin/<branch>` is spelled out
+  // rather than left to a bare `checkout <branch>`, so the DWIM path stays
+  // unused here too. No fetch is needed: the clone above brought every remote
+  // ref along, and a pre-existing clone returned further up.
+  else if (await refExists(dir, gitArgs, env, `refs/remotes/origin/${branch}`))
+    await run(
+      'git',
+      ['-C', dir, ...gitArgs, 'checkout', '-b', branch, '--track', `origin/${branch}`],
+      log,
+      { env }
+    )
   else await run('git', ['-C', dir, ...gitArgs, 'checkout', '-b', branch], log, { env })
   return dir
 }
@@ -583,17 +597,25 @@ function writeOverrideConfig(ref: EnvRef, content: string): Promise<void> {
  *  `materializeEnvConfig` at `up` (it persists on disk across app restarts, so
  *  the reattach path needs nothing). The same args must go to `up` and to each
  *  `exec` — exec re-resolves the config. Mounted sessions instead resolve the
- *  per-session merged copy at `mountedConfigPath` (written by `devcontainerUp`,
+ *  per-session merged copy at `sessionConfigPath` (written by `devcontainerUp`,
  *  same persistence). */
 export function overrideConfigArgs(ref: EnvRef): string[] {
   return ['--override-config', overrideConfigPath(ref.workspace, ref.env)]
 }
 
-/** The mounted session's merged devcontainer config — sibling of its wrapper
- *  workspace dir (`.multirepo/<sessionId>/devcontainer.json`), so it is
- *  per-session and lives exactly as long as the session's wrapper. */
-export const mountedConfigPath = (mountedWorkspaceFolder: string): string =>
-  path.join(path.dirname(mountedWorkspaceFolder), 'devcontainer.json')
+/** A session's merged devcontainer config — inside its scratch dir
+ *  (`.multirepo/<sessionId>/devcontainer.json`, see `store.sessionScratchDir`),
+ *  so it is per-session and lives exactly as long as the session does.
+ *
+ *  Written whenever gurt has mounts of its own to add: the sibling repo binds
+ *  of a multi-repo or read-only session, the read-only skills bind, or both.
+ *  Addressed off the scratch dir rather than off the wrapper workspace dir it
+ *  used to be derived from — a single-repo executor has no wrapper, and its
+ *  workspace folder is the clone, whose parent is the task directory every
+ *  session of the task shares. Same path as before for every session that
+ *  already had one. */
+export const sessionConfigPath = (scratchDir: string): string =>
+  path.join(scratchDir, 'devcontainer.json')
 
 /** True if an image with this tag exists in the local Docker image store. */
 export function dockerImageExists(tag: string): Promise<boolean> {
@@ -674,12 +696,18 @@ export async function buildEnvImage(
  * (`git archive`; the working clone is never touched) — and the materialized
  * config has `build` replaced by `image: tag`, all other fields preserved.
  * Comments are lost only in that materialized file, never in the stored config.
+ *
+ * `repo`/`cloneDir` are null for a repo-less operator session
+ * (docs/requirements-session-operator.md §2.1): the build branch needs a clone
+ * to `git archive` and a commit to tag the image with, so an env with a
+ * `build` section is structurally unreachable there — refused here with its
+ * own sentence, not at the anchor guard with "session has no repository".
  */
 export async function materializeEnvConfig(
   ref: EnvRef,
   envCfg: EnvConfig,
-  repo: RepoConfig,
-  cloneDir: string,
+  repo: RepoConfig | null,
+  cloneDir: string | null,
   log: LogSink
 ): Promise<string[]> {
   const invalid = validateEnvConfig(envCfg)
@@ -689,6 +717,11 @@ export async function materializeEnvConfig(
     await writeOverrideConfig(ref, envCfg.devcontainer)
     return overrideConfigArgs(ref)
   }
+  if (!repo || !cloneDir)
+    throw new Error(
+      `env "${envCfg.name}" has a build section, which needs a repository to build from — ` +
+        'a repo-less operator session needs an image-only env'
+    )
   const scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'gurt-env-snapshot-'))
   try {
     const tarFile = path.join(scratch, 'src.tar')
@@ -869,7 +902,6 @@ export async function devcontainerUp(
   workspaceFolder: string,
   log: LogSink,
   repoName: string,
-  repoHost?: string | null,
   /** Called once, when `up` moves from building the image to post-commands. */
   onPostCommands?: () => void,
   /** Repos mounted explicitly as siblings under the container-side root
@@ -877,14 +909,26 @@ export async function devcontainerUp(
    *  itself: every repo of a session whose `--workspace-folder` is the empty
    *  wrapper directory. That is any session with more than one repo, and any
    *  read-only role — `readonly` is what the CLI's own workspace mount can never
-   *  be. Empty for a plain read-write single-repo session. */
-  extraMounts: { hostDir: string; name: string; readonly?: boolean }[] = []
+   *  be (per-mount `readonly` now only set for researcher, see `containers.ts`).
+   *  Empty for a plain read-write single-repo session. */
+  extraMounts: { hostDir: string; name: string; readonly?: boolean }[] = [],
+  /** Binds with an **absolute container target**, which is what the skills
+   *  delivery needs and what a repo sibling can never be
+   *  (docs/requirements-skills.md §5.1). A separate list rather than a flag on
+   *  `extraMounts` because two rules key off that one — a single entry
+   *  re-points `workspaceFolder`, and any read-only entry strips the
+   *  create-time hooks — and neither may fire for a skills bind. */
+  hostMounts: { hostDir: string; target: string; readonly?: boolean }[] = [],
+  /** Where the merged config goes when one is needed — the session's scratch
+   *  dir. Defaults to the wrapper workspace folder's parent, which is the same
+   *  directory for every session that has a wrapper. */
+  scratchDir = path.dirname(workspaceFolder)
 ): Promise<UpResult> {
-  // The container is agent-agnostic: only the node feature is injected, plus any
-  // forge-CLI features for the repo's host (computed from the host alone, so the
-  // image-level feature set is stable across ups — an installed-but-unused CLI
-  // is harmless). Agent adapters are installed lazily via `exec` on connect.
-  const features = { ...BASE_FEATURES, ...forgeFeatures(repoHost ?? null) }
+  // The container is agent-agnostic: only the node feature is injected. No
+  // forge CLI — the container authenticates to nothing, so a `gh` in it would
+  // have no credential to use (docs/requirements-mcp-proxy.md §10.2). Agent
+  // adapters are installed lazily via `exec` on connect.
+  const features = BASE_FEATURES
   const remoteRoot = '/workspaces/' + repoName
   // The CLI's `--mount` argument is validated by a strict regex
   // (`type=,source=,target=[,external=]`) with no `readonly` key, while strings
@@ -897,7 +941,7 @@ export async function devcontainerUp(
   // and every `exec` of a mounted session must resolve it too (the config
   // decides the exec cwd and the reported remoteWorkspaceFolder).
   let mountConfigArgs = configArgs
-  if (extraMounts.length) {
+  if (extraMounts.length || hostMounts.length) {
     // `configArgs` is always the ['--override-config', path] pair built by
     // materializeEnvConfig — the flag is there, and so is its value.
     const envConfigPath = configArgs[configArgs.indexOf('--override-config') + 1] ?? ''
@@ -918,16 +962,48 @@ export async function devcontainerUp(
       : remoteRoot
     const merged: Record<string, unknown> = {
       ...config,
+      // A single mounted repo (every reviewer, and a researcher on just one)
+      // has one unambiguous cwd for lifecycle hooks and `exec` to land in —
+      // point workspaceFolder straight at it instead of the empty wrapper
+      // root, so a hook that does `npm install` finds package.json instead of
+      // failing with ENOENT one level up. workspaceMount (untouched, still
+      // binds the wrapper) and workspaceFolder are independent CLI fields —
+      // disagreeing between them is fine. A true multi-repo session has no
+      // single repo to point at, so it keeps the wrapper root.
+      ...(extraMounts.length === 1 && extraMounts[0]
+        ? { workspaceFolder: `${mountRoot}/${extraMounts[0].name}` }
+        : {}),
       mounts: [
         ...read.mounts,
         ...extraMounts.map(
           (m) =>
             `type=bind,source=${m.hostDir},target=${mountRoot}/${m.name}${m.readonly ? ',readonly' : ''}`
+        ),
+        ...hostMounts.map(
+          (m) =>
+            `type=bind,source=${m.hostDir},target=${m.target}${m.readonly ? ',readonly' : ''}`
         )
       ]
     }
-    await fs.writeFile(mountedConfigPath(workspaceFolder), JSON.stringify(merged, null, 2))
-    mountConfigArgs = ['--override-config', mountedConfigPath(workspaceFolder)]
+    // A read-only mount (researcher, see `containers.ts`) can never satisfy a
+    // create-time hook that expects to write into the checkout — the CLI would
+    // fail it deterministically, and `CREATE_HOOK_RE` below would burn a
+    // pointless container rebuild retrying a guaranteed repeat. Strip them
+    // instead: a researcher gets a clean, dependency-less container and never
+    // hits that path. Reviewer's mount isn't read-only, so its hooks run
+    // normally against the corrected cwd above.
+    if (extraMounts.some((m) => m.readonly)) {
+      delete merged['onCreateCommand']
+      delete merged['updateContentCommand']
+      delete merged['postCreateCommand']
+      log(
+        'read-only mount session: skipping onCreate/updateContent/postCreate ' +
+          'hooks (this role does not install dependencies)'
+      )
+    }
+    await fs.mkdir(scratchDir, { recursive: true })
+    await fs.writeFile(sessionConfigPath(scratchDir), JSON.stringify(merged, null, 2))
+    mountConfigArgs = ['--override-config', sessionConfigPath(scratchDir)]
   }
   const args = [
     'up',
@@ -1002,7 +1078,12 @@ export async function devcontainerUp(
           // Warm every bind source of this `up`, not just the reported one: the
           // staleness covers a whole subtree, so the next path would fail next.
           await warmBindPaths(
-            [workspaceFolder, ...extraMounts.map((m) => m.hostDir), ...stalePaths],
+            [
+              workspaceFolder,
+              ...extraMounts.map((m) => m.hostDir),
+              ...hostMounts.map((m) => m.hostDir),
+              ...stalePaths
+            ],
             log
           )
           await new Promise((r) => setTimeout(r, BACKOFF_MS[staleAttempts - 1] ?? 5_000))
@@ -1047,6 +1128,60 @@ export async function devcontainerUp(
       remoteWorkspaceFolder: result.remoteWorkspaceFolder ?? remoteRoot
     }
   }
+}
+
+/**
+ * Where a session's materialized skills are bound inside its container.
+ *
+ * A fixed absolute path rather than the `$HOME/.claude/skills` the agent
+ * actually reads, because a devcontainer's `mounts` are evaluated *to create*
+ * the container: `${containerEnv:HOME}` is substituted in a later pass, and the
+ * remote user — hence the home directory — is the image's choice, not gurt's.
+ * {@link linkContainerSkills} closes the gap once the container is up.
+ */
+export const SKILLS_MOUNT = '/gurt/skills'
+
+/**
+ * Point the agent's own skills directory — `AgentDef.skillsDir`, `$HOME`-
+ * relative, e.g. claude-code's `.claude/skills` — at the read-only bind
+ * (docs/requirements-skills.md §5). Where the link lands is the agent kind's
+ * to say; callers skip both the mount and this link for a kind whose
+ * `skillsDir` is `null`.
+ *
+ * Run by gurt through `devcontainer exec`, deliberately not as a devcontainer
+ * lifecycle hook: a read-only role has its `onCreate`/`updateContent`/
+ * `postCreate` commands stripped (see `devcontainerUp`), so a hook-based
+ * delivery would skip exactly the roles most likely to be handed a read-only
+ * procedure. Writes into the container's home, which is writable for every
+ * role — only the repo mounts and this bind are read-only.
+ *
+ * Replaces whatever was at that path: the enabled set is the whole set the
+ * session sees, which is the promise the picker makes. Idempotent, and re-run
+ * after every `up`, so a container the CLI rebuilt is relinked.
+ */
+export async function linkContainerSkills(
+  session: string,
+  configArgs: string[],
+  workspaceFolder: string,
+  skillsDir: string,
+  log: LogSink
+): Promise<void> {
+  const parent = path.posix.dirname(skillsDir)
+  const { code } = await runNodeCli(
+    [
+      'exec',
+      '--workspace-folder', workspaceFolder,
+      ...idLabelArgs(session),
+      ...configArgs,
+      'sh', '-c',
+      `mkdir -p "$HOME/${parent}" && rm -rf "$HOME/${skillsDir}" && ln -s ${SKILLS_MOUNT} "$HOME/${skillsDir}"`
+    ],
+    log
+  )
+  // Not fatal: the skills are mounted either way, and a session that starts
+  // without them beats one that does not start. The line above says which.
+  if (code !== 0) log(`could not link ${SKILLS_MOUNT} into the agent's home (exit ${code})`)
+  else log(`skills mounted read-only at ${SKILLS_MOUNT}, linked as ~/${skillsDir}`)
 }
 
 /** True when the agent's adapter binary is already on PATH inside the
@@ -1096,32 +1231,6 @@ export async function installAcpAdapter(
   if (code !== 0) throw new Error(`ACP adapter install failed (exit ${code})`)
 }
 
-/**
- * Write the git shims into the container (§5), lazily, like the adapter install:
- * the launcher + credential helper always, plus any forge-CLI wrappers for the
- * repo's host. Idempotent — content is overwritten each call.
- *
- * Runs as root via `docker exec` (not `devcontainer exec`): /opt is root-owned
- * while the remoteUser is usually non-root, so a user-level `mkdir -p
- * /opt/gurt/bin` fails with EACCES. Shims hold no secrets; root-owned 755 also
- * keeps the agent from rewriting them.
- */
-export async function installGitShims(
-  containerId: string,
-  repoHost: string | null,
-  log: LogSink
-): Promise<void> {
-  const names = [...BASE_SHIMS, ...forgeWrappers(repoHost)]
-  log(`installing git shims (${names.join(', ')}) in container ...`)
-  try {
-    await run('docker', ['exec', '-u', 'root', containerId, 'sh', '-c', shimInstallScript(names)], log)
-  } catch (e) {
-    throw new Error(`git shim install failed: ${e instanceof Error ? e.message : String(e)}`, {
-      cause: e
-    })
-  }
-}
-
 /** Spawns the ACP adapter inside the environment; caller owns the process. */
 export function spawnAcpAdapter(
   session: string,
@@ -1131,7 +1240,7 @@ export function spawnAcpAdapter(
   secret: string,
   secretEnv: string,
   extraEnv?: Record<string, string>,
-  gitEnv?: Record<string, string>
+  gitIdentityEnv?: Record<string, string>
 ) {
   const args = [
     devcontainerCliPath(),
@@ -1143,11 +1252,10 @@ export function spawnAcpAdapter(
   if (secret) args.push('--remote-env', `${secretEnv}=${secret}`)
   for (const [k, v] of Object.entries(extraEnv ?? {}))
     args.push('--remote-env', `${k}=${v}`)
-  // Git access (§6): broker URL + GIT_CONFIG_* injected as env (never secrets),
-  // and the agent command run through the launcher so the shims shadow container
-  // binaries for the agent's process tree only.
-  for (const [k, v] of Object.entries(gitEnv ?? {})) args.push('--remote-env', `${k}=${v}`)
-  if (gitEnv) args.push(LAUNCH_BIN)
+  // Commit identity for the container's local git, as GIT_CONFIG_* env (§10.3).
+  // No credentials, no helper, no launcher — there are no shims to put on PATH.
+  for (const [k, v] of Object.entries(gitIdentityEnv ?? {}))
+    args.push('--remote-env', `${k}=${v}`)
   args.push(agent.bin, ...agent.binArgs)
   return spawn(process.execPath, args, {
     env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },

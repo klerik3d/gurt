@@ -1,7 +1,7 @@
 // Session roles (docs/requirements-session-roles.md), without docker or an
-// agent: what a role changes about locking, about the (role, repos) pair, about
-// git access, and who may draft whom through `create_session`. Plus the on-disk
-// migration that turns a pre-roles record into an explicit role.
+// agent: what a role changes about locking, about the (role, repos) pair, and
+// who may draft whom through `create_session`. Plus the on-disk migration that
+// turns a pre-roles record into an explicit role.
 //
 // Container state is staged through `sessions.patchContainer`, the seam the
 // container manager writes through — same trick as session-repo-gate.test.mjs,
@@ -89,7 +89,6 @@ const mk = (repos, role, title) => {
     'none',
     [],
     true,
-    true, // gitAccess on for every session — a read-only role must drop it
     {},
     role
   )
@@ -140,11 +139,12 @@ test('(role, repos) rules', () => {
   assert.equal(m.sessionRole(multi), 'researcher', 'a researcher may hold several')
 })
 
-// --- git access is dropped for the read-only roles --------------------------
-test('git access per role', () => {
-  assert.equal(mk(['alpha'], 'executor', 'E-git').gitAccess, true, 'an executor keeps git access')
-  assert.equal(multi.gitAccess, false, 'a researcher never gets the git broker')
-  assert.equal(mk(['alpha'], 'reviewer', 'V-git').gitAccess, false, 'nor does a reviewer')
+// --- no session carries a native-git toggle any more (§10.2) ----------------
+test('no role carries a git-access flag', () => {
+  // The container broker is gone: authenticated git is the host-side github MCP
+  // for every role, so there is nothing per-session left to switch on.
+  for (const s of [mk(['alpha'], 'executor', 'E-git'), multi, mk(['alpha'], 'reviewer', 'V-git')])
+    assert.equal('gitAccess' in s, false, `${m.sessionRole(s)} carries no gitAccess flag`)
 })
 
 let reviewer
@@ -356,7 +356,7 @@ test('default title follows role', () => {
   fs.writeFileSync(path.join(GURT_ROOT, ws, task3, 'task.json'), JSON.stringify({}))
   const nameRef = { workspace: ws, task: task3, env: 'dev' }
   const named = (repos, role) =>
-    kernel.sessions.createSession(nameRef, repos, 'a1', 'hi', 'none', [], true, false, {}, role)
+    kernel.sessions.createSession(nameRef, repos, 'a1', 'hi', 'none', [], true, {}, role)
   assert.equal(named(['alpha'], 'executor').title, 'executor', 'first of a role carries no index')
   assert.equal(named(['alpha'], 'executor').title, 'executor 2', 'the second is numbered')
   assert.equal(named([], 'researcher').title, 'researcher', 'a different role starts its own count')

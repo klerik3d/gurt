@@ -1,6 +1,6 @@
 # Requirements: split Env and Repo
 
-Status: draft for review · Target: gurt Electron MVP (this repo)
+Status: historical (superseded) · Target: gurt Electron MVP (this repo)
 
 > **Superseded in part** by `requirements-session-container.md`: a container now
 > belongs to exactly one session (there are no env instances, and `task.json`
@@ -19,6 +19,14 @@ first. Key code: `src/shared/types.ts`, `src/shared/api.ts`,
 `src/renderer/src/components/SettingsPage.tsx`,
 `src/renderer/src/components/Sidebar.tsx` (NewSessionModal). Do not change
 the contract described here without asking the owner.
+
+> **Superseded in part** by `requirements-mcp-proxy.md` §10: the
+> container-side git credential broker (`src/main/git/broker.ts`), the
+> container shims, ssh git support and the `gitAccess` session flag are
+> removed. Wherever this document treats those as live, read: the container
+> holds no credentials at all, and authenticated git is exclusively the
+> host-side github MCP tools. The host credential broker survives as
+> `src/main/git/hostCredBroker.ts`.
 
 ## 1. Motivation
 

@@ -31,18 +31,20 @@ page.on('pageerror', (e) => console.log('[pageerror]', e.message))
 await page.waitForSelector('.sidebar', { timeout: 15000 })
 
 // New workspace, so there's somewhere to create a task.
-await page.click('.sb-ws-btn')
+await page.click('.tb-ws-btn')
 await page.click('text=+ new workspace')
 await page.waitForSelector('.modal input')
 await page.fill('.modal input', 'acme')
 await page.click('.modal .btn-primary')
 await page.waitForSelector('.modal', { state: 'detached', timeout: 5000 })
-await page.waitForSelector('.sb-ws-name:has-text("acme")', { timeout: 5000 })
+// The workspace name lives in the titlebar switcher, not the sidebar header
+// (which is a static "Tasks" label) — that button is the readback for the create.
+await page.waitForSelector('.tb-ws-btn:has-text("acme")', { timeout: 5000 })
 console.log('workspace created OK')
 
 // The fix under test: header "+" opens an inline popover, not a modal — one
 // click + Enter, no second "Create" click, and no modal at all.
-await page.click('button[title="New task · ⌘⇧N"]')
+await page.click('button[title^="New task"]')
 await page.waitForSelector('.sb-newtask-menu input', { timeout: 5000 })
 assert.equal(await page.locator('.modal').count(), 0, 'no modal opened for inline task creation')
 await page.fill('.sb-newtask-menu input', 'first-task')
@@ -59,9 +61,9 @@ await page.screenshot({ path: path.join(SHOT_DIR, '01-task-created.png') })
 console.log('confirmed: task created, no session leaked in')
 
 // A second task, to confirm the popover isn't confused with the per-row
-// "new session" button — and that the two are now visually distinct (message
+// task-actions menu — and that the two triggers are visually distinct (dots
 // icon vs plus icon) rather than two identical plus buttons.
-await page.click('button[title="New task · ⌘⇧N"]')
+await page.click('button[title^="New task"]')
 await page.fill('.sb-newtask-menu input', 'second-task')
 await page.press('.sb-newtask-menu input', 'Enter')
 await page.waitForSelector('.sb-task-name:has-text("second-task")', { timeout: 5000 })
@@ -69,14 +71,21 @@ assert.equal(await page.locator('.sb-task').count(), 2, 'two independent tasks e
 assert.equal(await page.locator('.sb-session').count(), 0, 'still no sessions after a second task')
 console.log('second task created independently OK')
 
-// The per-task "new session" button is now a distinct message icon, not a
-// second identical plus — click it and confirm the New Session modal (not
-// another task) is what opens. It's only visible on row hover.
-await page.hover('.sb-task >> nth=0')
-await page.click('.sb-task .icon-sq[title="new session"] >> nth=0')
-await page.waitForSelector('.modal:has-text("New session")', { timeout: 5000 })
-await page.screenshot({ path: path.join(SHOT_DIR, '02-new-session-modal.png') })
-console.log('per-task + opens New Session modal, distinct from task creation OK')
+// The per-task actions live behind the row's right-click menu, not behind a
+// second identical plus — open it and pick "New session", confirming it makes
+// a *session* (not another task). Since the New Session modal was replaced by
+// instant drafts, the session appears in the tree straight away and its pane
+// opens on the Chat tab — no popup in between.
+await page.click('.sb-task >> nth=0', { button: 'right' })
+await page.waitForSelector('.ctx-menu', { timeout: 5000 })
+await page.click('.ctx-menu .menu-item:has-text("New session")')
+await page.waitForSelector('.session-pane .tab-bar', { timeout: 5000 })
+await page.waitForSelector('.sb-session', { timeout: 5000 })
+assert.equal(await page.locator('.modal').count(), 0, 'a new session is a bare draft, no modal')
+assert.equal(await page.locator('.sb-task').count(), 2, 'still two tasks — no task was created')
+assert.equal(await page.locator('.sb-session').count(), 1, 'exactly one session, under the hovered task')
+await page.screenshot({ path: path.join(SHOT_DIR, '02-new-session-draft.png') })
+console.log('the task row menu creates a session draft, distinct from task creation OK')
 
 await app.close()
 console.log('DONE')

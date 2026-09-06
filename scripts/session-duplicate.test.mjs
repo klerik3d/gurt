@@ -74,7 +74,6 @@ test('the copy carries every configured field', () => {
     'draft',
     [{ id: 'github', mode: 'read-only' }],
     false,
-    true,
     { model: 'opus' },
     'executor'
   )
@@ -90,7 +89,6 @@ test('the copy carries every configured field', () => {
   assert.equal(copy.agent, 'a1')
   assert.equal(copy.role, 'executor')
   assert.equal(copy.autoAllow, false)
-  assert.equal(copy.gitAccess, true)
   assert.deepEqual(copy.mcp, [{ id: 'github', mode: 'read-only' }])
   assert.deepEqual(copy.configValues, { model: 'opus' })
   assert.equal(copy.workspace, ws)
@@ -146,7 +144,6 @@ test('multi-repo and repo-less sources copy', () => {
     'draft',
     [],
     true,
-    false,
     {},
     'researcher'
   )

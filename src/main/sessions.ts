@@ -10,6 +10,8 @@ import type {
   ConfigSelectOption,
   EnvRef,
   McpSelection,
+  SkillSelection,
+  PendingPromptInfo,
   PermissionOption,
   PersistedSession,
   PromptCapabilities,
@@ -18,6 +20,7 @@ import type {
   SessionConfigOption,
   SessionContainer,
   SessionInfo,
+  SessionNetwork,
   SessionLogRecord,
   SessionModes,
   SessionRole,
@@ -28,8 +31,9 @@ import {
   applyLog,
   roleAllowsMultiRepo,
   roleHasTurnContract,
-  roleIsReadOnly,
   roleLocksClone,
+  roleNeedsRepo,
+  sanitizeSessionNetwork,
   sessionRole,
   spawnableRoles
 } from '../shared/types'
@@ -37,11 +41,14 @@ import { defaultAgentConfig, withFable } from '../shared/agentConfig'
 import type { AgentDef } from '../shared/agents'
 import type { CreateAction } from '../shared/api'
 import { taskKey } from '../shared/keys'
+import { sanitizeSkillSelection } from '../shared/skills'
 import { limitResetAt, turnOutcome, usageFields } from '../shared/usage'
 import type { Bus } from './bus'
 import type { ContainerStatusReason, SessionStateReason } from '../shared/events'
 import type { LaunchContext } from './containers'
 import { lineBuffer, spawnAcpAdapter } from './provision'
+import { resolveProxyPlan } from './proxy/config'
+import type { ProxyConfig } from '../shared/proxy'
 import { JsonRpcPeer } from './jsonrpc'
 import {
   CONFIG_OPTION,
@@ -174,6 +181,14 @@ interface Connection {
   expectedExit?: boolean
 }
 
+/** One queued prompt, with the payload the UI never sees (the images). */
+interface PendingPrompt {
+  id: string
+  text: string
+  context?: PromptContext[] | undefined
+  images?: PromptImage[] | undefined
+}
+
 /**
  * Live, mutable state of one session in this process.
  *
@@ -202,6 +217,14 @@ interface Session {
    *  Used to turn repo-relative context paths into absolute `file://` resource links. */
   remoteCwd?: string | undefined
   busy: boolean
+  /** Prompts accepted while the session could not run them, oldest first — a
+   *  turn was in flight, or its clone was somebody else's. Drained by
+   *  {@link SessionManager.drainPending}. In memory only, on purpose: see
+   *  {@link PendingPromptInfo}. */
+  pending: PendingPrompt[]
+  /** The drain loop owns this session's turns right now — a second one would
+   *  race it for the queue. */
+  draining: boolean
   /** The current turn has seen its `complete` call; reset at each prompt start. */
   turnComplete: boolean
   /** Latest change proposal (outcome=changes) from a `complete` call; last wins. */
@@ -229,12 +252,21 @@ interface Session {
   pendingPermissions: Map<number, (outcome: unknown) => void>
 }
 
+/** The wire form of a queued prompt: everything but the images, which stay
+ *  here (see {@link PendingPromptInfo}). */
+const pendingInfo = (p: PendingPrompt): PendingPromptInfo => ({
+  id: p.id,
+  text: p.text,
+  ...(p.context?.length ? { context: p.context } : {}),
+  ...(p.images?.length ? { images: p.images.length } : {})
+})
+
 /** Capabilities the session manager needs from the container/mcp/store layers.
  *  Notifications ride the domain bus instead. */
 export interface SessionEvents {
   /** Ensure the session's container is up and return the agent's launch context.
-   *  When the session enabled git access, this also starts its broker and
-   *  installs the shims into that container. */
+   *  This also ensures the session's network and proxy, and switches the
+   *  container onto them, before the agent exists. */
   resolveLaunch: (sessionId: string) => Promise<LaunchContext>
   /** Install the agent's adapter packages in the session's container. */
   installAdapter: (ctx: LaunchContext) => Promise<void>
@@ -247,6 +279,10 @@ export interface SessionEvents {
   ) => Promise<AcpHttpMcpServer[]>
   /** Tear down the session's host MCP servers. */
   stopMcpServers: (sessionId: string) => void
+  /** Hand the session's proxy the scope its token names (MCP routes, resolved
+   *  credentials, egress policy). Called before the agent spawns, and again on
+   *  every later change — the token never changes with it. */
+  pushProxyScope: (sessionId: string, config: ProxyConfig) => Promise<void>
   /** Ensure the per-session `gurt` server is up; return its ACP descriptor.
    *  Attached to every session unconditionally — its tool set follows the
    *  session's role (`complete` for an executor, `create_session` for the
@@ -258,14 +294,34 @@ export interface SessionEvents {
       role: SessionRole
       onComplete: (p: ChangeProposal) => void
       onCreateSession: (req: AgentSessionRequest) => Promise<{ sessionId: string; title: string }>
+      /** Present only for an operator session — routes its admin tools into
+       *  the ws-bound admin surface (docs/requirements-session-operator.md §3). */
+      admin?: {
+        call(method: string, args: Record<string, unknown>): Promise<unknown>
+        provisioningLog(key: string, tail: number | undefined): Promise<string>
+      }
     }
   ) => Promise<AcpHttpMcpServer>
+  /** Execute one admin API call for an operator session of `ws` — the
+   *  workspace binding of docs/requirements-session-operator.md §3.2: the
+   *  session manager passes its own workspace, never anything the agent said. */
+  adminCall: (ws: string, method: string, args: Record<string, unknown>) => Promise<unknown>
+  /** The provisioning-log read behind `get_provisioning_log`, same binding. */
+  adminProvisioningLog: (ws: string, key: string, tail: number | undefined) => Promise<string>
   /** Tear down one session's `gurt` server (session deleted). */
   stopGurtServer: (sessionId: string) => void
-  /** Reject repos/env that are not registered in the workspace — the check
-   *  `Kernel.editDraft` runs at the IPC boundary, reused for the drafts an
-   *  agent asks for through `create_session` (which bypasses that boundary). */
-  checkDraftTarget: (ws: string, repos: string[], env: string) => Promise<void>
+  /** Reject repos/env that are not registered in the workspace, or an agent the
+   *  workspace denies — the check `Kernel.editDraft` runs at the IPC boundary,
+   *  reused for the drafts an agent asks for through `create_session` (which
+   *  bypasses that boundary). */
+  checkDraftTarget: (ws: string, repos: string[], env?: string, agent?: string) => Promise<void>
+  /** Env definition names claiming this repo as their default (`EnvConfig.repo`
+   *  read backwards). The source of the env a `create_session` draft runs in
+   *  when it names none — see `resolveDraftEnv`. */
+  defaultEnvsForRepo: (ws: string, repo: string) => Promise<string[]>
+  /** Workspace's default agent (an `AgentsFile` key), used to resolve a
+   *  `create_session` request that names none — see `createAgentDraft`. */
+  defaultAgentForWorkspace: (ws: string) => Promise<string | undefined>
   /** Is this clone held by a manual review? Synchronous by contract: the
    *  scheduler asks on every pass and cannot await a disk read (see review.ts). */
   isRepoLockedForReview: (ws: string, task: string, repo: string) => boolean
@@ -290,6 +346,15 @@ export interface SessionEvents {
    *  (`.multirepo/<id>`), once its container is down. Only sessions with
    *  explicit repo mounts ever had one; removing a missing one is a no-op. */
   deleteScratch: (ws: string, task: string, sessionId: string) => void
+  /** Copy this session's selected skills into its scratch dir, ready for the
+   *  read-only bind provisioning adds. Answers with the selected names that
+   *  resolved to nothing (docs/requirements-skills.md §5). */
+  materializeSkills: (
+    ws: string,
+    task: string,
+    sessionId: string,
+    selection: readonly SkillSelection[] | undefined
+  ) => Promise<{ missing: string[] }>
 }
 
 /** A persisted session plus its read (or just-migrated) JSONL log. */
@@ -316,16 +381,30 @@ export const NUDGE_PROMPT =
   'nothing else.'
 
 /**
- * The one structural rule a role puts on the repo list: more than one repo is a
+ * The structural rules a role puts on the repo list: more than one repo is a
  * researcher-only shape (docs/requirements-session-roles.md §2 — the former
- * discovery session *is* that role). Pure and unit-tested; the message it throws
- * is what the modal, the IPC boundary and the `create_session` tool all surface.
+ * discovery session *is* that role), and an operator holds exactly zero
+ * (docs/requirements-session-operator.md §2.1 — zero is its definition, not a
+ * default). Pure and unit-tested; the messages it throws are what the modal,
+ * the IPC boundary and the `create_session` tool all surface.
  */
 export function assertRoleFitsRepos(role: SessionRole, repos: string[]): void {
   if (repos.length > 1 && !roleAllowsMultiRepo(role))
     throw new Error(
       `a ${role} session takes a single repository — only a researcher may hold more than one`
     )
+  if (repos.length > 0 && !roleNeedsRepo(role))
+    throw new Error(
+      `an ${role} session holds no repository at all — its subject is gurt's configuration, not a clone`
+    )
+}
+
+/** True when `title` is still the auto-generated default for `role` — the
+ *  bare role name, or role name + index — rather than something the user
+ *  typed themselves. Used to decide whether a role change should carry the
+ *  title along with it. */
+export function isDefaultSessionTitle(title: string, role: SessionRole): boolean {
+  return title === role || new RegExp(`^${role} \\d+$`).test(title)
 }
 
 export type PostTurnAction = 'none' | 'nudge' | 'incomplete'
@@ -377,6 +456,16 @@ export class SessionManager {
   private agentConfigWritten = new Map<string, string>()
   /** Last logged "why still queued" per session id (see `noteQueued`). */
   private queuedReasons = new Map<string, string>()
+  /** Ids for queued prompts. Process-wide and monotonic — the renderer keys
+   *  rows on them and cancels by them, and reusing one across sessions would
+   *  make a stale cancel land on the wrong message. */
+  private pendingSeq = 0
+  /** Per-task cap on concurrently running sessions (`TaskFile.maxConcurrentSessions`),
+   *  keyed by `taskKey(ws, task)`. Absent = unlimited. Mirrors `review.ts`'s
+   *  in-memory lock set: the scheduler asks synchronously on every pass and
+   *  cannot await a disk read, so this is seeded from disk at boot
+   *  (`loadTaskCaps`) and kept current by every later edit (`setTaskCap`). */
+  private taskCaps = new Map<string, number>()
   /** Per agent-instance id, its kind (`AgentDef.id`) — mirrors agents.json so
    *  a hardcoded default/the `fable` force-merge can resolve without a live
    *  container's launch context (see `loadAgentKinds`). */
@@ -415,6 +504,8 @@ export class SessionManager {
         entries,
         nextEntryId: Math.max(0, ...entries.map((e) => e.id)) + 1,
         busy: false,
+        pending: [],
+        draining: false,
         turnComplete: false,
         turns: 0,
         attached: false,
@@ -471,6 +562,16 @@ export class SessionManager {
       .map((s) => this.infoWithRuntime(s))
   }
 
+  /** First of its role in the task carries no index; each further one counts
+   *  up from there. `excludeId` leaves the session being renamed itself out
+   *  of the count. */
+  private defaultTitleForRole(ref: EnvRef, role: SessionRole, excludeId?: string): string {
+    const sameRole = this.listForTask(ref.workspace, ref.task).filter(
+      (s) => s.id !== excludeId && sessionRole(s) === role
+    ).length
+    return sameRole === 0 ? role : `${role} ${sameRole + 1}`
+  }
+
   /** `info` plus the non-persisted runtime overlay the tree renders as status. */
   private infoWithRuntime(s: Session): SessionInfo {
     return {
@@ -486,6 +587,16 @@ export class SessionManager {
       .sort((a, b) => (a.info.queuedAt ?? '').localeCompare(b.info.queuedAt ?? ''))
     const i = queued.findIndex((s) => s.info.id === sessionId)
     return i < 0 ? undefined : i + 1
+  }
+
+  /** Why a queue that has something in it is not moving, when no turn is
+   *  running to explain it: the clone is somebody else's. Named, because
+   *  "waiting" without a who is the thing that reads as a hang. */
+  private pendingBlocked(s: Session): string | undefined {
+    if (!s.pending.length || s.busy) return undefined
+    const holder = this.repoHolder(s)
+    if (!holder) return undefined
+    return `session "${holder.info.title}" has "${s.info.repos[0]}" — this sends as soon as it lets go`
   }
 
   snapshot(sessionId: string): SessionSnapshot | undefined {
@@ -512,6 +623,8 @@ export class SessionManager {
       promptCapabilities: this.connections.get(sessionId)?.promptCapabilities,
       startError: s.startError,
       queuePosition: this.queuePosition(sessionId),
+      pending: s.pending.length ? s.pending.map(pendingInfo) : undefined,
+      pendingBlocked: this.pendingBlocked(s),
       proposal: s.proposal,
       usage: s.usage
     }
@@ -527,22 +640,26 @@ export class SessionManager {
     action: CreateAction,
     mcp: McpSelection[] = [],
     autoAllow = true,
-    gitAccess = false,
     configValues: Record<string, string | boolean> = {},
-    role: SessionRole = 'executor'
+    role: SessionRole = 'executor',
+    /** `undefined` = never chosen, which is what the draft's `defaultSkills`
+     *  seeding keys on; `[]` = chosen to be none, which it must not overwrite
+     *  (docs/requirements-skills.md §4.3). */
+    skills: SkillSelection[] | undefined = undefined,
+    network?: SessionNetwork
   ): SessionInfo {
-    // A session cannot run or enqueue without a repo (the UI disables those, but
-    // the IPC boundary enforces it too). A draft with no repo is allowed.
-    if ((action === 'run' || action === 'queue') && !repos.length)
+    const clean = sanitizeSessionNetwork(network)
+    // Gate 1 of four (docs/requirements-session-operator.md §2.1): a session
+    // cannot run or enqueue without a repo (the UI disables those, but the IPC
+    // boundary enforces it too) — unless its role never holds one. A draft
+    // with no repo is allowed for every role.
+    if ((action === 'run' || action === 'queue') && roleNeedsRepo(role) && !repos.length)
       throw new Error('session has no repository')
     assertRoleFitsRepos(role, repos)
     // Named after the role, not a flat "session N" — the role is the one thing
     // every session now declares. First of its role in the task carries no
     // index; each further one counts up from there.
-    const sameRole = this.listForTask(ref.workspace, ref.task).filter(
-      (s) => sessionRole(s) === role
-    ).length
-    const title = sameRole === 0 ? role : `${role} ${sameRole + 1}`
+    const title = this.defaultTitleForRole(ref, role)
     const info: SessionInfo = {
       id: randomUUID(),
       env: ref.env,
@@ -555,9 +672,18 @@ export class SessionManager {
       autoAllow,
       state: 'draft',
       mcp,
-      // A read-only role cannot use the git broker: its clone is mounted
-      // `readonly`, so native git would fail on the first write anyway.
-      gitAccess: gitAccess && !roleIsReadOnly(role),
+      ...(skills ? { skills } : {}),
+      // Sanitized here rather than at each caller: this value decides how a
+      // container is wired, and it arrives from a renderer form, from an
+      // agent's `create_session` (through the spawner's record) and from a
+      // duplicate. The sanitizer is also the deep copy, so no two sessions
+      // share a policy's domain array.
+      //
+      // Absent means the defaults (an open bridge, everything logged) — the
+      // record only carries the setting once someone has chosen one, so a
+      // session created before this existed and one created with the default
+      // read the same way everywhere downstream.
+      ...(clean ? { network: clean } : {}),
       startPrompt,
       ...(Object.keys(configValues).length ? { configValues } : {})
     }
@@ -571,6 +697,8 @@ export class SessionManager {
       entries: [],
       nextEntryId: 1,
       busy: false,
+      pending: [],
+      draining: false,
       turnComplete: false,
       turns: 0,
       attached: false,
@@ -581,22 +709,44 @@ export class SessionManager {
     this.emitState(this.sessions.get(info.id)!, 'created')
     this.schedulePersist(ref)
     if (action === 'queue') this.enqueue(info.id)
-    else if (action === 'run') void this.startSession(info.id, 'user')
+    else if (action === 'run') this.startNowOrQueue(info.id)
     return info
   }
 
-  /** Run now — bypass the queue and start immediately. */
+  /**
+   * Run now — bypass the queue and start immediately, unless the task's
+   * `maxConcurrentSessions` cap is already met: a user-initiated "run now" must
+   * not blow through the same limit enqueuing exists to protect, so it falls
+   * back to the queue exactly like a session the scheduler itself held back.
+   */
+  private startNowOrQueue(sessionId: string): void {
+    const s = this.sessions.get(sessionId)
+    if (!s) return
+    const cap = this.taskCaps.get(taskKey(s.ref.workspace, s.ref.task))
+    if (cap !== undefined && this.activeSessionCount(s.ref.workspace, s.ref.task) >= cap) {
+      this.enqueue(sessionId)
+      return
+    }
+    void this.startSession(sessionId, 'user')
+  }
+
+  /** Run now — bypass the queue and start immediately (see {@link startNowOrQueue}
+   *  for the one exception: a task already at its concurrency cap). */
   run(sessionId: string): void {
     const s = this.sessions.get(sessionId)
     if (!s || s.info.state === 'starting' || s.info.state === 'started') return
-    if (!s.info.repos.length) throw new Error('session has no repository')
-    void this.startSession(sessionId, 'user')
+    // Gate 2 (see createSession's gate 1 for the rule).
+    if (roleNeedsRepo(sessionRole(s.info)) && !s.info.repos.length)
+      throw new Error('session has no repository')
+    this.startNowOrQueue(sessionId)
   }
 
   enqueue(sessionId: string): void {
     const s = this.sessions.get(sessionId)
     if (!s || s.info.state === 'starting' || s.info.state === 'started') return
-    if (!s.info.repos.length) throw new Error('session has no repository')
+    // Gate 3 (see createSession's gate 1 for the rule).
+    if (roleNeedsRepo(sessionRole(s.info)) && !s.info.repos.length)
+      throw new Error('session has no repository')
     s.info.state = 'queued'
     s.info.queuedAt = new Date().toISOString()
     s.startError = undefined
@@ -640,8 +790,9 @@ export class SessionManager {
       role?: SessionRole
       repos?: string[]
       autoAllow?: boolean
-      gitAccess?: boolean
       mcp?: McpSelection[]
+      skills?: SkillSelection[]
+      network?: SessionNetwork
       startPrompt?: string
       configValues?: Record<string, string | boolean>
     }
@@ -652,10 +803,24 @@ export class SessionManager {
     // before anything is written — a rejected edit must leave the draft intact.
     const role = patch.role ?? sessionRole(s.info)
     assertRoleFitsRepos(role, patch.repos ?? s.info.repos)
-    if (patch.agent !== undefined) s.info.agent = patch.agent
+    if (patch.agent !== undefined) {
+      // With a skill selection in place the agent pick is structural too: the
+      // skills bind exists only for a kind that reads one (`AgentDef.skillsDir`,
+      // containers.ts), so a failed start can have left a container whose mount
+      // list the new agent invalidates. Without a selection every kind gets the
+      // same (empty) mount list and the container can stay. The selection
+      // itself is untouched — it survives a switch away and back.
+      if (patch.agent !== s.info.agent && s.info.skills?.length)
+        void this.events.releaseContainer(s.info.id, 'user')
+      s.info.agent = patch.agent
+    }
     if (patch.autoAllow !== undefined) s.info.autoAllow = patch.autoAllow
-    if (patch.gitAccess !== undefined) s.info.gitAccess = patch.gitAccess
     if (patch.mcp !== undefined) s.info.mcp = patch.mcp
+    // Takes effect at the next start: the network flag decides how the session's
+    // own network is created, and a live one cannot be edited in place (§7.2).
+    // Sanitized like the create path — same value, same untrusted sources.
+    if (patch.network !== undefined)
+      s.info.network = sanitizeSessionNetwork(patch.network) ?? { internal: false }
     if (patch.startPrompt !== undefined) s.info.startPrompt = patch.startPrompt
     if (patch.configValues !== undefined)
       s.info.configValues = Object.keys(patch.configValues).length ? patch.configValues : undefined
@@ -672,11 +837,28 @@ export class SessionManager {
       s.info.repos = patch.repos
     }
     if (patch.role !== undefined) {
-      if (patch.role !== sessionRole(s.info)) void this.events.releaseContainer(s.info.id, 'user')
+      const prevRole = sessionRole(s.info)
+      if (patch.role !== prevRole) void this.events.releaseContainer(s.info.id, 'user')
+      // The title still reads as the auto-generated default (e.g. "executor",
+      // untouched by the user) — carry it along to the new role instead of
+      // leaving it stuck reading like the old one.
+      if (isDefaultSessionTitle(s.info.title, prevRole))
+        s.info.title = this.defaultTitleForRole(s.ref, patch.role, s.info.id)
       s.info.role = patch.role
     }
-    // A read-only role has no use for the git broker (see `createSession`).
-    if (roleIsReadOnly(sessionRole(s.info))) s.info.gitAccess = false
+    // Structural like repos/env/role, not a runtime knob: the skills bind is
+    // part of the container's mount list, decided when it is created. A failed
+    // start can have left one provisioned against the previous selection, so a
+    // change here has to release it (docs/requirements-skills.md §5.2).
+    if (patch.skills !== undefined) {
+      const before = (s.info.skills ?? []).map((k) => k.name).join('\u0000')
+      const after = patch.skills.map((k) => k.name).join('\u0000')
+      if (before !== after) void this.events.releaseContainer(s.info.id, 'user')
+      // `[]` is written as `[]`, not cleared: it is the user saying "none", and
+      // clearing it back to absent would have the draft re-seed the workspace's
+      // defaults over the choice they just made.
+      s.info.skills = patch.skills
+    }
     if (patch.env !== undefined && patch.env !== s.info.env) {
       void this.events.releaseContainer(s.info.id, 'user')
       s.info.env = patch.env
@@ -707,9 +889,15 @@ export class SessionManager {
       'draft',
       source.mcp ? [...source.mcp] : [],
       source.autoAllow ?? true,
-      source.gitAccess ?? false,
       { ...(source.configValues ?? {}) },
-      sessionRole(source)
+      sessionRole(source),
+      // Copied element by element, and `undefined` kept as `undefined`: the
+      // records are the copy's own, and a source that deliberately chose no
+      // skills must not have the workspace's defaults seeded back into its copy.
+      source.skills?.map((k) => ({ ...k })),
+      // Through the sanitizer, which is also the deep copy: the two sessions
+      // must not share a policy's domain array.
+      sanitizeSessionNetwork(source.network)
     )
     // The copy is recognisable as one instead of taking the next free
     // role-index name — the source is usually still in the tree right above it.
@@ -769,14 +957,36 @@ export class SessionManager {
     // A pass may start several items; claim each started item's repo so a later
     // item over the same clone stays queued.
     const claimed = new Set<string>()
+    // Same idea, per task: a pass may start several items of a capped task, so
+    // each start counts against the cap for the rest of this same pass rather
+    // than only against `activeSessionCount`'s (pre-pass) snapshot.
+    const startedThisPass = new Map<string, number>()
     const still = new Set<string>()
     for (const s of queued) {
+      const tkey = taskKey(s.ref.workspace, s.ref.task)
+      const cap = this.taskCaps.get(tkey)
+      if (cap !== undefined) {
+        const running = this.activeSessionCount(s.ref.workspace, s.ref.task) + (startedThisPass.get(tkey) ?? 0)
+        if (running >= cap) {
+          still.add(s.info.id)
+          this.noteQueued(s, 'task-at-cap')
+          continue
+        }
+      }
+      const start = (): void => {
+        if (cap !== undefined) startedThisPass.set(tkey, (startedThisPass.get(tkey) ?? 0) + 1)
+        this.queuedReasons.delete(s.info.id)
+        void this.startSession(s.info.id, 'scheduler')
+      }
       // A researcher claims no clone (read-only, locks nothing) — start it
       // unconditionally, same pass, no FIFO contention to resolve. It still
       // needs a repo to read, so a repo-less one falls through to `no-repo`.
-      if (!roleLocksClone(sessionRole(s.info)) && s.info.repos.length) {
-        this.queuedReasons.delete(s.info.id)
-        void this.startSession(s.info.id, 'scheduler')
+      // An operator claims no clone either AND needs no repo — it can always
+      // run, which matters for the session whose job is to fix the reason the
+      // other sessions cannot (docs/requirements-session-operator.md §2.1).
+      const role = sessionRole(s.info)
+      if (!roleLocksClone(role) && (s.info.repos.length || !roleNeedsRepo(role))) {
+        start()
         continue
       }
       const rkey = this.repoKey(s)
@@ -806,12 +1016,16 @@ export class SessionManager {
         continue
       }
       claimed.add(rkey)
-      this.queuedReasons.delete(s.info.id)
-      void this.startSession(s.info.id, 'scheduler')
+      start()
     }
     // Forget the reason of anything no longer waiting, so a session that queues
     // again later reports why from scratch.
     for (const id of [...this.queuedReasons.keys()]) if (!still.has(id)) this.queuedReasons.delete(id)
+    // Prompts waiting on a clone (`drainPending`) are the other thing a freed
+    // repo releases, and this pass is where a repo gets freed. Deliberately
+    // last: a queued draft that has been waiting its turn is never overtaken by
+    // a follow-up to a session that has already had one.
+    for (const s of this.sessions.values()) if (s.pending.length) void this.drainPending(s)
   }
 
   /**
@@ -857,11 +1071,46 @@ export class SessionManager {
     if (!rkey) return undefined
     for (const o of this.sessions.values()) {
       if (o.info.id === s.info.id || this.repoKey(o) !== rkey) continue
-      const live = o.info.container?.status
-      const busyContainer = live === 'building' || live === 'post' || live === 'running'
-      if (o.info.state === 'starting' || busyContainer) return o
+      if (this.isActive(o)) return o
     }
     return undefined
+  }
+
+  /** "Able to touch its clone / count against its task's cap": mid-start, or
+   *  owning a container that is up. An idle session whose container has been
+   *  auto-stopped holds nothing — shared by {@link repoHolder}, {@link
+   *  repoHolderFor} and {@link activeSessionCount}. */
+  private isActive(s: Session): boolean {
+    const live = s.info.container?.status
+    const busyContainer = live === 'building' || live === 'post' || live === 'running'
+    return s.info.state === 'starting' || busyContainer
+  }
+
+  /** Sessions of `(ws, task)` currently active (see {@link isActive}) —
+   *  what a `maxConcurrentSessions` cap counts against. */
+  private activeSessionCount(ws: string, task: string): number {
+    let n = 0
+    for (const o of this.sessions.values())
+      if (o.ref.workspace === ws && o.ref.task === task && this.isActive(o)) n++
+    return n
+  }
+
+  /** Seed the per-task cap cache from disk. Called once at boot, before the
+   *  scheduler's first pass — mirrors `review.load()`. */
+  loadTaskCaps(entries: { ws: string; task: string; max?: number | undefined }[]): void {
+    this.taskCaps.clear()
+    for (const { ws, task, max } of entries)
+      if (max) this.taskCaps.set(taskKey(ws, task), max)
+  }
+
+  /** Set or clear one task's cap (0/undefined = unlimited) after an edit is
+   *  persisted, and re-run the scheduler — raising or clearing a cap may free
+   *  sessions the queue was holding back. */
+  setTaskCap(ws: string, task: string, max: number | undefined): void {
+    const key = taskKey(ws, task)
+    if (max) this.taskCaps.set(key, max)
+    else this.taskCaps.delete(key)
+    this.schedule()
   }
 
   /**
@@ -890,44 +1139,147 @@ export class SessionManager {
     const want = `${taskKey(ws, task)}/${repo}`
     for (const o of this.sessions.values()) {
       if (this.repoKey(o) !== want) continue
-      const live = o.info.container?.status
-      const busyContainer = live === 'building' || live === 'post' || live === 'running'
-      if (o.info.state === 'starting' || busyContainer) return o.info
+      if (this.isActive(o)) return o.info
     }
     return undefined
   }
 
   /**
    * Sessions whose live container is the only thing keeping a queued session
-   * off its clone, and which are not themselves working — the environments
-   * nobody is claiming right now. The queue handoff (kernel.ts) stops these
-   * immediately rather than letting them sit out the idle grace period, which
-   * is what turns "waiting for a repo" from ten minutes into seconds.
+   * off its clone *or* off its task's `maxConcurrentSessions` slot, and which
+   * are not themselves working — the environments nobody is claiming right
+   * now. The queue handoff (kernel.ts) stops these immediately rather than
+   * letting them sit out the idle grace period, which is what turns "waiting
+   * for a repo/slot" from ten minutes into seconds.
    *
    * A holder that is mid-start or mid-turn is doing real work and is never
    * listed: the queue waits for it exactly as before. Empty queue → empty list,
    * so with nothing waiting the plain idle policy applies untouched.
+   *
+   * The task-cap half is deliberately loose, same as the repo half: any idle
+   * running session of a capped task with something queued is listed, whether
+   * or not stopping it actually clears *this* queued item's way (it may be
+   * blocked by something else too, e.g. a review lock) — an idle container was
+   * headed down on its own regardless, so reaping it a little early never
+   * costs anything.
    */
   holdersBlockingQueue(): string[] {
-    const wanted = new Set<string>()
+    const wantedRepos = new Set<string>()
+    const wantedTasks = new Set<string>()
     for (const s of this.sessions.values()) {
-      if (s.info.state !== 'queued') continue
+      if (s.info.state !== 'queued') {
+        // A started session with a prompt waiting on a clone somebody else is
+        // sitting on is queueing in everything but the state: it wants exactly
+        // what a queued draft wants, and the same handoff is what gives it.
+        // Without this its message waits out the idle grace period instead.
+        if (s.pending.length && !s.busy && this.repoHolder(s)) {
+          const rkey = this.repoKey(s)
+          if (rkey) wantedRepos.add(rkey)
+        }
+        continue
+      }
       const rkey = this.repoKey(s)
-      if (rkey) wanted.add(rkey)
+      if (rkey) wantedRepos.add(rkey)
+      const tkey = taskKey(s.ref.workspace, s.ref.task)
+      if (this.taskCaps.has(tkey)) wantedTasks.add(tkey)
     }
-    if (!wanted.size) return []
+    if (!wantedRepos.size && !wantedTasks.size) return []
     const out: string[] = []
     for (const o of this.sessions.values()) {
       // A queued holder is the scheduler's business, not the reaper's: it owns
       // a container it is about to start into.
       if (o.info.state === 'queued' || o.info.state === 'starting' || o.busy) continue
-      const rkey = this.repoKey(o)
-      if (!rkey || !wanted.has(rkey)) continue
       // Only a fully-up container is stoppable — one still building/post is
       // mid-provision, and `starting` above already covers its session.
-      if (o.info.container?.status === 'running') out.push(o.info.id)
+      if (o.info.container?.status !== 'running') continue
+      const rkey = this.repoKey(o)
+      const tkey = taskKey(o.ref.workspace, o.ref.task)
+      if ((rkey && wantedRepos.has(rkey)) || wantedTasks.has(tkey)) out.push(o.info.id)
     }
     return out
+  }
+
+  /**
+   * Say so when a selected MCP server did not make it into the descriptors the
+   * agent is about to receive — the scope the session got is not the scope the
+   * user picked, and the difference is otherwise invisible from the outside.
+   *
+   * Both sources are routed now (built-ins through gurt's host listeners,
+   * registry entries straight from the proxy), so landing here means the id did
+   * not resolve at all: the workspace no longer offers it, or its credential
+   * refused to resolve — an unresolvable credential blocks, it never falls back
+   * to an unauthenticated call. `attachMcp` logs the reason immediately above.
+   *
+   * Rides the session's provisioning log, where the rest of "what happened on
+   * the way up" is written.
+   */
+  private noteUnattachedMcp(s: Session, attached: AcpHttpMcpServer[]): void {
+    for (const sel of s.info.mcp ?? []) {
+      if (attached.some((m) => m.name === sel.id)) continue
+      this.bus.emit('provision.log', {
+        key: s.info.id,
+        line: `[mcp] "${sel.id}" is selected but is not in this session's scope — the agent will not see it`
+      })
+    }
+  }
+
+  /**
+   * Everything the agent needs to reach an MCP server, in the order it has to
+   * happen (docs/requirements-mcp-proxy.md §4.3, §5.3):
+   *
+   *   1. gurt's own host listeners come up (`github`, `gurt`), each on its own
+   *      port with its own token — the `host` upstreams of the scope below;
+   *   2. the scope is built from the session's selection resolved against the
+   *      workspace registry and the credential store, and *pushed to the proxy*;
+   *   3. the descriptors the agent receives are returned — every one of them a
+   *      `http://gurt-proxy:8100/mcp/<token>/<id>` URL.
+   *
+   * So the session container holds a URL and an opaque token, and never an MCP
+   * credential, never a host token, and never an upstream address (§2). It runs
+   * before the adapter is spawned, on both the start and the resume path, which
+   * is also what makes a scope edit mid-session take effect on the next attach.
+   */
+  private async attachMcp(s: Session, ctx: LaunchContext): Promise<AcpHttpMcpServer[]> {
+    const hosted = [
+      ...(await this.events.resolveMcpServers(s.ref, s.info.id, s.info.repos[0], s.info.mcp)),
+      await this.events.resolveGurtServer(s.ref, s.info.id, this.gurtHooks(s))
+    ]
+    const plan = await resolveProxyPlan(s.ref, s.info.id, ctx.proxy.token, s.info.mcp, {
+      // One URL per built-in, because gurt still runs one listener per (session,
+      // mcp id); §10.4 collapses these into a single `hostMcpUrl`.
+      hostMcpUrls: Object.fromEntries(hosted.map((m) => [m.name, m.url])),
+      network: s.info.network,
+      proxyBase: ctx.proxy.base
+    })
+    for (const line of plan.errors)
+      this.bus.emit('provision.log', { key: s.info.id, line: `[mcp] ${line}` })
+    await this.events.pushProxyScope(s.info.id, plan.config)
+    this.noteUnattachedMcp(s, plan.mcpServers)
+    return plan.mcpServers
+  }
+
+  /**
+   * Stage this session's skills on the host, and say on its provision log which
+   * selected names resolved to nothing.
+   *
+   * Reported rather than thrown, the way `resolveProxyPlan`'s errors are: a
+   * skill deleted behind a draft is the user's to notice and fix, and refusing
+   * to start over it would strand the session on a problem the picker already
+   * shows as an error row (docs/requirements-skills.md §4.4).
+   */
+  private async materializeSkills(s: Session): Promise<void> {
+    if (!s.info.skills?.length) return
+    const { missing } = await this.events.materializeSkills(
+      s.ref.workspace,
+      s.ref.task,
+      s.info.id,
+      s.info.skills
+    )
+    for (const name of missing)
+      this.bus.emit('provision.log', {
+        key: s.info.id,
+        line: `[skills] "${name}" is not in this workspace's registry — not mounted`
+      })
   }
 
   /** Provision (if needed), open the ACP session, and send the start prompt. */
@@ -944,9 +1296,11 @@ export class SessionManager {
     this.emitState(s, by)
     this.bus.emit('session.changed', { sessionId })
     try {
-      // Every start path funnels here, so the gate is checked once, here: the
-      // scheduler pre-checks it to pick queue items, "Run now" doesn't need to.
-      if (!s.info.repos.length) throw new Error('session has no repository')
+      // Gate 4: every start path funnels here, so the gate is checked once,
+      // here — the scheduler pre-checks it to pick queue items, "Run now"
+      // doesn't need to. An operator legally starts with zero repos.
+      if (roleNeedsRepo(sessionRole(s.info)) && !s.info.repos.length)
+        throw new Error('session has no repository')
       const holder = this.repoHolder(s)
       if (holder)
         throw new Error(
@@ -958,13 +1312,19 @@ export class SessionManager {
         throw new Error(
           `repository "${s.info.repos[0]}" is locked for review — unlock it to run agents against it`
         )
+      // Before the container is resolved: `resolveLaunch` provisions it, and
+      // the read-only bind it adds points at the directory this call fills
+      // (docs/requirements-skills.md §5). Re-run on every start, so a skill
+      // edited in Settings between two starts of the same draft is delivered as
+      // it is now.
+      await this.materializeSkills(s)
       const ctx = await this.events.resolveLaunch(s.info.id)
       s.remoteCwd = ctx.remoteWorkspaceFolder
+      // Before the adapter, not after: the agent must never observe a proxy
+      // that has no scope, and its environment names that proxy from its first
+      // instruction.
+      const mcpServers = await this.attachMcp(s, ctx)
       const conn = await this.connection(s, ctx)
-      const mcpServers = [
-        ...(await this.events.resolveMcpServers(s.ref, s.info.id, s.info.repos[0], s.info.mcp)),
-        await this.events.resolveGurtServer(s.ref, s.info.id, this.gurtHooks(s))
-      ]
       // Model/effort chosen for the draft ride `_meta` so the very first turn
       // already runs on them (claude-code honors `_meta.claudeCode.options`);
       // any other picks (e.g. fast mode) are reconciled below, before the prompt.
@@ -1225,8 +1585,10 @@ export class SessionManager {
       ctx.hostWorkspaceFolder,
       ctx.secret,
       ctx.secretEnv,
-      ctx.env,
-      ctx.gitBrokerEnv
+      // The proxy variables go last, so a session's sandbox is not something an
+      // agent's own env config can talk its way out of (§4.5).
+      { ...ctx.env, ...ctx.proxy.env },
+      ctx.gitIdentityEnv
     )
     const spawnedAt = Date.now()
     log.info('agent.spawn', {
@@ -1239,7 +1601,8 @@ export class SessionManager {
       env: [
         ...(ctx.secret ? [ctx.secretEnv] : []),
         ...Object.keys(ctx.env ?? {}),
-        ...Object.keys(ctx.gitBrokerEnv ?? {})
+        ...Object.keys(ctx.proxy.env),
+        ...Object.keys(ctx.gitIdentityEnv ?? {})
       ]
     })
     // The adapter's own diagnostics: the reason a start fails is almost always
@@ -1403,14 +1766,15 @@ export class SessionManager {
         )
       const ctx = await this.events.resolveLaunch(s.info.id)
       s.remoteCwd = ctx.remoteWorkspaceFolder
+      // Same ordering as a start: the resumed session's proxy is a *new*
+      // container with no scope, so the scope is pushed before the adapter that
+      // will use it. A session that is still attached kept both, and re-pushing
+      // is what a scope edit does — not what a reconnect does.
+      const mcpServers = s.attached ? [] : await this.attachMcp(s, ctx)
       const conn = await this.connection(s, ctx)
       if (!s.attached) {
         if (!s.acpSessionId) throw new Error('session was never started')
         try {
-          const mcpServers = [
-            ...(await this.events.resolveMcpServers(s.ref, s.info.id, s.info.repos[0], s.info.mcp)),
-            await this.events.resolveGurtServer(s.ref, s.info.id, this.gurtHooks(s))
-          ]
           const result = await conn.peer.request(
             'session/load',
             {
@@ -1596,14 +1960,21 @@ export class SessionManager {
     context?: PromptContext[],
     images?: PromptImage[]
   ): Promise<void> {
-    const first = await this.sendTurn(s, text, 'user', false, context, images)
-    if (this.decideTurn(s, first, false) !== 'nudge') return
-    const second = await this.sendTurn(s, NUDGE_PROMPT, 'system', true)
-    if (this.decideTurn(s, second, true) === 'incomplete') {
-      this.push(s, { kind: 'system', text: 'turn ended without complete' })
-      s.info.incomplete = true
-      this.bus.emit('session.changed', { sessionId: s.info.id })
-      this.schedulePersist(s.ref)
+    try {
+      const first = await this.sendTurn(s, text, 'user', false, context, images)
+      if (this.decideTurn(s, first, false) !== 'nudge') return
+      const second = await this.sendTurn(s, NUDGE_PROMPT, 'system', true)
+      if (this.decideTurn(s, second, true) === 'incomplete') {
+        this.push(s, { kind: 'system', text: 'turn ended without complete' })
+        s.info.incomplete = true
+        this.bus.emit('session.changed', { sessionId: s.info.id })
+        this.schedulePersist(s.ref)
+      }
+    } finally {
+      // Whatever was typed while this turn ran goes next. A no-op when the drain
+      // loop is what called this (it owns `draining` and continues on its own) —
+      // this is here for the one turn it does not drive, the start prompt.
+      void this.drainPending(s)
     }
   }
 
@@ -1641,21 +2012,40 @@ export class SessionManager {
     role: SessionRole
     onComplete: (p: ChangeProposal) => void
     onCreateSession: (req: AgentSessionRequest) => Promise<{ sessionId: string; title: string }>
+    admin?: {
+      call(method: string, args: Record<string, unknown>): Promise<unknown>
+      provisioningLog(key: string, tail: number | undefined): Promise<string>
+    }
   } {
+    const role = sessionRole(s.info)
     return {
-      role: sessionRole(s.info),
+      role,
       onComplete: (p) => this.onComplete(s.info.id, p),
-      onCreateSession: (req) => this.createAgentDraft(s.info.id, req)
+      onCreateSession: (req) => this.createAgentDraft(s.info.id, req),
+      // The workspace is bound here, from the session's own record — the one
+      // parameter the agent can never express (§3.2 of
+      // docs/requirements-session-operator.md).
+      ...(role === 'operator'
+        ? {
+            admin: {
+              call: (method: string, args: Record<string, unknown>) =>
+                this.events.adminCall(s.ref.workspace, method, args),
+              provisioningLog: (key: string, tail: number | undefined) =>
+                this.events.adminProvisioningLog(s.ref.workspace, key, tail)
+            }
+          }
+        : {})
     }
   }
 
   /**
    * `create_session` (§3): one session's agent drafts another. The new session
-   * lands in the spawner's own task, inherits everything the request leaves out,
-   * and stays a **draft** — the user reviewing, editing or launching it *is* the
-   * approval step, which is why there is no spawn-graph limit, depth control or
-   * flow management to enforce here. Nothing flows back to the spawner beyond
-   * the id of the draft it just created.
+   * lands in the spawner's own task, inherits everything the request leaves out
+   * (the env excepted — see `resolveDraftEnv`), and stays a **draft** — the user
+   * reviewing, editing or launching it *is* the approval step, which is why
+   * there is no spawn-graph limit, depth control or flow management to enforce
+   * here. Nothing flows back to the spawner beyond the id of the draft it just
+   * created.
    */
   async createAgentDraft(
     spawnerId: string,
@@ -1680,13 +2070,22 @@ export class SessionManager {
       if (from !== 'researcher')
         throw new Error(`a ${from} session may only draft into its own task`)
     }
-    const env = req.env ?? spawner.info.env
-    const agent = req.agent ?? spawner.info.agent
+    // Explicit request wins; absent that, the workspace's own default (if any)
+    // beats inheriting the spawner's — a workspace that configured a default
+    // has made a choice for everything drafted into it, not just for sessions
+    // that name no agent of their own. Only with neither does the spawner's
+    // agent stand, as before.
+    const agent =
+      req.agent ?? (await this.events.defaultAgentForWorkspace(spawner.ref.workspace)) ?? spawner.info.agent
     if (!agent) throw new Error('no agent to draft with — this session has none either')
-    // Repo/env names come from an agent, so they are untrusted the same way the
-    // renderer's are; a draft naming a repo that does not exist would only fail
-    // much later, at the user's launch.
-    await this.events.checkDraftTarget(spawner.ref.workspace, req.repos, env)
+    // Repo/env/agent names come from an agent, so they are untrusted the same
+    // way the renderer's are; a draft naming a repo that does not exist, or an
+    // agent the workspace denies, would only fail much later, at the user's
+    // launch. Checked *before* the env is resolved, since resolving reads the
+    // repo back out of the registry — an invented repo has to read as "not
+    // registered", not as "has no default env".
+    await this.events.checkDraftTarget(spawner.ref.workspace, req.repos, req.env, agent)
+    const env = await this.resolveDraftEnv(spawner.ref.workspace, req)
     // The task name is agent-input too: `ensureTask` validates it and creates
     // the `task.json` marker if missing — the session's first persist would
     // otherwise mkdir its way into a directory that is not a task (invisible
@@ -1700,9 +2099,18 @@ export class SessionManager {
       'draft',
       spawner.info.mcp ?? [],
       req.autoAllow ?? spawner.info.autoAllow ?? true,
-      req.gitAccess ?? false,
       req.configValues ?? spawner.info.configValues ?? {},
-      req.role
+      req.role,
+      // Inherited when the request says nothing, replaced outright when it does
+      // — including with `[]`, which is how an agent asks for none
+      // (docs/requirements-skills.md §6). The names were validated at the tool
+      // boundary; one that does not resolve stays in the draft as an error row,
+      // which is where a user can act on it.
+      req.skills ? sanitizeSkillSelection(req.skills) : spawner.info.skills?.map((k) => ({ ...k })),
+      // Inherited, never chosen: a session running internal cannot draft one
+      // with open egress (§6.2), and `AgentSessionRequest` has no field to ask
+      // with — a rule the agent cannot express is one it cannot argue about.
+      sanitizeSessionNetwork(spawner.info.network)
     )
     // `renameSession` mutates the same info object createSession stored.
     if (req.title?.trim()) this.renameSession(info.id, req.title)
@@ -1713,6 +2121,63 @@ export class SessionManager {
     const where = task !== spawner.ref.task ? ` in task "${task}"` : ''
     this.push(spawner, { kind: 'system', text: `create_session: drafted ${req.role} "${info.title}"${where}` })
     return { sessionId: info.id, title: info.title }
+  }
+
+  /**
+   * Which environment a `create_session` draft runs in. The answer follows the
+   * **repo being drafted for**, never the spawner: a researcher parked in some
+   * ad-hoc container drafts sessions for repos all day, and inheriting its own
+   * env handed every one of them the wrong container silently — nothing in the
+   * request said "env", so nothing in the result looked wrong either.
+   *
+   * So: the env is the one claiming this repo as its default (`EnvConfig.repo`,
+   * read backwards). Naming a different one is allowed but never implicit —
+   * `confirmNonDefaultEnv` has to say so, which is what makes the wrong
+   * container a decision rather than an oversight. The interactive New Session
+   * flow (`createSession`) keeps its own defaulting: a human picking an env in
+   * the modal sees what they picked.
+   *
+   * Two shapes have no default to speak of, and both end at the same place —
+   * the caller names the env:
+   *  - **no env claims the repo**: there is nothing to default to, so `env` is
+   *    required. Once given it stands on its own; there is no default for it to
+   *    contradict, so no confirmation to ask for.
+   *  - **several envs claim it**: the registry is ambiguous, so an omitted
+   *    `env` cannot be resolved for the caller. Any env *from that set* is then
+   *    taken as-is — none of them is more "the" default than the others, and
+   *    demanding a non-default confirmation for a genuine default would teach
+   *    the agent to set the flag by reflex, which is the one habit this guard
+   *    cannot survive. Anything outside the set still needs the flag.
+   */
+  private async resolveDraftEnv(ws: string, req: AgentSessionRequest): Promise<string> {
+    // `repos` is exactly one entry: the tool's schema says so and
+    // `assertRoleFitsRepos` has already refused a second one for every role
+    // that can be drafted at all. The empty case only the type system believes
+    // in, but the env hangs off this repo now — better a sentence than a crash.
+    const repo = req.repos[0]
+    if (!repo) throw new Error('a drafted session needs exactly one repo')
+    const defaults = await this.events.defaultEnvsForRepo(ws, repo)
+    if (!req.env) {
+      const [only, ...rest] = defaults
+      if (only && !rest.length) return only
+      throw new Error(
+        defaults.length
+          ? `repo "${repo}" is the default repo of several environments (${defaults.join(', ')}) — ` +
+            'pass `env` naming the one this session should run in'
+          : `repo "${repo}" is not the default repo of any environment, so there is nothing to ` +
+            'default to — pass `env` naming the one this session should run in'
+      )
+    }
+    if (defaults.includes(req.env) || !defaults.length || req.confirmNonDefaultEnv) return req.env
+    const named = defaults.map((e) => `"${e}"`).join(', ')
+    throw new Error(
+      defaults.length > 1
+        ? `env "${req.env}" is not among the default environments of repo "${repo}" (${named}) — ` +
+          'name one of those, or pass `confirmNonDefaultEnv: true` if running it elsewhere is deliberate'
+        : `env "${req.env}" is not the default environment of repo "${repo}" (that is ${named}) — ` +
+          'omit `env` to draft into the repo\'s default, or pass `confirmNonDefaultEnv: true` if ' +
+          'running it elsewhere is deliberate'
+    )
   }
 
   /** Newest stored proposal among this (task, repo)'s sessions (all outcome=changes). */
@@ -1749,12 +2214,85 @@ export class SessionManager {
     const s = this.sessions.get(sessionId)
     if (!s) throw new Error('unknown session')
     if (s.info.state !== 'started') throw new Error('session is not started')
-    // One turn at a time: overlapping prompts would share `turnComplete`, so a
-    // `complete` for one turn could silently satisfy the other (and both could
-    // nudge). The composer already disables send while busy — this makes the
-    // invariant hold for any caller.
-    if (s.busy) throw new Error('session is busy')
-    await this.runPrompt(s, text, context, images)
+    // Everything goes through the queue, including the send that could have run
+    // straight away — that is what keeps "one turn at a time" structural rather
+    // than a rule each caller has to remember. Overlapping prompts would share
+    // `turnComplete`, so a `complete` for one turn could silently satisfy the
+    // other (and both could nudge).
+    //
+    // Resolves once the prompt is *accepted*, not once it has run: a queued one
+    // may wait minutes for the clone, and the caller (the composer) needs its
+    // message cleared now. What happened to it afterwards is the timeline's to
+    // tell, and a failed turn writes itself there.
+    const id = `p${++this.pendingSeq}`
+    s.pending.push({
+      id,
+      text,
+      ...(context?.length ? { context } : {}),
+      ...(images?.length ? { images } : {})
+    })
+    void this.drainPending(s)
+    // Still queued after the drain had its synchronous chance at it: nothing
+    // else is going to announce it. A drain already in flight returns at its
+    // own guard without a word, and the turn it is waiting behind may run for
+    // minutes — the pane has to show the message now, not then. When the drain
+    // *did* take it, `sendTurn` has already emitted for the turn it started.
+    if (s.pending.some((p) => p.id === id))
+      this.bus.emit('session.changed', { sessionId: s.info.id })
+  }
+
+  /**
+   * Run everything this session has waiting, one turn at a time, for as long as
+   * it can: a queue that empties into a session whose clone was taken away
+   * mid-drain stops where it is and waits to be called again (`schedule()`).
+   *
+   * Never rejects — it is called for its effect from event handlers and from
+   * the tail of every turn, and a rejected floating promise here would be a
+   * crash the user could not connect to anything they did.
+   */
+  private async drainPending(s: Session): Promise<void> {
+    if (s.draining) return
+    s.draining = true
+    try {
+      // `busy` covers the one turn this loop does not own: the start prompt,
+      // which `startSession` runs directly. `repoHolder` is case two — the
+      // clone is elsewhere, and attaching would only fail with it.
+      while (s.pending.length && !s.busy && s.info.state === 'started' && !this.repoHolder(s)) {
+        const next = s.pending.shift()!
+        await this.runPrompt(s, next.text, next.context, next.images)
+      }
+    } catch (e) {
+      log.error('internal.fail', { site: 'pending-drain', s: s.info.id, err: e })
+    } finally {
+      s.draining = false
+      // One emit for both endings: the queue is empty, or it is stuck and the
+      // pane has to say why.
+      this.bus.emit('session.changed', { sessionId: s.info.id })
+    }
+  }
+
+  /** Take everything out of the queue and hand it back — the composer puts the
+   *  text (and chips) where it came from, so stopping a session never eats what
+   *  was typed behind it. Images are dropped; see {@link PendingPromptInfo}. */
+  clearPending(sessionId: string): PendingPromptInfo[] {
+    const s = this.sessions.get(sessionId)
+    if (!s?.pending.length) return []
+    const out = s.pending.map(pendingInfo)
+    s.pending = []
+    this.bus.emit('session.changed', { sessionId })
+    return out
+  }
+
+  /** The same for one entry, by id (a row's own cancel). Returns it so that
+   *  one, too, can go back to the composer rather than just vanishing. */
+  cancelPending(sessionId: string, promptId: string): PendingPromptInfo | undefined {
+    const s = this.sessions.get(sessionId)
+    if (!s) return undefined
+    const i = s.pending.findIndex((p) => p.id === promptId)
+    if (i < 0) return undefined
+    const [gone] = s.pending.splice(i, 1)
+    this.bus.emit('session.changed', { sessionId })
+    return gone ? pendingInfo(gone) : undefined
   }
 
   cancel(sessionId: string): void {

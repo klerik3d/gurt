@@ -95,15 +95,15 @@ const modalGone = () => page.waitForSelector('.modal', { state: 'detached', time
 // The two views in the activity bar. Repos and environments live in Settings;
 // tasks and sessions in the work view.
 const openSettings = async (section) => {
-  await page.click('.activitybar .ab-item[title="Settings"]')
+  await page.click('.activitybar .ab-item[title^="Settings"]')
   await page.click(`.set-nav-item:has-text("${section}")`)
 }
-const openWork = () => page.click('.activitybar .ab-item[title="Tasks & sessions"]')
+const openWork = () => page.click('.activitybar .ab-item[title^="Tasks & sessions"]')
 
 await page.waitForSelector('.sidebar', { timeout: 15000 })
 
 // --- workspace ---------------------------------------------------------
-await page.click('.sb-ws-btn')
+await page.click('.tb-ws-btn')
 await page.click('.menu-item:has-text("+ new workspace")')
 await page.waitForSelector('.modal input', { timeout: 5000 })
 await page.fill('.modal input', 'p')
@@ -135,15 +135,16 @@ await page.waitForSelector('.set-row-label:text-is("hello-env")', { timeout: 500
 
 // --- task --------------------------------------------------------------
 await openWork()
-await page.click('button[title="New task · ⌘⇧N"]')
+await page.click('button[title^="New task"]')
 await page.waitForSelector('.sb-newtask-menu input', { timeout: 5000 })
 await page.fill('.sb-newtask-menu input', 't')
 await page.press('.sb-newtask-menu input', 'Enter')
 await page.waitForSelector('.sb-task-name:text-is("t")', { timeout: 10000 })
 
 // --- codex session — this is what provisions the container -------------
-await page.hover('.sb-task:has(.sb-task-name:text-is("t"))')
-await page.click('.sb-task:has(.sb-task-name:text-is("t")) .icon-sq[title="new session"]')
+await page.click('.sb-task:has(.sb-task-name:text-is("t"))', { button: 'right' })
+await page.waitForSelector('.ctx-menu', { timeout: 5000 })
+await page.click('.ctx-menu .menu-item:has-text("New session")')
 await page.waitForSelector('.modal:has-text("New session")', { timeout: 5000 })
 // environment first: picking it seeds the session's repo from the env default
 await page.click('.modal .seclabel:text-is("ENVIRONMENT") + .pick-wrap .pick-row')

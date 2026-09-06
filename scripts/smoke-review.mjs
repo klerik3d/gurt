@@ -273,8 +273,9 @@ try {
   check((await page.locator('.changes-group-head .tag-accent, .tp-sec-head .tag-accent').count()) > 0,
     'the panel shows the repo as locked')
 
-  await page.hover(`.sb-task:has(.sb-task-name:text-is("${TASK}"))`)
-  await page.click(`.sb-task:has(.sb-task-name:text-is("${TASK}")) button[title="new session"]`)
+  await page.click(`.sb-task:has(.sb-task-name:text-is("${TASK}"))`, { button: 'right' })
+  await page.waitForSelector('.ctx-menu', { timeout: 5000 })
+  await page.click('.ctx-menu .menu-item:has-text("New session")')
   await page.waitForSelector('.modal:has-text("New session")', { timeout: 5000 })
   await page.fill('textarea[placeholder="What should the agent do?"]', 'do the fix')
   await page.click('.modal .btn-primary:has-text("Run now")')

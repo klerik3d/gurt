@@ -35,9 +35,20 @@ body,
 body {
   font-family: var(--ui);
   font-size: 13px;
-  background: var(--app);
+  background: var(--surface);
   color: var(--text);
   -webkit-font-smoothing: antialiased;
+}
+
+/* Chromium's default focus ring is a white double outline that reads orange-ish
+   against the warm graphite; use the same accent ring the inputs already wear.
+   `:focus-visible` only — clicking with the mouse leaves no ring behind. */
+:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+:focus:not(:focus-visible) {
+  outline: none;
 }
 
 ::-webkit-scrollbar {
@@ -468,6 +479,14 @@ textarea.input {
 .menu-item.danger:hover {
   color: var(--red);
 }
+/* Lets the name give way to the menu's fixed width instead of forcing a
+   horizontal scrollbar on the dropdown (.pick-menu below). */
+.menu-item-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex: 1 1 auto;
+}
 .menu-item-input {
   padding: 3px;
 }
@@ -484,11 +503,39 @@ textarea.input {
   top: calc(100% + 6px);
   right: 0;
 }
+/* Row context menu (right-click / two-finger tap) — anchored to the pointer
+   instead of a button, so it reads as a normal OS menu. */
+.ctx-menu {
+  position: fixed;
+  z-index: 50;
+  min-width: 170px;
+}
 .menu-empty {
   padding: 10px 9px;
   font-size: 12px;
   color: var(--faint);
   white-space: normal;
+}
+/* Filter box at the top of a long picker menu — pinned above the scrolling
+   options rather than scrolling away with them. */
+.menu-filter {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  width: 100%;
+  height: 28px;
+  margin-bottom: 4px;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border2);
+  border-radius: 7px;
+  padding: 0 9px;
+  font-size: 12.5px;
+  font-family: inherit;
+}
+.menu-filter:focus {
+  outline: none;
+  border-color: var(--accent);
 }
 .menu-meta {
   margin-left: auto;
@@ -505,16 +552,15 @@ textarea.input {
   height: 100%;
 }
 
-/* Title bar: 44px, traffic-light inset on the left. */
+/* Title bar: 36px (matches the footer), traffic-light inset on the left.
+   Floats on the shared base fill — no border or background of its own. */
 .titlebar {
-  height: 44px;
+  height: 36px;
   flex: none;
   display: flex;
   align-items: center;
   gap: 14px;
   padding: 0 12px 0 78px;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
   -webkit-app-region: drag;
 }
 .tb-center {
@@ -535,6 +581,71 @@ textarea.input {
   font-family: var(--mono);
   font-size: 12px;
   color: var(--dim);
+}
+/* Workspace switcher — the titlebar breadcrumb's interactive segment, usable
+   from every view (work/dashboard/settings), unlike the old sidebar-only one. */
+.tb-ws {
+  position: relative;
+  -webkit-app-region: no-drag;
+}
+.tb-ws-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: -3px -6px;
+  padding: 3px 6px;
+  border-radius: 6px;
+  font-weight: 600;
+  color: var(--text);
+  -webkit-app-region: no-drag;
+}
+.tb-ws-btn:hover {
+  background: var(--hover);
+}
+.tb-ws-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 180px;
+  -webkit-app-region: no-drag;
+}
+.tb-ws-menu .menu-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.tb-ws-menu .menu-item .sb-act {
+  visibility: hidden;
+  width: 22px;
+  height: 22px;
+  margin: -4px -6px -4px 0;
+}
+.tb-ws-menu .menu-item:hover .sb-act {
+  visibility: visible;
+}
+/* The auto-updater's "restart into the new version" button — appears in the
+   titlebar right of the workspace switcher once an update is downloaded
+   (see main/update.ts). */
+.tb-update-btn {
+  flex: none;
+  margin-left: 8px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 600;
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  color: var(--on-accent);
+  -webkit-app-region: no-drag;
+}
+.tb-update-btn:hover {
+  filter: brightness(1.12);
+}
+.tb-crumb-sep {
+  color: var(--faint);
+}
+.tb-crumb-rest {
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -551,25 +662,29 @@ textarea.input {
   -webkit-app-region: no-drag;
 }
 
+/* No top/bottom padding — the panels sit flush under the titlebar and flush
+   above the footer; the side gutter and inter-panel gaps stay. */
 .workbench {
   flex: 1;
   display: flex;
   min-height: 0;
+  padding: 0 4px;
 }
 
-/* Activity bar: 52px, three items. */
+/* Activity bar: 44px, three items. Floats on the shared base fill; only the
+   sidebar/main panels below get an outline. */
 .activitybar {
-  width: 52px;
+  width: 44px;
   flex: none;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
-  padding: 10px 0;
-  background: var(--surface);
-  border-right: 1px solid var(--border);
+  gap: 3px;
+  padding: 5px 0;
+  margin-right: 4px;
 }
 .ab-item {
+  position: relative;
   width: 36px;
   height: 36px;
   border-radius: 9px;
@@ -585,17 +700,35 @@ textarea.input {
   background: var(--hover);
   color: var(--text);
 }
+/* ⌘/Ctrl-held shortcut hint (App's activity bar) — a little keycap, not an
+   alert, so it borrows .kbd's look rather than .notif-badge's. */
+.ab-badge {
+  position: absolute;
+  right: 1px;
+  bottom: 1px;
+  min-width: 13px;
+  height: 13px;
+  padding: 0 2px;
+  border-radius: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: 8.5px;
+  font-weight: 600;
+  line-height: 11px;
+  text-align: center;
+  pointer-events: none;
+}
 
-/* Footer: 26px status strip. */
+/* Footer: 36px (matches the titlebar). Floats on the shared base fill. */
 .footer {
-  height: 26px;
+  height: 36px;
   flex: none;
   display: flex;
   align-items: center;
   gap: 14px;
   padding: 0 16px;
-  background: var(--surface);
-  border-top: 1px solid var(--border);
   font-family: var(--mono);
   font-size: 10.5px;
   color: var(--faint);
@@ -639,15 +772,40 @@ textarea.input {
   flex-direction: column;
   min-width: 0;
   background: var(--app);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  /* Same fix as .settings: a full-bleed opaque child (.chat, .session-pane,
+     .task-pane) would otherwise square off this border's rounded corners. */
+  overflow: hidden;
 }
 
+/* 3x3 layout: the logo owns the whole center column as a faint watermark: the
+   copy sits in front of it, at the top of the bottom-center cell. */
 .placeholder {
   flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-rows: 1fr 1fr 1fr;
+}
+.placeholder-logo {
+  grid-column: 2;
+  grid-row: 1 / span 3;
   display: flex;
   align-items: center;
   justify-content: center;
+  opacity: 0.036;
+  pointer-events: none;
+}
+.placeholder-text {
+  grid-column: 2;
+  grid-row: 3;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
   gap: 6px;
+  padding-top: 22px;
   color: var(--faint);
+  text-align: center;
 }
 
 /* ---- sidebar ---- */
@@ -655,45 +813,50 @@ textarea.input {
 .sidebar {
   flex: none;
   background: var(--app);
-  border-right: 1px solid var(--border);
+  border: 1px solid var(--border);
+  border-radius: 10px;
   display: flex;
   flex-direction: column;
 }
+/* Sits in the gap between sidebar and main; the three dots hint that the
+   seam is draggable (col-resize), stacked parallel to it. */
 .sidebar-resizer {
   flex: none;
   width: 5px;
-  margin-left: -3px;
   cursor: col-resize;
   z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
-.sidebar-resizer:hover {
+.sidebar-resizer::before {
+  content: '';
+  width: 2px;
+  height: 2px;
+  border-radius: 50%;
+  background: var(--faint);
+  box-shadow:
+    0 -5px 0 var(--faint),
+    0 5px 0 var(--faint);
+}
+.sidebar-resizer:hover::before {
   background: var(--accent);
-  opacity: 0.4;
+  box-shadow:
+    0 -5px 0 var(--accent),
+    0 5px 0 var(--accent);
 }
 
 .sb-head {
-  height: 44px;
+  height: 32px;
   flex: none;
   display: flex;
   align-items: center;
   gap: 4px;
   padding: 0 10px 0 8px;
-  border-bottom: 1px solid var(--border);
 }
 .sb-ws {
-  position: relative;
   min-width: 0;
-}
-.sb-ws-btn {
-  display: flex;
-  align-items: center;
-  gap: 8px;
   padding: 4px 6px;
-  border-radius: 7px;
-  min-width: 0;
-}
-.sb-ws-btn:hover {
-  background: var(--hover);
 }
 .sb-ws-name {
   font-weight: 600;
@@ -703,41 +866,6 @@ textarea.input {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.sb-ws-menu {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  min-width: 180px;
-}
-.sb-ws-menu .menu-item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.sb-ws-menu .menu-item .sb-act {
-  visibility: hidden;
-  width: 22px;
-  height: 22px;
-  margin: -4px -6px -4px 0;
-}
-.sb-ws-menu .menu-item:hover .sb-act {
-  visibility: visible;
-}
-/* The auto-updater's "restart into the new version" button — appears right of
-   the workspace picker once an update is downloaded (see main/update.ts). */
-.sb-update-btn {
-  flex: none;
-  padding: 2px 9px;
-  border-radius: 999px;
-  font-size: 11.5px;
-  font-weight: 600;
-  background: var(--accent);
-  border: 1px solid var(--accent);
-  color: var(--on-accent);
-}
-.sb-update-btn:hover {
-  filter: brightness(1.12);
-}
 .sb-newtask {
   position: relative;
 }
@@ -746,6 +874,18 @@ textarea.input {
   top: calc(100% + 4px);
   right: 0;
   min-width: 200px;
+}
+.sb-sort {
+  position: relative;
+  flex: none;
+}
+/* Anchored to the right of the header rather than to its own button: the
+   sidebar is narrow enough that a left-anchored menu would hang off it. */
+.sb-sort-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 150px;
 }
 
 .sb-tree {
@@ -764,8 +904,8 @@ textarea.input {
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 1px 16px;
-  min-height: 18px;
+  padding: 2px 16px;
+  min-height: 22px;
   cursor: pointer;
 }
 .sb-task:hover {
@@ -812,14 +952,6 @@ textarea.input {
   padding: 1px 5px;
   outline: none;
 }
-.sb-task .sb-act {
-  visibility: hidden;
-  width: 18px;
-  height: 18px;
-}
-.sb-task:hover .sb-act {
-  visibility: visible;
-}
 .task-badge {
   width: 6px;
   height: 6px;
@@ -837,8 +969,6 @@ textarea.input {
   align-items: center;
   gap: 9px;
   padding: 2px 18px 2px 34px;
-  /* Hold the row at the height of the 18px hover actions so revealing them
-     doesn't grow the row and nudge the rest of the tree down. */
   min-height: 22px;
   cursor: pointer;
 }
@@ -866,25 +996,6 @@ textarea.input {
   font-size: 10.5px;
   color: var(--faint);
   flex: none;
-}
-/* Row actions take the agent mark's place on hover rather than reserving space
-   next to it — the tree is narrow, and the title should keep every pixel it can
-   while nobody is pointing at the row. */
-.sb-session-acts {
-  display: none;
-  margin-left: auto;
-  flex: none;
-  align-items: center;
-}
-.sb-session:hover .sb-session-acts {
-  display: flex;
-}
-.sb-session:hover .sb-session-client {
-  display: none;
-}
-.sb-session-acts .sb-act {
-  width: 18px;
-  height: 18px;
 }
 .sb-empty {
   padding: 3px 18px 3px 34px;
@@ -915,6 +1026,31 @@ textarea.input {
   padding: 0 20px;
   border-bottom: 1px solid var(--border);
 }
+.tab-bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+.tab-btn {
+  font-family: var(--ui);
+  font-weight: 500;
+  font-size: 12px;
+  color: var(--dim);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  padding: 5px 11px;
+  cursor: pointer;
+}
+.tab-btn:hover {
+  color: var(--text);
+  background: var(--hover);
+}
+.tab-btn.active {
+  color: var(--text);
+  background: var(--panel);
+}
 .chat-title {
   font-weight: 600;
   font-size: 13.5px;
@@ -934,6 +1070,22 @@ textarea.input {
   border-radius: 20px;
   padding: 3px 10px;
   white-space: nowrap;
+  /* Last line of defence: the marks inside already collapse long lists into
+     "+N", but an unusually long env or agent name must still clip here rather
+     than shove the VS Code and menu buttons off the right of the pane. */
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+/* The repo run inside a pill: its own row so it can carry one tooltip listing
+   every repository, while keeping the pill's own 6px rhythm. */
+.repo-marks {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.repo-marks svg {
   flex: none;
 }
 .chat-hint {
@@ -1382,6 +1534,53 @@ textarea.input {
 
 /* ---- composer ---- */
 
+/* Prompts already sent that are waiting for the session — see the queue in
+   sessions.ts. Sits directly above the composer, in reading order between the
+   feed (what has happened) and the input (what has not been sent yet). */
+.pending-queue {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  background: var(--panel);
+  border: 1px dashed var(--border2);
+  border-radius: 10px;
+}
+.pending-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--dim);
+  min-width: 0;
+}
+.pending-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pending-note {
+  font-size: 10.5px;
+  color: var(--faint);
+}
+/* A queue that is actually a queue — the turn has ended and these prompts are
+   waiting their turn behind another session — reads blue, like every other
+   waiting-its-turn mark in the app (see status.ts). Prompts piled onto a turn
+   that is still running keep the plain dashed look. */
+.pending-queue.waiting {
+  border-color: var(--accent);
+}
+.pending-row .dot {
+  flex: none;
+  margin: 0 2px;
+}
+.pending-queue.waiting .pending-note {
+  color: var(--accent);
+}
+
 .composer-wrap {
   flex: none;
   padding: 12px 7% 16px;
@@ -1485,6 +1684,17 @@ textarea.input {
 }
 .send-btn:disabled {
   opacity: 0.45;
+}
+/* Same button, different promise: this one joins the queue instead of starting
+   a turn. Outlined rather than solid — it is still the primary action, but it
+   is not the one that makes something happen right now. */
+.send-btn.queued {
+  background: transparent;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+}
+.send-btn.queued:hover:not(:disabled) {
+  background: var(--hover);
 }
 .composer-mic-error {
   margin-top: 8px;
@@ -1645,6 +1855,8 @@ textarea.input {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  min-width: 0;
+  flex: 1 1 auto;
 }
 .pick-value.strong {
   font-weight: 600;
@@ -1666,6 +1878,10 @@ textarea.input {
   right: 0;
   max-height: 240px;
   overflow-y: auto;
+  /* Without this, overflow-y: auto alone makes overflow-x compute to auto
+     too (spec quirk), so a too-wide menu-item grows a horizontal scrollbar
+     instead of just truncating via .menu-item-name. */
+  overflow-x: hidden;
 }
 .provider-row {
   background: var(--app);
@@ -1735,6 +1951,8 @@ textarea.input {
 .ns-body {
   display: flex;
   flex-direction: column;
+  flex: 1;
+  min-height: 0;
   padding: 16px 22px 18px;
   overflow-y: auto;
 }
@@ -1794,10 +2012,6 @@ textarea.input {
 }
 
 /* Harness config (#2b), inline. */
-.hc {
-  display: flex;
-  flex-direction: column;
-}
 .hc-body {
   display: flex;
   flex-direction: column;
@@ -1817,29 +2031,116 @@ textarea.input {
   font-size: 10.5px;
   color: var(--faint);
 }
-.hc-stub {
-  padding: 9px 12px;
-  border: 1px dashed var(--border2);
-  border-radius: 8px;
-  font-size: 11.5px;
+/* Section label plus the round 'i' that carries its explanation. */
+.seclabel-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 15px;
+}
+.info-dot {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
   color: var(--faint);
+  outline: none;
+}
+.info-dot:hover,
+.info-dot:focus {
+  color: var(--dim);
+}
+.info-pop {
+  display: none;
+  position: absolute;
+  top: calc(100% + 7px);
+  left: -7px;
+  z-index: 60;
+  width: 260px;
+  padding: 8px 11px;
+  background: var(--surface);
+  border: 1px solid var(--border2);
+  border-radius: 9px;
+  font-family: var(--ui);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.55;
+  letter-spacing: normal;
+  text-transform: none;
+  white-space: normal;
+  color: var(--dim);
+  box-shadow: 0 12px 32px -12px rgba(0, 0, 0, 0.6);
+}
+.info-dot:hover .info-pop,
+.info-dot:focus .info-pop {
+  display: block;
+}
+/* Two-up field grid (role|agent, env|repo) — collapses to one column when
+   the pane is narrow. */
+.cfg-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 14px 16px;
+  margin-top: 14px;
+}
+.cfg-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+}
+/* Inline fold: a seclabel that opens its block, for lists worth hiding
+   (the built-in denylist) without spending a full field row on a header. */
+.subfold {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-family: var(--mono);
+  font-weight: 500;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+.subfold:hover {
+  color: var(--dim);
+}
+/* Side-by-side blocks in the advanced panel (MCP | skills). */
+.hc-cols {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+.hc-warn {
+  color: var(--red);
 }
 .hc-foot {
   display: flex;
   align-items: center;
   gap: 9px;
 }
-.hc .mcp-row {
+.ns-section .mcp-row {
   padding: 8px 11px;
   border-radius: 8px;
 }
 .mcp-name {
   font-family: var(--mono);
   font-size: 12.5px;
+  flex: none;
 }
-.ns-section .pick-row + .hc,
-.ns-section .hc + .pick-row {
-  margin-top: 0;
+/* Takes the row's slack (so the mode label still sits right) and says which
+   server this is without a hover: a built-in's tools, a registry entry's URL. */
+.mcp-desc {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 11px;
 }
 .ns-section > * + * {
   margin-top: 0;
@@ -1946,6 +2247,17 @@ textarea.input {
 .tp-sec-hint {
   font-size: 11px;
   color: var(--faint);
+}
+.tp-cap-input {
+  width: 56px;
+  height: 22px;
+  background: var(--app);
+  color: var(--text);
+  border: 1px solid var(--border2);
+  border-radius: 6px;
+  padding: 0 8px;
+  font-size: 11.5px;
+  font-family: inherit;
 }
 .tp-empty {
   font-size: 12.5px;
@@ -2510,6 +2822,13 @@ textarea.input {
   flex: 1;
   display: flex;
   min-width: 0;
+  background: var(--app);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  /* .set-content scrolls (overflow-y: auto), which promotes it to its own
+     compositor layer — without clipping here that layer paints a square
+     corner over this border's curve. */
+  overflow: hidden;
 }
 .set-nav {
   width: 216px;
@@ -2536,6 +2855,9 @@ textarea.input {
   padding: 10px 8px;
 }
 .set-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
   padding: 7px 10px;
   border-radius: 7px;
   font-size: 13px;
@@ -2558,6 +2880,23 @@ textarea.input {
   height: 1px;
   background: var(--border);
   margin: 6px 8px;
+}
+/* Group heading (General, Registry, Advanced): each one is its own disclosure,
+   open by default — click to fold/unfold the sections under it. */
+.set-nav-fold {
+  color: var(--faint);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.set-nav-sub {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.set-nav-sub .set-nav-item {
+  padding-left: 20px;
 }
 
 .set-content {
@@ -2626,6 +2965,188 @@ textarea.input {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Hotkeys: the recording placeholder and the conflict note under a row. */
+.hotkey-recording {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.hotkey-conflict {
+  margin: 6px 16px 0;
+}
+
+/* MCP servers: the built-ins subheading and the header name/value rows. */
+.set-sub {
+  margin: 14px 0 -2px;
+  font-size: 11px;
+  color: var(--faint);
+}
+.set-row.faint .set-row-label {
+  color: var(--faint);
+}
+.mcp-hdr {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+/* Transport picker: three shapes, chosen before the form (stdio §3). */
+.seg {
+  display: flex;
+  gap: 6px;
+}
+.seg-btn {
+  flex: 1;
+  padding: 7px 10px;
+  font-size: 12px;
+  color: var(--dim);
+  background: var(--app);
+  border: 1px solid var(--border2);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.seg-btn:hover {
+  color: var(--text);
+}
+.seg-btn.active {
+  color: var(--text);
+  border-color: var(--accent);
+}
+/* The `+ Add` kind menu hangs off the button's right edge, not the header's. */
+.pick-menu.right {
+  left: auto;
+  right: 0;
+  min-width: 300px;
+}
+.menu-item .menu-hint {
+  margin-left: auto;
+  padding-left: 12px;
+  font-size: 11px;
+  color: var(--faint);
+}
+/* A pasted snippet, and the argv/env blocks next to it. */
+.snippet-input {
+  resize: vertical;
+  line-height: 1.5;
+}
+.cred-env-var {
+  width: 190px;
+  flex: none;
+}
+/*
+ * "Runs on your machine, unsandboxed, with your privileges." — the same line on
+ * the settings row, in the editor and in the composer's picker
+ * (docs/requirements-mcp-stdio.md §2). Yellow, because it is the one thing on
+ * these screens that is not bounded by the session container.
+ */
+.mcp-local-note {
+  font-size: 10.5px;
+  color: var(--yellow);
+  flex: none;
+}
+.pick-wrap > .mcp-local-note {
+  padding: 0 12px 8px 29px;
+}
+.mcp-notice {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 11px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--yellow);
+  background: var(--app);
+  border: 1px solid var(--border2);
+  border-radius: 9px;
+}
+/* A local MCP server that did not start, in the session pane (§8.2): the
+   reason, never the environment (§7). */
+.mcp-fail {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 10px 7% 0;
+  padding: 9px 11px;
+  background: var(--app);
+  border: 1px solid var(--border2);
+  border-radius: 9px;
+}
+.mcp-fail-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--red);
+}
+.mcp-fail-why {
+  color: var(--dim);
+  white-space: pre-wrap;
+}
+/* The probe's answer, under the MCP editor (stdio §4.6). One box for both
+   verdicts: a failure is the same kind of information as a tool list, and
+   moving the result around as the state changes loses the reader. */
+.mcp-probe {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 11px;
+  background: var(--app);
+  border: 1px solid var(--border2);
+  border-radius: 9px;
+}
+.mcp-probe-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11.5px;
+  color: var(--green);
+}
+.mcp-probe-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  font-size: 11px;
+  color: var(--dim);
+}
+/* The launch log under a probe: the server's own output, shown and not stored.
+   Bounded and scrollable — a chatty server must not push the dialog's buttons
+   off the screen. */
+.mcp-probe-log {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.mcp-probe-lines {
+  max-height: 220px;
+  overflow: auto;
+  padding: 7px 9px;
+  font-size: 10.5px;
+  line-height: 1.55;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+.mcp-probe-row {
+  display: grid;
+  grid-template-columns: 58px 46px 1fr;
+  gap: 8px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* stderr is where a dying server says why, so it reads as the exception. */
+.mcp-probe-row.stderr > span:last-child {
+  color: var(--red);
+}
+.mcp-probe-row.gurt > span:last-child {
+  color: var(--dim);
+}
+.mcp-hdr .input:first-child {
+  width: 190px;
+  flex: none;
+}
+.mcp-hdr .input:nth-child(2) {
+  flex: 1;
+  min-width: 0;
 }
 
 /* Environments: image badge extras + streamed build-log tail under a row. */
@@ -3423,4 +3944,117 @@ textarea.input {
 .dash-card-sub .tag {
   font-size: 9.5px;
   padding: 0 4px;
+}
+
+/* ---- session traffic (docs/requirements-mcp-proxy.md §8) ---- */
+/* Blocked attempts first, observed domains collapsed under them. In the chat
+   it lives behind the composer's network button; the non-started pane has no
+   composer and shows it as a panel under the header. Either way it is the
+   answer to "why couldn't it reach that". */
+.net-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 7% 10px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+}
+.net-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  color: var(--dim);
+}
+.net-mode {
+  color: var(--text);
+}
+.net-note {
+  font-size: 11px;
+  color: var(--yellow);
+  margin-bottom: 2px;
+}
+.net-blocked,
+.net-allowed {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.net-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--dim);
+}
+.net-blocked .net-host {
+  color: var(--red);
+}
+.net-allowed {
+  max-height: 180px;
+  overflow: auto;
+}
+.net-allowed .net-host {
+  color: var(--dim);
+}
+.net-row .dim {
+  font-size: 10.5px;
+}
+/* The built-in denylist, shown read-only above the allow list: the same rows as
+   the traffic panel, so "what is blocked" and "what was blocked" read alike. */
+.net-builtin {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.net-builtin .net-host {
+  color: var(--dim);
+}
+.net-builtin .dim {
+  font-size: 10.5px;
+}
+
+/* The composer's network button and the popup it opens. Same body as the
+   panel, so the two surfaces stay one thing with two frames. */
+.net-btn {
+  position: relative;
+}
+/* A blocked host is the one part of this that must not wait to be asked for:
+   the dot says "there is something to open", the popup says what. */
+.net-btn-dot {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--red);
+}
+.net-pop {
+  right: 0;
+  width: 340px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  font-size: 11px;
+}
+
+/* Allow-list entry in the composer — same frame as the prompt field. */
+.net-domains {
+  padding: 8px 10px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text);
+  background: var(--app);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  resize: vertical;
+}
+.net-domains:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--glow);
 }

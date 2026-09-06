@@ -15,6 +15,13 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { createRequire } from 'node:module'
 import { gurtRoot } from './store'
+import { REDACTED, deniedKey, redact } from './redact'
+
+// Redaction itself (the registered-value set, `redact`, the key deny-list)
+// lives in redact.ts so the MCP read scrub provably shares it (see that
+// module's header). Re-exported here because the credential store has always
+// registered its values through this module's name.
+export { addSecrets } from './redact'
 
 export type Level = 'debug' | 'info' | 'warn' | 'error'
 
@@ -41,7 +48,6 @@ const RECORD_MAX = 8 * 1024
 const RENDERER_RATE = 200
 const DIR_MODE = 0o700
 const FILE_MODE = 0o600
-const REDACTED = '[redacted]'
 
 const requireFn = createRequire(import.meta.url)
 
@@ -126,55 +132,6 @@ const ANSI_RE =
 // Everything below 0x20 except \t \n \r, plus DEL.
 // eslint-disable-next-line no-control-regex
 const CTRL_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g
-/** `scheme://user:pass@host` — the one credential shape that rides in a URL.
- *  Quantifiers are bounded: an unbounded `scheme` + `user` + `pass` run makes
- *  this pattern backtrack quadratically over a long match-free string (a 60 KB
- *  line of plain letters took ~6.5 s; 240 KB took ~100 s). No real scheme,
- *  username or password is anywhere near these lengths. */
-const URL_CREDS_RE = /([a-zA-Z][a-zA-Z0-9+.-]{0,30}:\/\/)[^\s/@:]{1,256}:[^\s/@]{1,256}@/g
-
-/** Secret values (raw + base64) redacted from every outgoing line. */
-const secrets = new Set<string>()
-/** Longest first, so a secret containing another is replaced whole. */
-let secretsByLength: string[] = []
-/** Below this a "secret" is more likely a common word than a credential — the
- *  false-positive cost of redacting ordinary short strings outweighs catching
- *  a credential this short, which real secret generators essentially never
- *  produce. This is a deliberate, documented exception to the "every secret is
- *  replaced wherever it appears" rule in docs/logging.md's Redaction section:
- *  a secret shorter than `MIN_SECRET_LEN` is never redacted. */
-const MIN_SECRET_LEN = 6
-
-/**
- * Register secret values to redact. Sourced from the credential store (loaded
- * at startup, refreshed on every save), so redaction is value-based: it catches
- * a token wherever it appears — an argv entry, a git error, agent stderr —
- * without any call site having to know it was a secret.
- */
-export function addSecrets(values: string[]): void {
-  let added = false
-  for (const v of values) {
-    if (typeof v !== 'string') continue
-    const raw = v.trim()
-    if (raw.length < MIN_SECRET_LEN) continue
-    const b64 = Buffer.from(raw, 'utf8').toString('base64')
-    const b64url = Buffer.from(raw, 'utf8').toString('base64url')
-    for (const form of [raw, b64, b64.replace(/=+$/, ''), b64url]) {
-      if (form.length < MIN_SECRET_LEN || secrets.has(form)) continue
-      secrets.add(form)
-      added = true
-    }
-  }
-  if (added) secretsByLength = [...secrets].sort((a, b) => b.length - a.length)
-}
-
-function redact(s: string): string {
-  let out = s
-  for (const secret of secretsByLength)
-    if (out.includes(secret)) out = out.split(secret).join(REDACTED)
-  return out.replace(URL_CREDS_RE, `$1${REDACTED}@`)
-}
-
 function escapeControl(s: string): string {
   return s
     .replace(/\n/g, '\\n')
@@ -208,24 +165,8 @@ function truncateForSanitize(s: string, limit: number): string {
 
 // --- context serialization -------------------------------------------------
 
-/** Key substrings that redact their value outright, whatever it holds. The key
- *  is case-folded and stripped of `-`/`_` before matching, so `api_key`,
- *  `api-key` and `apiKey` all hit `apikey`. */
-const DENY_KEYS = [
-  'token',
-  'authorization',
-  'password',
-  'secret',
-  'apikey',
-  'passphrase',
-  'credential',
-  'cookie',
-  'bearer'
-]
-const denied = (key: string): boolean => {
-  const k = key.toLowerCase().replace(/[-_]/g, '')
-  return DENY_KEYS.some((d) => k.includes(d))
-}
+// Key-based redaction (`deniedKey`) lives in redact.ts, next to the value set.
+const denied = deniedKey
 
 const MAX_DEPTH = 4
 const MAX_ARRAY = 20
@@ -792,6 +733,14 @@ function fileId(key: string): string {
   const id = raw.replace(/[^a-zA-Z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80)
   const hash = crypto.createHash('sha1').update(raw).digest('hex').slice(0, 8)
   return `${id || 'unknown'}-${hash}`
+}
+
+/** Host path of the per-key session/provisioning log file — what the operator's
+ *  `get_provisioning_log` reads back, tail-limited and re-scrubbed
+ *  (docs/requirements-session-operator.md §3.2). The renderer has no pull for
+ *  this file; it subscribes to the `provision-log` event instead. */
+export function sessionLogFilePath(key: string): string {
+  return path.join(logDir(), `session-${fileId(key)}.log`)
 }
 
 /** How many session files stay open at once. A long-lived process can rack up

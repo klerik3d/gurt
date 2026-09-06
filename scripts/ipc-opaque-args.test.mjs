@@ -76,11 +76,16 @@ const SAFE_ARGS = new Set([
   'getReviewLocks',
   'latestProposal',
   'sessionSnapshot',
+  // A session id in, host/port/count records out — the proxy log this reads
+  // never held a path, a header or a body to begin with.
+  'sessionTraffic',
   'getNotifications',
   'getNotificationPrefs',
   'getUsage',
   'getPlanUsage',
   'taskDirtyRepos',
+  // A workspace/task name and a number — the cap itself, nothing opaque.
+  'setTaskMaxConcurrentSessions',
   'envImageStatus',
   'discoverDevcontainer',
   'discoverDockerfiles',
@@ -92,6 +97,25 @@ const SAFE_ARGS = new Set([
   'updateRepo',
   'removeRepo',
   'removeEnv',
+  // A workspace and an agent-instance id (or a list of them) — identifiers,
+  // not prose.
+  'setDefaultAgent',
+  'setDeniedAgents',
+  'getMcpServers',
+  'removeMcpServer',
+  // Skill registry reads and deletes: a workspace and a skill name, which is a
+  // directory name. The `SKILL.md` *body* enters through `addSkill`/
+  // `updateSkill`, which are opaque; `getSkillDoc` returns one but takes none.
+  'getSkills',
+  'getSkillDoc',
+  'removeSkill',
+  'skillUsedBy',
+  'setDefaultSkills',
+  // A workspace and an env name — the operator-env pointer, not a config body.
+  'setOperatorEnv',
+  // A workspace and an entry id — the package it reinstalls is read from the
+  // registry, not passed in.
+  'reinstallMcpServer',
   'createTask',
   'removeTask',
   'renameTask',
@@ -106,6 +130,10 @@ const SAFE_ARGS = new Set([
   'sessionDuplicate',
   'sessionDelete',
   'sessionCancel',
+  // Session id and a queued-prompt id. The prompt text these *return* is
+  // another matter, and the trace never logs return values.
+  'sessionClearPending',
+  'sessionCancelPending',
   'sessionSetMode',
   'sessionSetConfigOption',
   'sessionPermission',
@@ -128,7 +156,10 @@ const SAFE_ARGS = new Set([
   'openLogsFolder',
   'checkForUpdates',
   'getUpdateStatus',
-  'installUpdate'
+  'installUpdate',
+  // A map of action id -> key code/booleans; no prose ever passes through it.
+  'getHotkeys',
+  'setHotkeys'
 ])
 
 /**
@@ -151,12 +182,14 @@ const PROSE_PARAM_NAMES = new Set([
 
 /**
  * Payload types that carry prose or secrets inside them, so the parameter name
- * says nothing on its own: a whole devcontainer definition, the credential
- * file, the agent registry (agent env and credential links), a draft patch
- * (`startPrompt`), attached prompt context and images.
+ * says nothing on its own: a whole devcontainer definition, an MCP registry
+ * entry (user-filled static headers), the credential file, the agent registry
+ * (agent env and credential links), a draft patch (`startPrompt`), attached
+ * prompt context and images.
  */
 const PROSE_PARAM_TYPES = [
   'EnvConfig',
+  'McpRegistryEntry',
   'CredentialsFile',
   'AgentsFile',
   'SessionDraftPatch',
@@ -232,10 +265,15 @@ const electronStub = {
           getVersion: () => '0.0.0-test',
           getAppPath: () => ${JSON.stringify(ROOT)},
           isPackaged: false,
-          on() {}, whenReady: () => Promise.resolve()
+          on() {}, whenReady: () => Promise.resolve(),
+          setName() {}
         }
         export const Notification = class { show() {} static isSupported() { return false } }
-        export default { BrowserWindow, ipcMain, shell, dialog, app, Notification }
+        // menu.ts (pulled in transitively through ipc.ts's setHotkeys handler)
+        // needs these to exist; nothing here calls into either.
+        export const clipboard = { writeText() {} }
+        export const Menu = { buildFromTemplate: () => ({}), setApplicationMenu() {} }
+        export default { BrowserWindow, ipcMain, shell, dialog, app, Notification, clipboard, Menu }
       `
     }))
   }

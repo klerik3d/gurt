@@ -1,34 +1,127 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { JSX } from 'react'
 import type { AgentInstance, AgentsFile, EnvConfig, RepoConfig, Tree } from '../../../shared/types'
+import { OPERATOR_ENV_NAME } from '../../../shared/types'
 import type { EnvImageStatus } from '../../../shared/api'
 import { parseEnvDevcontainer, validateEnvConfig } from '../../../shared/envConfig'
-import type { CredentialEntry, CredentialKind } from '../../../shared/credentials'
+import type {
+  CredentialEntry,
+  CredentialKind,
+  CredentialKindDef
+} from '../../../shared/credentials'
 import {
   CREDENTIAL_KINDS,
   agentCredentials,
   credentialKindLabel,
   isGitKind,
-  resolveForRepo
+  mcpCredentials,
+  resolveForRepo,
+  resolveMcpCredential,
+  resolveMcpEnvSecret
 } from '../../../shared/credentials'
+import type {
+  McpDef,
+  McpEntryDraft,
+  McpEntryKind,
+  McpEnvRow,
+  McpHeader,
+  McpProbeResult,
+  McpRegistryEntry,
+  McpSnippetResult
+} from '../../../shared/mcp'
+import {
+  LOCAL_MCP_NOTICE,
+  isEnvName,
+  isHttpMcpEntry,
+  isLocalMcpEntry,
+  looksLikeSecretEnv,
+  mcpEntryDetail,
+  mcpEntryKind,
+  mcpEnvRecord,
+  mcpEnvRows,
+  mcpLabel,
+  normalizeMcpEntry,
+  parseMcpSnippet,
+  validateMcpEntry
+} from '../../../shared/mcp'
+import type { SkillEntry } from '../../../shared/skills'
+import { skillNameProblem, skillTemplate, validateSkillDoc } from '../../../shared/skills'
 import { canonicalRepoId } from '../../../shared/repoId'
 import type { NotificationPrefs, NotificationType } from '../../../shared/notifications'
+import type { HotkeyActionId, HotkeyBinding, HotkeyMap } from '../../../shared/hotkeys'
+import {
+  HOTKEY_DEFAULTS,
+  HOTKEY_DEFS,
+  bindingEquals,
+  bindingFromEvent,
+  bindingLabel,
+  conflictsFor,
+  isRecordable,
+  modKeyLabel
+} from '../../../shared/hotkeys'
 import { AGENT_DEFS, agentDef } from '../../../shared/agents'
-import { refreshAgents } from '../useAgents'
+import { refreshAgents, useAgents } from '../useAgents'
+import { refreshHotkeys, useHotkeys } from '../useHotkeys'
 import { useOutsideClose } from '../hooks'
 import { confirmDialog } from '../dialog'
+import type { IconName } from './icons'
 import { Icon } from './icons'
 import { AgentTag, agentIcon } from './tags'
 import { Modal } from './Modal'
 import { run } from '../async'
 
 export type SettingsSection =
-  | 'general'
   | 'environments'
   | 'repos'
   | 'clients'
+  | 'agentAccess'
+  | 'mcp'
+  | 'skills'
   | 'credentials'
   | 'notifications'
+  | 'hotkeys'
+
+/** Nav labels for sections whose id does not simply capitalize. */
+const SECTION_LABEL: Partial<Record<SettingsSection, string>> = {
+  mcp: 'MCP servers',
+  agentAccess: 'Agent access'
+}
+
+/** One icon per nav item, so the list reads at a glance instead of as a wall
+ *  of text. */
+const SECTION_ICON: Record<SettingsSection, IconName> = {
+  environments: 'box',
+  repos: 'branch',
+  clients: 'plug',
+  agentAccess: 'sliders',
+  mcp: 'globe',
+  skills: 'folder',
+  credentials: 'key',
+  notifications: 'bell',
+  hotkeys: 'grid'
+}
+
+/** Registry group — the sections that define *what the workspace has*: the
+ *  envs it can build, the repos and clients it knows, who may reach them, and
+ *  the secrets behind that. Grouped under one heading so they read as one
+ *  subject rather than five peers of the General group. */
+const REGISTRY_SECTIONS = [
+  'environments',
+  'repos',
+  'clients',
+  'agentAccess',
+  'credentials'
+] as const satisfies readonly SettingsSection[]
+
+/** General group — per-user preferences rather than registry entries. They
+ *  head the list under their own heading instead of floating unlabelled
+ *  between Registry and Advanced. `mcp` and `skills` sit apart, under the
+ *  Advanced disclosure below — both are registries of pluggable capability
+ *  (external servers, filesystem-backed skill packs) rather than everyday
+ *  workspace config, so they cost a click instead of always taking up room. */
+const GENERAL_SECTIONS = ['notifications', 'hotkeys'] as const satisfies readonly SettingsSection[]
+
+const ADVANCED_SECTIONS = ['mcp', 'skills'] as const satisfies readonly SettingsSection[]
 
 /** Vendor tag shown beside each provider in the combobox (#4c). */
 const PROVIDER_VENDOR: Record<string, string> = {
@@ -36,6 +129,59 @@ const PROVIDER_VENDOR: Record<string, string> = {
   codex: 'OpenAI',
   gemini: 'Google',
   opencode: 'local'
+}
+
+/** Nav label for a section — the id capitalized, unless {@link SECTION_LABEL}
+ *  overrides it. */
+function sectionLabel(s: SettingsSection): string {
+  return SECTION_LABEL[s] ?? s.slice(0, 1).toUpperCase() + s.slice(1)
+}
+
+function NavItem({
+  section: s,
+  active,
+  onSection
+}: {
+  section: SettingsSection
+  active: boolean
+  onSection: (s: SettingsSection) => void
+}): JSX.Element {
+  return (
+    <div className={`set-nav-item ${active ? 'active' : ''}`} onClick={() => onSection(s)}>
+      <Icon name={SECTION_ICON[s]} size={14} style={{ flex: 'none' }} />
+      {sectionLabel(s)}
+    </div>
+  )
+}
+
+type NavGroup = 'general' | 'registry' | 'advanced'
+
+/** A group heading doubling as its own disclosure — click to fold/unfold the
+ *  sections under it. Every group starts open; nothing here is hidden until
+ *  the user chooses to hide it. */
+function GroupFold({
+  label,
+  icon,
+  open,
+  onToggle
+}: {
+  label: string
+  icon?: IconName
+  open: boolean
+  onToggle: () => void
+}): JSX.Element {
+  return (
+    <div className="set-nav-item set-nav-fold" onClick={onToggle}>
+      <Icon
+        name="chevron"
+        size={12}
+        className="faint"
+        style={{ flex: 'none', transform: open ? undefined : 'rotate(-90deg)' }}
+      />
+      {icon && <Icon name={icon} size={14} className="faint" style={{ flex: 'none' }} />}
+      {label}
+    </div>
+  )
 }
 
 export function SettingsPage({
@@ -49,33 +195,54 @@ export function SettingsPage({
   section: SettingsSection
   onSection: (s: SettingsSection) => void
 }) {
+  const [openGroups, setOpenGroups] = useState<Record<NavGroup, boolean>>({
+    general: true,
+    registry: true,
+    advanced: true
+  })
+  const toggleGroup = (g: NavGroup) => setOpenGroups((prev) => ({ ...prev, [g]: !prev[g] }))
   return (
     <div className="settings">
       <div className="set-nav">
         <div className="set-nav-head">Settings</div>
         <div className="set-nav-list">
-          <div className="set-nav-item disabled" title="coming later">
-            General
-          </div>
+          <GroupFold label="General" open={openGroups.general} onToggle={() => toggleGroup('general')} />
+          {openGroups.general &&
+            GENERAL_SECTIONS.map((s) => (
+              <NavItem key={s} section={s} active={section === s} onSection={onSection} />
+            ))}
           <div className="set-nav-sep" />
-          {(['environments', 'repos', 'clients', 'credentials', 'notifications'] as const).map((s) => (
-            <div
-              key={s}
-              className={`set-nav-item ${section === s ? 'active' : ''}`}
-              onClick={() => onSection(s)}
-            >
-              {s.slice(0, 1).toUpperCase() + s.slice(1)}
+          <GroupFold label="Registry" open={openGroups.registry} onToggle={() => toggleGroup('registry')} />
+          {openGroups.registry &&
+            REGISTRY_SECTIONS.map((s) => (
+              <NavItem key={s} section={s} active={section === s} onSection={onSection} />
+            ))}
+          <div className="set-nav-sep" />
+          <GroupFold
+            label="Advanced"
+            icon="gear"
+            open={openGroups.advanced}
+            onToggle={() => toggleGroup('advanced')}
+          />
+          {openGroups.advanced && (
+            <div className="set-nav-sub">
+              {ADVANCED_SECTIONS.map((s) => (
+                <NavItem key={s} section={s} active={section === s} onSection={onSection} />
+              ))}
             </div>
-          ))}
+          )}
         </div>
       </div>
       <div className="set-content">
         {section === 'environments' && <EnvironmentsSection tree={tree} ws={ws} />}
         {section === 'repos' && <ReposSection tree={tree} ws={ws} />}
         {section === 'clients' && <ClientsSection />}
+        {section === 'agentAccess' && <AgentAccessSection tree={tree} ws={ws} />}
+        {section === 'mcp' && <McpServersSection ws={ws} />}
+        {section === 'skills' && <SkillsSection tree={tree} ws={ws} />}
         {section === 'credentials' && <CredentialsSection />}
         {section === 'notifications' && <NotificationsSection />}
-        {section === 'general' && <div className="placeholder">general settings — coming soon</div>}
+        {section === 'hotkeys' && <HotkeysSection />}
       </div>
     </div>
   )
@@ -91,6 +258,7 @@ function stripProtocol(url: string): string {
 function EnvironmentsSection({ tree, ws }: { tree: Tree | null; ws: string | null }) {
   const [editing, setEditing] = useState<EnvConfig | null>(null)
   const [adding, setAdding] = useState(false)
+  const [operatorError, setOperatorError] = useState('')
   const [statuses, setStatuses] = useState<Record<string, EnvImageStatus>>({})
   const [building, setBuilding] = useState<Set<string>>(new Set())
   const [buildLogs, setBuildLogs] = useState<Record<string, string[]>>({})
@@ -182,6 +350,51 @@ function EnvironmentsSection({ tree, ws }: { tree: Tree | null; ws: string | nul
           + New environment
         </button>
       </div>
+      {/* Which env the workspace's operator sessions run on — the twin of the
+          default agent, beside the thing it points at
+          (docs/requirements-session-operator.md §2.2). Absent = the bundled,
+          always-startable default. */}
+      {ws && (
+        <div className="set-list">
+          <div className="set-row">
+            <span className="set-row-label">Operator environment</span>
+            <span className="spacer" />
+            <button
+              type="button"
+              className={`btn-link ${!wsData?.operatorEnv ? 'active' : ''}`}
+              title={`the image-only default gurt ships (${OPERATOR_ENV_NAME}) — needs no repo and no setup`}
+              onClick={() =>
+                void window.gurt
+                  .setOperatorEnv(ws, undefined)
+                  .then(() => setOperatorError(''))
+                  .catch((e: unknown) =>
+                    setOperatorError(e instanceof Error ? e.message : String(e))
+                  )
+              }
+            >
+              {!wsData?.operatorEnv ? 'bundled default ✓' : 'bundled default'}
+            </button>
+            {envs.map((e) => (
+              <button
+                key={e.name}
+                type="button"
+                className={`btn-link ${wsData?.operatorEnv === e.name ? 'active' : ''}`}
+                onClick={() =>
+                  void window.gurt
+                    .setOperatorEnv(ws, e.name)
+                    .then(() => setOperatorError(''))
+                    .catch((err: unknown) =>
+                      setOperatorError(err instanceof Error ? err.message : String(err))
+                    )
+                }
+              >
+                {wsData?.operatorEnv === e.name ? `${e.name} ✓` : e.name}
+              </button>
+            ))}
+          </div>
+          {operatorError && <div className="error">{operatorError}</div>}
+        </div>
+      )}
       <div className="set-list">
         {envs.map((e) => {
           const st = statuses[e.name]
@@ -910,6 +1123,1357 @@ function textToEnv(text: string): Record<string, string> | undefined {
   return Object.keys(env).length ? env : undefined
 }
 
+// ---- MCP servers (docs/requirements-mcp-proxy.md §3, §11 ·
+//      docs/requirements-mcp-stdio.md §3, §5, §8.2) ----
+
+/** The three transports, in the order the picker offers them: what the
+ *  ecosystem publishes first, the original remote shape second, the escape
+ *  hatch last (docs/requirements-mcp-stdio.md §3). */
+const MCP_KINDS: { kind: McpEntryKind; label: string; hint: string }[] = [
+  { kind: 'npm', label: 'npm package', hint: 'gurt installs it and runs it on this machine' },
+  { kind: 'http', label: 'Remote URL', hint: 'an http(s) endpoint the session proxy calls' },
+  { kind: 'command', label: 'Command (advanced)', hint: 'uvx, docker, a script — run as written' }
+]
+
+/** argv as text: one argument per line, so a value containing a space needs no
+ *  quoting rules of gurt's own invention. */
+const argsToText = (args?: readonly string[]): string => (args ?? []).join('\n')
+const textToArgs = (text: string): string[] =>
+  text
+    .split('\n')
+    .map((a) => a.trim())
+    .filter(Boolean)
+
+// ---- Agent access (workspace-scoped): default agent + deny-list ----
+// The agents themselves stay a global registry (see `ClientsSection`); this is
+// which of them a session in *this* workspace may use, and which one it gets
+// when it names none — the same "registry is global, use is per-workspace"
+// split `EnvironmentsSection`/`ReposSection` don't need because envs/repos
+// were workspace-scoped from the start.
+
+function AgentAccessSection({ tree, ws }: { tree: Tree | null; ws: string | null }) {
+  const agents = useAgents()
+  const [error, setError] = useState('')
+  const wsData = tree?.workspaces.find((w) => w.name === ws)
+  const defaultAgent = wsData?.defaultAgent
+  const denied = new Set(wsData?.deniedAgents ?? [])
+  const entries = Object.entries(agents)
+
+  const pickDefault = async (id: string | undefined) => {
+    if (!ws) return
+    setError('')
+    try {
+      await window.gurt.setDefaultAgent(ws, id)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  const toggleDenied = async (id: string) => {
+    if (!ws) return
+    setError('')
+    const next = denied.has(id) ? [...denied].filter((x) => x !== id) : [...denied, id]
+    try {
+      await window.gurt.setDeniedAgents(ws, next)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  return (
+    <>
+      <div className="set-head">
+        <div className="set-title-wrap">
+          <span className="set-title">Agent access</span>
+          <span className="set-count mono">
+            {entries.length} client{entries.length === 1 ? '' : 's'}
+            {ws ? ` · ${ws}` : ''}
+          </span>
+        </div>
+      </div>
+      <div className="set-list">
+        {entries.map(([id, a]) => {
+          const isDefault = defaultAgent === id
+          const isDenied = denied.has(id)
+          return (
+            <div key={id} className="set-row">
+              <span className="set-row-label">{a.label || id}</span>
+              <AgentTag kind={a.kind} name={agentDef(a.kind)?.label ?? a.kind} />
+              <span className="spacer" />
+              <button
+                type="button"
+                className={`btn-link ${isDefault ? 'active' : ''}`}
+                disabled={!ws || isDenied}
+                title={isDenied ? 'denied agents cannot be the default' : undefined}
+                onClick={() => void pickDefault(isDefault ? undefined : id)}
+              >
+                {isDefault ? 'default ✓' : 'set default'}
+              </button>
+              <button
+                type="button"
+                className={`btn-link ${isDenied ? 'active' : ''}`}
+                disabled={!ws || isDefault}
+                title={isDefault ? 'the default agent cannot be denied' : undefined}
+                onClick={() => void toggleDenied(id)}
+              >
+                {isDenied ? 'denied' : 'deny'}
+              </button>
+            </div>
+          )
+        })}
+        {entries.length === 0 && (
+          <div className="tp-dashed">no clients configured yet — add one in Settings → Clients</div>
+        )}
+      </div>
+      {error && <div className="error">{error}</div>}
+    </>
+  )
+}
+
+/** The workspace's MCP registry, plus the built-ins listed read-only so both
+ *  sources of the composer's picker are visible in one place (§11). */
+function McpServersSection({ ws }: { ws: string | null }) {
+  const [servers, setServers] = useState<McpRegistryEntry[]>([])
+  const [builtins, setBuiltins] = useState<McpDef[]>([])
+  const [editing, setEditing] = useState<McpRegistryEntry | null>(null)
+  /** The kind a `+ Add` pick chose, i.e. "a new entry of this shape". */
+  const [adding, setAdding] = useState<McpEntryKind | null>(null)
+  const [addMenu, setAddMenu] = useState(false)
+  const [error, setError] = useState('')
+  const addRef = useRef<HTMLDivElement>(null)
+  useOutsideClose(addMenu, addRef, () => setAddMenu(false))
+
+  const refresh = useCallback(() => {
+    if (!ws) {
+      setServers([])
+      return
+    }
+    window.gurt
+      .getMcpServers(ws)
+      .then(setServers)
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+  }, [ws])
+
+  // Mutations elsewhere (another window, a workspace switch) announce over
+  // tree.changed, the same signal the repo/env lists ride.
+  useEffect(() => {
+    refresh()
+    return window.gurt.onTreeChanged(refresh)
+  }, [refresh])
+
+  useEffect(() => {
+    window.gurt.getMcpDefs().then(setBuiltins).catch(() => {})
+  }, [])
+
+  return (
+    <>
+      <div className="set-head">
+        <div className="set-title-wrap">
+          <span className="set-title">MCP servers</span>
+          <span className="set-count mono">
+            {servers.length} server{servers.length === 1 ? '' : 's'}
+            {ws ? ` · ${ws}` : ''}
+          </span>
+        </div>
+        <span className="spacer" />
+        {/* Three transports, so the transport is chosen before the form rather
+            than as a field inside one shape's editor. */}
+        <div className="pick-wrap" ref={addRef}>
+          <button
+            className="btn btn-primary"
+            disabled={!ws}
+            onClick={() => setAddMenu((o) => !o)}
+          >
+            + Add
+            <Icon name="chevron" size={11} />
+          </button>
+          {addMenu && (
+            <div className="menu pick-menu right">
+              {MCP_KINDS.map((k) => (
+                <div
+                  key={k.kind}
+                  className="menu-item"
+                  onMouseDown={(e) => {
+                    e.preventDefault()
+                    setAddMenu(false)
+                    setAdding(k.kind)
+                  }}
+                >
+                  {k.label}
+                  <span className="menu-hint">{k.hint}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+      <div className="set-list">
+        {servers.map((m) => (
+          <div key={m.id} className="set-row">
+            <span className="set-row-label">{mcpLabel(m)}</span>
+            <span className="set-row-url mono">{mcpEntryDetail(m)}</span>
+            {m.credentialId && (
+              <Icon name="key" size={11} style={{ color: 'var(--yellow)', flex: 'none' }} />
+            )}
+            {/* Said here, in the editor and in the composer's picker — every
+                surface that offers a local entry carries the same line
+                (docs/requirements-mcp-stdio.md §2). */}
+            {isLocalMcpEntry(m) && <span className="mcp-local-note">{LOCAL_MCP_NOTICE}</span>}
+            <button className="btn-link" onClick={() => setEditing(m)}>
+              edit
+            </button>
+          </div>
+        ))}
+        {servers.length === 0 && (
+          <div className="tp-dashed">
+            no MCP servers yet — add one to offer it to this workspace&apos;s sessions
+          </div>
+        )}
+        {builtins.length > 0 && (
+          <>
+            <div className="set-sub">Built-in · provided by gurt, not editable</div>
+            {builtins.map((def) => (
+              <div key={def.id} className="set-row faint" title={def.description}>
+                <span className="set-row-label">{def.label}</span>
+                <span className="set-row-url">{def.description}</span>
+              </div>
+            ))}
+          </>
+        )}
+        {error && <div className="error">{error}</div>}
+      </div>
+      {(editing || adding) && ws && (
+        <McpServerModal
+          key={editing?.id ?? `__new:${adding}`}
+          ws={ws}
+          taken={servers.filter((m) => m.id !== editing?.id).map((m) => m.id)}
+          initial={editing ?? undefined}
+          initialKind={adding ?? 'npm'}
+          onClose={() => {
+            setEditing(null)
+            setAdding(null)
+            refresh()
+          }}
+        />
+      )}
+    </>
+  )
+}
+
+/**
+ * The workspace's skill registry (docs/requirements-skills.md §7).
+ *
+ * Modelled on `McpServersSection`, and different in one place: the "enabled by
+ * default" toggle lives on the *row*, not in the editor, because it is a
+ * property of the workspace (`defaultSkills`) rather than of the skill — the
+ * same reason `AgentAccessSection` puts "set default" beside each client
+ * instead of inside the client's form.
+ */
+function SkillsSection({ tree, ws }: { tree: Tree | null; ws: string | null }) {
+  const [skills, setSkills] = useState<SkillEntry[]>([])
+  const [editing, setEditing] = useState<SkillEntry | null>(null)
+  const [adding, setAdding] = useState(false)
+  const [error, setError] = useState('')
+  const defaults = new Set(tree?.workspaces.find((w) => w.name === ws)?.defaultSkills ?? [])
+
+  const refresh = useCallback(() => {
+    if (!ws) {
+      setSkills([])
+      return
+    }
+    window.gurt
+      .getSkills(ws)
+      .then(setSkills)
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+  }, [ws])
+
+  // Every registry write announces itself on tree.changed (ipc.ts), the same
+  // signal the repo/env/MCP lists ride.
+  useEffect(() => {
+    refresh()
+    return window.gurt.onTreeChanged(refresh)
+  }, [refresh])
+
+  const toggleDefault = async (name: string) => {
+    if (!ws) return
+    setError('')
+    const next = defaults.has(name)
+      ? [...defaults].filter((n) => n !== name)
+      : [...defaults, name]
+    try {
+      await window.gurt.setDefaultSkills(ws, next)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  return (
+    <>
+      <div className="set-head">
+        <div className="set-title-wrap">
+          <span className="set-title">Skills</span>
+          <span className="set-count mono">
+            {skills.length} skill{skills.length === 1 ? '' : 's'}
+            {ws ? ` · ${ws}` : ''}
+          </span>
+        </div>
+        <span className="spacer" />
+        <button className="btn btn-primary" disabled={!ws} onClick={() => setAdding(true)}>
+          + Add
+        </button>
+      </div>
+      <div className="set-list">
+        {skills.map((k) => (
+          <div key={k.name} className="set-row">
+            <span className="set-row-label mono">{k.name}</span>
+            <span
+              className="set-row-url"
+              // `.set-row-url` wins the cascade over `.error`, so the colour is
+              // set here rather than by stacking the two classes.
+              style={k.problem ? { color: 'var(--red)' } : undefined}
+              title={k.problem ?? k.description}
+            >
+              {k.problem ?? k.description}
+            </span>
+            {k.files.length > 0 && (
+              <span className="mono faint" title={k.files.join('\n')}>
+                +{k.files.length} file{k.files.length === 1 ? '' : 's'}
+              </span>
+            )}
+            <span className="spacer" />
+            <button
+              type="button"
+              className={`btn-link ${defaults.has(k.name) ? 'active' : ''}`}
+              disabled={!ws}
+              title="switch this skill on in every new draft of this workspace"
+              onClick={() => void toggleDefault(k.name)}
+            >
+              {defaults.has(k.name) ? 'default ✓' : 'enable by default'}
+            </button>
+            <button className="btn-link" onClick={() => setEditing(k)}>
+              edit
+            </button>
+          </div>
+        ))}
+        {skills.length === 0 && (
+          <div className="tp-dashed">
+            no skills yet — add one to offer it to this workspace&apos;s sessions
+          </div>
+        )}
+        <div className="set-sub">
+          Stored under ~/.gurt/{ws || '<workspace>'}/skills and mounted read-only into a
+          session&apos;s container. A repository&apos;s own .claude/skills is the repository&apos;s
+          — gurt neither lists nor disables those.
+        </div>
+        {error && <div className="error">{error}</div>}
+      </div>
+      {(editing || adding) && ws && (
+        <SkillModal
+          key={editing?.name ?? '__new'}
+          ws={ws}
+          taken={skills.filter((k) => k.name !== editing?.name).map((k) => k.name)}
+          initial={editing ?? undefined}
+          onClose={() => {
+            setEditing(null)
+            setAdding(false)
+            refresh()
+          }}
+        />
+      )}
+    </>
+  )
+}
+
+/** Name + `SKILL.md`. The document is validated as it is typed — with the same
+ *  function the store runs at save, so the verdict previewed here is the
+ *  verdict that decides — and the supporting files found beside it are listed
+ *  read-only, so a skill whose body points at `references/x.md` shows whether
+ *  that file actually travels with it. */
+function SkillModal({
+  ws,
+  taken,
+  initial,
+  onClose
+}: {
+  ws: string
+  /** The other skills' names — uniqueness is previewed here and enforced in the
+   *  store. */
+  taken: string[]
+  initial?: SkillEntry | undefined
+  onClose: () => void
+}) {
+  const editing = !!initial
+  const [name, setName] = useState(initial?.name ?? '')
+  const [doc, setDoc] = useState('')
+  const [loaded, setLoaded] = useState(!editing)
+  const [error, setError] = useState('')
+
+  // An existing skill's body is fetched on open rather than carried in the
+  // list: `getSkills` is read on every tree.changed by two other surfaces, and
+  // whole documents have no business in that payload.
+  useEffect(() => {
+    if (!initial) {
+      setDoc(skillTemplate(''))
+      return
+    }
+    let live = true
+    window.gurt
+      .getSkillDoc(ws, initial.name)
+      .then((text) => {
+        if (!live) return
+        setDoc(text)
+        setLoaded(true)
+      })
+      .catch((e: unknown) => live && setError(e instanceof Error ? e.message : String(e)))
+    return () => {
+      live = false
+    }
+  }, [ws, initial])
+
+  const clean = name.trim()
+  const nameProblem = skillNameProblem(clean, taken)
+  // Only once the document is the user's: an editor still fetching would
+  // otherwise flash the template's mismatched name as an error.
+  const docProblem = loaded && !nameProblem ? validateSkillDoc(clean, doc).error : undefined
+  const invalid = nameProblem ?? docProblem
+
+  const save = async () => {
+    setError('')
+    try {
+      await (editing
+        ? window.gurt.updateSkill(ws, clean, doc)
+        : window.gurt.addSkill(ws, clean, doc))
+      onClose()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  const del = async () => {
+    setError('')
+    // Asked before the confirm, not after: the store refuses this delete, so a
+    // dialog offering to go ahead anyway would be offering something that
+    // cannot happen (docs/requirements-skills.md §7).
+    const used = await window.gurt.skillUsedBy(ws, initial!.name).catch(() => [] as string[])
+    if (used.length) {
+      setError(
+        `selected by session(s) in task(s): ${used.join(', ')} — unselect it there first`
+      )
+      return
+    }
+    if (
+      !(await confirmDialog(
+        `Delete skill "${initial!.name}"? Its directory and every supporting file in it go with it.`,
+        { title: 'Delete skill', confirmText: 'Delete', danger: true }
+      ))
+    )
+      return
+    try {
+      await window.gurt.removeSkill(ws, initial!.name)
+      onClose()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  return (
+    <Modal title={editing ? 'Edit skill' : 'New skill'} width={620} onClose={onClose}>
+      <div className="modal-body env-modal">
+        <label className="fld">
+          <span className="seclabel">NAME</span>
+          <input
+            className="input mono"
+            placeholder="review-checklist"
+            value={name}
+            // Immutable once saved: the name is the directory, and it is what
+            // every session's selection stores.
+            disabled={editing}
+            onChange={(e) => {
+              const next = e.target.value
+              // Keep the template's frontmatter in step while it is still the
+              // template — otherwise a fresh form is invalid the moment the
+              // first character is typed, which reads as the editor being broken.
+              setDoc((prev) => (prev === skillTemplate(name) ? skillTemplate(next) : prev))
+              setName(next)
+            }}
+          />
+          <span className="fld-hint">
+            {editing
+              ? 'fixed — a session selects a skill by name; add a new one to rename'
+              : 'lowercase letters, digits and single hyphens; it is the directory name and the frontmatter `name`'}
+          </span>
+        </label>
+
+        <div className="fld">
+          <span className="seclabel">SKILL.md</span>
+          <textarea
+            className="input mono snippet-input"
+            rows={18}
+            spellCheck={false}
+            value={doc}
+            onChange={(e) => setDoc(e.target.value)}
+          />
+          <span className="fld-hint">
+            YAML frontmatter (`name`, `description`) over the markdown body. The description is all
+            the agent reads until it decides to open the body — write it as a trigger, not a title.
+          </span>
+        </div>
+
+        {!!initial?.files.length && (
+          <div className="fld">
+            <span className="seclabel">SUPPORTING FILES</span>
+            <span className="fld-hint mono">{initial.files.join('  ·  ')}</span>
+            <span className="fld-hint">
+              Found beside SKILL.md and mounted with it. Add or remove them in the directory itself
+              — this editor writes SKILL.md and nothing else.
+            </span>
+          </div>
+        )}
+
+        {(error || invalid) && <div className="error">{error || invalid}</div>}
+      </div>
+      <div className="modal-foot">
+        {editing && (
+          <button className="btn btn-danger-text" onClick={run(del)}>
+            Delete
+          </button>
+        )}
+        <span className="spacer" />
+        <button className="btn" onClick={onClose}>
+          Cancel
+        </button>
+        <button className="btn btn-primary" disabled={!!invalid || !loaded} onClick={run(save)}>
+          Save
+        </button>
+      </div>
+    </Modal>
+  )
+}
+
+/** A secret lifted out of a pasted `env` and held here until Save (§5): it goes
+ *  into the credential store, never into `workspace.json`. */
+interface PendingSecret {
+  /** The environment variable the server reads it from — its name in the snippet. */
+  name: string
+  value: string
+}
+
+/** Stands in for the credential Save is going to create, so the draft the user
+ *  sees validated is the draft that will be written (a `credentialId` with no
+ *  `credentialEnvVar` is a rejected save — §3.4). It never leaves this modal. */
+const PENDING_CREDENTIAL_ID = '__pending__'
+
+function McpServerModal({
+  ws,
+  taken,
+  initial,
+  initialKind,
+  onClose
+}: {
+  ws: string
+  /** Ids of the other entries — id uniqueness is previewed here and enforced
+   *  in the store validator (§3.3). */
+  taken: string[]
+  initial?: McpRegistryEntry | undefined
+  /** Shape of a *new* entry, as the `+ Add` menu chose it. Ignored when editing:
+   *  an existing entry's kind comes from the entry, and the picker below can
+   *  still change it. */
+  initialKind: McpEntryKind
+  onClose: () => void
+}) {
+  const editing = !!initial
+  const http = initial && isHttpMcpEntry(initial) ? initial : undefined
+  const local = initial && isLocalMcpEntry(initial) ? initial : undefined
+  const [kind, setKind] = useState<McpEntryKind>(initial ? mcpEntryKind(initial) : initialKind)
+  const [id, setId] = useState(initial?.id ?? '')
+  const [label, setLabel] = useState(initial?.label ?? '')
+  const [url, setUrl] = useState(http?.url ?? '')
+  const [headers, setHeaders] = useState<McpHeader[]>(http?.headers?.map((h) => ({ ...h })) ?? [])
+  const [pkg, setPkg] = useState(local?.kind === 'npm' ? local.package : '')
+  const [version, setVersion] = useState((local?.kind === 'npm' && local.version) || '')
+  const [command, setCommand] = useState(local?.kind === 'command' ? local.command : '')
+  const [cwd, setCwd] = useState((local?.kind === 'command' && local.cwd) || '')
+  const [argsText, setArgsText] = useState(argsToText(local?.args))
+  const [envRows, setEnvRows] = useState<McpEnvRow[]>(mcpEnvRows(local?.env))
+  const [credentialId, setCredentialId] = useState(initial?.credentialId ?? '')
+  const [credentialEnvVar, setCredentialEnvVar] = useState(local?.credentialEnvVar ?? '')
+  const [pendingSecret, setPendingSecret] = useState<PendingSecret | null>(null)
+  const [snippet, setSnippet] = useState('')
+  const [snippetError, setSnippetError] = useState('')
+  const [credentials, setCredentials] = useState<CredentialEntry[]>([])
+  const [credMenu, setCredMenu] = useState(false)
+  const [probing, setProbing] = useState(false)
+  /** The last probe, keyed by the entry it was run against — an edit made after
+   *  it invalidates it, and a stale green tick is worse than none. */
+  const [probed, setProbed] = useState<{ key: string; result: McpProbeResult } | null>(null)
+  const [note, setNote] = useState('')
+  const [error, setError] = useState('')
+  const credRef = useRef<HTMLDivElement>(null)
+  useOutsideClose(credMenu, credRef, () => setCredMenu(false))
+
+  useEffect(() => {
+    window.gurt.getCredentials().then((f) => setCredentials(f.credentials)).catch(() => {})
+  }, [])
+
+  const isLocal = kind !== 'http'
+
+  /**
+   * The entry the form currently describes.
+   *
+   * `inlineSecret` is the probe's version of it (§4.6): a lifted-but-unsaved
+   * secret goes back into `env`, under the variable it will be injected as,
+   * because there is no credential to link to until Save — and a probe that
+   * always failed on "linked credential no longer exists" would be useless in
+   * exactly the flow it exists for.
+   */
+  const buildDraft = (inlineSecret: PendingSecret | null): McpEntryDraft => {
+    const linkedId = inlineSecret ? '' : credentialId || (pendingSecret ? PENDING_CREDENTIAL_ID : '')
+    const tail = {
+      id: id.trim(),
+      label,
+      ...(linkedId ? { credentialId: linkedId } : {})
+    }
+    const envVar = credentialEnvVar.trim() || inlineSecret?.name || ''
+    const localTail = {
+      args: textToArgs(argsText),
+      env: {
+        ...mcpEnvRecord(envRows),
+        ...(inlineSecret && envVar ? { [envVar]: inlineSecret.value } : {})
+      },
+      ...(!inlineSecret && credentialEnvVar ? { credentialEnvVar } : {})
+    }
+    return kind === 'http'
+      ? { ...tail, url, headers }
+      : kind === 'npm'
+        ? { kind: 'npm', ...tail, ...localTail, package: pkg, version }
+        : { kind: 'command', ...tail, ...localTail, command, cwd }
+  }
+
+  const draft = buildDraft(null)
+  const entry = normalizeMcpEntry(draft)
+  const probeEntry = normalizeMcpEntry(buildDraft(pendingSecret))
+  const probeKey = JSON.stringify(probeEntry)
+  // The same validator the store runs — the modal only previews its verdict.
+  const invalid = validateMcpEntry(entry, { takenIds: taken })
+  const linked = credentials.find((c) => c.id === credentialId)
+  // A pending secret has no stored credential to resolve yet; it is checked by
+  // being created, at save time.
+  const credError = pendingSecret
+    ? undefined
+    : isLocal
+      ? resolveMcpEnvSecret(credentials, credentialId || undefined).error
+      : resolveMcpCredential(credentials, credentialId || undefined).error
+
+  const setHeader = (i: number, patch: Partial<McpHeader>) =>
+    setHeaders((prev) => prev.map((h, j) => (j === i ? { ...h, ...patch } : h)))
+  const setEnvRow = (i: number, patch: Partial<McpEnvRow>) =>
+    setEnvRows((prev) => prev.map((r, j) => (j === i ? { ...r, ...patch } : r)))
+
+  /** Move one `env` value out of the entry and into the credential link. The
+   *  value is held in component state until Save — nothing is written to the
+   *  credential store by looking at a form. */
+  const liftSecret = (row: McpEnvRow, at: number) => {
+    setEnvRows((prev) => prev.filter((_, j) => j !== at))
+    setCredentialEnvVar(row.name.trim())
+    setPendingSecret({ name: row.name.trim(), value: row.value })
+    setCredentialId('')
+  }
+
+  /** Put a lifted secret back where the snippet had it — the user's call, and
+   *  the only way back to an inline value. */
+  const dropPending = () => {
+    if (!pendingSecret) return
+    setEnvRows((prev) => [...prev, { name: pendingSecret.name, value: pendingSecret.value }])
+    setPendingSecret(null)
+    setCredentialEnvVar('')
+  }
+
+  /**
+   * A published snippet, straight into the form (§5). `parseMcpSnippet` does all
+   * of the reading — the kind, the id, the package and version, the argv, the
+   * env — so a `uvx` or `docker` snippet switches this form to `command` rather
+   * than being refused. Its error is a sentence written for the user; it is
+   * shown as it is.
+   */
+  const applySnippet = (text: string) => {
+    if (!text.trim()) return
+    const result: McpSnippetResult = parseMcpSnippet(text)
+    if (!result.entry) {
+      setSnippetError(result.error ?? 'that snippet could not be read')
+      return
+    }
+    const parsed = result.entry
+    setSnippetError('')
+    setNote('')
+    setKind(mcpEntryKind(parsed))
+    // The id is a route segment and a selection key, so an existing entry keeps
+    // the one its sessions already name.
+    if (!editing) setId(parsed.id)
+    if (parsed.label) setLabel(parsed.label)
+    if (isHttpMcpEntry(parsed)) {
+      setUrl(parsed.url)
+      setHeaders(parsed.headers?.map((h) => ({ ...h })) ?? [])
+      return
+    }
+    setPkg(parsed.kind === 'npm' ? parsed.package : '')
+    setVersion((parsed.kind === 'npm' && parsed.version) || '')
+    setCommand(parsed.kind === 'command' ? parsed.command : '')
+    setCwd((parsed.kind === 'command' && parsed.cwd) || '')
+    setArgsText(argsToText(parsed.args))
+    // A snippet's `env` is where READMEs put a real token, and `workspace.json`
+    // is a plain file meant to be shared and committed. So a value that looks
+    // like a secret is lifted out here, by default, rather than being saved
+    // inline and warned about afterwards (§5).
+    const rows = mcpEnvRows(parsed.env)
+    const at = rows.findIndex((r) => looksLikeSecretEnv(r.name, r.value))
+    if (at < 0 || credentialId) {
+      setEnvRows(rows)
+      setPendingSecret(null)
+      return
+    }
+    const row = rows[at]!
+    setEnvRows(rows.filter((_, j) => j !== at))
+    setCredentialEnvVar(row.name)
+    setPendingSecret({ name: row.name, value: row.value })
+  }
+
+  /** Store a lifted secret as an `mcp-token` credential and return its id.
+   *  Written before the entry, so a failure here leaves no entry pointing at a
+   *  credential that does not exist. */
+  const createCredential = async (secret: PendingSecret): Promise<string> => {
+    const fresh: CredentialEntry = {
+      id: crypto.randomUUID(),
+      label: `${id.trim() || 'mcp'} ${secret.name}`,
+      kind: 'mcp-token',
+      hosts: [],
+      data: { secret: secret.value }
+    }
+    const file = await window.gurt.getCredentials()
+    await window.gurt.setCredentials({ credentials: [...file.credentials, fresh] })
+    return fresh.id
+  }
+
+  const save = async () => {
+    setError('')
+    try {
+      let saved = entry
+      if (pendingSecret) {
+        const cid = await createCredential(pendingSecret)
+        saved = normalizeMcpEntry({ ...draft, credentialId: cid })
+        setCredentialId(cid)
+        setPendingSecret(null)
+      }
+      await (editing
+        ? window.gurt.updateMcpServer(ws, saved)
+        : window.gurt.addMcpServer(ws, saved))
+      onClose()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  /**
+   * Run it. For a local entry that means installing the package if it is not
+   * installed, spawning the process on this machine, doing the MCP handshake,
+   * listing what it offers and stopping it again (§4.6) — every failure the
+   * static checks cannot see, moved to a button the user presses while the form
+   * that caused it is still open.
+   *
+   * Only ever from here. Nothing about saving an entry runs it: a local entry
+   * is third-party code with the user's privileges, which is what the notice
+   * above this form says, and "I typed a package name" must not quietly mean
+   * "I ran it" (§2).
+   */
+  const probe = async () => {
+    setError('')
+    setNote('')
+    setProbing(true)
+    const key = probeKey
+    try {
+      setProbed({ key, result: await window.gurt.probeMcpServer(ws, probeEntry) })
+    } catch (e) {
+      // The probe answers rather than throws, so this is the call itself
+      // failing — shown in the same place, so the button always resolves.
+      setProbed({ key, result: { ok: false, kind, error: e instanceof Error ? e.message : String(e) } })
+    } finally {
+      setProbing(false)
+    }
+  }
+
+  /** Forget what is installed, so the next session start installs it again —
+   *  the button behind a pinned `latest` (§4.2). A running process keeps
+   *  running: gurt does not restart a local server under its holders (§10). */
+  const reinstall = async () => {
+    setError('')
+    try {
+      await window.gurt.reinstallMcpServer(ws, initial!.id)
+      setNote('will be installed again the next time a session starts it')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  const del = async () => {
+    if (
+      !(await confirmDialog(`Delete MCP server "${mcpLabel(initial!)}"?`, {
+        title: 'Delete MCP server',
+        confirmText: 'Delete',
+        danger: true
+      }))
+    )
+      return
+    try {
+      await window.gurt.removeMcpServer(ws, initial!.id)
+      onClose()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  const filledIn = id.trim() || url.trim() || pkg.trim() || command.trim()
+
+  return (
+    <Modal title={editing ? 'Edit MCP server' : 'New MCP server'} width={520} onClose={onClose}>
+      <div className="modal-body env-modal">
+        <div className="fld">
+          <span className="seclabel">TRANSPORT</span>
+          <div className="seg">
+            {MCP_KINDS.map((k) => (
+              <button
+                key={k.kind}
+                className={`seg-btn ${kind === k.kind ? 'active' : ''}`}
+                title={k.hint}
+                onClick={() => setKind(k.kind)}
+              >
+                {k.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Every surface that offers a local entry says this, in these words
+            (docs/requirements-mcp-stdio.md §2). */}
+        {isLocal && (
+          <div className="mcp-notice">
+            <Icon name="key" size={12} />
+            <span>
+              {LOCAL_MCP_NOTICE} The session container still sees nothing but a proxy URL — this
+              process does not run in it.
+            </span>
+          </div>
+        )}
+
+        {isLocal && (
+          <div className="fld">
+            <div className="fld-head">
+              <span className="seclabel">PASTE FROM README</span>
+              <span className="spacer" />
+              <button className="btn-link" onClick={() => applySnippet(snippet)}>
+                fill the form
+              </button>
+            </div>
+            <textarea
+              className="input mono snippet-input"
+              rows={4}
+              spellCheck={false}
+              placeholder={'{"mcpServers": {"kubernetes": {"command": "npx", "args": ["-y", "kubernetes-mcp-server@latest", "--read-only"]}}}'}
+              value={snippet}
+              onChange={(e) => setSnippet(e.target.value)}
+              onPaste={(e) => {
+                // Applied from the clipboard rather than from state: the paste
+                // event fires before React has the new value.
+                const text = e.clipboardData.getData('text')
+                if (!text.trim()) return
+                e.preventDefault()
+                setSnippet(text)
+                applySnippet(text)
+              }}
+            />
+            {snippetError ? (
+              <span className="error">{snippetError}</span>
+            ) : (
+              <span className="fld-hint">
+                The block a README gives you — `mcpServers`, `servers`, or the bare body. A `uvx`
+                or `docker` invocation fills in the command form instead. <b>Test</b> then runs
+                exactly what it filled in, so you can see what the snippet meant before saving it.
+              </span>
+            )}
+          </div>
+        )}
+
+        <div className="cred-grid">
+          <label className="fld">
+            <span className="seclabel">ID</span>
+            <input
+              className="input mono"
+              autoFocus={!editing}
+              placeholder="linear"
+              value={id}
+              disabled={editing}
+              onChange={(e) => setId(e.target.value)}
+            />
+          </label>
+          <label className="fld">
+            <span className="seclabel">NAME (OPTIONAL)</span>
+            <input
+              className="input"
+              placeholder={id.trim() || 'Linear'}
+              value={label}
+              onChange={(e) => setLabel(e.target.value)}
+            />
+          </label>
+        </div>
+
+        {kind === 'http' && (
+          <div className="fld">
+            <span className="seclabel">ENDPOINT URL</span>
+            <input
+              className="input mono"
+              placeholder="https://mcp.example.com/mcp"
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+            />
+            <span className="fld-hint">
+              A remote http(s) endpoint the session proxy calls — nothing runs on this machine.
+            </span>
+          </div>
+        )}
+
+        {kind === 'npm' && (
+          <div className="cred-grid">
+            <label className="fld">
+              <span className="seclabel">PACKAGE</span>
+              <input
+                className="input mono"
+                placeholder="kubernetes-mcp-server"
+                value={pkg}
+                onChange={(e) => setPkg(e.target.value)}
+              />
+            </label>
+            <label className="fld cred-type">
+              <span className="seclabel">VERSION</span>
+              <input
+                className="input mono"
+                placeholder="latest"
+                value={version}
+                onChange={(e) => setVersion(e.target.value)}
+              />
+            </label>
+          </div>
+        )}
+        {kind === 'npm' && (
+          <span className="fld-hint">
+            Installed once under ~/.gurt/mcp/{id.trim() || '<id>'} and pinned to what it resolved
+            to — a version or dist-tag here, never <span className="mono">name@version</span> in
+            the package field.
+          </span>
+        )}
+
+        {kind === 'command' && (
+          <div className="cred-grid">
+            <label className="fld">
+              <span className="seclabel">COMMAND</span>
+              <input
+                className="input mono"
+                placeholder="uvx"
+                value={command}
+                onChange={(e) => setCommand(e.target.value)}
+              />
+            </label>
+            <label className="fld cred-type">
+              <span className="seclabel">WORKING DIR</span>
+              <input
+                className="input mono"
+                placeholder="(optional)"
+                value={cwd}
+                onChange={(e) => setCwd(e.target.value)}
+              />
+            </label>
+          </div>
+        )}
+        {kind === 'command' && (
+          <span className="fld-hint">
+            A name is resolved against your PATH when this is saved, so a missing tool is an error
+            here rather than an hour later; an absolute path is used as given.
+          </span>
+        )}
+
+        {isLocal && (
+          <div className="fld">
+            <span className="seclabel">ARGUMENTS</span>
+            <textarea
+              className="input mono snippet-input"
+              rows={3}
+              spellCheck={false}
+              placeholder={'--read-only'}
+              value={argsText}
+              onChange={(e) => setArgsText(e.target.value)}
+            />
+            <span className="fld-hint">
+              One per line, passed verbatim. A server&apos;s own read-only flag lives here — gurt
+              reports the argv, and does not claim to enforce what it means.
+            </span>
+          </div>
+        )}
+
+        {kind === 'http' && (
+          <div className="fld">
+            <div className="fld-head">
+              <span className="seclabel">HEADERS</span>
+              <span className="spacer" />
+              <button
+                className="btn-link"
+                onClick={() => setHeaders((prev) => [...prev, { name: '', value: '' }])}
+              >
+                + header
+              </button>
+            </div>
+            {headers.map((h, i) => (
+              <div key={i} className="mcp-hdr">
+                <input
+                  className="input mono"
+                  placeholder="X-Workspace"
+                  value={h.name}
+                  onChange={(e) => setHeader(i, { name: e.target.value })}
+                />
+                <input
+                  className="input mono"
+                  placeholder="value"
+                  value={h.value}
+                  onChange={(e) => setHeader(i, { value: e.target.value })}
+                />
+                <button
+                  className="btn-link"
+                  title="remove header"
+                  onClick={() => setHeaders((prev) => prev.filter((_, j) => j !== i))}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+            <span className="fld-hint">
+              Sent upstream verbatim and stored in workspace.json — never put a secret here; link a
+              credential below.
+            </span>
+          </div>
+        )}
+
+        {isLocal && (
+          <div className="fld">
+            <div className="fld-head">
+              <span className="seclabel">ENVIRONMENT</span>
+              <span className="spacer" />
+              <button
+                className="btn-link"
+                onClick={() => setEnvRows((prev) => [...prev, { name: '', value: '' }])}
+              >
+                + variable
+              </button>
+            </div>
+            {envRows.map((row, i) => {
+              const secret = looksLikeSecretEnv(row.name, row.value)
+              const badName = !!row.name.trim() && !isEnvName(row.name.trim())
+              return (
+                <div key={i}>
+                  <div className="mcp-hdr">
+                    <input
+                      className="input mono"
+                      placeholder="KUBECONFIG"
+                      value={row.name}
+                      onChange={(e) => setEnvRow(i, { name: e.target.value })}
+                    />
+                    <input
+                      className="input mono"
+                      placeholder="value"
+                      value={row.value}
+                      onChange={(e) => setEnvRow(i, { value: e.target.value })}
+                    />
+                    <button
+                      className="btn-link"
+                      title="remove variable"
+                      onClick={() => setEnvRows((prev) => prev.filter((_, j) => j !== i))}
+                    >
+                      ×
+                    </button>
+                  </div>
+                  {badName && (
+                    <span className="error">
+                      {row.name.trim()} is not an environment variable name
+                    </span>
+                  )}
+                  {secret && !pendingSecret && (
+                    <span className="mcp-local-note">
+                      that value looks like a secret — workspace.json is a plain file{' '}
+                      <button className="btn-link" onClick={() => liftSecret(row, i)}>
+                        store it as a credential
+                      </button>
+                    </span>
+                  )}
+                </div>
+              )
+            })}
+            <span className="fld-hint">
+              Stored in workspace.json and given to the process verbatim — a secret belongs in the
+              credential link below, which resolves on this machine and is never written here.
+            </span>
+          </div>
+        )}
+
+        <div className="env-access">
+          <span className="seclabel">AUTH</span>
+          <div className="env-access-chips" ref={credRef}>
+            {pendingSecret ? (
+              <span className="chip-tag">
+                <Icon name="key" size={11} style={{ color: 'var(--yellow)' }} />
+                new credential · {pendingSecret.name}
+                <span className="chip-x" title="keep it inline instead" onClick={dropPending}>
+                  ×
+                </span>
+              </span>
+            ) : linked ? (
+              <span className="chip-tag">
+                <Icon name="key" size={11} style={{ color: 'var(--yellow)' }} />
+                {linked.label}
+                <span className="chip-x" title="unlink" onClick={() => setCredentialId('')}>
+                  ×
+                </span>
+              </span>
+            ) : (
+              <span className="chip-dashed clickable" onClick={() => setCredMenu((o) => !o)}>
+                + credential
+              </span>
+            )}
+            {credMenu && (
+              <div className="menu pick-menu">
+                <div
+                  className="menu-item"
+                  onMouseDown={(e) => {
+                    e.preventDefault()
+                    setCredentialId('')
+                    setCredMenu(false)
+                  }}
+                >
+                  none (unauthenticated)
+                </div>
+                {mcpCredentials(credentials).map((c) => (
+                  <div
+                    key={c.id}
+                    className="menu-item"
+                    onMouseDown={(e) => {
+                      e.preventDefault()
+                      setCredentialId(c.id)
+                      setCredMenu(false)
+                    }}
+                  >
+                    <Icon name="key" size={11} className="faint" />
+                    {c.label} · {credentialKindLabel(c.kind)}
+                  </div>
+                ))}
+                {mcpCredentials(credentials).length === 0 && (
+                  <div className="menu-item faint">no mcp token — add one in Credentials</div>
+                )}
+              </div>
+            )}
+            {/* A header has a sensible default; an environment variable does
+                not, and only the server's own docs know its name (§3.4). */}
+            {isLocal && (linked || pendingSecret) && (
+              <input
+                className="input mono cred-env-var"
+                placeholder="GITHUB_TOKEN"
+                value={credentialEnvVar}
+                onChange={(e) => setCredentialEnvVar(e.target.value)}
+              />
+            )}
+            <span className="env-access-note mono">
+              {credError
+                ? `⚠ ${credError}`
+                : pendingSecret
+                  ? `saved to the credential store on Save, not to workspace.json`
+                  : linked
+                    ? isLocal
+                      ? 'resolved here and put in the process environment; the container never sees it'
+                      : 'injected as a header upstream; the container never sees it'
+                    : 'no credential — the server is started with nothing of yours'}
+            </span>
+          </div>
+        </div>
+
+        {/* Idle shows nothing: the probe has a button, and a form that
+            volunteered a verdict it did not earn would read as one. */}
+        {probing ? (
+          <div className="mcp-probe">
+            <span className="fld-hint">
+              {isLocal
+                ? 'starting it on this machine — an npm entry installs its package the first time…'
+                : 'connecting to the endpoint…'}
+            </span>
+          </div>
+        ) : (
+          probed?.key === probeKey && <McpProbeReport result={probed.result} />
+        )}
+        {note && <div className="fld-hint">{note}</div>}
+        {(error || (invalid && filledIn)) && <div className="error">{error || invalid}</div>}
+      </div>
+      <div className="modal-foot">
+        {editing && (
+          <button className="btn btn-danger-text" onClick={run(del)}>
+            Delete
+          </button>
+        )}
+        {editing && local?.kind === 'npm' && kind === 'npm' && (
+          <button
+            className="btn btn-text"
+            title="forget what is installed, so the next start installs the package again"
+            onClick={run(reinstall)}
+          >
+            Reinstall
+          </button>
+        )}
+        <button
+          className="btn btn-text"
+          title={
+            isLocal
+              ? 'start this server on your machine now, do the MCP handshake, list its tools and stop it again'
+              : 'do the MCP handshake against this endpoint, with the headers a session would send'
+          }
+          disabled={probing || !!invalid || !!credError}
+          onClick={run(probe)}
+        >
+          {probing ? 'Testing…' : 'Test'}
+        </button>
+        <span className="spacer" />
+        <button className="btn" onClick={onClose}>
+          Cancel
+        </button>
+        <button
+          className="btn btn-primary"
+          disabled={!!invalid || !!credError}
+          onClick={run(save)}
+        >
+          Save
+        </button>
+      </div>
+    </Modal>
+  )
+}
+
+/** Tool names shown before the list is cut short. A server with a hundred tools
+ *  is a real thing; a dialog listing all hundred is not. What is dropped is
+ *  counted out loud. */
+const PROBE_TOOLS_SHOWN = 24
+
+/**
+ * What the probe found (§4.6) — the success and failure halves of the button's
+ * four states; idle and in-flight are rendered by the caller.
+ *
+ * The tool list is here to be *read*. It narrows nothing: `mcpHasModes` still
+ * says a registry entry has no read-only mode, because a name does not say
+ * whether the tool writes (§3.3).
+ */
+function McpProbeReport({ result }: { result: McpProbeResult }): JSX.Element {
+  // Open when it failed, because that is the question the reader now has;
+  // folded when it worked, because then the answer is the line above it.
+  const [openLog, setOpenLog] = useState(!result.ok)
+  const launchLog = <McpProbeLog result={result} open={openLog} onToggle={() => setOpenLog((o) => !o)} />
+
+  if (!result.ok)
+    return (
+      <div className="mcp-probe">
+        <span className="error">
+          {result.error || 'it did not come up, and said nothing about why'}
+        </span>
+        {launchLog}
+      </div>
+    )
+  const tools = result.tools ?? []
+  const shown = tools.slice(0, PROBE_TOOLS_SHOWN)
+  return (
+    <div className="mcp-probe">
+      <span className="mcp-probe-head">
+        <Icon name="plug" size={12} />
+        {result.kind === 'http'
+          ? 'the endpoint answered the MCP handshake'
+          : 'it started and answered the MCP handshake'}
+        {result.server ? ` · ${result.server}` : ''}
+      </span>
+      {result.tools &&
+        (tools.length ? (
+          <span className="mcp-probe-tools">
+            {shown.map((t, i) => (
+              // Keyed by position: nothing stops a server listing a name twice.
+              <span key={`${t.name}:${i}`} className="mono" title={t.summary}>
+                {t.name}
+              </span>
+            ))}
+            {tools.length > shown.length && (
+              <span className="faint">+{tools.length - shown.length} more</span>
+            )}
+          </span>
+        ) : (
+          <span className="fld-hint">it offers no tools</span>
+        ))}
+      {result.toolsError && (
+        <span className="fld-hint">it did not list its tools — {result.toolsError}</span>
+      )}
+      <span className="fld-hint">
+        {result.kind === 'http'
+          ? 'Checked from gurt, on this machine. A session reaches this endpoint through its own proxy, from the container — so this says the URL, the headers and the credential are right, not that a session can get there.'
+          : 'Started and stopped again just now. The list is what the server offers; gurt does not know which of them write, so it reports them and does not restrict them.'}
+      </span>
+      {launchLog}
+    </div>
+  )
+}
+
+/**
+ * The launch itself, line by line: what was installed, what argv was spawned,
+ * what the process printed, which MCP calls were made, how it ended.
+ *
+ * This is the server's *own* output, shown where the person who started it is
+ * standing. gurt keeps no copy of it — closing the dialog is the end of it (see
+ * §4.6) — so **copy** is not a convenience here, it is the only way to carry it
+ * into an issue.
+ */
+function McpProbeLog({
+  result,
+  open,
+  onToggle
+}: {
+  result: McpProbeResult
+  open: boolean
+  onToggle: () => void
+}): JSX.Element | null {
+  const lines = result.transcript ?? []
+  if (!lines.length) return null
+  const text = lines.map((l) => `+${l.at}ms ${l.stream}\t${l.line}`).join('\n')
+  return (
+    <div className="mcp-probe-log">
+      <div className="fld-head">
+        <button className="btn-link" onClick={onToggle}>
+          {open ? 'hide' : 'show'} launch log ({lines.length} lines)
+        </button>
+        <span className="spacer" />
+        {open && (
+          <button className="btn-link" onClick={() => void navigator.clipboard.writeText(text)}>
+            copy
+          </button>
+        )}
+      </div>
+      {open && (
+        <div className="mcp-probe-lines mono">
+          {lines.map((l, i) => (
+            <div key={i} className={`mcp-probe-row ${l.stream}`}>
+              <span className="faint">+{l.at}ms</span>
+              <span className="faint">{l.stream}</span>
+              <span>{l.line}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function ClientsSection() {
   const [agents, setAgents] = useState<AgentsFile | null>(null)
   const [credentials, setCredentials] = useState<CredentialEntry[]>([])
@@ -1341,31 +2905,192 @@ function NotificationsSection() {
   )
 }
 
+// ---- Hotkeys — remap the global keyboard shortcuts, tracking conflicts ----
+
+/** Set while a row waits for the user's next keypress instead of a typed
+ *  value — Escape cancels, a bare modifier is ignored, anything else becomes
+ *  the candidate binding. */
+interface Recording {
+  id: HotkeyActionId
+}
+
+/** A captured binding that already belongs to another action — surfaced
+ *  instead of silently overwriting it, since two actions on the same
+ *  combination would both fire and there would be no way to tell which one
+ *  the keypress meant. */
+interface PendingConflict {
+  id: HotkeyActionId
+  binding: HotkeyBinding
+  withIds: HotkeyActionId[]
+}
+
+function HotkeysSection() {
+  const map = useHotkeys()
+  const [recording, setRecording] = useState<Recording | null>(null)
+  const [pending, setPending] = useState<PendingConflict | null>(null)
+  const [hint, setHint] = useState('')
+  const [error, setError] = useState('')
+
+  const save = async (next: HotkeyMap) => {
+    setError('')
+    try {
+      await window.gurt.setHotkeys(next)
+      refreshHotkeys()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  // Captures the very next keydown while a row is recording — preventDefault
+  // and stopPropagation keep it from also reaching App's own hotkey listener
+  // (which would otherwise fire whatever the *old* binding for that key does)
+  // or landing in some focused text field behind the modal-less settings page.
+  useEffect(() => {
+    if (!recording) return
+    const onKey = (e: KeyboardEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      if (e.code === 'Escape' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        setRecording(null)
+        setHint('')
+        return
+      }
+      if (!isRecordable(e.code)) return // a bare modifier — keep waiting
+      const binding = bindingFromEvent(e)
+      if (!binding.mod) {
+        setHint(`hold ${modKeyLabel()} while pressing a key`)
+        return
+      }
+      const id = recording.id
+      const withIds = conflictsFor(id, binding, map)
+      setRecording(null)
+      setHint('')
+      if (withIds.length === 0) {
+        void save({ ...map, [id]: binding })
+      } else {
+        setPending({ id, binding, withIds })
+      }
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [recording, map])
+
+  const startRecording = (id: HotkeyActionId) => {
+    setPending(null)
+    setHint('')
+    setError('')
+    setRecording({ id })
+  }
+
+  // The only way to accept a conflicting combination: give the other side
+  // back what this action is giving up, so every action stays bound to
+  // something and the map never ends up with two actions sharing one
+  // combination (§ the invariant `conflictsFor` relies on to only ever find
+  // one owner).
+  const swap = async () => {
+    if (!pending || pending.withIds.length !== 1) return
+    const [other] = pending.withIds
+    if (!other) return
+    const displaced = map[pending.id]
+    await save({ ...map, [pending.id]: pending.binding, [other]: displaced })
+    setPending(null)
+  }
+
+  return (
+    <>
+      <div className="set-head">
+        <div className="set-title-wrap">
+          <span className="set-title">Hotkeys</span>
+          <span className="set-count mono">applies across every workspace</span>
+        </div>
+      </div>
+      <div className="set-list">
+        {HOTKEY_DEFS.map((def) => {
+          const binding = map[def.id]
+          const isRecording = recording?.id === def.id
+          const conflict = pending?.id === def.id ? pending : null
+          const isDefault = bindingEquals(binding, HOTKEY_DEFAULTS[def.id])
+          return (
+            <div key={def.id}>
+              <div className="set-row">
+                <span className="set-row-label">{def.label}</span>
+                <span className="set-row-url">{def.hint}</span>
+                {isRecording ? (
+                  <span className="kbd hotkey-recording">{hint || 'press a key…'}</span>
+                ) : (
+                  <span className="kbd">{bindingLabel(binding)}</span>
+                )}
+                {!isDefault && !isRecording && (
+                  <button
+                    className="btn-link"
+                    title="reset to default"
+                    onClick={run(() => save({ ...map, [def.id]: HOTKEY_DEFAULTS[def.id] }))}
+                  >
+                    reset
+                  </button>
+                )}
+                <button
+                  className="btn-link"
+                  onClick={() => (isRecording ? setRecording(null) : startRecording(def.id))}
+                >
+                  {isRecording ? 'cancel' : 'change'}
+                </button>
+              </div>
+              {conflict && (
+                <div className="hc-note hc-warn hotkey-conflict">
+                  {bindingLabel(conflict.binding)} is already{' '}
+                  {conflict.withIds.length === 1 ? 'used by' : 'used by multiple actions:'}{' '}
+                  {conflict.withIds
+                    .map((id) => HOTKEY_DEFS.find((d) => d.id === id)?.label ?? id)
+                    .join(', ')}
+                  .
+                  {conflict.withIds.length === 1 ? (
+                    <>
+                      {' '}
+                      <button className="btn-link" onClick={run(swap)}>
+                        swap
+                      </button>
+                    </>
+                  ) : null}{' '}
+                  <button className="btn-link" onClick={() => setPending(null)}>
+                    cancel
+                  </button>
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+      {error && <div className="error">{error}</div>}
+    </>
+  )
+}
+
 // ---- Credentials (#4d) ----
 
 const hostsToText = (hosts: string[]) => hosts.join(', ')
 const textToHosts = (text: string) => text.split(',').map((h) => h.trim()).filter(Boolean)
 
-/** Preview of an entry's secret-ish field for the collapsed row. `data.secret`
- *  is already masked server-side (getCredentials() never serves plaintext) —
- *  used as-is. `keyPath` is not secret-flagged and still masked here, purely
- *  for display brevity. */
+/** Preview of an entry's secret field for the collapsed row. `data.secret` is
+ *  already masked server-side (getCredentials() never serves plaintext) — used
+ *  as-is. */
 function maskedPreview(c: CredentialEntry): string {
   if (c.data['secret']) return c.data['secret']
-  if (c.data['keyPath']) {
-    const tail = c.data['keyPath'].length > 8 ? c.data['keyPath'].slice(-4) : ''
-    return `••••••${tail}`
-  }
   return c.kind === 'git-host' ? 'ambient host auth' : '—'
 }
 
 const KIND_TAG: Record<CredentialKind, string> = {
   'git-token': 'token',
-  'git-ssh-key': 'ssh',
   'git-app': 'app',
   'git-host': 'host',
-  'agent-token': 'agent'
+  'agent-token': 'agent',
+  'mcp-token': 'mcp'
 }
+
+/** Tag for a stored entry, tolerating a kind this build retired (§10.1) — such
+ *  an entry still round-trips through credentials.json, so the UI has to be
+ *  able to draw it. */
+const kindTag = (kind: string): string => KIND_TAG[kind as CredentialKind] ?? kind
 
 function CredentialsSection() {
   const [entries, setEntries] = useState<CredentialEntry[] | null>(null)
@@ -1395,7 +3120,7 @@ function CredentialsSection() {
     // empty field on save means "keep what's stored" (main's sentinel
     // resolution). The mask shows up as the input's placeholder instead.
     const data = { ...c.data }
-    for (const f of kindDef(c.kind).fields) if (f.secret) data[f.key] = ''
+    for (const f of kindDef(c.kind)?.fields ?? []) if (f.secret) data[f.key] = ''
     setDraft({ ...c, data })
     setDraftHosts(hostsToText(c.hosts))
     setError('')
@@ -1436,7 +3161,7 @@ function CredentialsSection() {
       return
     }
     if (freshIds.current.has(draft.id)) {
-      const missing = kindDef(draft.kind).fields.find(
+      const missing = (kindDef(draft.kind)?.fields ?? []).find(
         (f) => f.secret && !(draft.data[f.key] ?? '').trim()
       )
       if (missing) {
@@ -1465,10 +3190,10 @@ function CredentialsSection() {
 
   const remove = async (c: CredentialEntry) => {
     setError('')
-    // Block deleting an entry a repo still links to (§9).
+    // Block deleting an entry a repo, client or MCP server still links to (§9).
     const used = await window.gurt.credentialUsedBy(c.id).catch(() => [])
     if (used.length) {
-      setError(`linked by ${used.join(', ')} — unlink it (repo / client settings) first`)
+      setError(`linked by ${used.join(', ')} — unlink it (repo / client / MCP settings) first`)
       return
     }
     if (
@@ -1492,7 +3217,8 @@ function CredentialsSection() {
   }
 
   const count = (entries ?? []).filter((c) => c.label.trim()).length
-  const kindDef = (kind: CredentialKind) => CREDENTIAL_KINDS.find((k) => k.kind === kind)!
+  const kindDef = (kind: CredentialKind): CredentialKindDef | undefined =>
+    CREDENTIAL_KINDS.find((k) => k.kind === kind)
 
   return (
     <>
@@ -1522,7 +3248,7 @@ function CredentialsSection() {
                 <Icon name="key" size={13} className="faint" style={{ flex: 'none' }} />
                 <span className="cred-name mono">{c.label}</span>
                 <span className="cred-tag">
-                  <span className="tag">{KIND_TAG[c.kind]}</span>
+                  <span className="tag">{kindTag(c.kind)}</span>
                 </span>
                 <span className="cred-preview mono">{maskedPreview(c)}</span>
                 <Icon name="chevron" size={12} className="faint" style={{ transform: 'rotate(-90deg)' }} />
@@ -1536,12 +3262,12 @@ function CredentialsSection() {
                 <Icon name="key" size={13} style={{ color: 'var(--yellow)', flex: 'none' }} />
                 <span className="cred-name mono">{draft?.label || c.label || 'new credential'}</span>
                 <span className="cred-tag">
-                  <span className="tag">{KIND_TAG[draft?.kind ?? c.kind]}</span>
+                  <span className="tag">{kindTag(draft?.kind ?? c.kind)}</span>
                 </span>
                 <span className="cred-preview mono">{maskedPreview(c)}</span>
                 <Icon name="chevron" size={12} className="faint" />
               </div>
-              {draft && def && (
+              {draft && (
                 <div className="set-card-body">
                   <div className="cred-grid">
                     <label className="fld">
@@ -1562,11 +3288,19 @@ function CredentialsSection() {
                       />
                     </div>
                   </div>
-                  <div className="fld-hint">
-                    {def.hint}
-                    {!def.implemented && ' — stored, runtime not wired yet'}
+                  <div className={def ? 'fld-hint' : 'error'}>
+                    {def ? (
+                      <>
+                        {def.hint}
+                        {!def.implemented && ' — stored, runtime not wired yet'}
+                      </>
+                    ) : (
+                      `"${draft.kind}" credentials are no longer supported — ssh git access was ` +
+                      'removed; anything resolving to this entry is blocked. Switch it to a token ' +
+                      'credential above, or delete it.'
+                    )}
                   </div>
-                  {def.fields.map((f) => (
+                  {(def?.fields ?? []).map((f) => (
                     <label key={f.key} className="fld">
                       <span className="seclabel">{f.label.toUpperCase()}</span>
                       <input

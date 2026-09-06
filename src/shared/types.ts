@@ -1,12 +1,46 @@
 // Domain model shared between main and renderer.
+import type { McpRegistryEntry } from './mcp'
+import type { DomainPolicy } from './proxy'
+import { sanitizeDomainPolicy } from './proxy'
 
 /** How much of an MCP server's toolset the agent may use. */
 export type McpMode = 'read-only' | 'full'
 
-/** An MCP server the user picked for a session, with its granted access level. */
+/**
+ * An MCP server the user picked for a session, with its granted access level.
+ *
+ * `id` names either a built-in (`MCP_DEFS`) or an entry of the workspace's
+ * registry (`WorkspaceFile.mcpServers`) — one shape for both, resolved through
+ * `mcpEntry`/`resolveMcpSelection`. The union is not closed at write time: an
+ * id can stop resolving after the fact, so every reader treats an unknown one as
+ * "selected but unavailable" rather than as corruption.
+ *
+ * `mode` is meaningful for built-ins only. gurt knows statically which of *its*
+ * tools write and drops them in `read-only`; it knows nothing about an
+ * upstream's tools, so a selected registry entry records `full` and the picker
+ * offers it as off/on (docs/requirements-mcp-proxy.md §3.3).
+ */
 export interface McpSelection {
   id: string
   mode: McpMode
+}
+
+/**
+ * A skill the user picked for a session (docs/requirements-skills.md §4.3).
+ *
+ * `name` names a directory of the workspace's skill registry
+ * (`~/.gurt/<ws>/skills/<name>/`), resolved through `resolveSkillSelection`.
+ * Like `McpSelection` the union is not closed at write time: a skill can be
+ * deleted after the fact, so every reader treats an unknown name as "selected
+ * but unavailable" rather than as corruption.
+ *
+ * A skill is off or on — there is no `mode` twin to `McpSelection`'s, because
+ * gurt hands the agent the files and nothing about them is a capability gurt
+ * grants by halves. The record shape stays a record anyway, so the two
+ * selections read the same way everywhere they are handled together.
+ */
+export interface SkillSelection {
+  name: string
 }
 
 /** ACP http-transport MCP server descriptor, passed in session/new & session/load. */
@@ -105,14 +139,57 @@ export interface EnvConfig {
   dockerfile?: string
   /** Repo-relative path `dockerfile` was seeded from — provenance only. */
   dockerfilePath?: string
-  /** Default repo, seeds new sessions on this env; not a runtime binding. */
+  /** Default repo, seeds new sessions on this env; not a runtime binding. Read
+   *  backwards too — `store.envsDefaultingToRepo` — to answer "which env does
+   *  this repo run in?", the default `create_session` drafts against. */
   repo?: string
 }
+
+/**
+ * Name of the bundled default operator environment
+ * (docs/requirements-session-operator.md §2.2). It is code, not user data —
+ * the config lives under `resources/env/` beside the proxy script — but it
+ * shares the env name space, so the store validator reserves the name: a
+ * workspace env may not take it.
+ */
+export const OPERATOR_ENV_NAME = 'operator'
+
+/** The env an operator session of this workspace runs on: the workspace's
+ *  `operatorEnv` when set, else the bundled default (§2.2). The role does not
+ *  check which env it got — an operator pointed at a workspace env is an
+ *  ordinary session on an ordinary env. */
+export const operatorEnvName = (ws: Pick<WorkspaceFile, 'operatorEnv'>): string =>
+  ws.operatorEnv ?? OPERATOR_ENV_NAME
 
 /** <workspace>/workspace.json */
 export interface WorkspaceFile {
   repos: RepoConfig[]
   envs: EnvConfig[]
+  /** User-configured HTTP MCP servers, workspace-scoped like repos and envs
+   *  (docs/requirements-mcp-proxy.md §3.1). Absent = none. */
+  mcpServers?: McpRegistryEntry[]
+  /** Agent-instance id (an `AgentsFile` key), used when a session in this
+   *  workspace is created without an explicit `agent`. Absent = none — the
+   *  spawner/caller's own choice (or none) stands. */
+  defaultAgent?: string
+  /** Agent-instance ids (`AgentsFile` keys) that may not be used by a session
+   *  of this workspace. Keyed by instance, not by kind, so one configured
+   *  instance of a kind can be allowed while another is denied. Absent/empty
+   *  = every configured agent is allowed. */
+  deniedAgents?: string[]
+  /** Skill names (directories under `~/.gurt/<ws>/skills/`) switched on in
+   *  every new draft of this workspace — the skills twin of `defaultAgent`.
+   *  Seeded into the draft by the config tab, and the user's to change from
+   *  there on (docs/requirements-skills.md §4.2). Absent/empty = none. The
+   *  skills themselves live on disk, not here; a name that no longer resolves
+   *  is the same "selected but unavailable" case a session's own selection
+   *  already has to hold. */
+  defaultSkills?: string[]
+  /** Env definition name this workspace's operator sessions run on; absent =
+   *  the bundled default (`OPERATOR_ENV_NAME`). Set from Settings, beside
+   *  `defaultAgent` and `defaultSkills`, which it is the twin of
+   *  (docs/requirements-session-operator.md §2.2). */
+  operatorEnv?: string
 }
 
 /**
@@ -157,9 +234,18 @@ export interface SessionContainer {
  * the clones live on disk as `<task>/<repo>` and are discovered from there.
  */
 export interface TaskFile {
+  /** ISO timestamp the task was created. Absent on tasks made before this was
+   *  recorded — `buildTree` stands in the marker file's own birth time there,
+   *  so the tree always carries one. */
+  createdAt?: string
   /** Legacy per-env container records, folded onto their owning session at read
    *  and dropped from disk. Never written by the current code. */
   envs?: LegacyEnvState[]
+  /** Cap on sessions of this task the scheduler will run at once (see
+   *  `SessionManager.scheduleSync`). Unset/0 = unlimited, today's behavior.
+   *  Lets a user who expects to hit an external rate limit serialize a task's
+   *  sessions instead of having most of them fail together. */
+  maxConcurrentSessions?: number
 }
 
 /** Pre-1:1 shape of a `task.json` env record — read once, migrated, discarded. */
@@ -182,10 +268,11 @@ export interface LegacyEnvState {
 export type SessionState = 'draft' | 'queued' | 'starting' | 'started'
 
 /**
- * What a session is *for* — see docs/requirements-session-roles.md. Chosen at
- * creation (changeable while it is still a draft, like its repos and env, never
- * after it has started); mounts, clone locking and the `gurt` tool set follow
- * from it instead of from the repo count they used to be inferred from.
+ * What a session is *for* — see docs/requirements-session-roles.md and, for the
+ * operator, docs/requirements-session-operator.md. Chosen at creation
+ * (changeable while it is still a draft, like its repos and env, never after it
+ * has started); mounts, clone locking and the `gurt` tool set follow from it
+ * instead of from the repo count they used to be inferred from.
  *
  * executor   — today's worker: one repo, read-write, holds the exclusive clone
  *              lock, ends every turn with `complete`.
@@ -195,10 +282,19 @@ export type SessionState = 'draft' | 'queued' | 'starting' | 'started'
  * reviewer   — read-only *and* holding the clone lock: it judges one clone's
  *              uncommitted changes while nothing may mutate that working tree.
  *              Its verdict is plain chat text and gates nothing.
+ * operator   — configures gurt itself: holds exactly ZERO repos (a researcher's
+ *              N taken to 0), mounts nothing, locks nothing, and reads the
+ *              workspace configuration through the admin tools of its `gurt`
+ *              MCP server instead of through a clone.
  */
-export type SessionRole = 'executor' | 'researcher' | 'reviewer'
+export type SessionRole = 'executor' | 'researcher' | 'reviewer' | 'operator'
 
-export const SESSION_ROLES: readonly SessionRole[] = ['executor', 'researcher', 'reviewer']
+export const SESSION_ROLES: readonly SessionRole[] = [
+  'executor',
+  'researcher',
+  'reviewer',
+  'operator'
+]
 
 /** Guard for a role arriving from outside the kernel (the renderer over IPC).
  *  An unknown string must be rejected, not silently treated as some role: every
@@ -219,8 +315,16 @@ export const roleIsReadOnly = (role: SessionRole): boolean => role !== 'executor
 
 /** Takes the scheduler's exclusive clone lock. A researcher never blocks (and
  *  is never blocked by) another session; a reviewer excludes writers exactly
- *  the way an executor does. */
-export const roleLocksClone = (role: SessionRole): boolean => role !== 'researcher'
+ *  the way an executor does. An operator holds no clone at all, so there is
+ *  nothing for a lock to protect. */
+export const roleLocksClone = (role: SessionRole): boolean =>
+  role === 'executor' || role === 'reviewer'
+
+/** Needs at least one repository to start. Every role but the operator does;
+ *  the operator's zero repos is its definition, not a missing pick — the four
+ *  start gates and the container manager's anchor guard all read this instead
+ *  of assuming a repo (docs/requirements-session-operator.md §2.1). */
+export const roleNeedsRepo = (role: SessionRole): boolean => role !== 'operator'
 
 /** Bound by the turn contract — offered `complete`, nudged when a turn ends
  *  without it (docs/requirements-turn-contract.md). */
@@ -239,7 +343,8 @@ export const spawnableRoles = (role: SessionRole): SessionRole[] =>
  * A draft one session's agent asked for via the `gurt` MCP server's
  * `create_session` tool. It lands in the spawner's own task and never runs by
  * itself: the user reviewing and launching it *is* the approval step (§3).
- * Anything omitted is inherited from the spawning session.
+ * Anything omitted is inherited from the spawning session — `env` excepted, it
+ * follows the *target repo* instead (see below).
  */
 export interface AgentSessionRequest {
   role: SessionRole
@@ -254,13 +359,66 @@ export interface AgentSessionRequest {
   task?: string
   /** Display title; defaults to the usual `session N`. */
   title?: string
-  /** Env definition name; defaults to the spawner's. */
+  /** Env definition name. Omitted, it resolves to the **target repo's own**
+   *  default environment — the env whose `EnvConfig.repo` names `repos[0]` —
+   *  not the spawner's. A session drafted for a repo belongs in that repo's
+   *  container even when the spawner happens to run in an ad-hoc one, and
+   *  inheriting the spawner's env was silent drift nobody could see. */
   env?: string
+  /** Acknowledges that `env` names a container that is *not* the target repo's
+   *  default. Required for such a request and rejected without it, so the wrong
+   *  container can only ever be chosen on purpose, never drifted into. */
+  confirmNonDefaultEnv?: boolean
   /** Agent-instance id; defaults to the spawner's. */
   agent?: string
   autoAllow?: boolean
-  gitAccess?: boolean
   configValues?: Record<string, string | boolean>
+  /** Skill names for the draft. Omitted, the spawner's own set is inherited —
+   *  a drafted session runs with the procedures the drafting one was given
+   *  unless the agent deliberately narrows them. `[]` is how it says "none"
+   *  (docs/requirements-skills.md §6). */
+  skills?: string[]
+}
+
+/**
+ * A session's egress settings (docs/requirements-mcp-proxy.md §6.2), chosen at
+ * creation and adjustable while it runs.
+ *
+ * The two modes differ in what they *are*. The default (`internal: false`) is a
+ * normal bridge: the container has its own route out, `HTTP_PROXY` points at
+ * the session proxy, and what that buys is **observability, not enforcement** —
+ * a process that ignores the variables goes straight past it. `internal: true`
+ * creates the session network `--internal`, so the daemon installs no route out
+ * and the proxy is the only way to anything.
+ *
+ * `policy` is the session's allow list, evaluated by the proxy on the host (and
+ * port) a request names — empty means "everything but this machine's own
+ * networks", non-empty means "only these" (§6.3). It is what the open mode
+ * *logs* and the internal mode *enforces*.
+ */
+export interface SessionNetwork {
+  /** Absent reads as false; the UI nevertheless creates every new session with
+   *  it *on* (App.tsx). Setup (image build, features, `postCreate`, the adapter
+   *  install) always runs before this applies — see §7.3. */
+  internal?: boolean
+  policy?: DomainPolicy
+}
+
+/**
+ * Network settings as they arrive from outside main — the renderer's form or an
+ * agent's `create_session`. Undefined for anything that carries no choice, so a
+ * caller that never set one leaves the session's own value alone rather than
+ * overwriting it with a synthesised default.
+ *
+ * The internal flag is coerced, never guessed: only a literal `true` is
+ * internal. A restriction has to be asked for.
+ */
+export function sanitizeSessionNetwork(raw: unknown): SessionNetwork | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const { internal, policy } = raw as { internal?: unknown; policy?: unknown }
+  const out: SessionNetwork = { internal: internal === true }
+  if (policy !== undefined) out.policy = sanitizeDomainPolicy(policy)
+  return out
 }
 
 /**
@@ -279,9 +437,8 @@ export interface SessionInfo {
   /** The session's repos (first entry seeded from the env's default,
    *  changeable while a draft, fixed at start). Empty on a repo-less draft —
    *  it cannot start. `repos[0]` is the build anchor. Only a researcher may
-   *  hold more than one; then every repo is mounted as a sibling, no repo is
-   *  exclusively locked, and the git broker is unavailable (native git/gh
-   *  access does not make sense across more than one repo). */
+   *  hold more than one; then every repo is mounted as a sibling and no repo
+   *  is exclusively locked. */
   repos: string[]
   task: string
   workspace: string
@@ -293,13 +450,16 @@ export interface SessionInfo {
   state: SessionState
   /** MCP servers to attach when this session starts (empty/undefined = none). */
   mcp?: McpSelection[]
-  /**
-   * Inject native git access (credential helper + transport rewrite, and the gh
-   * wrapper) into the agent process when it starts. Off = status quo: no
-   * injection, the github MCP remains the delegated remote path. Fixed at the
-   * first start of the (env, agent) adapter this session shares (§6).
-   */
-  gitAccess?: boolean
+  /** Skills mounted into the container when this session starts (empty/undefined
+   *  = none). Chosen while the session is a draft and frozen at start: the files
+   *  are bind-mounted, so there is nothing to change on a live session
+   *  (docs/requirements-skills.md §2). Absent means "never chosen" — which is
+   *  what the draft's `defaultSkills` seeding keys on — while `[]` means the
+   *  user chose none and is not re-seeded. */
+  skills?: SkillSelection[]
+  /** Egress settings for this session's network (absent = the defaults:
+   *  a normal bridge, everything allowed and logged). */
+  network?: SessionNetwork
   /** First prompt, sent automatically when the session starts. */
   startPrompt: string
   /**
@@ -363,14 +523,33 @@ export interface Tree {
     repos: RepoConfig[]
     /** Environment definitions (listed in Settings and the New Session modal). */
     envs: EnvConfig[]
+    /** Agent instance id used when a session here is created without an
+     *  explicit `agent` — see `WorkspaceFile.defaultAgent`. */
+    defaultAgent?: string
+    /** Agent instance ids not allowed in this workspace — see
+     *  `WorkspaceFile.deniedAgents`. */
+    deniedAgents?: string[]
+    /** Skill names switched on in every new draft here — see
+     *  `WorkspaceFile.defaultSkills`. */
+    defaultSkills?: string[]
+    /** Env the workspace's operator sessions run on — see
+     *  `WorkspaceFile.operatorEnv`. Absent = the bundled default. */
+    operatorEnv?: string
     tasks: {
       name: string
+      /** ISO timestamp the task was created — see {@link TaskFile.createdAt}.
+       *  Always present here (backfilled from the filesystem when the file has
+       *  none); the sidebar orders by it. */
+      createdAt: string
       /** Repos with a clone in this task (discovered on disk). A clone outlives
        *  the sessions that used it — it holds their uncommitted work. */
       repos: string[]
       /** Sessions of this task, primary tree nodes. Each carries its own
        *  container, so the task has no infrastructure of its own. */
       sessions: SessionInfo[]
+      /** Cap on concurrently running sessions of this task (see {@link TaskFile}).
+       *  Absent = unlimited. */
+      maxConcurrentSessions?: number
     }[]
   }[]
 }
@@ -568,6 +747,31 @@ export interface PromptContext {
   path: string
 }
 
+/**
+ * A prompt the user has sent that the session could not take yet, as the UI
+ * sees it (`SessionSnapshot.pending`).
+ *
+ * Two things put a prompt here: a turn already running, and a session whose
+ * clone another session is sitting on (the queue handoff stops an idle
+ * container out from under it — see `holdersBlockingQueue`). Both are waits,
+ * not errors, so the composer accepts the message and this is where it stands
+ * until the session is free.
+ *
+ * In-memory on main, deliberately: a queue that survived a restart would have
+ * the app wake a container and run a prompt nobody is watching.
+ */
+export interface PendingPromptInfo {
+  id: string
+  text: string
+  /** Context chips attached to it — carried so taking the prompt back out of
+   *  the queue can put them back in the composer with the text. */
+  context?: PromptContext[]
+  /** How many images ride with it. The images themselves stay on main: they
+   *  are base64, and this rides every `session-changed` broadcast. Taking the
+   *  prompt back out of the queue therefore drops them — the row says so. */
+  images?: number
+}
+
 /** Context-window usage, from ACP's `usage_update` session/update variant.
  *  Not every adapter sends it (e.g. codex-acp doesn't yet). */
 export interface SessionUsage {
@@ -605,6 +809,12 @@ export interface SessionSnapshot {
   startError?: string | undefined
   /** 1-based position in the global queue, present while queued. */
   queuePosition?: number | undefined
+  /** Prompts accepted but not yet run, oldest first — see {@link PendingPromptInfo}. */
+  pending?: PendingPromptInfo[] | undefined
+  /** Why the queue is not moving although no turn is running: the session's
+   *  clone is somebody else's right now. Absent while a turn is in flight —
+   *  then the reason is simply `busy`. */
+  pendingBlocked?: string | undefined
   /** Latest change proposal from a `complete` call (outcome=changes), if any. */
   proposal?: StoredProposal | undefined
   /** Latest context-window usage reported by the agent, if the adapter sends it. */

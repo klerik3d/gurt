@@ -8,16 +8,28 @@ import { MCP_DEFS } from '../shared/mcp'
 import { createKernel } from './kernel'
 import { POLL_INTERVAL_MS } from './planUsage'
 import { createLogger, dropSessionLog, enabled, logDir, logLevel, logRenderer } from './log'
-import { getCredentials, setCredentials, credentialUsedBy } from './credentials'
+import {
+  getCredentials,
+  setCredentials,
+  credentialUsedBy,
+  checkMcpEntryCredential
+} from './credentials'
+import { isLocalMcpEntry, mcpEntryKind } from '../shared/mcp'
+import { sanitizeSkillSelection } from '../shared/skills'
+import { checkMcpCommand, clearNpmInstall } from './mcp/stdioBridge'
+import { probeMcpServer } from './mcp/probe'
 import {
   discoverDevcontainer,
   discoverDockerfiles,
   envBuildImage,
   envImageStatus
 } from './provision'
+import { traffic } from './proxy/traffic'
 import * as store from './store'
 import * as changes from './changes'
 import { normalizeNotificationPrefs } from '../shared/notifications'
+import { sanitizeHotkeys } from '../shared/hotkeys'
+import { initAppMenu } from './menu'
 import { checkForUpdates, installUpdate, updateStatus } from './update'
 
 const log = createLogger('ipc')
@@ -40,6 +52,9 @@ function broadcast(channel: string, ...args: unknown[]): void {
  */
 const OPAQUE_ARGS = new Set<keyof GurtApi>([
   'createSession',
+  // A SKILL.md is a whole document the user wrote — prose, like a prompt.
+  'addSkill',
+  'updateSkill',
   'sessionPrompt',
   'sessionEditPrompt',
   'sessionEditDraft',
@@ -51,7 +66,16 @@ const OPAQUE_ARGS = new Set<keyof GurtApi>([
   'setCredentials',
   'setAgents',
   'addEnv',
-  'updateEnv'
+  'updateEnv',
+  // An MCP registry entry is a config payload: its static headers are the
+  // user's to fill, and "never a secret" is a rule the store states, not one
+  // the wire can enforce.
+  'addMcpServer',
+  'updateMcpServer',
+  // The same payload, and one more reason: a probe of a not-yet-saved entry
+  // carries the pasted secret inline, because there is no credential to link
+  // to yet (§4.6).
+  'probeMcpServer'
 ])
 
 /** Args for the DBG trace: a count for the opaque methods, the (redacted,
@@ -73,6 +97,8 @@ export function registerIpc(): void {
   kernel.bus.on('session.log', (e) => broadcast('session-log', e))
   kernel.bus.on('session.turn', (e) => broadcast('session-turn', e))
   kernel.bus.on('provision.log', (e) => broadcast('provision-log', e))
+  kernel.bus.on('proxy.traffic', (t) => broadcast('proxy-traffic', t))
+  kernel.bus.on('mcp.fail', (f) => broadcast('mcp-fail', f))
   kernel.bus.on('notification.created', (record) => broadcast('notification', record))
   kernel.bus.on('notification.read', (e) => broadcast('notification-read', e))
   kernel.bus.on('usage.changed', () => broadcast('usage-changed'))
@@ -153,6 +179,74 @@ export function registerIpc(): void {
       dropSessionLog(`env-build:${ws}/${name}`)
       kernel.bus.emit('tree.changed', undefined)
     },
+    setDefaultAgent: async (ws, agentId) => {
+      await store.setDefaultAgent(ws, agentId)
+      kernel.bus.emit('tree.changed', undefined)
+    },
+    setDeniedAgents: async (ws, agentIds) => {
+      await store.setDeniedAgents(ws, agentIds)
+      kernel.bus.emit('tree.changed', undefined)
+    },
+    getMcpServers: (ws) => store.getMcpServers(ws),
+    addMcpServer: async (ws, entry) => {
+      // Two checks that need main, done here rather than in the store
+      // validator, which is shared with the renderer and knows neither the
+      // credential store nor this machine's PATH.
+      await checkMcpEntryCredential(entry)
+      if (isLocalMcpEntry(entry)) checkMcpCommand(entry)
+      await store.addMcpServer(ws, entry)
+      kernel.bus.emit('tree.changed', undefined)
+    },
+    updateMcpServer: async (ws, entry) => {
+      await checkMcpEntryCredential(entry)
+      if (isLocalMcpEntry(entry)) checkMcpCommand(entry)
+      await store.updateMcpServer(ws, entry)
+      kernel.bus.emit('tree.changed', undefined)
+    },
+    removeMcpServer: async (ws, id) => {
+      await store.removeMcpServer(ws, id)
+      kernel.bus.emit('tree.changed', undefined)
+    },
+    // The registry lives in directories, not in workspace.json, so these ride
+    // `tree.changed` the way the MCP writes do — it is the signal the picker
+    // and the Settings list already re-read on (docs/requirements-skills.md §7).
+    getSkills: (ws) => store.getSkills(ws),
+    getSkillDoc: (ws, name) => store.getSkillDoc(ws, name),
+    addSkill: async (ws, name, doc) => {
+      await store.addSkill(ws, name, doc)
+      kernel.bus.emit('tree.changed', undefined)
+    },
+    updateSkill: async (ws, name, doc) => {
+      await store.updateSkill(ws, name, doc)
+      kernel.bus.emit('tree.changed', undefined)
+    },
+    removeSkill: async (ws, name) => {
+      await store.removeSkill(ws, name)
+      kernel.bus.emit('tree.changed', undefined)
+    },
+    skillUsedBy: (ws, name) => store.tasksUsingSkill(ws, name),
+    setDefaultSkills: async (ws, names) => {
+      await store.setDefaultSkills(ws, sanitizeSkillSelection(names).map((k) => k.name))
+      kernel.bus.emit('tree.changed', undefined)
+    },
+    setOperatorEnv: async (ws, env) => {
+      await store.setOperatorEnv(ws, env)
+      kernel.bus.emit('tree.changed', undefined)
+    },
+    reinstallMcpServer: async (ws, id) => {
+      // Read the entry rather than trusting the caller's word for its kind:
+      // "reinstall" means nothing for a command or an http entry, and clearing
+      // a stamp that belongs to neither would be a silent no-op.
+      const entry = (await store.getMcpServers(ws)).find((e) => e.id === id)
+      if (!entry) throw new Error(`MCP server "${id}" is not in this workspace's registry`)
+      if (mcpEntryKind(entry) !== 'npm')
+        throw new Error(`MCP server "${id}" is not an npm entry — there is nothing to reinstall`)
+      await clearNpmInstall(id)
+    },
+    // No workspace read at all: the entry travels whole, which is what lets the
+    // editor check a draft it has not saved (§4.6). Whatever arrives is
+    // normalized and validated inside the probe before anything is spawned.
+    probeMcpServer: (_ws, entry) => probeMcpServer(entry),
     createTask: async (ws, name) => {
       await store.createTask(ws, name)
       kernel.bus.emit('tree.changed', undefined)
@@ -160,6 +254,8 @@ export function registerIpc(): void {
     removeTask: (ws, name) => kernel.deleteTask(ws, name),
     renameTask: (ws, name, newName) => kernel.renameTask(ws, name, newName),
     taskDirtyRepos: (ws, name) => kernel.taskDirtyRepos(ws, name),
+    setTaskMaxConcurrentSessions: (ws, name, max) =>
+      kernel.setTaskMaxConcurrentSessions(ws, name, max),
     stopContainer: (sessionId) => kernel.containers.stop(sessionId),
     releaseContainer: (sessionId) => kernel.containers.release(sessionId),
     sessionOpenVscode: (sessionId) => kernel.containers.openVscode(sessionId),
@@ -213,9 +309,10 @@ export function registerIpc(): void {
       action,
       mcp,
       autoAllow,
-      gitAccess,
       configValues,
-      role
+      role,
+      skills,
+      network
     ) => {
       // Anything that can bring a container up waits out the boot restore: the
       // reconcile rewrites container records from a pre-start snapshot, and a
@@ -231,17 +328,37 @@ export function registerIpc(): void {
         throw new Error(`task "${ref.task}" not found in "${ref.workspace}"`)
       if (role !== undefined && !isSessionRole(role))
         throw new Error(`unknown session role "${String(role)}"`)
+      // A fresh draft (App.tsx) names no agent up front — it falls back to the
+      // workspace's default, same as an agent's own `create_session` request
+      // that leaves `agent` out. An explicit pick (a re-post, a duplicate) is
+      // checked against the deny-list either way: silently swapping it for the
+      // default would hide the denial instead of rejecting it.
+      const wsData = await store.getWorkspace(ref.workspace)
+      const agentId = agent || wsData.defaultAgent || ''
+      if (agentId && wsData.deniedAgents?.includes(agentId))
+        throw new Error(`agent "${agentId}" is not allowed in workspace "${ref.workspace}"`)
       return kernel.sessions.createSession(
         ref,
         repos,
-        agent,
+        agentId,
         prompt,
         action,
         mcp,
         autoAllow,
-        gitAccess,
         configValues,
-        role
+        role,
+        // Names become directories under the session's scratch dir; a name that
+        // could never be one is refused where it arrives. Whether it *resolves*
+        // is not checked — that is the draft's to show
+        // (docs/requirements-skills.md §4.4). An empty list over this boundary
+        // is a bare draft that has picked nothing *yet*, so it stays absent and
+        // the config tab seeds the workspace's defaults into it; only an edit
+        // can record a deliberate "none".
+        skills?.length ? sanitizeSkillSelection(skills) : undefined,
+        // Not validated here: `SessionManager.createSession` sanitizes it, and
+        // it has to — the agent-drafted and duplicate paths never pass this
+        // boundary at all.
+        network
       )
     },
     // Same boot gate as createSession — see the comment there.
@@ -266,12 +383,18 @@ export function registerIpc(): void {
       kernel.notifications.markSessionRead(id)
       return kernel.sessions.snapshot(id)
     },
+    // The session's own `internal` flag is the fallback, so a pane that opens
+    // before the proxy has logged anything still says which mode it is reading.
+    sessionTraffic: async (id) =>
+      traffic.get(id, kernel.sessions.sessionInfo(id)?.network?.internal === true),
     // Prompt and config changes can wake a detached session's container — the
     // same boot gate as createSession applies.
     sessionPrompt: async (id, text, context, images) => {
       await kernel.ready
       return kernel.sessions.prompt(id, text, context, images)
     },
+    sessionClearPending: async (id) => kernel.sessions.clearPending(id),
+    sessionCancelPending: async (id, promptId) => kernel.sessions.cancelPending(id, promptId),
     sessionCancel: async (id) => kernel.sessions.cancel(id),
     sessionSetMode: (id, modeId) => kernel.sessions.setMode(id, modeId),
     sessionSetConfigOption: async (id, configId, value) => {
@@ -301,6 +424,18 @@ export function registerIpc(): void {
       const normalized = normalizeNotificationPrefs(prefs, await store.getNotificationPrefs())
       await store.setNotificationPrefs(normalized)
       kernel.notifications.setPrefs(normalized)
+    },
+    getHotkeys: () => store.getHotkeys(),
+    setHotkeys: async (map) => {
+      // Same untrusted-boundary treatment as notification prefs: a bad/partial
+      // payload falls back per-action to what's already persisted, never wipes
+      // every other action's remap.
+      const normalized = sanitizeHotkeys(map, await store.getHotkeys())
+      await store.setHotkeys(normalized)
+      // Live-rebuild the hidden accelerators macOS's window-cycle reservation
+      // needs (menu.ts) — otherwise a remap away from ⌘`/⌘⇧` would leave the
+      // old combination silently hijacked until the next launch.
+      initAppMenu(normalized)
     },
     getUsage: async () => {
       // The first read can beat the ledger's own load off disk; waiting on it

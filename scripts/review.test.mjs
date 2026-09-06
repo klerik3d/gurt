@@ -205,7 +205,7 @@ test('comments', async () => {
 
 const ref = { workspace: ws, task, env: 'dev' }
 const mk = (role, title) => {
-  const info = kernel.sessions.createSession(ref, [repo], 'a1', 'hi', 'draft', [], true, false, {}, role)
+  const info = kernel.sessions.createSession(ref, [repo], 'a1', 'hi', 'draft', [], true, {}, role)
   kernel.sessions.renameSession(info.id, title)
   return info.id
 }

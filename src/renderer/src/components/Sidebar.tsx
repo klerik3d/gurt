@@ -1,38 +1,16 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react'
-import type {
-  AgentConfig,
-  AgentsFile,
-  McpMode,
-  McpSelection,
-  RepoChanges,
-  SessionActivity,
-  SessionConfigOption,
-  SessionInfo,
-  SessionRole,
-  Tree
-} from '../../../shared/types'
-import {
-  SESSION_ROLES,
-  isActionable,
-  isDelivered,
-  roleAllowsMultiRepo,
-  roleIsReadOnly,
-  sessionRole,
-  sessionStatus
-} from '../../../shared/types'
-import type { CredentialEntry } from '../../../shared/credentials'
-import { hasManagedCredential, resolveForRepo } from '../../../shared/credentials'
-import type { McpDef } from '../../../shared/mcp'
-import { agentOptionView } from '../../../shared/agentConfig'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, ReactNode } from 'react'
+import type { RepoChanges, SessionActivity, Tree } from '../../../shared/types'
+import { isActionable, isDelivered, sessionStatus } from '../../../shared/types'
 import type { Selection } from '../App'
+import { bindingLabel } from '../../../shared/hotkeys'
 import { agentKind, agentName, useAgents } from '../useAgents'
+import { useHotkeys } from '../useHotkeys'
 import { useOutsideClose } from '../hooks'
 import { alertDialog, confirmDialog } from '../dialog'
-import { logErr } from '../log'
 import { SESSION_DOT } from '../status'
 import { Icon, Dot } from './icons'
-import { AgentMark, ROLE_INFO, agentIcon } from './tags'
+import { AgentMark } from './tags'
 import { deleteSession, duplicateSession } from './SessionActions'
 import { Modal } from './Modal'
 import { fire, run } from '../async'
@@ -44,6 +22,82 @@ type Row =
 
 const rowKey = (r: Row) => (r.kind === 'task' ? `t:${r.ws}/${r.task}` : `s:${r.id}`)
 
+/** What the task list is ordered by, and which way round. */
+export type TaskSortKey = 'name' | 'created'
+export type TaskSortDir = 'asc' | 'desc'
+export interface TaskSort {
+  key: TaskSortKey
+  dir: TaskSortDir
+}
+
+const TASK_SORT_KEY = 'gurt.sidebar.taskSort'
+const DEFAULT_SORT: TaskSort = { key: 'name', dir: 'asc' }
+
+export const SORT_KEY_LABEL: Record<TaskSortKey, string> = {
+  name: 'Name',
+  created: 'Created'
+}
+
+/** Direction reads as what the order *is*: "Z → A" and "Newest first" are the
+ *  same `desc`, but nobody picking one thinks of it as descending. */
+export const SORT_DIR_LABEL: Record<TaskSortKey, Record<TaskSortDir, string>> = {
+  name: { asc: 'A → Z', desc: 'Z → A' },
+  created: { asc: 'Oldest first', desc: 'Newest first' }
+}
+
+/** Case- and digit-aware, then exact — `sensitivity: 'base'` calls "api" and
+ *  "API" equal, and a tie left to sort's stability would order them by whatever
+ *  `readdir` returned that time. */
+const byName = (a: string, b: string): number =>
+  a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }) ||
+  (a < b ? -1 : a > b ? 1 : 0)
+
+/**
+ * Order the sidebar draws tasks in. `desc` reverses the whole comparison,
+ * tiebreak included, so flipping direction flips exactly what is on screen —
+ * the one thing the user is asking for when they press it.
+ */
+export function sortTasks<T extends { name: string; createdAt?: string }>(
+  tasks: readonly T[],
+  sort: TaskSort
+): T[] {
+  const cmp =
+    sort.key === 'name'
+      ? (a: T, b: T) => byName(a.name, b.name)
+      : // Tasks created within the same second are a real case (a script, a
+        // duplicate) — name keeps them from swapping places between renders.
+        (a: T, b: T) =>
+          (a.createdAt ?? '').localeCompare(b.createdAt ?? '') || byName(a.name, b.name)
+  const out = [...tasks].sort(cmp)
+  return sort.dir === 'desc' ? out.reverse() : out
+}
+
+/** Sidebar-local and persisted: an ordering preference is not part of the tree,
+ *  and one that resets on every launch is worse than not offering it. */
+function useTaskSort(): [TaskSort, (s: TaskSort) => void] {
+  const [sort, setSort] = useState<TaskSort>(() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem(TASK_SORT_KEY) ?? 'null') as Partial<TaskSort>
+      const key = raw?.key
+      const dir = raw?.dir
+      if ((key === 'name' || key === 'created') && (dir === 'asc' || dir === 'desc'))
+        return { key, dir }
+    } catch {
+      // unreadable preference — the default order is a fine place to land
+    }
+    return DEFAULT_SORT
+  })
+  const update = (next: TaskSort): void => {
+    setSort(next)
+    try {
+      localStorage.setItem(TASK_SORT_KEY, JSON.stringify(next))
+    } catch {
+      // a full/blocked store costs the preference, not the sort
+    }
+  }
+  return [sort, update]
+}
+
 export function Sidebar({
   width,
   tree,
@@ -51,13 +105,10 @@ export function Sidebar({
   selection,
   changes,
   activity,
-  onPickWorkspace,
-  onNewWorkspace,
-  onDeleteWorkspace,
+  focusSignal,
   onNewSession,
   onSelectTask,
-  onSelectSession,
-  onOpenPalette
+  onSelectSession
 }: {
   /** Current sidebar width in px (user-draggable). */
   width: number
@@ -69,32 +120,14 @@ export function Sidebar({
   changes: Record<string, RepoChanges[]>
   /** Live runtime overlay per session id — splits `started` into running/waiting/idle. */
   activity: Record<string, SessionActivity>
-  onPickWorkspace: (ws: string) => void
-  onNewWorkspace: () => void
-  onDeleteWorkspace: (ws: string) => void
+  /** Bumped by App on ⌘2 (`gotoTasks`) — focuses the tree, including on the
+   *  mount that follows switching into the work view from elsewhere. */
+  focusSignal?: number
   onNewSession: (ws: string, task: string) => void
   onSelectTask: (ws: string, task: string) => void
   onSelectSession: (id: string) => void
-  onOpenPalette: () => void
 }) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
-  const [wsMenuOpen, setWsMenuOpen] = useState(false)
-  const wsMenuRef = useRef<HTMLDivElement>(null)
-  /** Version of a downloaded-and-ready app update — shows the "update" button
-   *  (see main/update.ts). Null in dev and while up to date. */
-  const [updateVersion, setUpdateVersion] = useState<string | null>(null)
-  useEffect(() => {
-    const off = window.gurt.onUpdateReady((u) => setUpdateVersion(u.version))
-    // Pull the current value too — this window (or view) may have mounted
-    // after the push fired.
-    window.gurt
-      .getUpdateStatus()
-      .then((u) => {
-        if (u) setUpdateVersion(u.version)
-      })
-      .catch(logErr('getUpdateStatus'))
-    return off
-  }, [])
   const [creatingTask, setCreatingTask] = useState(false)
   const [taskDraftName, setTaskDraftName] = useState('')
   const taskPopRef = useRef<HTMLDivElement>(null)
@@ -103,9 +136,14 @@ export function Sidebar({
     setTaskDraftName('')
   })
   const agents = useAgents()
+  const hotkeys = useHotkeys()
   /** The row whose name is currently swapped for a text field, if any. */
   const [renaming, setRenaming] = useState<Row | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
+  /** Right-click (or two-finger tap) target — a row's actions, at the pointer
+   *  instead of behind a dedicated button, so hovering the tree never has to
+   *  reserve or reveal space for one and the list holds still under the mouse. */
+  const [ctxMenu, setCtxMenu] = useState<{ row: Row; x: number; y: number } | null>(null)
   /** Guards the edit against resolving twice: both Escape and a keyboard commit
    *  move focus off the input, and the blur that follows would otherwise run the
    *  commit a second time — against a name that no longer exists. */
@@ -114,27 +152,28 @@ export function Sidebar({
   const selectedRef = useRef<HTMLDivElement>(null)
 
   const wsData = tree?.workspaces.find((w) => w.name === ws)
-
-  useEffect(() => {
-    if (!wsMenuOpen) return
-    const onDown = (e: MouseEvent) => {
-      if (wsMenuRef.current && !wsMenuRef.current.contains(e.target as Node)) setWsMenuOpen(false)
-    }
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setWsMenuOpen(false)
-    }
-    document.addEventListener('mousedown', onDown)
-    document.addEventListener('keydown', onKey)
-    return () => {
-      document.removeEventListener('mousedown', onDown)
-      document.removeEventListener('keydown', onKey)
-    }
-  }, [wsMenuOpen])
+  const [sort, setSort] = useTaskSort()
+  const [sortOpen, setSortOpen] = useState(false)
+  const sortPopRef = useRef<HTMLDivElement>(null)
+  useOutsideClose(sortOpen, sortPopRef, () => setSortOpen(false))
+  /** The one ordering everything below reads — rendering and the arrow-key row
+   *  list both, or navigation would walk a list the user cannot see. */
+  const tasks = sortTasks(wsData?.tasks ?? [], sort)
+  /** Owner of every task in `tasks`. Empty only when there is no workspace, and
+   *  then `tasks` is empty too, so nothing below ever reads the empty string. */
+  const wsName = wsData?.name ?? ''
 
   // Keyboard navigation can walk the selection out of view — follow it.
   useEffect(() => {
     selectedRef.current?.scrollIntoView({ block: 'nearest' })
   }, [selection])
+
+  // ⌘2: focus the tree so arrow keys work immediately, no click first. Fires
+  // on mount too (App bumps the signal before the work view has mounted this
+  // component when switching in from dashboard/settings).
+  useEffect(() => {
+    if (focusSignal) treeRef.current?.focus()
+  }, [focusSignal])
 
   const setCollapse = (ws2: string, task: string, on: boolean) => {
     setCollapsed((prev) => {
@@ -148,6 +187,24 @@ export function Sidebar({
     if (on && selection?.type === 'session') {
       const owner = wsData?.tasks.find((t) => t.sessions.some((s) => s.id === selection.id))
       if (owner?.name === task) onSelectTask(ws2, task)
+    }
+  }
+
+  /** Every task's collapse key, for the header's fold-all toggle. */
+  const allTaskKeys = tasks.map((t) => `${wsName}/${t.name}`)
+  const allCollapsed = allTaskKeys.length > 0 && allTaskKeys.every((k) => collapsed.has(k))
+  const toggleCollapseAll = () => {
+    if (!wsData || !allTaskKeys.length) return
+    if (allCollapsed) {
+      setCollapsed(new Set())
+      return
+    }
+    setCollapsed(new Set(allTaskKeys))
+    // Same reasoning as setCollapse: a selected session about to be hidden
+    // moves the selection up to its task.
+    if (selection?.type === 'session') {
+      const owner = wsData.tasks.find((t) => t.sessions.some((s) => s.id === selection.id))
+      if (owner) onSelectTask(wsData.name, owner.name)
     }
   }
 
@@ -165,6 +222,78 @@ export function Sidebar({
   const deleteRow = async (id: string): Promise<boolean> => {
     const s = wsData?.tasks.flatMap((t) => t.sessions).find((x) => x.id === id)
     return s ? deleteSession(s) : false
+  }
+
+  /** Right-click opens the row's menu at the pointer and selects the row under
+   *  it — same as clicking, so the menu always acts on what it's next to. */
+  const openContextMenu = (e: ReactMouseEvent, row: Row) => {
+    e.preventDefault()
+    e.stopPropagation()
+    selectRow(row)
+    setCtxMenu({ row, x: e.clientX, y: e.clientY })
+  }
+
+  /** The open context menu's contents — a task gets "new session" / "delete
+   *  task", a session gets "duplicate as draft" / "delete session". */
+  const renderCtxMenu = (menu: { row: Row; x: number; y: number }, close: () => void) => {
+    const { row } = menu
+    return (
+      <RowContextMenu x={menu.x} y={menu.y} onClose={close}>
+        {row.kind === 'task' ? (
+          <>
+            <div
+              className="menu-item"
+              onMouseDown={(e) => {
+                e.preventDefault()
+                close()
+                onNewSession(row.ws, row.task)
+              }}
+            >
+              <Icon name="message" size={13} className="faint" />
+              <span>New session</span>
+            </div>
+            <div className="menu-sep" />
+            <div
+              className="menu-item danger"
+              onMouseDown={(e) => {
+                e.preventDefault()
+                close()
+                fire(() => deleteTask(row.task))
+              }}
+            >
+              <Icon name="trash" size={13} className="faint" />
+              <span>Delete task</span>
+            </div>
+          </>
+        ) : (
+          <>
+            <div
+              className="menu-item"
+              onMouseDown={(e) => {
+                e.preventDefault()
+                close()
+                void duplicateSession(row.id, (copy) => onSelectSession(copy.id))
+              }}
+            >
+              <Icon name="copy" size={13} className="faint" />
+              <span>Duplicate as draft</span>
+            </div>
+            <div className="menu-sep" />
+            <div
+              className="menu-item danger"
+              onMouseDown={(e) => {
+                e.preventDefault()
+                close()
+                fire(() => deleteRow(row.id))
+              }}
+            >
+              <Icon name="trash" size={13} className="faint" />
+              <span>Delete session</span>
+            </div>
+          </>
+        )}
+      </RowContextMenu>
+    )
   }
 
   // Creates the task right from the header "+", no modal round-trip — click,
@@ -185,11 +314,11 @@ export function Sidebar({
   // The tree as the user sees it, top to bottom — collapsed tasks contribute
   // only their own row. Arrow keys walk this list; nothing else needs the shape.
   const rows: Row[] = []
-  for (const task of wsData?.tasks ?? []) {
-    rows.push({ kind: 'task', ws: wsData!.name, task: task.name })
-    if (!collapsed.has(`${wsData!.name}/${task.name}`))
+  for (const task of tasks) {
+    rows.push({ kind: 'task', ws: wsName, task: task.name })
+    if (!collapsed.has(`${wsName}/${task.name}`))
       for (const s of task.sessions)
-        rows.push({ kind: 'session', id: s.id, ws: wsData!.name, task: task.name })
+        rows.push({ kind: 'session', id: s.id, ws: wsName, task: task.name })
   }
   const isSelected = (r: Row) =>
     r.kind === 'task'
@@ -320,69 +449,66 @@ export function Sidebar({
   return (
     <aside className="sidebar" style={{ width }}>
       <div className="sb-head">
-        <div className="sb-ws" ref={wsMenuRef}>
-          <button className="sb-ws-btn" onClick={() => setWsMenuOpen((o) => !o)}>
-            <span className="sb-ws-name">{ws ?? 'gurt'}</span>
-            <Icon name="chevron" size={13} className="faint" />
+        <div className="sb-ws">
+          <span className="sb-ws-name">Tasks</span>
+        </div>
+        <span className="spacer" />
+        <div className="sb-sort" ref={sortPopRef}>
+          <button
+            className={`icon-sq ${sortOpen ? 'active' : ''}`}
+            title={`Sort tasks · ${SORT_KEY_LABEL[sort.key]}, ${SORT_DIR_LABEL[sort.key][sort.dir]}`}
+            disabled={!allTaskKeys.length}
+            onClick={() => setSortOpen((o) => !o)}
+          >
+            {/* The glyph flips with the direction, so the current order is
+                readable from the closed button and not only from its tooltip. */}
+            <Icon
+              name="sort"
+              size={14}
+              style={sort.dir === 'desc' ? { transform: 'scaleY(-1)' } : undefined}
+            />
           </button>
-          {wsMenuOpen && (
-            <div className="menu sb-ws-menu">
-              {tree?.workspaces.map((w) => (
+          {sortOpen && (
+            <div className="menu sb-sort-menu">
+              {/* Key and direction stay in one open menu: switching the key
+                  relabels the directions under it ("A → Z" becomes "Oldest
+                  first"), which is how the pair explains itself. */}
+              {(['name', 'created'] as TaskSortKey[]).map((k) => (
                 <div
-                  key={w.name}
-                  className={`menu-item ${w.name === ws ? 'active' : ''}`}
-                  onMouseDown={(e) => {
-                    e.preventDefault()
-                    setWsMenuOpen(false)
-                    onPickWorkspace(w.name)
-                  }}
+                  key={k}
+                  className={`menu-item ${sort.key === k ? 'active' : ''}`}
+                  onClick={() => setSort({ ...sort, key: k })}
                 >
-                  <span style={{ flex: 1 }}>{w.name}</span>
-                  <button
-                    className="icon-sq sb-act"
-                    title="delete workspace"
-                    onMouseDown={(e) => {
-                      e.preventDefault()
-                      e.stopPropagation()
-                      setWsMenuOpen(false)
-                      onDeleteWorkspace(w.name)
-                    }}
-                  >
-                    <Icon name="trash" size={13} />
-                  </button>
+                  <Dot tone={sort.key === k ? 'accent' : 'outline'} size={6} />
+                  {SORT_KEY_LABEL[k]}
                 </div>
               ))}
               <div className="menu-sep" />
-              <div
-                className="menu-item"
-                onMouseDown={(e) => {
-                  e.preventDefault()
-                  setWsMenuOpen(false)
-                  onNewWorkspace()
-                }}
-              >
-                + new workspace
-              </div>
+              {(['asc', 'desc'] as TaskSortDir[]).map((d) => (
+                <div
+                  key={d}
+                  className={`menu-item ${sort.dir === d ? 'active' : ''}`}
+                  onClick={() => setSort({ ...sort, dir: d })}
+                >
+                  <Dot tone={sort.dir === d ? 'accent' : 'outline'} size={6} />
+                  {SORT_DIR_LABEL[sort.key][d]}
+                </div>
+              ))}
             </div>
           )}
         </div>
-        {updateVersion && (
-          <button
-            className="sb-update-btn"
-            title={`Restart to update gurt to ${updateVersion}`}
-            onClick={() => void window.gurt.installUpdate().catch(logErr('installUpdate'))}
-          >
-            update
-          </button>
-        )}
-        <span className="spacer" />
-        <button className="icon-sq" title="Search · ⌘K" onClick={onOpenPalette}>
-          <Icon name="search" size={14} />
+        <button
+          className="icon-sq"
+          title={allCollapsed ? 'Expand all' : 'Collapse all'}
+          disabled={!allTaskKeys.length}
+          onClick={toggleCollapseAll}
+        >
+          <Icon name="fold" size={14} style={allCollapsed ? { transform: 'rotate(180deg)' } : undefined} />
         </button>
         <div className="sb-newtask" ref={taskPopRef}>
           <button
             className="icon-sq"
-            title="New task · ⌘⇧N"
+            title={`New task · ${bindingLabel(hotkeys.newTask)}`}
             onClick={() => setCreatingTask((o) => !o)}
           >
             <Icon name="plus" size={14} />
@@ -405,10 +531,10 @@ export function Sidebar({
       </div>
 
       <div className="sb-tree" ref={treeRef} tabIndex={0} role="tree" onKeyDown={onTreeKey}>
-        {wsData?.tasks.map((task) => {
-          const tkey = `${wsData.name}/${task.name}`
+        {tasks.map((task) => {
+          const tkey = `${wsName}/${task.name}`
           const isCollapsed = collapsed.has(tkey)
-          const row: Row = { kind: 'task', ws: wsData.name, task: task.name }
+          const row: Row = { kind: 'task', ws: wsName, task: task.name }
           const taskSelected = isSelected(row)
           const editing = renaming && rowKey(renaming) === rowKey(row)
           return (
@@ -419,14 +545,15 @@ export function Sidebar({
                 role="treeitem"
                 aria-expanded={!isCollapsed}
                 aria-selected={taskSelected}
-                onClick={() => onSelectTask(wsData.name, task.name)}
+                onClick={() => onSelectTask(wsName, task.name)}
                 onDoubleClick={() => startRename(row)}
+                onContextMenu={editing ? undefined : (e) => openContextMenu(e, row)}
               >
                 <span
                   className="sb-chev"
                   onClick={(e) => {
                     e.stopPropagation()
-                    setCollapse(wsData.name, task.name, !isCollapsed)
+                    setCollapse(wsName, task.name, !isCollapsed)
                   }}
                 >
                   <Icon
@@ -447,26 +574,6 @@ export function Sidebar({
                     <span className="sb-task-name">{task.name}</span>
                     <TaskBadge repos={changes[tkey] ?? []} />
                     <span className="spacer" />
-                    <button
-                      className="icon-sq sb-act"
-                      title="new session"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        onNewSession(wsData.name, task.name)
-                      }}
-                    >
-                      <Icon name="message" size={13} />
-                    </button>
-                    <button
-                      className="icon-sq sb-act"
-                      title="delete task"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        fire(() => deleteTask(task.name))
-                      }}
-                    >
-                      <Icon name="trash" size={13} />
-                    </button>
                   </>
                 )}
               </div>
@@ -474,7 +581,7 @@ export function Sidebar({
                 task.sessions.map((s) => {
                   const status = sessionStatus({ ...s, ...activity[s.id] })
                   const dot = SESSION_DOT[status]
-                  const srow: Row = { kind: 'session', id: s.id, ws: wsData.name, task: task.name }
+                  const srow: Row = { kind: 'session', id: s.id, ws: wsName, task: task.name }
                   const selected = isSelected(srow)
                   const renamingThis = renaming && rowKey(renaming) === rowKey(srow)
                   return (
@@ -487,6 +594,7 @@ export function Sidebar({
                       title={dot.label}
                       onClick={() => onSelectSession(s.id)}
                       onDoubleClick={() => startRename(srow)}
+                      onContextMenu={renamingThis ? undefined : (e) => openContextMenu(e, srow)}
                     >
                       <Dot tone={dot.tone} pulse={dot.pulse} />
                       {renamingThis ? (
@@ -499,36 +607,10 @@ export function Sidebar({
                       ) : (
                         <>
                           <span className="sb-session-name">{s.title}</span>
-                          {/* Agent mark and row actions share the right edge:
-                              hovering swaps one for the other, so the actions
-                              cost the title no width when nobody is reaching
-                              for them. */}
                           <span className="sb-session-client">
                             {s.agent && (
                               <AgentMark kind={agentKind(agents, s.agent)} name={agentName(agents, s.agent)} />
                             )}
-                          </span>
-                          <span className="sb-session-acts">
-                            <button
-                              className="icon-sq sb-act"
-                              title="duplicate as draft"
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                void duplicateSession(s.id, (copy) => onSelectSession(copy.id))
-                              }}
-                            >
-                              <Icon name="copy" size={13} />
-                            </button>
-                            <button
-                              className="icon-sq sb-act"
-                              title="delete session"
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                void deleteSession(s)
-                              }}
-                            >
-                              <Icon name="trash" size={13} />
-                            </button>
                           </span>
                         </>
                       )}
@@ -552,7 +634,47 @@ export function Sidebar({
           </div>
         )}
       </div>
+      {ctxMenu && renderCtxMenu(ctxMenu, () => setCtxMenu(null))}
     </aside>
+  )
+}
+
+/** A row's actions at the pointer instead of behind a button — opened by
+ *  right-click (or a trackpad's two-finger tap, which the browser already
+ *  maps to the same `contextmenu` event). Closes like any other dropdown:
+ *  outside click or Escape. */
+function RowContextMenu({
+  x,
+  y,
+  onClose,
+  children
+}: {
+  x: number
+  y: number
+  onClose: () => void
+  children: ReactNode
+}) {
+  const ref = useRef<HTMLDivElement>(null)
+  useOutsideClose(true, ref, onClose)
+  // Anchored at the raw pointer position first, then nudged back on-screen
+  // once its real size is known — a menu that opens near the window edge
+  // should still land fully inside it, not spill off.
+  const [pos, setPos] = useState({ x, y })
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const margin = 6
+    const rect = el.getBoundingClientRect()
+    setPos({
+      x: Math.max(margin, Math.min(x, window.innerWidth - rect.width - margin)),
+      y: Math.max(margin, Math.min(y, window.innerHeight - rect.height - margin))
+    })
+  }, [x, y])
+
+  return (
+    <div className="menu ctx-menu" ref={ref} style={{ left: pos.x, top: pos.y }}>
+      {children}
+    </div>
   )
 }
 
@@ -702,822 +824,3 @@ export function DeleteWorkspaceModal({
   )
 }
 
-// ---- New session modal (#2a) with inline Harness config (#2b) ----
-
-/** Quiet select row: a field-styled button that opens a menu of options. */
-function PickRow({
-  open,
-  onToggle,
-  onClose,
-  menu,
-  children
-}: {
-  open: boolean
-  onToggle: () => void
-  onClose: () => void
-  menu: ReactNode
-  children: ReactNode
-}) {
-  const ref = useRef<HTMLDivElement>(null)
-  useOutsideClose(open, ref, onClose)
-  return (
-    <div className="pick-wrap" ref={ref}>
-      <button type="button" className="pick-row" onClick={onToggle}>
-        {children}
-        <Icon name="chevron" size={13} className="faint" style={{ flex: 'none' }} />
-      </button>
-      {open && <div className="menu pick-menu">{menu}</div>}
-    </div>
-  )
-}
-
-export function NewSessionModal({
-  tree,
-  ws,
-  task,
-  edit,
-  onClose,
-  onCreated
-}: {
-  tree: Tree
-  ws: string
-  /** Preselected task name; empty string → the modal's task picker chooses. */
-  task: string
-  /** When present, edit this existing draft's settings instead of creating one. */
-  edit?: SessionInfo
-  onClose: () => void
-  onCreated: (s: SessionInfo) => void
-}) {
-  const editing = !!edit
-  const [agents, setAgents] = useState<AgentsFile | null>(null)
-  const [agent, setAgent] = useState(edit?.agent ?? '')
-  const [taskName, setTaskName] = useState(edit?.task ?? task)
-  /** The env definition this session runs on. */
-  const [env, setEnv] = useState(edit?.env ?? '')
-  /** What the session is for — decides its mounts, its clone lock and its gurt
-   *  tool set. Editable here only because the modal edits *drafts*. */
-  const [role, setRole] = useState<SessionRole>(edit ? sessionRole(edit) : 'executor')
-  /** The session's repos. Seeded from the picked env's default. Only a
-   *  researcher may hold more than one. */
-  const [repos, setRepos] = useState<string[]>(edit?.repos ?? [])
-  const [prompt, setPrompt] = useState(edit?.startPrompt ?? '')
-  const [mcpDefs, setMcpDefs] = useState<McpDef[]>([])
-  /** MCP id -> granted mode; absent = not attached. */
-  const [mcp, setMcp] = useState<Record<string, McpMode>>(
-    Object.fromEntries((edit?.mcp ?? []).map((m) => [m.id, m.mode]))
-  )
-  /** Permission mode: auto-allow tool calls, or ask for each one. */
-  const [autoAllow, setAutoAllow] = useState(edit?.autoAllow ?? true)
-  /** Native git access injection — off by default; the user opts in per session. */
-  const [gitAccess, setGitAccess] = useState(edit?.gitAccess ?? false)
-  /** The selected agent's cached config surface (models/effort/commands). */
-  const [agentConfig, setAgentConfig] = useState<AgentConfig | null>(null)
-  /** Config-option picks keyed by option id; empty = agent defaults. */
-  const [configValues, setConfigValues] = useState<Record<string, string | boolean>>(
-    edit?.configValues ?? {}
-  )
-  const [credentials, setCredentials] = useState<CredentialEntry[]>([])
-  const [harnessOpen, setHarnessOpen] = useState(false)
-  /** Which quiet-select menu is open. */
-  const [picker, setPicker] = useState<'task' | 'env' | 'repo' | 'client' | 'role' | null>(null)
-  /** Task picker showing its inline "new task" text field instead of the list. */
-  const [creatingTask, setCreatingTask] = useState(false)
-  /** In-flight inline task creation, awaited before a session is created. */
-  const taskCreation = useRef<Promise<void> | null>(null)
-  const [newTaskName, setNewTaskName] = useState('')
-  const [error, setError] = useState('')
-  const taRef = useRef<HTMLTextAreaElement>(null)
-
-  useEffect(() => {
-    fire(() =>
-      window.gurt.getAgents().then((a) => {
-        setAgents(a)
-        // Create mode picks the first agent; edit mode keeps the draft's.
-        if (!editing) {
-          const first = Object.keys(a)[0]
-          if (first) setAgent(first)
-        }
-      })
-    )
-    fire(() => window.gurt.getMcpDefs().then(setMcpDefs))
-    fire(() => window.gurt.getCredentials().then((f) => setCredentials(f.credentials)))
-    // Mount-only on purpose: this seeds the *initial* pick of a modal that is
-    // remounted per open, and `editing` decides that seed. Re-running it when
-    // the flag flips mid-edit would overwrite the choice the user is making.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
-  const mcpSelection = (): McpSelection[] =>
-    Object.entries(mcp).map(([id, mode]) => ({ id, mode }))
-
-  const wsData = tree.workspaces.find((w) => w.name === ws)
-  // Memoized because both feed effect dependency lists below: the `?? []`
-  // fallback is a fresh array on every render, which would re-run those effects
-  // every render for a workspace that has no tasks (or no envs) yet.
-  const tasks = useMemo(() => wsData?.tasks ?? [], [wsData])
-  const envs = useMemo(() => wsData?.envs ?? [], [wsData])
-  const taskData = tasks.find((t) => t.name === taskName)
-  const allRepos = wsData?.repos ?? []
-  const agentList = agents
-    ? Object.entries(agents).map(([id, a]) => ({ id, label: a.label, kind: a.kind }))
-    : []
-
-  useEffect(() => {
-    const first = tasks[0]
-    if (!taskName && first) setTaskName(first.name)
-  }, [taskName, tasks])
-
-  // Default to the first env; seed the session repo from its default (create mode
-  // only — edit mode keeps the session's saved repos).
-  useEffect(() => {
-    const first = envs[0]
-    if (!env && first) {
-      setEnv(first.name)
-      if (!editing) setRepos(first.repo ? [first.repo] : [])
-    }
-  }, [env, envs, editing])
-
-  // Picking a (different) env re-seeds the session repo from that env's default.
-  const pickEnv = (name: string) => {
-    setEnv(name)
-    const def = envs.find((e) => e.name === name)?.repo
-    setRepos(def ? [def] : [])
-    setPicker(null)
-  }
-
-  // Only a researcher may hold several repos, so leaving that role drops the
-  // extras rather than letting an invalid pair reach the IPC boundary (which
-  // rejects it). Git access follows the same logic: a read-only role's clone
-  // refuses writes at the mount, so the broker has nothing to offer it.
-  const pickRole = (next: SessionRole) => {
-    setRole(next)
-    if (!roleAllowsMultiRepo(next) && repos.length > 1) setRepos(repos.slice(0, 1))
-    if (roleIsReadOnly(next)) setGitAccess(false)
-    setPicker(null)
-  }
-
-  // Multi-select for a researcher, plain single pick for the roles that work in
-  // exactly one clone.
-  const toggleRepo = (name: string) => {
-    if (repos.includes(name)) setRepos(repos.filter((n) => n !== name))
-    else if (roleAllowsMultiRepo(role)) setRepos([...repos, name])
-    else setRepos([name])
-  }
-
-  const closeTaskPicker = () => {
-    setPicker(null)
-    setCreatingTask(false)
-    setNewTaskName('')
-  }
-
-  // Creates the task on the fly and selects it, so the picker never forces a
-  // detour through the sidebar's separate "new task" flow. The task is
-  // committed to immediately — the picker must not keep a previously selected
-  // name (possibly a task that no longer exists) while the IPC is in flight,
-  // or a session run in that window would land on the wrong task. `create`
-  // waits on the same promise, so the task exists before the session does. On
-  // failure the pick reverts and the error is shown.
-  const createTaskInline = async () => {
-    const name = newTaskName.trim()
-    if (!name) return
-    const prev = taskName
-    setError('')
-    setTaskName(name)
-    closeTaskPicker()
-    const pending = window.gurt.createTask(ws, name)
-    taskCreation.current = pending
-    try {
-      await pending
-    } catch (e) {
-      setTaskName(prev)
-      setError(e instanceof Error ? e.message : String(e))
-    } finally {
-      if (taskCreation.current === pending) taskCreation.current = null
-    }
-  }
-
-  // Load the chosen agent's cached config surface so the model/effort/command
-  // controls can be offered before the container is up. A stale response from a
-  // previous agent is dropped via the `live` guard.
-  useEffect(() => {
-    if (!agent) {
-      setAgentConfig(null)
-      return
-    }
-    let live = true
-    window.gurt
-      .getAgentConfig(agent)
-      .then((c) => live && setAgentConfig(c))
-      .catch(() => live && setAgentConfig(null))
-    return () => {
-      live = false
-    }
-  }, [agent])
-
-  const setConfig = (opt: SessionConfigOption, value: string | boolean) =>
-    setConfigValues((prev) => ({ ...prev, [opt.id]: value }))
-  // Kind-specific presentation quirks (which chips, what's active) — e.g.
-  // claude-code's "default" entry mapping to the concrete model it names.
-  const optionView = agentOptionView(agentKind(agents ?? {}, agent))
-  // Effective value of an option: the user's pick, else the agent's current,
-  // both through the view so the chip/highlight/note show the real model.
-  const effective = (opt: SessionConfigOption): string | boolean =>
-    optionView.activeValue({ ...opt, currentValue: configValues[opt.id] ?? opt.currentValue })
-  // Model/effort/fast — rendered inside Harness config, alongside Mode/Git
-  // access/MCP/Skills; they're all part of the same "how does this session run"
-  // surface. Mode itself is expressed via the auto/manual toggle, not this list.
-  const cfgOptions = (agentConfig?.configOptions ?? []).filter((o) => o.category !== 'mode')
-  const cfgLabel = (o: SessionConfigOption) =>
-    o.category === 'model' ? 'MODEL' : o.category === 'thought_level' ? 'EFFORT' : o.name.toUpperCase()
-  // What the currently-picked value of a select option actually means — shown under
-  // the chips so e.g. "Default" doesn't sit unexplained (it's whatever the agent
-  // itself reports for that entry).
-  const selectedDescription = (opt: SessionConfigOption): string | undefined =>
-    opt.options?.find((o) => o.value === effective(opt))?.description ?? undefined
-  // Only among the view's own chips — a raw "default" entry the view couldn't
-  // resolve (e.g. claude-code's alias) isn't a real selection and shouldn't
-  // read as one in the collapsed summary.
-  const selectedName = (opt: SessionConfigOption): string | undefined =>
-    optionView.selectOptions(opt).find((o) => o.value === effective(opt))?.name
-
-  // Git access only ever applies to a single-repo read-write session — the
-  // broker is scoped to one repo for a container's whole lifetime, and a
-  // read-only role could not write with it anyway.
-  const gitAccessApplies = repos.length <= 1 && !roleIsReadOnly(role)
-  const repoCfg = repos.length === 1 ? allRepos.find((r) => r.name === repos[0]) : undefined
-  const gitResolution = repoCfg ? resolveForRepo(credentials, repoCfg) : null
-  const gitCredNote = gitResolution
-    ? hasManagedCredential(gitResolution)
-      ? `credential: ${gitResolution.entry?.label}`
-      : gitResolution.error
-        ? `credential error: ${gitResolution.error}`
-        : gitResolution.entry?.kind === 'git-host'
-          ? `host credentials (explicit): ${gitResolution.entry.label}`
-          : 'no credential — remote git/forge is blocked until one is configured'
-    : null
-
-  const saveEdit = async () => {
-    setError('')
-    try {
-      await window.gurt.sessionEditDraft(edit!.id, {
-        agent,
-        env,
-        role,
-        repos,
-        autoAllow,
-        // Never true where the broker cannot be wired up: across several repos,
-        // or on a read-only role's clone.
-        gitAccess: gitAccessApplies && gitAccess,
-        mcp: mcpSelection(),
-        startPrompt: prompt,
-        configValues
-      })
-      onClose()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    }
-  }
-
-  const create = async (action: 'run' | 'queue' | 'draft') => {
-    setError('')
-    try {
-      // An inline task pick is only optimistic until its IPC lands — the
-      // session must not be created before the task it names exists.
-      await taskCreation.current?.catch(() => {})
-      const s = await window.gurt.createSession(
-        { workspace: ws, task: taskName, env },
-        repos,
-        agent,
-        prompt,
-        action,
-        mcpSelection(),
-        autoAllow,
-        gitAccessApplies && gitAccess,
-        configValues,
-        role
-      )
-      onCreated(s)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    }
-  }
-
-  // Draft only needs env + agent + prompt; running/queueing also needs a repo.
-  const ready = !!taskName && !!env && !!agent && !!prompt.trim()
-  const canRun = ready && repos.length > 0
-  const mcpCount = Object.keys(mcp).length
-  // Model/effort surface in the summary so they stay legible while the panel's collapsed.
-  const modelOpt = cfgOptions.find((o) => o.category === 'model')
-  const effortOpt = cfgOptions.find((o) => o.category === 'thought_level')
-  const harnessSummary = [
-    modelOpt && selectedName(modelOpt),
-    effortOpt && selectedName(effortOpt),
-    autoAllow ? 'auto' : 'manual',
-    `${mcpCount} mcp`
-  ]
-    .filter(Boolean)
-    .join(' · ')
-
-  /** A task's mark is its liveliest session: someone needs you (solid yellow)
-   *  wins over merely having live sessions (green). */
-  const taskStatusTone = (t: { sessions: SessionInfo[] }): 'green' | 'yellow' | 'outline' => {
-    if (t.sessions.some((s) => s.awaitingInput)) return 'yellow'
-    if (t.sessions.some((s) => s.state === 'started')) return 'green'
-    return 'outline'
-  }
-
-  return (
-    <Modal title={editing ? 'Edit session' : 'New session'} width={520} onClose={onClose}>
-      <div className="ns-body">
-        {/* task */}
-        <PickRow
-          open={picker === 'task'}
-          onToggle={() => setPicker(picker === 'task' ? null : 'task')}
-          onClose={closeTaskPicker}
-          menu={
-            creatingTask ? (
-              <div className="menu-item-input">
-                <input
-                  autoFocus
-                  className="input"
-                  placeholder="task name"
-                  value={newTaskName}
-                  onChange={(e) => setNewTaskName(e.target.value)}
-                  onKeyDown={run((e) => e.key === 'Enter' && createTaskInline())}
-                />
-              </div>
-            ) : (
-              <>
-                {tasks.map((t) => (
-                  <div
-                    key={t.name}
-                    className={`menu-item ${t.name === taskName ? 'active' : ''}`}
-                    onMouseDown={(e) => {
-                      e.preventDefault()
-                      setTaskName(t.name)
-                      setPicker(null)
-                    }}
-                  >
-                    <Dot tone={taskStatusTone(t)} />
-                    {t.name}
-                  </div>
-                ))}
-                {tasks.length > 0 && <div className="menu-sep" />}
-                <div
-                  className="menu-item"
-                  onMouseDown={(e) => {
-                    e.preventDefault()
-                    setCreatingTask(true)
-                  }}
-                >
-                  + new task
-                </div>
-              </>
-            )
-          }
-        >
-          <span className="seclabel">TASK</span>
-          <span className="pick-div" />
-          {taskName ? (
-            <>
-              <Dot tone={taskData ? taskStatusTone(taskData) : 'outline'} />
-              <span className="pick-value">{taskName}</span>
-            </>
-          ) : (
-            <span className="pick-value faint">{tasks.length ? 'pick a task' : 'no tasks yet'}</span>
-          )}
-          <span className="spacer" />
-        </PickRow>
-
-        {/* role — what the session is for. It comes before the repository
-            picker because it governs it: only a researcher may hold more than
-            one clone, and mounts, locking and the gurt tool set follow from the
-            role too (docs/requirements-session-roles.md). */}
-        <div className="ns-section">
-          <span className="seclabel">ROLE</span>
-          <PickRow
-            open={picker === 'role'}
-            onToggle={() => setPicker(picker === 'role' ? null : 'role')}
-            onClose={() => setPicker(null)}
-            menu={SESSION_ROLES.map((r) => (
-              <div
-                key={r}
-                className={`menu-item ${r === role ? 'active' : ''}`}
-                onMouseDown={(e) => {
-                  e.preventDefault()
-                  pickRole(r)
-                }}
-              >
-                <Icon name={ROLE_INFO[r].icon} size={12} className="faint" />
-                {ROLE_INFO[r].label}
-              </div>
-            ))}
-          >
-            <Icon name={ROLE_INFO[role].icon} size={14} className="dim" style={{ flex: 'none' }} />
-            <span className="pick-value strong">{ROLE_INFO[role].label}</span>
-            <span className="spacer" />
-          </PickRow>
-          <div className="hc-note">{ROLE_INFO[role].hint}</div>
-        </div>
-
-        {/* environment */}
-        <div className="ns-section">
-          <span className="seclabel">ENVIRONMENT</span>
-          <PickRow
-            open={picker === 'env'}
-            onToggle={() => setPicker(picker === 'env' ? null : 'env')}
-            onClose={() => setPicker(null)}
-            menu={
-              envs.length ? (
-                envs.map((e) => (
-                  <div
-                    key={e.name}
-                    className={`menu-item ${e.name === env ? 'active' : ''}`}
-                    onMouseDown={(ev) => {
-                      ev.preventDefault()
-                      pickEnv(e.name)
-                    }}
-                  >
-                    <Icon name="box" size={13} className="dim" />
-                    {e.name}
-                    {e.repo && <span className="menu-meta mono">{e.repo}</span>}
-                  </div>
-                ))
-              ) : (
-                <div className="menu-empty">no environments — add one in Settings → Environments</div>
-              )
-            }
-          >
-            <Icon name="box" size={14} className="dim" style={{ flex: 'none' }} />
-            <span className="pick-value strong">{env || 'pick an environment'}</span>
-            <span className="spacer" />
-          </PickRow>
-
-          {/* session repositories — seeded from the env's default, changeable
-              here. Multi-select for a researcher only; the other roles work in
-              exactly one clone, so a pick replaces the previous one. */}
-          <span className="seclabel">REPOSITORY</span>
-          <PickRow
-            open={picker === 'repo'}
-            onToggle={() => setPicker(picker === 'repo' ? null : 'repo')}
-            onClose={() => setPicker(null)}
-            menu={
-              allRepos.length ? (
-                allRepos.map((r) => {
-                  const active = repos.includes(r.name)
-                  return (
-                    <div
-                      key={r.name}
-                      className={`menu-item ${active ? 'active' : ''}`}
-                      onMouseDown={(e) => {
-                        e.preventDefault()
-                        toggleRepo(r.name)
-                      }}
-                    >
-                      <Icon name="branch" size={11} className="faint" />
-                      {r.name}
-                      <span className="menu-meta mono">{shortRepoUrl(r.url)}</span>
-                    </div>
-                  )
-                })
-              ) : (
-                <div className="menu-empty">no repositories — add one in Settings</div>
-              )
-            }
-          >
-            {repos.length ? (
-              repos.map((name) => {
-                const cfg = allRepos.find((r) => r.name === name)
-                return (
-                  <span className="chip-tag" key={name}>
-                    <Icon name="branch" size={11} className="faint" />
-                    {cfg ? shortRepoUrl(cfg.url) : name}
-                  </span>
-                )
-              })
-            ) : (
-              <span className="chip-dashed">no repository</span>
-            )}
-            <span className="spacer" />
-          </PickRow>
-          {!repos.length && (
-            <div className="hc-note">no repository — Run/Queue disabled until you pick one</div>
-          )}
-          {repos.length > 1 && (
-            <div className="hc-note">{repos.length} repos — mounted read-only, no git access</div>
-          )}
-        </div>
-
-        {/* agent */}
-        <div className="ns-section">
-          <span className="seclabel">AGENT</span>
-          <PickRow
-            open={picker === 'client'}
-            onToggle={() => setPicker(picker === 'client' ? null : 'client')}
-            onClose={() => setPicker(null)}
-            menu={
-              agentList.length ? (
-                agentList.map((a) => (
-                  <div
-                    key={a.id}
-                    className={`menu-item ${a.id === agent ? 'active' : ''}`}
-                    onMouseDown={(e) => {
-                      e.preventDefault()
-                      setAgent(a.id)
-                      setPicker(null)
-                    }}
-                  >
-                    <Dot tone="green" size={7} />
-                    <Icon name={agentIcon(a.kind)} size={12} className="faint" />
-                    {a.label}
-                  </div>
-                ))
-              ) : (
-                <div className="menu-empty">no clients — add one in Settings → Clients</div>
-              )
-            }
-          >
-            <span className="pick-value">Client</span>
-            <span className="spacer" />
-            {agent && <Dot tone="green" size={7} />}
-            <span className="pick-meta">
-              {agent ? (
-                <AgentMark kind={agentKind(agents ?? {}, agent)} name={agentName(agents ?? {}, agent)} />
-              ) : (
-                'none'
-              )}
-            </span>
-          </PickRow>
-
-          <div className={`hc ${harnessOpen ? 'open' : ''}`}>
-            <button type="button" className="pick-row hc-head" onClick={() => setHarnessOpen((o) => !o)}>
-              <Icon
-                name="chevron"
-                size={13}
-                className="faint"
-                style={{ flex: 'none', transform: harnessOpen ? undefined : 'rotate(-90deg)' }}
-              />
-              <span className="pick-value">Harness config</span>
-              <span className="spacer" />
-              <span className="pick-meta">{harnessSummary}</span>
-            </button>
-            {harnessOpen && (
-              <div className="hc-body">
-                {/* model / effort / fast — from the agent's cached config surface,
-                    presented through the kind's option view (e.g. claude-code
-                    omits its "default" entries: they're the absence of a choice,
-                    not one). */}
-                {cfgOptions.map((opt) =>
-                  opt.type === 'select' ? (
-                    <div key={opt.id} className="hc-block">
-                      <span className="seclabel">{cfgLabel(opt)}</span>
-                      <div className="chip-row">
-                        {optionView.selectOptions(opt).map((o) => (
-                          <button
-                            key={o.value}
-                            type="button"
-                            className={`chip-btn ${effective(opt) === o.value ? 'on' : ''}`}
-                            title={o.description ?? undefined}
-                            onClick={() => setConfig(opt, o.value)}
-                          >
-                            {o.name}
-                          </button>
-                        ))}
-                      </div>
-                      {selectedDescription(opt) && (
-                        <div className="hc-note">{selectedDescription(opt)}</div>
-                      )}
-                    </div>
-                  ) : (
-                    <div key={opt.id} className="hc-block">
-                      <span className="seclabel">{cfgLabel(opt)}</span>
-                      <div className="chip-row">
-                        <button
-                          type="button"
-                          className={`chip-btn ${effective(opt) === true ? 'on' : ''}`}
-                          onClick={() => setConfig(opt, true)}
-                        >
-                          on
-                        </button>
-                        <button
-                          type="button"
-                          className={`chip-btn ${effective(opt) === false ? 'on' : ''}`}
-                          onClick={() => setConfig(opt, false)}
-                        >
-                          off
-                        </button>
-                      </div>
-                    </div>
-                  )
-                )}
-                <div className="hc-block">
-                  <span className="seclabel">MODE</span>
-                  <div className="chip-row">
-                    <button
-                      className={`chip-btn ${autoAllow ? 'on' : ''}`}
-                      onClick={() => setAutoAllow(true)}
-                      title="allow tool calls automatically"
-                    >
-                      auto
-                    </button>
-                    <button
-                      className={`chip-btn ${!autoAllow ? 'on' : ''}`}
-                      onClick={() => setAutoAllow(false)}
-                      title="confirm each tool call"
-                    >
-                      manual
-                    </button>
-                  </div>
-                </div>
-                {gitAccessApplies && (
-                  <div className="hc-block">
-                    <span className="seclabel">GIT ACCESS</span>
-                    <div className="chip-row">
-                      <button
-                        className={`chip-btn ${gitAccess ? 'on' : ''}`}
-                        onClick={() => setGitAccess(true)}
-                        title="native git + gh in the container"
-                      >
-                        on
-                      </button>
-                      <button
-                        className={`chip-btn ${!gitAccess ? 'on' : ''}`}
-                        onClick={() => setGitAccess(false)}
-                        title="delegate remote git to the github MCP"
-                      >
-                        off
-                      </button>
-                    </div>
-                    {gitCredNote && <div className="hc-note">{gitCredNote}</div>}
-                  </div>
-                )}
-                {mcpDefs.length > 0 && (
-                  <div className="hc-block">
-                    <span className="seclabel">MCP SERVERS</span>
-                    {mcpDefs.map((def) => (
-                      <McpRow
-                        key={def.id}
-                        def={def}
-                        mode={mcp[def.id]}
-                        onChange={(mode) =>
-                          setMcp((prev) => {
-                            const next = { ...prev }
-                            if (mode == null) delete next[def.id]
-                            else next[def.id] = mode
-                            return next
-                          })
-                        }
-                      />
-                    ))}
-                  </div>
-                )}
-                <div className="hc-block">
-                  <span className="seclabel">SKILLS</span>
-                  <div className="hc-stub">Skills, hooks, tool policy — coming later</div>
-                </div>
-                <div className="hc-foot">
-                  <span className="spacer" />
-                  <button
-                    className="btn btn-sm"
-                    onClick={() => {
-                      setAutoAllow(true)
-                      setGitAccess(false)
-                      setMcp({})
-                    }}
-                  >
-                    Reset
-                  </button>
-                  <button className="btn btn-sm btn-primary" onClick={() => setHarnessOpen(false)}>
-                    Done
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* prompt */}
-        <div className="ns-prompt">
-          <textarea
-            ref={taRef}
-            autoFocus
-            className="ns-prompt-input"
-            placeholder="What should the agent do?"
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-                e.preventDefault()
-                if (editing) {
-                  if (ready) fire(saveEdit)
-                } else if (canRun) fire(() => create('run'))
-              }
-            }}
-          />
-          <div className="ns-prompt-foot">
-            <span className="pick-meta mono">{editing ? '⌘↵ to save' : '⌘↵ to run'}</span>
-          </div>
-        </div>
-
-        {error && <div className="error">{error}</div>}
-      </div>
-
-      <div className="modal-foot">
-        {editing ? (
-          <>
-            <span className="spacer" />
-            <button className="btn" onClick={onClose}>
-              Cancel
-            </button>
-            <button className="btn btn-primary" disabled={!ready} onClick={run(saveEdit)}>
-              Save
-            </button>
-          </>
-        ) : (
-          <>
-            <button className="btn btn-text" disabled={!ready} onClick={run(() => create('draft'))}>
-              Save draft
-            </button>
-            <span className="spacer" />
-            <button
-              className="btn"
-              disabled={!canRun}
-              title={!repos.length ? 'pick a repository to queue' : undefined}
-              onClick={run(() => create('queue'))}
-            >
-              Add to queue
-            </button>
-            <button
-              className="btn btn-primary"
-              disabled={!canRun}
-              title={!repos.length ? 'pick a repository to run' : undefined}
-              onClick={run(() => create('run'))}
-            >
-              <Icon name="play" size={11} />
-              Run now
-            </button>
-          </>
-        )}
-      </div>
-    </Modal>
-  )
-}
-
-/** One MCP server row in the harness config: dot + name + off/read-only/full menu. */
-function McpRow({
-  def,
-  mode,
-  onChange
-}: {
-  def: McpDef
-  mode: McpMode | undefined
-  onChange: (mode: McpMode | null) => void
-}) {
-  const [open, setOpen] = useState(false)
-  const ref = useRef<HTMLDivElement>(null)
-  useOutsideClose(open, ref, () => setOpen(false))
-  const on = mode != null
-  const label = mode == null ? 'off' : mode === 'read-only' ? 'read-only' : 'full'
-  const pick = (m: McpMode | null) => {
-    setOpen(false)
-    onChange(m)
-  }
-  return (
-    <div className="pick-wrap" ref={ref}>
-      <button
-        type="button"
-        className="pick-row mcp-row"
-        title={def.description}
-        onClick={() => setOpen((o) => !o)}
-      >
-        <Dot tone={on ? 'green' : 'outline'} size={7} />
-        <span className={`mcp-name ${on ? '' : 'faint'}`}>{def.label}</span>
-        <span className="spacer" />
-        <span className="pick-meta">{label}</span>
-        <Icon name="chevron" size={12} className="faint" style={{ flex: 'none' }} />
-      </button>
-      {open && (
-        <div className="menu pick-menu">
-          {(['off', 'read-only', 'full'] as const).map((m) => (
-            <div
-              key={m}
-              className={`menu-item ${label === m ? 'active' : ''}`}
-              onMouseDown={(e) => {
-                e.preventDefault()
-                pick(m === 'off' ? null : m)
-              }}
-            >
-              {m}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
-
-/** `https://github.com/acme/checkout-web.git` → `acme/checkout-web`. */
-function shortRepoUrl(url: string): string {
-  const cleaned = url.replace(/\.git$/, '').replace(/\/+$/, '')
-  return /[:/]([^:/]+\/[^:/]+)$/.exec(cleaned)?.[1] ?? cleaned
-}
