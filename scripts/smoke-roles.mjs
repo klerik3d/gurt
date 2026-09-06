@@ -169,14 +169,14 @@ try {
   assert.deepEqual(await repoChips(), ['o/beta'], 'an executor pick replaces the repo')
   // The advanced panel opens, and offers no git-access toggle for any role —
   // the container broker is gone (docs/requirements-mcp-proxy.md §10.2).
-  await page.click('.ns-body .hc-head')
-  await page.waitForSelector('.ns-body .hc-body', { timeout: 5000 })
+  await page.click('.ns-body .subfold:has-text("advanced")')
+  await page.waitForSelector('.ns-body .hc-foot', { timeout: 5000 })
   assert.equal(
-    await page.locator('.ns-body .hc .seclabel:text-is("GIT ACCESS")').count(),
+    await page.locator('.ns-body .seclabel:text-is("GIT ACCESS")').count(),
     0,
     'no role is offered a native git toggle any more'
   )
-  await page.click('.ns-body .hc-head') // collapse again
+  await page.click('.ns-body .subfold:has-text("advanced")') // collapse again
   console.log('executor: single-select repo OK, no git-access toggle')
 
   // --- researcher: multi-select ---

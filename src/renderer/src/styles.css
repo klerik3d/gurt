@@ -886,8 +886,8 @@ textarea.input {
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 1px 16px;
-  min-height: 18px;
+  padding: 2px 16px;
+  min-height: 22px;
   cursor: pointer;
 }
 .sb-task:hover {
@@ -1994,10 +1994,6 @@ textarea.input {
 }
 
 /* Harness config (#2b), inline. */
-.hc {
-  display: flex;
-  flex-direction: column;
-}
 .hc-body {
   display: flex;
   flex-direction: column;
@@ -2109,7 +2105,7 @@ textarea.input {
   align-items: center;
   gap: 9px;
 }
-.hc .mcp-row {
+.ns-section .mcp-row {
   padding: 8px 11px;
   border-radius: 8px;
 }
@@ -2127,10 +2123,6 @@ textarea.input {
   white-space: nowrap;
   text-overflow: ellipsis;
   font-size: 11px;
-}
-.ns-section .pick-row + .hc,
-.ns-section .hc + .pick-row {
-  margin-top: 0;
 }
 .ns-section > * + * {
   margin-top: 0;
@@ -2871,18 +2863,8 @@ textarea.input {
   background: var(--border);
   margin: 6px 8px;
 }
-/* Group heading (Registry): the same typographic key as .set-nav-fold, minus
-   the chevron and the pointer — it labels a block, it doesn't toggle one. */
-.set-nav-group {
-  padding: 7px 10px 5px;
-  color: var(--faint);
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-/* Advanced disclosure: mcp/skills registries, folded behind one click so the
-   everyday-config list above isn't sharing space with them. */
+/* Group heading (General, Registry, Advanced): each one is its own disclosure,
+   open by default — click to fold/unfold the sections under it. */
 .set-nav-fold {
   color: var(--faint);
   font-size: 11px;

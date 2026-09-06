@@ -765,93 +765,95 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
       </div>
 
       {/* advanced — everything left: rare agent-reported options, MCP
-          servers, the skills stub, and reset. */}
+          servers, the skills stub, and reset. Same fold shape as the network
+          section above — an inline subfold label, not a full-width button —
+          and the opened content sits flat in the section, no card around it. */}
       <div className="ns-section">
-        <div className={`hc ${advancedOpen ? 'open' : ''}`}>
-          <button type="button" className="pick-row hc-head" onClick={() => setAdvancedOpen((o) => !o)}>
-            <Icon
-              name="chevron"
-              size={13}
-              className="faint"
-              style={{ flex: 'none', transform: advancedOpen ? undefined : 'rotate(-90deg)' }}
-            />
-            <span className="pick-value">Advanced</span>
-            <span className="spacer" />
-            <span className="pick-meta">{advancedSummary}</span>
-          </button>
-          {advancedOpen && (
-            <div className="hc-body">
-              {advancedOptions.map(configBlock)}
-              {/* MCP and skills side by side — two short columns instead of
-                  two stacked full-width lists. */}
-              <div className="hc-cols">
-                {(mcpOffered.length > 0 || mcpOrphans.length > 0) && (
-                  <div className="hc-block">
-                    <span className="seclabel">MCP SERVERS</span>
-                    {mcpOffered.map((entry) => (
-                      <McpRow
-                        key={entry.id}
+        <div className="hc-block">
+          <div className="seclabel-row">
+            <button type="button" className="subfold" onClick={() => setAdvancedOpen((o) => !o)}>
+              <Icon
+                name="chevron"
+                size={11}
+                style={{ flex: 'none', transform: advancedOpen ? undefined : 'rotate(-90deg)' }}
+              />
+              advanced
+              <span className="dim">{advancedSummary}</span>
+            </button>
+          </div>
+        </div>
+        {advancedOpen && (
+          <>
+            {advancedOptions.map(configBlock)}
+            {/* MCP and skills side by side — two short columns instead of
+                two stacked full-width lists. */}
+            <div className="hc-cols">
+              {(mcpOffered.length > 0 || mcpOrphans.length > 0) && (
+                <div className="hc-block">
+                  <span className="seclabel">MCP SERVERS</span>
+                  {mcpOffered.map((entry) => (
+                    <McpRow
+                      key={entry.id}
+                      entry={entry}
+                      mode={mcpMode(entry.id)}
+                      onChange={(mode) => setMcpMode(entry.id, mode)}
+                    />
+                  ))}
+                  {mcpOrphans.map((sel) => (
+                    <McpMissingRow key={sel.id} id={sel.id} onRemove={() => setMcpMode(sel.id, null)} />
+                  ))}
+                </div>
+              )}
+              <div className="hc-block">
+                <span className="seclabel">SKILLS</span>
+                {skillsUnsupported ? (
+                  <div className="hc-note">
+                    {draftAgentDef?.label} does not support skills — nothing would be mounted.
+                    {skills.length
+                      ? ' Your selection is kept and applies if you pick an agent that does.'
+                      : ''}
+                  </div>
+                ) : (
+                  <>
+                    {skillsOffered.map((entry) => (
+                      <SkillRow
+                        key={entry.name}
                         entry={entry}
-                        mode={mcpMode(entry.id)}
-                        onChange={(mode) => setMcpMode(entry.id, mode)}
+                        on={skills.some((k) => k.name === entry.name)}
+                        onChange={(on) => setSkill(entry.name, on)}
                       />
                     ))}
-                    {mcpOrphans.map((sel) => (
-                      <McpMissingRow key={sel.id} id={sel.id} onRemove={() => setMcpMode(sel.id, null)} />
+                    {skillOrphans.map((sel) => (
+                      <SkillMissingRow
+                        key={sel.name}
+                        name={sel.name}
+                        onRemove={() => setSkill(sel.name, false)}
+                      />
                     ))}
-                  </div>
+                    {!skillsOffered.length && !skillOrphans.length && (
+                      <div className="hc-note">
+                        no skills in this workspace — add one in Settings &rarr; Skills. A skill
+                        in the repository&apos;s own .claude/skills is the repo&apos;s and is not
+                        listed here.
+                      </div>
+                    )}
+                  </>
                 )}
-                <div className="hc-block">
-                  <span className="seclabel">SKILLS</span>
-                  {skillsUnsupported ? (
-                    <div className="hc-note">
-                      {draftAgentDef?.label} does not support skills — nothing would be mounted.
-                      {skills.length
-                        ? ' Your selection is kept and applies if you pick an agent that does.'
-                        : ''}
-                    </div>
-                  ) : (
-                    <>
-                      {skillsOffered.map((entry) => (
-                        <SkillRow
-                          key={entry.name}
-                          entry={entry}
-                          on={skills.some((k) => k.name === entry.name)}
-                          onChange={(on) => setSkill(entry.name, on)}
-                        />
-                      ))}
-                      {skillOrphans.map((sel) => (
-                        <SkillMissingRow
-                          key={sel.name}
-                          name={sel.name}
-                          onRemove={() => setSkill(sel.name, false)}
-                        />
-                      ))}
-                      {!skillsOffered.length && !skillOrphans.length && (
-                        <div className="hc-note">
-                          no skills in this workspace — add one in Settings &rarr; Skills. A skill
-                          in the repository&apos;s own .claude/skills is the repo&apos;s and is not
-                          listed here.
-                        </div>
-                      )}
-                    </>
-                  )}
-                </div>
-              </div>
-              <div className="hc-foot">
-                <span className="spacer" />
-                <button
-                  className="btn btn-sm"
-                  onClick={() =>
-                    patch({ autoAllow: true, mcp: [], skills: [], network: { internal: true } })
-                  }
-                >
-                  Reset
-                </button>
               </div>
             </div>
-          )}
-        </div>
+            <div className="hc-foot">
+              <span className="spacer" />
+              <button
+                className="btn btn-sm"
+                onClick={() =>
+                  patch({ autoAllow: true, mcp: [], skills: [], network: { internal: true } })
+                }
+              >
+                Reset
+              </button>
+            </div>
+          </>
+        )}
       </div>
 
       {error && <div className="error">{error}</div>}
