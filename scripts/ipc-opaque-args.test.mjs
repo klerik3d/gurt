@@ -155,6 +155,8 @@ const SAFE_ARGS = new Set([
   'setNotificationPrefs',
   'openLogsFolder',
   'checkForUpdates',
+  'getUpdateStatus',
+  'installUpdate',
   // A map of action id -> key code/booleans; no prose ever passes through it.
   'getHotkeys',
   'setHotkeys'

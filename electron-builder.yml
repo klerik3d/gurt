@@ -35,11 +35,17 @@ mac:
     # electron-updater's mac auto-updater (Squirrel.Mac) applies updates from
     # the zip, not the dmg — the dmg stays as the first-download installer.
     - zip
-  # Alpha builds are unsigned. They run fine locally; on another Mac the
-  # recipient has to clear the download quarantine (see README). Unsigned
-  # also means mac auto-update is untested end-to-end: Squirrel.Mac generally
-  # expects a signed app, so treat it as best-effort until this is signed.
-  identity: null
+  # Signing + notarization are driven entirely by the environment, so this
+  # config works both in CI and for a local `npm run dist`:
+  #  - a Developer ID cert in CSC_LINK/CSC_KEY_PASSWORD (or the keychain)
+  #    signs the app; with neither present electron-builder skips signing
+  #    with a warning and produces an unsigned build (fine for local runs,
+  #    but Squirrel.Mac refuses to *apply* updates to an unsigned install).
+  #  - APPLE_ID/APPLE_APP_SPECIFIC_PASSWORD/APPLE_TEAM_ID trigger
+  #    notarization; without them it is skipped with a warning.
+  # The release workflow sets all five from repo secrets.
+  # hardenedRuntime (required by notarization) is electron-builder's default,
+  # as are the Electron-required entitlements (allow-jit etc.).
 
 # Linux is built via `npm run dist:linux` (and the release-linux CI job).
 # electron-builder accepts a plain png icon for linux targets.

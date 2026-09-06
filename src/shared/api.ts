@@ -344,9 +344,16 @@ export interface GurtApi {
   /** Reveal `~/.gurt/logs` in the OS file manager (⌘K → "Open logs folder"). */
   openLogsFolder(): Promise<void>
   /** Manual update check (⌘K → "Check for updates"); a no-op outside packaged
-   *  builds. Feedback (up to date / downloading / restart prompt / error) is
-   *  a native dialog from main, not a return value — see `main/update.ts`. */
+   *  builds. Feedback (up to date / error) is a native dialog from main, not
+   *  a return value — see `main/update.ts`. A found update downloads and
+   *  surfaces through `update-ready`, same as the background poll's. */
   checkForUpdates(): Promise<void>
+  /** Downloaded-and-ready update, if any — the pull behind the sidebar's
+   *  "update" button for a window that opened after `update-ready` fired. */
+  getUpdateStatus(): Promise<{ version: string } | null>
+  /** Restart into the downloaded update (the sidebar button's click). A no-op
+   *  unless an `update-ready` was announced. */
+  installUpdate(): Promise<void>
   /** In-memory notification history (oldest first) — empty after a relaunch,
    *  see docs/requirements-notifications.md §6. */
   getNotifications(): Promise<NotificationRecord[]>
@@ -481,6 +488,8 @@ const METHODS = {
   sessionActivity: 'none',
   openLogsFolder: 'none', //    host GUI
   checkForUpdates: 'none', //   native dialog / update path
+  getUpdateStatus: 'none', //   the update path is the user's, not an operator's
+  installUpdate: 'none', //     restarts the app
   getNotifications: 'read', //  scrubbed, scoped to the operator's workspace
   markNotificationRead: 'none', // the user's own read state
   markAllRead: 'none', //       the user's own read state
@@ -531,6 +540,8 @@ export interface GurtEvents {
   'usage-changed': DomainEvents['usage.changed']
   /** Boot restore progress — the footer's startup bar (see `BootProgress`). */
   'boot-progress': DomainEvents['boot.progress']
+  /** An update finished downloading — the titlebar's "update" button appears. */
+  'update-ready': { version: string }
   /** One session's observed traffic changed — coalesced in main, so this is a
    *  few per second at worst even under an `npm install`. */
   'proxy-traffic': DomainEvents['proxy.traffic']

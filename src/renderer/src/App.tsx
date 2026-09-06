@@ -128,6 +128,20 @@ export default function App() {
   const [wsMenuOpen, setWsMenuOpen] = useState(false)
   const wsMenuRef = useRef<HTMLDivElement>(null)
   useOutsideClose(wsMenuOpen, wsMenuRef, () => setWsMenuOpen(false))
+  /** Version of a downloaded-and-ready app update — shows the titlebar's
+   *  "update" button (see main/update.ts). Null in dev and while up to date. */
+  const [updateVersion, setUpdateVersion] = useState<string | null>(null)
+  useEffect(() => {
+    const off = window.gurt.onUpdateReady((u) => setUpdateVersion(u.version))
+    // Pull the current value too — this window may have opened after the push.
+    window.gurt
+      .getUpdateStatus()
+      .then((u) => {
+        if (u) setUpdateVersion(u.version)
+      })
+      .catch(logErr('getUpdateStatus'))
+    return off
+  }, [])
   /** ⌘`/⌘⇧` hold-to-switch: while the modifier stays down, cycling only moves
    *  this highlight (`order[index]`) and opens the same dropdown read-only —
    *  `curWs` itself only changes once the modifier is released (see
@@ -699,6 +713,15 @@ export default function App() {
                 </div>
               )}
             </div>
+            {updateVersion && (
+              <button
+                className="tb-update-btn"
+                title={`Restart to update gurt to ${updateVersion}`}
+                onClick={() => void window.gurt.installUpdate().catch(logErr('installUpdate'))}
+              >
+                update
+              </button>
+            )}
             {crumbRest && (
               <>
                 <span className="tb-crumb-sep">/</span>

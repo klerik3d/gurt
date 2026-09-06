@@ -373,12 +373,17 @@ npm run dist         # macOS → release/gurt-<version>-arm64.dmg + release/mac-
 npm run dist:linux   # Linux → release/gurt-<version>.AppImage + .deb
 ```
 
-Release artifacts (built by `.github/workflows/release.yml` on version tags)
-are the dmg plus the AppImage/deb — all unsigned.
+Release artifacts (built by `.github/workflows/release.yml` on `v*` version
+tags) are the dmg/zip plus the AppImage/deb. The workflow stamps the tag's
+version into `package.json` before building, so the tag is the single source
+of truth — no need to bump `package.json` before tagging.
 
-Config lives in `electron-builder.yml`. Builds are **unsigned**: they run on the
-machine that produced them, but a Mac that downloads the dmg will refuse to open
-it until the quarantine flag is cleared:
+Config lives in `electron-builder.yml`. macOS signing + notarization are
+driven entirely by the environment (see the comment in the `mac:` section):
+CI takes them from repo secrets (`CSC_LINK`, `CSC_KEY_PASSWORD`, `APPLE_ID`,
+`APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`); a local `npm run dist`
+without them produces an unsigned build with a warning. An unsigned dmg
+downloaded onto another Mac won't open until the quarantine flag is cleared:
 
 ```bash
 xattr -dr com.apple.quarantine /Applications/gurt.app
@@ -390,22 +395,24 @@ spawns it as a child process — only Electron's own fs can read from an asar.
 ## Auto-update
 
 Packaged builds carry [electron-updater](https://www.electron.build/auto-update),
-wired in `src/main/update.ts`. Checks are user-initiated only (⌘K → "Check for
-updates") — there is no background poll — and feedback is a native dialog, not
-UI in the app itself: up to date, downloading, a restart prompt once the update
-lands, or an error. `electron-builder.yml`'s `publish` block points the default
-feed at this repo's GitHub Releases, matching `.github/workflows/release.yml`
-(which uploads the `latest*.yml` manifests alongside the installers — without
-those, electron-updater has nothing to compare versions against).
+wired in `src/main/update.ts`. A background poll checks the feed every minute
+and downloads a found update silently; once it's ready an **update** button
+appears in the sidebar head (right of the workspace picker) — clicking it
+restarts into the new version. A manual check also exists (⌘K → "Check for
+updates") and is the only path that answers with dialogs (up to date / error).
+`electron-builder.yml`'s `publish` block points the default feed at this
+repo's GitHub Releases, matching `.github/workflows/release.yml` (which
+uploads the `latest*.yml` manifests alongside the installers — without those,
+electron-updater has nothing to compare versions against).
 
 Auto-update only works for the **AppImage** target on Linux (the deb ships too,
-but upgrades through apt/dpkg, not this — `checkForUpdates()` short-circuits with
-a dialog if it isn't running as the AppImage, so it never falls back to shelling
-out to `sudo dpkg -i`, which electron-updater will otherwise attempt and which
-just hangs or fails outside a desktop with a polkit agent). macOS auto-update
-needs the `zip` target (also configured) and, unverified so far here, a signed
-build — these are alpha builds and `identity: null` (see above), so treat mac
-auto-update as best-effort until that changes.
+but upgrades through apt/dpkg, not this — both the poll and `checkForUpdates()`
+short-circuit if it isn't running as the AppImage, so it never falls back to
+shelling out to `sudo dpkg -i`, which electron-updater will otherwise attempt
+and which just hangs or fails outside a desktop with a polkit agent). macOS
+auto-update needs the `zip` target (also configured) and a **signed** build:
+Squirrel.Mac refuses to apply an update to an unsigned install, so mac
+auto-update only works end-to-end once the signing secrets are in place.
 
 **Testing the whole loop locally, before pushing a tag:**
 

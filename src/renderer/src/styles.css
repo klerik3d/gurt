@@ -623,6 +623,24 @@ textarea.input {
 .tb-ws-menu .menu-item:hover .sb-act {
   visibility: visible;
 }
+/* The auto-updater's "restart into the new version" button — appears in the
+   titlebar right of the workspace switcher once an update is downloaded
+   (see main/update.ts). */
+.tb-update-btn {
+  flex: none;
+  margin-left: 8px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 600;
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  color: var(--on-accent);
+  -webkit-app-region: no-drag;
+}
+.tb-update-btn:hover {
+  filter: brightness(1.12);
+}
 .tb-crumb-sep {
   color: var(--faint);
 }
