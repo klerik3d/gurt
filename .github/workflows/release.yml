@@ -20,7 +20,23 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - run: npx allow-scripts
+      # electron-builder takes the app version from package.json, and
+      # electron-updater compares against it — a tag/package.json mismatch
+      # would publish artifacts whose version doesn't match the release and
+      # break the update chain. The tag is the source of truth: stamp its
+      # version (v1.2.3 → 1.2.3) into package.json for this build only.
+      - run: npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --allow-same-version
+      # Signing + notarization credentials (see the mac section of
+      # electron-builder.yml). On a fork without these secrets the env vars
+      # are empty and electron-builder skips both steps with a warning
+      # instead of failing.
       - run: npm run dist
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
       # electron-builder writes to release/ (directories.output in
       # electron-builder.yml). latest-mac.yml is the update manifest
       # electron-updater's GitHub provider polls — without it, mac auto-update
@@ -49,6 +65,8 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - run: npx allow-scripts
+      # Same tag→version stamp as the mac job above.
+      - run: npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --allow-same-version
       - run: npm run dist:linux
       # electron-builder writes to release/ (directories.output in
       # electron-builder.yml). latest-linux*.yml is the update manifest

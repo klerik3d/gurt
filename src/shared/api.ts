@@ -231,9 +231,16 @@ export interface GurtApi {
   /** Reveal `~/.gurt/logs` in the OS file manager (⌘K → "Open logs folder"). */
   openLogsFolder(): Promise<void>
   /** Manual update check (⌘K → "Check for updates"); a no-op outside packaged
-   *  builds. Feedback (up to date / downloading / restart prompt / error) is
-   *  a native dialog from main, not a return value — see `main/update.ts`. */
+   *  builds. Feedback (up to date / error) is a native dialog from main, not
+   *  a return value — see `main/update.ts`. A found update downloads and
+   *  surfaces through `update-ready`, same as the background poll's. */
   checkForUpdates(): Promise<void>
+  /** Downloaded-and-ready update, if any — the pull behind the sidebar's
+   *  "update" button for a window that opened after `update-ready` fired. */
+  getUpdateStatus(): Promise<{ version: string } | null>
+  /** Restart into the downloaded update (the sidebar button's click). A no-op
+   *  unless an `update-ready` was announced. */
+  installUpdate(): Promise<void>
   /** In-memory notification history (oldest first) — empty after a relaunch,
    *  see docs/requirements-notifications.md §6. */
   getNotifications(): Promise<NotificationRecord[]>
@@ -322,6 +329,8 @@ const METHODS = {
   sessionActivity: true,
   openLogsFolder: true,
   checkForUpdates: true,
+  getUpdateStatus: true,
+  installUpdate: true,
   getNotifications: true,
   markNotificationRead: true,
   markAllRead: true,
@@ -353,4 +362,6 @@ export interface GurtEvents {
   'usage-changed': DomainEvents['usage.changed']
   /** Boot restore progress — the footer's startup bar (see `BootProgress`). */
   'boot-progress': DomainEvents['boot.progress']
+  /** An update finished downloading — the sidebar's "update" button appears. */
+  'update-ready': { version: string }
 }

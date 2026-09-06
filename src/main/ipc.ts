@@ -18,7 +18,7 @@ import {
 import * as store from './store'
 import * as changes from './changes'
 import { normalizeNotificationPrefs } from '../shared/notifications'
-import { checkForUpdates } from './update'
+import { checkForUpdates, installUpdate, updateStatus } from './update'
 
 const log = createLogger('ipc')
 
@@ -286,6 +286,8 @@ export function registerIpc(): void {
       if (err) throw new Error(err)
     },
     checkForUpdates: () => checkForUpdates(),
+    getUpdateStatus: async () => updateStatus(),
+    installUpdate: async () => installUpdate(),
     getNotifications: async () => kernel.notifications.list(),
     markNotificationRead: async (id) => kernel.notifications.markRead(id),
     markAllRead: async () => kernel.notifications.markAllRead(),

@@ -29,6 +29,7 @@ import type { Selection } from '../App'
 import { agentKind, agentName, useAgents } from '../useAgents'
 import { useOutsideClose } from '../hooks'
 import { alertDialog, confirmDialog } from '../dialog'
+import { logErr } from '../log'
 import { SESSION_DOT } from '../status'
 import { Icon, Dot } from './icons'
 import { AgentMark, ROLE_INFO, agentIcon } from './tags'
@@ -79,6 +80,21 @@ export function Sidebar({
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const [wsMenuOpen, setWsMenuOpen] = useState(false)
   const wsMenuRef = useRef<HTMLDivElement>(null)
+  /** Version of a downloaded-and-ready app update — shows the "update" button
+   *  (see main/update.ts). Null in dev and while up to date. */
+  const [updateVersion, setUpdateVersion] = useState<string | null>(null)
+  useEffect(() => {
+    const off = window.gurt.onUpdateReady((u) => setUpdateVersion(u.version))
+    // Pull the current value too — this window (or view) may have mounted
+    // after the push fired.
+    window.gurt
+      .getUpdateStatus()
+      .then((u) => {
+        if (u) setUpdateVersion(u.version)
+      })
+      .catch(logErr('getUpdateStatus'))
+    return off
+  }, [])
   const [creatingTask, setCreatingTask] = useState(false)
   const [taskDraftName, setTaskDraftName] = useState('')
   const taskPopRef = useRef<HTMLDivElement>(null)
@@ -350,6 +366,15 @@ export function Sidebar({
             </div>
           )}
         </div>
+        {updateVersion && (
+          <button
+            className="sb-update-btn"
+            title={`Restart to update gurt to ${updateVersion}`}
+            onClick={() => void window.gurt.installUpdate().catch(logErr('installUpdate'))}
+          >
+            update
+          </button>
+        )}
         <span className="spacer" />
         <button className="icon-sq" title="Search · ⌘K" onClick={onOpenPalette}>
           <Icon name="search" size={14} />

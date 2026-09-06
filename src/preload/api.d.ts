@@ -20,6 +20,7 @@ declare global {
       onNotificationRead(cb: (event: GurtEvents['notification-read']) => void): () => void
       onUsageChanged(cb: () => void): () => void
       onBootProgress(cb: (event: GurtEvents['boot-progress']) => void): () => void
+      onUpdateReady(cb: (event: GurtEvents['update-ready']) => void): () => void
     }
   }
 }

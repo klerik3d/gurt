@@ -126,7 +126,9 @@ const SAFE_ARGS = new Set([
   'dismissNotification',
   'setNotificationPrefs',
   'openLogsFolder',
-  'checkForUpdates'
+  'checkForUpdates',
+  'getUpdateStatus',
+  'installUpdate'
 ])
 
 /**
