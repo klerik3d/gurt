@@ -1994,10 +1994,6 @@ textarea.input {
 }
 
 /* Harness config (#2b), inline. */
-.hc {
-  display: flex;
-  flex-direction: column;
-}
 .hc-body {
   display: flex;
   flex-direction: column;
@@ -2109,7 +2105,7 @@ textarea.input {
   align-items: center;
   gap: 9px;
 }
-.hc .mcp-row {
+.ns-section .mcp-row {
   padding: 8px 11px;
   border-radius: 8px;
 }
@@ -2127,10 +2123,6 @@ textarea.input {
   white-space: nowrap;
   text-overflow: ellipsis;
   font-size: 11px;
-}
-.ns-section .pick-row + .hc,
-.ns-section .hc + .pick-row {
-  margin-top: 0;
 }
 .ns-section > * + * {
   margin-top: 0;
