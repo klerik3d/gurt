@@ -886,8 +886,8 @@ textarea.input {
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 1px 16px;
-  min-height: 18px;
+  padding: 2px 16px;
+  min-height: 22px;
   cursor: pointer;
 }
 .sb-task:hover {
