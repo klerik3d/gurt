@@ -2,14 +2,21 @@ import { app, BrowserWindow, dialog, nativeImage, shell } from 'electron'
 import path from 'node:path'
 import { registerIpc } from './ipc'
 import { loadSecrets, migrateAgentSecrets, sealPlaintextSecrets } from './credentials'
+import { applyHostPath } from './hostPath'
 import { createLogger, flushSync, logDir, logLevel } from './log'
 import { stopLocalMcpServers } from './mcp/manager'
-import { dockerVersion } from './provision'
+import { dockerCliPath, dockerVersion } from './provision'
 import { getHotkeys, gurtRoot } from './store'
 import { initAutoUpdater } from './update'
 import { initAppMenu } from './menu'
 
 const log = createLogger('app')
+
+// Before anything can spawn: a macOS app launched from the Dock inherits
+// launchd's PATH, which has neither `docker` nor a Homebrew `git` on it
+// (hostPath.ts). Every child gurt starts — and every child *they* start, like
+// the docker the devcontainer CLI runs — inherits what this installs.
+const hostSearchPath = applyHostPath()
 
 // One instance only: two processes would share ~/.gurt with none of the
 // in-memory guarantees holding across them — both would reconcile containers,
@@ -87,7 +94,10 @@ function createWindow(): void {
 
 /** First record of every run: what this build is, and what it is running on.
  *  Docker is probed best-effort — its absence is the single most common cause
- *  of a session that never starts, and it belongs in the banner, not a guess. */
+ *  of a session that never starts, and it belongs in the banner, not a guess.
+ *  The PATH rides along with it: when docker is missing, "which directories
+ *  were searched" is the next question, and it is unanswerable after the fact
+ *  (the app's PATH is not the user's shell's). */
 async function logStartBanner(): Promise<void> {
   log.info('app.start', {
     gurt: app.getVersion(),
@@ -95,6 +105,8 @@ async function logStartBanner(): Promise<void> {
     node: process.versions.node,
     platform: `${process.platform}-${process.arch}`,
     docker: (await dockerVersion()) ?? 'unavailable',
+    dockerCli: dockerCliPath() ?? 'not found',
+    path: hostSearchPath,
     root: gurtRoot,
     logs: logDir(),
     level: logLevel

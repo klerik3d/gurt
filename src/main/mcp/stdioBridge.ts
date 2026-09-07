@@ -35,11 +35,11 @@ import { randomUUID } from 'node:crypto'
 import { StringDecoder } from 'node:string_decoder'
 import type { AddressInfo } from 'node:net'
 import fs from 'node:fs/promises'
-import { accessSync, statSync, constants as FS } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import type { McpLocalEntry, McpNpmEntry } from '../../shared/mcp'
 import { npmPackageSpec } from '../../shared/mcp'
+import { hostPath, resolveHostCommand } from '../hostPath'
 import { gurtRoot } from '../store'
 import { lineBuffer } from '../provision'
 import { createLogger } from '../log'
@@ -63,63 +63,6 @@ const MAX_FRAME_BYTES = 32 * 1024 * 1024
 
 /** SIGTERM, then this long, then SIGKILL (§6). */
 const STOP_GRACE_MS = 3_000
-
-/** Directories a GUI-launched process is missing from its PATH on macOS, and
- *  where a user's own tools live on Linux. Appended, never prepended: the
- *  user's PATH wins where it has an opinion. */
-const EXTRA_PATH_DIRS = [
-  '/opt/homebrew/bin',
-  '/usr/local/bin',
-  path.join(os.homedir(), '.local', 'bin'),
-  path.join(os.homedir(), '.cargo', 'bin'),
-  '/usr/bin',
-  '/bin'
-]
-
-/** PATH with {@link EXTRA_PATH_DIRS} on the end, de-duplicated. */
-export function hostPath(env: NodeJS.ProcessEnv = process.env): string {
-  const seen = new Set<string>()
-  const dirs: string[] = []
-  for (const dir of [...(env['PATH'] ?? '').split(path.delimiter), ...EXTRA_PATH_DIRS]) {
-    if (!dir || seen.has(dir)) continue
-    seen.add(dir)
-    dirs.push(dir)
-  }
-  return dirs.join(path.delimiter)
-}
-
-/**
- * Where a command name actually is, or null. Synchronous and eager on purpose:
- * this is what the *save* path calls, so "there is no `uvx` on this machine"
- * is a rejected registry entry rather than a session that fails to start an
- * hour later (§4.3).
- *
- * A name containing a separator is a path and is only checked for existence; a
- * bare name is searched along {@link hostPath}. `PATHEXT` is not consulted —
- * gurt does not run on Windows.
- */
-export function resolveHostCommand(command: string, env: NodeJS.ProcessEnv = process.env): string | null {
-  // `X_OK` alone is not enough: every directory on PATH is executable, so a
-  // blank command would "resolve" to the directory it was joined onto.
-  const executable = (file: string): boolean => {
-    try {
-      accessSync(file, FS.X_OK)
-      return statSync(file).isFile()
-    } catch {
-      return false
-    }
-  }
-  if (!command.trim()) return null
-  if (command.includes('/')) {
-    const abs = path.resolve(command)
-    return executable(abs) ? abs : null
-  }
-  for (const dir of hostPath(env).split(path.delimiter)) {
-    const candidate = path.join(dir, command)
-    if (executable(candidate)) return candidate
-  }
-  return null
-}
 
 /**
  * Throw unless this entry can actually be launched on this machine — the

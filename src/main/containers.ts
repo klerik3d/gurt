@@ -24,6 +24,7 @@ import * as store from './store'
 import { cloneDir } from './store'
 import {
   adapterPresent,
+  assertDockerCli,
   devcontainerUp,
   dockerRemove,
   dockerRunning,
@@ -274,6 +275,10 @@ export class ContainerManager {
     // §2.1 — repo-less start is that role's definition, not a missing pick).
     if (roleNeedsRepo(sessionRole(info)) && !info.repos.length)
       throw new Error('session has no repository')
+    // Before anything else: no docker, no container, and every probe below
+    // would report its absence as "the daemon says no" (they swallow spawn
+    // errors on purpose) until some later `run` failed with a raw ENOENT.
+    assertDockerCli()
     const provisionLog = this.logFor(sessionId)
 
     // Its own container, still up → just reuse it. (Probe the daemon: a Docker

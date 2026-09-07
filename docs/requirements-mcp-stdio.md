@@ -431,8 +431,17 @@ directly rather than executed, because the shebang in it says
 The PATH problem is therefore still here, and is handled by moving the
 failure: `resolveHostCommand` searches the user's PATH plus the
 directories a GUI launch loses (`/opt/homebrew/bin`, `/usr/local/bin`,
-`~/.local/bin`, `~/.cargo/bin`, `/usr/bin`, `/bin`), and it is called
-**when the entry is saved**, from `ipc.ts`, not when a session starts.
+the docker CLI directories `~/.docker/bin`, `~/.orbstack/bin`, `~/.rd/bin`,
+then `~/.local/bin`, `~/.cargo/bin`, `/usr/bin`, `/bin`), and it is
+called **when the entry is saved**, from `ipc.ts`, not when a session
+starts.
+
+It lives in `src/main/hostPath.ts` rather than in the bridge, because
+this was never only an MCP problem: gurt's own `docker` is missing from
+a GUI launch's PATH the same way, so the same list backs
+`applyHostPath` (which repairs `process.env.PATH` at startup, for every
+child) and the docker preflight in
+docs/requirements-session-container.md §2.
 
 That is the whole of the design here. "spawn uvx ENOENT" an hour later,
 in a log the user has no reason to open, on a session that seemed to

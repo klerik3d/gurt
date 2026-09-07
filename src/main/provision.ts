@@ -13,6 +13,7 @@ import type { EnvImageStatus } from '../shared/api'
 import { cloneDir, getWorkspace, gurtRoot, overrideConfigPath, taskDir } from './store'
 import { listCredentials } from './credentials'
 import { hostGitAccess } from './git/env'
+import { hostPath, resolveHostCommand } from './hostPath'
 import { createLogger } from './log'
 
 const require = createRequire(import.meta.url)
@@ -278,7 +279,14 @@ export function run(cmd: string, args: string[], sink: LogSink, opts: RunOpts = 
       out.flush()
       err.flush()
       exited(null, Date.now() - started, false)
-      reject(e)
+      // A binary that is not there fails as `spawn docker ENOENT`, which names
+      // neither the cause (a GUI app's PATH, see hostPath.ts) nor a remedy.
+      // The PATH actually searched goes to the session log, not into the
+      // message the session pane shows.
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
+        sink(`${cmd} was not found on this machine — PATH searched: ${hostPath()}`)
+        reject(new Error(`${cmd} is not installed, or is not on the PATH gurt searches`))
+      } else reject(e)
     })
     child.on('close', (code) => {
       if (timer) clearTimeout(timer)
@@ -1318,6 +1326,33 @@ export function dockerVersion(timeoutMs = 3000): Promise<string | null> {
       resolve(code === 0 ? out.trim() || null : null)
     })
   })
+}
+
+/** Where the `docker` CLI is on this machine, or null when it is in none of
+ *  the places gurt looks (hostPath.ts). Cheap: a few `stat`s, no subprocess. */
+export function dockerCliPath(): string | null {
+  return resolveHostCommand('docker')
+}
+
+/**
+ * Refuse, up front, a start that cannot possibly work. Docker missing is the
+ * single most common reason a session never comes up, and every path into it
+ * reports the same unhelpful thing: `spawn docker ENOENT`, which reads like an
+ * internal error rather than "install Docker". This turns it into the sentence
+ * that says what to do, before the clone and the image build waste the user's
+ * time on a start that ends there anyway.
+ *
+ * The lookup is a defaulted parameter so the message can be tested without
+ * uninstalling docker.
+ */
+export function assertDockerCli(cli: string | null = dockerCliPath()): void {
+  if (cli) return
+  throw new Error(
+    'Docker was not found on this machine. gurt runs every session in a container, so it needs ' +
+      'the `docker` CLI: install Docker Desktop (or another Docker runtime), start it, and start ' +
+      'the session again. If Docker is installed somewhere unusual, launching gurt from a terminal ' +
+      'hands it the PATH of that shell.'
+  )
 }
 
 /** True only if the container exists and is actually running (survives a Docker

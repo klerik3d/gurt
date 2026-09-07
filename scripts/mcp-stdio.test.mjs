@@ -56,7 +56,7 @@ await bundle({
       export { planProxy } from ${S('src/main/proxy/config.ts')}
       export { localMcpWants, localMcpSpec } from ${S('src/main/mcp/manager.ts')}
       export {
-        stdioFramer, encodeStdioMessage, isJsonRpcRequest, resolveHostCommand, hostPath,
+        stdioFramer, encodeStdioMessage, isJsonRpcRequest,
         checkMcpCommand, mcpInstallDir, startStdioBridge, clearNpmInstall, installedName
       } from ${S('src/main/mcp/stdioBridge.ts')}
       export { probeMcpServer } from ${S('src/main/mcp/probe.ts')}
@@ -674,23 +674,8 @@ test('only a request gets a reply, so only a request is renumbered and waited fo
 })
 
 // --- resolving a command on this machine (§4.3) -----------------------------
-
-test('the PATH gurt searches is the user PATH plus where GUI apps lose it', () => {
-  const resolved = m.hostPath({ PATH: '/usr/local/bin:/custom' })
-  assert.equal(resolved.startsWith('/usr/local/bin:/custom:'), true, 'the user PATH wins and comes first')
-  assert.equal(resolved.includes('/opt/homebrew/bin'), true)
-  // De-duplicated: /usr/local/bin is in both halves and appears once.
-  assert.equal(resolved.split(':').filter((d) => d === '/usr/local/bin').length, 1)
-})
-
-test('a command is resolved to an absolute path, or refused by name', () => {
-  const env = { PATH: '/usr/bin:/bin' }
-  assert.ok(m.resolveHostCommand('sh', env)?.startsWith('/'), 'a bare name is searched along PATH')
-  assert.equal(m.resolveHostCommand('definitely-not-installed-xyz', env), null)
-  // A path is checked as a path, never searched.
-  assert.equal(m.resolveHostCommand('/bin/sh', env), '/bin/sh')
-  assert.equal(m.resolveHostCommand('/bin/definitely-not-there', env), null)
-})
+// The PATH itself (and `resolveHostCommand`) moved to src/main/hostPath.ts —
+// docker needs the same repair — and is tested in scripts/host-path.test.mjs.
 
 test('a command that is not on this machine is refused when the entry is saved', () => {
   // The whole point of the save-time check: the alternative is a session that
