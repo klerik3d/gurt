@@ -56,7 +56,7 @@ await bundle({
       export { planProxy } from ${S('src/main/proxy/config.ts')}
       export { localMcpWants, localMcpSpec } from ${S('src/main/mcp/manager.ts')}
       export {
-        stdioFramer, encodeStdioMessage, isJsonRpcRequest, resolveHostCommand, hostPath,
+        stdioFramer, encodeStdioMessage, isJsonRpcRequest,
         checkMcpCommand, mcpInstallDir, startStdioBridge, clearNpmInstall, installedName
       } from ${S('src/main/mcp/stdioBridge.ts')}
       export { probeMcpServer } from ${S('src/main/mcp/probe.ts')}
@@ -674,23 +674,8 @@ test('only a request gets a reply, so only a request is renumbered and waited fo
 })
 
 // --- resolving a command on this machine (§4.3) -----------------------------
-
-test('the PATH gurt searches is the user PATH plus where GUI apps lose it', () => {
-  const resolved = m.hostPath({ PATH: '/usr/local/bin:/custom' })
-  assert.equal(resolved.startsWith('/usr/local/bin:/custom:'), true, 'the user PATH wins and comes first')
-  assert.equal(resolved.includes('/opt/homebrew/bin'), true)
-  // De-duplicated: /usr/local/bin is in both halves and appears once.
-  assert.equal(resolved.split(':').filter((d) => d === '/usr/local/bin').length, 1)
-})
-
-test('a command is resolved to an absolute path, or refused by name', () => {
-  const env = { PATH: '/usr/bin:/bin' }
-  assert.ok(m.resolveHostCommand('sh', env)?.startsWith('/'), 'a bare name is searched along PATH')
-  assert.equal(m.resolveHostCommand('definitely-not-installed-xyz', env), null)
-  // A path is checked as a path, never searched.
-  assert.equal(m.resolveHostCommand('/bin/sh', env), '/bin/sh')
-  assert.equal(m.resolveHostCommand('/bin/definitely-not-there', env), null)
-})
+// The PATH itself (and `resolveHostCommand`) moved to src/main/hostPath.ts —
+// docker needs the same repair — and is tested in scripts/host-path.test.mjs.
 
 test('a command that is not on this machine is refused when the entry is saved', () => {
   // The whole point of the save-time check: the alternative is a session that
@@ -999,6 +984,30 @@ test('stopping the bridge closes the listener and the process', async () => {
   // Idempotent: teardown runs from the session path and from app quit.
   await bridge.stop()
   await assert.rejects(fetch(url, { method: 'POST', body: '{}' }))
+})
+
+test('a server that is gone before the write is answered, not crashed into', async () => {
+  // `/bin/echo` speaks no MCP and is usually gone by the time the request
+  // lands, so the write goes to a dead pipe. Unhandled, that EPIPE is an
+  // uncaughtException in gurt's main process — a registry entry taking the app
+  // down with it. It first showed up as a test-runner failure ("a resource
+  // generated asynchronous activity after the test ended"), which is what this
+  // test would report again: the assertions below only pass if the write was
+  // absorbed AND the caller was answered rather than left to time out.
+  const bridge = m.startStdioBridge({ kind: 'command', id: 'gone', command: '/bin/echo' })
+  const url = (await bridge.ready).replace('host.docker.internal', '127.0.0.1')
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' })
+    })
+    const body = await res.json()
+    assert.equal(body.id, 1, 'the caller gets its own id back')
+    assert.match(body.error.message, /exited/, 'and is told the server is gone')
+  } finally {
+    await bridge.stop()
+  }
 })
 
 test('a command that cannot be spawned fails at start, with the reason', async () => {

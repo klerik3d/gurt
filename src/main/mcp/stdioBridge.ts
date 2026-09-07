@@ -35,11 +35,11 @@ import { randomUUID } from 'node:crypto'
 import { StringDecoder } from 'node:string_decoder'
 import type { AddressInfo } from 'node:net'
 import fs from 'node:fs/promises'
-import { accessSync, statSync, constants as FS } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import type { McpLocalEntry, McpNpmEntry } from '../../shared/mcp'
 import { npmPackageSpec } from '../../shared/mcp'
+import { hostPath, resolveHostCommand } from '../hostPath'
 import { gurtRoot } from '../store'
 import { lineBuffer } from '../provision'
 import { createLogger } from '../log'
@@ -63,63 +63,6 @@ const MAX_FRAME_BYTES = 32 * 1024 * 1024
 
 /** SIGTERM, then this long, then SIGKILL (§6). */
 const STOP_GRACE_MS = 3_000
-
-/** Directories a GUI-launched process is missing from its PATH on macOS, and
- *  where a user's own tools live on Linux. Appended, never prepended: the
- *  user's PATH wins where it has an opinion. */
-const EXTRA_PATH_DIRS = [
-  '/opt/homebrew/bin',
-  '/usr/local/bin',
-  path.join(os.homedir(), '.local', 'bin'),
-  path.join(os.homedir(), '.cargo', 'bin'),
-  '/usr/bin',
-  '/bin'
-]
-
-/** PATH with {@link EXTRA_PATH_DIRS} on the end, de-duplicated. */
-export function hostPath(env: NodeJS.ProcessEnv = process.env): string {
-  const seen = new Set<string>()
-  const dirs: string[] = []
-  for (const dir of [...(env['PATH'] ?? '').split(path.delimiter), ...EXTRA_PATH_DIRS]) {
-    if (!dir || seen.has(dir)) continue
-    seen.add(dir)
-    dirs.push(dir)
-  }
-  return dirs.join(path.delimiter)
-}
-
-/**
- * Where a command name actually is, or null. Synchronous and eager on purpose:
- * this is what the *save* path calls, so "there is no `uvx` on this machine"
- * is a rejected registry entry rather than a session that fails to start an
- * hour later (§4.3).
- *
- * A name containing a separator is a path and is only checked for existence; a
- * bare name is searched along {@link hostPath}. `PATHEXT` is not consulted —
- * gurt does not run on Windows.
- */
-export function resolveHostCommand(command: string, env: NodeJS.ProcessEnv = process.env): string | null {
-  // `X_OK` alone is not enough: every directory on PATH is executable, so a
-  // blank command would "resolve" to the directory it was joined onto.
-  const executable = (file: string): boolean => {
-    try {
-      accessSync(file, FS.X_OK)
-      return statSync(file).isFile()
-    } catch {
-      return false
-    }
-  }
-  if (!command.trim()) return null
-  if (command.includes('/')) {
-    const abs = path.resolve(command)
-    return executable(abs) ? abs : null
-  }
-  for (const dir of hostPath(env).split(path.delimiter)) {
-    const candidate = path.join(dir, command)
-    if (executable(candidate)) return candidate
-  }
-  return null
-}
 
 /**
  * Throw unless this entry can actually be launched on this machine — the
@@ -537,12 +480,17 @@ export function startStdioBridge(
   const pending = new Map<number, Pending>()
   let nextId = 1
 
+  /** Settle one pending request with a JSON-RPC error and forget it. */
+  const failOne = (id: number, reason: string): void => {
+    const p = pending.get(id)
+    if (!p) return
+    clearTimeout(p.timer)
+    pending.delete(id)
+    p.settle({ jsonrpc: '2.0', id: p.original, error: { code: -32000, message: reason } })
+  }
+
   const failAll = (reason: string): void => {
-    for (const [id, p] of pending) {
-      clearTimeout(p.timer)
-      pending.delete(id)
-      p.settle({ jsonrpc: '2.0', id: p.original, error: { code: -32000, message: reason } })
-    }
+    for (const id of [...pending.keys()]) failOne(id, reason)
   }
 
   const spawnChild = async (): Promise<Child> => {
@@ -583,6 +531,15 @@ export function startStdioBridge(
     proc.on('error', (e) => {
       rec.alive = false
       log.error('internal.fail', { site: 'mcp-stdio-spawn', id: entry.id, err: e })
+    })
+    // A write to a child that has already gone fails asynchronously on the pipe
+    // (EPIPE), and an unhandled error there is an uncaughtException: gurt's main
+    // process dying because a registry entry named a command that exits at once
+    // (`/bin/echo` does it every time). Absorbing it loses nothing — 'close'
+    // runs `failAll`, so whoever was waiting still gets an answer.
+    proc.stdin?.on('error', (e) => {
+      log.debug('mcp.stdin', { id: entry.id, err: e })
+      trace?.('gurt', `could not write to the process: ${e.message}`)
     })
     const frames = stdioFramer(
       (msg) => onUpstream(msg),
@@ -631,6 +588,16 @@ export function startStdioBridge(
     return started
   }
 
+  /** Write one message to the child's stdin, or report that the pipe is gone.
+   *  The check is what the `error` listener in `spawnChild` cannot do: tell the
+   *  caller, synchronously, that this message will never be delivered. */
+  const send = (live: Child, msg: JsonRpcMessage): boolean => {
+    const stdin = live.proc.stdin
+    if (!stdin || stdin.destroyed || !stdin.writable) return false
+    stdin.write(encodeStdioMessage(msg))
+    return true
+  }
+
   /** Send one request down and resolve with its reply (or a JSON-RPC error). */
   const request = async (msg: JsonRpcMessage): Promise<JsonRpcMessage> => {
     const live = await ensureChild()
@@ -648,14 +615,17 @@ export function startStdioBridge(
       // `unref` so a pending call cannot hold the app open past a quit.
       timer.unref?.()
       pending.set(id, { original, settle: resolve, timer })
-      live.proc.stdin?.write(encodeStdioMessage({ ...msg, id }))
+      // The child can die between `ensureChild` and this write, and 'close'
+      // may already have run `failAll` before the request was registered —
+      // waiting out REQUEST_TIMEOUT_MS for a reply that cannot come is two
+      // minutes of the agent's turn spent on a process that is gone.
+      if (!send(live, { ...msg, id })) failOne(id, 'the local MCP server exited')
     })
   }
 
   /** Send one notification down; there is nothing to wait for. */
   const notify = async (msg: JsonRpcMessage): Promise<void> => {
-    const live = await ensureChild()
-    live.proc.stdin?.write(encodeStdioMessage(msg))
+    send(await ensureChild(), msg)
   }
 
   const readBody = (req: IncomingMessage): Promise<string> =>

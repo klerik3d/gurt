@@ -78,6 +78,20 @@ address a physical resource.
   waking a session brings its container back up on the shared clone, so an
   ungated resume could put two live containers on one working tree.
 
+- **Docker has to be findable before it can be the registry.** gurt is a GUI
+  app, and a macOS bundle launched from the Dock inherits launchd's PATH
+  (`/usr/bin:/bin:/usr/sbin:/sbin`) — not the shell's, and not where Docker
+  Desktop puts its CLI. So `applyHostPath` (`hostPath.ts`, the same list the
+  MCP `command` resolver uses, docs/requirements-mcp-stdio.md §4.3) repairs
+  `process.env.PATH` once at startup, before anything is spawned: every child,
+  including the `docker` the devcontainer CLI runs itself, inherits it.
+  `ensure` then refuses a start with no `docker` anywhere on that PATH
+  (`assertDockerCli`) before it clones or builds anything. The preflight
+  exists for the message: the probes underneath swallow spawn errors by
+  design, so without it a missing Docker surfaces as `start failed: spawn
+  docker ENOENT` from whichever call happened to run first — an
+  internal-looking error for a plain missing dependency.
+
 - **Docker is the registry.** Containers carry `gurt.session=<session id>` (they
   always did — only the bookkeeping was env-scoped). `ContainerManager.reconcile`
   runs at boot: a record describing a container the daemon no longer has is
@@ -148,3 +162,7 @@ discovers them on disk, since the directory *is* the fact.
    `npm run build` are clean.
 6. No entity key outside `keys.ts`, and nothing container-bound keyed by a name:
    `grep -rn 'envKey\|connKey' src` returns nothing.
+7. `node scripts/host-path.test.mjs` passes: the search path keeps the user's
+   own PATH first and adds the directories a docker CLI installs into, applying
+   it is idempotent, and a start with no docker anywhere is refused with a
+   sentence that names Docker rather than `spawn docker ENOENT`.
