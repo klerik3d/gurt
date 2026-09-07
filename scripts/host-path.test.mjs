@@ -102,14 +102,17 @@ test('a command is resolved to an absolute path, or refused by name', () => {
 
 // --- the docker preflight ---------------------------------------------------
 
-test('docker is found through the repaired PATH, not the inherited one', () => {
-  // The GUI case: the app's own PATH has no docker at all. The repair is what
-  // makes the difference, so the lookup runs off the process PATH the way the
-  // preflight does.
-  process.env.PATH = '/nonexistent-launchd-path'
-  assert.equal(m.dockerCliPath(), null, 'nothing on this PATH, and no repair yet')
+test('docker is looked up along the search path, off the live process PATH', () => {
+  // The lookup runs the way the preflight does — no env argument — so this is
+  // the process PATH, and the stub is the docker it must find.
   process.env.PATH = `${BIN}:/nonexistent-launchd-path`
   assert.equal(m.dockerCliPath(), path.join(BIN, 'docker'))
+  // Deliberately NOT asserted here: that a PATH without docker resolves to
+  // null. The appended directories are searched too and one of them is
+  // /usr/bin, so on any machine with docker installed — every CI runner — that
+  // lookup correctly finds it. What "docker is nowhere" does to a start is the
+  // next test's job, through the preflight's own parameter.
+  assert.equal(m.resolveHostCommand('docker-no-runtime-installs-this'), null)
 })
 
 test('a missing docker fails the start with a sentence, not `spawn docker ENOENT`', () => {
