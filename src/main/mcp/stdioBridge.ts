@@ -480,12 +480,17 @@ export function startStdioBridge(
   const pending = new Map<number, Pending>()
   let nextId = 1
 
+  /** Settle one pending request with a JSON-RPC error and forget it. */
+  const failOne = (id: number, reason: string): void => {
+    const p = pending.get(id)
+    if (!p) return
+    clearTimeout(p.timer)
+    pending.delete(id)
+    p.settle({ jsonrpc: '2.0', id: p.original, error: { code: -32000, message: reason } })
+  }
+
   const failAll = (reason: string): void => {
-    for (const [id, p] of pending) {
-      clearTimeout(p.timer)
-      pending.delete(id)
-      p.settle({ jsonrpc: '2.0', id: p.original, error: { code: -32000, message: reason } })
-    }
+    for (const id of [...pending.keys()]) failOne(id, reason)
   }
 
   const spawnChild = async (): Promise<Child> => {
@@ -526,6 +531,15 @@ export function startStdioBridge(
     proc.on('error', (e) => {
       rec.alive = false
       log.error('internal.fail', { site: 'mcp-stdio-spawn', id: entry.id, err: e })
+    })
+    // A write to a child that has already gone fails asynchronously on the pipe
+    // (EPIPE), and an unhandled error there is an uncaughtException: gurt's main
+    // process dying because a registry entry named a command that exits at once
+    // (`/bin/echo` does it every time). Absorbing it loses nothing — 'close'
+    // runs `failAll`, so whoever was waiting still gets an answer.
+    proc.stdin?.on('error', (e) => {
+      log.debug('mcp.stdin', { id: entry.id, err: e })
+      trace?.('gurt', `could not write to the process: ${e.message}`)
     })
     const frames = stdioFramer(
       (msg) => onUpstream(msg),
@@ -574,6 +588,16 @@ export function startStdioBridge(
     return started
   }
 
+  /** Write one message to the child's stdin, or report that the pipe is gone.
+   *  The check is what the `error` listener in `spawnChild` cannot do: tell the
+   *  caller, synchronously, that this message will never be delivered. */
+  const send = (live: Child, msg: JsonRpcMessage): boolean => {
+    const stdin = live.proc.stdin
+    if (!stdin || stdin.destroyed || !stdin.writable) return false
+    stdin.write(encodeStdioMessage(msg))
+    return true
+  }
+
   /** Send one request down and resolve with its reply (or a JSON-RPC error). */
   const request = async (msg: JsonRpcMessage): Promise<JsonRpcMessage> => {
     const live = await ensureChild()
@@ -591,14 +615,17 @@ export function startStdioBridge(
       // `unref` so a pending call cannot hold the app open past a quit.
       timer.unref?.()
       pending.set(id, { original, settle: resolve, timer })
-      live.proc.stdin?.write(encodeStdioMessage({ ...msg, id }))
+      // The child can die between `ensureChild` and this write, and 'close'
+      // may already have run `failAll` before the request was registered —
+      // waiting out REQUEST_TIMEOUT_MS for a reply that cannot come is two
+      // minutes of the agent's turn spent on a process that is gone.
+      if (!send(live, { ...msg, id })) failOne(id, 'the local MCP server exited')
     })
   }
 
   /** Send one notification down; there is nothing to wait for. */
   const notify = async (msg: JsonRpcMessage): Promise<void> => {
-    const live = await ensureChild()
-    live.proc.stdin?.write(encodeStdioMessage(msg))
+    send(await ensureChild(), msg)
   }
 
   const readBody = (req: IncomingMessage): Promise<string> =>
