@@ -14,6 +14,7 @@ export type CredentialKind =
   | 'git-host'
   | 'agent-token'
   | 'mcp-token'
+  | 'oauth'
 
 export interface CredentialEntry {
   /** uuid, stable — configs link by this. */
@@ -95,6 +96,12 @@ export interface CredentialField {
   /** Rendered as a password input and never echoed back to the UI in cleartext. */
   secret?: boolean
   placeholder?: string
+  /** Never rendered in the modal. The field is still declared because this
+   *  list is the sealing manifest (docs/requirements-oauth-credentials.md
+   *  §2.1): `secretKeys()` reads it to decide what gets sealed, masked and
+   *  fed to the redactor, so a value obtained by a flow rather than typed
+   *  must be hidden here — never omitted. */
+  hidden?: boolean
 }
 
 /** UI metadata + which phase implements each kind's runtime path. */
@@ -142,11 +149,30 @@ export const CREDENTIAL_KINDS: CredentialKindDef[] = [
   {
     kind: 'agent-token',
     label: 'agent token',
+    // Presented as a peer of `oauth sign-in` below, the hint saying which path
+    // each is (docs/requirements-oauth-credentials.md §4): neither recommended,
+    // neither buried.
     hint:
-      'OAuth token / API key for a coding agent (Claude, OpenAI, …). ' +
+      'Paste an API key — CI, self-hosted gateways, enterprise proxies. ' +
       'Linked from an agent in ⚙ Agents; not a git host, so it needs no hosts.',
     fields: [
       { key: 'secret', label: 'token / api key', secret: true, placeholder: 'sk-… / oauth token' }
+    ],
+    implemented: true
+  },
+  {
+    kind: 'oauth',
+    label: 'oauth sign-in',
+    hint:
+      'Sign in with your Claude / ChatGPT / Gemini account — gurt runs the browser ' +
+      'sign-in and refreshes the tokens itself. Links from an agent or an MCP server ' +
+      'exactly like a token.',
+    // Hidden, not omitted (§2.1): no text input ever renders for these, but the
+    // declaration is what makes `secretKeys()` seal, mask and redact the token
+    // set the sign-in flow stores.
+    fields: [
+      { key: 'refresh', label: 'refresh token', secret: true, hidden: true },
+      { key: 'access', label: 'access token', secret: true, hidden: true }
     ],
     implemented: true
   },
@@ -167,18 +193,45 @@ export const CREDENTIAL_KINDS: CredentialKindDef[] = [
 
 /** Kinds that are not a git transport: they link explicitly (from an agent, from
  *  an MCP registry entry) and never auto-match a host. */
-const NON_GIT_KINDS: readonly CredentialKind[] = ['agent-token', 'mcp-token']
+const NON_GIT_KINDS: readonly CredentialKind[] = ['agent-token', 'mcp-token', 'oauth']
 
 /** Whether a kind matches a git host (auto-match, forge verification, hosts field). */
 export const isGitKind = (kind: CredentialKind): boolean => !NON_GIT_KINDS.includes(kind)
 
-/** Agent-token entries — the pool the Agents editor links against. */
-export const agentCredentials = (credentials: CredentialEntry[]): CredentialEntry[] =>
-  credentials.filter((c) => c.kind === 'agent-token')
+/** The provider modules `src/main/oauth/providers/` implements, for the
+ *  renderer's provider picker — ids must match `OAUTH_PROVIDERS` in main. */
+export const OAUTH_PROVIDER_CHOICES: readonly { id: string; label: string }[] = [
+  { id: 'anthropic', label: 'Claude (Anthropic)' },
+  { id: 'openai', label: 'ChatGPT (OpenAI)' },
+  { id: 'google', label: 'Gemini (Google)' }
+]
 
-/** Mcp-token entries — the pool the MCP registry editor links against. */
+/**
+ * §2 of docs/requirements-oauth-credentials.md: the sentence an unresolvable
+ * `oauth` entry blocks with. Actionable on purpose — the Credentials modal is
+ * where "sign in again" points.
+ */
+export const signedOutError = (entry: CredentialEntry): string =>
+  `credential "${entry.label || entry.id}" is signed out — sign in again in Credentials`
+
+/**
+ * Whether an `oauth` entry holds no usable sign-in: it was never signed in (no
+ * refresh token), or the provider declared the refresh token dead — recorded
+ * as the plaintext `data.signedOut` marker by main's refresh path, since the
+ * detection happens at resolve time and the modal has to be able to show it.
+ * Works on the renderer's masked view too: a served mask is non-empty exactly
+ * when the stored token is.
+ */
+export const oauthSignedOut = (entry: CredentialEntry): boolean =>
+  entry.kind === 'oauth' && (!!entry.data['signedOut'] || !entry.data['refresh'])
+
+/** Agent-token and oauth entries — the pool the Agents editor links against. */
+export const agentCredentials = (credentials: CredentialEntry[]): CredentialEntry[] =>
+  credentials.filter((c) => c.kind === 'agent-token' || c.kind === 'oauth')
+
+/** Mcp-token and oauth entries — the pool the MCP registry editor links against. */
 export const mcpCredentials = (credentials: CredentialEntry[]): CredentialEntry[] =>
-  credentials.filter((c) => c.kind === 'mcp-token')
+  credentials.filter((c) => c.kind === 'mcp-token' || c.kind === 'oauth')
 
 /**
  * Resolve the auth header an MCP registry entry's credential link injects
@@ -204,9 +257,21 @@ export function resolveMcpCredential(
   if (!credentialId) return {}
   const entry = credentials.find((c) => c.id === credentialId)
   if (!entry) return { error: 'linked credential no longer exists' }
-  if (entry.kind !== 'mcp-token')
-    return { error: `linked credential "${entry.label || entry.id}" is not an MCP token` }
   const label = entry.label || entry.id
+  if (entry.kind === 'oauth') {
+    // The access token composes exactly as an `mcp-token`'s secret does, with
+    // the default header and scheme — an oauth entry has no overrides. This
+    // pure half reads whatever `data.access` holds; the main-side caller
+    // (resolveProxyPlan, the probe) refreshes it first (§2 of
+    // docs/requirements-oauth-credentials.md).
+    if (oauthSignedOut(entry)) return { error: signedOutError(entry) }
+    const value = `${DEFAULT_MCP_SCHEME} ${(entry.data['access'] ?? '').trim()}`
+    const problem = headerValueProblem(value)
+    if (problem) return { error: `linked credential "${label}" ${problem}` }
+    return { header: { name: DEFAULT_MCP_HEADER, value } }
+  }
+  if (entry.kind !== 'mcp-token')
+    return { error: `linked credential "${label}" is not an MCP token` }
   const name = entry.data['header']?.trim() || DEFAULT_MCP_HEADER
   if (!isHeaderName(name))
     return { error: `linked credential "${label}" has "${name}" as its header name, which is not a valid header name` }
@@ -245,9 +310,13 @@ export function resolveMcpEnvSecret(
   if (!credentialId) return {}
   const entry = credentials.find((c) => c.id === credentialId)
   if (!entry) return { error: 'linked credential no longer exists' }
-  if (entry.kind !== 'mcp-token')
+  if (entry.kind === 'oauth' && oauthSignedOut(entry)) return { error: signedOutError(entry) }
+  if (entry.kind !== 'mcp-token' && entry.kind !== 'oauth')
     return { error: `linked credential "${entry.label || entry.id}" is not an MCP token` }
-  const secret = (entry.data['secret'] ?? '').trim()
+  // An oauth entry contributes its (main-side refreshed, §2) access token the
+  // way an mcp-token contributes its pasted secret: the bare value, into the
+  // env var the server names.
+  const secret = (entry.data[entry.kind === 'oauth' ? 'access' : 'secret'] ?? '').trim()
   if (secret.includes('\0'))
     return {
       error: `linked credential "${entry.label || entry.id}" contains a NUL byte — re-enter it`
@@ -287,17 +356,27 @@ export function checkMcpSecret(entry: CredentialEntry): string {
  * Resolve the secret an agent injects, from its linked credential id (§6, like
  * a repo's credential link). No link ⇒ empty (the adapter starts and reports its
  * own auth error); a dangling link is a config error the caller surfaces.
+ *
+ * For an `oauth` entry this pure half only identifies the entry and hands back
+ * the *stored* access token, which may be stale: the main-side caller
+ * (`resolveLaunch`) sees `entry.kind === 'oauth'` and awaits
+ * `resolveOAuthAccess` before injecting anything — the §2 async seam of
+ * docs/requirements-oauth-credentials.md.
  */
 export function resolveAgentSecret(
   credentials: CredentialEntry[],
   credentialId: string | undefined
-): { secret: string; error?: string } {
+): { secret: string; entry?: CredentialEntry; error?: string } {
   if (!credentialId) return { secret: '' }
   const entry = credentials.find((c) => c.id === credentialId)
   if (!entry) return { secret: '', error: 'linked credential no longer exists' }
+  if (entry.kind === 'oauth') {
+    if (oauthSignedOut(entry)) return { secret: '', entry, error: signedOutError(entry) }
+    return { secret: entry.data['access'] ?? '', entry }
+  }
   if (entry.kind !== 'agent-token')
     return { secret: '', error: `linked credential "${entry.label}" is not an agent token` }
-  return { secret: entry.data['secret'] ?? '' }
+  return { secret: entry.data['secret'] ?? '', entry }
 }
 
 export const credentialKindLabel = (kind: CredentialKind): string =>

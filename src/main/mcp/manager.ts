@@ -10,6 +10,7 @@ import type {
 } from '../../shared/mcp'
 import { RESERVED_MCP_IDS, isLocalMcpEntry, mcpDef } from '../../shared/mcp'
 import { resolveMcpEnvSecret } from '../../shared/credentials'
+import { freshenOAuthCredentials } from '../oauth'
 import { mcpServerKey } from '../../shared/keys'
 import { cloneDir, getMcpServers } from '../store'
 import { listCredentials } from '../credentials'
@@ -235,7 +236,16 @@ let reconciling: Promise<void> = Promise.resolve()
  *  outside the refcount this module keeps. */
 export async function credentialEnv(entry: McpLocalEntry): Promise<{ env: Record<string, string>; secret: string }> {
   if (!entry.credentialId || !entry.credentialEnvVar) return { env: {}, secret: '' }
-  const { secret, error } = resolveMcpEnvSecret(await listCredentials(), entry.credentialId)
+  // The async half of the oauth seam (docs/requirements-oauth-credentials.md
+  // §2): an oauth link's access token is refreshed before the pure resolver
+  // reads it — a stale token in a server's environment is a 401 nobody can
+  // explain.
+  const { credentials, errors } = await freshenOAuthCredentials(await listCredentials(), [
+    entry.credentialId
+  ])
+  const freshenError = errors[entry.credentialId]
+  if (freshenError) throw new Error(`MCP server "${entry.id}": ${freshenError}`)
+  const { secret, error } = resolveMcpEnvSecret(credentials, entry.credentialId)
   // Blocks rather than starting unauthenticated — the same rule the proxy
   // applies to a remote entry's header (requirements-mcp-proxy.md §3.2).
   if (error) throw new Error(`MCP server "${entry.id}": ${error}`)

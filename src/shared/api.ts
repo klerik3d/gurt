@@ -26,7 +26,7 @@ import type {
   StoredProposal,
   Tree
 } from './types'
-import type { CredentialsFile } from './credentials'
+import type { CredentialEntry, CredentialsFile } from './credentials'
 import type { SessionTraffic } from './proxy'
 import type { DomainEvents } from './events'
 import type { McpDef, McpProbeResult, McpRegistryEntry } from './mcp'
@@ -96,6 +96,14 @@ export interface GurtApi {
   setCredentials(data: CredentialsFile): Promise<void>
   /** Repos (as `ws/repo`) linking to a credential id — for delete-blocking. */
   credentialUsedBy(id: string): Promise<string[]>
+  /** Run the OAuth sign-in for an `oauth` entry (system browser + loopback
+   *  callback, docs/requirements-oauth-credentials.md §4) and persist the
+   *  token set on success. The entry may be an unsaved draft — signing in is
+   *  what stores it. A second call for the same entry cancels the pending
+   *  attempt and restarts. */
+  oauthSignIn(entry: CredentialEntry): Promise<void>
+  /** Cancel the pending sign-in attempt of one entry, if any. */
+  oauthCancel(credentialId: string): Promise<void>
   createWorkspace(name: string): Promise<void>
   /** Delete a whole workspace: every task, environment, clone and session goes with it. */
   removeWorkspace(name: string): Promise<void>
@@ -413,6 +421,8 @@ const METHODS = {
   getCredentials: 'read', //    ids, labels, kinds — no values (§5.1)
   setCredentials: 'none', //    §5.1: no write path into the credential store
   credentialUsedBy: 'read',
+  oauthSignIn: 'none', //       host browser + a credential-store write
+  oauthCancel: 'none', //       controls the same host-side flow
   createWorkspace: 'none', //   bootstrap (§10); binds the operator's authority
   removeWorkspace: 'none', //   destroys clones and their uncommitted work
   addRepo: 'write',
