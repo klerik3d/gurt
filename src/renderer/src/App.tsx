@@ -20,9 +20,12 @@ import { TaskPane } from './components/TaskPane'
 import { SettingsPage, type SettingsSection } from './components/SettingsPage'
 import { Dashboard } from './components/Dashboard'
 import { CommandPalette } from './components/CommandPalette'
+import { Welcome } from './components/Welcome'
+import { PREPARE_LOG_KEY } from '../../shared/doctor'
 import { NotificationsPanel } from './components/NotificationsPanel'
 import { useOutsideClose } from './hooks'
 import { markSeen } from './reviewed'
+import { useAgents } from './useAgents'
 import { DialogHost, alertDialog } from './dialog'
 import { logErr } from './log'
 import { run } from './async'
@@ -77,6 +80,12 @@ export default function App() {
    *  main does not persist turn starts, and inventing one would misreport. */
   const [turnStarts, setTurnStarts] = useState<Record<string, number>>({})
   const [paletteOpen, setPaletteOpen] = useState(false)
+  /** ⌘K → "Welcome & machine setup": forces the welcome screen into the main
+   *  pane whatever the store holds, for a machine that lost Docker or a second
+   *  demo on one that already has sessions
+   *  (docs/requirements-first-run.md §2.3). Cleared by any selection. */
+  const [forceWelcome, setForceWelcome] = useState(false)
+  const agents = useAgents()
   const hotkeys = useHotkeys()
   /** Bumped on every ⌘2 (`gotoTasks`) — Sidebar focuses its tree whenever this
    *  changes, including on the mount that follows switching into the work view. */
@@ -272,6 +281,20 @@ export default function App() {
   // Keep the current workspace valid as the tree changes.
   const workspaces = tree?.workspaces ?? []
   const ws = workspaces.find((w) => w.name === curWs) ?? workspaces[0]
+
+  /** First run is "the store has never produced a session"
+   *  (docs/requirements-first-run.md §2.1) — derived from the tree the
+   *  renderer already holds, never a persisted flag: a flag would be a fourth
+   *  thing that can be wrong on a machine gurt has never seen. It stops
+   *  matching the moment any session exists in any state, a draft included, so
+   *  clicking the sidebar's "+" is itself the way out of it. */
+  const firstRun =
+    !!tree && tree.workspaces.every((w) => w.tasks.every((t) => t.sessions.length === 0))
+  const showWelcome = !selection && (firstRun || forceWelcome)
+  /** Seeds the welcome screen's kind picker from an instance that already
+   *  exists: an agent registry with no sessions is still a first run (§2.1),
+   *  and asking which kind they meant would be asking twice. */
+  const firstAgentKind = Object.values(agents)[0]?.kind
   useEffect(() => {
     if (tree && !tree.workspaces.some((w) => w.name === curWs))
       setCurWs(tree.workspaces[0]?.name ?? null)
@@ -346,6 +369,7 @@ export default function App() {
 
   const selectSession = useCallback((id: string) => {
     setView('work')
+    setForceWelcome(false)
     setSelection({ type: 'session', id })
     // Opening a session is what "reviewed" means on the dashboard — the same
     // act that clears its notifications (§4.2) clears it from the review list.
@@ -373,6 +397,7 @@ export default function App() {
 
   const selectTask = useCallback((tws: string, task: string) => {
     setView('work')
+    setForceWelcome(false)
     setSelection({ type: 'task', ws: tws, task })
     setCurWs(tws)
   }, [])
@@ -837,7 +862,14 @@ export default function App() {
                   onSelectSession={selectSession}
                 />
               )}
-              {!selection && (
+              {showWelcome && (
+                <Welcome
+                  log={logs[PREPARE_LOG_KEY] ?? []}
+                  preferredKind={firstAgentKind}
+                  onStarted={selectSession}
+                />
+              )}
+              {!selection && !showWelcome && (
                 <div className="placeholder">
                   <div className="placeholder-logo">
                     <Logo size={240} />
@@ -917,6 +949,12 @@ export default function App() {
           onNewTask={() => {
             setPaletteOpen(false)
             if (ws) setNewTask(ws.name)
+          }}
+          onWelcome={() => {
+            setPaletteOpen(false)
+            setView('work')
+            setSelection(null)
+            setForceWelcome(true)
           }}
           onSelectSession={(id) => {
             setPaletteOpen(false)

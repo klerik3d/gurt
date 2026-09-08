@@ -462,4 +462,13 @@ export const ADMIN_TOOLS: readonly AdminToolDef[] = [
     params: [],
     input: {}
   },
+  {
+    name: "machine_doctor",
+    method: "machineDoctor",
+    exposure: "read",
+    description: "State of the machine gurt is running on: whether the `docker` CLI\nresolves, whether its daemon answers, and whether the images a first\nsession needs are already local (docs/requirements-first-run.md §3).\nProbed on every call — this is the answer to \"why will nothing start\",\nand a cached one would be worse than none. Never rejects: a failure is a\nrow, which is the whole point.",
+    bindWs: false,
+    params: [],
+    input: {}
+  },
 ]

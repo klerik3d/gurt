@@ -60,6 +60,8 @@ import {
   modKeyLabel
 } from '../../../shared/hotkeys'
 import { AGENT_DEFS, agentDef } from '../../../shared/agents'
+import { PREPARE_LOG_KEY } from '../../../shared/doctor'
+import { MachineChecklist } from './Welcome'
 import { refreshAgents, useAgents } from '../useAgents'
 import { refreshHotkeys, useHotkeys } from '../useHotkeys'
 import { useOutsideClose } from '../hooks'
@@ -80,6 +82,7 @@ export type SettingsSection =
   | 'credentials'
   | 'notifications'
   | 'hotkeys'
+  | 'machine'
 
 /** Nav labels for sections whose id does not simply capitalize. */
 const SECTION_LABEL: Partial<Record<SettingsSection, string>> = {
@@ -98,7 +101,8 @@ const SECTION_ICON: Record<SettingsSection, IconName> = {
   skills: 'folder',
   credentials: 'key',
   notifications: 'bell',
-  hotkeys: 'grid'
+  hotkeys: 'grid',
+  machine: 'info'
 }
 
 /** Registry group — the sections that define *what the workspace has*: the
@@ -119,7 +123,15 @@ const REGISTRY_SECTIONS = [
  *  Advanced disclosure below — both are registries of pluggable capability
  *  (external servers, filesystem-backed skill packs) rather than everyday
  *  workspace config, so they cost a click instead of always taking up room. */
-const GENERAL_SECTIONS = ['notifications', 'hotkeys'] as const satisfies readonly SettingsSection[]
+// `machine` heads the General group: it is per-host state (is Docker there,
+// is its daemon up, are the images pulled) rather than a workspace registry,
+// and it is the section a user is sent to when a start fails for a reason that
+// is not in the configuration at all (docs/requirements-first-run.md §2.2).
+const GENERAL_SECTIONS = [
+  'machine',
+  'notifications',
+  'hotkeys'
+] as const satisfies readonly SettingsSection[]
 
 const ADVANCED_SECTIONS = ['mcp', 'skills'] as const satisfies readonly SettingsSection[]
 
@@ -184,6 +196,31 @@ function GroupFold({
   )
 }
 
+/** The checklist's permanent home — the same component the welcome screen
+ *  embeds, so a machine that lost Docker after setup does not need an empty
+ *  store to reach the rows (docs/requirements-first-run.md §2.2). */
+function MachineSection(): JSX.Element {
+  const [log, setLog] = useState<string[]>([])
+  useEffect(
+    () =>
+      window.gurt.onProvisionLog(({ key, line }) => {
+        if (key === PREPARE_LOG_KEY) setLog((prev) => [...prev.slice(-500), line])
+      }),
+    []
+  )
+  return (
+    <div className="set-section">
+      <div className="set-head">
+        <div className="set-title-wrap">
+          <span className="set-title">Machine</span>
+          <span className="set-count mono">what a session needs from this host</span>
+        </div>
+      </div>
+      <MachineChecklist log={log} />
+    </div>
+  )
+}
+
 export function SettingsPage({
   tree,
   ws,
@@ -243,6 +280,7 @@ export function SettingsPage({
         {section === 'credentials' && <CredentialsSection />}
         {section === 'notifications' && <NotificationsSection />}
         {section === 'hotkeys' && <HotkeysSection />}
+        {section === 'machine' && <MachineSection />}
       </div>
     </div>
   )

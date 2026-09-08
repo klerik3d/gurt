@@ -28,11 +28,19 @@ process.env.GURT_ROOT = GURT_ROOT
 // and failing on the fake image only after a feature fetch and a pull, well
 // past `settle`'s patience. A stub that refuses instantly makes the path
 // identical everywhere; every child inherits PATH through `run`/`runNodeCli`.
+//
+// `docker info` is the one subcommand it answers, because the start preflight
+// asks it before anything else (`assertDockerDaemon`,
+// docs/requirements-first-run.md §4.2) and a refusal there would stop these
+// tests short of the config rules they exist to check — which is the correct
+// behaviour for a machine whose daemon is down, and the wrong fixture for
+// "the daemon is up and the env is misconfigured".
 const stubBin = path.join(GURT_ROOT, 'stub-bin')
 fs.mkdirSync(stubBin, { recursive: true })
 fs.writeFileSync(
   path.join(stubBin, 'docker'),
-  '#!/bin/sh\necho "docker stub: no daemon here" >&2\nexit 1\n'
+  '#!/bin/sh\nif [ "$1" = "info" ]; then echo 27.3.1; exit 0; fi\n' +
+    'echo "docker stub: no daemon here" >&2\nexit 1\n'
 )
 fs.chmodSync(path.join(stubBin, 'docker'), 0o755)
 process.env.PATH = `${stubBin}${path.delimiter}${process.env.PATH}`
