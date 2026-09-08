@@ -68,11 +68,16 @@ const SAFE_ARGS = new Set([
   'machineDoctor',
   'machinePrepare',
   'machineStartDocker',
+  // Takes an agent kind and nothing else: the secret this path produces is
+  // minted by the provider's browser flow, never carried over IPC.
+  'firstRunSignIn',
+  'firstRunCancelSignIn',
   'getMcpDefs',
   'getAgents',
   'getAgentConfig',
   'getCredentials',
   'credentialUsedBy',
+  'oauthCancel', // a credential id — the entry payload itself is oauthSignIn's, which is opaque
   'getTaskChanges',
   'getFileDiff',
   'getCommitDiff',

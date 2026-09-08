@@ -26,7 +26,7 @@ import type {
   StoredProposal,
   Tree
 } from './types'
-import type { CredentialsFile } from './credentials'
+import type { CredentialEntry, CredentialsFile } from './credentials'
 import type { SessionTraffic } from './proxy'
 import type { DomainEvents } from './events'
 import type { McpDef, McpProbeResult, McpRegistryEntry } from './mcp'
@@ -97,6 +97,14 @@ export interface GurtApi {
   setCredentials(data: CredentialsFile): Promise<void>
   /** Repos (as `ws/repo`) linking to a credential id — for delete-blocking. */
   credentialUsedBy(id: string): Promise<string[]>
+  /** Run the OAuth sign-in for an `oauth` entry (system browser + loopback
+   *  callback, docs/requirements-oauth-credentials.md §4) and persist the
+   *  token set on success. The entry may be an unsaved draft — signing in is
+   *  what stores it. A second call for the same entry cancels the pending
+   *  attempt and restarts. */
+  oauthSignIn(entry: CredentialEntry): Promise<void>
+  /** Cancel the pending sign-in attempt of one entry, if any. */
+  oauthCancel(credentialId: string): Promise<void>
   createWorkspace(name: string): Promise<void>
   /** Delete a whole workspace: every task, environment, clone and session goes with it. */
   removeWorkspace(name: string): Promise<void>
@@ -399,6 +407,19 @@ export interface GurtApi {
    *  the ordinary run path, so its failure lands on the session as a plain
    *  `startError` rather than a rejection here. */
   firstRunStart(kind: string, token: string): Promise<FirstRunResult>
+  /** The same create, entered by signing in instead of pasting a key — the
+   *  welcome screen's primary path (docs/requirements-first-run.md §6.1).
+   *  Mints an `oauth` credential for the kind's provider
+   *  (`AgentDef.oauthProvider`), runs that provider's browser flow, and on
+   *  success creates and starts exactly what {@link firstRunStart} does. A
+   *  cancelled or failed sign-in creates nothing; a kind with no sign-in path
+   *  is refused rather than sent through a flow its CLI cannot consume. */
+  firstRunSignIn(kind: string): Promise<FirstRunResult>
+  /** Abort the welcome screen's pending sign-in. The credential it mints is
+   *  created host-side, so the renderer has no id to pass to `oauthCancel` —
+   *  this is the same cancel, addressed by "the one the welcome screen
+   *  started". A no-op when nothing is pending. */
+  firstRunCancelSignIn(): Promise<void>
   /** Bring the host's Docker GUI up — the `start-docker` action of the
    *  daemon row (§3.4). macOS only (`open -a Docker`); a no-op elsewhere,
    *  where the daemon is a system service and gurt does not run `sudo`.
@@ -439,6 +460,8 @@ const METHODS = {
   getCredentials: 'read', //    ids, labels, kinds — no values (§5.1)
   setCredentials: 'none', //    §5.1: no write path into the credential store
   credentialUsedBy: 'read',
+  oauthSignIn: 'none', //       host browser + a credential-store write
+  oauthCancel: 'none', //       controls the same host-side flow
   createWorkspace: 'none', //   bootstrap (§10); binds the operator's authority
   removeWorkspace: 'none', //   destroys clones and their uncommitted work
   addRepo: 'write',
@@ -534,6 +557,8 @@ const METHODS = {
   // be reachable when neither of its parts is. The annotation says nothing
   // about who *calls* it: the welcome screen does, before any operator exists.
   firstRunStart: 'none',
+  firstRunSignIn: 'none', //    the same, plus a host browser window
+  firstRunCancelSignIn: 'none', // controls that flow
   machineStartDocker: 'none' // host GUI, like `openLogsFolder`
 } as const satisfies Record<keyof GurtApi, Exposure>
 

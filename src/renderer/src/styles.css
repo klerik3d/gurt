@@ -4173,3 +4173,18 @@ textarea.input {
   font-size: 11px;
   color: var(--yellow);
 }
+/* The demoted API-key path (docs/requirements-first-run.md §6.1): reachable in
+   one click, never competing with the sign-in button for attention. */
+.wc-alt {
+  align-self: flex-start;
+  font-size: 11px;
+}
+.wc-keyblock {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}

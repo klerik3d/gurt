@@ -15,7 +15,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { JSX } from 'react'
 import { AGENT_DEFS, agentDef } from '../../../shared/agents'
-import type { DoctorReport, DoctorRow } from '../../../shared/doctor'
+import type { DoctorReport, DoctorRow, FirstRunResult } from '../../../shared/doctor'
+import { OAUTH_PROVIDER_CHOICES } from '../../../shared/credentials'
 import { Icon, Logo } from './icons'
 import { AgentMark } from './tags'
 import { logErr } from '../log'
@@ -160,8 +161,23 @@ export function MachineChecklist({
 }
 
 /**
- * The welcome screen. Everything below the checklist is the second block of
- * §6: pick a kind, paste its token, one button.
+ * The welcome screen. Everything below the checklist is §6's second block:
+ * pick a kind, sign in, one button.
+ *
+ * **Signing in is the primary path and pasting a key is the fallback**, and
+ * the layout says so: the sign-in button is the one that is always visible,
+ * the key field lives behind a disclosure. The reason is
+ * docs/requirements-oauth-credentials.md §1 — the credential a user standing
+ * in front of a fresh gurt actually *has* is a login, not a string. Claude,
+ * ChatGPT and Gemini subscriptions authenticate by sign-in, and those tokens
+ * are not something anyone can extract from another tool's keychain and paste
+ * into a form.
+ *
+ * It is not the *only* path, for two reasons that are not preference: opencode
+ * has no verified sign-in delivery at all (`AgentDef.oauthProvider` is null for
+ * it, §5.2.1 of that document), and API keys are the right shape for CI,
+ * self-hosted gateways and enterprise proxies — which is why that document's
+ * §1 says OAuth "complements `agent-token`; it never replaces it".
  *
  * `preferredKind` seeds the picker from an agent instance that already exists
  * — a returning user with a registry and no sessions is still a first run
@@ -179,31 +195,40 @@ export function Welcome({
   const [ready, setReady] = useState(false)
   const [kind, setKind] = useState(preferredKind || AGENT_DEFS[0]!.id)
   const [token, setToken] = useState('')
-  const [busy, setBusy] = useState(false)
+  const [showKey, setShowKey] = useState(false)
+  const [busy, setBusy] = useState<'' | 'signin' | 'token'>('')
   const [error, setError] = useState('')
   const [warning, setWarning] = useState('')
   const onReport = useCallback((r: DoctorReport) => setReady(r.ready), [])
 
-  const start = async (): Promise<void> => {
-    setBusy(true)
+  const def = agentDef(kind)
+  const provider = def?.oauthProvider
+    ? OAUTH_PROVIDER_CHOICES.find((p) => p.id === def.oauthProvider)
+    : undefined
+
+  /** Both entrances land here: same result shape, same clearing rules. */
+  const run = async (mode: 'signin' | 'token', call: () => Promise<FirstRunResult>) => {
+    setBusy(mode)
     setError('')
     setWarning('')
     try {
-      const res = await window.gurt.firstRunStart(kind, token)
-      // Cleared on both paths: a retry retypes the token rather than
+      const res = await call()
+      // Cleared on both paths: a retry retypes the key rather than
       // resubmitting a value this component kept (§7.1).
       setToken('')
       if (res.warning) setWarning(res.warning)
       onStarted(res.sessionId)
     } catch (e) {
       setToken('')
-      setError(e instanceof Error ? e.message : String(e))
+      const message = e instanceof Error ? e.message : String(e)
+      // A cancelled browser flow is a decision, not a failure — the oauth
+      // modal in Settings makes the same distinction.
+      if (!/cancelled/i.test(message)) setError(message)
     } finally {
-      setBusy(false)
+      setBusy('')
     }
   }
 
-  const secretEnv = agentDef(kind)?.secretEnv ?? ''
   return (
     <div className="wc">
       <div className="wc-logo">
@@ -231,43 +256,91 @@ export function Welcome({
                 key={a.id}
                 type="button"
                 className={`btn ${kind === a.id ? 'btn-primary' : ''}`}
-                disabled={busy}
-                onClick={() => setKind(a.id)}
+                disabled={busy !== ''}
+                onClick={() => {
+                  setKind(a.id)
+                  setError('')
+                  // A kind with no sign-in path has only the key field, so
+                  // open it rather than hiding the only thing that works.
+                  setShowKey(!agentDef(a.id)?.oauthProvider)
+                }}
               >
                 <AgentMark kind={a.id} name={a.label} />
               </button>
             ))}
           </div>
-          <input
-            className="wc-token"
-            type="password"
-            autoComplete="off"
-            spellCheck={false}
-            placeholder={secretEnv ? `token for ${secretEnv}` : 'agent token'}
-            value={token}
-            disabled={busy}
-            onChange={(e) => setToken(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && ready && token.trim() && !busy) void start()
-            }}
-          />
-          <div className="row-buttons">
-            <button
-              className="btn btn-primary"
-              // Only the two docker rows gate. A missing image is a pull this
-              // click does itself (§3.3) — gating on it would cost a second
-              // click for nothing.
-              disabled={!ready || !token.trim() || busy}
-              onClick={() => void start()}
-            >
-              {busy ? 'starting…' : 'Start operator'}
+
+          {provider ? (
+            <div className="row-buttons">
+              <button
+                className="btn btn-primary"
+                // Only the two docker rows gate. A missing image is a pull
+                // this click does itself (§3.3) — gating on it would cost a
+                // second click for nothing.
+                disabled={!ready || busy !== ''}
+                onClick={() => void run('signin', () => window.gurt.firstRunSignIn(kind))}
+              >
+                {busy === 'signin' ? 'waiting for the browser…' : `Sign in with ${provider.label}`}
+              </button>
+              {busy === 'signin' && (
+                <button
+                  className="btn"
+                  onClick={() => void window.gurt.firstRunCancelSignIn()}
+                >
+                  Cancel
+                </button>
+              )}
+              <span className="wc-hint faint">
+                {!ready
+                  ? 'fix the red rows above first'
+                  : 'opens your browser, then creates a workspace, a task and an operator session'}
+              </span>
+            </div>
+          ) : (
+            <div className="wc-hint faint">
+              {def?.label} has no sign-in — it needs an API key.
+            </div>
+          )}
+
+          {/* The key path, demoted but never hidden: opencode has no sign-in
+              at all, and a key is the right shape for CI and self-hosted
+              gateways (requirements-oauth-credentials.md §1). */}
+          {provider && !showKey && (
+            <button className="btn-link wc-alt" onClick={() => setShowKey(true)}>
+              or paste an API key instead
             </button>
-            <span className="wc-hint faint">
-              {!ready
-                ? 'fix the red rows above first'
-                : 'creates a workspace, a task and an operator session, then starts it'}
-            </span>
-          </div>
+          )}
+          {showKey && (
+            <div className="wc-keyblock">
+              <input
+                className="wc-token"
+                type="password"
+                autoComplete="off"
+                spellCheck={false}
+                placeholder={def?.secretEnv ? `API key for ${def.secretEnv}` : 'API key'}
+                value={token}
+                disabled={busy !== ''}
+                onChange={(e) => setToken(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && ready && token.trim() && !busy)
+                    void run('token', () => window.gurt.firstRunStart(kind, token))
+                }}
+              />
+              <div className="row-buttons">
+                <button
+                  className={`btn ${provider ? '' : 'btn-primary'}`}
+                  disabled={!ready || !token.trim() || busy !== ''}
+                  onClick={() => void run('token', () => window.gurt.firstRunStart(kind, token))}
+                >
+                  {busy === 'token' ? 'starting…' : 'Start operator'}
+                </button>
+                <span className="wc-hint faint">
+                  the key is stored in this machine’s credential store and never leaves it
+                </span>
+              </div>
+            </div>
+          )}
+
           {error && <div className="error">{error}</div>}
           {warning && (
             <div className="wc-warn">

@@ -8,7 +8,11 @@
 // nothing, and the whole thing gets out of the way once a session exists.
 //
 // What is NOT covered here, for want of a daemon (recorded in §11 item 7):
-// Prepare pulling the two images, and `firstRunStart` reaching `started`.
+// Prepare pulling the two images, and either create reaching `started`. The
+// sign-in button's *click* is likewise not driven — it opens the system
+// browser against a real provider, which a smoke must not do; what is checked
+// is that it leads, names the right provider per kind, and that the key path
+// stays one click away.
 //
 //   npm run build && node scripts/smoke-first-run.mjs
 import { createRequire } from 'node:module'
@@ -91,39 +95,67 @@ try {
     els.map((e) => e.className)
   )
   const healthy = dots[0].includes('dot-green') && dots[1].includes('dot-green')
-  const startBtn = page.locator('button:has-text("Start operator")')
 
-  // --- the button is gated on the token, always ---
-  assert.equal(await startBtn.isDisabled(), true, 'no token pasted yet')
-  await page.fill('.wc-token', 'sk-smoke-not-a-real-token')
+  // --- signing in is the primary path, and it leads ---
+  // The credential a user meeting gurt actually has is a login, not a string
+  // (requirements-oauth-credentials.md §1), so the sign-in button is the one
+  // that is visible without asking, and the key field is behind a disclosure.
+  const signInBtn = page.locator('button:has-text("Sign in with")')
+  await signInBtn.waitFor({ timeout: 5000 })
+  assert.match(
+    (await signInBtn.innerText()).trim(),
+    /Claude \(Anthropic\)/,
+    'claude-code leads with its own provider named'
+  )
+  assert.equal(await page.locator('.wc-token').count(), 0, 'no key field until asked for')
   assert.equal(
-    await startBtn.isDisabled(),
+    await signInBtn.isDisabled(),
     !healthy,
-    healthy ? 'a green machine with a token can start' : 'a red machine cannot start'
+    healthy ? 'a green machine can sign in' : 'a red machine cannot'
   )
   if (!healthy) {
-    const hint = (await page.locator('.wc-hint').innerText()).trim()
+    const hint = (await page.locator('.wc-hint').first().innerText()).trim()
     assert.match(hint, /fix the red rows/, 'a disabled button says why')
-    console.log('first run: button refused with a stated reason OK')
-  } else {
-    console.log('first run: button enabled on a healthy machine OK')
   }
-  // The token field is a password field — it is never echoed on screen.
-  assert.equal(await page.locator('.wc-token').getAttribute('type'), 'password')
-  await page.fill('.wc-token', '')
+  console.log('first run: sign-in is the primary path OK')
 
-  // --- the four agent kinds are offered, with the env var that names them ---
-  const kinds = await page.locator('.wc-kinds button').allInnerTexts()
-  assert.equal(kinds.length, 4, 'claude / codex / gemini / opencode')
-  const placeholder = await page.locator('.wc-token').getAttribute('placeholder')
-  assert.match(placeholder, /CLAUDE_CODE_OAUTH_TOKEN/, 'says which token is wanted')
-  await page.click('.wc-kinds button:has-text("codex")')
+  // --- the key path is one click away, never buried ---
+  await page.click('.wc-alt')
+  await page.waitForSelector('.wc-token', { timeout: 5000 })
+  assert.equal(await page.locator('.wc-token').getAttribute('type'), 'password')
   assert.match(
     await page.locator('.wc-token').getAttribute('placeholder'),
-    /OPENAI_API_KEY/,
+    /CLAUDE_CODE_OAUTH_TOKEN/,
+    'says which key is wanted'
+  )
+  console.log('first run: the API-key path is one click away OK')
+
+  // --- each kind leads with its own provider; opencode has none ---
+  const kinds = await page.locator('.wc-kinds button').allInnerTexts()
+  assert.equal(kinds.length, 4, 'claude / codex / gemini / opencode')
+  await page.click('.wc-kinds button:has-text("codex")')
+  assert.match((await signInBtn.innerText()).trim(), /ChatGPT \(OpenAI\)/)
+  await page.click('.wc-kinds button:has-text("gemini")')
+  assert.match((await signInBtn.innerText()).trim(), /Gemini \(Google\)/)
+
+  // opencode has no verified sign-in delivery (§5.2.1 of the oauth doc), so it
+  // says so and opens the key field instead of offering a button that would
+  // complete a browser round-trip and then fail at session start.
+  await page.click('.wc-kinds button:has-text("opencode")')
+  await page.waitForSelector('.wc-token', { timeout: 5000 })
+  assert.equal(await signInBtn.count(), 0, 'no sign-in button for a kind with no sign-in')
+  assert.match(
+    (await page.locator('.wc-start').innerText()),
+    /has no sign-in/,
+    'and it says why rather than silently offering only a field'
+  )
+  assert.match(
+    await page.locator('.wc-token').getAttribute('placeholder'),
+    /ANTHROPIC_API_KEY/,
     'and follows the picked kind'
   )
-  console.log('first run: kind picker names each kind’s token OK')
+  console.log('first run: per-kind providers, and opencode’s honest fallback OK')
+  await page.click('.wc-kinds button:has-text("claude")')
 
   // --- the same checklist has a permanent home in Settings ---
   await page.click('.ab-item[title^="Settings"]')

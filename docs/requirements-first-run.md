@@ -453,16 +453,57 @@ question. No `docker images` parsing, no tag comparison.
 
 ## 6. "Start operator": the one-click create
 
-### 6.1 The gesture
+### 6.1 The gesture: sign in
 
 Below the checklist: a kind picker (the four `AGENT_DEFS` —
-claude code / codex / gemini / opencode), one password field for the
-token, one button.
+claude code / codex / gemini / opencode) and one button, **Sign in with
+Claude (Anthropic)** / **ChatGPT (OpenAI)** / **Gemini (Google)**,
+naming the provider that kind authenticates against.
 
-The kind picker's rows carry each kind's `secretEnv` as a hint
-(`CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_API_KEY`, `GEMINI_API_KEY`,
-`ANTHROPIC_API_KEY`) — that string is what tells a user which token they
-are being asked for, and it is already in `AGENT_DEFS`.
+> **Extends** `requirements-oauth-credentials.md` §4. That section
+> presents the API key and the sign-in as *peers* in the Credentials
+> modal, and this does not change that — Settings stays exactly as it
+> is. The welcome screen is a different context and takes a different
+> position: **the sign-in leads, the key is behind one click.** The
+> reason is that document's own §1 — the credential a user meeting gurt
+> for the first time actually *has* is a login, not a string. Claude,
+> ChatGPT and Gemini subscriptions authenticate by sign-in, and the
+> tokens those flows mint are not something anyone can extract from
+> another tool's keychain and paste into a form. Leading with a
+> password field asks most first-time users for the one thing they do
+> not have.
+
+**Which provider signs a kind in is a per-kind fact, on `AgentDef`.**
+`oauthProvider` sits beside `secretEnv` because it answers the same
+question — how this kind is authenticated — and because
+`requirements-oauth-credentials.md` §5.2.1 already makes *delivery* a
+per-kind fact (`oauthAuthFile` in `main/oauth/materialize.ts`):
+
+| kind | `oauthProvider` | how the token is delivered (§5.2.1) |
+| --- | --- | --- |
+| claude-code | `anthropic` | `CLAUDE_CODE_OAUTH_TOKEN`, the env var |
+| codex | `openai` | `~/.codex/auth.json`, env var suppressed |
+| gemini | `google` | `~/.gemini/oauth_creds.json`, env var suppressed |
+| opencode | **null** | — no verified delivery; API key only |
+
+A kind is listed only once that document says how its CLI consumes a
+sign-in. **opencode is null on purpose**: pointing it at the anthropic
+provider would buy a browser round-trip and a failure at session start,
+which is a worse outcome than asking for a key. Picking it on the
+welcome screen says so and opens the key field.
+
+### 6.1.1 The key path stays, demoted
+
+Under the sign-in button: **"or paste an API key instead"**, one click
+to a password field carrying the kind's `secretEnv` as its placeholder
+(`CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_API_KEY`, …) — that string is what
+tells a user which key they are being asked for.
+
+Not hidden and not deprecated, for two reasons that are not taste:
+opencode has no sign-in path at all, and a key is the right shape for
+CI, self-hosted gateways and enterprise proxies — which is why
+`requirements-oauth-credentials.md` §1 says OAuth "complements
+`agent-token`; it never replaces it".
 
 ### 6.2 What it creates
 
@@ -494,7 +535,7 @@ existing one where the name or shape already matches:
 | # | entity | name / default | reuse rule |
 | --- | --- | --- | --- |
 | 1 | workspace | the currently-selected workspace; else the only existing one; else create `default` | never creates a second when one exists |
-| 2 | credential | `CredentialEntry` `{ kind: 'agent-token', label: '<kind label> token', hosts: [], data: { secret } }`, `id` a fresh `randomUUID()` | never reused — a pasted token is always a new entry (an existing entry's secret is unreadable from here by design) |
+| 2 | credential | **sign-in path**: `{ kind: 'oauth', label: '<kind label> sign-in', data: { providerId } }`, stored by the flow itself. **key path**: `{ kind: 'agent-token', label: '<kind label> token', data: { secret } }`. `id` a fresh `randomUUID()` either way | never reused — a pasted token is always a new entry (an existing entry's secret is unreadable from here by design), and a sign-in always mints a fresh set |
 | 3 | agent instance | id from the kind slug, uniquified the way `SettingsPage`'s `uniqueId` does (`claude-code`, `claude-code-2`, …); `{ kind, label: AgentDef.label, credentialId }` | an existing instance of that kind is **re-pointed** at the new credential rather than duplicated |
 | 4 | task | `setup` | reused when it exists (`store.taskExists`) |
 | 5 | session | role `operator`, `repos: []`, `env: operatorEnvName(ws)`, `agent` = #3, `network: { internal: true }`, `startPrompt` = §6.5, `action: 'draft'` | never reused |
@@ -526,11 +567,22 @@ this document exists to remove.
    failed pull means the start would fail too, and an entity graph
    created for a start that cannot happen is exactly the litter the
    manual flow leaves behind.
-2. Call `firstRunStart(kind, token)`. It **probes the token first**
-   (§7.3): a `rejected` verdict creates nothing and rejects the call
-   with the provider's answer; `ok` and `unreachable` both continue,
-   the latter carrying a warning back for the renderer to show. Then it
-   creates 1–5 above and returns `{ sessionId }` for the **draft**.
+2. Call `firstRunSignIn(kind)` or, on the key path,
+   `firstRunStart(kind, token)`. Both verify the credential before
+   creating anything, in the way their path allows:
+
+   - **sign-in** runs the provider's browser flow (`oauthSignIn`, which
+     is also what *stores* the entry — so a cancelled flow stores
+     nothing). There is no token probe here and none is wanted: the
+     provider just authenticated the user, which is a stronger
+     statement than any `/v1/models` call could make.
+   - **key** probes it (§7.3): `rejected` creates nothing and rejects
+     with the provider's answer; `ok` and `unreachable` both continue,
+     the latter carrying a warning back.
+
+   Then entities 3–5 are created — by one shared `createAndStart`, so
+   the two paths cannot drift in what they leave on disk — and
+   `{ sessionId }` for the **draft** comes back.
 3. The renderer selects that session immediately. The welcome screen
    stops matching §2.1's condition on the same tree push, so it goes
    away by itself.
@@ -547,6 +599,10 @@ token field is empty. It is *not* disabled on `images`.
 ordinary entity the UI already knows how to show.** That falls out of
 step 4 being a separate, un-awaited call:
 
+- **The sign-in is cancelled or fails** — nothing at all exists yet.
+  The oauth entry is a draft until the flow stores it, so a closed
+  browser tab, a timeout or a `state` mismatch leaves the machine
+  untouched. A cancel is not shown as an error; it was a decision.
 - **Steps 1–5 of §6.2 throw** — the method rejects with that sentence,
   shown inline under the button. Everything created before the throw
   stays (a workspace, possibly a credential), because every one of them
@@ -589,6 +645,12 @@ contract):
 > will do it.
 
 ## 7. Token handling
+
+This whole section is about the **key path**. On the sign-in path no
+secret crosses the IPC boundary at all: `firstRunSignIn` takes an agent
+kind, and the tokens are minted host-side by the provider's flow and fed
+to `addSecrets` there (`requirements-oauth-credentials.md` §5.4) before
+they can reach a log. That is the strongest reason to lead with it.
 
 ### 7.1 One crossing
 
@@ -707,9 +769,7 @@ whoever takes it.
 
 `src/shared/api.ts` is the single source of truth (its own header: "adding
 a method here is the whole wiring"), and `METHODS` makes an unannotated
-method a compile error. Four methods, four annotations — the fourth is
-`machineStartDocker`, which §3.4's action needs and the first draft of
-this section forgot:
+method a compile error. Six methods, six annotations:
 
 ```ts
   /** Host-state report for the welcome screen and Settings → Machine: the
@@ -726,6 +786,15 @@ this section forgot:
    *  Returns as soon as the draft exists; a failed start lands on it as an
    *  ordinary `startError`, not a rejection here. */
   firstRunStart(kind: string, token: string): Promise<FirstRunResult>
+  /** The same create, entered by signing in instead of pasting a key — the
+   *  primary path (§6.1). Mints an `oauth` credential for the kind's provider
+   *  (`AgentDef.oauthProvider`), runs that provider's browser flow, and on
+   *  success creates and starts exactly what `firstRunStart` does. A cancelled
+   *  flow creates nothing; a kind with no sign-in path is refused. */
+  firstRunSignIn(kind: string): Promise<FirstRunResult>
+  /** Abort that pending sign-in. The credential it mints is created
+   *  host-side, so the renderer has no id to hand `oauthCancel`. */
+  firstRunCancelSignIn(): Promise<void>
   /** The daemon row's `start-docker` action (§3.4) — `open -a Docker`, macOS
    *  only, fire-and-forget; the row's own re-check reports the result. */
   machineStartDocker(): Promise<void>
@@ -735,6 +804,8 @@ this section forgot:
   machineDoctor: 'read',   //   the "why won't anything start" diagnostic
   machinePrepare: 'none',  //   host-side side effect, and a user gesture
   firstRunStart: 'none',   //   §10 bootstrap + §5.1: no path to a credential
+  firstRunSignIn: 'none',  //   the same, plus a host browser window
+  firstRunCancelSignIn: 'none', // controls that flow
   machineStartDocker: 'none', // host GUI, like `openLogsFolder`
 ```
 
@@ -747,6 +818,11 @@ this section forgot:
   `scripts/gen-admin-tools.mjs` and one line in `main/adminSurface.ts`'s
   `Pick<GurtApi, ReadMethod>` binding — both mechanical, both
   compile-checked, and CI's no-diff regeneration check covers the rest.
+- **`firstRunSignIn` is `none` for `firstRunStart`'s reason and one
+  more**: it opens a browser window on the user's desktop, which is the
+  `openLogsFolder` rule (§3.4 of the operator doc). An agent that could
+  start an OAuth flow could put a provider's consent screen in front of
+  a user who did not ask for one.
 - **`firstRunStart` is `none`.** The annotation is not about who calls
   the method — the welcome screen does, and no operator exists at that
   point. It answers one question and only that one: *may the operator
@@ -779,6 +855,11 @@ ipc.ts, and the doctor is a plain pull. Nothing new is broadcast.
   fields, `applyHeld`, the composite verbs and the per-tool MCP
   allowlist are all untouched and unblocked. This document adds one
   `read` annotation and two `none`s.
+- **The Credentials modal.** `requirements-oauth-credentials.md` §4's
+  presentation — API key and sign-in as peers, neither recommended,
+  neither buried — is exactly as it was. §6.1's ordering is the welcome
+  screen's alone, and it is a first-encounter judgement, not a claim
+  that one path is better than the other.
 - **The Settings operator-env picker.** `setOperatorEnv` stays the way a
   workspace re-points its operator env, and the welcome screen honours
   it: the session is created on `operatorEnvName(ws)`, not on the
@@ -844,6 +925,14 @@ exists to remove.
 4. `scripts/host-path.test.mjs` — extended with `assertDockerDaemon`'s
    message, the way it already covers `assertDockerCli`'s, via the same
    injected-value seam.
+4a. `scripts/first-run.test.mjs`, the sign-in half — a stub `signIn`
+   stands in for the browser flow: each kind hands its own `providerId`
+   to it (`claude-code`→anthropic, codex→openai, gemini→google); the
+   minted entry is `kind: 'oauth'` and the agent links it exactly as it
+   links an `agent-token`; a throwing flow leaves no workspace, no
+   agent change and **no credential** (the entry is a draft until the
+   flow stores it); and `opencode` is refused before the browser is
+   opened, with `attempted === false` asserted rather than assumed.
 5. `scripts/agent-providers.test.mjs` (new) — a provider per kind
    against a local HTTP stub: 200 → `ok`, 401 and 403 → `rejected`,
    **429 → `unreachable`** (the `/api/oauth/usage` edge answers an
@@ -857,13 +946,20 @@ exists to remove.
    — a store with a workspace and a task but *no session* opens on the
    welcome screen (§2.1's condition, which is deliberately not "no
    workspaces"); the checklist renders its three rows; "Start operator"
-   is disabled with the token field empty and, on a machine with no
-   daemon, disabled with the reason beside it; the token field is a
-   password field; the kind picker names each kind's `secretEnv`;
-   Settings → Machine shows the same rows; creating a draft ends the
-   first run, and the command-palette entry brings it back. The docker
-   rows will be red in this environment, which is the point — the screen
-   must be legible and correct on the machine that has nothing.
+   **Sign in with Claude (Anthropic)** leads and no key field is on
+   screen until asked for; it is disabled on a machine with no daemon,
+   with the reason beside it; "or paste an API key instead" opens a
+   password field carrying the kind's `secretEnv`; switching kinds
+   renames the button to that kind's provider, and `opencode` shows
+   "has no sign-in" and the key field instead of a button; Settings →
+   Machine shows the same rows; creating a draft ends the first run, and
+   the command-palette entry brings it back. The docker rows will be red
+   in this environment, which is the point — the screen must be legible
+   and correct on the machine that has nothing.
+
+   The sign-in button's **click** is deliberately not driven: it opens
+   the system browser against a real provider, which a smoke must not
+   do.
 7. **Not verified without a daemon**: the whole happy path. What to
    check on first real use — Prepare pulling both refs and the row
    turning green; `docker info` on a *starting* Docker Desktop (the
@@ -915,6 +1011,23 @@ Where the plan met the code and bent.
   already keeps `logs[key]` for every `provision-log` key, so the welcome
   screen passes `logs[PREPARE_LOG_KEY]` down and only the Settings mount
   subscribes on its own.
+- **The screen leads with signing in** (§6.1), which arrived after the
+  first cut of this document was written against a token field. Three
+  things followed. `AgentDef` gained `oauthProvider`, because "which
+  provider signs this kind in" is the same shape of per-kind fact as
+  `secretEnv` and `skillsDir`, and `main/oauth/materialize.ts` already
+  branches on agent kind for the delivery half. `firstRun.ts` split into
+  a shared `createAndStart` plus two thin entrances, so an `oauth` first
+  run and an `agent-token` one cannot drift in what they leave on disk.
+  And `firstRunCancelSignIn` exists because the credential is minted
+  host-side: the renderer never learns its id, so it has nothing to pass
+  to `oauthCancel` and needs a cancel addressed by "the one the welcome
+  screen started".
+- **`opencode` gets no sign-in button.** Its `oauthProvider` is null
+  because `requirements-oauth-credentials.md` §5.2.1 verified delivery
+  for three kinds and not for it. The screen says so and opens the key
+  field, rather than offering a button that would complete a browser
+  round-trip and then fail at session start.
 - **`ipc-opaque-args.test.mjs` did its job.** It failed on the three
   new zero-argument methods until they were declared in `SAFE_ARGS`;
   `firstRunStart` it accepted, because that one was already in
@@ -984,8 +1097,9 @@ binding), `src/main/doctor.ts` (new — the report, Prepare),
 `src/main/agentProviders.ts` (new — one token probe per `AgentDef.id`,
 shaped like `git/providers.ts`),
 `src/main/containers.ts` (`ensureUncoalesced`: the second preflight),
-`src/main/firstRun.ts` (new — `firstRunStart`, the only place the five
-creates live), `src/main/ipc.ts` (three handlers, `firstRunStart` into
+`src/main/firstRun.ts` (new — `createAndStart` plus its two entrances,
+the only place the five creates live), `src/shared/agents.ts`
+(`AgentDef.oauthProvider`), `src/main/ipc.ts` (three handlers, `firstRunStart` into
 `OPAQUE_ARGS`), `src/renderer/src/components/Welcome.tsx` (new — the
 screen and the reusable checklist), `src/renderer/src/App.tsx` (the
 `!selection` slot, the forced-welcome flag, the palette wiring),

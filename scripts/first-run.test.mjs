@@ -57,8 +57,9 @@ await bundle({
   stdin: {
     contents:
       `export { createKernel } from ${S('src/main/kernel.ts')}\n` +
-      `export { firstRunStart } from ${S('src/main/firstRun.ts')}\n` +
-      `export { getCredentials } from ${S('src/main/credentials.ts')}\n` +
+      `export { firstRunStart, firstRunSignIn } from ${S('src/main/firstRun.ts')}\n` +
+      `export { AGENT_DEFS, agentDef } from ${S('src/shared/agents.ts')}\n` +
+      `export { getCredentials, upsertCredentialEntry } from ${S('src/main/credentials.ts')}\n` +
       `export { getAgents, listWorkspaces } from ${S('src/main/store.ts')}\n` +
       `export { FIRST_RUN_PROMPT, FIRST_RUN_TASK, FIRST_RUN_WORKSPACE } from ${S('src/shared/doctor.ts')}\n` +
       `export { OPERATOR_ENV_NAME } from ${S('src/shared/types.ts')}`,
@@ -78,6 +79,22 @@ after(() => {
 
 const TOKEN = 'sk-first-run-secret-value-0001'
 const TOKEN2 = 'sk-first-run-secret-value-0002'
+
+/** Stand in for what `oauthSignIn` does on success: fill the draft entry with
+ *  a token set and store it. The real one adds a browser round-trip; nothing
+ *  below depends on that, and everything below depends on the entry existing
+ *  only once the flow has succeeded. */
+const storeOAuth = (entry) =>
+  m.upsertCredentialEntry({
+    ...entry,
+    data: {
+      ...entry.data,
+      access: `access-${entry.id}`,
+      refresh: `refresh-${entry.id}`,
+      expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+      account: 'someone@example.com'
+    }
+  })
 
 /** A provider that answers with one status and never touches the network. */
 const answering = (status) => async () => ({ status, ok: status >= 200 && status < 300 })
@@ -251,4 +268,95 @@ test('an unknown kind is refused before anything is written', async () => {
     /paste the agent token/
   )
   assert.equal((await m.getCredentials()).credentials.length, credsBefore)
+})
+
+// --- the sign-in path (the welcome screen's primary one) --------------------
+//
+// The credential a user standing in front of a fresh gurt actually has is a
+// login, not a string (requirements-oauth-credentials.md §1), so signing in is
+// the path the screen leads with. Its create must land exactly what the key
+// path lands, differing only in the credential's kind.
+
+test('signing in mints an oauth credential and creates the same five entities', async () => {
+  let signedInWith = null
+  const { sessionId } = await m.firstRunSignIn(kernel, 'claude-code', {
+    signIn: async (entry) => {
+      // What `oauthSignIn` gets handed: a draft entry naming the provider,
+      // which the flow itself is what stores (§4 of the oauth doc).
+      signedInWith = entry
+      await storeOAuth(entry)
+    }
+  })
+  assert.equal(signedInWith.kind, 'oauth')
+  assert.equal(signedInWith.data.providerId, 'anthropic', 'claude-code signs in with anthropic')
+
+  const creds = (await m.getCredentials()).credentials
+  const minted = creds.find((c) => c.id === signedInWith.id)
+  assert.ok(minted, 'the flow stored the entry')
+  assert.equal(minted.kind, 'oauth')
+
+  // The agent instance links it exactly the way it links an agent-token, and
+  // the session is the same operator on the same env.
+  const agents = await m.getAgents()
+  const claudeId = Object.keys(agents).find((id) => agents[id].kind === 'claude-code')
+  assert.equal(agents[claudeId].credentialId, minted.id)
+  const snap = kernel.sessions.snapshot(sessionId)
+  assert.equal(snap.info.role, 'operator')
+  assert.equal(snap.info.env, m.OPERATOR_ENV_NAME)
+  assert.equal(snap.info.task, m.FIRST_RUN_TASK)
+})
+
+test('each kind signs in with its own provider', async () => {
+  const seen = {}
+  for (const def of m.AGENT_DEFS.filter((d) => d.oauthProvider)) {
+    await m.firstRunSignIn(kernel, def.id, {
+      signIn: async (entry) => {
+        seen[def.id] = entry.data.providerId
+        await storeOAuth(entry)
+      }
+    })
+  }
+  assert.deepEqual(seen, { 'claude-code': 'anthropic', codex: 'openai', gemini: 'google' })
+})
+
+test('a cancelled or failed sign-in creates nothing', async () => {
+  const wsBefore = await m.listWorkspaces()
+  const agentsBefore = JSON.stringify(await m.getAgents())
+  const credsBefore = (await m.getCredentials()).credentials.length
+
+  await assert.rejects(
+    () =>
+      m.firstRunSignIn(kernel, 'codex', {
+        signIn: async () => {
+          throw new Error('sign-in cancelled')
+        }
+      }),
+    /cancelled/
+  )
+
+  assert.deepEqual(await m.listWorkspaces(), wsBefore)
+  assert.equal(JSON.stringify(await m.getAgents()), agentsBefore, 'no agent re-pointed')
+  assert.equal(
+    (await m.getCredentials()).credentials.length,
+    credsBefore,
+    'the entry is a draft until the flow stores it — a cancel stores nothing'
+  )
+})
+
+test('a kind with no sign-in path is refused, not sent through a doomed flow', async () => {
+  // opencode has no verified delivery (requirements-oauth-credentials.md
+  // §5.2.1), so `AgentDef.oauthProvider` is null and a "Sign in" would buy a
+  // browser round-trip and a failure at session start.
+  assert.equal(m.agentDef('opencode').oauthProvider, null)
+  let attempted = false
+  await assert.rejects(
+    () =>
+      m.firstRunSignIn(kernel, 'opencode', {
+        signIn: async () => {
+          attempted = true
+        }
+      }),
+    /no sign-in path/
+  )
+  assert.equal(attempted, false, 'refused before the browser is opened')
 })

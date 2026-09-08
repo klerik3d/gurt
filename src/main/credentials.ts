@@ -494,6 +494,57 @@ export async function listCredentials(): Promise<CredentialEntry[]> {
 }
 
 /**
+ * Read-modify-write one entry's `data` on the save chain
+ * (docs/requirements-oauth-credentials.md §5.3) — the oauth refresh's persist
+ * path. The chain is the lock: a renderer save in flight when the refresh
+ * started must not last-write-wins away a rotated refresh token, and vice
+ * versa, so both writers sit on it and this one reads the store *inside* its
+ * turn. A `undefined` value deletes the key. Values are main-minted plaintext,
+ * never renderer input — no sentinel resolution here.
+ */
+export function patchCredentialData(
+  id: string,
+  patch: Record<string, string | undefined>
+): Promise<void> {
+  const next = saveChain.catch(() => {}).then(async () => {
+    const before = await read()
+    const entry = before.credentials.find((c) => c.id === id)
+    if (!entry) throw new Error('linked credential no longer exists')
+    const data = { ...entry.data }
+    for (const [key, value] of Object.entries(patch)) {
+      if (value === undefined) delete data[key]
+      else data[key] = value
+    }
+    const credentials = before.credentials.map((c) => (c.id === id ? { ...c, data } : c))
+    await write({ credentials })
+    feedRedactor(credentials)
+  })
+  saveChain = next.catch(() => {})
+  return next
+}
+
+/**
+ * Insert or replace one whole entry on the save chain — how a completed OAuth
+ * sign-in lands (docs/requirements-oauth-credentials.md §4): the entry may not
+ * exist yet (signing in a not-yet-saved draft is what stores it), and when it
+ * does, the new token set replaces the old one whole. Same locking rule as
+ * {@link patchCredentialData}; same "main-minted plaintext only" contract.
+ */
+export function upsertCredentialEntry(entry: CredentialEntry): Promise<void> {
+  const next = saveChain.catch(() => {}).then(async () => {
+    const before = await read()
+    const exists = before.credentials.some((c) => c.id === entry.id)
+    const credentials = exists
+      ? before.credentials.map((c) => (c.id === entry.id ? entry : c))
+      : [...before.credentials, entry]
+    await write({ credentials })
+    feedRedactor(credentials)
+  })
+  saveChain = next.catch(() => {})
+  return next
+}
+
+/**
  * Reject an MCP registry entry whose credential link does not resolve to an
  * `mcp-token` (docs/requirements-mcp-proxy.md §3.2). Lives here rather than in
  * store.ts's validator because the credential store is what holds the answer,

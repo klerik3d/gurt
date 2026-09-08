@@ -177,14 +177,14 @@ function killAfter(child: ChildProcess, ms: number): void {
 const CLI_SILENCE_TIMEOUT_MS = 5 * 60_000
 
 /** Runs the CLI under Electron's own binary in Node mode — no system node needed. */
-function runNodeCli(args: string[], sink: LogSink): Promise<RunResult> {
-  sink(`$ devcontainer ${args.join(' ')}`)
+function runNodeCli(args: string[], sink: LogSink, opaqueArgv = false): Promise<RunResult> {
+  if (!opaqueArgv) sink(`$ devcontainer ${args.join(' ')}`)
   return new Promise((resolve, reject) => {
     const started = Date.now()
     const child = spawn(process.execPath, [devcontainerCliPath(), ...args], {
       env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }
     })
-    const exited = traceProc('info', 'devcontainer', args, child.pid)
+    const exited = traceProc('info', 'devcontainer', args, child.pid, opaqueArgv)
     // Silence watchdog: re-armed by every output line, so a long build that
     // keeps talking never trips it. No auto-retry — the caller surfaces the
     // error and the user decides.
@@ -1216,6 +1216,43 @@ export async function adapterPresent(
     () => {}
   )
   return code === 0
+}
+
+/**
+ * Write one small file into the agent's `$HOME` inside the container — the
+ * §5.2.1 seam (docs/requirements-oauth-credentials.md): the access-only native
+ * auth file an oauth-linked codex/gemini launch materializes. Same
+ * `devcontainer exec` transport every other provisioning step uses.
+ *
+ * The content rides in a `--remote-env` value rather than inside the shell
+ * script, so the sh argv carries no secret and no quoting can mangle one; the
+ * value holds the token in its raw registered form, which value-based
+ * redaction knows — and the trace is opaque anyway (`opaqueArgv`, plus a muted
+ * sink), so no log line ever carries the argv. `umask 077` keeps the file
+ * owner-only, like the CLIs' own writes of it.
+ */
+export async function writeContainerUserFile(
+  session: string,
+  configArgs: string[],
+  workspaceFolder: string,
+  relPath: string,
+  content: string
+): Promise<void> {
+  const parent = path.posix.dirname(relPath)
+  const { code } = await runNodeCli(
+    [
+      'exec',
+      '--workspace-folder', workspaceFolder,
+      ...idLabelArgs(session),
+      ...configArgs,
+      '--remote-env', `GURT_PROVISION_FILE=${content}`,
+      'sh', '-c',
+      `umask 077 && mkdir -p "$HOME/${parent}" && printf '%s' "$GURT_PROVISION_FILE" > "$HOME/${relPath}"`
+    ],
+    () => {},
+    true
+  )
+  if (code !== 0) throw new Error(`could not write ~/${relPath} in the container (exit ${code})`)
 }
 
 export async function installAcpAdapter(

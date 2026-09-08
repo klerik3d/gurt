@@ -1,7 +1,15 @@
 // The one-click first-run create (docs/requirements-first-run.md §6).
 //
-// Five entities — workspace, `agent-token` credential, agent instance, task,
-// operator session — created eagerly, in main, behind one call.
+// Five entities — workspace, credential, agent instance, task, operator
+// session — created eagerly, in main, behind one call.
+//
+// **Two entrances, one create.** {@link firstRunSignIn} is the welcome
+// screen's primary path: the kind's OAuth provider runs its browser flow and
+// mints an `oauth` credential. {@link firstRunStart} is the fallback: a pasted
+// API key becomes an `agent-token` credential. They differ only in how the
+// credential comes to exist and how it is checked — everything after that is
+// {@link createAndStart}, shared, so the two paths cannot drift in what they
+// leave on disk.
 //
 // **Why one method and not five IPC calls from the welcome screen.** Three
 // reasons, in order of weight:
@@ -42,12 +50,27 @@ import {
 } from '../shared/doctor'
 import { operatorEnvName, type AgentsFile } from '../shared/types'
 import { probeAgentToken } from './agentProviders'
+import { cancelOAuthSignIn, oauthSignIn } from './oauth'
 import { getCredentials, setCredentials } from './credentials'
 import { createLogger, addSecrets } from './log'
 import * as store from './store'
 import type { Kernel } from './kernel'
 
 const log = createLogger('first-run')
+
+/** The credential id of the sign-in attempt the welcome screen has running, if
+ *  any. The renderer never learns that id — the entry is minted here — so
+ *  "Cancel" needs this to have something to name. One attempt at a time,
+ *  which is what one screen with one button can produce. */
+let pendingSignIn: string | null = null
+
+/** Abort the welcome screen's pending sign-in, if there is one. Idempotent:
+ *  cancelling nothing is not an error, and the browser tab a user already
+ *  closed is the common case. */
+export function cancelFirstRunSignIn(): void {
+  if (pendingSignIn) cancelOAuthSignIn(pendingSignIn)
+  pendingSignIn = null
+}
 
 /** `SettingsPage`'s own rule for a new agent instance id, in the one other
  *  place instances are created: the kind (or the label's slug) with `-2`, `-3`
@@ -101,17 +124,9 @@ export async function firstRunStart(
   const probe = await probeAgentToken(kind, secret, opts.fetchImpl)
   if (probe.verdict === 'rejected') throw new Error(probe.detail)
 
-  // Anything that can bring a container up waits out the boot restore, for the
-  // reason `createSession`'s handler gives: a container born mid-reconcile can
-  // have its record erased.
-  await kernel.ready
-
-  // 1. workspace
-  const ws = await ensureWorkspace(opts.workspace)
-
-  // 2. credential — always a new entry. An existing one's secret cannot be
-  //    read from here by design, so there is nothing to compare against and
-  //    nothing to reuse.
+  // The credential — always a new entry. An existing one's secret cannot be
+  // read from here by design, so there is nothing to compare a paste against
+  // and nothing to reuse.
   const credential: CredentialEntry = {
     id: randomUUID(),
     label: `${def.label} token`,
@@ -121,6 +136,88 @@ export async function firstRunStart(
   }
   const file = await getCredentials()
   await setCredentials({ credentials: [...file.credentials, credential] })
+
+  return createAndStart(
+    kernel,
+    kind,
+    credential.id,
+    opts.workspace,
+    probe.verdict === 'unreachable' ? probe.detail : ''
+  )
+}
+
+/**
+ * The welcome screen's primary path: sign in, then create.
+ *
+ * Why this is primary and pasting a key is the fallback — the credential a
+ * user standing in front of a fresh gurt actually *has* is a login, not a
+ * string (docs/requirements-oauth-credentials.md §1). Claude, ChatGPT and
+ * Gemini subscriptions authenticate by sign-in, and the tokens those flows
+ * mint are not something anyone can extract from another tool's keychain and
+ * paste into a form. Asking for a key first asks most users for the one thing
+ * they do not have.
+ *
+ * There is no token probe on this path and none is wanted: the provider just
+ * authenticated the user, which is a stronger statement than any `/v1/models`
+ * call could make. The `rejected` outcome of §7.3 becomes "the browser flow
+ * failed", and it has the same consequence — nothing is created.
+ */
+export async function firstRunSignIn(
+  kernel: Kernel,
+  kind: string,
+  opts: { workspace?: string; signIn?: (entry: CredentialEntry) => Promise<void> } = {}
+): Promise<FirstRunResult> {
+  const def = agentDef(kind)
+  if (!def) throw new Error(`unknown agent kind "${kind}"`)
+  // Refused rather than sent through a flow its CLI cannot consume: a "Sign
+  // in" that completes a browser round-trip and then fails at session start is
+  // worse than having asked for a key (`AgentDef.oauthProvider`).
+  if (!def.oauthProvider)
+    throw new Error(
+      `${def.label} has no sign-in path — paste an API key for it instead`
+    )
+
+  // The entry is a draft until the flow fills it: `oauthSignIn` is what stores
+  // it, and a cancelled flow therefore stores nothing (§4 of the oauth doc —
+  // "the entry may be an unsaved draft; signing in is what stores it").
+  const credential: CredentialEntry = {
+    id: randomUUID(),
+    label: `${def.label} sign-in`,
+    kind: 'oauth',
+    hosts: [],
+    data: { providerId: def.oauthProvider }
+  }
+  // Throws on cancel, timeout, a `state` mismatch or a provider error, and
+  // creates nothing when it does — the whole reason it runs before the rest.
+  pendingSignIn = credential.id
+  try {
+    await (opts.signIn ?? oauthSignIn)(credential)
+  } finally {
+    if (pendingSignIn === credential.id) pendingSignIn = null
+  }
+
+  return createAndStart(kernel, kind, credential.id, opts.workspace, '')
+}
+
+/**
+ * Everything after "a credential for this kind now exists": entities 3–5, then
+ * the start. Shared by both entrances so an `oauth` first run and an
+ * `agent-token` one leave exactly the same shape on disk.
+ */
+async function createAndStart(
+  kernel: Kernel,
+  kind: string,
+  credentialId: string,
+  preferredWorkspace: string | undefined,
+  warning: string
+): Promise<FirstRunResult> {
+  const def = agentDef(kind)!
+  // Anything that can bring a container up waits out the boot restore, for the
+  // reason `createSession`'s handler gives: a container born mid-reconcile can
+  // have its record erased.
+  await kernel.ready
+
+  const ws = await ensureWorkspace(preferredWorkspace)
 
   // 3. agent instance — an existing instance of this kind is re-pointed at the
   //    new credential rather than duplicated: two claude instances differing
@@ -137,7 +234,7 @@ export async function firstRunStart(
     [agentId]: {
       kind,
       label: prior?.label || def.label,
-      credentialId: credential.id,
+      credentialId,
       ...(prior?.secretEnv ? { secretEnv: prior.secretEnv } : {}),
       ...(prior?.env ? { env: prior.env } : {})
     }
@@ -166,7 +263,7 @@ export async function firstRunStart(
     undefined,
     { internal: true }
   )
-  log.info('first-run.created', { ws, agent: agentId, session: info.id, probe: probe.verdict })
+  log.info('first-run.created', { ws, agent: agentId, session: info.id })
 
   // Hand the start to the ordinary path and do not wait for it: a failure
   // there is a draft carrying `startError`, which is a state the pane the
@@ -178,8 +275,5 @@ export async function firstRunStart(
     // repo). Log it and leave the draft — the user has a Run button.
     log.warn('first-run.start.fail', { session: info.id, err: e })
   }
-  return {
-    sessionId: info.id,
-    ...(probe.verdict === 'unreachable' ? { warning: probe.detail } : {})
-  }
+  return { sessionId: info.id, ...(warning ? { warning } : {}) }
 }

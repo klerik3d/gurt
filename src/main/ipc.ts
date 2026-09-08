@@ -14,6 +14,7 @@ import {
   credentialUsedBy,
   checkMcpEntryCredential
 } from './credentials'
+import { cancelOAuthSignIn, oauthSignIn } from './oauth'
 import { isLocalMcpEntry, mcpEntryKind } from '../shared/mcp'
 import { sanitizeSkillSelection } from '../shared/skills'
 import { checkMcpCommand, clearNpmInstall } from './mcp/stdioBridge'
@@ -31,7 +32,7 @@ import { normalizeNotificationPrefs } from '../shared/notifications'
 import { sanitizeHotkeys } from '../shared/hotkeys'
 import { initAppMenu } from './menu'
 import { machineDoctor, machinePrepare, startDockerApp } from './doctor'
-import { firstRunStart } from './firstRun'
+import { cancelFirstRunSignIn, firstRunSignIn, firstRunStart } from './firstRun'
 import { PREPARE_LOG_KEY } from '../shared/doctor'
 import { checkForUpdates, installUpdate, updateStatus } from './update'
 
@@ -67,6 +68,9 @@ const OPAQUE_ARGS = new Set<keyof GurtApi>([
   'addReviewComment',
   'launchReviewFix',
   'setCredentials',
+  // The whole entry rides in the call; its secret fields only ever hold masks,
+  // but the payload is a credential's and stays opaque like setCredentials'.
+  'oauthSignIn',
   // Carries a pasted agent token, exactly like `setCredentials`
   // (docs/requirements-first-run.md §7.2).
   'firstRunStart',
@@ -137,6 +141,8 @@ export function registerIpc(): void {
     getCredentials: () => getCredentials(),
     setCredentials: (data) => setCredentials(data),
     credentialUsedBy: (id) => credentialUsedBy(id),
+    oauthSignIn: (entry) => oauthSignIn(entry),
+    oauthCancel: async (id) => cancelOAuthSignIn(id),
     // Store CRUD announces over the bus, not straight to the windows, so
     // headless bus subscribers (orchestrator, extensions) see these too.
     createWorkspace: async (name) => {
@@ -462,7 +468,9 @@ export function registerIpc(): void {
       await machinePrepare((line) => kernel.bus.emit('provision.log', { key, line }))
     },
     machineStartDocker: async () => startDockerApp(),
-    firstRunStart: (kind, token) => firstRunStart(kernel, kind, token)
+    firstRunStart: (kind, token) => firstRunStart(kernel, kind, token),
+    firstRunSignIn: (kind) => firstRunSignIn(kernel, kind),
+    firstRunCancelSignIn: async () => cancelFirstRunSignIn()
   }
 
   // Renderer records: validated, rate-limited and truncated inside `logRenderer`

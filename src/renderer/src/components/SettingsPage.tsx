@@ -11,13 +11,16 @@ import type {
 } from '../../../shared/credentials'
 import {
   CREDENTIAL_KINDS,
+  OAUTH_PROVIDER_CHOICES,
   agentCredentials,
   credentialKindLabel,
   isGitKind,
   mcpCredentials,
+  oauthSignedOut,
   resolveForRepo,
   resolveMcpCredential,
-  resolveMcpEnvSecret
+  resolveMcpEnvSecret,
+  signedOutError
 } from '../../../shared/credentials'
 import type {
   McpDef,
@@ -3113,6 +3116,8 @@ const textToHosts = (text: string) => text.split(',').map((h) => h.trim()).filte
  *  already masked server-side (getCredentials() never serves plaintext) — used
  *  as-is. */
 function maskedPreview(c: CredentialEntry): string {
+  if (c.kind === 'oauth')
+    return c.data['account'] ? `signed in as ${c.data['account']}` : 'not signed in'
   if (c.data['secret']) return c.data['secret']
   return c.kind === 'git-host' ? 'ambient host auth' : '—'
 }
@@ -3122,7 +3127,8 @@ const KIND_TAG: Record<CredentialKind, string> = {
   'git-app': 'app',
   'git-host': 'host',
   'agent-token': 'agent',
-  'mcp-token': 'mcp'
+  'mcp-token': 'mcp',
+  oauth: 'oauth'
 }
 
 /** Tag for a stored entry, tolerating a kind this build retired (§10.1) — such
@@ -3137,6 +3143,10 @@ function CredentialsSection() {
   const [draftHosts, setDraftHosts] = useState('')
   const [plaintext, setPlaintext] = useState(false)
   const [error, setError] = useState('')
+  // A browser sign-in round-trip is pending for the open card (§4 of
+  // docs/requirements-oauth-credentials.md). One attempt at most: the button
+  // becomes Cancel, and main cancels-and-restarts if asked again anyway.
+  const [signingIn, setSigningIn] = useState(false)
   // Entries created this session: their secret must be typed in before the
   // first save. For anything already stored, an empty secret field means
   // "keep the stored one" — so only fresh entries get the required check.
@@ -3165,6 +3175,10 @@ function CredentialsSection() {
   }
 
   const collapse = () => {
+    // Dismissing the card abandons its pending sign-in: the loopback listener
+    // must not outlive the UI that started it.
+    if (signingIn && open) void window.gurt.oauthCancel(open)
+    setSigningIn(false)
     setOpen(null)
     setDraft(null)
     setError('')
@@ -3199,8 +3213,11 @@ function CredentialsSection() {
       return
     }
     if (freshIds.current.has(draft.id)) {
+      // Hidden fields are the flow-obtained ones (oauth) — there is nothing
+      // the user could type, so the required check skips them: saving a
+      // not-yet-signed-in entry is legal, it just blocks at resolve time.
       const missing = (kindDef(draft.kind)?.fields ?? []).find(
-        (f) => f.secret && !(draft.data[f.key] ?? '').trim()
+        (f) => f.secret && !f.hidden && !(draft.data[f.key] ?? '').trim()
       )
       if (missing) {
         setError(`${missing.label} must not be empty`)
@@ -3223,6 +3240,50 @@ function CredentialsSection() {
       setDraft(null)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  /**
+   * Run the browser sign-in for the open `oauth` draft
+   * (docs/requirements-oauth-credentials.md §4). Main owns the whole flow —
+   * system browser, loopback listener, code exchange — and persists the token
+   * set itself; the renderer only ever sees the refreshed masked view. A
+   * successful sign-in *is* the save for a fresh entry, so the label has to be
+   * there first. On failure the entry stays as it was and the provider's
+   * error shows as a sentence.
+   */
+  const signIn = async () => {
+    if (!draft) return
+    if (!draft.label.trim()) {
+      setError('name must not be empty')
+      return
+    }
+    if (!(draft.data['providerId'] ?? '').trim()) {
+      setError('choose a provider first')
+      return
+    }
+    setError('')
+    setSigningIn(true)
+    try {
+      await window.gurt.oauthSignIn({ ...draft, kind: 'oauth', hosts: [] })
+      freshIds.current.delete(draft.id)
+      const f = await window.gurt.getCredentials()
+      setEntries(f.credentials)
+      setPlaintext(!!f.plaintext)
+      // Reopen from the stored view, the way expand() does, so the card now
+      // shows "signed in as <account>" and Re-authenticate.
+      const stored = f.credentials.find((x) => x.id === draft.id)
+      if (stored) {
+        const data = { ...stored.data }
+        for (const fld of kindDef(stored.kind)?.fields ?? []) if (fld.secret) data[fld.key] = ''
+        setDraft({ ...stored, data })
+      }
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e)
+      // Cancelled by the user (the Cancel button, or a restart) — not an error.
+      if (!message.includes('cancelled')) setError(message)
+    } finally {
+      setSigningIn(false)
     }
   }
 
@@ -3338,7 +3399,7 @@ function CredentialsSection() {
                       'credential above, or delete it.'
                     )}
                   </div>
-                  {(def?.fields ?? []).map((f) => (
+                  {(def?.fields ?? []).filter((f) => !f.hidden).map((f) => (
                     <label key={f.key} className="fld">
                       <span className="seclabel">{f.label.toUpperCase()}</span>
                       <input
@@ -3352,6 +3413,47 @@ function CredentialsSection() {
                       />
                     </label>
                   ))}
+                  {draft.kind === 'oauth' && (
+                    <>
+                      <div className="fld cred-type">
+                        <span className="seclabel">PROVIDER</span>
+                        <ProviderPick
+                          value={draft.data['providerId'] ?? ''}
+                          onPick={(id) =>
+                            setDraft({ ...draft, data: { ...draft.data, providerId: id } })
+                          }
+                        />
+                      </div>
+                      {/* State is read from the *stored* masked entry `c`, not
+                          the draft — expand() blanks the draft's secret fields,
+                          which would read as signed out. */}
+                      {c.data['refresh'] && !oauthSignedOut(c) && (
+                        <div className="fld-hint">
+                          signed in as {c.data['account'] || 'an unnamed account'}
+                        </div>
+                      )}
+                      {oauthSignedOut(c) && c.data['account'] && (
+                        <div className="error">{signedOutError(c)}</div>
+                      )}
+                      <div className="set-card-foot" style={{ justifyContent: 'flex-start' }}>
+                        {signingIn ? (
+                          <>
+                            <span className="fld-hint">waiting for the browser sign-in…</span>
+                            <button
+                              className="btn"
+                              onClick={() => void window.gurt.oauthCancel(draft.id)}
+                            >
+                              Cancel
+                            </button>
+                          </>
+                        ) : (
+                          <button className="btn" onClick={run(signIn)}>
+                            {c.data['refresh'] && !oauthSignedOut(c) ? 'Re-authenticate' : 'Sign in'}
+                          </button>
+                        )}
+                      </div>
+                    </>
+                  )}
                   {draft.kind === 'git-token' && draft.data['gitEmail'] && (
                     <div className="fld-hint">
                       verified identity: {draft.data['gitName']} &lt;{draft.data['gitEmail']}&gt;
@@ -3389,6 +3491,41 @@ function CredentialsSection() {
         {count === 0 && open === null && <div className="tp-dashed">no credentials yet</div>}
       </div>
     </>
+  )
+}
+
+/** Provider picker for an `oauth sign-in` entry — which of main's provider
+ *  modules owns it (`data.providerId`). */
+function ProviderPick({ value, onPick }: { value: string; onPick: (id: string) => void }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  useOutsideClose(open, ref, () => setOpen(false))
+  const cur = OAUTH_PROVIDER_CHOICES.find((p) => p.id === value)
+  return (
+    <div className="pick-wrap" ref={ref}>
+      <button type="button" className="pick-row" onClick={() => setOpen((o) => !o)}>
+        <span className="pick-value">{cur?.label ?? 'choose provider…'}</span>
+        <span className="spacer" />
+        <Icon name="chevron" size={12} className="faint" style={{ flex: 'none' }} />
+      </button>
+      {open && (
+        <div className="menu pick-menu">
+          {OAUTH_PROVIDER_CHOICES.map((p) => (
+            <div
+              key={p.id}
+              className={`menu-item ${p.id === value ? 'active' : ''}`}
+              onMouseDown={(e) => {
+                e.preventDefault()
+                onPick(p.id)
+                setOpen(false)
+              }}
+            >
+              {p.label}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   )
 }
 

@@ -19,6 +19,8 @@ import { agentDef } from '../shared/agents'
 import { canonicalRepoId } from '../shared/repoId'
 import { resolveCredential, resolveAgentSecret, credentialIdentity } from '../shared/credentials'
 import { listCredentials } from './credentials'
+import { resolveOAuthAccess } from './oauth'
+import { oauthAuthFile } from './oauth/materialize'
 import { containerGitEnv } from './git/config'
 import * as store from './store'
 import { cloneDir } from './store'
@@ -38,6 +40,7 @@ import {
   overrideConfigArgs,
   sessionConfigPath,
   linkContainerSkills,
+  writeContainerUserFile,
   SKILLS_MOUNT
 } from './provision'
 import { bundledOperatorEnv } from './operatorEnv'
@@ -647,7 +650,7 @@ export class ContainerManager {
     const def = agentDef(cfg.kind)
     if (!def) throw new Error(`agent "${cfg.label}" has unknown kind "${cfg.kind}"`)
     // The secret lives in credentials.json; the agent only links it (§6).
-    const { secret, error: credError } = resolveAgentSecret(
+    const { secret, entry: credEntry, error: credError } = resolveAgentSecret(
       await listCredentials(),
       cfg.credentialId
     )
@@ -688,10 +691,38 @@ export class ContainerManager {
     // connection path calls this again and hits the per-container cache.
     await this.installAdapter(target)
     const proxy = await this.ensureProxy(info, c.id)
+    // The async half of the credential seam (docs/requirements-oauth-
+    // credentials.md §2, §5.2): an oauth link resolves to a *live* access
+    // token, refreshed (single-flight, persisted) right here — after
+    // provisioning, so a cold image build cannot age the token it injects.
+    // Every launch starts with a fresh one; a dead refresh token throws the
+    // signed-out sentence and no container-bound adapter spawns without auth.
+    const injected = credEntry?.kind === 'oauth' ? await resolveOAuthAccess(credEntry.id) : secret
+    // §5.2.1: delivery is per agent kind. codex/gemini consume a sign-in
+    // through their native auth file — materialized access-only, right now,
+    // with the token just resolved — and their secretEnv var must stay unset
+    // (a non-key value in it sends those CLIs down the API-key path). Every
+    // other kind, and every agent-token link, keeps the env-var path.
+    let envSecret = injected
+    if (credEntry?.kind === 'oauth') {
+      // Re-read after the refresh above: the copy resolveAgentSecret returned
+      // predates it, and the file composes from the persisted set (idToken may
+      // have rotated with the access token).
+      const freshEntry =
+        (await listCredentials()).find((e) => e.id === credEntry.id) ?? credEntry
+      const authFile = oauthAuthFile(def.id, freshEntry, injected, Date.now())
+      if (authFile) {
+        await writeContainerUserFile(
+          sessionId, target.configArgs, hostWorkspaceFolder, authFile.path, authFile.content
+        )
+        this.logFor(sessionId)(`wrote ~/${authFile.path} (oauth sign-in, access token only)`)
+        envSecret = ''
+      }
+    }
     return {
       ...target,
       remoteWorkspaceFolder: c.remoteWorkspaceFolder,
-      secret,
+      secret: envSecret,
       secretEnv: cfg.secretEnv || def.secretEnv,
       ...(cfg.env ? { env: cfg.env } : {}),
       proxy: { ...proxy, env: proxyEnv(proxy.base) },
