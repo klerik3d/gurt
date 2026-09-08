@@ -33,7 +33,7 @@ import { sanitizeHotkeys } from '../shared/hotkeys'
 import { initAppMenu } from './menu'
 import { machineDoctor, machinePrepare, startDockerApp } from './doctor'
 import { cancelFirstRunSignIn, firstRunSignIn, firstRunStart } from './firstRun'
-import { PREPARE_LOG_KEY } from '../shared/doctor'
+import { PREPARE_LOG_KEY, sanitizeWelcomeMode } from '../shared/doctor'
 import { checkForUpdates, installUpdate, updateStatus } from './update'
 
 const log = createLogger('ipc')
@@ -468,6 +468,8 @@ export function registerIpc(): void {
       await machinePrepare((line) => kernel.bus.emit('provision.log', { key, line }))
     },
     machineStartDocker: async () => startDockerApp(),
+    getWelcomeMode: () => store.getWelcomeMode(),
+    setWelcomeMode: (mode) => store.setWelcomeMode(sanitizeWelcomeMode(mode)),
     firstRunStart: (kind, token) => firstRunStart(kernel, kind, token),
     firstRunSignIn: (kind) => firstRunSignIn(kernel, kind),
     firstRunCancelSignIn: async () => cancelFirstRunSignIn()

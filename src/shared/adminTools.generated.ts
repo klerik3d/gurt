@@ -471,4 +471,22 @@ export const ADMIN_TOOLS: readonly AdminToolDef[] = [
     params: [],
     input: {}
   },
+  {
+    name: "get_welcome_mode",
+    method: "getWelcomeMode",
+    exposure: "read",
+    description: "When the welcome screen shows itself (docs/requirements-first-run.md\n§2.1): `auto` while the store has never produced a session, `always` on\nevery launch, `never` only through the command palette. `GURT_WELCOME`\noverrides the stored value, the way `GURT_LOG` overrides the log level.",
+    bindWs: false,
+    params: [],
+    input: {}
+  },
+  {
+    name: "set_welcome_mode",
+    method: "setWelcomeMode",
+    exposure: "write",
+    description: "GurtApi.setWelcomeMode",
+    bindWs: false,
+    params: ["mode"],
+    input: { "mode": z.enum(["auto", "always", "never"]) }
+  },
 ]

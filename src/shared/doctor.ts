@@ -86,3 +86,34 @@ export interface FirstRunResult {
   sessionId: string
   warning?: string
 }
+
+/**
+ * When the welcome screen appears on its own (docs/requirements-first-run.md
+ * §2.1). Three states rather than a boolean, because two of them answer
+ * questions a boolean cannot:
+ *
+ *   - `auto`   — the default: while the store has never produced a session.
+ *   - `always` — every launch, whatever the store holds. What a demo machine
+ *                wants, and what lets a smoke reach the screen without having
+ *                to empty the store first.
+ *   - `never`  — only ⌘K → "Welcome & machine setup" reaches it. The answer
+ *                for someone who deleted their last session and does not want
+ *                the screen back.
+ */
+export type WelcomeMode = 'auto' | 'always' | 'never'
+
+export const WELCOME_MODES: readonly WelcomeMode[] = ['auto', 'always', 'never']
+
+export const WELCOME_MODE_DEFAULT: WelcomeMode = 'auto'
+
+/** The IPC boundary and a hand-edited `welcome.json` are both untrusted input:
+ *  anything unrecognized degrades to the default rather than to a screen that
+ *  never appears. */
+export const sanitizeWelcomeMode = (raw: unknown): WelcomeMode =>
+  WELCOME_MODES.includes(raw as WelcomeMode) ? (raw as WelcomeMode) : WELCOME_MODE_DEFAULT
+
+/** Whether the screen shows itself, given the mode and whether the store has
+ *  ever produced a session. One function so main's tests and the renderer's
+ *  render condition cannot disagree about the rule. */
+export const welcomeShows = (mode: WelcomeMode, firstRun: boolean): boolean =>
+  mode === 'always' || (mode === 'auto' && firstRun)

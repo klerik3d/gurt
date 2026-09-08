@@ -154,7 +154,8 @@ export function createAdminSurface(kernel: Kernel): AdminSurface {
     // that will not start because this machine's Docker daemon is down looks
     // identical, from every other read here, to one that will not start for a
     // reason in the configuration (docs/requirements-first-run.md §8).
-    machineDoctor: () => machineDoctor()
+    machineDoctor: () => machineDoctor(),
+    getWelcomeMode: () => store.getWelcomeMode()
   })
 
   return {

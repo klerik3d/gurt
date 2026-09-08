@@ -72,6 +72,8 @@ const SAFE_ARGS = new Set([
   // minted by the provider's browser flow, never carried over IPC.
   'firstRunSignIn',
   'firstRunCancelSignIn',
+  'getWelcomeMode',
+  'setWelcomeMode',
   'getMcpDefs',
   'getAgents',
   'getAgentConfig',

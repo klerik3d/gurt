@@ -63,7 +63,9 @@ import {
   modKeyLabel
 } from '../../../shared/hotkeys'
 import { AGENT_DEFS, agentDef } from '../../../shared/agents'
-import { PREPARE_LOG_KEY } from '../../../shared/doctor'
+import { PREPARE_LOG_KEY, WELCOME_MODES } from '../../../shared/doctor'
+import { logErr } from '../log'
+import type { WelcomeMode } from '../../../shared/doctor'
 import { MachineChecklist } from './Welcome'
 import { refreshAgents, useAgents } from '../useAgents'
 import { refreshHotkeys, useHotkeys } from '../useHotkeys'
@@ -204,6 +206,8 @@ function GroupFold({
  *  store to reach the rows (docs/requirements-first-run.md §2.2). */
 function MachineSection(): JSX.Element {
   const [log, setLog] = useState<string[]>([])
+  const [mode, setMode] = useState<WelcomeMode | null>(null)
+  const [modeError, setModeError] = useState('')
   useEffect(
     () =>
       window.gurt.onProvisionLog(({ key, line }) => {
@@ -211,6 +215,17 @@ function MachineSection(): JSX.Element {
       }),
     []
   )
+  useEffect(() => {
+    window.gurt.getWelcomeMode().then(setMode).catch(logErr('getWelcomeMode'))
+  }, [])
+  const pick = (next: WelcomeMode) =>
+    void window.gurt
+      .setWelcomeMode(next)
+      .then(() => {
+        setMode(next)
+        setModeError('')
+      })
+      .catch((e: unknown) => setModeError(e instanceof Error ? e.message : String(e)))
   return (
     <div className="set-section">
       <div className="set-head">
@@ -220,8 +235,42 @@ function MachineSection(): JSX.Element {
         </div>
       </div>
       <MachineChecklist log={log} />
+      {/* When the welcome screen shows itself
+          (docs/requirements-first-run.md §2.1). `always` is what a demo
+          machine wants; `never` is the way out for someone who deleted their
+          last session and does not want the screen back. Either way ⌘K →
+          "Welcome & machine setup" still reaches it. */}
+      <div className="set-list" style={{ marginTop: 14 }}>
+        <div className="set-row">
+          <span className="set-row-label">Welcome screen</span>
+          <span className="spacer" />
+          {WELCOME_MODES.map((m) => (
+            <button
+              key={m}
+              type="button"
+              className={`btn-link ${mode === m ? 'active' : ''}`}
+              title={WELCOME_MODE_HINT[m]}
+              disabled={mode === null}
+              onClick={() => pick(m)}
+            >
+              {mode === m ? `${m} ✓` : m}
+            </button>
+          ))}
+        </div>
+        <div className="faint" style={{ fontSize: 11, padding: '0 2px' }}>
+          {mode ? WELCOME_MODE_HINT[mode] : 'loading…'} · `GURT_WELCOME` overrides this for one
+          run.
+        </div>
+        {modeError && <div className="error">{modeError}</div>}
+      </div>
     </div>
   )
+}
+
+const WELCOME_MODE_HINT: Record<WelcomeMode, string> = {
+  auto: 'shown until this machine has its first session',
+  always: 'shown on every launch',
+  never: 'only from the command palette'
 }
 
 export function SettingsPage({

@@ -21,7 +21,8 @@ import { SettingsPage, type SettingsSection } from './components/SettingsPage'
 import { Dashboard } from './components/Dashboard'
 import { CommandPalette } from './components/CommandPalette'
 import { Welcome } from './components/Welcome'
-import { PREPARE_LOG_KEY } from '../../shared/doctor'
+import { PREPARE_LOG_KEY, WELCOME_MODE_DEFAULT, welcomeShows } from '../../shared/doctor'
+import type { WelcomeMode } from '../../shared/doctor'
 import { NotificationsPanel } from './components/NotificationsPanel'
 import { useOutsideClose } from './hooks'
 import { markSeen } from './reviewed'
@@ -85,6 +86,14 @@ export default function App() {
    *  demo on one that already has sessions
    *  (docs/requirements-first-run.md §2.3). Cleared by any selection. */
   const [forceWelcome, setForceWelcome] = useState(false)
+  /** Whether the welcome screen shows itself, and when (§2.1). Read once at
+   *  mount: `GURT_WELCOME` and `welcome.json` are both start-of-run settings,
+   *  and a mode that changed under a rendered screen would be a surprise, not
+   *  a feature. The Settings picker re-reads it where it is edited. */
+  const [welcomeMode, setWelcomeMode] = useState<WelcomeMode>(WELCOME_MODE_DEFAULT)
+  useEffect(() => {
+    window.gurt.getWelcomeMode().then(setWelcomeMode).catch(logErr('getWelcomeMode'))
+  }, [])
   const agents = useAgents()
   const hotkeys = useHotkeys()
   /** Bumped on every ⌘2 (`gotoTasks`) — Sidebar focuses its tree whenever this
@@ -290,7 +299,10 @@ export default function App() {
    *  clicking the sidebar's "+" is itself the way out of it. */
   const firstRun =
     !!tree && tree.workspaces.every((w) => w.tasks.every((t) => t.sessions.length === 0))
-  const showWelcome = !selection && (firstRun || forceWelcome)
+  // `welcomeShows` is shared with main's own tests, so the rule cannot be
+  // stated twice and drift: `always` every launch, `auto` while the store has
+  // never produced a session, `never` only through the command palette.
+  const showWelcome = !selection && (forceWelcome || welcomeShows(welcomeMode, firstRun))
   /** Seeds the welcome screen's kind picker from an instance that already
    *  exists: an agent registry with no sessions is still a first run (§2.1),
    *  and asking which kind they meant would be asking twice. */

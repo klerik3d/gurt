@@ -35,7 +35,7 @@ import type { TurnRecord } from './usage'
 import type { PlanUsage } from './planUsage'
 import type { NotificationPrefs, NotificationRecord } from './notifications'
 import type { HotkeyMap } from './hotkeys'
-import type { DoctorReport, FirstRunResult } from './doctor'
+import type { DoctorReport, FirstRunResult, WelcomeMode } from './doctor'
 
 export type CreateAction = 'run' | 'queue' | 'draft'
 
@@ -420,6 +420,12 @@ export interface GurtApi {
    *  this is the same cancel, addressed by "the one the welcome screen
    *  started". A no-op when nothing is pending. */
   firstRunCancelSignIn(): Promise<void>
+  /** When the welcome screen shows itself (docs/requirements-first-run.md
+   *  §2.1): `auto` while the store has never produced a session, `always` on
+   *  every launch, `never` only through the command palette. `GURT_WELCOME`
+   *  overrides the stored value, the way `GURT_LOG` overrides the log level. */
+  getWelcomeMode(): Promise<WelcomeMode>
+  setWelcomeMode(mode: WelcomeMode): Promise<void>
   /** Bring the host's Docker GUI up — the `start-docker` action of the
    *  daemon row (§3.4). macOS only (`open -a Docker`); a no-op elsewhere,
    *  where the daemon is a system service and gurt does not run `sudo`.
@@ -559,6 +565,8 @@ const METHODS = {
   firstRunStart: 'none',
   firstRunSignIn: 'none', //    the same, plus a host browser window
   firstRunCancelSignIn: 'none', // controls that flow
+  getWelcomeMode: 'read', //    a UI preference, like the hotkeys below
+  setWelcomeMode: 'write', //   same
   machineStartDocker: 'none' // host GUI, like `openLogsFolder`
 } as const satisfies Record<keyof GurtApi, Exposure>
 
