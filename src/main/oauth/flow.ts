@@ -40,6 +40,11 @@ export interface AuthCodeConfig {
   /** Hostname the registered redirect_uri spells (`localhost` for the CLIs
    *  that registered it that way); the socket still binds 127.0.0.1 only. */
   redirectHost?: string
+  /** Provider-specific extra `TokenSet.extra` fields mined from a token
+   *  response (§2). On the refresh grant it also receives the current set,
+   *  so a value the response omits (a non-rotated id_token, say) can be
+   *  carried forward instead of erased. */
+  extraData?: (tokens: Record<string, unknown>, current?: TokenSet) => Record<string, string>
 }
 
 /** A flow-level failure. `code` is the OAuth error code when the provider sent
@@ -161,7 +166,8 @@ export async function refreshGrant(cfg: AuthCodeConfig, current: TokenSet): Prom
     refresh: str(parsed['refresh_token']) || current.refresh,
     expiresAt: expiryFrom(parsed['expires_in']),
     // Identity does not change on a refresh.
-    account: current.account
+    account: current.account,
+    ...(cfg.extraData ? { extra: cfg.extraData(parsed, current) } : {})
   }
 }
 
@@ -310,6 +316,7 @@ export async function authorizeGrant(
     access,
     refresh,
     expiresAt: expiryFrom(parsed['expires_in']),
-    account: str(await account(parsed))
+    account: str(await account(parsed)),
+    ...(cfg.extraData ? { extra: cfg.extraData(parsed) } : {})
   }
 }

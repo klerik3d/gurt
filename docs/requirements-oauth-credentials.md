@@ -54,6 +54,24 @@ data:
   account      display identity of the signed-in user ("jane@example.com")
 ```
 
+**Provider-specific extra fields are legal and named by the provider
+module.** The list above is the common core, not a closed set: a provider
+whose native consumer needs more than an access token stores the more,
+under keys its own module names, persisted through the same
+`patchCredentialData` path (which merges keys — extras survive a core
+patch). The **openai** provider stores two:
+
+```
+  idToken      the id_token JWT — secret, sealed (it is bearer-ish;
+               declared hidden+secret in CREDENTIAL_KINDS per §2.1)
+  accountId    the ChatGPT account id, from the id_token's
+               `https://api.openai.com/auth` claim — plaintext
+```
+
+Both exist because codex's native `auth.json` (§5.2) needs them; a
+refresh response may rotate the `id_token`, and one that omits it keeps
+the stored value.
+
 `hosts` is `[]` and the kind joins `NON_GIT_KINDS`: like `agent-token`
 and `mcp-token` it links explicitly and never auto-matches a git host.
 
@@ -98,8 +116,10 @@ branch, or a `hidden` flag on `CredentialField`); it may not omit them
 from the definition. This is the one place §5's "reuse as-is" needs a
 mechanical check, so it is named here rather than discovered as a leak.
 
-`providerId`, `expiresAt` and `account` are plaintext `data` — none is a
-secret, and `account` exists precisely to be shown.
+`providerId`, `expiresAt`, `account` and the openai provider's
+`accountId` are plaintext `data` — none is a secret, and `account`
+exists precisely to be shown. The openai `idToken` is on the secret
+side of the line: declared hidden+secret like `refresh` and `access`.
 
 ## 3. Providers
 
@@ -205,18 +225,66 @@ be spent by `refresh()` in main, and nowhere else.
 **Only the short-lived access token reaches a container**, by the two
 paths that already exist:
 
-- **Agents:** `resolveLaunch` resolves the linked credential to the
-  access token and injects it as the agent's `secretEnv`
-  (`--remote-env`, `provision.ts`) — the same variable an `agent-token`
-  fills (`CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_API_KEY`, …). Resolution
-  runs at every adapter launch, so every launch starts with a fresh
-  token.
+- **Agents:** `resolveLaunch` resolves the linked credential to a live
+  access token at every adapter launch, so every launch starts with a
+  fresh one. *How* the token then reaches the CLI is per agent kind —
+  see the subsection below; it is not uniformly the `secretEnv` env
+  var, and shipping it as if it were was this document's one design
+  bug (§11).
 - **MCP:** the access token composes into the upstream header exactly
   as an `mcp-token` does (`Authorization: Bearer <access>` by default),
   rides in the proxy scope, and reaches the proxy via `pushScope`. The
   scope file *is* the push (`requirements-mcp-proxy.md` §5.4), so a
   refreshed token can be delivered to a **live** session by rewriting
   the scope — no restart, no token reissue for the agent.
+
+### 5.2.1 Delivery is per agent kind — DECIDED
+
+The original text assumed every agent CLI accepts an OAuth access token
+through its `secretEnv` variable. That is true of exactly one of them,
+and the assumption shipped unverified (§11). Each CLI is fed the way it
+actually consumes a subscription sign-in:
+
+- **claude-code** — env var, as shipped: `CLAUDE_CODE_OAUTH_TOKEN`
+  accepts the OAuth access token directly. Nothing changes.
+- **codex** — the CLI ignores env vars for ChatGPT-plan auth and reads
+  `~/.codex/auth.json`. `resolveLaunch` materializes that file in the
+  container at **every adapter launch**, access-only (the freshly
+  host-refreshed access token, the stored `idToken` and `accountId`
+  from §2 — never the refresh token). Verified against the pinned
+  binary: `OPENAI_API_KEY` must be null/absent or it *wins* and forces
+  the API-key path; `tokens.id_token` is hard-required as a parseable
+  JWT (which is why §2 stores it — an entry signed in before it was
+  captured blocks the launch with the sign-in-again sentence);
+  `refresh_token` cannot be omitted but an empty string is accepted,
+  and empty is what it gets.
+- **gemini** — same rule, file `~/.gemini/oauth_creds.json` (the
+  google-auth credentials shape: `access_token`, `token_type`
+  `"Bearer"`, `expiry_date` in epoch ms). Verified against the pinned
+  CLI: the loader does no field validation, `refresh_token` is omitted
+  outright and only ever consulted when the token is missing or
+  expiring, and startup validates the access token with a live
+  `tokeninfo` call — which a launch-fresh token passes.
+
+For an oauth-linked codex or gemini agent the `secretEnv` variable
+**must not be set**: a non-key value in `OPENAI_API_KEY` /
+`GEMINI_API_KEY` makes the CLI take the API-key path and fail at
+session start ("Authentication required"). Suppressing the env var is
+part of the delivery, not an optimization. `agent-token` entries keep
+the env-var path untouched — a pasted API key is exactly what those
+variables mean.
+
+**§5.2's core rule holds unchanged: only the ACCESS token ever enters a
+container.** The materialized files carry no refresh token, so the CLI
+cannot self-refresh; the session lives until the access token expires,
+and §6's "mid-turn expiry is accepted, restart the turn" covers the
+file path exactly as it covers the env-var path. Every adapter launch
+rewrites the file with a fresh token at the same point `resolveLaunch`
+resolves the secret today — there is no second refresh path. The exact
+file shapes are verified against the *pinned* adapter/CLI versions in
+`AGENT_DEFS` (`@agentclientprotocol/codex-acp@1.6.2` and its bundled
+`@openai/codex`, `@google/gemini-cli@0.56.0`), and a pin bump re-checks
+them, same rule as `skillsDir`.
 
 ### 5.3 Refresh
 
@@ -261,9 +329,11 @@ harmlessly; `addSecrets` is idempotent.
 ## 6. Accepted limits, decided now
 
 **Mid-turn access-token expiry is accepted for v1.** The agent path
-refreshes per adapter launch and the injected env var is fixed for the
-life of the adapter process — a very long turn can outlive its token
-and die on a 401, and v1 answers that with "start the turn again". (The
+refreshes per adapter launch and what it delivers — the injected env
+var, or the access-only auth file of §5.2.1, which holds no refresh
+token for the CLI to spend — is fixed for the life of the adapter
+process. A very long turn can outlive its token and die on a 401, and
+v1 answers that with "start the turn again". (The
 MCP path is better off: §5.2's live scope push can renew a running
 session's header.) Two mitigations are recorded as future options,
 neither committed: claude-code accepts a long-lived
@@ -328,7 +398,24 @@ string is not) and every token value appear in no record at any level.
    sign-in-again sentence; nothing falls back to ambient auth and no
    container starts with an empty or stale token.
 6. `grep` finds the refresh token in no proxy config, no descriptor, no
-   argv and no `--remote-env` — only `credentials.json` holds it.
+   argv, no `--remote-env` **and no file materialized into a container**
+   (`~/.codex/auth.json`, `~/.gemini/oauth_creds.json`) — only
+   `credentials.json` holds it.
+7. A codex agent linked to an openai `oauth` entry starts and answers a
+   turn — the container holds an access-only `~/.codex/auth.json`, and
+   `OPENAI_API_KEY` is not set in the adapter's environment.
+8. A gemini agent linked to a google `oauth` entry starts and answers a
+   turn — access-only `~/.gemini/oauth_creds.json`, no `GEMINI_API_KEY`.
+9. **A per-provider LIVE smoke test is a RELEASE BLOCKER for the
+   §5.2.1 fix**, performed by a human (the browser sign-in cannot be
+   automated). For each of anthropic, openai, google: sign in through
+   the Credentials modal ("signed in as `<account>`" appears), link the
+   entry to the matching agent kind (claude-code / codex / gemini),
+   launch a session, and get a real answer to one turn. "Working"
+   means the turn completes — not merely that the adapter spawns; the
+   §11 bug was invisible until exactly this check. The automated tests
+   approximate items 7–8 (composed file content, env suppression); this
+   item is the part no test can stand in for.
 
 ## 10. Out of scope
 
@@ -342,3 +429,25 @@ management is where revocation lives. Confidential clients / client
 secrets: every flow here is a public client with PKCE. Migrating
 existing `agent-token` entries to OAuth — they are not wrong, and §1
 says why they stay.
+
+## 11. Postmortem: the env-var delivery assumption
+
+The first shipped version of §5.2 injected the OAuth access token into
+the agent's `secretEnv` for **every** kind — the assumption "each CLI
+accepts its subscription token via the same variable an API key fills"
+was written down and implemented without checking a single consumer
+other than claude-code. It happened to hold there
+(`CLAUDE_CODE_OAUTH_TOKEN` is designed for exactly that), and failed
+everywhere else: codex with ChatGPT-plan auth reads `~/.codex/auth.json`
+and gemini reads `~/.gemini/oauth_creds.json`, and both, on finding a
+non-key value in `OPENAI_API_KEY` / `GEMINI_API_KEY`, took the API-key
+path and died at session start with "Authentication required". §5.2.1
+is the fix.
+
+The lesson, recorded so it is not re-learned: **a credential is only
+delivered when the consumer's actual consumption path has been
+verified** — per consumer, against the pinned version, the way
+`skillsDir` in `AGENT_DEFS` already demands — and **a per-provider live
+smoke test gates any release that touches credential delivery** (§9.9).
+The bug was invisible to every automated check we had, because every
+automated check stopped where the token left our code.

@@ -3,8 +3,11 @@
 // proceeds (§9.4), the signed-out blocking sentence (§9.5), redaction the
 // moment a token exists (§9.3), the read-modify-write save chain (§5.3), an
 // unknown-kind entry surviving the new write paths (§9.2), the pure resolvers
-// accepting the kind, and — with a stub keystore — the token set landing under
-// `sealed` with the renderer seeing only masks (§9.3).
+// accepting the kind, the per-agent-kind delivery of §5.2.1 (the composed
+// codex/gemini auth files, access-only, and the null that keeps every other
+// path on the env var), the openai provider extras (§2), and — with a stub
+// keystore — the token set landing under `sealed` with the renderer seeing
+// only masks (§9.3).
 //
 //   node scripts/oauth-credentials.test.mjs
 import { test, after } from 'node:test'
@@ -32,6 +35,8 @@ export {
   resolveOAuthAccess, freshenOAuthCredentials, oauthSignIn, cancelOAuthSignIn
 } from ${S('src/main/oauth/index.ts')}
 export { OAuthFlowError } from ${S('src/main/oauth/flow.ts')}
+export { oauthAuthFile } from ${S('src/main/oauth/materialize.ts')}
+export { openaiExtraData } from ${S('src/main/oauth/providers/openai.ts')}
 export {
   getCredentials, setCredentials, listCredentials, patchCredentialData, upsertCredentialEntry
 } from ${S('src/main/credentials.ts')}
@@ -361,6 +366,122 @@ test('cancelOAuthSignIn aborts the pending attempt and a failure stores nothing'
   assert.equal(diskEntry('gone1'), undefined)
 })
 
+// --- §5.2.1: delivery is per agent kind — the materialized native auth files ---
+const fakeJwt = (claims) =>
+  `eyJhbGciOiJub25lIn0.${Buffer.from(JSON.stringify(claims), 'utf8').toString('base64url')}.sig`
+
+test('codex auth.json composes access-only, from the entry extras', () => {
+  const entry = oauthEntry('cx', {
+    providerId: 'openai',
+    access: 'STORED-ACCESS',
+    refresh: 'REFRESH-NEVER-LEAVES',
+    expiresAt: future,
+    idToken: fakeJwt({ email: 'jane@example.com' }),
+    accountId: 'acct_123'
+  })
+  const now = Date.UTC(2026, 8, 8, 12, 0, 0)
+  const file = m.oauthAuthFile('codex', entry, 'FRESH-ACCESS', now)
+  assert.equal(file.path, '.codex/auth.json')
+  const parsed = JSON.parse(file.content)
+  // OPENAI_API_KEY must be null: any non-null value (even "") wins over
+  // `tokens` in the pinned codex and forces the API-key path.
+  assert.ok('OPENAI_API_KEY' in parsed && parsed.OPENAI_API_KEY === null)
+  assert.equal(parsed.tokens.access_token, 'FRESH-ACCESS', 'the freshly resolved token, not the stored one')
+  assert.equal(parsed.tokens.id_token, entry.data.idToken)
+  assert.equal(parsed.tokens.account_id, 'acct_123')
+  // refresh_token: the pinned codex requires the key present; empty is the
+  // access-only shape (§5.2 — the refresh token never enters a container).
+  assert.equal(parsed.tokens.refresh_token, '')
+  assert.ok(!file.content.includes('REFRESH-NEVER-LEAVES'), 'no refresh token in the file (§9.6)')
+  assert.equal(parsed.last_refresh, new Date(now).toISOString())
+})
+
+test('codex without a stored id token blocks with the sign-in-again sentence', () => {
+  // An entry signed in before idToken capture existed: the pinned codex
+  // hard-requires a parseable id_token, so composing would only defer the
+  // failure to a cryptic CLI error.
+  const entry = oauthEntry('old', { access: 'A', refresh: 'R', expiresAt: future })
+  assert.throws(() => m.oauthAuthFile('codex', entry, 'FRESH', Date.now()), {
+    message: 'credential "oauth old" has no ChatGPT id token — sign in again in Credentials'
+  })
+})
+
+test('gemini oauth_creds.json composes access-only with epoch-ms expiry', () => {
+  const entry = oauthEntry('gm', { access: 'S', refresh: 'REFRESH-NEVER-LEAVES', expiresAt: future })
+  const file = m.oauthAuthFile('gemini', entry, 'FRESH-ACCESS', Date.now())
+  assert.equal(file.path, '.gemini/oauth_creds.json')
+  const parsed = JSON.parse(file.content)
+  assert.equal(parsed.access_token, 'FRESH-ACCESS')
+  assert.equal(parsed.token_type, 'Bearer')
+  assert.equal(parsed.expiry_date, Date.parse(future), 'epoch ms, straight against Date.now()')
+  // The pinned gemini tolerates the key's absence outright — omitted, not empty.
+  assert.ok(!('refresh_token' in parsed), 'refresh_token key omitted entirely')
+  assert.ok(!file.content.includes('REFRESH-NEVER-LEAVES'), 'no refresh token in the file (§9.6)')
+})
+
+test('the env-var path is untouched where it belongs', () => {
+  const entry = oauthEntry('cc', {
+    access: 'A', refresh: 'R', expiresAt: future, idToken: fakeJwt({}), accountId: 'x'
+  })
+  // claude-code consumes the access token via CLAUDE_CODE_OAUTH_TOKEN — no file.
+  assert.equal(m.oauthAuthFile('claude-code', entry, 'A', Date.now()), null)
+  assert.equal(m.oauthAuthFile('opencode', entry, 'A', Date.now()), null)
+  // An agent-token link never materializes a file, codex/gemini included:
+  // null is what keeps resolveLaunch on the secretEnv injection.
+  const token = { id: 't', label: 'pat', kind: 'agent-token', hosts: [], data: { secret: 'sk-1' } }
+  assert.equal(m.oauthAuthFile('codex', token, 'sk-1', Date.now()), null)
+  assert.equal(m.oauthAuthFile('gemini', token, 'sk-1', Date.now()), null)
+})
+
+// --- §2: the openai provider's extra fields (idToken / accountId) ---
+test('openaiExtraData mines the auth claim and carries values forward', () => {
+  const jwt = fakeJwt({
+    email: 'jane@example.com',
+    'https://api.openai.com/auth': { chatgpt_account_id: 'acct_777' }
+  })
+  assert.deepEqual(m.openaiExtraData({ id_token: jwt }), {
+    idToken: jwt,
+    accountId: 'acct_777'
+  })
+  // A refresh response may omit the id_token: the stored values survive.
+  const current = { access: '', refresh: '', expiresAt: '', account: '',
+    extra: { idToken: 'OLD-JWT', accountId: 'acct_old' } }
+  assert.deepEqual(m.openaiExtraData({}, current), { idToken: 'OLD-JWT', accountId: 'acct_old' })
+  // A rotated id_token without the claim keeps the known account id.
+  assert.deepEqual(m.openaiExtraData({ id_token: fakeJwt({ email: 'j@x' }) }, current), {
+    idToken: fakeJwt({ email: 'j@x' }),
+    accountId: 'acct_old'
+  })
+})
+
+test('provider extras persist through a refresh and ride the current set', async () => {
+  seed([oauthEntry('ex', {
+    access: 'STALE', refresh: 'OLD', expiresAt: past, idToken: 'OLD-IDTOKEN-VALUE', accountId: 'acct_1'
+  })])
+  const seen = []
+  const provider = {
+    id: 'fake',
+    authorize: () => Promise.reject(new Error('not under test')),
+    refresh: async (current) => {
+      seen.push(current.extra)
+      return {
+        access: 'NEW-ACCESS-VALUE', refresh: 'NEW-REFRESH', expiresAt: future,
+        account: current.account,
+        extra: { idToken: 'NEW-IDTOKEN-VALUE', accountId: 'acct_1' }
+      }
+    }
+  }
+  assert.equal(await m.resolveOAuthAccess('ex', { fake: provider }), 'NEW-ACCESS-VALUE')
+  assert.deepEqual(seen, [{ idToken: 'OLD-IDTOKEN-VALUE', accountId: 'acct_1' }],
+    'the provider sees its stored extras on the current set')
+  const stored = diskEntry('ex').data
+  assert.equal(stored.idToken, 'NEW-IDTOKEN-VALUE')
+  assert.equal(stored.accountId, 'acct_1')
+  // §5.4 covers secret extras too: the idToken is redactable the moment the
+  // refresh returns (accountId is plaintext, like `account`).
+  assert.equal(m.redact('leaking NEW-IDTOKEN-VALUE here'), 'leaking [redacted] here')
+})
+
 // --- §9.3 with a keystore: sealed at rest, masks to the renderer ---
 // A second bundle, placed next to a stub `electron` module so the lazy
 // `createRequire(...)('electron')` inside main/credentials.ts resolves it —
@@ -407,22 +528,33 @@ test('oauth tokens seal at rest and the renderer sees masks', async (t) => {
   const sealed = await import(pathToFileURL(sealedOutfile).href)
 
   await sealed.upsertCredentialEntry(
-    oauthEntry('s1', { access: 'LIVE-ACCESS', refresh: 'LIVE-REFRESH', expiresAt: future })
+    oauthEntry('s1', {
+      access: 'LIVE-ACCESS',
+      refresh: 'LIVE-REFRESH',
+      expiresAt: future,
+      // §2's provider extras: idToken is secret (bearer-ish JWT), accountId is
+      // plaintext like `account`.
+      idToken: 'LIVE-IDTOKEN',
+      accountId: 'acct_9'
+    })
   )
   const raw = JSON.parse(fs.readFileSync(path.join(sealedRoot, 'credentials.json'), 'utf8'))
   const onDisk = raw.credentials.find((c) => c.id === 's1')
   assert.equal(onDisk.data.access, undefined, 'access only under sealed')
   assert.equal(onDisk.data.refresh, undefined, 'refresh only under sealed')
-  assert.ok(onDisk.sealed.access && onDisk.sealed.refresh, 'both tokens sealed')
+  assert.equal(onDisk.data.idToken, undefined, 'idToken only under sealed')
+  assert.ok(onDisk.sealed.access && onDisk.sealed.refresh && onDisk.sealed.idToken, 'all three sealed')
   assert.ok(
-    !JSON.stringify(raw).includes('LIVE-ACCESS') && !JSON.stringify(raw).includes('LIVE-REFRESH'),
+    ['LIVE-ACCESS', 'LIVE-REFRESH', 'LIVE-IDTOKEN'].every((v) => !JSON.stringify(raw).includes(v)),
     'no plaintext token anywhere in the file'
   )
   // Plaintext fields stay readable; the renderer view masks the secrets.
   assert.equal(onDisk.data.account, 'jane@example.com')
+  assert.equal(onDisk.data.accountId, 'acct_9', 'accountId stays plaintext')
   const served = (await sealed.getCredentials()).credentials.find((c) => c.id === 's1')
   assert.ok(served.data.access.startsWith('••••••'), 'renderer sees a mask')
   assert.ok(served.data.refresh.startsWith('••••••'), 'renderer sees a mask')
+  assert.ok(served.data.idToken.startsWith('••••••'), 'renderer sees a mask for the idToken')
   // And main-side resolution still reads the real value through unseal.
   assert.equal(m.resolveAgentSecret((await sealed.listCredentials()), 's1').secret, 'LIVE-ACCESS')
 })
