@@ -41,6 +41,7 @@ import type {
 import { isLocalMcpEntry, mcpEntryKind, normalizeMcpEntry, validateMcpEntry } from '../../shared/mcp'
 import { resolveMcpCredential } from '../../shared/credentials'
 import { listCredentials } from '../credentials'
+import { freshenOAuthCredentials } from '../oauth'
 import { credentialEnv } from './manager'
 import { startStdioBridge, type JsonRpcMessage, type StdioTrace } from './stdioBridge'
 import { createLogger, sanitize } from '../log'
@@ -411,7 +412,15 @@ async function probeHttp(
 async function httpHeaders(entry: McpHttpEntry): Promise<Record<string, string>> {
   const out: Record<string, string> = {}
   for (const h of entry.headers ?? []) out[h.name] = h.value
-  const { header, error } = resolveMcpCredential(await listCredentials(), entry.credentialId)
+  // Same async freshen a session's proxy plan does (docs/requirements-oauth-
+  // credentials.md §2): a probe of an oauth-linked entry tests the header the
+  // session would actually send, not a stale one.
+  const { credentials, errors } = await freshenOAuthCredentials(await listCredentials(), [
+    entry.credentialId
+  ])
+  const freshenError = entry.credentialId && errors[entry.credentialId]
+  if (freshenError) throw new Error(freshenError)
+  const { header, error } = resolveMcpCredential(credentials, entry.credentialId)
   if (error) throw new Error(error)
   if (header) {
     for (const name of Object.keys(out))

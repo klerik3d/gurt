@@ -14,6 +14,7 @@ import {
   credentialUsedBy,
   checkMcpEntryCredential
 } from './credentials'
+import { cancelOAuthSignIn, oauthSignIn } from './oauth'
 import { isLocalMcpEntry, mcpEntryKind } from '../shared/mcp'
 import { sanitizeSkillSelection } from '../shared/skills'
 import { checkMcpCommand, clearNpmInstall } from './mcp/stdioBridge'
@@ -64,6 +65,9 @@ const OPAQUE_ARGS = new Set<keyof GurtApi>([
   'addReviewComment',
   'launchReviewFix',
   'setCredentials',
+  // The whole entry rides in the call; its secret fields only ever hold masks,
+  // but the payload is a credential's and stays opaque like setCredentials'.
+  'oauthSignIn',
   'setAgents',
   'addEnv',
   'updateEnv',
@@ -131,6 +135,8 @@ export function registerIpc(): void {
     getCredentials: () => getCredentials(),
     setCredentials: (data) => setCredentials(data),
     credentialUsedBy: (id) => credentialUsedBy(id),
+    oauthSignIn: (entry) => oauthSignIn(entry),
+    oauthCancel: async (id) => cancelOAuthSignIn(id),
     // Store CRUD announces over the bus, not straight to the windows, so
     // headless bus subscribers (orchestrator, extensions) see these too.
     createWorkspace: async (name) => {

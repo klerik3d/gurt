@@ -38,6 +38,7 @@ import {
 } from '../../shared/proxy'
 import { getMcpServers, gurtRoot } from '../store'
 import { listCredentials } from '../credentials'
+import { freshenOAuthCredentials } from '../oauth'
 
 /** The turn-contract server: never user-selectable, always routed, because the
  *  session is over when the agent cannot report that it is (§3.3). */
@@ -113,6 +114,14 @@ export interface ProxyPlanInput {
   registry?: readonly McpRegistryEntry[] | undefined
   /** The credential store (`listCredentials`). */
   credentials?: readonly CredentialEntry[] | undefined
+  /**
+   * Per-credential-id resolution failures from the main-side oauth freshen
+   * (docs/requirements-oauth-credentials.md §2): a refresh that could not
+   * deliver a live token. planProxy stays a pure function of arrays — the
+   * awaiting happened in `resolveProxyPlan` — and an entry linking a failed id
+   * is dropped with the error, exactly like a credential that does not resolve.
+   */
+  credentialErrors?: Readonly<Record<string, string>> | undefined
   /**
    * Base URL of gurt's own per-session host MCP listener, *including* its host
    * token — e.g. `http://host.docker.internal:54321/mcp/<hostToken>`. Built-in
@@ -201,6 +210,11 @@ export function planProxy(input: ProxyPlanInput): ProxyPlan {
 
   const registryUpstream = (entry: McpHttpEntry): McpUpstream | null => {
     const headers = [...(entry.headers ?? []).map((h) => ({ name: h.name, value: h.value }))]
+    const freshenError = entry.credentialId && input.credentialErrors?.[entry.credentialId]
+    if (freshenError) {
+      errors.push(`MCP server "${entry.id}": ${freshenError}`)
+      return null
+    }
     const { header, error } = resolveMcpCredential(credentials, entry.credentialId)
     if (error) {
       errors.push(`MCP server "${entry.id}": ${error}`)
@@ -278,7 +292,29 @@ export async function resolveProxyPlan(
     getMcpServers(ref.workspace),
     listCredentials()
   ])
-  return planProxy({ sessionId, token, selection, registry, credentials, ...opts })
+  // The async half of the credential seam (docs/requirements-oauth-
+  // credentials.md §2): every oauth entry a *selected* http entry links is
+  // refreshed here, before the pure plan composes headers from it — only the
+  // short-lived access token ever reaches the scope file (§5.2). Local
+  // entries resolve their credential in mcp/manager.ts, which freshens on its
+  // own.
+  const selected = new Set((selection ?? []).map((s) => s.id))
+  const oauthIds = registry
+    .filter((e) => selected.has(e.id) && !isLocalMcpEntry(e))
+    .map((e) => e.credentialId)
+  const { credentials: freshened, errors: credentialErrors } = await freshenOAuthCredentials(
+    credentials,
+    oauthIds
+  )
+  return planProxy({
+    sessionId,
+    token,
+    selection,
+    registry,
+    credentials: freshened,
+    credentialErrors,
+    ...opts
+  })
 }
 
 /**

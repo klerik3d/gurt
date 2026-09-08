@@ -67,6 +67,7 @@ const SAFE_ARGS = new Set([
   'getAgentConfig',
   'getCredentials',
   'credentialUsedBy',
+  'oauthCancel', // a credential id — the entry payload itself is oauthSignIn's, which is opaque
   'getTaskChanges',
   'getFileDiff',
   'getCommitDiff',

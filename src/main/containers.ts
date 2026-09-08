@@ -19,6 +19,7 @@ import { agentDef } from '../shared/agents'
 import { canonicalRepoId } from '../shared/repoId'
 import { resolveCredential, resolveAgentSecret, credentialIdentity } from '../shared/credentials'
 import { listCredentials } from './credentials'
+import { resolveOAuthAccess } from './oauth'
 import { containerGitEnv } from './git/config'
 import * as store from './store'
 import { cloneDir } from './store'
@@ -641,7 +642,7 @@ export class ContainerManager {
     const def = agentDef(cfg.kind)
     if (!def) throw new Error(`agent "${cfg.label}" has unknown kind "${cfg.kind}"`)
     // The secret lives in credentials.json; the agent only links it (§6).
-    const { secret, error: credError } = resolveAgentSecret(
+    const { secret, entry: credEntry, error: credError } = resolveAgentSecret(
       await listCredentials(),
       cfg.credentialId
     )
@@ -682,10 +683,17 @@ export class ContainerManager {
     // connection path calls this again and hits the per-container cache.
     await this.installAdapter(target)
     const proxy = await this.ensureProxy(info, c.id)
+    // The async half of the credential seam (docs/requirements-oauth-
+    // credentials.md §2, §5.2): an oauth link resolves to a *live* access
+    // token, refreshed (single-flight, persisted) right here — after
+    // provisioning, so a cold image build cannot age the token it injects.
+    // Every launch starts with a fresh one; a dead refresh token throws the
+    // signed-out sentence and no container-bound adapter spawns without auth.
+    const injected = credEntry?.kind === 'oauth' ? await resolveOAuthAccess(credEntry.id) : secret
     return {
       ...target,
       remoteWorkspaceFolder: c.remoteWorkspaceFolder,
-      secret,
+      secret: injected,
       secretEnv: cfg.secretEnv || def.secretEnv,
       ...(cfg.env ? { env: cfg.env } : {}),
       proxy: { ...proxy, env: proxyEnv(proxy.base) },
