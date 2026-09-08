@@ -11,6 +11,13 @@ export interface TokenSet {
   expiresAt: string
   /** Display identity of the signed-in user ("jane@example.com"). */
   account: string
+  /**
+   * Provider-specific extra entry `data` (§2: legal, named by the provider
+   * module) — e.g. openai's `idToken`/`accountId`, which codex's native
+   * auth.json needs (§5.2.1). Persisted alongside the core fields; a key
+   * declared secret in CREDENTIAL_KINDS seals and redacts like the tokens.
+   */
+  extra?: Record<string, string>
 }
 
 export interface OAuthProvider {

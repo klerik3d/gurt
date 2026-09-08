@@ -172,7 +172,10 @@ export const CREDENTIAL_KINDS: CredentialKindDef[] = [
     // set the sign-in flow stores.
     fields: [
       { key: 'refresh', label: 'refresh token', secret: true, hidden: true },
-      { key: 'access', label: 'access token', secret: true, hidden: true }
+      { key: 'access', label: 'access token', secret: true, hidden: true },
+      // Provider-specific (§2: extra fields are legal, named by the provider
+      // module): openai's id_token JWT — bearer-ish, so sealed like the tokens.
+      { key: 'idToken', label: 'id token', secret: true, hidden: true }
     ],
     implemented: true
   },

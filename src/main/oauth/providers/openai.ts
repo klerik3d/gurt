@@ -10,6 +10,39 @@
 import type { OAuthProvider, TokenSet } from '../provider'
 import { authorizeGrant, idTokenClaims, refreshGrant, type AuthCodeConfig } from '../flow'
 
+/**
+ * The extra entry fields codex's native `~/.codex/auth.json` needs beyond the
+ * access token (§2, §5.2.1): the `id_token` JWT itself, and the ChatGPT
+ * account id its `https://api.openai.com/auth` claim carries (the same claim
+ * codex's own IdTokenInfo parser reads). A refresh response may rotate the
+ * id_token or omit it — when absent, the stored values are carried forward
+ * rather than erased. Exported for the unit test.
+ */
+export const openaiExtraData = (
+  tokens: Record<string, unknown>,
+  current?: TokenSet
+): Record<string, string> => {
+  const idToken = typeof tokens['id_token'] === 'string' ? tokens['id_token'] : ''
+  if (!idToken) {
+    return {
+      idToken: current?.extra?.['idToken'] ?? '',
+      accountId: current?.extra?.['accountId'] ?? ''
+    }
+  }
+  const auth = idTokenClaims(idToken)['https://api.openai.com/auth']
+  const accountId =
+    auth && typeof auth === 'object'
+      ? (auth as Record<string, unknown>)['chatgpt_account_id']
+      : undefined
+  return {
+    idToken,
+    accountId:
+      typeof accountId === 'string' && accountId
+        ? accountId
+        : (current?.extra?.['accountId'] ?? '')
+  }
+}
+
 const CONFIG: AuthCodeConfig = {
   id: 'openai',
   authorizationEndpoint: 'https://auth.openai.com/oauth/authorize',
@@ -24,7 +57,8 @@ const CONFIG: AuthCodeConfig = {
   // redirect_uri.
   port: 1455,
   redirectHost: 'localhost',
-  redirectPath: '/auth/callback'
+  redirectPath: '/auth/callback',
+  extraData: openaiExtraData
 }
 
 /** The account rides in the id_token's `email` claim. */

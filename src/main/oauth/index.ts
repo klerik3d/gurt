@@ -7,7 +7,7 @@
 // token is dead. It also owns the sign-in attempts the Credentials modal
 // starts (§4).
 import type { CredentialEntry } from '../../shared/credentials'
-import { oauthSignedOut, signedOutError } from '../../shared/credentials'
+import { CREDENTIAL_KINDS, oauthSignedOut, signedOutError } from '../../shared/credentials'
 import { listCredentials, patchCredentialData, upsertCredentialEntry } from '../credentials'
 import { addSecrets, createLogger } from '../log'
 import { isSignedOut } from './flow'
@@ -34,6 +34,30 @@ const stillFresh = (expiresAt: string): boolean => {
   const t = Date.parse(expiresAt)
   return Number.isFinite(t) && t - Date.now() > EXPIRY_SKEW_MS
 }
+
+/** The core `data` keys every oauth entry owns; everything else is a
+ *  provider-named extra (§2) and rides in `TokenSet.extra`. */
+const CORE_KEYS = new Set(['providerId', 'access', 'refresh', 'expiresAt', 'account', 'signedOut'])
+
+const extraOf = (data: Record<string, string>): Record<string, string> =>
+  Object.fromEntries(Object.entries(data).filter(([k]) => !CORE_KEYS.has(k)))
+
+/** §5.4 for a whole set, extras included: the manifest (§2.1) says which extra
+ *  keys are secrets — those go to the redactor with the tokens; plaintext
+ *  extras (an account id) stay loggable like `account` itself. */
+const OAUTH_SECRET_KEYS = new Set(
+  (CREDENTIAL_KINDS.find((k) => k.kind === 'oauth')?.fields ?? [])
+    .filter((f) => f.secret)
+    .map((f) => f.key)
+)
+const redactTokenSet = (set: TokenSet): void =>
+  addSecrets([
+    set.access,
+    set.refresh,
+    ...Object.entries(set.extra ?? {})
+      .filter(([k]) => OAUTH_SECRET_KEYS.has(k))
+      .map(([, v]) => v)
+  ])
 
 /** One in-flight resolution per credential id — see {@link resolveOAuthAccess}. */
 const resolving = new Map<string, Promise<string>>()
@@ -85,7 +109,8 @@ async function resolveUncoalesced(
     access: entry.data['access'] ?? '',
     refresh: entry.data['refresh'] ?? '',
     expiresAt: entry.data['expiresAt'] ?? '',
-    account: entry.data['account'] ?? ''
+    account: entry.data['account'] ?? '',
+    extra: extraOf(entry.data)
   }
   if (current.access && stillFresh(current.expiresAt)) return current.access
 
@@ -113,7 +138,7 @@ async function resolveUncoalesced(
   // §5.4: registered the moment refresh() returns — not left to the store
   // write below, so there is no window in which a live token is loggable.
   // (flow.ts feeds the raw response too; addSecrets is idempotent.)
-  addSecrets([set.access, set.refresh])
+  redactTokenSet(set)
   log.info('oauth.refresh', {
     id,
     provider: provider.id,
@@ -124,7 +149,11 @@ async function resolveUncoalesced(
   // §5.3: the (possibly rotated) refresh token is on disk before the access
   // token reaches any consumer — losing it is losing the sign-in. The patch
   // rides the save chain, so it read-modify-writes against any renderer save.
+  // Provider extras (§2 — openai's idToken/accountId) persist alongside; the
+  // patch merges keys, so an extra the provider did not return this time
+  // simply keeps its stored value.
   await patchCredentialData(id, {
+    ...set.extra,
     access: set.access,
     refresh: set.refresh,
     expiresAt: set.expiresAt,
@@ -191,7 +220,7 @@ export async function oauthSignIn(
   try {
     const set = await provider.authorize(ctl.signal)
     // §5.4, same rule as the refresh path: redactor first, store write second.
-    addSecrets([set.access, set.refresh])
+    redactTokenSet(set)
     log.info('oauth.authorize', { id: entry.id, provider: provider.id, ok: true, ms: Date.now() - started })
     await upsertCredentialEntry({
       id: entry.id,
@@ -199,6 +228,7 @@ export async function oauthSignIn(
       kind: 'oauth',
       hosts: [],
       data: {
+        ...set.extra,
         providerId: provider.id,
         access: set.access,
         refresh: set.refresh,
