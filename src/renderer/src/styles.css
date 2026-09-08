@@ -4058,3 +4058,133 @@ textarea.input {
   border-color: var(--accent);
   box-shadow: var(--glow);
 }
+
+/* --- first run: the welcome screen and the machine checklist -------------
+   (docs/requirements-first-run.md §2, §3). The checklist half is mounted
+   twice — here and in Settings → Machine — so its rules live on .wc-check
+   and below, independent of .wc's own layout. */
+.wc {
+  flex: 1;
+  position: relative;
+  overflow: auto;
+  display: flex;
+  justify-content: center;
+}
+.wc-logo {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.036;
+  pointer-events: none;
+}
+.wc-body {
+  position: relative;
+  width: 100%;
+  max-width: 620px;
+  padding: 40px 24px 48px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.wc-title {
+  font-size: 19px;
+  font-weight: 600;
+}
+.wc-sub {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--dim);
+}
+.wc-head-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+.wc-check {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.wc-check-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.wc-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.wc-row-label {
+  font-size: 13px;
+  font-weight: 600;
+  width: 116px;
+  flex: none;
+}
+/* The detail is the useful half of the row (a resolved path, a version, a
+   failure sentence) and is allowed to wrap rather than be truncated: on the
+   docker-cli row it carries the whole PATH that was searched. */
+.wc-row-detail {
+  font-size: 11px;
+  color: var(--dim);
+  line-height: 1.5;
+  min-width: 0;
+  word-break: break-word;
+}
+.wc-start {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 10px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+}
+.wc-kinds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.wc-token {
+  width: 100%;
+  padding: 9px 12px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+}
+.wc-token:focus {
+  outline: none;
+  border-color: var(--border2);
+}
+.wc-hint {
+  font-size: 11px;
+}
+.wc-warn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--yellow);
+}
+/* The demoted API-key path (docs/requirements-first-run.md §6.1): reachable in
+   one click, never competing with the sign-in button for attention. */
+.wc-alt {
+  align-self: flex-start;
+  font-size: 11px;
+}
+.wc-keyblock {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}

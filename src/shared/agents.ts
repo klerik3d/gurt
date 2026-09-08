@@ -15,6 +15,20 @@ export interface AgentDef {
   /** Default env var that receives the stored secret. */
   secretEnv: string
   /**
+   * Which `src/main/oauth/providers/` module signs this kind in, or null when
+   * the kind has no sign-in path and needs a pasted API key. Sits beside
+   * {@link secretEnv} because it answers the same question — how this kind is
+   * authenticated — and because §5.2.1 of
+   * docs/requirements-oauth-credentials.md already makes *delivery* a
+   * per-kind fact (`oauthAuthFile` in `main/oauth/materialize.ts`).
+   *
+   * A kind is only listed here once that document says how its CLI consumes a
+   * subscription sign-in. Guessing would produce a "Sign in" button that
+   * completes a browser round-trip and then fails at session start, which is a
+   * worse outcome than asking for a key.
+   */
+  oauthProvider: string | null
+  /**
    * Where this kind discovers Claude-style skills (SKILL.md directories)
    * inside the container, relative to `$HOME` — the target
    * `linkContainerSkills` points at the read-only bind. `null` means the
@@ -43,6 +57,9 @@ export const AGENT_DEFS: AgentDef[] = [
     bin: 'claude-agent-acp',
     binArgs: [],
     secretEnv: 'CLAUDE_CODE_OAUTH_TOKEN',
+    // §5.2.1: the access token rides that variable directly — the one kind for
+    // which the original env-var assumption held.
+    oauthProvider: 'anthropic',
     // Claude Code's own user-level skills directory — the path this feature
     // was built against (docs/requirements-skills.md §5).
     skillsDir: '.claude/skills'
@@ -55,6 +72,9 @@ export const AGENT_DEFS: AgentDef[] = [
     bin: 'codex-acp',
     binArgs: [],
     secretEnv: 'OPENAI_API_KEY',
+    // §5.2.1: fed through a materialized `~/.codex/auth.json`, with the env var
+    // suppressed — a non-key value there wins and forces the API-key path.
+    oauthProvider: 'openai',
     // Verified in the @openai/codex@0.148.0 binary codex-acp@1.6.2 resolves
     // to: a default-on skills subsystem reads `~/.agents/skills` (canonical)
     // and `~/.codex/skills` (deprecated but still loaded) — SKILL.md format,
@@ -71,6 +91,9 @@ export const AGENT_DEFS: AgentDef[] = [
     bin: 'gemini',
     binArgs: ['--experimental-acp'],
     secretEnv: 'GEMINI_API_KEY',
+    // §5.2.1: fed through a materialized `~/.gemini/oauth_creds.json`, env var
+    // likewise suppressed.
+    oauthProvider: 'google',
     // Verified in the @google/gemini-cli@0.56.0 tarball: Agent Skills are
     // default-on since v0.26.0 (`skillsSupport ?? true`), discovered from
     // `~/.gemini/skills` and the `~/.agents/skills` alias — SKILL.md
@@ -85,6 +108,11 @@ export const AGENT_DEFS: AgentDef[] = [
     bin: 'opencode',
     binArgs: ['acp'],
     secretEnv: 'ANTHROPIC_API_KEY',
+    // No sign-in path: docs/requirements-oauth-credentials.md §5.2.1 verified
+    // delivery for the three kinds above and not for this one. Pointing it at
+    // the anthropic provider would buy a browser round-trip and a failure at
+    // session start; a pasted key is the honest answer until that is checked.
+    oauthProvider: null,
     // Verified in the opencode-linux-x64@1.18.21 binary (the -ai package is a
     // wrapper): global skills load from `~/.config/opencode/{skill,skills}/`,
     // same SKILL.md frontmatter format. It also auto-reads `~/.claude/skills`,

@@ -362,7 +362,11 @@ npm run setup      # npm ci + allow-scripts + unpack the Electron binary
 npm run dev        # requires docker daemon for env start
 ```
 
-`GURT_ROOT` env var overrides `~/.gurt` (used by tests). `GURT_LOG=debug|info|warn|error`
+`GURT_ROOT` env var overrides `~/.gurt` (used by tests).
+`GURT_WELCOME=auto|always|never` overrides the stored welcome-screen mode
+(`~/.gurt/welcome.json`, Settings → Machine) for one run — `always` is what a
+demo machine wants and how the smoke reaches the screen on a store that already
+has sessions. `GURT_LOG=debug|info|warn|error`
 sets the log level — the app writes `~/.gurt/logs/gurt.log` (⌘K → "Open logs
 folder"); see [docs/logging.md](docs/logging.md).
 
@@ -480,6 +484,7 @@ SCRATCH=/tmp/gurt-smoke GURT_SMOKE_CLAUDE_TOKEN=… node scripts/smoke-turn-cont
 node scripts/smoke-delete-row.mjs                 # sidebar Del/⌫: confirm, delete, move the selection, no docker
 node scripts/smoke-session-copy.mjs               # duplicate/delete from the row actions and the pane menu, no docker
 node scripts/smoke-roles.mjs                      # session roles: the picker, the repo select it drives, persistence, no docker
+node scripts/smoke-first-run.mjs                  # first run: the welcome screen, the machine checklist, Settings → Machine, no docker
 node scripts/smoke-newtask.mjs                    # header "+" creates a task inline — no modal, no stray session, no docker
 node scripts/smoke-deleted-task.mjs               # a deleted task stays deleted: selection cleared, no dir resurrected by a late persist, no docker
 node scripts/smoke-logging.mjs                    # app log: startup banner, IPC wrapper, renderer transport, no docker (an unreachable daemon is logged as "unavailable")
@@ -488,7 +493,7 @@ node scripts/smoke.linux.mjs                      # linux variant of smoke.mjs: 
 
 Unit tests are pure node — no Electron, no Playwright, no docker; the TS under
 test is bundled on the fly with esbuild. `npm test` runs every
-`scripts/*.test.mjs` (currently 46) and is the canonical way to run them; a single
+`scripts/*.test.mjs` (currently 56) and is the canonical way to run them; a single
 file can also be run directly. A few, to show what they cover:
 
 ```bash
@@ -497,6 +502,9 @@ node scripts/git-logic.test.mjs        # git contract: repo identity, credential
 node scripts/session-log.test.mjs      # append-only session log + legacy migration
 node scripts/gurt-mcp.test.mjs         # the `gurt` MCP server: `complete` validation + the per-role tool set
 node scripts/session-roles.test.mjs    # session roles: locks, (role, repos) rules, create_session gating, migration
+node scripts/doctor.test.mjs           # machine checklist: what each row probes, what gates, what "could not ask" reports
+node scripts/agent-providers.test.mjs  # agent token probes: ok / rejected / unreachable per kind (a 429 is never "ok")
+node scripts/first-run.test.mjs        # one-click first run: the five entities, reuse, where the token lands, a failed start
 node scripts/turn-contract.test.mjs    # turn contract: the post-turn nudge/incomplete decision matrix
 node scripts/proposal-store.test.mjs   # turn contract: proposal restore, latestProposal, Kernel.prUrl params
 node scripts/env-config.test.mjs       # env normal form: JSONC parse/validation, envImageTag identity, migration

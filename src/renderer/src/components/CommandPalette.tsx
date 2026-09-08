@@ -28,15 +28,16 @@ interface TaskItem {
 
 interface ActionItem {
   kind: 'action'
-  id: 'new-session' | 'new-task' | 'open-logs' | 'check-updates'
+  id: 'new-session' | 'new-task' | 'welcome' | 'open-logs' | 'check-updates'
   title: string
   keys: string
 }
 
 /** Icon per action row. */
-const ACTION_ICON: Record<ActionItem['id'], 'plus' | 'branch' | 'folder' | 'history'> = {
+const ACTION_ICON: Record<ActionItem['id'], 'plus' | 'branch' | 'folder' | 'history' | 'info'> = {
   'new-session': 'plus',
   'new-task': 'branch',
+  welcome: 'info',
   'open-logs': 'folder',
   'check-updates': 'history'
 }
@@ -61,6 +62,7 @@ export function CommandPalette({
   onClose,
   onNewSession,
   onNewTask,
+  onWelcome,
   onSelectSession,
   onSelectTask
 }: {
@@ -69,6 +71,10 @@ export function CommandPalette({
   onClose: () => void
   onNewSession: () => void
   onNewTask: () => void
+  /** Bring the first-run screen back on a store that has moved past it
+   *  (docs/requirements-first-run.md §2.3) — a machine that lost Docker, or a
+   *  second demo. */
+  onWelcome: () => void
   onSelectSession: (id: string) => void
   onSelectTask: (ws: string, task: string) => void
 }) {
@@ -85,6 +91,7 @@ export function CommandPalette({
     const actions: ActionItem[] = [
       { kind: 'action', id: 'new-session', title: 'New session…', keys: bindingLabel(hotkeys.newSession) },
       { kind: 'action', id: 'new-task', title: 'New task…', keys: bindingLabel(hotkeys.newTask) },
+      { kind: 'action', id: 'welcome', title: 'Welcome & machine setup', keys: '' },
       { kind: 'action', id: 'open-logs', title: 'Open logs folder', keys: '' },
       { kind: 'action', id: 'check-updates', title: 'Check for updates', keys: '' }
     ].filter((a) => match(a.title)) as ActionItem[]
@@ -120,6 +127,7 @@ export function CommandPalette({
     if (item.kind === 'action') {
       if (item.id === 'new-session') onNewSession()
       else if (item.id === 'new-task') onNewTask()
+      else if (item.id === 'welcome') onWelcome()
       else if (item.id === 'open-logs') {
         // Reveals ~/.gurt/logs — the log is local, so "open it" is the whole
         // support story (see docs/logging.md).

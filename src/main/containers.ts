@@ -27,6 +27,7 @@ import { cloneDir } from './store'
 import {
   adapterPresent,
   assertDockerCli,
+  assertDockerDaemon,
   devcontainerUp,
   dockerRemove,
   dockerRunning,
@@ -281,7 +282,12 @@ export class ContainerManager {
     // Before anything else: no docker, no container, and every probe below
     // would report its absence as "the daemon says no" (they swallow spawn
     // errors on purpose) until some later `run` failed with a raw ENOENT.
+    // Two halves, two sentences: the binary missing and its daemon not
+    // answering are different problems with different fixes, and the second
+    // is the one that is true on a machine where Docker Desktop is merely
+    // not started (docs/requirements-first-run.md §4.2).
     assertDockerCli()
+    await assertDockerDaemon()
     const provisionLog = this.logFor(sessionId)
 
     // Its own container, still up → just reuse it. (Probe the daemon: a Docker

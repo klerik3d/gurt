@@ -23,6 +23,7 @@ import { ADMIN_TOOLS } from '../shared/adminTools.generated'
 import { getCredentials, credentialUsedBy } from './credentials'
 import { probeMcpServer } from './mcp/probe'
 import { discoverDevcontainer, discoverDockerfiles, envImageStatus } from './provision'
+import { machineDoctor } from './doctor'
 import { traffic } from './proxy/traffic'
 import * as store from './store'
 import * as changes from './changes'
@@ -147,7 +148,14 @@ export function createAdminSurface(kernel: Kernel): AdminSurface {
       return kernel.usage.list().filter((r) => r.workspace === ws)
     },
     getPlanUsage: () => kernel.planUsage.get(),
-    getBootProgress: async () => kernel.bootProgress()
+    getBootProgress: async () => kernel.bootProgress(),
+    // Host state, no parameters, no secrets — and the answer to the one
+    // diagnostic question the operator could not previously reach: a session
+    // that will not start because this machine's Docker daemon is down looks
+    // identical, from every other read here, to one that will not start for a
+    // reason in the configuration (docs/requirements-first-run.md §8).
+    machineDoctor: () => machineDoctor(),
+    getWelcomeMode: () => store.getWelcomeMode()
   })
 
   return {

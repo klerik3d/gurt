@@ -35,6 +35,7 @@ import type { TurnRecord } from './usage'
 import type { PlanUsage } from './planUsage'
 import type { NotificationPrefs, NotificationRecord } from './notifications'
 import type { HotkeyMap } from './hotkeys'
+import type { DoctorReport, FirstRunResult, WelcomeMode } from './doctor'
 
 export type CreateAction = 'run' | 'queue' | 'draft'
 
@@ -386,6 +387,50 @@ export interface GurtApi {
   /** Current boot-restore progress — the pull for a window that opened after
    *  some `boot-progress` pushes already fired. */
   getBootProgress(): Promise<BootProgress>
+  /** State of the machine gurt is running on: whether the `docker` CLI
+   *  resolves, whether its daemon answers, and whether the images a first
+   *  session needs are already local (docs/requirements-first-run.md §3).
+   *  Probed on every call — this is the answer to "why will nothing start",
+   *  and a cached one would be worse than none. Never rejects: a failure is a
+   *  row, which is the whole point. */
+  machineDoctor(): Promise<DoctorReport>
+  /** Pull the two digest-pinned images a first session needs — the bundled
+   *  operator env's and the session proxy's (§5.1). Progress streams over
+   *  `provision-log` under the key `machine:prepare`; the call rejects with
+   *  the pull's own failure. */
+  machinePrepare(): Promise<void>
+  /** Create everything a first operator session needs and start it: the
+   *  workspace, an `agent-token` credential for the pasted token, an agent
+   *  instance linked to it, a task, and an operator-role session on the
+   *  bundled env (§6.2). The token is probed first (§7.3) — a provider that
+   *  rejects it creates nothing. Returns once the draft exists; the start is
+   *  the ordinary run path, so its failure lands on the session as a plain
+   *  `startError` rather than a rejection here. */
+  firstRunStart(kind: string, token: string): Promise<FirstRunResult>
+  /** The same create, entered by signing in instead of pasting a key — the
+   *  welcome screen's primary path (docs/requirements-first-run.md §6.1).
+   *  Mints an `oauth` credential for the kind's provider
+   *  (`AgentDef.oauthProvider`), runs that provider's browser flow, and on
+   *  success creates and starts exactly what {@link firstRunStart} does. A
+   *  cancelled or failed sign-in creates nothing; a kind with no sign-in path
+   *  is refused rather than sent through a flow its CLI cannot consume. */
+  firstRunSignIn(kind: string): Promise<FirstRunResult>
+  /** Abort the welcome screen's pending sign-in. The credential it mints is
+   *  created host-side, so the renderer has no id to pass to `oauthCancel` —
+   *  this is the same cancel, addressed by "the one the welcome screen
+   *  started". A no-op when nothing is pending. */
+  firstRunCancelSignIn(): Promise<void>
+  /** When the welcome screen shows itself (docs/requirements-first-run.md
+   *  §2.1): `auto` while the store has never produced a session, `always` on
+   *  every launch, `never` only through the command palette. `GURT_WELCOME`
+   *  overrides the stored value, the way `GURT_LOG` overrides the log level. */
+  getWelcomeMode(): Promise<WelcomeMode>
+  setWelcomeMode(mode: WelcomeMode): Promise<void>
+  /** Bring the host's Docker GUI up — the `start-docker` action of the
+   *  daemon row (§3.4). macOS only (`open -a Docker`); a no-op elsewhere,
+   *  where the daemon is a system service and gurt does not run `sudo`.
+   *  Fire-and-forget: the row's own re-check reports the result. */
+  machineStartDocker(): Promise<void>
 }
 
 /**
@@ -510,7 +555,19 @@ const METHODS = {
   setHotkeys: 'write',
   getUsage: 'read',
   getPlanUsage: 'read',
-  getBootProgress: 'read'
+  getBootProgress: 'read',
+  machineDoctor: 'read', //     "why will nothing start" — the diagnostic the operator exists for
+  machinePrepare: 'none', //    pulls images on the host: a user gesture, not an agent's
+  // Creates a credential and a workspace, both of which are `none` on their
+  // own (§5.1, §10 of the operator doc) — a method that creates both must not
+  // be reachable when neither of its parts is. The annotation says nothing
+  // about who *calls* it: the welcome screen does, before any operator exists.
+  firstRunStart: 'none',
+  firstRunSignIn: 'none', //    the same, plus a host browser window
+  firstRunCancelSignIn: 'none', // controls that flow
+  getWelcomeMode: 'read', //    a UI preference, like the hotkeys below
+  setWelcomeMode: 'write', //   same
+  machineStartDocker: 'none' // host GUI, like `openLogsFolder`
 } as const satisfies Record<keyof GurtApi, Exposure>
 
 /** Runtime method list; `api:<method>` is the IPC channel per entry. */

@@ -31,6 +31,9 @@ import * as changes from './changes'
 import { normalizeNotificationPrefs } from '../shared/notifications'
 import { sanitizeHotkeys } from '../shared/hotkeys'
 import { initAppMenu } from './menu'
+import { machineDoctor, machinePrepare, startDockerApp } from './doctor'
+import { cancelFirstRunSignIn, firstRunSignIn, firstRunStart } from './firstRun'
+import { PREPARE_LOG_KEY, sanitizeWelcomeMode } from '../shared/doctor'
 import { checkForUpdates, installUpdate, updateStatus } from './update'
 
 const log = createLogger('ipc')
@@ -68,6 +71,9 @@ const OPAQUE_ARGS = new Set<keyof GurtApi>([
   // The whole entry rides in the call; its secret fields only ever hold masks,
   // but the payload is a credential's and stays opaque like setCredentials'.
   'oauthSignIn',
+  // Carries a pasted agent token, exactly like `setCredentials`
+  // (docs/requirements-first-run.md §7.2).
+  'firstRunStart',
   'setAgents',
   'addEnv',
   'updateEnv',
@@ -450,7 +456,23 @@ export function registerIpc(): void {
       return kernel.usage.list()
     },
     getPlanUsage: () => kernel.planUsage.get(),
-    getBootProgress: async () => kernel.bootProgress()
+    getBootProgress: async () => kernel.bootProgress(),
+    machineDoctor: () => machineDoctor(),
+    machinePrepare: async () => {
+      // Same stream the provisioning log uses, under a reserved non-session
+      // key — the third one, after a session id and `env-build:<ws>/<env>`
+      // (docs/requirements-first-run.md §5.3). `sessionLogFilePath` runs it
+      // through `fileId`, so the file lands beside every other one.
+      const key = PREPARE_LOG_KEY
+      dropSessionLog(key)
+      await machinePrepare((line) => kernel.bus.emit('provision.log', { key, line }))
+    },
+    machineStartDocker: async () => startDockerApp(),
+    getWelcomeMode: () => store.getWelcomeMode(),
+    setWelcomeMode: (mode) => store.setWelcomeMode(sanitizeWelcomeMode(mode)),
+    firstRunStart: (kind, token) => firstRunStart(kernel, kind, token),
+    firstRunSignIn: (kind) => firstRunSignIn(kernel, kind),
+    firstRunCancelSignIn: async () => cancelFirstRunSignIn()
   }
 
   // Renderer records: validated, rate-limited and truncated inside `logRenderer`

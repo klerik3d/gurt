@@ -462,4 +462,31 @@ export const ADMIN_TOOLS: readonly AdminToolDef[] = [
     params: [],
     input: {}
   },
+  {
+    name: "machine_doctor",
+    method: "machineDoctor",
+    exposure: "read",
+    description: "State of the machine gurt is running on: whether the `docker` CLI\nresolves, whether its daemon answers, and whether the images a first\nsession needs are already local (docs/requirements-first-run.md §3).\nProbed on every call — this is the answer to \"why will nothing start\",\nand a cached one would be worse than none. Never rejects: a failure is a\nrow, which is the whole point.",
+    bindWs: false,
+    params: [],
+    input: {}
+  },
+  {
+    name: "get_welcome_mode",
+    method: "getWelcomeMode",
+    exposure: "read",
+    description: "When the welcome screen shows itself (docs/requirements-first-run.md\n§2.1): `auto` while the store has never produced a session, `always` on\nevery launch, `never` only through the command palette. `GURT_WELCOME`\noverrides the stored value, the way `GURT_LOG` overrides the log level.",
+    bindWs: false,
+    params: [],
+    input: {}
+  },
+  {
+    name: "set_welcome_mode",
+    method: "setWelcomeMode",
+    exposure: "write",
+    description: "GurtApi.setWelcomeMode",
+    bindWs: false,
+    params: ["mode"],
+    input: { "mode": z.enum(["auto", "always", "never"]) }
+  },
 ]

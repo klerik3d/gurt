@@ -62,6 +62,18 @@ const SAFE_ARGS = new Set([
   // Reads. No arguments at all, or a workspace/task/repo/session key.
   'getTree',
   'getBootProgress',
+  // The machine checklist and its two actions: no arguments at all. (The
+  // fourth first-run method, `firstRunStart`, carries a pasted agent token and
+  // is in OPAQUE_ARGS — docs/requirements-first-run.md §7.2.)
+  'machineDoctor',
+  'machinePrepare',
+  'machineStartDocker',
+  // Takes an agent kind and nothing else: the secret this path produces is
+  // minted by the provider's browser flow, never carried over IPC.
+  'firstRunSignIn',
+  'firstRunCancelSignIn',
+  'getWelcomeMode',
+  'setWelcomeMode',
   'getMcpDefs',
   'getAgents',
   'getAgentConfig',

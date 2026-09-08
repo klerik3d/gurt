@@ -38,7 +38,7 @@ await bundle({
   stdin: {
     contents: `
       export { hostPath, applyHostPath, resolveHostCommand } from ${S('src/main/hostPath.ts')}
-      export { dockerCliPath, assertDockerCli } from ${S('src/main/provision.ts')}
+      export { dockerCliPath, assertDockerCli, assertDockerDaemon, resetDockerDaemonMemo } from ${S('src/main/provision.ts')}
     `,
     resolveDir: ROOT,
     loader: 'ts',
@@ -126,4 +126,54 @@ test('a missing docker fails the start with a sentence, not `spawn docker ENOENT
   assert.match(message, /Docker was not found/)
   assert.match(message, /install Docker Desktop/i, 'says what to do about it')
   assert.doesNotMatch(message, /ENOENT/, 'the message it replaces read like an internal error')
+})
+
+// --- the daemon preflight ---------------------------------------------------
+//
+// The second half of the start preflight (docs/requirements-first-run.md §4):
+// a `docker` binary with no daemon behind it fails exactly the way a missing
+// binary does — every probe underneath swallows spawn errors — so it needs its
+// own sentence, and it must not borrow the CLI one's.
+
+test('a dead daemon fails the start with its own sentence, not the CLI one', async () => {
+  m.resetDockerDaemonMemo()
+  await assert.doesNotReject(() => m.assertDockerDaemon(async () => '27.3.1'))
+  m.resetDockerDaemonMemo()
+  let message = ''
+  try {
+    await m.assertDockerDaemon(async () => null)
+  } catch (e) {
+    message = String(e)
+  }
+  assert.match(message, /daemon is not responding/)
+  assert.match(message, /start Docker Desktop/i, 'says what to do about it')
+  assert.doesNotMatch(
+    message,
+    /was not found on this machine/,
+    'a stopped daemon must not read as "install Docker" — different cause, different fix'
+  )
+})
+
+test('only a yes is memoized: a daemon that stops is not reported as up', async () => {
+  m.resetDockerDaemonMemo()
+  let calls = 0
+  const up = async () => {
+    calls++
+    return '27.3.1'
+  }
+  await m.assertDockerDaemon(up)
+  await m.assertDockerDaemon(up)
+  assert.equal(calls, 1, 'a burst of starts pays for one `docker info`')
+
+  // A negative answer is never cached — a user who has just started Docker
+  // Desktop must not have to wait out a stale no.
+  m.resetDockerDaemonMemo()
+  let downCalls = 0
+  const down = async () => {
+    downCalls++
+    return null
+  }
+  await assert.rejects(() => m.assertDockerDaemon(down))
+  await assert.rejects(() => m.assertDockerDaemon(down))
+  assert.equal(downCalls, 2)
 })

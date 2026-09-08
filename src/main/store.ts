@@ -23,6 +23,7 @@ import type {
 import { AsyncLocalStorage } from 'node:async_hooks'
 import type { McpRegistryEntry } from '../shared/mcp'
 import { OPERATOR_ENV_NAME } from '../shared/types'
+import { sanitizeWelcomeMode, type WelcomeMode } from '../shared/doctor'
 import { agentDef } from '../shared/agents'
 import { defaultAgentConfig } from '../shared/agentConfig'
 import { validateEnvConfig } from '../shared/envConfig'
@@ -537,6 +538,28 @@ export async function getNotificationPrefs(): Promise<NotificationPrefs> {
 
 export async function setNotificationPrefs(prefs: NotificationPrefs): Promise<void> {
   await writeJson(notificationsFile(), prefs)
+}
+
+const welcomeFile = () => path.join(gurtRoot, 'welcome.json')
+
+/**
+ * When the welcome screen shows itself (docs/requirements-first-run.md §2.1).
+ *
+ * `GURT_WELCOME` overrides the stored value, the way `GURT_LOG` overrides the
+ * log level: it is what a smoke sets to reach the screen without emptying the
+ * store, and what a demo machine can export without editing a file. An
+ * unrecognized value in either place degrades to the default rather than to a
+ * screen that never appears.
+ */
+export async function getWelcomeMode(): Promise<WelcomeMode> {
+  const override = process.env['GURT_WELCOME']
+  if (override) return sanitizeWelcomeMode(override.trim().toLowerCase())
+  const raw = await readJson<{ mode?: unknown }>(welcomeFile(), {})
+  return sanitizeWelcomeMode(raw.mode)
+}
+
+export async function setWelcomeMode(mode: WelcomeMode): Promise<void> {
+  await writeJson(welcomeFile(), { mode: sanitizeWelcomeMode(mode) })
 }
 
 const hotkeysFile = () => path.join(gurtRoot, 'hotkeys.json')

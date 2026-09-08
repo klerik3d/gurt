@@ -1365,6 +1365,45 @@ export function dockerVersion(timeoutMs = 3000): Promise<string | null> {
   })
 }
 
+/**
+ * The daemon's reported server version, or null when it is not answering.
+ *
+ * Three different questions, three different answers, and conflating any two
+ * of them is how "spawn docker ENOENT" got its reputation: {@link dockerCliPath}
+ * asks whether the binary exists at all, {@link dockerVersion} asks what the
+ * *CLI* is (it answers perfectly well while the daemon is dead), and this asks
+ * whether there is a daemon behind it.
+ *
+ * Bounded, like `dockerVersion`, and for a sharper reason: a half-started
+ * Docker Desktop answers `info` slowly or never, which is precisely the state
+ * this exists to name.
+ *
+ * Exit code alone is not the answer — `docker info` has historically exited 0
+ * while reporting connection failures in its own body, and the template
+ * renders `<nil>` for a field it cannot fill. A daemon counts as responding
+ * only when the child exits 0 *and* prints a version.
+ */
+export function dockerDaemon(timeoutMs = 5000): Promise<string | null> {
+  return new Promise((resolve) => {
+    const child = spawn('docker', ['info', '--format', '{{.ServerVersion}}'])
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL')
+      resolve(null)
+    }, timeoutMs)
+    let out = ''
+    child.stdout.on('data', (d: Buffer) => (out += d.toString()))
+    child.on('error', () => {
+      clearTimeout(timer)
+      resolve(null)
+    })
+    child.on('close', (code) => {
+      clearTimeout(timer)
+      const version = out.trim()
+      resolve(code === 0 && version && version !== '<nil>' ? version : null)
+    })
+  })
+}
+
 /** Where the `docker` CLI is on this machine, or null when it is in none of
  *  the places gurt looks (hostPath.ts). Cheap: a few `stat`s, no subprocess. */
 export function dockerCliPath(): string | null {
@@ -1389,6 +1428,45 @@ export function assertDockerCli(cli: string | null = dockerCliPath()): void {
       'the `docker` CLI: install Docker Desktop (or another Docker runtime), start it, and start ' +
       'the session again. If Docker is installed somewhere unusual, launching gurt from a terminal ' +
       'hands it the PATH of that shell.'
+  )
+}
+
+/** Monotonic ms of the last daemon answer, for {@link assertDockerDaemon}'s
+ *  positive memo. Only a *yes* is remembered: a user who has just started
+ *  Docker Desktop must not have to wait out a cache. */
+let daemonSeenAt = 0
+/** Long enough that a burst of starts pays for one `docker info`, short enough
+ *  that a daemon stopped mid-demo is never reported as up. */
+const DAEMON_MEMO_MS = 5_000
+
+/** Test seam: forget the memo. */
+export function resetDockerDaemonMemo(): void {
+  daemonSeenAt = 0
+}
+
+/**
+ * The second half of the start preflight, beside {@link assertDockerCli}
+ * (docs/requirements-first-run.md §4.2). A CLI with no daemon behind it fails
+ * exactly the way a missing CLI does — every probe below swallows spawn errors
+ * by design, so without this the first symptom is `Cannot connect to the
+ * Docker daemon` quoted out of the tail of whichever `run` happened to go
+ * first, several seconds and one clone later.
+ *
+ * `probe` is a parameter so the message can be tested without stopping the
+ * machine's Docker.
+ */
+export async function assertDockerDaemon(
+  probe: (timeoutMs?: number) => Promise<string | null> = dockerDaemon
+): Promise<void> {
+  if (Date.now() - daemonSeenAt < DAEMON_MEMO_MS) return
+  if (await probe()) {
+    daemonSeenAt = Date.now()
+    return
+  }
+  throw new Error(
+    'Docker is installed but its daemon is not responding. gurt runs every session in a ' +
+      'container: start Docker Desktop (or your Docker runtime), wait for it to report ready, ' +
+      'and start the session again.'
   )
 }
 
