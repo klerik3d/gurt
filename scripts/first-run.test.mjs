@@ -60,7 +60,8 @@ await bundle({
       `export { firstRunStart, firstRunSignIn } from ${S('src/main/firstRun.ts')}\n` +
       `export { AGENT_DEFS, agentDef } from ${S('src/shared/agents.ts')}\n` +
       `export { getCredentials, upsertCredentialEntry } from ${S('src/main/credentials.ts')}\n` +
-      `export { getAgents, listWorkspaces } from ${S('src/main/store.ts')}\n` +
+      `export { getAgents, listWorkspaces, getWelcomeMode, setWelcomeMode } from ${S('src/main/store.ts')}\n` +
+      `export { welcomeShows, sanitizeWelcomeMode, WELCOME_MODE_DEFAULT } from ${S('src/shared/doctor.ts')}\n` +
       `export { FIRST_RUN_PROMPT, FIRST_RUN_TASK, FIRST_RUN_WORKSPACE } from ${S('src/shared/doctor.ts')}\n` +
       `export { OPERATOR_ENV_NAME } from ${S('src/shared/types.ts')}`,
     resolveDir: ROOT,
@@ -359,4 +360,50 @@ test('a kind with no sign-in path is refused, not sent through a doomed flow', a
     /no sign-in path/
   )
   assert.equal(attempted, false, 'refused before the browser is opened')
+})
+
+// --- when the welcome screen shows itself (§2.1) ----------------------------
+//
+// Three states, not a boolean: `always` is what a demo machine wants and what
+// lets the smoke reach the screen without emptying the store, and `never` is
+// the way out for someone who deleted their last session and does not want the
+// screen back. The rule lives in one function so main's tests and the
+// renderer's render condition cannot state it twice and drift.
+
+test('the mode decides, and `auto` is the documented default', async () => {
+  assert.equal(m.WELCOME_MODE_DEFAULT, 'auto')
+  // auto: exactly the old behaviour.
+  assert.equal(m.welcomeShows('auto', true), true)
+  assert.equal(m.welcomeShows('auto', false), false)
+  // always: every launch, whatever the store holds.
+  assert.equal(m.welcomeShows('always', true), true)
+  assert.equal(m.welcomeShows('always', false), true)
+  // never: not on its own, ever — the command palette is the only way in.
+  assert.equal(m.welcomeShows('never', true), false)
+  assert.equal(m.welcomeShows('never', false), false)
+})
+
+test('a garbage mode degrades to the default, never to a screen nobody can reach', async () => {
+  for (const bad of ['', 'ALWAYS ', 'yes', null, undefined, 7, {}])
+    assert.equal(m.sanitizeWelcomeMode(bad), 'auto', `${JSON.stringify(bad)} must not stick`)
+  assert.equal(m.sanitizeWelcomeMode('never'), 'never')
+})
+
+test('the mode persists, and GURT_WELCOME overrides it for one run', async () => {
+  assert.equal(await m.getWelcomeMode(), 'auto', 'nothing stored yet')
+  await m.setWelcomeMode('never')
+  assert.equal(await m.getWelcomeMode(), 'never', 'persisted')
+
+  // The env override is what a smoke sets to reach the screen without
+  // emptying the store, and what a demo machine exports instead of editing a
+  // file — the relationship GURT_LOG has to the log level.
+  process.env.GURT_WELCOME = 'always'
+  assert.equal(await m.getWelcomeMode(), 'always', 'the override wins over the file')
+  process.env.GURT_WELCOME = 'ALWAYS'
+  assert.equal(await m.getWelcomeMode(), 'always', 'case and padding are forgiven')
+  process.env.GURT_WELCOME = 'nonsense'
+  assert.equal(await m.getWelcomeMode(), 'auto', 'a typo is the default, not the stored value')
+  delete process.env.GURT_WELCOME
+  assert.equal(await m.getWelcomeMode(), 'never', 'and the file is still what it was')
+  await m.setWelcomeMode('auto')
 })

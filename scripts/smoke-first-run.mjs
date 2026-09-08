@@ -14,6 +14,9 @@
 // is that it leads, names the right provider per kind, and that the key path
 // stays one click away.
 //
+// It ends by relaunching with `GURT_WELCOME=always` against a store that now
+// has a session and a stored `never` — the leg the setting exists for.
+//
 //   npm run build && node scripts/smoke-first-run.mjs
 import { createRequire } from 'node:module'
 import assert from 'node:assert/strict'
@@ -194,8 +197,48 @@ try {
   await shot('03-welcome-again')
   console.log('first run: palette re-opens the welcome screen OK')
 
-  console.log('smoke-first-run: PASS')
+  // --- the mode is a setting, and it lives beside the checklist ---
+  await page.click('.ab-item[title^="Settings"]')
+  await page.click('.set-nav-item:has-text("Machine")')
+  await page.waitForSelector('.set-row:has-text("Welcome screen")', { timeout: 5000 })
+  const modeRow = page.locator('.set-row:has-text("Welcome screen")')
+  assert.deepEqual(
+    (await modeRow.locator('.btn-link').allInnerTexts()).map((t) => t.replace(' ✓', '').trim()),
+    ['auto', 'always', 'never'],
+    'three modes, in the order the doc lists them'
+  )
+  await modeRow.locator('.btn-link:has-text("never")').click()
+  await page.waitForSelector('.set-row:has-text("Welcome screen") .btn-link.active:has-text("never")', {
+    timeout: 5000
+  })
+  await shot('04-welcome-mode')
+  console.log('first run: the mode picker persists OK')
 } finally {
   await shot('99-final').catch(() => {})
   await app.close()
+}
+
+// --- GURT_WELCOME: the screen on a store that is well past its first run ----
+//
+// The store now has a session and the mode on disk is `never`, so nothing
+// would show the screen. This is the leg the setting exists for: a demo
+// machine that wants the screen every launch, and a smoke that needs to reach
+// it without emptying the store.
+const forced = await _electron.launch({
+  executablePath: electronPath,
+  args: [APP_DIR, '--no-sandbox'],
+  env: { ...env, GURT_WELCOME: 'always' },
+  timeout: 30000
+})
+try {
+  const p2 = await forced.firstWindow()
+  await p2.waitForSelector('.sidebar', { timeout: 15000 })
+  await p2.waitForSelector('.sb-task', { timeout: 10000 })
+  await p2.waitForSelector('.wc', { timeout: 10000 })
+  await p2.screenshot({ path: path.join(SHOT_DIR, '05-forced.png') })
+  console.log('first run: GURT_WELCOME=always overrides a stored `never` OK')
+
+  console.log('smoke-first-run: PASS')
+} finally {
+  await forced.close()
 }

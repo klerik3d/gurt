@@ -362,7 +362,11 @@ npm run setup      # npm ci + allow-scripts + unpack the Electron binary
 npm run dev        # requires docker daemon for env start
 ```
 
-`GURT_ROOT` env var overrides `~/.gurt` (used by tests). `GURT_LOG=debug|info|warn|error`
+`GURT_ROOT` env var overrides `~/.gurt` (used by tests).
+`GURT_WELCOME=auto|always|never` overrides the stored welcome-screen mode
+(`~/.gurt/welcome.json`, Settings → Machine) for one run — `always` is what a
+demo machine wants and how the smoke reaches the screen on a store that already
+has sessions. `GURT_LOG=debug|info|warn|error`
 sets the log level — the app writes `~/.gurt/logs/gurt.log` (⌘K → "Open logs
 folder"); see [docs/logging.md](docs/logging.md).
 

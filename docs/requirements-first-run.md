@@ -115,16 +115,60 @@ Not "no workspaces" and not "no agents", for one reason each:
   disappearing.
 
 The condition is derived from `tree`, which the renderer already holds
-and already refreshes on `tree.changed` — no new state, no persisted
-"has seen welcome" flag. A flag would be a fourth thing that can be
-wrong on a machine gurt has never seen.
+and already refreshes on `tree.changed` — no "has seen welcome" flag. A
+flag would be a fourth thing that can be wrong on a machine gurt has
+never seen, and it answers the wrong question: what matters is whether
+this machine has a session, not whether someone once looked at a screen.
+(§2.1.1 adds a *mode*, which is a stated preference rather than a
+latched fact — a different thing, and the user's to set.)
 
 **It stops appearing the moment any session exists in any state**,
 including a draft. Clicking the sidebar's `+` creates a draft
 immediately (`App.tsx`'s `createDraft`), so a user who deliberately
 enters the manual flow is not sent back to the welcome screen on the
-next render. This is the whole stop rule; there is no dismissal, no
-"don't show again", nothing to un-set.
+next render.
+
+Two consequences of deriving it rather than latching it, both
+deliberate: the screen **survives a restart** (a machine that still has
+no session is still the machine this screen is for — there is no "seen
+it once" to record), and it **comes back if every session is later
+deleted** (a store with no sessions is exactly the state it serves).
+The second is the one that can surprise, and §2.1.1 is the way out.
+
+### 2.1.1 The mode: `auto` / `always` / `never`
+
+The condition above is the `auto` mode, which is the default. Two other
+states answer questions it cannot, and a boolean could not hold all
+three:
+
+| mode | shows itself |
+| --- | --- |
+| `auto` (default) | while the store has never produced a session — §2.1 |
+| `always` | every launch, whatever the store holds |
+| `never` | not on its own; only ⌘K reaches it |
+
+`always` is what a demo machine wants, and it is what lets
+`smoke-first-run.mjs` reach the screen without first emptying the store.
+`never` is the way out of the delete-all-sessions surprise above.
+**Neither mode touches the command palette**: ⌘K → "Welcome & machine
+setup" reaches the screen under all three, because a setting that could
+make a screen unreachable is a setting that will one day strand someone.
+
+Stored in `~/.gurt/welcome.json` (`{ "mode": "auto" }`) — its own small
+global file, the shape `notifications.json` and `hotkeys.json` already
+established, read through the same defaults-merge so a missing or
+hand-mangled file degrades to `auto` rather than to a screen nobody can
+reach. Edited in Settings → Machine, beside the checklist.
+
+**`GURT_WELCOME` overrides it for one run**, the relationship `GURT_LOG`
+has to the log level: a demo machine exports it instead of editing a
+file, and the smoke sets it in the launch env. An unrecognized value is
+`auto`, not an error — an override is a convenience, and a typo in one
+must not change what the app does in a way nobody can see.
+
+The rule itself is one exported function, `welcomeShows(mode, firstRun)`
+in `shared/doctor.ts`, so main's tests and the renderer's render
+condition cannot state it twice and drift.
 
 ### 2.2 The checklist has a permanent home; the welcome screen embeds it
 
@@ -769,7 +813,7 @@ whoever takes it.
 
 `src/shared/api.ts` is the single source of truth (its own header: "adding
 a method here is the whole wiring"), and `METHODS` makes an unannotated
-method a compile error. Six methods, six annotations:
+method a compile error. Eight methods, eight annotations:
 
 ```ts
   /** Host-state report for the welcome screen and Settings → Machine: the
@@ -798,6 +842,10 @@ method a compile error. Six methods, six annotations:
   /** The daemon row's `start-docker` action (§3.4) — `open -a Docker`, macOS
    *  only, fire-and-forget; the row's own re-check reports the result. */
   machineStartDocker(): Promise<void>
+  /** When the welcome screen shows itself (§2.1.1). `GURT_WELCOME` overrides
+   *  the stored value the way `GURT_LOG` overrides the log level. */
+  getWelcomeMode(): Promise<WelcomeMode>
+  setWelcomeMode(mode: WelcomeMode): Promise<void>
 ```
 
 ```ts
@@ -807,6 +855,8 @@ method a compile error. Six methods, six annotations:
   firstRunSignIn: 'none',  //   the same, plus a host browser window
   firstRunCancelSignIn: 'none', // controls that flow
   machineStartDocker: 'none', // host GUI, like `openLogsFolder`
+  getWelcomeMode: 'read',  //   a UI preference, exactly like the hotkeys
+  setWelcomeMode: 'write', //   same — "configuring gurt is the point"
 ```
 
 - **`machineDoctor` is `read`** because it is precisely the diagnostic
@@ -925,6 +975,12 @@ exists to remove.
 4. `scripts/host-path.test.mjs` — extended with `assertDockerDaemon`'s
    message, the way it already covers `assertDockerCli`'s, via the same
    injected-value seam.
+4b. `scripts/first-run.test.mjs`, the mode — `welcomeShows` over all six
+   (mode, firstRun) pairs; a garbage or hand-mangled value degrading to
+   `auto` rather than to a screen nobody can reach; the mode persisting
+   to `welcome.json`; and `GURT_WELCOME` winning over the file, forgiving
+   case and padding, and falling back to `auto` on a typo without
+   destroying what is stored.
 4a. `scripts/first-run.test.mjs`, the sign-in half — a stub `signIn`
    stands in for the browser flow: each kind hands its own `providerId`
    to it (`claude-code`→anthropic, codex→openai, gemini→google); the
@@ -956,6 +1012,11 @@ exists to remove.
    the command-palette entry brings it back. The docker rows will be red
    in this environment, which is the point — the screen must be legible
    and correct on the machine that has nothing.
+
+   It then sets the mode to `never` in Settings → Machine and relaunches
+   with `GURT_WELCOME=always` against that store — which by then has a
+   session *and* a stored `never`, so nothing else would show the screen.
+   That leg is the whole reason the setting exists.
 
    The sign-in button's **click** is deliberately not driven: it opens
    the system browser against a real provider, which a smoke must not
@@ -1023,6 +1084,15 @@ Where the plan met the code and bent.
   host-side: the renderer never learns its id, so it has nothing to pass
   to `oauthCancel` and needs a cancel addressed by "the one the welcome
   screen started".
+- **The welcome screen gained a mode** (§2.1.1) after the first cut
+  shipped with the §2.1 condition alone. Two things forced it: a demo
+  machine wants the screen on every launch, and the smoke could only
+  reach it by keeping the store empty — which made the interesting
+  assertions (the mode picker, a screen over a populated tree) unable to
+  run in the same file. `never` came along because deriving the
+  condition means the screen returns when the last session is deleted,
+  and that is right by default and wrong for somebody. The command
+  palette deliberately ignores all three modes.
 - **`opencode` gets no sign-in button.** Its `oauthProvider` is null
   because `requirements-oauth-credentials.md` §5.2.1 verified delivery
   for three kinds and not for it. The screen says so and opens the key
@@ -1104,7 +1174,9 @@ the only place the five creates live), `src/shared/agents.ts`
 screen and the reusable checklist), `src/renderer/src/App.tsx` (the
 `!selection` slot, the forced-welcome flag, the palette wiring),
 `src/renderer/src/components/SettingsPage.tsx` (`SettingsSection` gains
-`'machine'`, its icon and its General-group entry),
+`'machine'`, its icon, its General-group entry and the welcome-mode
+picker), `src/main/store.ts` (`welcome.json` and its `GURT_WELCOME`
+override),
 `src/renderer/src/components/CommandPalette.tsx` (one action item),
 `scripts/first-run.test.mjs`, `scripts/doctor.test.mjs`,
 `scripts/agent-providers.test.mjs`, `scripts/smoke-first-run.mjs`
