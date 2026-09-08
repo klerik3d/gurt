@@ -4111,6 +4111,15 @@ textarea.input {
   align-items: center;
   gap: 8px;
 }
+/* The checklist owns its own vertical rhythm and nothing else: in Settings it
+   sits inside `.set-list`, which already supplies this page's horizontal
+   padding, and adding a second one is what pushed the rows out of line with
+   every other section. */
+.wc-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
 .wc-row {
   display: flex;
   align-items: center;
@@ -4119,6 +4128,55 @@ textarea.input {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 10px;
+  /* The sweep is fast by design (§3.5), so the transition has to be too: this
+     is what keeps a row from snapping between states, not what paces them. */
+  transition:
+    border-color 140ms ease,
+    background 140ms ease,
+    opacity 140ms ease;
+}
+/* Not yet reached: present, legible, plainly not answered. */
+.wc-row.wc-pending {
+  opacity: 0.45;
+}
+.wc-row.wc-pending .wc-row-label {
+  color: var(--dim);
+}
+/* Being checked — the amber of a queued session's row, with the pulsing dot
+   doing the "right now" half. */
+.wc-row.wc-checking {
+  border-color: var(--yellow);
+}
+.wc-row.wc-checking .wc-row-label {
+  color: var(--yellow);
+}
+.wc-row.wc-ok {
+  border-color: color-mix(in srgb, var(--green) 45%, var(--border));
+}
+.wc-row.wc-ok .wc-row-label {
+  color: var(--green);
+}
+.wc-row.wc-warn {
+  border-color: color-mix(in srgb, var(--yellow) 45%, var(--border));
+}
+.wc-row.wc-fail {
+  border-color: color-mix(in srgb, var(--red) 45%, var(--border));
+}
+.wc-row.wc-fail .wc-row-label {
+  color: var(--red);
+}
+.wc-tick {
+  flex: none;
+  font-size: 12px;
+  color: var(--green);
+}
+/* A line of explanation under a settings row — smaller than the row, aligned
+   with its text rather than with the page. */
+.set-note {
+  font-size: 11px;
+  color: var(--faint);
+  padding: 0 2px;
+  line-height: 1.5;
 }
 .wc-row-label {
   font-size: 13px;

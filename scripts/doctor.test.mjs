@@ -45,7 +45,7 @@ await bundle({
     contents: `
       export { machineDoctor, prepareImages } from ${S('src/main/doctor.ts')}
       export { dockerDaemon } from ${S('src/main/provision.ts')}
-      export { doctorReady } from ${S('src/shared/doctor.ts')}
+      export { doctorReady, DOCTOR_ROWS, pendingRows } from ${S('src/shared/doctor.ts')}
       export { PROXY_IMAGE } from ${S('src/main/proxy/manager.ts')}
     `,
     resolveDir: ROOT,
@@ -222,4 +222,69 @@ test('a hung docker does not hold the checklist open forever', async () => {
   const started = Date.now()
   assert.equal(await m.dockerDaemon(300), null)
   assert.ok(Date.now() - started < 5000, 'killed at the timeout, not waited out')
+})
+
+// --- the sweep is watched, not awaited (§3.5) -------------------------------
+//
+// The rows are known before anything is probed, so the screen draws all three
+// at once and fills them in order from `onRow`. The alternative — one report at
+// the end — showed a placeholder for as long as the slowest probe took and then
+// everything at once, which reads as a hang rather than as work.
+
+test('the row list is static, and the renderer can draw it before asking anything', () => {
+  assert.deepEqual(
+    m.DOCTOR_ROWS.map((r) => r.id),
+    ['docker-cli', 'docker-daemon', 'images']
+  )
+  const skeleton = m.pendingRows()
+  assert.equal(skeleton.length, 3)
+  assert.equal(skeleton.every((r) => r.state === 'pending' && r.detail === ''), true)
+  // Labels and gating come from the one list, so a row cannot be labelled one
+  // way by main and another by the screen.
+  assert.deepEqual(
+    skeleton.map((r) => [r.label, r.gates]),
+    m.DOCTOR_ROWS.map((r) => [r.label, r.gates])
+  )
+})
+
+test('each row is announced as it is decided, in order, before the report returns', async () => {
+  const announced = []
+  const report = await m.machineDoctor({
+    ...healthy(),
+    // The daemon is the slow one in real life; if the report were the only
+    // signal, rows 1 and 3 would wait behind it for nothing.
+    daemon: async () => {
+      assert.deepEqual(announced.map((r) => r.id), ['docker-cli'], 'row 1 landed first')
+      return '27.3.1'
+    },
+    onRow: (row) => announced.push(row)
+  })
+  assert.deepEqual(
+    announced.map((r) => r.id),
+    ['docker-cli', 'docker-daemon', 'images'],
+    'announced in the order the screen reads them'
+  )
+  assert.deepEqual(announced, report.rows, 'and the stream is exactly the report')
+  assert.equal(announced.some((r) => r.state === 'pending' || r.state === 'checking'), false,
+    'main only ever announces settled rows')
+})
+
+test('a skipped row is announced too — the list must never stall half-drawn', async () => {
+  const announced = []
+  await m.machineDoctor({ ...healthy({ cliPath: () => null }), onRow: (r) => announced.push(r) })
+  assert.deepEqual(
+    announced.map((r) => r.id),
+    ['docker-cli', 'docker-daemon', 'images'],
+    'the rows below a missing binary still resolve, as "not checked"'
+  )
+  assert.equal(announced.every((r) => r.state === 'fail'), true)
+
+  const halfway = []
+  await m.machineDoctor({ ...healthy({ daemon: async () => null }), onRow: (r) => halfway.push(r) })
+  assert.equal(halfway.length, 3, 'and likewise below a dead daemon')
+})
+
+test('machineDoctor works with no onRow at all', async () => {
+  const r = await m.machineDoctor(healthy())
+  assert.equal(r.rows.length, 3)
 })

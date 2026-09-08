@@ -33,6 +33,7 @@ const api: Record<string, unknown> = {
   onSessionLog: subscribe('session-log'),
   onSessionTurn: subscribe('session-turn'),
   onProvisionLog: subscribe('provision-log'),
+  onDoctorRow: subscribe('doctor-row'),
   onNotification: subscribe('notification'),
   onNotificationRead: subscribe('notification-read'),
   onUsageChanged: subscribe('usage-changed'),

@@ -226,21 +226,29 @@ function MachineSection(): JSX.Element {
         setModeError('')
       })
       .catch((e: unknown) => setModeError(e instanceof Error ? e.message : String(e)))
+  // A fragment, like every other section: `.set-head` and `.set-list` carry
+  // this page's own horizontal padding, and a wrapper between them and
+  // `.set-content` is what knocks it out of alignment.
   return (
-    <div className="set-section">
+    <>
       <div className="set-head">
         <div className="set-title-wrap">
           <span className="set-title">Machine</span>
           <span className="set-count mono">what a session needs from this host</span>
         </div>
       </div>
-      <MachineChecklist log={log} />
+      {/* The checklist's own head is suppressed here: this section already has
+          one, and two headings stacked ("Machine" over "This machine") was
+          exactly the mess. Its Re-check lives inside the list instead. */}
+      <div className="set-list">
+        <MachineChecklist heading={null} log={log} />
+      </div>
       {/* When the welcome screen shows itself
-          (docs/requirements-first-run.md §2.1). `always` is what a demo
+          (docs/requirements-first-run.md §2.1.1). `always` is what a demo
           machine wants; `never` is the way out for someone who deleted their
           last session and does not want the screen back. Either way ⌘K →
           "Welcome & machine setup" still reaches it. */}
-      <div className="set-list" style={{ marginTop: 14 }}>
+      <div className="set-list">
         <div className="set-row">
           <span className="set-row-label">Welcome screen</span>
           <span className="spacer" />
@@ -257,13 +265,13 @@ function MachineSection(): JSX.Element {
             </button>
           ))}
         </div>
-        <div className="faint" style={{ fontSize: 11, padding: '0 2px' }}>
-          {mode ? WELCOME_MODE_HINT[mode] : 'loading…'} · `GURT_WELCOME` overrides this for one
-          run.
+        <div className="set-note">
+          {mode ? WELCOME_MODE_HINT[mode] : 'loading…'} · <span className="mono">GURT_WELCOME</span>{' '}
+          overrides this for one run.
         </div>
         {modeError && <div className="error">{modeError}</div>}
       </div>
-    </div>
+    </>
   )
 }
 

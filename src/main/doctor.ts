@@ -14,7 +14,13 @@
 // all, because it is the sentence that sends a user looking somewhere else.
 import { spawn } from 'node:child_process'
 import { parseEnvDevcontainer } from '../shared/envConfig'
-import { doctorReady, type DoctorReport, type DoctorRow } from '../shared/doctor'
+import {
+  DOCTOR_ROWS,
+  doctorReady,
+  type DoctorReport,
+  type DoctorRow,
+  type DoctorRowId
+} from '../shared/doctor'
 import { hostPath } from './hostPath'
 import { createLogger } from './log'
 import { bundledOperatorEnv } from './operatorEnv'
@@ -50,16 +56,22 @@ export async function prepareImages(): Promise<string[]> {
   return refs
 }
 
+/** A row's label and gating come from the one shared list, so main and the
+ *  renderer cannot disagree about what is being checked or in what order. */
+const rowDef = (id: DoctorRowId): { id: DoctorRowId; label: string; gates: boolean } =>
+  DOCTOR_ROWS.find((r) => r.id === id)!
+
+const rowOf = (id: DoctorRowId, state: DoctorRow['state'], detail: string): DoctorRow => ({
+  ...rowDef(id),
+  state,
+  detail
+})
+
 /** A skipped row is never `ok`. "We could not ask" and "the answer is no" must
  *  not read alike — the same distinction `dockerSessionContainers` keeps with
  *  its `null`-vs-empty return, here in prose. */
-const notChecked = (id: DoctorRow['id'], label: string, gates: boolean): DoctorRow => ({
-  id,
-  label,
-  state: 'fail',
-  detail: 'not checked — Docker is not available',
-  gates
-})
+const notChecked = (id: DoctorRowId): DoctorRow =>
+  rowOf(id, 'fail', 'not checked — Docker is not available')
 
 /**
  * Run the checklist. Never rejects: every failure it can have is a row, which
@@ -75,6 +87,10 @@ export async function machineDoctor(
     imageExists?: (ref: string) => Promise<boolean>
     images?: () => Promise<string[]>
     platform?: NodeJS.Platform
+    /** Called with each row the moment it is decided, before the next probe
+     *  runs. The renderer draws the row list up front and fills it in from
+     *  these, so a slow `docker info` holds up its own row and nothing else. */
+    onRow?: (row: DoctorRow) => void
   } = {}
 ): Promise<DoctorReport> {
   const cliPath = probes.cliPath ?? dockerCliPath
@@ -84,42 +100,47 @@ export async function machineDoctor(
   const platform = probes.platform ?? process.platform
 
   const rows: DoctorRow[] = []
+  const settle = (row: DoctorRow): DoctorRow => {
+    rows.push(row)
+    probes.onRow?.(row)
+    return row
+  }
 
   // 1. The binary. Cheap enough to be unconditional: a few `stat`s over the
   //    PATH hostPath.ts repaired at startup.
   const cli = cliPath()
-  rows.push({
-    id: 'docker-cli',
-    label: 'Docker CLI',
-    state: cli ? 'ok' : 'fail',
-    gates: true,
-    detail: cli
-      ? cli
-      : 'Docker was not found on this machine. Install Docker Desktop (or another Docker ' +
-        `runtime) and re-check. Directories searched: ${hostPath()}`
-  })
+  settle(
+    rowOf(
+      'docker-cli',
+      cli ? 'ok' : 'fail',
+      cli
+        ? cli
+        : 'Docker was not found on this machine. Install Docker Desktop (or another Docker ' +
+          `runtime) and re-check. Directories searched: ${hostPath()}`
+    )
+  )
 
   // 2. The daemon behind it. Skipped when there is nothing to spawn.
   if (!cli) {
-    rows.push(notChecked('docker-daemon', 'Docker daemon', true))
-    rows.push(notChecked('images', 'Images', false))
+    settle(notChecked('docker-daemon'))
+    settle(notChecked('images'))
     return { rows, ready: doctorReady(rows) }
   }
   const version = await daemon()
-  rows.push({
-    id: 'docker-daemon',
-    label: 'Docker daemon',
-    state: version ? 'ok' : 'fail',
-    gates: true,
-    detail: version
-      ? version
-      : platform === 'darwin'
-        ? 'Docker is installed but its daemon is not answering — start Docker Desktop and re-check.'
-        : // No action button here: the daemon is a system service, gurt does
-          // not run `sudo`, and `systemctl --user start docker` is right for a
-          // rootless install and wrong for every other (§3.4).
-          'Docker is installed but its daemon is not answering — start your Docker runtime ' +
-          '(dockerd, Docker Desktop, OrbStack, Rancher Desktop) and re-check.',
+  settle({
+    ...rowOf(
+      'docker-daemon',
+      version ? 'ok' : 'fail',
+      version
+        ? version
+        : platform === 'darwin'
+          ? 'Docker is installed but its daemon is not answering — start Docker Desktop and re-check.'
+          : // No action button here: the daemon is a system service, gurt does
+            // not run `sudo`, and `systemctl --user start docker` is right for
+            // a rootless install and wrong for every other (§3.4).
+            'Docker is installed but its daemon is not answering — start your Docker runtime ' +
+            '(dockerd, Docker Desktop, OrbStack, Rancher Desktop) and re-check.'
+    ),
     // Offered only where it can work. A button that silently does nothing on
     // half the supported platforms is worse than no button.
     ...(version || platform !== 'darwin' ? {} : { action: 'start-docker' as const })
@@ -128,24 +149,24 @@ export async function machineDoctor(
   // 3. The images. Never gates: a missing image is a pull the Start button
   //    does itself (§3.3), not a broken machine.
   if (!version) {
-    rows.push(notChecked('images', 'Images', false))
+    settle(notChecked('images'))
     return { rows, ready: doctorReady(rows) }
   }
   const refs = await images()
   const present = await Promise.all(refs.map((ref) => imageExists(ref)))
   const missing = refs.filter((_, i) => !present[i])
-  rows.push({
-    id: 'images',
-    label: 'Images',
-    state: missing.length ? 'warn' : 'ok',
-    gates: false,
-    detail: missing.length
-      ? `${missing.length} image${missing.length === 1 ? '' : 's'} to pull — the first session ` +
-        'pulls them anyway; Prepare does it now'
-      : // Deliberately not the word "ready": `devcontainer up` still injects
-        // the node feature and gurt still npm-installs the ACP adapter inside
-        // the container, both over the network, on every first start (§5.2).
-        'images present — the first start still installs the node feature and the agent adapter',
+  settle({
+    ...rowOf(
+      'images',
+      missing.length ? 'warn' : 'ok',
+      missing.length
+        ? `${missing.length} image${missing.length === 1 ? '' : 's'} to pull — the first session ` +
+          'pulls them anyway; Prepare does it now'
+        : // Deliberately not the word "ready": `devcontainer up` still injects
+          // the node feature and gurt still npm-installs the ACP adapter inside
+          // the container, both over the network, on every first start (§5.2).
+          'images present — the first start still installs the node feature and the agent adapter'
+    ),
     ...(missing.length ? { action: 'prepare' as const } : {})
   })
   return { rows, ready: doctorReady(rows) }

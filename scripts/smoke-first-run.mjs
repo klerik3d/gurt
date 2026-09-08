@@ -75,19 +75,44 @@ try {
   assert.equal(await page.locator('.placeholder').count(), 0)
   console.log('first run: welcome screen shown on an empty store OK')
 
-  // --- the checklist rows ---
+  // --- the checklist draws complete, then fills in (§3.5) ---
+  // All three rows exist before any probe has answered — the list is static
+  // knowledge, so the screen is never a spinner over an empty box.
   await page.waitForSelector('.wc-row', { timeout: 10000 })
-  // Wait for the probes to answer before reading the rows — the first render
-  // is the "checking this machine…" placeholder.
-  await page.waitForSelector('.wc-row-label', { timeout: 15000 })
   const labels = await page.locator('.wc-row-label').allInnerTexts()
   assert.deepEqual(
     labels.map((l) => l.trim()),
     ['Docker CLI', 'Docker daemon', 'Images'],
-    'three rows, in the order the screen reads them'
+    'three rows, in the order the screen reads them, from the first frame'
   )
-  await shot('01-welcome')
-  console.log(`first run: checklist rows OK (${labels.join(', ')})`)
+  await shot('01-welcome-sweeping')
+
+  // Every row settles: none is left `pending`, and exactly one row at a time
+  // is `checking` on the way there.
+  await page.waitForFunction(
+    () =>
+      document.querySelectorAll('.wc-row').length === 3 &&
+      !document.querySelector('.wc-row.wc-pending, .wc-row.wc-checking'),
+    undefined,
+    { timeout: 20000 }
+  )
+  // A settled row carries a state class and a detail; a passing one carries
+  // the tick. (On this machine the docker rows fail, so only assert the
+  // shape that holds either way.)
+  const settled = await page.locator('.wc-row').evaluateAll((els) =>
+    els.map((e) => ({
+      cls: e.className,
+      detail: e.querySelector('.wc-row-detail')?.textContent?.trim() ?? '',
+      tick: !!e.querySelector('.wc-tick')
+    }))
+  )
+  for (const r of settled) {
+    assert.match(r.cls, /wc-(ok|warn|fail)/, `row settled: ${r.cls}`)
+    assert.ok(r.detail.length > 0, 'a settled row says what it found')
+    assert.equal(r.tick, /wc-ok/.test(r.cls), 'the tick marks "done and fine", nothing else')
+  }
+  await shot('02-welcome-settled')
+  console.log(`first run: checklist sweeps and settles OK (${labels.join(', ')})`)
 
   // --- the machine's actual state is reported, whatever it is ---
   // This environment has no docker, so the gating rows are red and the button
@@ -171,7 +196,14 @@ try {
     3,
     'the same three rows, without an empty store'
   )
-  await shot('02-settings-machine')
+  // One heading, not two: the section header is the heading here, and the
+  // checklist's own is suppressed (`heading={null}`).
+  assert.equal(
+    await page.locator('.wc-check-head').count(),
+    0,
+    'the checklist does not stack a second heading under the section title'
+  )
+  await shot('03-settings-machine')
   console.log('first run: Settings → Machine shows the checklist OK')
 
   // --- creating a session by hand is the way out of the welcome screen ---

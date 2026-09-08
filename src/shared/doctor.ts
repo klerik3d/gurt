@@ -7,9 +7,16 @@
 // never persisted — a cached answer to "why will nothing start" is worse than
 // no answer, because the thing it describes changes while the app is open.
 
-/** A row's verdict. `checking` is renderer-side only (the state before the
- *  first reply); main never returns it. */
-export type DoctorState = 'ok' | 'warn' | 'fail' | 'checking'
+/**
+ * A row's verdict, plus the two states it passes through on the way there.
+ *
+ * `pending` and `checking` are renderer-side only — main never returns them.
+ * They exist because the checklist is watched, not read: the rows are known
+ * before any probe runs (see {@link DOCTOR_ROWS}), so the screen can draw all
+ * three the instant it mounts and then light them up one at a time, instead of
+ * showing a placeholder until every probe has answered.
+ */
+export type DoctorState = 'pending' | 'checking' | 'ok' | 'warn' | 'fail'
 
 /** Rows of the phase-1 checklist, in display order. */
 export type DoctorRowId = 'docker-cli' | 'docker-daemon' | 'images'
@@ -31,6 +38,23 @@ export interface DoctorRow {
   gates: boolean
   action?: DoctorAction
 }
+
+/**
+ * The rows, their labels and what gates — known statically, because the
+ * checklist always asks the same three questions in the same order. The
+ * renderer draws this list before it has asked main anything, so the screen is
+ * never a spinner over an empty box; main builds its answers on the same list,
+ * so the two cannot disagree about what is being checked or in what order.
+ */
+export const DOCTOR_ROWS: readonly { id: DoctorRowId; label: string; gates: boolean }[] = [
+  { id: 'docker-cli', label: 'Docker CLI', gates: true },
+  { id: 'docker-daemon', label: 'Docker daemon', gates: true },
+  { id: 'images', label: 'Images', gates: false }
+]
+
+/** The skeleton the renderer mounts with: every row, unasked. */
+export const pendingRows = (): DoctorRow[] =>
+  DOCTOR_ROWS.map((r) => ({ ...r, state: 'pending' as const, detail: '' }))
 
 export interface DoctorReport {
   rows: DoctorRow[]

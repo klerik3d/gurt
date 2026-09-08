@@ -35,7 +35,7 @@ import type { TurnRecord } from './usage'
 import type { PlanUsage } from './planUsage'
 import type { NotificationPrefs, NotificationRecord } from './notifications'
 import type { HotkeyMap } from './hotkeys'
-import type { DoctorReport, FirstRunResult, WelcomeMode } from './doctor'
+import type { DoctorReport, DoctorRow, FirstRunResult, WelcomeMode } from './doctor'
 
 export type CreateAction = 'run' | 'queue' | 'draft'
 
@@ -598,6 +598,8 @@ export interface GurtEvents {
   'session-log': DomainEvents['session.log']
   'session-turn': DomainEvents['session.turn']
   'provision-log': { key: string; line: string }
+  /** One machine-checklist row settled — see `DomainEvents['doctor.row']`. */
+  'doctor-row': DoctorRow
   notification: NotificationRecord
   /** A session's pending notifications were marked read by something other
    *  than a panel click (opened from the sidebar, or its `awaiting` cleared)
