@@ -19,7 +19,7 @@ import type {
   Tree
 } from '../../../shared/types'
 import { sessionRole, sessionStatus } from '../../../shared/types'
-import { agentOptionView } from '../../../shared/agentConfig'
+import { agentOptionView, withPickedValues } from '../../../shared/agentConfig'
 import { agentKind, agentName, useAgents } from '../useAgents'
 import { useMcpEntries, useMcpFailures } from '../useMcp'
 import { resolveMcpSelection } from '../../../shared/mcp'
@@ -373,6 +373,7 @@ export function Chat({
             modes={modes}
             commands={commands ?? []}
             configOptions={configOptions ?? []}
+            configValues={info.configValues}
             promptCaps={promptCapabilities}
           />
         </>
@@ -711,6 +712,7 @@ function Composer({
   modes,
   commands,
   configOptions,
+  configValues,
   promptCaps
 }: {
   sessionId: string
@@ -731,6 +733,9 @@ function Composer({
   modes?: SessionModes | undefined
   commands: CommandInfo[]
   configOptions: SessionConfigOption[]
+  /** The picks this session was started (or last switched) with — what the gear
+   *  highlights when the agent does not echo a choice back. */
+  configValues?: Record<string, string | boolean> | undefined
   promptCaps?: PromptCapabilities | undefined
 }) {
   const draft = composerDrafts.get(sessionId)
@@ -1331,6 +1336,7 @@ function Composer({
                   agentKind={agentKind}
                   modes={modes}
                   configOptions={configOptions}
+                  configValues={configValues}
                 />
               )}
             </span>
@@ -1369,25 +1375,33 @@ function GearPopup({
   sessionId,
   agentKind,
   modes,
-  configOptions
+  configOptions,
+  configValues
 }: {
   sessionId: string
   /** The session agent's kind — passed to the kind-scoped model resolver. */
   agentKind?: string | undefined
   modes?: SessionModes | undefined
   configOptions: SessionConfigOption[]
+  configValues?: Record<string, string | boolean> | undefined
 }) {
   const setMode = (id: string) =>
     window.gurt.sessionSetMode(sessionId, id).catch((e: unknown) => alertDialog(String(e)))
   const setConfig = (opt: SessionConfigOption, value: string | boolean) =>
     window.gurt.sessionSetConfigOption(sessionId, opt.id, value).catch((e: unknown) => alertDialog(String(e)))
 
-  // The agent may surface Mode as a config option too; the dedicated mode group
-  // already renders it, so drop the duplicate control.
-  const cfg = configOptions.filter((o) => o.category !== 'mode')
   // Kind-specific presentation quirks (which chips, what's active) live behind
   // the view — this component renders whatever it hands back.
   const view = agentOptionView(agentKind)
+  // The agent may surface Mode as a config option too; the dedicated mode group
+  // already renders it, so drop the duplicate control. What the session itself
+  // picked is layered back on for the agents that never echo a choice — see
+  // `withPickedValues`.
+  const cfg = withPickedValues(
+    configOptions.filter((o) => o.category !== 'mode'),
+    configValues,
+    agentKind
+  )
   const sectionTitle = (o: SessionConfigOption) =>
     o.category === 'model' ? 'MODEL' : o.category === 'thought_level' ? 'EFFORT' : o.name.toUpperCase()
 

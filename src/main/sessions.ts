@@ -1789,6 +1789,13 @@ export class SessionManager {
           s.configOptions =
             normalizeConfigOptions(result.configOptions, ctx.agent.id) ?? s.configOptions
           s.attached = true
+          // Same reconciliation a start does: a resumed adapter comes back on
+          // its own defaults, and `_meta` (which carried the model into
+          // `session/new`) has no counterpart on `session/load`. Without this
+          // the session silently changes model the first time its container
+          // has been asleep — the pick is still shown, but a different model
+          // answers the next turn.
+          await this.applyStartConfig(s, conn)
           this.cacheAgentConfig(s)
           await this.applyAutoAllow(s, conn)
         } catch (e) {
