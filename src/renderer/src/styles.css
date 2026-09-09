@@ -4088,9 +4088,33 @@ textarea.input {
   flex-direction: column;
   gap: 14px;
 }
-.wc-title {
-  font-size: 19px;
-  font-weight: 600;
+/* The welcome screen is a popup (docs/requirements-first-run.md §2.1), so its
+   body is bounded by the modal rather than by the main pane: the .modal's
+   max-height does the bounding and .wc scrolls inside it, which is why the
+   min-height override is needed — a flex child's default min-height:auto
+   would let the checklist push the footer off the bottom of the screen. */
+.wc-modal {
+  width: 680px;
+}
+.wc-modal .wc {
+  min-height: 0;
+}
+.wc-modal .wc-body {
+  max-width: none;
+  padding: 22px 22px 26px;
+}
+/* The one lasting decision in the popup, and the footer's left half. */
+.wc-again {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--dim);
+  cursor: pointer;
+  user-select: none;
+}
+.wc-again input {
+  cursor: pointer;
 }
 .wc-sub {
   font-size: 12px;

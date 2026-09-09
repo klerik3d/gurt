@@ -35,7 +35,10 @@ const require = createRequire(path.join(APP_DIR, 'package.json'))
 const { _electron } = require('playwright-core')
 const electronPath = require('electron')
 
-const env = { ...process.env, GURT_ROOT, GURT_FORCE_PLAINTEXT: '1', DISPLAY: process.env.DISPLAY ?? ':99' }
+// The welcome popup opens over the main pane on a store with no sessions
+// (docs/requirements-first-run.md §2.1) and its backdrop would swallow this
+// smoke's first clicks. `never` is the same escape hatch a user has.
+const env = { ...process.env, GURT_ROOT, GURT_WELCOME: 'never', GURT_FORCE_PLAINTEXT: '1', DISPLAY: process.env.DISPLAY ?? ':99' }
 delete env.ELECTRON_RUN_AS_NODE
 
 const app = await _electron.launch({
