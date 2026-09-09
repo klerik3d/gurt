@@ -90,6 +90,34 @@ export const agentOptionView = (kind?: string): AgentOptionView =>
   (kind && VIEWS[kind]) || neutral
 
 /**
+ * Overlay a session's own picks (`SessionInfo.configValues`) on the agent's
+ * live report, for display.
+ *
+ * An agent that echoes a concrete choice back is the truth and is left alone.
+ * When it does not — claude-code answers `session/set_config_option` and then
+ * keeps reporting `currentValue: "default"` — the pick is the truth, and it
+ * has to win: the `default` entry describes the *account* fallback, so a
+ * session explicitly started on Fable would otherwise be shown (and read) as
+ * whatever that fallback is, e.g. Sonnet. A pick no chip offers is ignored
+ * rather than asserted.
+ */
+export function withPickedValues(
+  options: SessionConfigOption[],
+  values: Record<string, string | boolean> | undefined,
+  kind?: string
+): SessionConfigOption[] {
+  if (!values) return options
+  const view = agentOptionView(kind)
+  return options.map((o) => {
+    const picked = values[o.id]
+    if (o.type !== 'select' || typeof picked !== 'string') return o
+    const chips = view.selectOptions(o)
+    if (chips.some((c) => c.value === o.currentValue)) return o
+    return chips.some((c) => c.value === picked) ? { ...o, currentValue: picked } : o
+  })
+}
+
+/**
  * Map claude-code's `"default"` model alias to the concrete option its
  * description names. Matching is on family *and* version ("Opus 5", not just
  * "Opus"): an account can offer several models of one family (e.g. Opus 5
