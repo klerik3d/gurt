@@ -78,47 +78,66 @@ export function MachineChecklist({
   // top of a newer one's.
   const seq = useRef(0)
   const alive = useRef(true)
-  useEffect(
-    () => () => {
-      alive.current = false
-    },
-    []
-  )
 
   /** Rows arrive faster than they can be read, so they are queued here and
-   *  drained one per `ROW_STEP_MS`. The queue is per-sweep: a stale row is
-   *  dropped by its sequence number, not by racing the timer. */
+   *  drained one per `ROW_STEP_MS`. */
   const queue = useRef<DoctorRow[]>([])
   const draining = useRef(false)
+  /**
+   * The report is the truth; the event stream is only the reveal.
+   *
+   * Nothing about correctness may depend on an event arriving: one that is
+   * dropped, or that fires before this component subscribed, would otherwise
+   * strand its row in `checking` forever with no way back. So the reply is
+   * kept here and applied wholesale once the queue drains — idempotent when
+   * every event did arrive, and the whole answer when none did.
+   */
+  const settled = useRef<DoctorRow[] | null>(null)
 
-  const drain = useCallback((mine: number) => {
-    if (draining.current) return
-    draining.current = true
-    const step = (): void => {
-      const next = queue.current.shift()
-      if (!next || !alive.current || mine !== seq.current) {
-        draining.current = false
-        return
-      }
-      setRows((prev) => {
-        const at = prev.findIndex((r) => r.id === next.id)
-        if (at < 0) return prev
-        const out = [...prev]
-        out[at] = next
-        // Light the next unanswered row: the list should always show where
-        // the sweep currently is, not go blank between two answers.
-        const after = out[at + 1]
-        if (after && after.state === 'pending') out[at + 1] = { ...after, state: 'checking' }
-        return out
-      })
-      setTimeout(step, ROW_STEP_MS)
-    }
-    step()
+  const applySettled = useCallback((mine: number) => {
+    const final = settled.current
+    if (!final || !alive.current || mine !== seq.current) return
+    setRows(final)
   }, [])
+
+  const drain = useCallback(
+    (mine: number) => {
+      if (draining.current) return
+      draining.current = true
+      const step = (): void => {
+        if (!alive.current || mine !== seq.current) {
+          draining.current = false
+          return
+        }
+        const next = queue.current.shift()
+        if (!next) {
+          draining.current = false
+          // Queue empty — land on the report, if it has come back yet.
+          applySettled(mine)
+          return
+        }
+        setRows((prev) => {
+          const at = prev.findIndex((r) => r.id === next.id)
+          if (at < 0) return prev
+          const out = [...prev]
+          out[at] = next
+          // Light the next unanswered row: the list should always show where
+          // the sweep currently is, not go blank between two answers.
+          const after = out[at + 1]
+          if (after && after.state === 'pending') out[at + 1] = { ...after, state: 'checking' }
+          return out
+        })
+        setTimeout(step, ROW_STEP_MS)
+      }
+      step()
+    },
+    [applySettled]
+  )
 
   const refresh = useCallback(async (): Promise<DoctorReport | null> => {
     const mine = ++seq.current
     queue.current = []
+    settled.current = null
     setBusy('checking')
     setError('')
     // Back to a full, unanswered list — a re-check re-runs every probe, and
@@ -131,27 +150,50 @@ export function MachineChecklist({
     try {
       const r = await window.gurt.machineDoctor()
       if (!alive.current || mine !== seq.current) return r
+      settled.current = r.rows
+      // Nothing is animating (every event was lost, or they all drained while
+      // this was in flight) — land on the answer now rather than never.
+      if (!draining.current) applySettled(mine)
       onReport?.(r)
       return r
     } catch (e) {
       logErr('machineDoctor')(e)
-      if (alive.current && mine === seq.current)
+      if (alive.current && mine === seq.current) {
         setError(e instanceof Error ? e.message : String(e))
+        // Never leave a row pulsing over a check that will not finish.
+        setRows((prev) =>
+          prev.map((r) =>
+            r.state === 'pending' || r.state === 'checking'
+              ? { ...r, state: 'fail' as const, detail: 'the check could not run' }
+              : r
+          )
+        )
+      }
       return null
     } finally {
       if (alive.current && mine === seq.current) setBusy('')
     }
-  }, [onReport])
+  }, [onReport, applySettled])
 
   // Subscribe before the first sweep: a probe that answers in under a
   // millisecond must not beat the listener that draws its row.
+  //
+  // `alive` is re-armed here, not just cleared on unmount: StrictMode runs
+  // mount → cleanup → mount on the SAME instance, so a ref only ever set to
+  // false in the cleanup stays false for the life of the component — every
+  // guard below it then fails silently and the list hangs on its first row.
   useEffect(() => {
+    alive.current = true
+    draining.current = false
     const off = window.gurt.onDoctorRow((row) => {
       queue.current.push(row)
       drain(seq.current)
     })
     void refresh()
-    return off
+    return () => {
+      alive.current = false
+      off()
+    }
   }, [refresh, drain])
 
   const prepare = async (): Promise<void> => {
@@ -173,18 +215,27 @@ export function MachineChecklist({
     await window.gurt.machineStartDocker().catch(logErr('machineStartDocker'))
     setBusy('waiting')
     const until = Date.now() + DOCKER_POLL_LIMIT_MS
+    const mine = ++seq.current
     for (;;) {
       await new Promise((r) => setTimeout(r, DOCKER_POLL_MS))
-      if (!alive.current) return
+      if (!alive.current || mine !== seq.current) return
       const r = await window.gurt.machineDoctor().catch(() => null)
-      if (!alive.current) return
+      if (!alive.current || mine !== seq.current) return
+      // Each poll emits its own row events. They are dropped rather than
+      // drained: replaying the whole reveal every three seconds while the
+      // user waits for Docker Desktop would be motion, not information — the
+      // daemon row already says "waiting for the daemon…". The report is
+      // applied straight, which is the same "the reply is the truth" rule the
+      // sweep ends on.
+      queue.current = []
       if (r) {
+        setRows(r.rows)
         onReport?.(r)
         if (r.rows.find((x) => x.id === 'docker-daemon')?.state === 'ok') break
       }
       if (Date.now() > until) break
     }
-    if (alive.current) setBusy('')
+    if (alive.current && mine === seq.current) setBusy('')
   }
 
   const recheck = (

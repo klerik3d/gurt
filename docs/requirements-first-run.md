@@ -340,6 +340,15 @@ exactly the machine where the user has no reason to trust the app yet.
 The probes are individually fast; what was slow was the *report*, and
 only because it waited for its slowest member.
 
+**The report is the truth; the stream is only the reveal.** Nothing about
+correctness may depend on an event arriving. One that is dropped, or that
+fires before the component subscribed, would otherwise strand its row in
+`checking` with no way back — so the renderer keeps the reply and applies
+it wholesale once its queue drains: idempotent when every event arrived,
+and the whole answer when none did. A rejected `machineDoctor` likewise
+resolves every unanswered row to `fail` rather than leaving one pulsing
+over a check that will not finish.
+
 **Speed is the requirement, and the pacing must never fight it.** The
 probes are a few `stat`s, one `docker info` and two
 `docker image inspect` — well under a second on a healthy machine. That
@@ -1139,6 +1148,19 @@ Where the plan met the code and bent.
   host-side: the renderer never learns its id, so it has nothing to pass
   to `oauthCancel` and needs a cancel addressed by "the one the welcome
   screen started".
+- **The checklist hung on its first row, and the cause was `StrictMode`.**
+  The component guarded its async work with an `alive` ref cleared in an
+  unmount cleanup — the usual shape, and wrong here: React 18's
+  `StrictMode` (which `main.tsx` wraps the app in) runs mount → cleanup →
+  mount *on the same instance*, so a ref only ever set to `false` in the
+  cleanup stays false for the component's whole life. Every guard past it
+  then failed silently: no row was applied, `onReport` never fired, and
+  the list sat on `Docker CLI` in `checking` forever with the Start button
+  disabled. The ref is re-armed at the top of the effect now. Two things
+  this cost, both kept: the report became authoritative rather than the
+  event stream (above), so no single lost signal can strand a row again;
+  and the daemon poll drops its own events instead of replaying the whole
+  reveal every three seconds.
 - **The checklist streams, and it did not at first.** The first cut
   awaited one report and showed `checking…` until it landed — which on
   the machine this screen exists for is a placeholder followed by three
