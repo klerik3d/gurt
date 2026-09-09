@@ -7,6 +7,7 @@ import type {
   SessionState,
   StoredProposal
 } from './types'
+import type { DoctorRow } from './doctor'
 import type { SessionTraffic } from './proxy'
 import type { SessionMcpFailures } from './mcp'
 import type { TurnRecord } from './usage'
@@ -97,6 +98,12 @@ export interface DomainEvents {
   'usage.changed': void
   /** Provisioning output of one session's container; `key` is the session id. */
   'provision.log': { key: string; line: string }
+  /** One machine-checklist row has been decided
+   *  (docs/requirements-first-run.md §3.5). Emitted as each probe answers, not
+   *  batched at the end: the rows are known statically, so the screen draws
+   *  them all at once and lights them up in order rather than sitting on a
+   *  placeholder until the slowest probe returns. */
+  'doctor.row': DoctorRow
   /** One session's proxy was seen allowing or refusing a host — the whole
    *  aggregate, not the delta, coalesced over a few hundred ms in the watcher
    *  (docs/requirements-mcp-proxy.md §8). Refusals are the point: they are the

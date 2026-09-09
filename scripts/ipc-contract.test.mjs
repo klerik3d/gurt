@@ -218,6 +218,7 @@ test('preload exposes nothing beyond API_METHODS + the known event hooks', () =>
     'onSessionLog',
     'onSessionTurn',
     'onProvisionLog',
+    'onDoctorRow',
     'onNotification',
     'onNotificationRead',
     'onUsageChanged',

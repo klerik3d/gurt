@@ -222,7 +222,7 @@ One report, computed on demand, no persistence. `src/shared/doctor.ts`
 type module with no main-only imports):
 
 ```ts
-export type DoctorState = 'ok' | 'warn' | 'fail' | 'checking'
+export type DoctorState = 'pending' | 'checking' | 'ok' | 'warn' | 'fail'
 
 export interface DoctorRow {
   id: 'docker-cli' | 'docker-daemon' | 'images'
@@ -246,8 +246,8 @@ export interface DoctorReport {
 }
 ```
 
-`checking` is a renderer-side state (the row before the first reply); it
-never comes back from main.
+`pending` and `checking` are renderer-side states — the row before it is
+reached, and the row being probed. Main never returns either; see §3.5.
 
 ### 3.2 The rows, phase 1
 
@@ -306,7 +306,51 @@ OrbStack, Rancher Desktop) and re-check`. This asymmetry is stated in
 the row, not hidden: an action that silently does nothing on half the
 supported platforms is worse than no action.
 
-### 3.5 Later-phase rows
+### 3.5 The sweep: the list is watched, not awaited
+
+**The rows are known before anything is probed.** The checklist always asks
+the same three questions in the same order, so `DOCTOR_ROWS` in
+`shared/doctor.ts` is the list, and the renderer draws it complete and
+greyed out the instant it mounts. Main builds its answers on the same
+list, so the two cannot disagree about what is being checked.
+
+**Each row is announced as it is decided**, over the bus event
+`doctor.row` → the `doctor-row` channel, the plumbing `provision.log`
+already established. `machineDoctor` takes an `onRow` callback and calls
+it before starting the next probe; `ipc.ts` wires that to the bus.
+
+The state machine per row, and what the user sees:
+
+| state | shown as |
+| --- | --- |
+| `pending` | dimmed, hollow dot, no detail — not reached yet |
+| `checking` | amber label and border, **pulsing green dot** — the same "something is happening here" a running session's row uses |
+| `ok` | green label and border, and a green ✓ |
+| `warn` / `fail` | amber / red, the detail saying what was found |
+
+`pending` and `checking` are renderer-side only; main never returns them.
+A row that is skipped is still *announced* (as `fail`, "not checked" —
+§3.2), because a list that stalls half-drawn is worse than one that
+resolves to bad news.
+
+**Why not one report at the end.** That is what the first cut did, and it
+showed a `checking…` placeholder for as long as the slowest probe took
+and then all three rows at once — which reads as a hang, not as work, on
+exactly the machine where the user has no reason to trust the app yet.
+The probes are individually fast; what was slow was the *report*, and
+only because it waited for its slowest member.
+
+**Speed is the requirement, and the pacing must never fight it.** The
+probes are a few `stat`s, one `docker info` and two
+`docker image inspect` — well under a second on a healthy machine. That
+is fast enough that with no floor the three rows would settle in one
+frame and the sequence would not be seen at all, so the renderer drains
+its incoming rows at one per `ROW_STEP_MS` (110 ms). Small on purpose:
+it paces the reveal, it is never what makes the check slow. A row that
+takes longer than that to answer simply holds its own `checking` state —
+the floor is a minimum, not a delay added to each step.
+
+### 3.6 Later-phase rows
 
 Named here so they are decided rather than rediscovered. None is in
 phase 1.
@@ -761,7 +805,7 @@ the answer to three outcomes and nothing else:
 | `rejected` | the provider answered 401/403 | refuse, with the provider's own status in the message |
 | `unreachable` | timeout, DNS, 5xx, or any unrecognized answer | **proceed**, with a warning line under the field |
 
-`unreachable` must not block, for the same reason §3.5 makes the
+`unreachable` must not block, for the same reason §3.6 makes the
 reachability rows `warn`-only: the probe runs **on the host**, and the
 container's route out is the session proxy's, not the host's. A
 corporate proxy that blocks the host can sit next to a container that
@@ -799,7 +843,7 @@ reused rather than re-derived:
 field, where the token is, and a doctor row would have to either hold a
 token (it must not) or report a stale verdict. Once the provider seam
 exists, a `token accepted` row over the *saved* credentials is cheap
-and lands with the phase-2 rows (§3.5).
+and lands with the phase-2 rows (§3.6).
 
 **Not wired into `setCredentials`.** Adding `agent-token` to
 `verifyTokens` would mean every save of the credentials file probes
@@ -936,7 +980,7 @@ ipc.ts, and the doctor is a plain pull. Nothing new is broadcast.
    failure and nothing else.
 2. **Re-entry and honesty.** The command-palette entry and the footer
    chip (§2.3), the encrypted-at-rest row, the two reachability rows
-   and a `token accepted` row over the saved credentials (§3.5, §7.3),
+   and a `token accepted` row over the saved credentials (§3.6, §7.3),
    and the `operatorEnv`-is-re-pointed detail on the images row.
 3. **The rest of the warm-up.** The disk-space row, and — if §12
    question 5 holds — dropping the node feature from the operator env.
@@ -967,6 +1011,13 @@ exists to remove.
    `credentials.json` and absent from `sessions.json`, `agents.json`
    and every log file under `logs/`; and a `firstRunStart` whose start
    throws leaving an ordinary draft carrying `startError`.
+3a. `scripts/doctor.test.mjs`, the sweep (§3.5) — the row list is static
+   and its skeleton is all-`pending`; `onRow` fires per row **in order and
+   before the report returns** (asserted from inside the daemon probe, so
+   a slow middle row provably does not hold up the first); the stream is
+   exactly the report; main never announces a `pending` or `checking`
+   row; a skipped row is announced too, so the list cannot stall
+   half-drawn; and `machineDoctor` still works with no `onRow` at all.
 3. `scripts/doctor.test.mjs` (new) — the row table of §3.2 over injected
    probe results: `docker-cli` failing skips the other two as `fail`
    with "not checked" rather than `ok`; `ready` is true with `images`
@@ -1002,6 +1053,10 @@ exists to remove.
    — a store with a workspace and a task but *no session* opens on the
    welcome screen (§2.1's condition, which is deliberately not "no
    workspaces"); the checklist renders its three rows; "Start operator"
+   all three checklist rows are present in the first frame, every row
+   settles out of `pending`/`checking`, a settled row carries a state
+   class and a detail, and the ✓ appears on `ok` rows and nowhere else;
+   Settings → Machine shows the same rows under **one** heading;
    **Sign in with Claude (Anthropic)** leads and no key field is on
    screen until asked for; it is disabled on a machine with no daemon,
    with the reason beside it; "or paste an API key instead" opens a
@@ -1084,6 +1139,22 @@ Where the plan met the code and bent.
   host-side: the renderer never learns its id, so it has nothing to pass
   to `oauthCancel` and needs a cancel addressed by "the one the welcome
   screen started".
+- **The checklist streams, and it did not at first.** The first cut
+  awaited one report and showed `checking…` until it landed — which on
+  the machine this screen exists for is a placeholder followed by three
+  rows appearing at once, and reads as a hang. What fixed it was moving
+  the row *list* into shared code (`DOCTOR_ROWS`), so the screen can draw
+  it before asking anything, and adding `onRow` + a `doctor.row` bus
+  event so each answer lands on its own row. The 110 ms drain floor is
+  the one piece of pure theatre and is deliberately tiny: without it the
+  sweep completes inside a frame and cannot be seen.
+- **Settings → Machine was laid out wrong.** `MachineSection` wrapped
+  itself in a `.set-section` div that does not exist in the stylesheet,
+  so it lost the `0 6%` padding `.set-head`/`.set-list` carry and sat out
+  of line with every other section — and it stacked its own "This
+  machine" heading under the section's "Machine". Fixed by returning a
+  fragment like every other section and giving `MachineChecklist` a
+  `heading` prop that Settings passes as `null`.
 - **The welcome screen gained a mode** (§2.1.1) after the first cut
   shipped with the §2.1 condition alone. Two things forced it: a demo
   machine wants the screen on every launch, and the smoke could only

@@ -16,6 +16,9 @@ declare global {
       onSessionLog(cb: (event: GurtEvents['session-log']) => void): () => void
       onSessionTurn(cb: (event: GurtEvents['session-turn']) => void): () => void
       onProvisionLog(cb: (event: GurtEvents['provision-log']) => void): () => void
+      /** One machine-checklist row settled — the checklist lights up in order
+       *  instead of waiting for every probe. */
+      onDoctorRow(cb: (event: GurtEvents['doctor-row']) => void): () => void
       onNotification(cb: (event: GurtEvents['notification']) => void): () => void
       onNotificationRead(cb: (event: GurtEvents['notification-read']) => void): () => void
       onUsageChanged(cb: () => void): () => void

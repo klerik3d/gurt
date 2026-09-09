@@ -16,6 +16,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { JSX } from 'react'
 import { AGENT_DEFS, agentDef } from '../../../shared/agents'
 import type { DoctorReport, DoctorRow, FirstRunResult } from '../../../shared/doctor'
+import { pendingRows } from '../../../shared/doctor'
 import { OAUTH_PROVIDER_CHOICES } from '../../../shared/credentials'
 import { Icon, Logo } from './icons'
 import { AgentMark } from './tags'
@@ -27,27 +28,54 @@ import { logErr } from '../log'
 const DOCKER_POLL_MS = 3_000
 const DOCKER_POLL_LIMIT_MS = 90_000
 
+/** The dot per state. A row being checked pulses green — the same "something
+ *  is happening here" a running session's row uses (`status.ts`); a row not
+ *  yet reached is a hollow outline, so the list reads as a queue rather than
+ *  as three unanswered questions. */
 const DOT: Record<DoctorRow['state'], string> = {
+  pending: 'dot-outline',
+  checking: 'dot-green dot-pulse',
   ok: 'dot-green',
   warn: 'dot-yellow',
-  fail: 'dot-red',
-  checking: 'dot-outline'
+  fail: 'dot-red'
 }
 
-/** The checklist. `onReport` lets the embedding screen read `ready` without
- *  running the probes a second time. */
+/** Minimum time a row stays lit before the next one starts. The probes are
+ *  fast (a few `stat`s, one `docker info`, two `docker image inspect`) and on a
+ *  healthy machine the whole sweep is well under a second — which is the goal,
+ *  and also the problem: with no floor the three rows would resolve in one
+ *  frame and the sequence would not be seen at all. Small on purpose: this
+ *  paces the reveal, it must never be what makes the check slow. */
+const ROW_STEP_MS = 110
+
+/**
+ * The checklist.
+ *
+ * The rows are known before anything is probed (`DOCTOR_ROWS`), so the list is
+ * drawn complete and greyed out the moment this mounts and then fills in
+ * order, one row at a time, from the `doctor-row` events main emits as each
+ * probe answers. The alternative — a "checking…" placeholder until the whole
+ * report returns — showed nothing for as long as the slowest probe took and
+ * then everything at once, which reads as a hang rather than as work.
+ *
+ * `onReport` lets the embedding screen read `ready` without running the probes
+ * a second time. `heading` is the head row; pass null where the caller already
+ * has one (Settings → Machine puts its Re-check in the section header).
+ */
 export function MachineChecklist({
   onReport,
-  log
+  log,
+  heading = 'This machine'
 }: {
   onReport?: (r: DoctorReport) => void
   log?: string[] | undefined
+  heading?: string | null
 }): JSX.Element {
-  const [report, setReport] = useState<DoctorReport | null>(null)
+  const [rows, setRows] = useState<DoctorRow[]>(pendingRows)
   const [busy, setBusy] = useState<'' | 'checking' | 'preparing' | 'waiting'>('checking')
   const [error, setError] = useState('')
-  // Invalidates an in-flight refresh: a reply that lands after a newer one
-  // would roll the rows back to the older machine state.
+  // Invalidates an in-flight sweep: a row from an older run must not land on
+  // top of a newer one's.
   const seq = useRef(0)
   const alive = useRef(true)
   useEffect(
@@ -57,13 +85,52 @@ export function MachineChecklist({
     []
   )
 
+  /** Rows arrive faster than they can be read, so they are queued here and
+   *  drained one per `ROW_STEP_MS`. The queue is per-sweep: a stale row is
+   *  dropped by its sequence number, not by racing the timer. */
+  const queue = useRef<DoctorRow[]>([])
+  const draining = useRef(false)
+
+  const drain = useCallback((mine: number) => {
+    if (draining.current) return
+    draining.current = true
+    const step = (): void => {
+      const next = queue.current.shift()
+      if (!next || !alive.current || mine !== seq.current) {
+        draining.current = false
+        return
+      }
+      setRows((prev) => {
+        const at = prev.findIndex((r) => r.id === next.id)
+        if (at < 0) return prev
+        const out = [...prev]
+        out[at] = next
+        // Light the next unanswered row: the list should always show where
+        // the sweep currently is, not go blank between two answers.
+        const after = out[at + 1]
+        if (after && after.state === 'pending') out[at + 1] = { ...after, state: 'checking' }
+        return out
+      })
+      setTimeout(step, ROW_STEP_MS)
+    }
+    step()
+  }, [])
+
   const refresh = useCallback(async (): Promise<DoctorReport | null> => {
     const mine = ++seq.current
+    queue.current = []
     setBusy('checking')
+    setError('')
+    // Back to a full, unanswered list — a re-check re-runs every probe, and
+    // showing the previous answers while it does would be showing stale ones.
+    setRows(() => {
+      const fresh = pendingRows()
+      if (fresh[0]) fresh[0] = { ...fresh[0], state: 'checking' }
+      return fresh
+    })
     try {
       const r = await window.gurt.machineDoctor()
       if (!alive.current || mine !== seq.current) return r
-      setReport(r)
       onReport?.(r)
       return r
     } catch (e) {
@@ -76,9 +143,16 @@ export function MachineChecklist({
     }
   }, [onReport])
 
+  // Subscribe before the first sweep: a probe that answers in under a
+  // millisecond must not beat the listener that draws its row.
   useEffect(() => {
+    const off = window.gurt.onDoctorRow((row) => {
+      queue.current.push(row)
+      drain(seq.current)
+    })
     void refresh()
-  }, [refresh])
+    return off
+  }, [refresh, drain])
 
   const prepare = async (): Promise<void> => {
     setBusy('preparing')
@@ -105,7 +179,6 @@ export function MachineChecklist({
       const r = await window.gurt.machineDoctor().catch(() => null)
       if (!alive.current) return
       if (r) {
-        setReport(r)
         onReport?.(r)
         if (r.rows.find((x) => x.id === 'docker-daemon')?.state === 'ok') break
       }
@@ -114,42 +187,50 @@ export function MachineChecklist({
     if (alive.current) setBusy('')
   }
 
-  const rows = report?.rows ?? []
+  const recheck = (
+    <button className="btn-link" disabled={busy !== ''} onClick={() => void refresh()}>
+      {busy === 'checking' ? 'checking…' : 'Re-check'}
+    </button>
+  )
+
   return (
     <div className="wc-check">
-      <div className="wc-check-head">
-        <span className="wc-head-title">This machine</span>
-        <span className="spacer" />
-        <button className="btn-link" disabled={busy !== ''} onClick={() => void refresh()}>
-          {busy === 'checking' ? 'checking…' : 'Re-check'}
-        </button>
-      </div>
-      <div className="set-list">
-        {!rows.length && <div className="wc-row faint">checking this machine…</div>}
-        {rows.map((row) => (
-          <div key={row.id} className="wc-row">
-            <span
-              className={`dot ${DOT[busy === 'waiting' && row.id === 'docker-daemon' ? 'checking' : row.state]}`}
-            />
-            <span className="wc-row-label">{row.label}</span>
-            <span className="wc-row-detail mono">
-              {busy === 'waiting' && row.id === 'docker-daemon'
-                ? 'waiting for the daemon…'
-                : row.detail}
-            </span>
-            <span className="spacer" />
-            {row.action === 'prepare' && (
-              <button className="btn" disabled={busy !== ''} onClick={() => void prepare()}>
-                {busy === 'preparing' ? 'pulling…' : 'Prepare'}
-              </button>
-            )}
-            {row.action === 'start-docker' && (
-              <button className="btn" disabled={busy !== ''} onClick={() => void startDocker()}>
-                Start Docker Desktop
-              </button>
-            )}
-          </div>
-        ))}
+      {heading !== null && (
+        <div className="wc-check-head">
+          <span className="wc-head-title">{heading}</span>
+          <span className="spacer" />
+          {recheck}
+        </div>
+      )}
+      <div className="wc-rows">
+        {rows.map((row) => {
+          // The daemon poll owns its row's appearance while it runs.
+          const waiting = busy === 'waiting' && row.id === 'docker-daemon'
+          const state = waiting ? 'checking' : row.state
+          return (
+            <div key={row.id} className={`wc-row wc-${state}`}>
+              <span className={`dot ${DOT[state]}`} />
+              <span className="wc-row-label">{row.label}</span>
+              <span className="wc-row-detail mono">
+                {waiting ? 'waiting for the daemon…' : state === 'pending' ? '' : row.detail}
+              </span>
+              <span className="spacer" />
+              {row.action === 'prepare' && (
+                <button className="btn" disabled={busy !== ''} onClick={() => void prepare()}>
+                  {busy === 'preparing' ? 'pulling…' : 'Prepare'}
+                </button>
+              )}
+              {row.action === 'start-docker' && (
+                <button className="btn" disabled={busy !== ''} onClick={() => void startDocker()}>
+                  Start Docker Desktop
+                </button>
+              )}
+              {/* The tick is the "done, and fine" mark — a row that failed
+                  says so in its own colour and its detail, not with a mark. */}
+              {state === 'ok' && <span className="wc-tick">✓</span>}
+            </div>
+          )
+        })}
       </div>
       {error && <div className="error">{error}</div>}
       {/* The pull's own output, in the provisioning-log style the session pane

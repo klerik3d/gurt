@@ -107,6 +107,7 @@ export function registerIpc(): void {
   kernel.bus.on('session.log', (e) => broadcast('session-log', e))
   kernel.bus.on('session.turn', (e) => broadcast('session-turn', e))
   kernel.bus.on('provision.log', (e) => broadcast('provision-log', e))
+  kernel.bus.on('doctor.row', (e) => broadcast('doctor-row', e))
   kernel.bus.on('proxy.traffic', (t) => broadcast('proxy-traffic', t))
   kernel.bus.on('mcp.fail', (f) => broadcast('mcp-fail', f))
   kernel.bus.on('notification.created', (record) => broadcast('notification', record))
@@ -457,7 +458,10 @@ export function registerIpc(): void {
     },
     getPlanUsage: () => kernel.planUsage.get(),
     getBootProgress: async () => kernel.bootProgress(),
-    machineDoctor: () => machineDoctor(),
+    // Each row is announced as it is decided, so the checklist fills in
+    // order rather than appearing all at once when the slowest probe returns
+    // (docs/requirements-first-run.md §3.5).
+    machineDoctor: () => machineDoctor({ onRow: (row) => kernel.bus.emit('doctor.row', row) }),
     machinePrepare: async () => {
       // Same stream the provisioning log uses, under a reserved non-session
       // key — the third one, after a session id and `env-build:<ws>/<env>`
