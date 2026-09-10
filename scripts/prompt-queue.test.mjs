@@ -59,19 +59,22 @@ fs.mkdirSync(path.join(GURT_ROOT, ws, task), { recursive: true })
 fs.writeFileSync(
   path.join(GURT_ROOT, ws, 'workspace.json'),
   JSON.stringify({
-    repos: [{ name: 'alpha', url: 'https://github.com/o/alpha.git' }],
+    repos: [
+      { name: 'alpha', url: 'https://github.com/o/alpha.git' },
+      { name: 'beta', url: 'https://github.com/o/beta.git' }
+    ],
     envs: [{ name: 'dev', devcontainer: '{"image":"x"}', repo: 'alpha' }]
   })
 )
 fs.writeFileSync(path.join(GURT_ROOT, ws, task, 'task.json'), JSON.stringify({}))
 fs.writeFileSync(path.join(GURT_ROOT, ws, 'agents.json'), JSON.stringify({}))
 
-const started = (id, title) => ({
+const started = (id, title, repo = 'alpha') => ({
   info: {
     id,
     env: 'dev',
     role: 'executor',
-    repos: ['alpha'],
+    repos: [repo],
     task,
     workspace: ws,
     title,
@@ -84,7 +87,15 @@ const started = (id, title) => ({
 })
 fs.writeFileSync(
   path.join(GURT_ROOT, ws, task, 'sessions.json'),
-  JSON.stringify([started('sa', 'A'), started('sb', 'B')])
+  JSON.stringify([
+    started('sa', 'A'),
+    started('sb', 'B'),
+    // A second pair on their own clone, untouched by every test below: the
+    // handoff trigger is asserted against sessions whose state no earlier test
+    // can have moved.
+    started('sc', 'C', 'beta'),
+    started('sd', 'D', 'beta')
+  ])
 )
 
 const kernel = createKernel()
@@ -97,6 +108,16 @@ kernel.sessions.patchContainer('sa', {
   remoteWorkspaceFolder: '/app',
   repos: ['alpha']
 })
+
+// Queueing a prompt is itself a queue-handoff trigger, so every prompt in this
+// file now asks the container manager to stop the holder — stub it before the
+// first one, or the tests reach for a daemon that may or may not be there.
+// Recording only: a stub that also freed the clone would move the very queue
+// these tests are watching.
+const stops = []
+kernel.containers.stop = async (id, reason) => {
+  stops.push({ id, reason })
+}
 
 test('a prompt to a session whose clone is held waits instead of failing', async () => {
   await kernel.sessions.prompt('sb', 'rebase onto main')
@@ -186,25 +207,27 @@ test('a released clone lets the queue move again', async () => {
 // The queue only ever moves when a container comes down, and the holder's own
 // turn ended before this message was typed — so queueing it has to be a trigger
 // of its own. Without one the prompt waits out the ten-minute grace period.
-test('queueing a prompt reaps the idle holder that is blocking it', async () => {
-  const stops = []
-  kernel.containers.stop = async (id, reason) => {
-    stops.push({ id, reason })
-    kernel.sessions.patchContainer(id, undefined)
-  }
-  for (let i = 0; i < 100 && kernel.sessions.snapshot('sb').busy; i++)
-    await new Promise((r) => setTimeout(r, 25))
-  kernel.sessions.patchContainer('sa', {
+//
+// C and D are used here and nowhere else: the assertion is about what queueing
+// a prompt does, and reusing B would make it about whatever B's last turn left
+// behind (with a real docker on the machine, a turn that is still running).
+test('queueing a prompt reaps the idle holder that is blocking it', () => {
+  kernel.sessions.patchContainer('sc', {
     status: 'running',
-    id: 'container-a',
+    id: 'container-c',
     remoteWorkspaceFolder: '/app',
-    repos: ['alpha']
+    repos: ['beta']
   })
-  await kernel.sessions.prompt('sb', 'one more thing')
-  await new Promise((r) => setTimeout(r, 50))
+  // Read synchronously, with no tick in between: the point is that queueing the
+  // prompt *is* the trigger, so the stop is already recorded when `prompt`
+  // returns. A window here would also let an earlier test's turn end land its
+  // own handoff pass in the middle of the assertion.
+  const before = stops.length
+  const sent = kernel.sessions.prompt('sd', 'one more thing')
   assert.deepEqual(
-    stops,
-    [{ id: 'sa', reason: 'queue' }],
-    'the message waiting on alpha stops the idle session sitting on it, at once'
+    stops.slice(before),
+    [{ id: 'sc', reason: 'queue' }],
+    'the message waiting on beta stops the idle session sitting on it, at once'
   )
+  return sent
 })
