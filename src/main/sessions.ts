@@ -22,6 +22,7 @@ import type {
   SessionInfo,
   SessionNetwork,
   SessionLogRecord,
+  SessionMode,
   SessionModes,
   SessionRole,
   SessionSnapshot,
@@ -56,6 +57,7 @@ import {
   CONFIG_OPTION_UPDATE,
   INITIALIZE_RESULT,
   MODE_UPDATE,
+  MODES,
   PERMISSION_REQUEST,
   PLAN_UPDATE,
   PROMPT_RESULT,
@@ -154,6 +156,88 @@ function normalizeConfigOptions(
     }
   }
   return out
+}
+
+/** The mode's `_meta.kind`, if it reports one. ACP's `_meta` is a free-form
+ *  envelope the schema keeps but does not type, so it is read defensively —
+ *  an adapter that puts a `kind` straight on the mode is honored too. */
+function modeKind(raw: Record<string, unknown>): string | undefined {
+  const meta = raw['_meta']
+  const fromMeta =
+    meta && typeof meta === 'object' ? (meta as Record<string, unknown>)['kind'] : undefined
+  const kind = typeof fromMeta === 'string' ? fromMeta : raw['kind']
+  return typeof kind === 'string' && kind ? kind : undefined
+}
+
+/** Normalize an ACP `session/new`/`session/load` mode report into our shape:
+ *  the same modes, with `_meta.kind` lifted onto each one so mode matching can
+ *  key on what a mode *is* rather than on what it happens to be called (see
+ *  {@link SessionMode.kind}). Returns undefined when the agent reported none,
+ *  which every caller reads as "keep what we had". */
+export function normalizeModes(raw: unknown): SessionModes | undefined {
+  const parsed = MODES.safeParse(raw)
+  if (!parsed.success) return undefined
+  return {
+    currentModeId: parsed.data.currentModeId,
+    availableModes: parsed.data.availableModes.map((m) => {
+      const kind = modeKind(m)
+      // Absent, not `undefined`: this rides IPC, where a key present only to
+      // say "nothing" is noise (same rule as `normalizeConfigOptions`).
+      return { id: m.id, name: m.name, ...(kind ? { kind } : {}) }
+    })
+  }
+}
+
+/**
+ * Pick the ACP mode that matches a session's auto-allow preference. Modes are
+ * agent-defined, so this is a best-effort match over kind/id/name (mirrors the
+ * renderer's `modeVisual`). Returns undefined if the current mode already fits
+ * or no matching mode is exposed.
+ *
+ * Order matters on the auto side. claude-code reports, in this order,
+ * `acceptEdits` ("Accept edits") and then `auto` ("Auto", `_meta.kind`
+ * `auto_review`) — a plain name match over "accept|auto" therefore always
+ * landed on accept-edits and gurt's "auto" could never be reached. The real
+ * auto mode is asked for by kind (or by the literal id) first; the
+ * accept/auto-edit family is the fallback for agents that expose no such mode,
+ * and a blanket bypass only for agents that expose neither.
+ */
+export function desiredModeId(
+  autoAllow: boolean,
+  modes: SessionModes | undefined
+): string | undefined {
+  const list = modes?.availableModes
+  if (!list?.length) return undefined
+  const has = (m: SessionMode, ...needles: string[]) => {
+    const k = `${m.id} ${m.name}`.toLowerCase()
+    return needles.some((n) => k.includes(n))
+  }
+  const pick = (pred: (m: SessionMode) => boolean) => list.find(pred)?.id
+  const target = autoAllow
+    ? // "auto" = review the risky calls, auto-accept the rest. Fall back to
+      // accept-edits, and to a full bypass only for agents that expose neither.
+      pick((m) => m.kind === 'auto_review') ??
+      pick((m) => m.id === 'auto') ??
+      pick((m) => has(m, 'accept', 'auto')) ??
+      pick((m) => has(m, 'bypass', 'yolo'))
+    : pick((m) => m.id === 'default') ?? pick((m) => has(m, 'default', 'manual', 'ask', 'confirm'))
+  if (!target || target === modes!.currentModeId) return undefined
+  return target
+}
+
+/** The mode a freshly (re)opened ACP session should be switched into: the
+ *  user's own last pick, when the agent still offers it, and only otherwise
+ *  the one derived from the auto/manual choice. Without this a reattach
+ *  re-derived the mode from a bool and silently overwrote the pick on every
+ *  start and every wake. Undefined = the session is already where it belongs. */
+export function nextModeId(
+  info: Pick<SessionInfo, 'modeId' | 'autoAllow'>,
+  modes: SessionModes | undefined
+): string | undefined {
+  const saved = info.modeId
+  if (saved && modes?.availableModes.some((m) => m.id === saved))
+    return saved === modes.currentModeId ? undefined : saved
+  return desiredModeId(info.autoAllow ?? true, modes)
 }
 
 /**
@@ -816,7 +900,14 @@ export class SessionManager {
       if (patch.agent !== s.info.agent) void this.events.releaseContainer(s.info.id, 'user')
       s.info.agent = patch.agent
     }
-    if (patch.autoAllow !== undefined) s.info.autoAllow = patch.autoAllow
+    if (patch.autoAllow !== undefined) {
+      s.info.autoAllow = patch.autoAllow
+      // Setting the coarse chip again *is* the user re-choosing, so an earlier
+      // fine-grained pick stops outranking it — a draft that has one (a start
+      // that failed after its first mode change) would otherwise ignore the
+      // chip it was just given and come back up in the old mode.
+      s.info.modeId = undefined
+    }
     if (patch.mcp !== undefined) s.info.mcp = patch.mcp
     // Takes effect at the next start: the network flag decides how the session's
     // own network is created, and a live one cannot be edited in place (§7.2).
@@ -1342,7 +1433,7 @@ export class SessionManager {
         { timeoutMs: ACP_REQUEST_TIMEOUT_MS }
       )
       s.acpSessionId = result.sessionId
-      s.modes = result.modes ?? s.modes
+      s.modes = normalizeModes(result.modes) ?? s.modes
       s.configOptions = normalizeConfigOptions(result.configOptions, ctx.agent.id)
       s.attached = true
       s.info.state = 'started'
@@ -1787,7 +1878,7 @@ export class SessionManager {
             SESSION_LOAD_RESULT,
             { timeoutMs: ACP_REQUEST_TIMEOUT_MS }
           )
-          s.modes = result.modes ?? s.modes
+          s.modes = normalizeModes(result.modes) ?? s.modes
           s.configOptions =
             normalizeConfigOptions(result.configOptions, ctx.agent.id) ?? s.configOptions
           s.attached = true
@@ -2324,6 +2415,9 @@ export class SessionManager {
     if (!conn) throw new Error('agent is not running — send a prompt first')
     await conn.peer.request('session/set_mode', { sessionId: s.acpSessionId, modeId })
     if (s.modes) s.modes.currentModeId = modeId
+    // The pick itself is what a reattach restores — the bool below only drives
+    // the auto/manual tag and is far too coarse to rebuild a mode from.
+    s.info.modeId = modeId
     // Keep the persisted preference in step so a later reattach restores this choice.
     const mode = s.modes?.availableModes.find((m) => m.id === modeId)
     const k = `${mode?.id ?? modeId} ${mode?.name ?? ''}`.toLowerCase()
@@ -2460,36 +2554,24 @@ export class SessionManager {
     this.schedulePersist(s.ref)
   }
 
-  /** Pick the ACP mode that matches the session's auto-allow preference. Modes are
-   *  agent-defined, so this is a best-effort match over id/name (mirrors the
-   *  renderer's `modeVisual`). Returns undefined if the current mode already fits
-   *  or no matching mode is exposed. */
-  private desiredModeId(autoAllow: boolean, modes: SessionModes | undefined): string | undefined {
-    const list = modes?.availableModes
-    if (!list?.length) return undefined
-    const has = (m: { id: string; name: string }, ...needles: string[]) => {
-      const k = `${m.id} ${m.name}`.toLowerCase()
-      return needles.some((n) => k.includes(n))
-    }
-    const pick = (pred: (m: { id: string; name: string }) => boolean) => list.find(pred)?.id
-    const target = autoAllow
-      ? // "auto" = auto-accept edits, still confirm the risky stuff. Fall back to
-        // a full bypass only for agents that expose no accept/auto mode.
-        pick((m) => has(m, 'accept', 'auto')) ?? pick((m) => has(m, 'bypass', 'yolo'))
-      : pick((m) => m.id === 'default') ?? pick((m) => has(m, 'default', 'manual', 'ask', 'confirm'))
-    if (!target || target === modes!.currentModeId) return undefined
-    return target
-  }
-
-  /** Switch the freshly (re)opened ACP session into the mode implied by the
-   *  session-start auto/manual choice. Best-effort: unknown mode sets are left alone. */
+  /** Switch the freshly (re)opened ACP session into the mode it belongs in —
+   *  the user's own last pick, or the one implied by the session-start
+   *  auto/manual choice (see {@link nextModeId}). Best-effort: unknown mode
+   *  sets are left alone. */
   private async applyAutoAllow(s: Session, conn: Connection): Promise<void> {
     if (!s.acpSessionId) return
-    const target = this.desiredModeId(s.info.autoAllow ?? true, s.modes)
+    const target = nextModeId(s.info, s.modes)
     if (!target) return
     try {
       await conn.peer.request('session/set_mode', { sessionId: s.acpSessionId, modeId: target })
       if (s.modes) s.modes.currentModeId = target
+      // The mode chips read `modes.currentModeId`; a start/reattach that lands
+      // in a different mode than the last snapshot showed has to say so, or the
+      // popup keeps highlighting the mode the session left behind. (claude-code
+      // also sends `current_mode_update` for this — an agent that does not is
+      // exactly the case this covers.)
+      this.cacheAgentConfig(s)
+      this.bus.emit('session.changed', { sessionId: s.info.id })
     } catch (e) {
       this.push(s, {
         kind: 'system',
