@@ -200,10 +200,10 @@ At `startSession`, before the container is resolved:
 
    | kind | pinned package | `skillsDir` |
    |---|---|---|
-   | claude-code | claude-agent-acp@0.70.0 | `.claude/skills` |
-   | opencode | opencode-ai@1.18.21 | `.config/opencode/skills` — the CLI's native global directory; it *also* auto-reads `~/.claude/skills`, but that compat scan is env-var opt-out, so the link targets the unconditional path |
-   | codex | codex-acp@1.6.2 (bundles @openai/codex@0.148.0) | `.agents/skills` — default-on skills subsystem; the canonical directory (the `~/.codex/skills` twin is deprecated), never `~/.claude/skills` |
-   | gemini | @google/gemini-cli@0.56.0 | `.gemini/skills` — Agent Skills (agentskills.io), default-on since its v0.26.0; also reads the `~/.agents/skills` alias, never `~/.claude/skills` |
+   | claude-code | claude-agent-acp@0.76.0 | `.claude/skills` |
+   | opencode | opencode-ai@1.18.30 | `.config/opencode/skills` — the CLI's native global directory; it *also* auto-reads `~/.claude/skills`, but that compat scan is env-var opt-out, so the link targets the unconditional path |
+   | codex | codex-acp@1.11.0 (bundles @openai/codex@0.153.4) | `.agents/skills` — default-on skills subsystem; the canonical directory (the `~/.codex/skills` twin is deprecated), never `~/.claude/skills` |
+   | gemini | @google/gemini-cli@0.59.0 | `.gemini/skills` — Agent Skills (agentskills.io), default-on since its v0.26.0; also reads the `~/.agents/skills` alias, never `~/.claude/skills` |
 
    As of these pins every kind reads *some* skills directory — the
    research behind the table found default-on SKILL.md support in all

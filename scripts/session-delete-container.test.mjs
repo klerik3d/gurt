@@ -102,6 +102,11 @@ kernel.sessions.patchContainer(info.id, {
 // mounts are staged under; `scratchRoot` is what the delete removes.
 const scratchRoot = path.join(GURT_ROOT, ws, task, '.multirepo', info.id)
 const scratch = path.join(scratchRoot, 'repos')
+// A sibling of `repos`/`skills`: the host side of the agent history bind
+// (docs/requirements-agent-history.md §5). Staged by hand here the same way
+// `scratch` is — this file never runs a real container, so nothing ever
+// calls `ensureSessionHistory` for real.
+const history = path.join(scratchRoot, 'history', 'claude-projects')
 
 test('session delete takes its container down', async () => {
   assert.equal(
@@ -110,6 +115,7 @@ test('session delete takes its container down', async () => {
     'the staged container survives the boot reconcile'
   )
   fs.mkdirSync(scratch, { recursive: true })
+  fs.mkdirSync(history, { recursive: true })
 
   kernel.sessions.deleteSession(info.id)
 
@@ -129,4 +135,43 @@ test('session delete removes its mount scratch', async () => {
   for (let i = 0; i < 200 && fs.existsSync(scratchRoot); i++)
     await new Promise((r) => setTimeout(r, 25))
   assert.ok(!fs.existsSync(scratchRoot), 'the mount scratch dir goes with the session')
+  // The history directory is a child of the scratch root removed above — no
+  // code of its own reaches it, which is the whole point
+  // (docs/requirements-agent-history.md §5, §9 item 3). By the time the
+  // scratch root is gone (confirmed only after the earlier `waitForCall` on
+  // the container `rm`), the history directory nested inside it is gone too.
+  assert.ok(!fs.existsSync(history), 'the history directory goes with the session, after the container')
+})
+
+// --- rebuild path: container replaced, session (and its history) survive ---
+
+test("a container teardown that isn't a delete leaves the history directory in place", async () => {
+  // A second session, standing in for the "repo-set change forces a rebuild"
+  // case (docs/requirements-agent-history.md §1): its container comes down
+  // through the same teardown a delete uses (`release`/'remove' mode), but
+  // the session itself is never deleted, so nothing may touch its scratch
+  // dir — the history directory included (§9 item 4, the test a
+  // delete-everything implementation would still pass without).
+  const info2 = kernel.sessions.createSession(ref, ['alpha'], 'a1', 'hi', 'none')
+  kernel.sessions.patchContainer(info2.id, {
+    status: 'running',
+    id: 'container-b',
+    remoteWorkspaceFolder: '/app',
+    repos: ['alpha']
+  })
+  const scratchRoot2 = path.join(GURT_ROOT, ws, task, '.multirepo', info2.id)
+  const history2 = path.join(scratchRoot2, 'history', 'claude-projects')
+  fs.mkdirSync(history2, { recursive: true })
+
+  await kernel.containers.release(info2.id, 'user')
+
+  assert.ok(
+    await waitForCall(/^rm -f container-b$/),
+    'the rebuild path removes the old container'
+  )
+  assert.ok(kernel.sessions.snapshot(info2.id), 'the session itself is untouched')
+  assert.ok(fs.existsSync(history2), 'the history directory survives a container-only teardown')
+  assert.ok(fs.existsSync(scratchRoot2), 'so does the rest of the scratch dir')
+
+  kernel.sessions.deleteSession(info2.id)
 })

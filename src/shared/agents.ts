@@ -41,6 +41,20 @@ export interface AgentDef {
    * whatever the projects ship today — a bump of a pin re-checks this field.
    */
   skillsDir: string | null
+  /** The `$HOME`-relative paths this kind persists its own conversation and
+   *  resume state in, each linked into the read-write bind by
+   *  `linkContainerHistory`. Empty means no delivery at all: the session
+   *  provisions exactly as it does today.
+   *
+   *  A **list**, not a single directory, because no CLI examined keeps all
+   *  of it in one place (§3.1) — and every entry MUST be separable from
+   *  that kind's credential file (§6.2). A kind whose transcript cannot be
+   *  separated from its secrets gets `[]` and stays there (§3.3).
+   *
+   *  Verified against the *pinned* versions, not whatever the projects ship
+   *  today — a pin bump re-checks this field, same rule as `skillsDir`.
+   *  (docs/requirements-agent-history.md §3) */
+  historyPaths: readonly string[]
 }
 
 // Adapter packages are pinned to exact versions on purpose (supply chain):
@@ -53,7 +67,7 @@ export const AGENT_DEFS: AgentDef[] = [
     label: 'claude code',
     // @agentclientprotocol/claude-agent-acp bundles the Claude Agent SDK — the
     // claude-code devcontainer feature is not needed.
-    adapterPackages: ['@agentclientprotocol/claude-agent-acp@0.70.0'],
+    adapterPackages: ['@agentclientprotocol/claude-agent-acp@0.76.0'],
     bin: 'claude-agent-acp',
     binArgs: [],
     secretEnv: 'CLAUDE_CODE_OAUTH_TOKEN',
@@ -62,49 +76,73 @@ export const AGENT_DEFS: AgentDef[] = [
     oauthProvider: 'anthropic',
     // Claude Code's own user-level skills directory — the path this feature
     // was built against (docs/requirements-skills.md §5).
-    skillsDir: '.claude/skills'
+    skillsDir: '.claude/skills',
+    // Verified against claude-agent-acp@0.76.0 (SDK 0.3.257): conversation +
+    // resume state lives in `.claude/projects/<mangled-cwd>/<sessionId>.jsonl`
+    // and `.claude/todos`. Cleanest boundary of the four kinds — there is no
+    // auth file anywhere in `~/.claude` (the credential rides the
+    // CLAUDE_CODE_OAUTH_TOKEN env var / a materialized-nowhere secret), so
+    // nothing here can collide with §6.2. The cwd-keyed directory name is
+    // overridden by CLAUDE_CODE_PROJECT_DIR_NAME (see containers.ts
+    // `resolveLaunch`), pinned to the session id, so this kind's history
+    // survives a repo-set change too (docs/requirements-agent-history.md
+    // §3.2). Phase 1 of that document.
+    historyPaths: ['.claude/projects', '.claude/todos']
   },
   {
     id: 'codex',
     label: 'codex',
     // the adapter package bundles a compatible @openai/codex
-    adapterPackages: ['@agentclientprotocol/codex-acp@1.6.2'],
+    adapterPackages: ['@agentclientprotocol/codex-acp@1.11.0'],
     bin: 'codex-acp',
     binArgs: [],
     secretEnv: 'OPENAI_API_KEY',
     // §5.2.1: fed through a materialized `~/.codex/auth.json`, with the env var
     // suppressed — a non-key value there wins and forces the API-key path.
     oauthProvider: 'openai',
-    // Verified in the @openai/codex@0.148.0 binary codex-acp@1.6.2 resolves
-    // to: a default-on skills subsystem reads `~/.agents/skills` (canonical)
+    // Verified in the @openai/codex@0.153.4 binary codex-acp@1.11.0 resolves
+    // to (unchanged from 1.10.0 — the pin still range-depends on
+    // @openai/codex@^0.153.4): a default-on skills subsystem reads
+    // `~/.agents/skills` (canonical)
     // and `~/.codex/skills` (deprecated but still loaded) — SKILL.md format,
     // surfaced as `$<name>` commands over ACP. It never reads
     // `~/.claude/skills`. Link the canonical directory.
-    skillsDir: '.agents/skills'
+    skillsDir: '.agents/skills',
+    // Not phase 1 (docs/requirements-agent-history.md §10 item 3): the
+    // rollout files live under `.codex/sessions`, but the resume index
+    // (`state_5.sqlite` / `thread_history_1.sqlite`) sits top-level, beside
+    // `auth.json`, and stores an absolute `rollout_path` — binding those
+    // files individually needs a live resume check first. Empty until then.
+    historyPaths: []
   },
   {
     id: 'gemini',
     label: 'gemini',
     // gemini cli speaks ACP itself (`--experimental-acp`) — no adapter package
     // besides the CLI, so `bin` is the CLI and the flag rides in `binArgs`.
-    adapterPackages: ['@google/gemini-cli@0.56.0'],
+    adapterPackages: ['@google/gemini-cli@0.59.0'],
     bin: 'gemini',
     binArgs: ['--experimental-acp'],
     secretEnv: 'GEMINI_API_KEY',
     // §5.2.1: fed through a materialized `~/.gemini/oauth_creds.json`, env var
     // likewise suppressed.
     oauthProvider: 'google',
-    // Verified in the @google/gemini-cli@0.56.0 tarball: Agent Skills are
+    // Verified in the @google/gemini-cli@0.59.0 tarball: Agent Skills are
     // default-on since v0.26.0 (`skillsSupport ?? true`), discovered from
     // `~/.gemini/skills` and the `~/.agents/skills` alias — SKILL.md
     // frontmatter format, activated through its `activate_skill` tool. It
     // never reads `~/.claude/skills`. Link the primary documented directory.
-    skillsDir: '.gemini/skills'
+    skillsDir: '.gemini/skills',
+    // Not phase 1 (docs/requirements-agent-history.md §10 item 2): the
+    // transcripts live in `.gemini/tmp`/`.gemini/history`, plus the
+    // `projects.json` registry file that assigns the shortId — the first
+    // kind that needs §3.1's file-entry case. Empty until that phase.
+    historyPaths: []
   },
   {
     id: 'opencode',
     label: 'opencode',
-    adapterPackages: ['opencode-ai@1.18.21'],
+    adapterPackages: ['opencode-ai@1.18.30'],
     bin: 'opencode',
     binArgs: ['acp'],
     secretEnv: 'ANTHROPIC_API_KEY',
@@ -113,13 +151,20 @@ export const AGENT_DEFS: AgentDef[] = [
     // the anthropic provider would buy a browser round-trip and a failure at
     // session start; a pasted key is the honest answer until that is checked.
     oauthProvider: null,
-    // Verified in the opencode-linux-x64@1.18.21 binary (the -ai package is a
+    // Verified in the opencode-linux-x64@1.18.30 binary (the -ai package is a
     // wrapper): global skills load from `~/.config/opencode/{skill,skills}/`,
     // same SKILL.md frontmatter format. It also auto-reads `~/.claude/skills`,
     // but that compat scan sits behind opt-out env vars
     // (OPENCODE_DISABLE_EXTERNAL_SKILLS / …_CLAUDE_CODE[_SKILLS]) a user env
     // could set — the native config dir is unconditional, so link there.
-    skillsDir: '.config/opencode/skills'
+    skillsDir: '.config/opencode/skills',
+    // No phase — verified permanently empty (docs/requirements-agent-history.md
+    // §3.3). opencode-ai@1.18.30 keeps sessions, messages and parts in
+    // `~/.local/share/opencode/opencode.db`, and its `account` /
+    // `control_account` / `credential` rows — live OAuth tokens — sit in that
+    // same sqlite file. There is no path that separates the transcript from
+    // the secret, so this stays `[]` unless upstream splits the store.
+    historyPaths: []
   }
 ]
 
