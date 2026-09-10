@@ -1192,26 +1192,49 @@ export async function linkContainerSkills(
   else log(`skills mounted read-only at ${SKILLS_MOUNT}, linked as ~/${skillsDir}`)
 }
 
-/** True when the agent's adapter binary is already on PATH inside the
- *  container. Probed through `devcontainer exec` — the same environment the
- *  install and the adapter spawn resolve, so PATH (nvm's node) reads the same
- *  way for all three. The host-side installed-cache dies with the app process
- *  while the install itself lives in the container, and this probe is what
- *  keeps a fresh process from reinstalling over it — a reinstall skipped is
- *  also a reinstall that cannot rewrite the package under a live spawn. */
+/** Path, relative to the container `$HOME`, of the marker file that records
+ *  which exact pin was last installed for an agent — keyed by agent id so
+ *  unrelated agents in the same container never collide. */
+function adapterMarkerPath(agent: AgentDef): string {
+  return `.gurt/adapter-versions/${agent.id}`
+}
+
+/** The marker's expected content for the *current* pin. Comparing the
+ *  installed marker against this (not just the binary's presence on PATH) is
+ *  what makes a pin bump reinstall into a container that already has an
+ *  older version on PATH from before the bump. */
+function adapterMarkerValue(agent: AgentDef): string {
+  return agent.adapterPackages.join(',')
+}
+
+/** True when the agent's adapter binary is on PATH inside the container
+ *  *and* the version marker left by the last successful install matches the
+ *  currently pinned `adapterPackages` exactly. Probed through `devcontainer
+ *  exec` — the same environment the install and the adapter spawn resolve,
+ *  so PATH (nvm's node) reads the same way for all three. The host-side
+ *  installed-cache dies with the app process while the install itself lives
+ *  in the container, and this probe is what keeps a fresh process from
+ *  reinstalling over it — a reinstall skipped is also a reinstall that
+ *  cannot rewrite the package under a live spawn. The version check on top
+ *  of the PATH check is what makes a pin bump apply to a container
+ *  provisioned under the old pin: without it, a stale binary already on
+ *  PATH reads as "installed" forever, across every app restart. */
 export async function adapterPresent(
   session: string,
   agent: AgentDef,
   configArgs: string[],
   workspaceFolder: string
 ): Promise<boolean> {
+  const marker = adapterMarkerPath(agent)
+  const expected = adapterMarkerValue(agent)
   const { code } = await runNodeCli(
     [
       'exec',
       '--workspace-folder', workspaceFolder,
       ...idLabelArgs(session),
       ...configArgs,
-      'sh', '-c', `command -v ${agent.bin}`
+      'sh', '-c',
+      `command -v ${agent.bin} >/dev/null 2>&1 && [ "$(cat "$HOME/${marker}" 2>/dev/null)" = "${expected}" ]`
     ],
     () => {}
   )
@@ -1274,6 +1297,24 @@ export async function installAcpAdapter(
     log
   )
   if (code !== 0) throw new Error(`ACP adapter install failed (exit ${code})`)
+  // Record the exact pin just installed — what `adapterPresent` compares
+  // against on the next probe, so a later pin bump reinstalls here instead
+  // of reading the old binary on PATH as good enough forever.
+  const marker = adapterMarkerPath(agent)
+  const parent = path.posix.dirname(marker)
+  const { code: markerCode } = await runNodeCli(
+    [
+      'exec',
+      '--workspace-folder', workspaceFolder,
+      ...idLabelArgs(session),
+      ...configArgs,
+      'sh', '-c',
+      `mkdir -p "$HOME/${parent}" && printf '%s' '${adapterMarkerValue(agent)}' > "$HOME/${marker}"`
+    ],
+    () => {}
+  )
+  if (markerCode !== 0)
+    log(`could not record adapter version marker (exit ${markerCode}) — next probe will reinstall`)
 }
 
 /** Spawns the ACP adapter inside the environment; caller owns the process. */
