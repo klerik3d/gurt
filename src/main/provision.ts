@@ -1024,6 +1024,18 @@ export async function devcontainerUp(
     // `.devcontainer/` of its own has it, so `up` failed there with ENOENT.
     // Nothing here reads the lockfile back, so disable it outright.
     '--no-lockfile',
+    // The CLI's own default: when `workspaceFolder` sits inside a git working
+    // tree, resolve `git rev-parse --show-toplevel` from it and mount *that*
+    // instead — meant for opening a worktree at its main checkout. Every
+    // `workspaceFolder` gurt ever passes is either a repo clone (already its
+    // own toplevel, so this is a no-op) or the empty wrapper dir a mounted
+    // session stages under `~/.gurt/<ws>/<task>/.multirepo/<session>/repos`
+    // (`store.mountedWorkspaceDir`) — and `~/.gurt` itself is a git repo
+    // (`ensureJournalRepo`), so for that case the default would walk up and
+    // bind-mount the whole journal, credentials.json included, in place of
+    // the wrapper dir. Disable it unconditionally rather than only for the
+    // wrapper case — gurt never wants anything but the literal folder it named.
+    '--no-mount-workspace-git-root',
     ...idLabelArgs(session),
     ...mountConfigArgs
   ]
