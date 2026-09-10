@@ -123,7 +123,9 @@ address a physical resource.
   period — otherwise the scheduler, which only advances on a container coming
   down, would stall the queue for the whole ten minutes. Triggers are the same
   idle transitions (turn end, awaiting cleared, adapter exit, failed start),
-  plus enqueue and the boot restore. Nothing mid-turn or mid-start is ever
+  plus enqueue, a prompt queued on a started session (`session.promptQueued` —
+  its holder's turn ended before the message was typed, so no idle transition
+  is coming) and the boot restore. Nothing mid-turn or mid-start is ever
   reaped, and an empty queue leaves the policy exactly as it was. A stop that
   fails re-arms the grace period it was cutting short — the handoff degrades to
   the old timing, never to a queue waiting on a container nothing will retry.

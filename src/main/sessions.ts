@@ -2246,8 +2246,14 @@ export class SessionManager {
     // own guard without a word, and the turn it is waiting behind may run for
     // minutes — the pane has to show the message now, not then. When the drain
     // *did* take it, `sendTurn` has already emitted for the turn it started.
-    if (s.pending.some((p) => p.id === id))
+    if (s.pending.some((p) => p.id === id)) {
       this.bus.emit('session.changed', { sessionId: s.info.id })
+      // A waiting prompt wants the clone exactly like a queued draft does, and
+      // the handoff only ever runs off a signal. Without this one the holder is
+      // already idle — its turn ended before the message was typed — so nothing
+      // else will fire, and the message sits out the whole grace period.
+      this.bus.emit('session.promptQueued', { sessionId: s.info.id })
+    }
   }
 
   /**

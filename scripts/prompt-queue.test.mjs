@@ -182,3 +182,29 @@ test('a released clone lets the queue move again', async () => {
     'freeing the repo takes the prompt out of the queue and runs it'
   )
 })
+
+// The queue only ever moves when a container comes down, and the holder's own
+// turn ended before this message was typed — so queueing it has to be a trigger
+// of its own. Without one the prompt waits out the ten-minute grace period.
+test('queueing a prompt reaps the idle holder that is blocking it', async () => {
+  const stops = []
+  kernel.containers.stop = async (id, reason) => {
+    stops.push({ id, reason })
+    kernel.sessions.patchContainer(id, undefined)
+  }
+  for (let i = 0; i < 100 && kernel.sessions.snapshot('sb').busy; i++)
+    await new Promise((r) => setTimeout(r, 25))
+  kernel.sessions.patchContainer('sa', {
+    status: 'running',
+    id: 'container-a',
+    remoteWorkspaceFolder: '/app',
+    repos: ['alpha']
+  })
+  await kernel.sessions.prompt('sb', 'one more thing')
+  await new Promise((r) => setTimeout(r, 50))
+  assert.deepEqual(
+    stops,
+    [{ id: 'sa', reason: 'queue' }],
+    'the message waiting on alpha stops the idle session sitting on it, at once'
+  )
+})
