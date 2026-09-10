@@ -53,7 +53,7 @@ export const AGENT_DEFS: AgentDef[] = [
     label: 'claude code',
     // @agentclientprotocol/claude-agent-acp bundles the Claude Agent SDK — the
     // claude-code devcontainer feature is not needed.
-    adapterPackages: ['@agentclientprotocol/claude-agent-acp@0.70.0'],
+    adapterPackages: ['@agentclientprotocol/claude-agent-acp@0.76.0'],
     bin: 'claude-agent-acp',
     binArgs: [],
     secretEnv: 'CLAUDE_CODE_OAUTH_TOKEN',
@@ -68,15 +68,17 @@ export const AGENT_DEFS: AgentDef[] = [
     id: 'codex',
     label: 'codex',
     // the adapter package bundles a compatible @openai/codex
-    adapterPackages: ['@agentclientprotocol/codex-acp@1.10.0'],
+    adapterPackages: ['@agentclientprotocol/codex-acp@1.11.0'],
     bin: 'codex-acp',
     binArgs: [],
     secretEnv: 'OPENAI_API_KEY',
     // §5.2.1: fed through a materialized `~/.codex/auth.json`, with the env var
     // suppressed — a non-key value there wins and forces the API-key path.
     oauthProvider: 'openai',
-    // Verified in the @openai/codex@0.153.4 binary codex-acp@1.10.0 resolves
-    // to: a default-on skills subsystem reads `~/.agents/skills` (canonical)
+    // Verified in the @openai/codex@0.153.4 binary codex-acp@1.11.0 resolves
+    // to (unchanged from 1.10.0 — the pin still range-depends on
+    // @openai/codex@^0.153.4): a default-on skills subsystem reads
+    // `~/.agents/skills` (canonical)
     // and `~/.codex/skills` (deprecated but still loaded) — SKILL.md format,
     // surfaced as `$<name>` commands over ACP. It never reads
     // `~/.claude/skills`. Link the canonical directory.
@@ -87,14 +89,14 @@ export const AGENT_DEFS: AgentDef[] = [
     label: 'gemini',
     // gemini cli speaks ACP itself (`--experimental-acp`) — no adapter package
     // besides the CLI, so `bin` is the CLI and the flag rides in `binArgs`.
-    adapterPackages: ['@google/gemini-cli@0.56.0'],
+    adapterPackages: ['@google/gemini-cli@0.59.0'],
     bin: 'gemini',
     binArgs: ['--experimental-acp'],
     secretEnv: 'GEMINI_API_KEY',
     // §5.2.1: fed through a materialized `~/.gemini/oauth_creds.json`, env var
     // likewise suppressed.
     oauthProvider: 'google',
-    // Verified in the @google/gemini-cli@0.56.0 tarball: Agent Skills are
+    // Verified in the @google/gemini-cli@0.59.0 tarball: Agent Skills are
     // default-on since v0.26.0 (`skillsSupport ?? true`), discovered from
     // `~/.gemini/skills` and the `~/.agents/skills` alias — SKILL.md
     // frontmatter format, activated through its `activate_skill` tool. It
@@ -104,7 +106,7 @@ export const AGENT_DEFS: AgentDef[] = [
   {
     id: 'opencode',
     label: 'opencode',
-    adapterPackages: ['opencode-ai@1.18.21'],
+    adapterPackages: ['opencode-ai@1.18.30'],
     bin: 'opencode',
     binArgs: ['acp'],
     secretEnv: 'ANTHROPIC_API_KEY',
@@ -113,7 +115,7 @@ export const AGENT_DEFS: AgentDef[] = [
     // the anthropic provider would buy a browser round-trip and a failure at
     // session start; a pasted key is the honest answer until that is checked.
     oauthProvider: null,
-    // Verified in the opencode-linux-x64@1.18.21 binary (the -ai package is a
+    // Verified in the opencode-linux-x64@1.18.30 binary (the -ai package is a
     // wrapper): global skills load from `~/.config/opencode/{skill,skills}/`,
     // same SKILL.md frontmatter format. It also auto-reads `~/.claude/skills`,
     // but that compat scan sits behind opt-out env vars

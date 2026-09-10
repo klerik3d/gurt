@@ -45,7 +45,7 @@ export function oauthAuthFile(
 ): OAuthAuthFile | null {
   if (entry.kind !== 'oauth') return null
   if (agentKind === 'codex') {
-    // Verified against @openai/codex@0.153.4, the version codex-acp@1.10.0
+    // Verified against @openai/codex@0.153.4, the version codex-acp@1.11.0
     // resolves (run against the actual binary, 2026-09-10): `OPENAI_API_KEY`
     // null-or-absent selects ChatGPT-token mode — any non-null value, even
     // "", wins over `tokens` and takes the API-key path. In `tokens`,
@@ -78,7 +78,7 @@ export function oauthAuthFile(
     }
   }
   if (agentKind === 'gemini') {
-    // Verified against @google/gemini-cli@0.56.0 (bundle source, 2026-09-08):
+    // Verified against @google/gemini-cli@0.59.0 (bundle source, 2026-09-10):
     // the file is JSON.parse'd with no field validation and handed to
     // google-auth-library's OAuth2Client.setCredentials. `refresh_token` may
     // be omitted entirely: getAccessToken only consults it when the token is
