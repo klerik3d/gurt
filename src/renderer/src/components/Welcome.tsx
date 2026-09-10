@@ -8,15 +8,17 @@
 //     machine that lost Docker after setup needs the rows and must not need an
 //     empty store to reach them (§2.2).
 //   - {@link Welcome} — the checklist plus the "Start operator" block, shown
-//     in the main pane while the store has never produced a session (§2.1).
+//     as a popup over the main pane while the store has never produced a
+//     session (§2.1). It can be skipped, and skipping it can be made
+//     permanent from the popup itself.
 //
 // The five forms this replaces are still there and still work; what this
 // removes is having to know their order on a machine gurt has never seen.
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { JSX } from 'react'
 import { AGENT_DEFS, agentDef } from '../../../shared/agents'
-import type { DoctorReport, DoctorRow, FirstRunResult } from '../../../shared/doctor'
-import { pendingRows } from '../../../shared/doctor'
+import type { DoctorReport, DoctorRow, FirstRunResult, WelcomeMode } from '../../../shared/doctor'
+import { pendingRows, WELCOME_MODE_DEFAULT } from '../../../shared/doctor'
 import { OAUTH_PROVIDER_CHOICES } from '../../../shared/credentials'
 import { Icon, Logo } from './icons'
 import { AgentMark } from './tags'
@@ -314,15 +316,31 @@ export function MachineChecklist({
  * `preferredKind` seeds the picker from an agent instance that already exists
  * — a returning user with a registry and no sessions is still a first run
  * (§2.1), and asking them which kind they meant would be asking twice.
+ *
+ * **It is a popup, and it can be skipped.** The screen opens over the main
+ * pane rather than in place of it, so what is behind it stays where it was,
+ * and Esc, the backdrop, the × and "Skip for now" all mean the same thing:
+ * not now. The one gesture that outlives the click is the checkbox in the
+ * footer, which writes §2.1.1's `never` mode — that is the distinction the
+ * mode was built for, a dismissal being about this launch and a preference
+ * being about every one after it. Neither puts the screen out of reach: ⌘K →
+ * "Welcome & machine setup" opens it under all three modes, which is also why
+ * the checkbox can be unticked from here.
+ *
+ * Dismissal is refused while a sign-in or a start is in flight: those own a
+ * browser window and a half-created session, and the Cancel beside the
+ * sign-in button is the way out that also tells main to stop.
  */
 export function Welcome({
   log,
   preferredKind,
-  onStarted
+  onStarted,
+  onClose
 }: {
   log?: string[] | undefined
   preferredKind?: string | undefined
   onStarted: (sessionId: string) => void
+  onClose: () => void
 }): JSX.Element {
   const [ready, setReady] = useState(false)
   const [kind, setKind] = useState(preferredKind || AGENT_DEFS[0]!.id)
@@ -332,6 +350,42 @@ export function Welcome({
   const [error, setError] = useState('')
   const [warning, setWarning] = useState('')
   const onReport = useCallback((r: DoctorReport) => setReady(r.ready), [])
+  /** The stored mode (§2.1.1), so the checkbox can be unticked as well as
+   *  ticked — and so unticking restores what was there rather than assuming
+   *  `auto`: a demo machine on `always` that ticks and unticks must end up
+   *  back on `always`. Null until the read lands, and the checkbox is disabled
+   *  until then rather than showing an answer it does not have yet. */
+  const [savedMode, setSavedMode] = useState<WelcomeMode | null>(null)
+  const wasMode = useRef<WelcomeMode>(WELCOME_MODE_DEFAULT)
+  useEffect(() => {
+    window.gurt
+      .getWelcomeMode()
+      .then((m) => {
+        setSavedMode(m)
+        if (m !== 'never') wasMode.current = m
+      })
+      .catch(logErr('getWelcomeMode'))
+  }, [])
+
+  const setHidden = (hide: boolean): void => {
+    const next: WelcomeMode = hide ? 'never' : wasMode.current
+    setSavedMode(next)
+    window.gurt.setWelcomeMode(next).catch(logErr('setWelcomeMode'))
+  }
+
+  /** Esc, the backdrop, the × and Skip are one gesture with one guard: a
+   *  sign-in waiting on the browser is not dismissed out from under itself. */
+  const close = useCallback((): void => {
+    if (busy === '') onClose()
+  }, [busy, onClose])
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') close()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [close])
 
   const def = agentDef(kind)
   const provider = def?.oauthProvider
@@ -362,123 +416,159 @@ export function Welcome({
   }
 
   return (
-    <div className="wc">
-      <div className="wc-logo">
-        <Logo size={200} />
-      </div>
-      <div className="wc-body">
-        <div className="wc-title">Welcome to gurt</div>
-        <div className="wc-sub">
-          gurt runs every coding agent in its own container. Two things to check, then one
-          agent to talk to.
+    <div className="modal-backdrop wc-backdrop" onMouseDown={close}>
+      <div className="modal wc-modal" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <span className="modal-title">Welcome to gurt</span>
+          <span className="spacer" />
+          {busy === '' && <span className="kbd-tag">esc</span>}
+          <button className="icon-sq" disabled={busy !== ''} onClick={close} title="close">
+            <Icon name="x" size={13} />
+          </button>
         </div>
-
-        <MachineChecklist onReport={onReport} log={log} />
-
-        <div className="wc-start">
-          <div className="wc-head-title">Start an operator</div>
-          <div className="wc-sub">
-            An operator is a session whose subject is gurt itself — it reads your
-            configuration and tells you what to fix. It holds no repository, so it can always
-            run.
+        <div className="wc">
+          <div className="wc-logo">
+            <Logo size={200} />
           </div>
-          <div className="wc-kinds">
-            {AGENT_DEFS.map((a) => (
-              <button
-                key={a.id}
-                type="button"
-                className={`btn ${kind === a.id ? 'btn-primary' : ''}`}
-                disabled={busy !== ''}
-                onClick={() => {
-                  setKind(a.id)
-                  setError('')
-                  // A kind with no sign-in path has only the key field, so
-                  // open it rather than hiding the only thing that works.
-                  setShowKey(!agentDef(a.id)?.oauthProvider)
-                }}
-              >
-                <AgentMark kind={a.id} name={a.label} />
-              </button>
-            ))}
-          </div>
+          <div className="wc-body">
+            <div className="wc-sub">
+              gurt runs every coding agent in its own container. Two things to check, then one
+              agent to talk to.
+            </div>
 
-          {provider ? (
-            <div className="row-buttons">
-              <button
-                className="btn btn-primary"
-                // Only the two docker rows gate. A missing image is a pull
-                // this click does itself (§3.3) — gating on it would cost a
-                // second click for nothing.
-                disabled={!ready || busy !== ''}
-                onClick={() => void run('signin', () => window.gurt.firstRunSignIn(kind))}
-              >
-                {busy === 'signin' ? 'waiting for the browser…' : `Sign in with ${provider.label}`}
-              </button>
-              {busy === 'signin' && (
-                <button
-                  className="btn"
-                  onClick={() => void window.gurt.firstRunCancelSignIn()}
-                >
-                  Cancel
+            <MachineChecklist onReport={onReport} log={log} />
+
+            <div className="wc-start">
+              <div className="wc-head-title">Start an operator</div>
+              <div className="wc-sub">
+                An operator is a session whose subject is gurt itself — it reads your
+                configuration and tells you what to fix. It holds no repository, so it can always
+                run.
+              </div>
+              <div className="wc-kinds">
+                {AGENT_DEFS.map((a) => (
+                  <button
+                    key={a.id}
+                    type="button"
+                    className={`btn ${kind === a.id ? 'btn-primary' : ''}`}
+                    disabled={busy !== ''}
+                    onClick={() => {
+                      setKind(a.id)
+                      setError('')
+                      // A kind with no sign-in path has only the key field, so
+                      // open it rather than hiding the only thing that works.
+                      setShowKey(!agentDef(a.id)?.oauthProvider)
+                    }}
+                  >
+                    <AgentMark kind={a.id} name={a.label} />
+                  </button>
+                ))}
+              </div>
+
+              {provider ? (
+                <div className="row-buttons">
+                  <button
+                    className="btn btn-primary"
+                    // Only the two docker rows gate. A missing image is a pull
+                    // this click does itself (§3.3) — gating on it would cost a
+                    // second click for nothing.
+                    disabled={!ready || busy !== ''}
+                    onClick={() => void run('signin', () => window.gurt.firstRunSignIn(kind))}
+                  >
+                    {busy === 'signin' ? 'waiting for the browser…' : `Sign in with ${provider.label}`}
+                  </button>
+                  {busy === 'signin' && (
+                    <button
+                      className="btn"
+                      onClick={() => void window.gurt.firstRunCancelSignIn()}
+                    >
+                      Cancel
+                    </button>
+                  )}
+                  <span className="wc-hint faint">
+                    {!ready
+                      ? 'fix the red rows above first'
+                      : 'opens your browser, then creates a workspace, a task and an operator session'}
+                  </span>
+                </div>
+              ) : (
+                <div className="wc-hint faint">
+                  {def?.label} has no sign-in — it needs an API key.
+                </div>
+              )}
+
+              {/* The key path, demoted but never hidden: opencode has no sign-in
+                  at all, and a key is the right shape for CI and self-hosted
+                  gateways (requirements-oauth-credentials.md §1). */}
+              {provider && !showKey && (
+                <button className="btn-link wc-alt" onClick={() => setShowKey(true)}>
+                  or paste an API key instead
                 </button>
               )}
-              <span className="wc-hint faint">
-                {!ready
-                  ? 'fix the red rows above first'
-                  : 'opens your browser, then creates a workspace, a task and an operator session'}
-              </span>
-            </div>
-          ) : (
-            <div className="wc-hint faint">
-              {def?.label} has no sign-in — it needs an API key.
-            </div>
-          )}
+              {showKey && (
+                <div className="wc-keyblock">
+                  <input
+                    className="wc-token"
+                    type="password"
+                    autoComplete="off"
+                    spellCheck={false}
+                    placeholder={def?.secretEnv ? `API key for ${def.secretEnv}` : 'API key'}
+                    value={token}
+                    disabled={busy !== ''}
+                    onChange={(e) => setToken(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && ready && token.trim() && !busy)
+                        void run('token', () => window.gurt.firstRunStart(kind, token))
+                    }}
+                  />
+                  <div className="row-buttons">
+                    <button
+                      className={`btn ${provider ? '' : 'btn-primary'}`}
+                      disabled={!ready || !token.trim() || busy !== ''}
+                      onClick={() => void run('token', () => window.gurt.firstRunStart(kind, token))}
+                    >
+                      {busy === 'token' ? 'starting…' : 'Start operator'}
+                    </button>
+                    <span className="wc-hint faint">
+                      the key is stored in this machine’s credential store and never leaves it
+                    </span>
+                  </div>
+                </div>
+              )}
 
-          {/* The key path, demoted but never hidden: opencode has no sign-in
-              at all, and a key is the right shape for CI and self-hosted
-              gateways (requirements-oauth-credentials.md §1). */}
-          {provider && !showKey && (
-            <button className="btn-link wc-alt" onClick={() => setShowKey(true)}>
-              or paste an API key instead
-            </button>
-          )}
-          {showKey && (
-            <div className="wc-keyblock">
-              <input
-                className="wc-token"
-                type="password"
-                autoComplete="off"
-                spellCheck={false}
-                placeholder={def?.secretEnv ? `API key for ${def.secretEnv}` : 'API key'}
-                value={token}
-                disabled={busy !== ''}
-                onChange={(e) => setToken(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && ready && token.trim() && !busy)
-                    void run('token', () => window.gurt.firstRunStart(kind, token))
-                }}
-              />
-              <div className="row-buttons">
-                <button
-                  className={`btn ${provider ? '' : 'btn-primary'}`}
-                  disabled={!ready || !token.trim() || busy !== ''}
-                  onClick={() => void run('token', () => window.gurt.firstRunStart(kind, token))}
-                >
-                  {busy === 'token' ? 'starting…' : 'Start operator'}
-                </button>
-                <span className="wc-hint faint">
-                  the key is stored in this machine’s credential store and never leaves it
-                </span>
-              </div>
+              {error && <div className="error">{error}</div>}
+              {warning && (
+                <div className="wc-warn">
+                  <Icon name="info" size={13} /> {warning}
+                </div>
+              )}
             </div>
-          )}
-
-          {error && <div className="error">{error}</div>}
-          {warning && (
-            <div className="wc-warn">
-              <Icon name="info" size={13} /> {warning}
-            </div>
-          )}
+          </div>
+        </div>
+        {/* The checkbox is the only thing here that outlives the click: it
+            writes §2.1.1's mode, which is what Settings → Machine edits too. */}
+        <div className="modal-foot">
+          <label className="wc-again">
+            <input
+              type="checkbox"
+              checked={savedMode === 'never'}
+              disabled={savedMode === null}
+              onChange={(e) => setHidden(e.target.checked)}
+            />
+            Don’t show this again
+          </label>
+          <span className="spacer" />
+          {/* No key glyph here: the palette hotkey is rebindable and differs
+              per platform, and a wrong one printed under a checkbox that hides
+              a screen is the one place it must not be wrong. */}
+          <span className="wc-hint faint">
+            {savedMode === 'never'
+              ? 'still reachable from the command palette'
+              : 'you can come back to it from the command palette'}
+          </span>
+          <button className="btn" disabled={busy !== ''} onClick={close}>
+            Skip for now
+          </button>
         </div>
       </div>
     </div>

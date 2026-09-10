@@ -93,12 +93,15 @@ that conversation.
 ### 2.1 What counts as first run
 
 **The store has never produced a session.** Formally: the welcome screen
-is shown in the main pane, in place of `App.tsx`'s `!selection`
-placeholder, when
+opens as a popup over the main pane when
 
 ```
 tree !== null && tree.workspaces.every((w) => w.tasks.every((t) => t.sessions.length === 0))
 ```
+
+**A popup, not a pane** (§2.1.2), so the `!selection` placeholder — and
+whatever else the main pane holds — stays behind it and is what skipping
+it lands on.
 
 Not "no workspaces" and not "no agents", for one reason each:
 
@@ -170,6 +173,41 @@ The rule itself is one exported function, `welcomeShows(mode, firstRun)`
 in `shared/doctor.ts`, so main's tests and the renderer's render
 condition cannot state it twice and drift.
 
+### 2.1.2 It is a popup, and it can be skipped
+
+The screen is a modal over the main pane, dismissed by **Esc**, the
+**backdrop**, the **×** in its header or **"Skip for now"** in its
+footer — four gestures, one meaning, because a user who does not want a
+screen right now should not have to find the one control that agrees.
+Skipping is renderer state and lasts the run: the store still has no
+session, so §2.1's condition is still true, and only the dismissal is
+holding the screen closed. It is deliberately **not** persisted — the
+lasting answer already exists as §2.1.1's mode, and giving the same
+question two homes is giving it two answers that can disagree.
+
+The footer's **"Don't show this again"** checkbox is that lasting
+answer, written from where the user is standing: ticking it stores
+`never`, unticking it restores the mode that was there before (an
+`always` demo machine that ticks and unticks ends up back on `always`,
+not on `auto`). Settings → Machine edits the same value, and the popup
+reads it on open, so the two can never show different answers. Ticking
+it is safe precisely because §2.1.1's last rule holds: ⌘K reaches the
+screen under every mode.
+
+**Dismissal is refused while a sign-in or a start is in flight.** Those
+own a browser window and a half-created session; the Cancel beside the
+sign-in button is the way out of them, because it also tells main to
+stop (`firstRunCancelSignIn`, §8). The × and Skip are disabled for the
+same reason rather than silently doing nothing.
+
+Two things follow for anything driving the app. The backdrop covers the
+sidebar and the activity bar, so a UI test on a store with no sessions
+must skip the popup before clicking past it — the smokes that are not
+about first run launch with `GURT_WELCOME=never`, which is the same
+escape hatch a user has. And "the welcome screen is up" no longer
+implies "nothing else is": ⌘K opens it over a session pane, and closing
+it returns the user to that pane rather than to an empty one.
+
 ### 2.2 The checklist has a permanent home; the welcome screen embeds it
 
 The checklist is not part of the welcome screen — it is a Settings
@@ -198,10 +236,12 @@ Three ways, in ascending cost:
   answer for "a machine that lost Docker".
 - **The command palette** — a new action item beside `new-session` /
   `new-task` in `CommandPalette.tsx`, "Welcome & machine setup", which
-  sets an `App.tsx` state flag that forces the welcome screen into the
-  main pane regardless of §2.1's condition. The flag clears on any
-  selection change. This is the answer for "a second demo on a machine
-  that already has sessions".
+  sets an `App.tsx` state flag that opens the popup regardless of §2.1's
+  condition, of the mode and of a skip earlier in the run. The flag
+  clears on any selection change and on the popup's own dismissal. This
+  is the answer for "a second demo on a machine that already has
+  sessions", and the reason ticking "don't show this again" cannot
+  strand anyone (§2.1.2).
 - **The footer**, when something is red. `App.tsx`'s `.footer` already
   reports host-level state (the boot-restore bar); a hard-gate row that
   fails adds one chip there — `docker not responding`, clicking it opens
@@ -1073,7 +1113,12 @@ exists to remove.
    renames the button to that kind's provider, and `opencode` shows
    "has no sign-in" and the key field instead of a button; Settings →
    Machine shows the same rows; creating a draft ends the first run, and
-   the command-palette entry brings it back. The docker rows will be red
+   the command-palette entry brings it back. The popup half (§2.1.2):
+   it opens over the `!selection` placeholder rather than instead of it,
+   Esc closes it and a click on the activity bar does not bring it back,
+   ⌘K does, "don't show this again" ticks and unticks with the stored
+   mode still `auto` afterwards (read back from Settings → Machine), and
+   the palette re-opens it over a session pane. The docker rows will be red
    in this environment, which is the point — the screen must be legible
    and correct on the machine that has nothing.
 
@@ -1186,6 +1231,26 @@ Where the plan met the code and bent.
   condition means the screen returns when the last session is deleted,
   and that is right by default and wrong for somebody. The command
   palette deliberately ignores all three modes.
+- **The screen became a popup** (§2.1.2), having first shipped as a pane
+  that replaced `App.tsx`'s `!selection` placeholder. What forced it: the
+  screen is derived, not latched (§2.1), so on a store with no sessions
+  it was the only thing the main pane could show and there was no way to
+  put it aside for five minutes — every way out was a commitment (start
+  an operator, create a draft by hand, or go to Settings and set `never`).
+  A dismissal and a preference are different answers, and now they have
+  different controls: Esc/backdrop/×/Skip for this run, the footer
+  checkbox for every run after it. The skip is renderer state on purpose;
+  a second persisted flag beside the mode would be a second thing that
+  can be wrong on a machine gurt has never seen, which is the same
+  argument §2.1 makes against a "has seen welcome" flag.
+- **A modal backdrop covers the app, and the smokes had to be told.**
+  The popup's backdrop swallows clicks the pane version left alone, and
+  every smoke starts on an empty `GURT_ROOT` — so the ones that are not
+  about first run now launch with `GURT_WELCOME=never`. That is the
+  setting doing its job rather than a test-only hook: it is the same
+  escape hatch a user has, and the alternative (each smoke dismissing a
+  popup it does not care about) would have put a first-run step in
+  eighteen files.
 - **`opencode` gets no sign-in button.** Its `oauthProvider` is null
   because `requirements-oauth-credentials.md` §5.2.1 verified delivery
   for three kinds and not for it. The screen says so and opens the key
@@ -1264,8 +1329,9 @@ shaped like `git/providers.ts`),
 the only place the five creates live), `src/shared/agents.ts`
 (`AgentDef.oauthProvider`), `src/main/ipc.ts` (three handlers, `firstRunStart` into
 `OPAQUE_ARGS`), `src/renderer/src/components/Welcome.tsx` (new — the
-screen and the reusable checklist), `src/renderer/src/App.tsx` (the
-`!selection` slot, the forced-welcome flag, the palette wiring),
+screen, now a popup, and the reusable checklist),
+`src/renderer/src/App.tsx` (the overlay mount beside the palette, the
+forced-welcome and skipped-this-run flags, the palette wiring),
 `src/renderer/src/components/SettingsPage.tsx` (`SettingsSection` gains
 `'machine'`, its icon, its General-group entry and the welcome-mode
 picker), `src/main/store.ts` (`welcome.json` and its `GURT_WELCOME`
@@ -1273,7 +1339,9 @@ override),
 `src/renderer/src/components/CommandPalette.tsx` (one action item),
 `scripts/first-run.test.mjs`, `scripts/doctor.test.mjs`,
 `scripts/agent-providers.test.mjs`, `scripts/smoke-first-run.mjs`
-(all new), plus the daemon-preflight cases appended to
+(all new; the smoke also covers the skip, the checkbox and the popup
+over a session pane), `GURT_WELCOME=never` in every other
+`scripts/smoke*.mjs`, plus the daemon-preflight cases appended to
 `scripts/host-path.test.mjs`, the three zero-arg methods declared in
 `scripts/ipc-opaque-args.test.mjs`'s `SAFE_ARGS`, and
 `scripts/operator-role.test.mjs`'s docker stub.

@@ -366,7 +366,8 @@ npm run dev        # requires docker daemon for env start
 `GURT_WELCOME=auto|always|never` overrides the stored welcome-screen mode
 (`~/.gurt/welcome.json`, Settings → Machine) for one run — `always` is what a
 demo machine wants and how the smoke reaches the screen on a store that already
-has sessions. `GURT_LOG=debug|info|warn|error`
+has sessions; `never` is what the welcome popup's "don't show this again" writes,
+and what the other smokes launch with so its backdrop stays out of their way. `GURT_LOG=debug|info|warn|error`
 sets the log level — the app writes `~/.gurt/logs/gurt.log` (⌘K → "Open logs
 folder"); see [docs/logging.md](docs/logging.md).
 

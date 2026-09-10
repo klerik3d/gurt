@@ -40,9 +40,13 @@ const electronPath = require('electron') // path string to the electron binary
 // The app shells out to the host's git, which needs an identity for any commit
 // it makes on the clone. Supply one through the environment rather than the
 // machine's global config — a fresh container has no user.email at all.
+// The welcome popup opens over the main pane on a store with no sessions
+// (docs/requirements-first-run.md §2.1) and its backdrop would swallow this
+// smoke's first clicks. `never` is the same escape hatch a user has.
 const env = {
   ...process.env,
   GURT_ROOT,
+  GURT_WELCOME: 'never',
   DISPLAY: process.env.DISPLAY ?? ':99',
   GIT_AUTHOR_NAME: 'smoke',
   GIT_AUTHOR_EMAIL: 'smoke@test',

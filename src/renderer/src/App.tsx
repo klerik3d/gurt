@@ -86,6 +86,12 @@ export default function App() {
    *  demo on one that already has sessions
    *  (docs/requirements-first-run.md §2.3). Cleared by any selection. */
   const [forceWelcome, setForceWelcome] = useState(false)
+  /** Skipped for this run: the × / Esc / backdrop / "Skip for now" of the
+   *  welcome popup. Deliberately renderer state and not persisted — the
+   *  lasting answer is §2.1.1's `never` mode, which the popup's checkbox
+   *  writes, and latching a dismissal here as well would give the same
+   *  question two homes that can disagree. ⌘K re-opens it either way. */
+  const [welcomeSkipped, setWelcomeSkipped] = useState(false)
   /** Whether the welcome screen shows itself, and when (§2.1). Read once at
    *  mount: `GURT_WELCOME` and `welcome.json` are both start-of-run settings,
    *  and a mode that changed under a rendered screen would be a surprise, not
@@ -302,7 +308,8 @@ export default function App() {
   // `welcomeShows` is shared with main's own tests, so the rule cannot be
   // stated twice and drift: `always` every launch, `auto` while the store has
   // never produced a session, `never` only through the command palette.
-  const showWelcome = !selection && (forceWelcome || welcomeShows(welcomeMode, firstRun))
+  const showWelcome =
+    forceWelcome || (!selection && !welcomeSkipped && welcomeShows(welcomeMode, firstRun))
   /** Seeds the welcome screen's kind picker from an instance that already
    *  exists: an agent registry with no sessions is still a first run (§2.1),
    *  and asking which kind they meant would be asking twice. */
@@ -874,14 +881,7 @@ export default function App() {
                   onSelectSession={selectSession}
                 />
               )}
-              {showWelcome && (
-                <Welcome
-                  log={logs[PREPARE_LOG_KEY] ?? []}
-                  preferredKind={firstAgentKind}
-                  onStarted={selectSession}
-                />
-              )}
-              {!selection && !showWelcome && (
+              {!selection && (
                 <div className="placeholder">
                   <div className="placeholder-logo">
                     <Logo size={240} />
@@ -949,6 +949,20 @@ export default function App() {
         )}
       </div>
 
+      {/* A popup over whatever the main pane holds, not a pane of its own
+          (docs/requirements-first-run.md §2.1): skipping it has to leave the
+          user where they already were. */}
+      {showWelcome && (
+        <Welcome
+          log={logs[PREPARE_LOG_KEY] ?? []}
+          preferredKind={firstAgentKind}
+          onStarted={selectSession}
+          onClose={() => {
+            setForceWelcome(false)
+            setWelcomeSkipped(true)
+          }}
+        />
+      )}
       {paletteOpen && tree && (
         <CommandPalette
           tree={tree}

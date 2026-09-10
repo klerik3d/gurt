@@ -70,9 +70,11 @@ try {
   await page.waitForSelector('.sidebar', { timeout: 15000 })
   await page.waitForSelector('.sb-task', { timeout: 10000 })
   await page.waitForSelector('.wc', { timeout: 10000 })
-  // Not the old placeholder: a first-time user gets the screen with the
-  // answers on it, not a logo and a keyboard shortcut.
-  assert.equal(await page.locator('.placeholder').count(), 0)
+  // A popup, over the main pane rather than in place of it: a first-time user
+  // gets the screen with the answers on it, and the pane they will be left
+  // with once they skip it is already behind it.
+  assert.equal(await page.locator('.wc-backdrop').count(), 1, 'it opens as a popup')
+  assert.equal(await page.locator('.placeholder').count(), 1, 'over the pane, not instead of it')
   console.log('first run: welcome screen shown on an empty store OK')
 
   // --- the checklist draws complete, then fills in (§3.5) ---
@@ -185,6 +187,37 @@ try {
   console.log('first run: per-kind providers, and opencode’s honest fallback OK')
   await page.click('.wc-kinds button:has-text("claude")')
 
+  // --- it can be skipped, and the skip lasts the run ---
+  await page.keyboard.press('Escape')
+  await page.waitForSelector('.wc', { state: 'detached', timeout: 5000 })
+  assert.equal(await page.locator('.placeholder').count(), 1, 'skipping lands on the pane behind')
+  // A skip is about this launch: the store still has no session, so the rule
+  // that showed it has not changed, and only the skip is holding it closed.
+  await page.click('.ab-item[title^="Tasks"]')
+  assert.equal(await page.locator('.wc').count(), 0, 'and it stays closed until asked for')
+
+  // ⌘K reaches it under every mode — that is the guarantee the checkbox is
+  // safe to tick against.
+  await page.keyboard.press(process.platform === 'darwin' ? 'Meta+k' : 'Control+k')
+  await page.waitForSelector('.palette', { timeout: 5000 })
+  await page.fill('.pal-input', 'welcome')
+  await page.click('.palette .pal-item:has-text("Welcome")')
+  await page.waitForSelector('.wc', { timeout: 5000 })
+  console.log('first run: Esc skips the popup, ⌘K brings it back OK')
+
+  // --- "don't show this again" is the mode, written from the popup ---
+  const again = page.locator('.wc-again input')
+  assert.equal(await again.isChecked(), false, 'not ticked on a default (`auto`) store')
+  await again.check()
+  await shot('02-welcome-dont-show')
+  // Unticking restores what was there rather than assuming a value, so the
+  // pair of clicks is a no-op — asserted through Settings below, which reads
+  // the same stored mode.
+  await again.uncheck()
+  await page.click('.modal-head .icon-sq')
+  await page.waitForSelector('.wc', { state: 'detached', timeout: 5000 })
+  console.log('first run: the popup writes the welcome mode OK')
+
   // --- the same checklist has a permanent home in Settings ---
   await page.click('.ab-item[title^="Settings"]')
   await page.waitForSelector('.settings', { timeout: 5000 })
@@ -208,32 +241,35 @@ try {
 
   // --- creating a session by hand is the way out of the welcome screen ---
   await page.click('.ab-item[title^="Tasks"]')
-  // Still the welcome screen: a workspace and a task are not a session, and
-  // the user who created them is still the user this screen is for.
-  await page.waitForSelector('.wc', { timeout: 5000 })
-  assert.equal(await page.locator('.wc').count(), 1, 'a task alone does not end the first run')
-
   await page.click('.sb-task', { button: 'right' })
   await page.waitForSelector('.ctx-menu', { timeout: 5000 })
   await page.click('.ctx-menu .menu-item:has-text("New session")')
   await page.waitForSelector('.session-pane', { timeout: 10000 })
   console.log('first run: a draft ends the first run OK')
 
-  // --- and the palette brings it back ---
+  // --- and the palette brings it back, over whatever is open ---
   await page.keyboard.press(process.platform === 'darwin' ? 'Meta+k' : 'Control+k')
   await page.waitForSelector('.palette', { timeout: 5000 })
   await page.fill('.pal-input', 'welcome')
   await page.click('.palette .pal-item:has-text("Welcome")')
   await page.waitForSelector('.wc', { timeout: 5000 })
-  assert.equal(await page.locator('.session-pane').count(), 0, 'it replaced the session pane')
   await shot('03-welcome-again')
   console.log('first run: palette re-opens the welcome screen OK')
+
+  // Skipping it hands the user back to where they were, not to an empty pane.
+  await page.keyboard.press('Escape')
+  await page.waitForSelector('.wc', { state: 'detached', timeout: 5000 })
 
   // --- the mode is a setting, and it lives beside the checklist ---
   await page.click('.ab-item[title^="Settings"]')
   await page.click('.set-nav-item:has-text("Machine")')
   await page.waitForSelector('.set-row:has-text("Welcome screen")', { timeout: 5000 })
   const modeRow = page.locator('.set-row:has-text("Welcome screen")')
+  assert.equal(
+    (await modeRow.locator('.btn-link.active').innerText()).replace(' ✓', '').trim(),
+    'auto',
+    'tick-then-untick in the popup left the stored mode where it was'
+  )
   assert.deepEqual(
     (await modeRow.locator('.btn-link').allInnerTexts()).map((t) => t.replace(' ✓', '').trim()),
     ['auto', 'always', 'never'],
