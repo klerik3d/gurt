@@ -12,6 +12,12 @@ release/
 # this file relative to whatever committed version came before it as noise.
 .devcontainer/devcontainer-lock.json
 
+# Per-machine Claude Code state: the local permission allowlist each
+# contributor accumulates, and anything the CLI writes beside it. Shared
+# project config (.claude/settings.json, skills, agents) is deliberately not
+# covered — that is meant to be committed.
+.claude/settings.local.json
+
 tmp
 archive/
 smoke-shots/
