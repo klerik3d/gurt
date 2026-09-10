@@ -185,14 +185,21 @@ holding the screen closed. It is deliberately **not** persisted — the
 lasting answer already exists as §2.1.1's mode, and giving the same
 question two homes is giving it two answers that can disagree.
 
-The footer's **"Don't show this again"** checkbox is that lasting
-answer, written from where the user is standing: ticking it stores
-`never`, unticking it restores the mode that was there before (an
-`always` demo machine that ticks and unticks ends up back on `always`,
-not on `auto`). Settings → Machine edits the same value, and the popup
-reads it on open, so the two can never show different answers. Ticking
-it is safe precisely because §2.1.1's last rule holds: ⌘K reaches the
-screen under every mode.
+The footer's **"don't show this again"** toggle is that lasting answer,
+written from where the user is standing: turning it on stores `never`,
+turning it off restores the mode that was there before (an `always` demo
+machine that toggles twice ends up back on `always`, not on `auto`).
+Settings → Machine edits the same value, and the popup reads it on open,
+so the two can never show different answers. Turning it on is safe
+precisely because §2.1.1's last rule holds: ⌘K reaches the screen under
+every mode.
+
+It is a toggling `btn-link` with a `✓`, not a checkbox — the same
+control Settings → Machine already writes this setting with, and a lone
+form field in a footer of buttons reads as something to fill in before
+leaving. Its reassurance ("the command palette still opens this screen")
+is its `title` rather than a line beside it: one decision per footer,
+and no sentence competing with the button that ends the screen.
 
 **Dismissal is refused while a sign-in or a start is in flight.** Those
 own a browser window and a half-created session; the Cancel beside the
@@ -1116,8 +1123,9 @@ exists to remove.
    the command-palette entry brings it back. The popup half (§2.1.2):
    it opens over the `!selection` placeholder rather than instead of it,
    Esc closes it and a click on the activity bar does not bring it back,
-   ⌘K does, "don't show this again" ticks and unticks with the stored
-   mode still `auto` afterwards (read back from Settings → Machine), and
+   ⌘K does, "don't show this again" toggles on and back off with the
+   stored mode still `auto` afterwards (read back from Settings →
+   Machine), and
    the palette re-opens it over a session pane. The docker rows will be red
    in this environment, which is the point — the screen must be legible
    and correct on the machine that has nothing.
@@ -1239,7 +1247,7 @@ Where the plan met the code and bent.
   an operator, create a draft by hand, or go to Settings and set `never`).
   A dismissal and a preference are different answers, and now they have
   different controls: Esc/backdrop/×/Skip for this run, the footer
-  checkbox for every run after it. The skip is renderer state on purpose;
+  toggle for every run after it. The skip is renderer state on purpose;
   a second persisted flag beside the mode would be a second thing that
   can be wrong on a machine gurt has never seen, which is the same
   argument §2.1 makes against a "has seen welcome" flag.
@@ -1339,7 +1347,7 @@ override),
 `src/renderer/src/components/CommandPalette.tsx` (one action item),
 `scripts/first-run.test.mjs`, `scripts/doctor.test.mjs`,
 `scripts/agent-providers.test.mjs`, `scripts/smoke-first-run.mjs`
-(all new; the smoke also covers the skip, the checkbox and the popup
+(all new; the smoke also covers the skip, the mode toggle and the popup
 over a session pane), `GURT_WELCOME=never` in every other
 `scripts/smoke*.mjs`, plus the daemon-preflight cases appended to
 `scripts/host-path.test.mjs`, the three zero-arg methods declared in

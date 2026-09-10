@@ -109,6 +109,43 @@ export const sessionScratchDir = (ws: string, task: string, sessionId: string) =
 export const sessionSkillsDir = (ws: string, task: string, sessionId: string) =>
   path.join(sessionScratchDir(ws, task, sessionId), 'skills')
 
+/** A sibling of `skills/`: the source of the read-write bind that carries the
+ *  agent's own conversation/resume state (`AgentDef.historyPaths`), one
+ *  directory per session, never wiped
+ *  (docs/requirements-agent-history.md §5). */
+export const sessionHistoryDir = (ws: string, task: string, sessionId: string) =>
+  path.join(sessionScratchDir(ws, task, sessionId), 'history')
+
+/** The subdirectory `sessionHistoryDir` holds for one `historyPaths` entry —
+ *  the relative path with `/` → `-` and the leading dot dropped, so entries
+ *  from different agent homes (`.claude/projects` vs. a future `.gemini/...`)
+ *  cannot collide (docs/requirements-agent-history.md §3.1). Shared by the
+ *  host-side pre-create below and `linkContainerHistory`'s symlink target —
+ *  both must agree on the same slug. */
+export const historySlug = (entry: string): string =>
+  entry.replace(/^\.+/, '').replace(/\//g, '-')
+
+/**
+ * Ensure this session's history directory exists, with one subdirectory per
+ * `historyPaths` entry — `mkdir -p`, and never anything else. Unlike
+ * `materializeSessionSkills`, this must NOT `rmTree` first: history is the
+ * accumulated state the whole feature exists to keep, so ensuring it is
+ * idempotent and purely additive (docs/requirements-agent-history.md §4 step
+ * 2). Every entry is treated as a directory — phase 1's `historyPaths` are
+ * both directories; a future file entry (§3.1) needs its own branch here,
+ * left unbuilt since no phase before §10 item 2 needs it.
+ */
+export async function ensureSessionHistory(
+  ws: string,
+  task: string,
+  sessionId: string,
+  historyPaths: readonly string[]
+): Promise<void> {
+  const dir = sessionHistoryDir(ws, task, sessionId)
+  await fs.mkdir(dir, { recursive: true })
+  for (const entry of historyPaths) await fs.mkdir(path.join(dir, historySlug(entry)), { recursive: true })
+}
+
 /** Path segments gurt itself owns inside the parent dir of each kind — a repo
  *  named `sessions` would collide with the task's session-log dir, etc.
  *  Compared case-insensitively (macOS default FS is case-insensitive). */
@@ -1444,7 +1481,8 @@ export async function readSessionLog(
 
 /** Remove the scratch directory gurt staged a session's own mounts in
  *  (`.multirepo/<id>`, see {@link sessionScratchDir}): its repo mount points,
- *  its merged devcontainer config and its materialized skills. All gurt's own,
+ *  its merged devcontainer config, its materialized skills and its agent
+ *  history directory (docs/requirements-agent-history.md §5). All gurt's own,
  *  with no owner once the session is deleted. A session that needed none of
  *  them hits a missing path, which `force` makes a no-op. */
 export async function deleteSessionScratch(

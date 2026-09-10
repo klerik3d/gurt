@@ -10,7 +10,7 @@ import type { EnvConfig, EnvRef, RepoConfig } from '../shared/types'
 import type { AgentDef } from '../shared/agents'
 import { envImageTag, parseEnvDevcontainer, validateEnvConfig } from '../shared/envConfig'
 import type { EnvImageStatus } from '../shared/api'
-import { cloneDir, getWorkspace, gurtRoot, overrideConfigPath, taskDir } from './store'
+import { cloneDir, getWorkspace, gurtRoot, historySlug, overrideConfigPath, taskDir } from './store'
 import { listCredentials } from './credentials'
 import { hostGitAccess } from './git/env'
 import { hostPath, resolveHostCommand } from './hostPath'
@@ -1024,6 +1024,18 @@ export async function devcontainerUp(
     // `.devcontainer/` of its own has it, so `up` failed there with ENOENT.
     // Nothing here reads the lockfile back, so disable it outright.
     '--no-lockfile',
+    // The CLI's own default: when `workspaceFolder` sits inside a git working
+    // tree, resolve `git rev-parse --show-toplevel` from it and mount *that*
+    // instead — meant for opening a worktree at its main checkout. Every
+    // `workspaceFolder` gurt ever passes is either a repo clone (already its
+    // own toplevel, so this is a no-op) or the empty wrapper dir a mounted
+    // session stages under `~/.gurt/<ws>/<task>/.multirepo/<session>/repos`
+    // (`store.mountedWorkspaceDir`) — and `~/.gurt` itself is a git repo
+    // (`ensureJournalRepo`), so for that case the default would walk up and
+    // bind-mount the whole journal, credentials.json included, in place of
+    // the wrapper dir. Disable it unconditionally rather than only for the
+    // wrapper case — gurt never wants anything but the literal folder it named.
+    '--no-mount-workspace-git-root',
     ...idLabelArgs(session),
     ...mountConfigArgs
   ]
@@ -1190,6 +1202,73 @@ export async function linkContainerSkills(
   // without them beats one that does not start. The line above says which.
   if (code !== 0) log(`could not link ${SKILLS_MOUNT} into the agent's home (exit ${code})`)
   else log(`skills mounted read-only at ${SKILLS_MOUNT}, linked as ~/${skillsDir}`)
+}
+
+/**
+ * Where a session's agent history is bound inside its container — the
+ * read-write counterpart of {@link SKILLS_MOUNT}, for the same reason: fixed
+ * and absolute because a devcontainer's `mounts` are evaluated to *create*
+ * the container, before `${containerEnv:HOME}` is substituted
+ * (docs/requirements-agent-history.md §4 step 2).
+ */
+export const HISTORY_MOUNT = '/gurt/history'
+
+/**
+ * Link every entry of the agent kind's `historyPaths` (`AgentDef`) into the
+ * container's home, pointed at its own subdirectory of the read-write history
+ * bind — `linkContainerHistory`, a sibling of {@link linkContainerSkills}.
+ * One `sh -c` per entry, same shape as the skills link:
+ *
+ * ```sh
+ * mkdir -p "$HOME/<parent>" && rm -rf "$HOME/<entry>" \
+ *   && ln -s /gurt/history/<slug> "$HOME/<entry>"
+ * ```
+ *
+ * Run through `devcontainer exec`, not a lifecycle hook, for the same reason
+ * as the skills link (a read-only role has its create-time hooks stripped)
+ * — and `rm -rf` on the link target removes a symlink without following it,
+ * so a re-link never touches the bound history
+ * (docs/requirements-agent-history.md §4 step 3). Idempotent, re-run after
+ * every `up`.
+ *
+ * Failure is logged per entry and never fatal: a session that starts without
+ * durable history beats one that does not start, and "which half landed"
+ * matters for a CLI that degrades unevenly. `kind` rides the `history.link`
+ * log line only — it is never read back.
+ */
+export async function linkContainerHistory(
+  session: string,
+  kind: string,
+  configArgs: string[],
+  workspaceFolder: string,
+  historyPaths: readonly string[],
+  log: LogSink
+): Promise<void> {
+  const linked: string[] = []
+  const failed: { entry: string; code: number | null }[] = []
+  for (const entry of historyPaths) {
+    const parent = path.posix.dirname(entry)
+    const slug = historySlug(entry)
+    const { code } = await runNodeCli(
+      [
+        'exec',
+        '--workspace-folder', workspaceFolder,
+        ...idLabelArgs(session),
+        ...configArgs,
+        'sh', '-c',
+        `mkdir -p "$HOME/${parent}" && rm -rf "$HOME/${entry}" && ln -s ${HISTORY_MOUNT}/${slug} "$HOME/${entry}"`
+      ],
+      log
+    )
+    const ok = code === 0
+    procLog.info('history.link', { s: session, kind, path: entry, ok })
+    if (ok) linked.push(entry)
+    else failed.push({ entry, code })
+  }
+  if (linked.length)
+    log(`history mounted at ${HISTORY_MOUNT}, linked as ${linked.map((e) => `~/${e}`).join(', ')}`)
+  for (const f of failed)
+    log(`could not link ${HISTORY_MOUNT} entry ~/${f.entry} into the agent's home (exit ${f.code})`)
 }
 
 /** Path, relative to the container `$HOME`, of the marker file that records

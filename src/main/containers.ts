@@ -41,8 +41,10 @@ import {
   sessionConfigPath,
   linkContainerSkills,
   probeAdapterAndLinkSkills,
+  linkContainerHistory,
   writeContainerUserFile,
-  SKILLS_MOUNT
+  SKILLS_MOUNT,
+  HISTORY_MOUNT
 } from './provision'
 import { bundledOperatorEnv } from './operatorEnv'
 import type { Bus } from './bus'
@@ -117,14 +119,44 @@ export function usesSkillMounts(info: SessionInfo, skillsDir: string | null): bo
   return !!info.skills?.length && skillsDir !== null
 }
 
+/** Whether this session's container carries the history bind: unconditional
+ *  on the agent kind alone — unlike skills, there is no selection to be
+ *  empty. A kind with no verified `historyPaths` (every kind but claude-code,
+ *  as of phase 1) adds no mount, same as an unresolved agent
+ *  (docs/requirements-agent-history.md §4 step 1). Exported for the mount
+ *  test. */
+export function usesHistoryMounts(historyPaths: readonly string[]): boolean {
+  return historyPaths.length > 0
+}
+
+/**
+ * The `hostMounts` entry the history bind adds, or none. Always **one**
+ * entry regardless of how many paths `historyPaths` names — every entry is a
+ * link inside the same bind, not a mount of its own
+ * (docs/requirements-agent-history.md §3.1) — and always read-write, the
+ * opposite of the skills bind. A pure function of the path list so the
+ * mount-list contract is testable without a container
+ * (`scripts/session-history-mount.test.mjs`).
+ */
+export function historyHostMounts(
+  ws: string,
+  task: string,
+  sessionId: string,
+  historyPaths: readonly string[]
+): { hostDir: string; target: string; readonly?: boolean }[] {
+  return usesHistoryMounts(historyPaths)
+    ? [{ hostDir: store.sessionHistoryDir(ws, task, sessionId), target: HISTORY_MOUNT, readonly: false }]
+    : []
+}
+
 /**
  * The `--override-config` pair every `up` and every `exec` of this session must
  * resolve — they have to agree, since the config decides the exec cwd and the
  * reported `remoteWorkspaceFolder`. It is the session's own merged copy
- * whenever gurt added mounts of its own (sibling repos, the skills bind, or
- * both), and the env's shared materialized file otherwise. The file behind it
- * was written by `ensure`'s `up` and persists across app restarts, so the
- * reattach path needs nothing.
+ * whenever gurt added mounts of its own (sibling repos, the skills bind, the
+ * history bind, or any combination), and the env's shared materialized file
+ * otherwise. The file behind it was written by `ensure`'s `up` and persists
+ * across app restarts, so the reattach path needs nothing.
  *
  * "Added mounts of its own" is literal, and must mirror `devcontainerUp`'s
  * write condition exactly: a repo-less operator is the mounted case with ZERO
@@ -132,15 +164,19 @@ export function usesSkillMounts(info: SessionInfo, skillsDir: string | null): bo
  * env's own materialized file and wrote no merged copy — an exec resolving
  * the per-session path there would point at a file that does not exist, and
  * the adapter install would die on it (the first real repo-less start did).
- * Exported for the regression test in scripts/operator-role.test.mjs.
+ * The history mount makes this the common case for a plain single-repo
+ * executor on claude-code: it now carries a mount of its own even with no
+ * skill selected (docs/requirements-agent-history.md §4.1). Exported for the
+ * regression test in scripts/operator-role.test.mjs.
  */
 export function sessionConfigArgs(
   info: SessionInfo,
   sessionId: string,
-  skillsDir: string | null
+  skillsDir: string | null,
+  historyPaths: readonly string[] = []
 ): string[] {
   const hasRepoMounts = usesRepoMounts(info) && info.repos.length > 0
-  return hasRepoMounts || usesSkillMounts(info, skillsDir)
+  return hasRepoMounts || usesSkillMounts(info, skillsDir) || usesHistoryMounts(historyPaths)
     ? [
         '--override-config',
         sessionConfigPath(store.sessionScratchDir(info.workspace, info.task, sessionId))
@@ -504,6 +540,7 @@ export class ContainerManager {
       const agentId = info.agent || ws.defaultAgent
       const kind = agentId ? (await store.getAgents())[agentId]?.kind : undefined
       const skillsDir = (kind ? agentDef(kind)?.skillsDir : null) ?? null
+      const historyPaths = (kind ? agentDef(kind)?.historyPaths : undefined) ?? []
       if (info.skills?.length && skillsDir === null)
         provisionLog(
           `[skills] agent "${kind ?? agentId ?? 'unknown'}" does not read skills — selection not mounted`
@@ -515,7 +552,7 @@ export class ContainerManager {
       // provisions exactly as it did before this feature existed — and a draft
       // that changes its selection (or, with one, its agent) releases its
       // container, since the mount list is fixed at create time (§5.2).
-      const hostMounts = usesSkillMounts(info, skillsDir)
+      const skillMounts = usesSkillMounts(info, skillsDir)
         ? [
             {
               hostDir: store.sessionSkillsDir(info.workspace, info.task, sessionId),
@@ -524,6 +561,16 @@ export class ContainerManager {
             }
           ]
         : []
+      // The agent's own conversation/resume state, read-write, bound whenever
+      // its kind names any `historyPaths` — unconditional on the kind alone,
+      // there is no selection here the way skills has one
+      // (docs/requirements-agent-history.md §4). `ensureSessionHistory` is
+      // `mkdir -p` only: never wiped, so a rebuilt container finds its own
+      // history exactly where it left it.
+      if (usesHistoryMounts(historyPaths))
+        await store.ensureSessionHistory(info.workspace, info.task, sessionId, historyPaths)
+      const historyMounts = historyHostMounts(info.workspace, info.task, sessionId, historyPaths)
+      const hostMounts = [...skillMounts, ...historyMounts]
       const up = await devcontainerUp(
         sessionId,
         configArgs,
@@ -541,12 +588,22 @@ export class ContainerManager {
         store.sessionScratchDir(info.workspace, info.task, sessionId)
       )
       // Owed after `up`, before anything reports the container usable: the
-      // agent resolves its skills at startup. Not run here — `installAdapter`
-      // is the only caller ever reached right after this one (only
-      // `resolveLaunch` calls `ensure`), and consuming the debt there merges
-      // it into the same `devcontainer exec` as the adapter probe instead of
-      // spending a second CLI boot on it.
-      if (skillsDir !== null && hostMounts.length) this.pendingSkillsLink.set(up.containerId, skillsDir)
+      // agent resolves its skills and its history at startup. The history
+      // link runs here, same as always; the skills link is deferred instead
+      // of run inline — `installAdapter` is the only caller ever reached
+      // right after this one (only `resolveLaunch` calls `ensure`), and
+      // consuming the debt there merges it into the same `devcontainer exec`
+      // as the adapter probe instead of spending a second CLI boot on it.
+      if (skillsDir !== null && skillMounts.length) this.pendingSkillsLink.set(up.containerId, skillsDir)
+      if (historyMounts.length)
+        await linkContainerHistory(
+          sessionId,
+          kind ?? 'unknown',
+          sessionConfigArgs(info, sessionId, skillsDir, historyPaths),
+          workspaceFolder,
+          historyPaths,
+          provisionLog
+        )
       // Deleted mid-start: this container was born after its session's delete
       // had already looked for one to take down, so nothing owns it and nothing
       // records it (`patchContainer` on a gone session is a no-op). Remove it
@@ -766,7 +823,7 @@ export class ContainerManager {
       session: sessionId,
       containerId: c.id,
       hostWorkspaceFolder,
-      configArgs: sessionConfigArgs(info, sessionId, def.skillsDir)
+      configArgs: sessionConfigArgs(info, sessionId, def.skillsDir, def.historyPaths)
     }
     // Step 3 of the provisioning sequence (§7.1), and the reason it runs
     // alongside the proxy reservation rather than in the connection path:
@@ -806,12 +863,20 @@ export class ContainerManager {
         envSecret = ''
       }
     }
+    // claude-code only (§3.2): pin the mangled-cwd directory name its own
+    // history keys by to a constant — the session id, already what the host
+    // history directory is keyed by — so this kind's history survives a
+    // repo-set change too. An ordinary non-secret var, composed beside
+    // whatever the agent instance's own config already sets (which wins on a
+    // clash — it is the more specific, user-made choice).
+    const historyEnv = def.id === 'claude-code' ? { CLAUDE_CODE_PROJECT_DIR_NAME: sessionId } : {}
+    const env = { ...historyEnv, ...cfg.env }
     return {
       ...target,
       remoteWorkspaceFolder: c.remoteWorkspaceFolder,
       secret: envSecret,
       secretEnv: cfg.secretEnv || def.secretEnv,
-      ...(cfg.env ? { env: cfg.env } : {}),
+      ...(Object.keys(env).length ? { env } : {}),
       proxy: { ...proxy, env: proxyEnv(proxy.base) },
       // Identity is injected unconditionally — it carries no authority, and a
       // local commit an agent does make should still be attributed. Anchored on
