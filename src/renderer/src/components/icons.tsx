@@ -155,19 +155,22 @@ const PATHS: Record<IconName, JSX.Element> = {
       <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
     </>
   ),
-  // Isolated egress: `globe` again, moved up-left to free a corner for a lock.
-  // Both departures from the plain stroke recipe are for the same reason — this
-  // renders at 10-14px in the pills and on the composer bar. The lock body is
-  // filled (a stroked one closes into a blob at that size) and the grid is
-  // drawn a shade thinner than the outline, so the globe does not fill in.
+  // Isolated egress: Google's `vpn_lock` from Material Symbols, verbatim, under
+  // the Apache 2.0 this project is already under (their repo ships no NOTICE and
+  // their icons carry no headers, so there is nothing further to carry). Its
+  // sphere sits where `globe`'s does — r10 on centre, 2 to 22 — so the two
+  // egress modes are the same size, and the lock takes the top-right corner
+  // without pushing the globe aside for it.
+  //
+  // It is the one mark in the set drawn as a solid rather than a stroke, which
+  // is why it is in FILLED: Material draws its globe as landmasses, not as a
+  // grid, and no stroke width makes that into a Feather outline. The wrapper
+  // carries Material's own 0 -960 960 960 grid onto this file's 24 one, so the
+  // path stays byte-identical to upstream's and can be re-pulled as such.
   'globe-lock': (
-    <>
-      <circle cx="10" cy="10" r="9" />
-      <line x1="1" y1="10" x2="19" y2="10" strokeWidth={1.4} />
-      <path d="M10 1a6 9 0 0 1 0 18 6 9 0 0 1 0-18z" strokeWidth={1.4} />
-      <rect x="16.6" y="17.8" width="6.8" height="5.2" rx="1.3" fill="currentColor" stroke="none" />
-      <path d="M18.2 17.8v-1.2a1.8 1.8 0 0 1 3.6 0v1.2" strokeWidth={1.6} />
-    </>
+    <g transform="translate(0 24) scale(.025)">
+      <path d="M480-80q-82 0-155-31.5t-127.5-86Q143-252 111.5-325T80-480q0-83 31.5-155.5t86-127Q252-817 325-848.5T480-880q32 0 61.5 4.5T600-862v102q0 33-23.5 56.5T520-680h-80v80q0 17-11.5 28.5T400-560h-80v80h240q17 0 28.5 11.5T600-440v120h40q27 0 47.5 16t28.5 40q39-44 61.5-98.5T800-480q0-11-1-20t-3-20h82q2 11 2 20v20q0 82-31.5 155t-86 127.5q-54.5 54.5-127 86T480-80Zm-40-82v-78q-33 0-56.5-23.5T360-320v-40L168-552q-3 18-5.5 36t-2.5 36q0 124 80.5 213.5T440-162Zm280-438q-17 0-28.5-11.5T680-640v-120q0-17 11.5-28.5T720-800v-40q0-33 23.5-56.5T800-920q33 0 56.5 23.5T880-840v40q17 0 28.5 11.5T920-760v120q0 17-11.5 28.5T880-600H720Zm40-200h80v-40q0-17-11.5-28.5T800-880q-17 0-28.5 11.5T760-840v40Z" />
+    </g>
   ),
   key: (
     <>
@@ -183,8 +186,9 @@ const PATHS: Record<IconName, JSX.Element> = {
       <circle cx="12" cy="12" r="3" />
     </>
   ),
-  // `eye` moved up-left to free the same corner `globe-lock` frees, carrying
-  // the same filled lock — it looks, and it holds a lock while it does.
+  // `eye` moved up-left to free its bottom-right corner for a lock, whose body
+  // is filled because a stroked one closes into a blob at the sizes this renders
+  // at — it looks, and it holds a lock while it does.
   'eye-lock': (
     <>
       <path d="M0.8 10.5s3.35-6.5 9.2-6.5 9.2 6.5 9.2 6.5-3.35 6.5-9.2 6.5-9.2-6.5-9.2-6.5z" />
@@ -297,6 +301,7 @@ const PATHS: Record<IconName, JSX.Element> = {
 const FILLED = new Set<IconName>([
   'play',
   'dots',
+  'globe-lock',
   'vscode',
   'agent-claude',
   'agent-codex',
