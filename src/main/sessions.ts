@@ -1777,12 +1777,19 @@ export class SessionManager {
       if (!s.attached) {
         if (!s.acpSessionId) throw new Error('session was never started')
         try {
+          // Same `_meta` a start sends to `session/new`: for claude-code, a
+          // pinned model (e.g. fable) only appears in the CLI's model picker
+          // when the CLI is launched with it pinned. Without this, a reload
+          // brings up an adapter whose picker forgot the pin, and the next
+          // `session/set_config_option` for it is rejected as an invalid value.
+          const meta = this.startMeta(ctx.agent, s.info.configValues)
           const result = await conn.peer.request(
             'session/load',
             {
               sessionId: s.acpSessionId,
               cwd: ctx.remoteWorkspaceFolder,
-              mcpServers
+              mcpServers,
+              ...(meta ? { _meta: meta } : {})
             },
             SESSION_LOAD_RESULT,
             { timeoutMs: ACP_REQUEST_TIMEOUT_MS }
@@ -1791,12 +1798,11 @@ export class SessionManager {
           s.configOptions =
             normalizeConfigOptions(result.configOptions, ctx.agent.id) ?? s.configOptions
           s.attached = true
-          // Same reconciliation a start does: a resumed adapter comes back on
-          // its own defaults, and `_meta` (which carried the model into
-          // `session/new`) has no counterpart on `session/load`. Without this
-          // the session silently changes model the first time its container
-          // has been asleep — the pick is still shown, but a different model
-          // answers the next turn.
+          // Same reconciliation a start does, for picks `_meta` above can't
+          // carry (e.g. fast mode): a resumed adapter otherwise comes back on
+          // its own defaults and the session silently changes them the first
+          // time its container has been asleep — the pick is still shown, but
+          // a different value answers the next turn.
           await this.applyStartConfig(s, conn)
           this.cacheAgentConfig(s)
           await this.applyAutoAllow(s, conn)
@@ -2444,7 +2450,27 @@ export class SessionManager {
     // so the change applies to the live agent and is validated by it right now,
     // exactly like a change on a running session.
     const conn = await this.attach(s)
-    await this.pushConfigOption(s, conn, configId, value)
+    try {
+      await this.pushConfigOption(s, conn, configId, value)
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e)
+      // The agent validates a pick against what its own picker currently
+      // offers — for claude-code's model option, that list only contains a
+      // model the CLI wasn't launched pinned to (see `startMeta`) once this
+      // session's adapter has been restarted with it already set. Recording
+      // the choice anyway means the next `session/new`/`session/load` sends
+      // it via `_meta` and the agent comes up already offering it, instead of
+      // the pick silently reverting.
+      if (/invalid value/i.test(message)) {
+        s.info.configValues = { ...s.info.configValues, [configId]: value }
+        this.schedulePersist(s.ref)
+        throw new Error(
+          `agent does not offer ${configId} ${value} in this session; it will be pinned on the next start`,
+          { cause: e }
+        )
+      }
+      throw e
+    }
     s.info.configValues = { ...s.info.configValues, [configId]: value }
     // Confirm the change in the timeline. Failures already leave system entries
     // ("could not set …"); a success was only visible as the popup's highlight,

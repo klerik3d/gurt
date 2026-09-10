@@ -22,13 +22,49 @@ const RPC_FRAME = z.looseObject({
   method: z.string().optional(),
   params: z.unknown().optional(),
   result: z.unknown().optional(),
-  error: z.looseObject({ message: z.string().optional() }).optional()
+  error: z
+    .looseObject({ code: z.number().optional(), message: z.string().optional(), data: z.unknown().optional() })
+    .optional()
 })
 
 type RpcFrame = z.infer<typeof RPC_FRAME>
 
 /** Returns the request's result, or a promise of it. */
 type Handler = (params: unknown) => unknown
+
+/**
+ * The ACP SDK wraps most agent-side errors as a flat "Internal error", with
+ * the real cause demoted to `error.data` — sometimes `data.details` (the
+ * shape claude-agent-acp uses), sometimes a bare string, sometimes some other
+ * object. `message` alone is what every caller sees today, which is how a
+ * concrete rejection like "Invalid value for config option model: fable"
+ * disappears into a useless "Internal error" in the UI. This recovers
+ * whatever detail is available and appends it to the message so callers (and
+ * users) can see the real reason.
+ */
+function formatRpcError(error: {
+  code?: number | undefined
+  message?: string | undefined
+  data?: unknown
+}): Error {
+  const base = error.message ?? 'agent error'
+  let detail: string | undefined
+  if (error.data && typeof error.data === 'object' && 'details' in error.data) {
+    const d = (error.data as { details?: unknown }).details
+    if (typeof d === 'string' && d) detail = d
+  }
+  if (detail === undefined && typeof error.data === 'string' && error.data) detail = error.data
+  if (detail === undefined && error.data !== undefined && error.data !== null) {
+    try {
+      detail = JSON.stringify(error.data).slice(0, 500)
+    } catch {
+      // Not JSON-serializable (e.g. a circular structure) — no detail to add.
+    }
+  }
+  const err = new Error(detail ? `${base}: ${detail}` : base)
+  if (error.code !== undefined) (err as Error & { code?: number }).code = error.code
+  return err
+}
 
 /**
  * Where a payload failed to match, and nothing else. Zod's own messages quote
@@ -279,7 +315,7 @@ export class JsonRpcPeer {
       const p = this.pending.get(msg.id)
       if (!p) return
       this.pending.delete(msg.id)
-      if (msg.error) p.reject(new Error(msg.error.message ?? 'agent error'))
+      if (msg.error) p.reject(formatRpcError(msg.error))
       else p.resolve(msg.result)
     }
   }
