@@ -68,14 +68,14 @@ export const AGENT_DEFS: AgentDef[] = [
     id: 'codex',
     label: 'codex',
     // the adapter package bundles a compatible @openai/codex
-    adapterPackages: ['@agentclientprotocol/codex-acp@1.6.2'],
+    adapterPackages: ['@agentclientprotocol/codex-acp@1.10.0'],
     bin: 'codex-acp',
     binArgs: [],
     secretEnv: 'OPENAI_API_KEY',
     // §5.2.1: fed through a materialized `~/.codex/auth.json`, with the env var
     // suppressed — a non-key value there wins and forces the API-key path.
     oauthProvider: 'openai',
-    // Verified in the @openai/codex@0.148.0 binary codex-acp@1.6.2 resolves
+    // Verified in the @openai/codex@0.153.4 binary codex-acp@1.10.0 resolves
     // to: a default-on skills subsystem reads `~/.agents/skills` (canonical)
     // and `~/.codex/skills` (deprecated but still loaded) — SKILL.md format,
     // surfaced as `$<name>` commands over ACP. It never reads

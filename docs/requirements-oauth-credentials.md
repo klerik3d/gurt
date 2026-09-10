@@ -282,7 +282,7 @@ file path exactly as it covers the env-var path. Every adapter launch
 rewrites the file with a fresh token at the same point `resolveLaunch`
 resolves the secret today — there is no second refresh path. The exact
 file shapes are verified against the *pinned* adapter/CLI versions in
-`AGENT_DEFS` (`@agentclientprotocol/codex-acp@1.6.2` and its bundled
+`AGENT_DEFS` (`@agentclientprotocol/codex-acp@1.10.0` and its bundled
 `@openai/codex`, `@google/gemini-cli@0.56.0`), and a pin bump re-checks
 them, same rule as `skillsDir`.
 
