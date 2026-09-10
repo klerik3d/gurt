@@ -83,6 +83,11 @@ export interface DomainEvents {
   'session.awaiting': { sessionId: string; ref: EnvRef; awaiting: boolean }
   /** Coarse "snapshot changed" — the UI's re-render trigger. */
   'session.changed': { sessionId: string }
+  /** A prompt landed in a started session's queue instead of running — the
+   *  same "something is waiting" signal `state: 'queued'` is for a draft, and
+   *  what lets the queue handoff reap the idle container holding its clone
+   *  (docs/requirements-session-queue.md §3.1). */
+  'session.promptQueued': { sessionId: string }
   /** Appended session-log records (timeline deltas), in seq order. */
   'session.log': { sessionId: string; records: SessionLogRecord[] }
   /** A `complete` call with outcome=changes stored a proposal — the seam the

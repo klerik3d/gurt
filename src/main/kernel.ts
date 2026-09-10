@@ -343,6 +343,9 @@ export function createKernel(): Kernel {
     // idle for minutes — free it now instead of when its timer happens to fire.
     else if (state === 'queued') reapForQueue()
   })
+  // Same for a prompt queued on a started session: it waits on a clone whose
+  // holder has already gone idle, so the turn-end triggers above are long past.
+  bus.on('session.promptQueued', () => reapForQueue())
   bus.on('session.activity', ({ sessionId }) => containers.noteActive(sessionId))
   // A container that came down released its session's clone — the next queued
   // session of that repo can start now.
