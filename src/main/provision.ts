@@ -1035,7 +1035,10 @@ export async function devcontainerUp(
     // bind-mount the whole journal, credentials.json included, in place of
     // the wrapper dir. Disable it unconditionally rather than only for the
     // wrapper case — gurt never wants anything but the literal folder it named.
-    '--no-mount-workspace-git-root',
+    // Spelled `=false`, not `--no-…`: the CLI builds its yargs parser with
+    // `boolean-negation` off, so the `--no-` prefix is rejected as an unknown
+    // argument and `up` exits 1 before doing anything.
+    '--mount-workspace-git-root=false',
     ...idLabelArgs(session),
     ...mountConfigArgs
   ]

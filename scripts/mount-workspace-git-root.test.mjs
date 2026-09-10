@@ -6,13 +6,20 @@
 // working tree, is to resolve `git rev-parse --show-toplevel` from it and
 // mount *that* instead — which for the wrapper case is `~/.gurt` itself,
 // credentials.json included. `devcontainerUp` (src/main/provision.ts) must
-// pass `--no-mount-workspace-git-root` on every `up` so the CLI mounts
+// pass `--mount-workspace-git-root=false` on every `up` so the CLI mounts
 // exactly the folder it was given, never a git ancestor of it.
+//
+// The spelling matters: the CLI's yargs parser has `boolean-negation` off, so
+// `--no-mount-workspace-git-root` is an *unknown argument* and `up` exits 1
+// without starting anything. The stub CLI below accepts any argv, so a second
+// test replays the recorded argv through the real bundled CLI and asserts its
+// parser accepts it.
 //
 //   node scripts/mount-workspace-git-root.test.mjs
 import { test, after } from 'node:test'
 import { bundle } from './lib/bundle.mjs'
 import { pathToFileURL, fileURLToPath } from 'node:url'
+import { spawnSync } from 'node:child_process'
 import path from 'node:path'
 import os from 'node:os'
 import fs from 'node:fs'
@@ -69,7 +76,27 @@ test('devcontainer up always disables mounting the workspace folder\'s git root'
   await m.devcontainerUp('s1', [], workspace, () => {}, 'repo', null, undefined, [])
   const argv = JSON.parse(fs.readFileSync(state, 'utf8'))
   assert.ok(
-    argv.includes('--no-mount-workspace-git-root'),
-    `expected --no-mount-workspace-git-root in CLI invocation, got: ${argv.join(' ')}`
+    argv.includes('--mount-workspace-git-root=false'),
+    `expected --mount-workspace-git-root=false in CLI invocation, got: ${argv.join(' ')}`
   )
+})
+
+test('the real devcontainer CLI accepts every flag devcontainerUp passes', async () => {
+  await m.devcontainerUp('s1', [], workspace, () => {}, 'repo', null, undefined, [])
+  const argv = JSON.parse(fs.readFileSync(state, 'utf8'))
+  // Point the workspace at a folder with no devcontainer.json: the CLI parses
+  // argv first, so an unknown flag surfaces as `Unknown arguments: …` and exit
+  // 1 before it ever looks for the config, while a fully-parsed argv fails
+  // later with a JSON `{"outcome":"error"}` about the missing config. Either
+  // way nothing touches Docker.
+  const missing = path.join(tmp, 'no-such-workspace')
+  const replayed = argv.map((a) => (a === workspace ? missing : a))
+  const realCli = path.join(ROOT, 'node_modules', '@devcontainers', 'cli', 'devcontainer.js')
+  const r = spawnSync(process.execPath, [realCli, ...replayed], { encoding: 'utf8' })
+  const out = r.stdout + r.stderr
+  assert.ok(
+    !/Unknown arguments?:/.test(out),
+    `real CLI rejected gurt's argv (${replayed.join(' ')}):\n${out}`
+  )
+  assert.match(out, /"outcome":"error"/, `expected the CLI to get as far as config lookup:\n${out}`)
 })
