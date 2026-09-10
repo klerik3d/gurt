@@ -206,14 +206,16 @@ try {
   console.log('first run: Esc skips the popup, ⌘K brings it back OK')
 
   // --- "don't show this again" is the mode, written from the popup ---
-  const again = page.locator('.wc-again input')
-  assert.equal(await again.isChecked(), false, 'not ticked on a default (`auto`) store')
-  await again.check()
+  const again = page.locator('.wc-again')
+  assert.equal(await page.locator('.wc-again.active').count(), 0, 'off on an `auto` store')
+  await again.click()
+  await page.waitForSelector('.wc-again.active', { timeout: 5000 })
   await shot('02-welcome-dont-show')
-  // Unticking restores what was there rather than assuming a value, so the
-  // pair of clicks is a no-op — asserted through Settings below, which reads
-  // the same stored mode.
-  await again.uncheck()
+  // Turning it back off restores what was there rather than assuming a value,
+  // so the pair of clicks is a no-op — asserted through Settings below, which
+  // reads the same stored mode.
+  await again.click()
+  await page.waitForSelector('.wc-again.active', { state: 'detached', timeout: 5000 })
   await page.click('.modal-head .icon-sq')
   await page.waitForSelector('.wc', { state: 'detached', timeout: 5000 })
   console.log('first run: the popup writes the welcome mode OK')
