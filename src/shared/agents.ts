@@ -41,6 +41,20 @@ export interface AgentDef {
    * whatever the projects ship today — a bump of a pin re-checks this field.
    */
   skillsDir: string | null
+  /** The `$HOME`-relative paths this kind persists its own conversation and
+   *  resume state in, each linked into the read-write bind by
+   *  `linkContainerHistory`. Empty means no delivery at all: the session
+   *  provisions exactly as it does today.
+   *
+   *  A **list**, not a single directory, because no CLI examined keeps all
+   *  of it in one place (§3.1) — and every entry MUST be separable from
+   *  that kind's credential file (§6.2). A kind whose transcript cannot be
+   *  separated from its secrets gets `[]` and stays there (§3.3).
+   *
+   *  Verified against the *pinned* versions, not whatever the projects ship
+   *  today — a pin bump re-checks this field, same rule as `skillsDir`.
+   *  (docs/requirements-agent-history.md §3) */
+  historyPaths: readonly string[]
 }
 
 // Adapter packages are pinned to exact versions on purpose (supply chain):
@@ -62,7 +76,18 @@ export const AGENT_DEFS: AgentDef[] = [
     oauthProvider: 'anthropic',
     // Claude Code's own user-level skills directory — the path this feature
     // was built against (docs/requirements-skills.md §5).
-    skillsDir: '.claude/skills'
+    skillsDir: '.claude/skills',
+    // Verified against claude-agent-acp@0.76.0 (SDK 0.3.257): conversation +
+    // resume state lives in `.claude/projects/<mangled-cwd>/<sessionId>.jsonl`
+    // and `.claude/todos`. Cleanest boundary of the four kinds — there is no
+    // auth file anywhere in `~/.claude` (the credential rides the
+    // CLAUDE_CODE_OAUTH_TOKEN env var / a materialized-nowhere secret), so
+    // nothing here can collide with §6.2. The cwd-keyed directory name is
+    // overridden by CLAUDE_CODE_PROJECT_DIR_NAME (see containers.ts
+    // `resolveLaunch`), pinned to the session id, so this kind's history
+    // survives a repo-set change too (docs/requirements-agent-history.md
+    // §3.2). Phase 1 of that document.
+    historyPaths: ['.claude/projects', '.claude/todos']
   },
   {
     id: 'codex',
@@ -82,7 +107,13 @@ export const AGENT_DEFS: AgentDef[] = [
     // and `~/.codex/skills` (deprecated but still loaded) — SKILL.md format,
     // surfaced as `$<name>` commands over ACP. It never reads
     // `~/.claude/skills`. Link the canonical directory.
-    skillsDir: '.agents/skills'
+    skillsDir: '.agents/skills',
+    // Not phase 1 (docs/requirements-agent-history.md §10 item 3): the
+    // rollout files live under `.codex/sessions`, but the resume index
+    // (`state_5.sqlite` / `thread_history_1.sqlite`) sits top-level, beside
+    // `auth.json`, and stores an absolute `rollout_path` — binding those
+    // files individually needs a live resume check first. Empty until then.
+    historyPaths: []
   },
   {
     id: 'gemini',
@@ -101,7 +132,12 @@ export const AGENT_DEFS: AgentDef[] = [
     // `~/.gemini/skills` and the `~/.agents/skills` alias — SKILL.md
     // frontmatter format, activated through its `activate_skill` tool. It
     // never reads `~/.claude/skills`. Link the primary documented directory.
-    skillsDir: '.gemini/skills'
+    skillsDir: '.gemini/skills',
+    // Not phase 1 (docs/requirements-agent-history.md §10 item 2): the
+    // transcripts live in `.gemini/tmp`/`.gemini/history`, plus the
+    // `projects.json` registry file that assigns the shortId — the first
+    // kind that needs §3.1's file-entry case. Empty until that phase.
+    historyPaths: []
   },
   {
     id: 'opencode',
@@ -121,7 +157,14 @@ export const AGENT_DEFS: AgentDef[] = [
     // but that compat scan sits behind opt-out env vars
     // (OPENCODE_DISABLE_EXTERNAL_SKILLS / …_CLAUDE_CODE[_SKILLS]) a user env
     // could set — the native config dir is unconditional, so link there.
-    skillsDir: '.config/opencode/skills'
+    skillsDir: '.config/opencode/skills',
+    // No phase — verified permanently empty (docs/requirements-agent-history.md
+    // §3.3). opencode-ai@1.18.30 keeps sessions, messages and parts in
+    // `~/.local/share/opencode/opencode.db`, and its `account` /
+    // `control_account` / `credential` rows — live OAuth tokens — sit in that
+    // same sqlite file. There is no path that separates the transcript from
+    // the secret, so this stays `[]` unless upstream splits the store.
+    historyPaths: []
   }
 ]
 
