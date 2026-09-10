@@ -56,8 +56,9 @@ import { run } from '../async'
 
 /** Blanket permission-bypass modes (Claude's "bypassPermissions", Codex's
  *  "yolo") — hidden from the live mode picker, same as the composer's gear
- *  popup (Chat.tsx): gurt's own "auto" already maps to the safer accept-edits
- *  mode, and the agent may still report one as current without it being offered. */
+ *  popup (Chat.tsx): gurt's own "auto" already maps to the safer auto-review
+ *  (or accept-edits) mode, and the agent may still report one as current
+ *  without it being offered. */
 const BLANKET_MODE_RE = /bypass|yolo/i
 const isBlanketMode = (m: SessionMode): boolean => BLANKET_MODE_RE.test(`${m.id} ${m.name}`)
 

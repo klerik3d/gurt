@@ -447,6 +447,15 @@ export interface SessionInfo {
   /** Auto-allow tool calls (map to a bypass/accept mode) vs. confirm each one.
    *  Chosen at session start; kept in sync when the mode is changed later. */
   autoAllow?: boolean
+  /** The ACP mode the user last picked for this session (`SessionMode.id`).
+   *  `autoAllow` says only auto-or-manual, and deriving a mode from that bool
+   *  is guesswork over an agent-defined list — it cannot tell claude-code's
+   *  "Accept edits" from its "Auto". So the pick itself is persisted and
+   *  restored verbatim on every `session/new`/`session/load`; the derivation
+   *  is only the fallback for a session that has never chosen one (or whose
+   *  agent no longer offers it). Cleared when the draft's auto/manual chip is
+   *  set again — that is the user re-choosing at the coarser level. */
+  modeId?: string | undefined
   state: SessionState
   /** MCP servers to attach when this session starts (empty/undefined = none). */
   mcp?: McpSelection[]
@@ -651,6 +660,13 @@ export function applyLog(entries: ChatEntry[], records: SessionLogRecord[]): Cha
 export interface SessionMode {
   id: string
   name: string
+  /** `_meta.kind` as the agent reports it, lifted out of the envelope by the
+   *  session manager's mode normalizer. Ids and names are agent-defined and
+   *  overlap badly ("Accept edits" vs. "Auto"), but the kind is the one thing
+   *  that carries intent across adapters — claude-code's `auto` and another
+   *  adapter's `agent` ("Approve for me") both report `auto_review` — so mode
+   *  matching keys on it first. */
+  kind?: string
 }
 
 export interface SessionModes {

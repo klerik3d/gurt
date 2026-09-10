@@ -21,3 +21,4 @@ release/
 tmp
 archive/
 smoke-shots/
+.claude/

@@ -45,7 +45,7 @@ const ACTIVITY_PING_INTERVAL_MS = 5_000
 /**
  * Blanket permission-bypass modes (Claude's "bypassPermissions", Codex's "yolo").
  * They disable every guardrail, so they're hidden from the mode picker — gurt's
- * "auto" already maps to the safer accept-edits mode. Kept out of the UI, not the
+ * "auto" already maps to the safer auto-review/accept-edits mode. Kept out of the UI, not the
  * protocol: the agent may still report one as current.
  */
 const BLANKET_MODE_RE = /bypass|yolo/i
