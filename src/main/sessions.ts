@@ -804,14 +804,16 @@ export class SessionManager {
     const role = patch.role ?? sessionRole(s.info)
     assertRoleFitsRepos(role, patch.repos ?? s.info.repos)
     if (patch.agent !== undefined) {
-      // With a skill selection in place the agent pick is structural too: the
-      // skills bind exists only for a kind that reads one (`AgentDef.skillsDir`,
-      // containers.ts), so a failed start can have left a container whose mount
-      // list the new agent invalidates. Without a selection every kind gets the
-      // same (empty) mount list and the container can stay. The selection
-      // itself is untouched — it survives a switch away and back.
-      if (patch.agent !== s.info.agent && s.info.skills?.length)
-        void this.events.releaseContainer(s.info.id, 'user')
+      // The agent pick is structural, full stop: the mount list depends on the
+      // kind even with no skill selected, now that every kind carries its own
+      // (possibly empty) `historyPaths` (`AgentDef`, containers.ts) — switching
+      // to or from a kind with a non-empty one changes what gets mounted. A
+      // failed start can have left a container provisioned against the old
+      // kind's mount list, so any agent change releases it
+      // (docs/requirements-agent-history.md §4.2). A draft's history directory
+      // is empty and unstarted, so nothing live is ever orphaned by this — a
+      // started session cannot reach here, since it cannot change agent.
+      if (patch.agent !== s.info.agent) void this.events.releaseContainer(s.info.id, 'user')
       s.info.agent = patch.agent
     }
     if (patch.autoAllow !== undefined) s.info.autoAllow = patch.autoAllow
