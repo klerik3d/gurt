@@ -4103,18 +4103,22 @@ textarea.input {
   max-width: none;
   padding: 22px 22px 26px;
 }
-/* The one lasting decision in the popup, and the footer's left half. */
-.wc-again {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--dim);
-  cursor: pointer;
-  user-select: none;
+/* No rules between the head, the body and the foot. The checklist is already
+   a column of bordered rows and the pull log a boxed block, so the modal's own
+   two lines added a third and a fourth horizontal edge to a screen that reads
+   as a list — the padding is enough separation here. */
+.wc-modal .modal-head,
+.wc-modal .modal-foot {
+  border: none;
 }
-.wc-again input {
-  cursor: pointer;
+/* The one lasting decision in the popup, and the footer's left half: dim until
+   it is on, so it sits under the button that ends the screen rather than
+   beside it. */
+.wc-again {
+  color: var(--dim);
+}
+.wc-again.active {
+  color: var(--accent);
 }
 .wc-sub {
   font-size: 12px;

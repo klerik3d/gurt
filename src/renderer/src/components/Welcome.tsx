@@ -545,27 +545,30 @@ export function Welcome({
             </div>
           </div>
         </div>
-        {/* The checkbox is the only thing here that outlives the click: it
-            writes §2.1.1's mode, which is what Settings → Machine edits too. */}
+        {/* The one thing here that outlives the click: it writes §2.1.1's
+            mode, which is what Settings → Machine edits too. A toggling
+            `btn-link` rather than a checkbox, because that is how this app
+            already writes this exact setting — the mode picker in Settings →
+            Machine is three of them — and because a lone form control in a
+            footer of buttons reads as something to fill in.
+
+            The reassurance is the title rather than a line of its own: the
+            footer has one decision in it, and a sentence beside it competes
+            with the button that ends the screen. No key glyph in it — the
+            palette hotkey is rebindable and platform-dependent, and a wrong
+            one printed next to the control that hides a screen is the one
+            place it must not be wrong. */}
         <div className="modal-foot">
-          <label className="wc-again">
-            <input
-              type="checkbox"
-              checked={savedMode === 'never'}
-              disabled={savedMode === null}
-              onChange={(e) => setHidden(e.target.checked)}
-            />
-            Don’t show this again
-          </label>
+          <button
+            type="button"
+            className={`btn-link wc-again${savedMode === 'never' ? ' active' : ''}`}
+            disabled={savedMode === null}
+            title="the command palette still opens this screen under every mode"
+            onClick={() => setHidden(savedMode !== 'never')}
+          >
+            {savedMode === 'never' ? 'don’t show this again ✓' : 'don’t show this again'}
+          </button>
           <span className="spacer" />
-          {/* No key glyph here: the palette hotkey is rebindable and differs
-              per platform, and a wrong one printed under a checkbox that hides
-              a screen is the one place it must not be wrong. */}
-          <span className="wc-hint faint">
-            {savedMode === 'never'
-              ? 'still reachable from the command palette'
-              : 'you can come back to it from the command palette'}
-          </span>
           <button className="btn" disabled={busy !== ''} onClick={close}>
             Skip for now
           </button>
