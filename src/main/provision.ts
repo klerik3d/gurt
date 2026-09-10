@@ -1321,6 +1321,50 @@ export async function adapterPresent(
 }
 
 /**
+ * Merges {@link linkContainerSkills} and {@link adapterPresent} into one
+ * `devcontainer exec` — in the session-start chain that mounts skills, the two
+ * run back to back right after a fresh `up`
+ * (`ContainerManager.installAdapter` consumes the pending link left by
+ * `ensureUncoalesced`), and each is otherwise its own CLI boot (a few seconds
+ * just to spin up the CLI's own process, before either does anything). The
+ * exit code packs both independent outcomes, since one shell reports only one
+ * status: bit 0 is the adapter probe (0 = present, the same sense
+ * `adapterPresent` itself returns), bit 1 is whether the skills link failed —
+ * non-fatal either way, exactly as `linkContainerSkills` treats it on its own.
+ */
+export async function probeAdapterAndLinkSkills(
+  session: string,
+  agent: AgentDef,
+  configArgs: string[],
+  workspaceFolder: string,
+  skillsDir: string,
+  log: LogSink
+): Promise<boolean> {
+  const parent = path.posix.dirname(skillsDir)
+  const marker = adapterMarkerPath(agent)
+  const expected = adapterMarkerValue(agent)
+  const { code } = await runNodeCli(
+    [
+      'exec',
+      '--workspace-folder', workspaceFolder,
+      ...idLabelArgs(session),
+      ...configArgs,
+      'sh', '-c',
+      `skills_rc=0\n` +
+        `mkdir -p "$HOME/${parent}" && rm -rf "$HOME/${skillsDir}" && ` +
+        `ln -s ${SKILLS_MOUNT} "$HOME/${skillsDir}" || skills_rc=1\n` +
+        `if command -v ${agent.bin} >/dev/null 2>&1 && ` +
+        `[ "$(cat "$HOME/${marker}" 2>/dev/null)" = "${expected}" ]; then adapter_rc=0; else adapter_rc=1; fi\n` +
+        `exit $(( skills_rc * 2 + adapter_rc ))`
+    ],
+    log
+  )
+  if ((code & 2) !== 0) log(`could not link ${SKILLS_MOUNT} into the agent's home`)
+  else log(`skills mounted read-only at ${SKILLS_MOUNT}, linked as ~/${skillsDir}`)
+  return (code & 1) === 0
+}
+
+/**
  * Write one small file into the agent's `$HOME` inside the container — the
  * §5.2.1 seam (docs/requirements-oauth-credentials.md): the access-only native
  * auth file an oauth-linked codex/gemini launch materializes. Same
@@ -1357,6 +1401,12 @@ export async function writeContainerUserFile(
   if (code !== 0) throw new Error(`could not write ~/${relPath} in the container (exit ${code})`)
 }
 
+/** Sentinel exit code for "the install itself succeeded but recording the
+ *  version marker did not" — outside the range `npm install` itself ever
+ *  exits with, so it can share the one exec's exit code with npm's own
+ *  without the two being confused. */
+const MARKER_WRITE_FAILED = 90
+
 export async function installAcpAdapter(
   session: string,
   agent: AgentDef,
@@ -1365,35 +1415,33 @@ export async function installAcpAdapter(
   log: LogSink
 ): Promise<void> {
   log(`installing ${agent.adapterPackages.join(', ')} in container ...`)
+  // One exec for both `npm install -g` and recording the version marker
+  // `adapterPresent` compares against on the next probe — the marker is
+  // written only when the install exits 0 (`&&`, never on the `exit "$rc"`
+  // branch above it), same as when this was two execs run one after another.
+  const marker = adapterMarkerPath(agent)
+  const parent = path.posix.dirname(marker)
   const { code } = await runNodeCli(
     [
       'exec',
       '--workspace-folder', workspaceFolder,
       ...idLabelArgs(session),
       ...configArgs,
-      'npm', 'install', '-g', ...agent.adapterPackages
+      'sh', '-c',
+      `npm install -g ${agent.adapterPackages.map((p) => `'${p}'`).join(' ')}\n` +
+        `rc=$?\n` +
+        `if [ "$rc" -ne 0 ]; then exit "$rc"; fi\n` +
+        `mkdir -p "$HOME/${parent}" && printf '%s' '${adapterMarkerValue(agent)}' > "$HOME/${marker}" ` +
+        `&& exit 0\n` +
+        `exit ${MARKER_WRITE_FAILED}`
     ],
     log
   )
+  if (code === MARKER_WRITE_FAILED) {
+    log('could not record adapter version marker — next probe will reinstall')
+    return
+  }
   if (code !== 0) throw new Error(`ACP adapter install failed (exit ${code})`)
-  // Record the exact pin just installed — what `adapterPresent` compares
-  // against on the next probe, so a later pin bump reinstalls here instead
-  // of reading the old binary on PATH as good enough forever.
-  const marker = adapterMarkerPath(agent)
-  const parent = path.posix.dirname(marker)
-  const { code: markerCode } = await runNodeCli(
-    [
-      'exec',
-      '--workspace-folder', workspaceFolder,
-      ...idLabelArgs(session),
-      ...configArgs,
-      'sh', '-c',
-      `mkdir -p "$HOME/${parent}" && printf '%s' '${adapterMarkerValue(agent)}' > "$HOME/${marker}"`
-    ],
-    () => {}
-  )
-  if (markerCode !== 0)
-    log(`could not record adapter version marker (exit ${markerCode}) — next probe will reinstall`)
 }
 
 /** Spawns the ACP adapter inside the environment; caller owns the process. */

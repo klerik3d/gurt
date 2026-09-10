@@ -425,13 +425,18 @@ const containers = new m.ContainerManager({
 })
 
 /**
- * Steps 4 and 5 for one session, straight at the seam `resolveLaunch` calls it
- * from — the last thing that runs before the agent is spawned into `CONTAINER`.
+ * Steps 4 and 5 for one session, straight at the seams `resolveLaunch` calls
+ * them from — the last thing that runs before the agent is spawned into
+ * `CONTAINER`. Two calls, not one: `resolveLaunch` runs the proxy-scope half
+ * (step 4) alongside the adapter install and only converges the network
+ * (step 5) once that install settles, so this test drives the same two seams
+ * in sequence rather than the single method that used to wrap them.
  */
-const ensureProxy = (id, network) => {
+const ensureProxy = async (id, network) => {
   provisionLog.length = 0
   const info = { id, workspace: ws, task, env: 'dev', repos: ['alpha'], network }
-  return containers.ensureProxy(info, CONTAINER)
+  const runtime = await containers.ensureProxyScope(info)
+  return containers.convergeProxyNetwork(info, CONTAINER, runtime)
 }
 
 test('an internal session is switched off the bridge, and the switch is verified', async () => {
