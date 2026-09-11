@@ -1948,6 +1948,13 @@ textarea.input {
 .modal-wide {
   width: 760px;
 }
+/* Fills the window less a margin — the review needs every pixel it can get. */
+.modal-full {
+  width: 96vw;
+  max-width: 96vw;
+  height: 94vh;
+  max-height: 94vh;
+}
 .modal-head {
   flex: none;
   display: flex;
@@ -2483,15 +2490,16 @@ textarea.input {
 .review {
   display: flex;
   flex-direction: column;
+  flex: 1;
   min-height: 0;
 }
 .review-body {
   display: flex;
+  flex: 1;
   min-height: 0;
-  height: 65vh;
 }
 .review-files {
-  width: 220px;
+  width: 200px;
   flex: none;
   border-right: 1px solid var(--border);
   overflow: auto;
@@ -2546,6 +2554,31 @@ textarea.input {
   border-bottom: 1px solid var(--border);
   font-size: 11.5px;
   color: var(--dim);
+}
+.review-diff-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Split / Unified — a two-way segmented toggle. */
+.review-view {
+  display: inline-flex;
+}
+.review-view .btn {
+  border-radius: 0;
+}
+.review-view .btn:first-child {
+  border-radius: 6px 0 0 6px;
+}
+.review-view .btn:last-child {
+  border-radius: 0 6px 6px 0;
+  margin-left: -1px;
+}
+.review-view .btn.active {
+  color: var(--text);
+  border-color: var(--accent);
+  position: relative;
 }
 
 /* The split itself: every row is two equal panes, so a line and its
@@ -2624,10 +2657,12 @@ textarea.input {
   font-size: 11px;
   line-height: 1;
   cursor: pointer;
-  visibility: hidden;
+  /* Faintly there on every line so it can be found; solid on the hovered row. */
+  opacity: 0.22;
 }
-.split-row:hover .split-add {
-  visibility: visible;
+.split-row:hover .split-add,
+.uni-line:hover .split-add {
+  opacity: 1;
 }
 .split-code {
   flex: 1;
@@ -2770,6 +2805,56 @@ textarea.input {
   visibility: visible;
 }
 
+/* Unified layout: one column, removed lines above added ones per block. The
+   whole column scrolls horizontally as one (no per-side tracks), so .uni-body
+   grows to the longest line and every line's background spans it. */
+.split.unified {
+  overflow-x: auto;
+}
+.uni-body {
+  display: inline-block;
+  min-width: 100%;
+}
+.uni-line {
+  display: flex;
+}
+.uni-line.add {
+  background: rgba(108, 196, 127, 0.1);
+}
+.uni-line.del {
+  background: rgba(229, 84, 75, 0.1);
+}
+.uni-line.selecting {
+  background: rgba(77, 163, 255, 0.16);
+}
+.uni-line.in-range {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.uni-line.add .split-word {
+  background: rgba(108, 196, 127, 0.28);
+}
+.uni-line.del .split-word {
+  background: rgba(229, 84, 75, 0.28);
+}
+.uni-gutter {
+  width: 86px;
+  position: sticky;
+  left: 0;
+  background: inherit;
+}
+.uni-line .uni-gutter {
+  background: var(--panel);
+}
+.uni-line.add .uni-gutter {
+  background: #1d2a22;
+}
+.uni-line.del .uni-gutter {
+  background: #2c2021;
+}
+.uni-code {
+  overflow: visible;
+}
+
 /* A comment hangs off the row it anchors to, across both panes. */
 .split-note {
   display: flex;
@@ -2832,6 +2917,62 @@ textarea.input {
 }
 .review-hint {
   color: var(--faint);
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.review-foot-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+.review-foot-count.active {
+  color: var(--text);
+  border-color: var(--accent);
+}
+/* Every comment on the target, flat — a click jumps to its line. */
+.review-list {
+  flex: none;
+  max-height: 32vh;
+  overflow: auto;
+  border-top: 1px solid var(--border);
+  padding: 4px 0;
+}
+.review-list-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 4px 14px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.review-list-item:hover {
+  background: var(--hover);
+}
+.review-list-item.here {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.review-list-item.resolved {
+  opacity: 0.55;
+}
+.review-list-item.resolved .review-list-text {
+  text-decoration: line-through;
+}
+.review-list-anchor {
+  flex: none;
+  font-size: 11px;
+  color: var(--dim);
+  padding-top: 1px;
+}
+.review-list-text {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-height: 3.2em;
 }
 .review-prompt {
   flex: 1;

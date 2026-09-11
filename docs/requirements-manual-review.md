@@ -352,9 +352,10 @@ otherwise have to re-derive from the diff:
 - **`git`'s `--numstat` decides "binary"**, not content sniffing: the pair is
   read as utf8, and by the time we could sniff it we would already have
   mangled it.
-- **The `+` gutter affordance is hover-only and lock-gated.** Unlocked, there
-  is no way to leave a comment at all — which is what makes "the diff cannot
-  move underneath an anchor" (§2.3) true rather than merely likely.
+- **The `+` gutter affordance is lock-gated.** Unlocked, there is no way to
+  leave a comment at all — which is what makes "the diff cannot move
+  underneath an anchor" (§2.3) true rather than merely likely. (It was also
+  hover-only until v3; see below.)
 - **The old `DiffModal` is gone**, and both of its entry points (a file row, a
   commit row) now open the review surface. `getFileDiff`/`getCommitDiff` stay
   on the API surface unused, per §4.
@@ -413,6 +414,35 @@ one line at a time; the split view was plain monospace text.
   renders exactly as before (plain), which is why this is safe to ship as a
   fixed, curated language list rather than "whatever hljs autodetects."
 
+### v3: open on the clicked file, full-window surface, unified layout, comments list
+
+Complaints from actually using v2, landed together: a file-row click opened
+the surface on the *first* file; the 1080px modal with a 65vh body did not
+fit a two-pane diff; the comment affordance was hard to find; and there was
+no list of the comments already left.
+
+- **`initialPath`.** The Changes panel's file rows pass the clicked path;
+  the surface starts on it and falls back to the first file only when the
+  target no longer has it. `Review` and a commit row pass nothing.
+- **The modal fills the window** (`Modal`'s `full` prop → `.modal-full`,
+  96vw × 94vh) and the review body takes the remaining height instead of a
+  fixed 65vh.
+- **Split / Unified toggle** in the diff header, remembered in
+  `localStorage` (`gurt.review.view`). Unified renders the same aligned rows
+  as one column — per change block, every `before` cell then every `after`
+  cell (the shape of a unified hunk), equal rows once with both line numbers.
+  Folds, word-diff, syntax color, the per-line `+`, gutter drag ranges and
+  `+ block` all work the same; the column scrolls horizontally as one, so
+  the two per-side tracks are split-only.
+- **Comments list.** The footer's open count is a toggle for a flat list of
+  every comment on the target (path:line, text, resolve, delete); a click
+  opens that file and scrolls the anchor into view, unfolding whatever hid
+  it (`Jump` in `ReviewModal.tsx`). This is the §3.2 `Comments (N open)`
+  list, which v1 had reduced to a count.
+- **The `+` is faintly visible on every line once locked**, solid on the
+  hovered row — hover-only had made it undiscoverable. Line numbers carry a
+  tooltip saying click/drag comments. The lock gate itself is unchanged.
+
 ## 8. Verification
 
 - `npm run typecheck` — clean, both projects.
@@ -441,7 +471,9 @@ one line at a time; the split view was plain monospace text.
   surviving a restart.
 - `npm run build && node scripts/smoke-review.mjs` — the real UI, offline
   against a local bare origin: the split view's folds/word-highlight/padding,
-  hover-only comment affordance, lock → `review.json` → a Run-now start
+  the unified layout, the lock-gated comment affordance, the comments list
+  jumping to a file, a file-row click opening on that file,
+  lock → `review.json` → a Run-now start
   refused with "locked for review", comment persistence and the open count,
   `Launch fix` drafting a session whose `startPrompt` carries the open
   comment (and neither unlocking nor resolving anything), syntax-highlight

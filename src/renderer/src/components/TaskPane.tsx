@@ -250,8 +250,11 @@ function ChangesSection({
   changes: RepoChanges[] | undefined
   onRefresh: () => void
 }) {
-  /** The open review surface: a repo plus what it reads (uncommitted, or one commit). */
-  const [review, setReview] = useState<{ repo: string; target: DiffTarget } | null>(null)
+  /** The open review surface: a repo plus what it reads (uncommitted, or one
+   *  commit), and the file it opens on when a file row was what got clicked. */
+  const [review, setReview] = useState<{ repo: string; target: DiffTarget; path?: string } | null>(
+    null
+  )
   const [commitRepo, setCommitRepo] = useState<string | null>(null)
   /** Repos held by a manual review — the lock tag and the panel's Review button
    *  read it; the surface itself owns the toggling. */
@@ -351,7 +354,9 @@ function ChangesSection({
                     <span className={`file-status st-${f.status}`}>{f.status}</span>
                     <span
                       className="file-path clickable"
-                      onClick={() => setReview({ repo: r.repo, target: { kind: 'uncommitted' } })}
+                      onClick={() =>
+                        setReview({ repo: r.repo, target: { kind: 'uncommitted' }, path: f.path })
+                      }
                     >
                       {f.path}
                     </span>
@@ -461,6 +466,7 @@ function ChangesSection({
           task={task}
           repo={review.repo}
           target={review.target}
+          initialPath={review.path}
           title={`${review.repo}${
             review.target.kind === 'commit' ? ` · ${review.target.sha.slice(0, 7)}` : ''
           }`}
