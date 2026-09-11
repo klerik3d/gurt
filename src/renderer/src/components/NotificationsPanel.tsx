@@ -8,12 +8,12 @@ import { relativeTime } from '../time'
 
 /** Same tone grammar as `status.ts` (§4.2): awaiting -> yellow, proposal ->
  *  green, error -> red. `turn-ended` is off by default and carries no
- *  urgency, so it reads as a neutral outline when a user turns it on. */
-const NOTIF_DOT: Record<NotificationType, Tone> = {
-  awaiting: 'yellow',
-  proposal: 'green',
-  error: 'red',
-  'turn-ended': 'outline'
+ *  urgency, so it reads as a neutral hollow mark when a user turns it on. */
+const NOTIF_DOT: Record<NotificationType, { tone: Tone; hollow?: boolean }> = {
+  awaiting: { tone: 'yellow' },
+  proposal: { tone: 'green' },
+  error: { tone: 'red' },
+  'turn-ended': { tone: 'faint', hollow: true }
 }
 
 /** Every session id the tree currently knows about — a notification for one
@@ -101,7 +101,7 @@ export function NotificationsPanel({
             onClick={() => open(n)}
             onMouseEnter={() => setIdx(i)}
           >
-            <Dot tone={NOTIF_DOT[n.type]} />
+            <Dot tone={NOTIF_DOT[n.type].tone} hollow={NOTIF_DOT[n.type].hollow} />
             <div className="notif-body">
               <div className="notif-loc mono">
                 {n.ref.workspace} / {n.title}

@@ -78,12 +78,14 @@ function Header({
   const agents = useAgents()
   const mcpOffered = useMcpEntries(info.workspace)
   const mcp = resolveMcpSelection(info.mcp, mcpOffered)
-  const dot = SESSION_DOT[sessionStatus(info)]
+  // A session rendered here is the one on screen, so its mark reads as seen —
+  // the same conclusion `App` writes to the store a tick later.
+  const dot = SESSION_DOT[sessionStatus({ ...info, seen: true })]
   return (
     <div className="chat-head">
       <TabBar active={activeTab} onChange={onTab} />
       <span className="spacer" />
-      <Dot tone={dot.tone} pulse={dot.pulse} />
+      <Dot tone={dot.tone} pulse={dot.pulse} hollow={dot.hollow} />
       <span className="chat-title">
         {info.task} / {info.title}
       </span>

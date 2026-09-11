@@ -25,7 +25,7 @@ import { PREPARE_LOG_KEY, WELCOME_MODE_DEFAULT, welcomeShows } from '../../share
 import type { WelcomeMode } from '../../shared/doctor'
 import { NotificationsPanel } from './components/NotificationsPanel'
 import { useOutsideClose } from './hooks'
-import { markSeen } from './reviewed'
+import { isReviewed, lastTurnEnds, markSeen, useSeen, useUsage } from './reviewed'
 import { useAgents } from './useAgents'
 import { DialogHost, alertDialog } from './dialog'
 import { logErr } from './log'
@@ -69,6 +69,8 @@ export function queuePositions(tree: Tree | null): Record<string, number> {
 
 export default function App() {
   const [tree, setTree] = useState<Tree | null>(null)
+  const seenMarks = useSeen()
+  const usage = useUsage()
   const [selection, setSelection] = useState<Selection>(null)
   const [view, setView] = useState<View>('work')
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('environments')
@@ -658,6 +660,17 @@ export default function App() {
   const activity: Record<string, SessionActivity> = {}
   for (const [id, snap] of Object.entries(snapshots))
     activity[id] = { busy: snap.info.busy, awaitingInput: snap.info.awaitingInput }
+  // Read state rides the same overlay, so every status mark in the app splits
+  // `idle` into seen/unseen from one source. Keyed off the tree rather than the
+  // snapshots: a session with no live snapshot still has a mark worth reading.
+  const turnEnds = lastTurnEnds(usage)
+  for (const w of workspaces)
+    for (const t of w.tasks)
+      for (const s of t.sessions)
+        activity[s.id] = {
+          ...activity[s.id],
+          seen: isReviewed(s.id, seenMarks, turnEnds.get(s.id))
+        }
 
   const activeSnap = selection?.type === 'session' ? snapshots[selection.id] : undefined
   const activeInfo = activeSnap?.info
@@ -678,6 +691,15 @@ export default function App() {
   const activeStatus = activeInfo
     ? sessionStatus({ ...activeInfo, ...activity[activeInfo.id] })
     : null
+
+  // Opening a session marks it read (`selectSession`), but a turn can also end
+  // while the user sits on it — which is the plainest "seen" there is, and
+  // without this the mark would stay unread under their eyes until they
+  // clicked away and back.
+  const watchedId = view === 'work' && activeStatus === 'idle' ? (activeInfo?.id ?? null) : null
+  useEffect(() => {
+    if (watchedId) markSeen(watchedId)
+  }, [watchedId])
 
   // The workspace name itself is now the interactive `.tb-ws` button — this is
   // only the rest of the breadcrumb, shown as plain text after it. Dropping
@@ -771,7 +793,7 @@ export default function App() {
                 <span className="tb-crumb-sep">/</span>
                 {crumbDot && (
                   <span
-                    className={`dot dot-${crumbDot.tone}${crumbDot.pulse ? ' dot-pulse' : ''}`}
+                    className={`dot dot-${crumbDot.tone}${crumbDot.hollow ? ' dot-hollow' : ''}${crumbDot.pulse ? ' dot-pulse' : ''}`}
                     title={crumbDot.label}
                     style={{ width: 7, height: 7 }}
                   />

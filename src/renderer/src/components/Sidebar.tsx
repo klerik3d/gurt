@@ -479,7 +479,7 @@ export function Sidebar({
                   className={`menu-item ${sort.key === k ? 'active' : ''}`}
                   onClick={() => setSort({ ...sort, key: k })}
                 >
-                  <Dot tone={sort.key === k ? 'accent' : 'outline'} size={6} />
+                  <Dot tone={sort.key === k ? 'accent' : 'faint'} hollow={sort.key !== k} size={6} />
                   {SORT_KEY_LABEL[k]}
                 </div>
               ))}
@@ -490,7 +490,7 @@ export function Sidebar({
                   className={`menu-item ${sort.dir === d ? 'active' : ''}`}
                   onClick={() => setSort({ ...sort, dir: d })}
                 >
-                  <Dot tone={sort.dir === d ? 'accent' : 'outline'} size={6} />
+                  <Dot tone={sort.dir === d ? 'accent' : 'faint'} hollow={sort.dir !== d} size={6} />
                   {SORT_DIR_LABEL[sort.key][d]}
                 </div>
               ))}
@@ -596,7 +596,7 @@ export function Sidebar({
                       onDoubleClick={() => startRename(srow)}
                       onContextMenu={renamingThis ? undefined : (e) => openContextMenu(e, srow)}
                     >
-                      <Dot tone={dot.tone} pulse={dot.pulse} />
+                      <Dot tone={dot.tone} pulse={dot.pulse} hollow={dot.hollow} />
                       {renamingThis ? (
                         <RenameInput
                           value={renameDraft}

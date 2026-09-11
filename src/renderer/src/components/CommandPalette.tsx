@@ -5,7 +5,6 @@ import { bindingLabel } from '../../../shared/hotkeys'
 import { agentKind, agentName, useAgents } from '../useAgents'
 import { useHotkeys } from '../useHotkeys'
 import { logErr } from '../log'
-import type { Tone } from '../status'
 import { SESSION_DOT } from '../status'
 import { Icon, Dot } from './icons'
 import { AgentMark } from './tags'
@@ -51,10 +50,9 @@ const STATUS_WORD: Record<SessionStatus, string> = {
   starting: 'starting',
   running: 'working',
   waiting: 'waits',
-  idle: 'idle'
+  idle: 'idle',
+  'idle-read': 'seen'
 }
-
-const wordClass = (tone: Tone) => (tone === 'outline' ? 'faint' : tone)
 
 export function CommandPalette({
   tree,
@@ -190,7 +188,7 @@ export function CommandPalette({
       const dot = SESSION_DOT[item.status]
       return (
         <div key={item.id} {...common}>
-          <Dot tone={dot.tone} pulse={dot.pulse} />
+          <Dot tone={dot.tone} pulse={dot.pulse} hollow={dot.hollow} />
           <span className={`pal-title ${active ? 'strong' : ''}`}>{item.title}</span>
           <span className="pal-meta mono">
             {item.client && (
@@ -198,7 +196,7 @@ export function CommandPalette({
                 <AgentMark kind={item.clientKind} name={item.client} /> ·{' '}
               </>
             )}
-            <span className={wordClass(dot.tone)}>{STATUS_WORD[item.status]}</span>
+            <span className={dot.tone}>{STATUS_WORD[item.status]}</span>
           </span>
         </div>
       )

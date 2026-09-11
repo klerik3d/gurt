@@ -6,12 +6,14 @@
 // worst failure mode is a cleared store, which re-surfaces finished sessions in
 // the dashboard's review list — noisy for one pass, never wrong about the work.
 import { useEffect, useState } from 'react'
+import type { TurnRecord } from '../../shared/usage'
+import { logErr } from './log'
 
 const KEY = 'gurt.seenSessions'
 /** Enough for any realistic session count; the oldest marks fall off first. */
 const CAP = 500
 
-type Seen = Record<string, string>
+export type Seen = Record<string, string>
 
 function read(): Seen {
   try {
@@ -69,3 +71,32 @@ export function useSeen(): Seen {
   }, [])
   return state
 }
+
+/** The turn ledger, refetched whenever main files a turn. */
+export function useUsage(): TurnRecord[] {
+  const [usage, setUsage] = useState<TurnRecord[]>([])
+  useEffect(() => {
+    const load = (): void => {
+      window.gurt.getUsage().then(setUsage).catch(logErr('getUsage'))
+    }
+    load()
+    return window.gurt.onUsageChanged(load)
+  }, [])
+  return usage
+}
+
+/** ISO end of each session's last recorded turn — the ledger is append-ordered,
+ *  so the last match wins. */
+export function lastTurnEnds(usage: TurnRecord[]): Map<string, string> {
+  const out = new Map<string, string>()
+  for (const r of usage) out.set(r.sessionId, r.ts)
+  return out
+}
+
+/**
+ * Has the user looked at this session since its last turn ended? A session with
+ * no recorded turn counts as reviewed: nothing is on record for them to have
+ * missed, and a turn this install never saw must not nag forever.
+ */
+export const isReviewed = (id: string, marks: Seen, lastTurnEnd?: string): boolean =>
+  !lastTurnEnd || (marks[id] ?? '') >= lastTurnEnd

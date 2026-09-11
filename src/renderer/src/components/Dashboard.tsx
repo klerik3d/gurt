@@ -11,7 +11,7 @@ import type { TurnRecord } from '../../../shared/usage'
 import { formatDuration } from '../../../shared/usage'
 import { SESSION_DOT } from '../status'
 import { agentKind, agentName, useAgents } from '../useAgents'
-import { markAllSeen, markSeen, useSeen } from '../reviewed'
+import { markAllSeen, markSeen, useUsage } from '../reviewed'
 import { relativeTime, resetClock } from '../time'
 import { logErr } from '../log'
 import { Dot, Icon } from './icons'
@@ -51,19 +51,6 @@ function usePlanUsage(): Record<string, PlanUsage> {
     return window.gurt.onUsageChanged(load)
   }, [])
   return plan
-}
-
-/** The ledger, refetched whenever main files a turn. */
-function useUsage(): TurnRecord[] {
-  const [usage, setUsage] = useState<TurnRecord[]>([])
-  useEffect(() => {
-    const load = (): void => {
-      window.gurt.getUsage().then(setUsage).catch(logErr('getUsage'))
-    }
-    load()
-    return window.gurt.onUsageChanged(load)
-  }, [])
-  return usage
 }
 
 /** Every session in the tree, with the live overlay folded into its status. */
@@ -248,7 +235,6 @@ export function Dashboard({
   const agents = useAgents()
   const usage = useUsage()
   const plan = usePlanUsage()
-  const seen = useSeen()
   const now = useNow()
   const { collapsed, toggle: toggleWorkspace } = useCollapsedWorkspaces()
 
@@ -258,17 +244,14 @@ export function Dashboard({
   const lastTurn = new Map<string, TurnRecord>()
   for (const r of usage) lastTurn.set(r.sessionId, r)
 
-  // What the board holds. Everything unfinished goes on as-is; an `idle`
-  // session earns a place in DONE only while it is unreviewed — it has run a
-  // turn this install recorded, and that turn ended after the session was last
-  // opened. Reviewing it is what takes it off the board, so DONE stays a
-  // to-do list rather than an ever-growing archive.
+  // What the board holds. Everything unfinished goes on as-is; a finished
+  // session earns a place in DONE only while it is unreviewed, which is what
+  // `idle` (as against `idle-read`) already means. Reviewing it is what takes
+  // it off the board, so DONE stays a to-do list rather than an archive.
   const boardRows: Row[] = rows.flatMap((r) => {
     if (r.status !== 'idle') return r.status in STATUS_RANK ? [r] : []
     const turn = lastTurn.get(r.info.id)
-    const seenAt = seen[r.info.id]
-    if (!turn || (seenAt && seenAt >= turn.ts)) return []
-    return [{ ...r, finishedAt: turn.ts }]
+    return turn ? [{ ...r, finishedAt: turn.ts }] : []
   })
   const boards = boardByWorkspace(boardRows, positions)
 
@@ -583,7 +566,7 @@ function BoardCard({
   return (
     <div className="dash-card-row clickable" onClick={onOpen} title={dot.label}>
       <div className="dash-card-line">
-        <Dot tone={failed ? 'red' : dot.tone} pulse={dot.pulse} />
+        <Dot tone={failed ? 'red' : dot.tone} pulse={dot.pulse} hollow={!failed && dot.hollow} />
         <span className="dash-row-title">{row.info.title}</span>
         {row.info.agent && (
           <Icon

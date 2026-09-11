@@ -35,7 +35,7 @@ const DOCKER_POLL_LIMIT_MS = 90_000
  *  yet reached is a hollow outline, so the list reads as a queue rather than
  *  as three unanswered questions. */
 const DOT: Record<DoctorRow['state'], string> = {
-  pending: 'dot-outline',
+  pending: 'dot-faint dot-hollow',
   checking: 'dot-green dot-pulse',
   ok: 'dot-green',
   warn: 'dot-yellow',
