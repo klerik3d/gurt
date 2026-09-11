@@ -22,6 +22,7 @@ export function SessionPane({
   snapshot,
   sessionId,
   queuePosition,
+  seen,
   log,
   onSelect,
   onDeleted
@@ -30,6 +31,10 @@ export function SessionPane({
   snapshot?: SessionSnapshot | undefined
   sessionId: string
   queuePosition?: number | undefined
+  /** Whether this session's last turn reads as already looked at — the sidebar
+   *  can hand it back as unread while it sits open, so the header cannot just
+   *  assume that being on screen means seen. */
+  seen?: boolean | undefined
   log: string[]
   /** Select another session — where a duplicate's fresh draft is handed to. */
   onSelect: (id: string) => void
@@ -42,6 +47,7 @@ export function SessionPane({
         tree={tree}
         snapshot={snapshot}
         sessionId={sessionId}
+        seen={seen}
         log={log}
         onSelect={onSelect}
         onDeleted={onDeleted}
@@ -78,9 +84,9 @@ function Header({
   const agents = useAgents()
   const mcpOffered = useMcpEntries(info.workspace)
   const mcp = resolveMcpSelection(info.mcp, mcpOffered)
-  // A session rendered here is the one on screen, so its mark reads as seen —
-  // the same conclusion `App` writes to the store a tick later.
-  const dot = SESSION_DOT[sessionStatus({ ...info, seen: true })]
+  // Only ever a draft/queued/starting session here — a started one renders as
+  // `Chat` — so no read state can reach this mark.
+  const dot = SESSION_DOT[sessionStatus(info)]
   return (
     <div className="chat-head">
       <TabBar active={activeTab} onChange={onTab} />

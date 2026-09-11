@@ -70,7 +70,7 @@ export function queuePositions(tree: Tree | null): Record<string, number> {
 export default function App() {
   const [tree, setTree] = useState<Tree | null>(null)
   const seenMarks = useSeen()
-  const usage = useUsage()
+  const { turns: usage, loaded: readStateReady } = useUsage()
   const [selection, setSelection] = useState<Selection>(null)
   const [view, setView] = useState<View>('work')
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('environments')
@@ -693,13 +693,17 @@ export default function App() {
     : null
 
   // Opening a session marks it read (`selectSession`), but a turn can also end
-  // while the user sits on it — which is the plainest "seen" there is, and
-  // without this the mark would stay unread under their eyes until they
-  // clicked away and back.
-  const watchedId = view === 'work' && activeStatus === 'idle' ? (activeInfo?.id ?? null) : null
+  // while the user sits on it — which is the plainest "seen" there is. Read off
+  // the busy edge rather than off `idle`, so that marking a session unread by
+  // hand survives: the status alone would flip back the moment it went unread.
+  const openId = view === 'work' ? (activeInfo?.id ?? null) : null
+  const openBusy = !!(openId && activity[openId]?.busy)
+  const wasOpen = useRef<{ id: string | null; busy: boolean }>({ id: null, busy: false })
   useEffect(() => {
-    if (watchedId) markSeen(watchedId)
-  }, [watchedId])
+    const was = wasOpen.current
+    wasOpen.current = { id: openId, busy: openBusy }
+    if (openId && was.id === openId && was.busy && !openBusy) markSeen(openId)
+  }, [openId, openBusy])
 
   // The workspace name itself is now the interactive `.tb-ws` button — this is
   // only the rest of the breadcrumb, shown as plain text after it. Dropping
@@ -874,6 +878,7 @@ export default function App() {
               changes={changes}
               activity={activity}
               focusSignal={focusTasksSignal}
+              readStateReady={readStateReady}
               onNewSession={(w, t) => createDraft(w, t)}
               onSelectTask={selectTask}
               onSelectSession={selectSession}
@@ -886,6 +891,7 @@ export default function App() {
                   snapshot={snapshots[selection.id]}
                   sessionId={selection.id}
                   queuePosition={positions[selection.id]}
+                  seen={activity[selection.id]?.seen}
                   log={logs[selection.id] ?? []}
                   onSelect={selectSession}
                   onDeleted={() => setSelection(null)}

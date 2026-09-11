@@ -233,7 +233,7 @@ export function Dashboard({
   onSelectTask: (ws: string, task: string) => void
 }) {
   const agents = useAgents()
-  const usage = useUsage()
+  const { turns: usage } = useUsage()
   const plan = usePlanUsage()
   const now = useNow()
   const { collapsed, toggle: toggleWorkspace } = useCollapsedWorkspaces()
