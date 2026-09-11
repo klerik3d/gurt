@@ -42,6 +42,7 @@ export type IconName =
   | 'fold'
   | 'sort'
   | 'info'
+  | 'check'
 
 const PATHS: Record<IconName, JSX.Element> = {
   search: (
@@ -295,7 +296,8 @@ const PATHS: Record<IconName, JSX.Element> = {
       <line x1="12" y1="11" x2="12" y2="16" />
       <line x1="12" y1="7.6" x2="12.01" y2="7.6" />
     </>
-  )
+  ),
+  check: <polyline points="4 12 10 18 20 6" />
 }
 
 /** Icons drawn as a solid mark (currentColor fill) rather than a stroke outline. */
