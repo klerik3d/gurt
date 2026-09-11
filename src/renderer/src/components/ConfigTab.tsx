@@ -122,7 +122,7 @@ function McpRow({
   return (
     <div className="pick-wrap">
       <div className="pick-row mcp-row" title={entry.description}>
-        <Dot tone={on ? 'green' : 'outline'} size={7} />
+        <Dot tone={on ? 'green' : 'faint'} hollow={!on} size={7} />
         <span className={`mcp-name ${on ? '' : 'faint'}`}>{entry.label}</span>
         <span className="mcp-desc faint">{entry.description}</span>
         <div className="chip-row" style={{ flex: 'none' }}>
@@ -184,7 +184,11 @@ function SkillRow({
   const current = on ? 'on' : 'off'
   return (
     <div className="pick-row mcp-row" title={entry.problem ?? entry.description}>
-      <Dot tone={entry.problem ? 'red' : on ? 'green' : 'outline'} size={7} />
+      <Dot
+        tone={entry.problem ? 'red' : on ? 'green' : 'faint'}
+        hollow={!entry.problem && !on}
+        size={7}
+      />
       <span className={`mcp-name ${on ? '' : 'faint'}`}>{entry.name}</span>
       <span className="mcp-desc faint">{entry.problem ?? entry.description}</span>
       <div className="chip-row" style={{ flex: 'none' }}>

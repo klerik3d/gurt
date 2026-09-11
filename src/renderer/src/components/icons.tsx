@@ -1,4 +1,5 @@
 import type { JSX } from 'react'
+import type { Tone } from '../status'
 // Shared line-icon set (Feather/Lucide-style strokes, 1.75px, round caps) used
 // across the whole UI — see the redesign handoff's Assets section.
 
@@ -374,20 +375,23 @@ export function Logo({ size = 64, className }: { size?: number; className?: stri
   )
 }
 
-/** Status dot used everywhere (sidebar, headers, palette, env rows).
- *  `tone`: green | yellow | red | accent | outline; `pulse` for running/busy. */
+/** Status dot used everywhere (sidebar, headers, palette, env rows). `tone` is
+ *  the colour axis, `hollow` the fill axis and `pulse` marks live work — see the
+ *  grammar on `SESSION_DOT`. */
 export function Dot({
   tone,
   pulse,
+  hollow,
   size = 8
 }: {
-  tone: 'green' | 'yellow' | 'red' | 'accent' | 'outline'
+  tone: Tone
   pulse?: boolean | undefined
+  hollow?: boolean | undefined
   size?: number | undefined
 }): JSX.Element {
   return (
     <span
-      className={`dot dot-${tone}${pulse ? ' dot-pulse' : ''}`}
+      className={`dot dot-${tone}${hollow ? ' dot-hollow' : ''}${pulse ? ' dot-pulse' : ''}`}
       style={size !== 8 ? { width: size, height: size } : undefined}
     />
   )

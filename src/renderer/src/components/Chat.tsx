@@ -287,15 +287,16 @@ export function Chat({
         ? null
         : 'thinking…'
 
-  // `busy` is the live flag, fresher than the copy on `info`.
-  const headDot = SESSION_DOT[sessionStatus({ ...info, busy })]
+  // `busy` is the live flag, fresher than the copy on `info`; `seen` holds
+  // because this is the session the user is looking at.
+  const headDot = SESSION_DOT[sessionStatus({ ...info, busy, seen: true })]
 
   return (
     <div className="chat">
       <div className="chat-head">
         <TabBar active={activeTab} onChange={setActiveTab} />
         <span className="spacer" />
-        <Dot tone={headDot.tone} pulse={headDot.pulse} />
+        <Dot tone={headDot.tone} pulse={headDot.pulse} hollow={headDot.hollow} />
         <span className="chat-title">
           {info.task} / {info.title}
         </span>

@@ -90,7 +90,7 @@ export function TaskPane({
             return (
               <div key={s.id}>
                 <div className="env-row">
-                  <Dot tone={dot.tone} pulse={dot.pulse} />
+                  <Dot tone={dot.tone} pulse={dot.pulse} hollow={dot.hollow} />
                   <span className="env-name clickable" onClick={() => onSelectSession(s.id)}>
                     {s.title}
                   </span>

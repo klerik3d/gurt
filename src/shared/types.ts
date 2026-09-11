@@ -492,22 +492,28 @@ export interface SessionInfo {
   /** Runtime overlay (never persisted): the turn ended without a `complete` call and the
    *  automatic nudge did not heal it — a protocol violation surfaced in the snapshot. */
   incomplete?: boolean | undefined
+  /** Runtime overlay (never persisted): the user has looked at this session since its
+   *  last turn ended, which splits `idle` into `idle-read`. */
+  seen?: boolean | undefined
 }
 
 /**
  * The live overlay the renderer keeps per session id, outside the tree snapshot:
- * both members carry `| undefined` because they are read off a
- * {@link SessionSnapshot}, which reports "not busy" as an unset field.
+ * `busy`/`awaitingInput` carry `| undefined` because they are read off a
+ * {@link SessionSnapshot}, which reports "not busy" as an unset field, while
+ * `seen` is the window's own read-state bookkeeping.
  */
 export interface SessionActivity {
   busy?: boolean | undefined
   awaitingInput?: boolean | undefined
+  seen?: boolean | undefined
 }
 
 /**
  * Fine-grained status shown in the session tree — the persisted {@link SessionState}
  * split by the live runtime overlay so a `started` session reads as one of:
- *   running — the agent is working, waiting — it needs the user, idle — turn done.
+ *   running — the agent is working, waiting — it needs the user, idle — turn done
+ *   and still unseen, idle-read — turn done and the user has looked at it.
  */
 export type SessionStatus =
   | 'draft'
@@ -516,13 +522,14 @@ export type SessionStatus =
   | 'running'
   | 'waiting'
   | 'idle'
+  | 'idle-read'
 
 /** Collapse (persisted state + runtime overlay) into the status the tree renders. */
 export function sessionStatus(s: SessionInfo): SessionStatus {
   if (s.state !== 'started') return s.state // draft | queued | starting
   if (s.awaitingInput) return 'waiting'
   if (s.busy) return 'running'
-  return 'idle'
+  return s.seen ? 'idle-read' : 'idle'
 }
 
 /** Full tree snapshot pushed to the renderer. */
