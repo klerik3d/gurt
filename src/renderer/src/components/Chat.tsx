@@ -442,6 +442,33 @@ function PinnedRequest({
 
 // ---- feed entries ----
 
+/** Fenced code block from an agent message, with a hover-revealed button to
+ *  copy its literal text — the whole reason someone reads a code block in a
+ *  chat is usually to lift it out, and `<pre>` gives no way to do that. Reads
+ *  from the rendered DOM node rather than the markdown AST so it copies
+ *  exactly what's on screen, syntax quirks and all. */
+function CodeBlock({ node: _node, ...rest }: React.ComponentPropsWithoutRef<'pre'> & { node?: unknown }) {
+  const ref = useRef<HTMLPreElement>(null)
+  const [copied, setCopied] = useState(false)
+  return (
+    <div className="code-block">
+      <pre ref={ref} {...rest} />
+      <button
+        type="button"
+        className="code-copy"
+        title={copied ? 'copied' : 'copy'}
+        onClick={() => {
+          void navigator.clipboard.writeText(ref.current?.textContent ?? '')
+          setCopied(true)
+          setTimeout(() => setCopied(false), 1200)
+        }}
+      >
+        <Icon name={copied ? 'check' : 'copy'} size={13} />
+      </button>
+    </div>
+  )
+}
+
 function Msg({
   entry,
   sessionId,
@@ -465,7 +492,9 @@ function Msg({
         <div className="msg">
           <span className="msg-dot" style={{ background: 'var(--accent)' }} />
           <div className="msg-text markdown">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{entry.text}</ReactMarkdown>
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ pre: CodeBlock }}>
+              {entry.text}
+            </ReactMarkdown>
           </div>
         </div>
       )
