@@ -75,6 +75,7 @@ export function Chat({
   tree,
   snapshot,
   sessionId,
+  seen,
   log,
   onSelect,
   onDeleted
@@ -82,6 +83,8 @@ export function Chat({
   tree: Tree | null
   snapshot?: SessionSnapshot | undefined
   sessionId: string
+  /** Whether the last turn reads as already looked at — see `SessionPane`. */
+  seen?: boolean | undefined
   log: string[]
   /** Select another session — where a duplicate's fresh draft is handed to. */
   onSelect: (id: string) => void
@@ -287,9 +290,8 @@ export function Chat({
         ? null
         : 'thinking…'
 
-  // `busy` is the live flag, fresher than the copy on `info`; `seen` holds
-  // because this is the session the user is looking at.
-  const headDot = SESSION_DOT[sessionStatus({ ...info, busy, seen: true })]
+  // `busy` is the live flag, fresher than the copy on `info`.
+  const headDot = SESSION_DOT[sessionStatus({ ...info, busy, seen })]
 
   return (
     <div className="chat">

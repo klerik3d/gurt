@@ -47,10 +47,23 @@ function commit(next: Seen): void {
   subscribers.forEach((fn) => fn(next))
 }
 
+/**
+ * An explicit "I still want to come back to this". Deliberately not an ISO
+ * stamp: no turn can ever end after it, so the mark holds until the user opens
+ * the session again — including on one with no turn on record at all, which a
+ * missing mark would otherwise read as nothing-to-review.
+ */
+const UNREAD = 'unread'
+
 /** Mark a session reviewed as of now — called when it is opened, and by the
  *  dashboard's explicit "reviewed" action. */
 export function markSeen(id: string): void {
   commit({ ...seen, [id]: new Date().toISOString() })
+}
+
+/** Hand the session back to the user as unread — the sidebar's "mark unread". */
+export function markUnread(id: string): void {
+  commit({ ...seen, [id]: UNREAD })
 }
 
 /** Mark several at once (the review list's "mark all" action). */
@@ -72,17 +85,28 @@ export function useSeen(): Seen {
   return state
 }
 
-/** The turn ledger, refetched whenever main files a turn. */
-export function useUsage(): TurnRecord[] {
-  const [usage, setUsage] = useState<TurnRecord[]>([])
+/**
+ * The turn ledger, refetched whenever main files a turn. `loaded` tells an
+ * empty ledger apart from one that has not arrived yet, which matters because
+ * a session with no record on it reads as reviewed: anything deciding on the
+ * ledger before it lands would take every finished session for read.
+ */
+export function useUsage(): { turns: TurnRecord[]; loaded: boolean } {
+  const [state, setState] = useState<{ turns: TurnRecord[]; loaded: boolean }>({
+    turns: [],
+    loaded: false
+  })
   useEffect(() => {
     const load = (): void => {
-      window.gurt.getUsage().then(setUsage).catch(logErr('getUsage'))
+      window.gurt
+        .getUsage()
+        .then((turns) => setState({ turns, loaded: true }))
+        .catch(logErr('getUsage'))
     }
     load()
     return window.gurt.onUsageChanged(load)
   }, [])
-  return usage
+  return state
 }
 
 /** ISO end of each session's last recorded turn — the ledger is append-ordered,
@@ -96,7 +120,8 @@ export function lastTurnEnds(usage: TurnRecord[]): Map<string, string> {
 /**
  * Has the user looked at this session since its last turn ended? A session with
  * no recorded turn counts as reviewed: nothing is on record for them to have
- * missed, and a turn this install never saw must not nag forever.
+ * missed, and a turn this install never saw must not nag forever. An explicit
+ * {@link markUnread} outranks both.
  */
 export const isReviewed = (id: string, marks: Seen, lastTurnEnd?: string): boolean =>
-  !lastTurnEnd || (marks[id] ?? '') >= lastTurnEnd
+  marks[id] !== UNREAD && (!lastTurnEnd || (marks[id] ?? '') >= lastTurnEnd)

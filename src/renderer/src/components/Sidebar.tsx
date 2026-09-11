@@ -9,6 +9,7 @@ import { useHotkeys } from '../useHotkeys'
 import { useOutsideClose } from '../hooks'
 import { alertDialog, confirmDialog } from '../dialog'
 import { SESSION_DOT } from '../status'
+import { markUnread } from '../reviewed'
 import { Icon, Dot } from './icons'
 import { AgentMark } from './tags'
 import { deleteSession, duplicateSession } from './SessionActions'
@@ -106,6 +107,7 @@ export function Sidebar({
   changes,
   activity,
   focusSignal,
+  readStateReady,
   onNewSession,
   onSelectTask,
   onSelectSession
@@ -123,6 +125,9 @@ export function Sidebar({
   /** Bumped by App on ⌘2 (`gotoTasks`) — focuses the tree, including on the
    *  mount that follows switching into the work view from elsewhere. */
   focusSignal?: number
+  /** Whether the read marks on `activity` are settled — the fold-on-entry seed
+   *  below must not run against a turn ledger that has not arrived yet. */
+  readStateReady?: boolean
   onNewSession: (ws: string, task: string) => void
   onSelectTask: (ws: string, task: string) => void
   onSelectSession: (id: string) => void
@@ -174,6 +179,28 @@ export function Sidebar({
   useEffect(() => {
     if (focusSignal) treeRef.current?.focus()
   }, [focusSignal])
+
+  // Entering the tree folds away the tasks holding nothing new, so the list
+  // opens on what still wants the user. Seeded once per entry (mount, ⌘2, a
+  // workspace switch) rather than derived from the marks: recomputing live
+  // would fold a task shut under the cursor the moment its last session was
+  // read, and would fight every manual unfold.
+  const seedKey = tasks.length && readStateReady ? `${wsName}#${focusSignal ?? 0}` : null
+  const seeded = useRef<string | null>(null)
+  useEffect(() => {
+    if (!seedKey || seeded.current === seedKey) return
+    seeded.current = seedKey
+    // The open session's own task stays up — folding it would hide the row for
+    // what the pane is showing.
+    const open = tasks.find(
+      (t) => selection?.type === 'session' && t.sessions.some((s) => s.id === selection.id)
+    )
+    const read = (t: (typeof tasks)[number]) =>
+      t !== open &&
+      t.sessions.length > 0 &&
+      t.sessions.every((s) => sessionStatus({ ...s, ...activity[s.id] }) === 'idle-read')
+    setCollapsed(new Set(tasks.filter(read).map((t) => `${wsName}/${t.name}`)))
+  }, [seedKey, tasks, activity, wsName, selection])
 
   const setCollapse = (ws2: string, task: string, on: boolean) => {
     setCollapsed((prev) => {
@@ -234,9 +261,18 @@ export function Sidebar({
   }
 
   /** The open context menu's contents — a task gets "new session" / "delete
-   *  task", a session gets "duplicate as draft" / "delete session". */
+   *  task", a session gets "duplicate as draft" / "mark unread" (only once it
+   *  reads as seen) / "delete session". */
   const renderCtxMenu = (menu: { row: Row; x: number; y: number }, close: () => void) => {
     const { row } = menu
+    // Only a session that already reads as seen has a mark worth handing back.
+    const readSession =
+      row.kind === 'session' &&
+      tasks.some((t) =>
+        t.sessions.some(
+          (s) => s.id === row.id && sessionStatus({ ...s, ...activity[s.id] }) === 'idle-read'
+        )
+      )
     return (
       <RowContextMenu x={menu.x} y={menu.y} onClose={close}>
         {row.kind === 'task' ? (
@@ -278,6 +314,19 @@ export function Sidebar({
               <Icon name="copy" size={13} className="faint" />
               <span>Duplicate as draft</span>
             </div>
+            {readSession && (
+              <div
+                className="menu-item"
+                onMouseDown={(e) => {
+                  e.preventDefault()
+                  close()
+                  markUnread(row.id)
+                }}
+              >
+                <Icon name="eye" size={13} className="faint" />
+                <span>Mark unread</span>
+              </div>
+            )}
             <div className="menu-sep" />
             <div
               className="menu-item danger"
