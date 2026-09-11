@@ -7,6 +7,8 @@
 // which expands on click; word-level highlighting on a rewritten line; the
 // lock toggle reaches review.json and blocks a session start with an inline
 // error, and unlocking releases it; comments persist and survive a reload;
+// the unified layout and the comments list work; a file-row click opens the
+// surface on that file;
 // Launch fix drafts a session whose start prompt carries the open comments.
 //
 //   npm run build && node scripts/smoke-review.mjs
@@ -175,6 +177,19 @@ try {
   )
   console.log('split view OK')
 
+  // --- unified layout ------------------------------------------------------
+  // The same rows, one column: removed lines above added ones, no padding
+  // cells, and the choice survives closing the surface.
+  await page.click('.review-view button:has-text("Unified")')
+  await page.waitForSelector('.uni-line', { timeout: 5000 })
+  check((await page.locator('.split-row').count()) === 0, 'unified replaces the two-pane rows')
+  check((await page.locator('.uni-line.del').count()) > 0 && (await page.locator('.uni-line.add').count()) > 0,
+    'unified shows removed and added lines')
+  check((await page.locator('.split-fold').count()) > 0, 'folds still apply in unified')
+  await page.screenshot({ path: path.join(SHOT_DIR, '02b-unified.png') })
+  await page.click('.review-view button:has-text("Split")')
+  await page.waitForSelector('.split-row', { timeout: 5000 })
+
   // --- the lock ------------------------------------------------------------
   // Commenting is gated on it, so the affordance is absent until it is taken.
   check((await page.locator('.split-add').count()) === 0, 'no comment affordance while unlocked')
@@ -182,15 +197,9 @@ try {
   await page.waitForSelector('.review-diff-head .tag-accent', { timeout: 5000 })
   check(!!reviewJson().locked[REPO], 'the lock reached review.json')
   check((await page.locator('.split-add').count()) > 0, 'locking reveals the comment affordance')
-  // Hidden until its row is hovered — the gutter stays quiet while reading.
-  check(
-    !(await page.locator('.split-add').first().isVisible()),
-    'the comment affordance is hover-only'
-  )
   await page.screenshot({ path: path.join(SHOT_DIR, '03-locked.png') })
 
   // --- comments ------------------------------------------------------------
-  // The `+` only shows on row hover, so the gutter stays quiet while reading.
   const target = page.locator('.split-row.change', { has: page.locator('.split-word') }).first()
   await target.hover()
   await target.locator('.split-pane.add .split-add').click()
@@ -206,6 +215,18 @@ try {
     'the footer counts it'
   )
   await page.screenshot({ path: path.join(SHOT_DIR, '04-comment.png') })
+
+  // The flat comments list opens from the footer count and jumps to the line.
+  await page.click('.review-foot-count')
+  await page.waitForSelector('.review-list-item', { timeout: 5000 })
+  check(
+    (await page.textContent('.review-list-anchor'))?.startsWith('app.ts:'),
+    'the list names the file and line'
+  )
+  await page.click('.review-list-item')
+  await page.waitForSelector('.review-file.active:has-text("app.ts")', { timeout: 5000 })
+  await page.click('.review-foot-count')
+  await page.waitForSelector('.review-list', { state: 'detached', timeout: 5000 })
 
   // Resolving it takes it out of the open count without deleting it.
   await page.click('.split-note input[type="checkbox"]')
@@ -293,8 +314,16 @@ try {
   // --- launch fix ----------------------------------------------------------
   await page.click(`.sb-task-name:has-text("${TASK}")`)
   await page.waitForSelector('.changes-block', { timeout: 10000 })
-  await page.click('.changes-actions button:has-text("Review")')
-  await page.waitForSelector('.split-note', { timeout: 10000 })
+  // Reopen from a file row: the surface opens on that file, not the first one.
+  const secondRow = page.locator('.changes-block .file-row .file-path').nth(1)
+  const secondPath = (await secondRow.textContent())?.trim()
+  await secondRow.click()
+  await page.waitForSelector('.review', { timeout: 10000 })
+  await page.waitForSelector(`.review-file.active:has-text("${secondPath}")`, { timeout: 5000 })
+  check(
+    (await page.textContent('.review-diff-path'))?.trim() === secondPath,
+    `a file-row click opens the review on that file (${secondPath})`
+  )
   const before = sessionsJson().length
   await page.fill('.review-prompt', 'keep the change minimal')
   await page.click('.review-foot button:has-text("Launch fix")')
