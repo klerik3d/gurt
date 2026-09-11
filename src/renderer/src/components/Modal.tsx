@@ -6,12 +6,15 @@ export function Modal({
   title,
   onClose,
   wide,
+  full,
   width,
   children
 }: {
   title: string
   onClose: () => void
   wide?: boolean
+  /** Fill the window (less a margin) — for surfaces that need the room, like the review. */
+  full?: boolean
   width?: number
   children: ReactNode
 }) {
@@ -27,7 +30,7 @@ export function Modal({
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
       <div
-        className={`modal${wide ? ' modal-wide' : ''}`}
+        className={`modal${wide ? ' modal-wide' : ''}${full ? ' modal-full' : ''}`}
         style={width ? { width } : undefined}
         onMouseDown={(e) => e.stopPropagation()}
       >
