@@ -812,6 +812,49 @@ function idLabelArgs(session: string): string[] {
   return ['--id-label', `gurt.session=${session}`]
 }
 
+/**
+ * The CLI's own default, when `--workspace-folder` sits inside a git working
+ * tree, is to resolve `git rev-parse --show-toplevel` from it and treat
+ * *that* as the workspace root — meant for opening a worktree at its main
+ * checkout. Every `workspaceFolder` gurt ever passes is either a repo clone
+ * (already its own toplevel, so this is a no-op) or the empty wrapper dir a
+ * mounted session stages under `~/.gurt/<ws>/<task>/.multirepo/<session>/repos`
+ * (`store.mountedWorkspaceDir`) — and `~/.gurt` itself is a git repo
+ * (`ensureJournalRepo`), so for that case the default would walk up to the
+ * whole journal, credentials.json included.
+ *
+ * `up` and `exec` both take the option and both derive paths from it: `up`
+ * decides what to bind-mount and where, `exec` decides the cwd it hands
+ * docker (`/workspaces/<basename(root)>/<path below root>` unless the config
+ * names a `workspaceFolder`). The two must agree — an `up` with the flag
+ * mounts the wrapper at `/workspaces/repos`, and an `exec` without it then
+ * asks for `/workspaces/.gurt/gurt/<ws>/<task>/.multirepo/<session>/repos`,
+ * which does not exist in that container, so docker refuses the exec with
+ * "chdir to cwd … failed" and exit 127 before the command ever runs. Hence
+ * one constant, passed by `up` (`devcontainerUp`) and every `exec`
+ * (`execArgs`) alike.
+ *
+ * Spelled `=false`, not `--no-…`: the CLI builds its yargs parser with
+ * `boolean-negation` off, so the `--no-` prefix is rejected as an unknown
+ * argument and the command exits 1 before doing anything.
+ */
+const MOUNT_WORKSPACE_GIT_ROOT_OFF = '--mount-workspace-git-root=false'
+
+/**
+ * The argv prefix every `devcontainer exec` shares: the container is found by
+ * the session id-label, and the workspace folder + override config resolve
+ * the cwd and remote user exactly the way the `up` that created it did.
+ */
+function execArgs(session: string, configArgs: string[], workspaceFolder: string): string[] {
+  return [
+    'exec',
+    '--workspace-folder', workspaceFolder,
+    MOUNT_WORKSPACE_GIT_ROOT_OFF,
+    ...idLabelArgs(session),
+    ...configArgs
+  ]
+}
+
 export interface UpResult {
   containerId: string
   remoteWorkspaceFolder: string
@@ -1024,21 +1067,11 @@ export async function devcontainerUp(
     // `.devcontainer/` of its own has it, so `up` failed there with ENOENT.
     // Nothing here reads the lockfile back, so disable it outright.
     '--no-lockfile',
-    // The CLI's own default: when `workspaceFolder` sits inside a git working
-    // tree, resolve `git rev-parse --show-toplevel` from it and mount *that*
-    // instead — meant for opening a worktree at its main checkout. Every
-    // `workspaceFolder` gurt ever passes is either a repo clone (already its
-    // own toplevel, so this is a no-op) or the empty wrapper dir a mounted
-    // session stages under `~/.gurt/<ws>/<task>/.multirepo/<session>/repos`
-    // (`store.mountedWorkspaceDir`) — and `~/.gurt` itself is a git repo
-    // (`ensureJournalRepo`), so for that case the default would walk up and
-    // bind-mount the whole journal, credentials.json included, in place of
-    // the wrapper dir. Disable it unconditionally rather than only for the
-    // wrapper case — gurt never wants anything but the literal folder it named.
-    // Spelled `=false`, not `--no-…`: the CLI builds its yargs parser with
-    // `boolean-negation` off, so the `--no-` prefix is rejected as an unknown
-    // argument and `up` exits 1 before doing anything.
-    '--mount-workspace-git-root=false',
+    // Never bind-mount a git ancestor of the folder gurt named — see
+    // `MOUNT_WORKSPACE_GIT_ROOT_OFF` for why, and why every `exec` against
+    // this container must pass the same flag. Unconditional rather than only
+    // for the wrapper case: gurt never wants anything but the literal folder.
+    MOUNT_WORKSPACE_GIT_ROOT_OFF,
     ...idLabelArgs(session),
     ...mountConfigArgs
   ]
@@ -1192,10 +1225,7 @@ export async function linkContainerSkills(
   const parent = path.posix.dirname(skillsDir)
   const { code } = await runNodeCli(
     [
-      'exec',
-      '--workspace-folder', workspaceFolder,
-      ...idLabelArgs(session),
-      ...configArgs,
+      ...execArgs(session, configArgs, workspaceFolder),
       'sh', '-c',
       `mkdir -p "$HOME/${parent}" && rm -rf "$HOME/${skillsDir}" && ln -s ${SKILLS_MOUNT} "$HOME/${skillsDir}"`
     ],
@@ -1254,10 +1284,7 @@ export async function linkContainerHistory(
     const slug = historySlug(entry)
     const { code } = await runNodeCli(
       [
-        'exec',
-        '--workspace-folder', workspaceFolder,
-        ...idLabelArgs(session),
-        ...configArgs,
+        ...execArgs(session, configArgs, workspaceFolder),
         'sh', '-c',
         `mkdir -p "$HOME/${parent}" && rm -rf "$HOME/${entry}" && ln -s ${HISTORY_MOUNT}/${slug} "$HOME/${entry}"`
       ],
@@ -1311,10 +1338,7 @@ export async function adapterPresent(
   const expected = adapterMarkerValue(agent)
   const { code } = await runNodeCli(
     [
-      'exec',
-      '--workspace-folder', workspaceFolder,
-      ...idLabelArgs(session),
-      ...configArgs,
+      ...execArgs(session, configArgs, workspaceFolder),
       'sh', '-c',
       `command -v ${agent.bin} >/dev/null 2>&1 && [ "$(cat "$HOME/${marker}" 2>/dev/null)" = "${expected}" ]`
     ],
@@ -1348,10 +1372,7 @@ export async function probeAdapterAndLinkSkills(
   const expected = adapterMarkerValue(agent)
   const { code } = await runNodeCli(
     [
-      'exec',
-      '--workspace-folder', workspaceFolder,
-      ...idLabelArgs(session),
-      ...configArgs,
+      ...execArgs(session, configArgs, workspaceFolder),
       'sh', '-c',
       `skills_rc=0\n` +
         `mkdir -p "$HOME/${parent}" && rm -rf "$HOME/${skillsDir}" && ` +
@@ -1390,10 +1411,7 @@ export async function writeContainerUserFile(
   const parent = path.posix.dirname(relPath)
   const { code } = await runNodeCli(
     [
-      'exec',
-      '--workspace-folder', workspaceFolder,
-      ...idLabelArgs(session),
-      ...configArgs,
+      ...execArgs(session, configArgs, workspaceFolder),
       '--remote-env', `GURT_PROVISION_FILE=${content}`,
       'sh', '-c',
       `umask 077 && mkdir -p "$HOME/${parent}" && printf '%s' "$GURT_PROVISION_FILE" > "$HOME/${relPath}"`
@@ -1426,10 +1444,7 @@ export async function installAcpAdapter(
   const parent = path.posix.dirname(marker)
   const { code } = await runNodeCli(
     [
-      'exec',
-      '--workspace-folder', workspaceFolder,
-      ...idLabelArgs(session),
-      ...configArgs,
+      ...execArgs(session, configArgs, workspaceFolder),
       'sh', '-c',
       `npm install -g ${agent.adapterPackages.map((p) => `'${p}'`).join(' ')}\n` +
         `rc=$?\n` +
@@ -1460,10 +1475,7 @@ export function spawnAcpAdapter(
 ) {
   const args = [
     devcontainerCliPath(),
-    'exec',
-    '--workspace-folder', workspaceFolder,
-    ...idLabelArgs(session),
-    ...configArgs
+    ...execArgs(session, configArgs, workspaceFolder)
   ]
   if (secret) args.push('--remote-env', `${secretEnv}=${secret}`)
   for (const [k, v] of Object.entries(extraEnv ?? {}))
