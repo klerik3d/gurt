@@ -161,6 +161,9 @@ const SAFE_ARGS = new Set([
   'changesUpdateFromMain',
   'changesOpenPr',
   'changesOpenVscode',
+  'changesOpenTerminal',
+  'taskOpenVscode',
+  'taskOpenTerminal',
   // Notifications and shell. Ids, and a prefs object of booleans/enums.
   'markNotificationRead',
   'markAllRead',
