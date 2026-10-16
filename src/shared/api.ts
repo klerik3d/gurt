@@ -288,6 +288,10 @@ export interface GurtApi {
   /** Open the browser at the forge's compare URL (impl: `prUrl` + `shell.openExternal`). */
   changesOpenPr(ws: string, task: string, repo: string): Promise<void>
   changesOpenVscode(ws: string, task: string, repo: string): Promise<void>
+  changesOpenTerminal(ws: string, task: string, repo: string): Promise<void>
+  /** Open every repo clone under the task dir in one VS Code window. */
+  taskOpenVscode(ws: string, task: string): Promise<void>
+  taskOpenTerminal(ws: string, task: string): Promise<void>
   createSession(
     ref: EnvRef,
     /** The session's repos (repo names); empty for a repo-less draft. More than
@@ -522,6 +526,9 @@ const METHODS = {
   latestProposal: 'none', //    repo content
   changesOpenPr: 'none', //     host browser
   changesOpenVscode: 'none', // host GUI
+  changesOpenTerminal: 'none', // host GUI
+  taskOpenVscode: 'none', // host GUI
+  taskOpenTerminal: 'none', // host GUI
   createSession: 'none', //     phase 1; §13 question 2
   sessionRun: 'none', //        §2.4: does not start sessions
   sessionEnqueue: 'none', //    §2.4
