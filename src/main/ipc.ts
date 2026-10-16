@@ -314,6 +314,9 @@ export function registerIpc(): void {
       await shell.openExternal(await kernel.prUrl(ws, task, repo))
     },
     changesOpenVscode: (ws, task, repo) => changes.openInVscode(ws, task, repo),
+    changesOpenTerminal: (ws, task, repo) => changes.openRepoInTerminal(ws, task, repo),
+    taskOpenVscode: (ws, task) => changes.openTaskInVscode(ws, task),
+    taskOpenTerminal: (ws, task) => changes.openTaskInTerminal(ws, task),
     createSession: async (
       ref,
       repos,
