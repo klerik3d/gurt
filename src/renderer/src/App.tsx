@@ -108,6 +108,8 @@ export default function App() {
   }, [])
   const agents = useAgents()
   const hotkeys = useHotkeys()
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<Set<string>>(new Set())
+  const sidebarSeeded = useRef(new Set<string>())
   /** Bumped on every ⌘2 (`gotoTasks`) — Sidebar focuses its tree whenever this
    *  changes, including on the mount that follows switching into the work view. */
   const [focusTasksSignal, setFocusTasksSignal] = useState(0)
@@ -896,10 +898,10 @@ export default function App() {
           </button>
           <button
             className={`ab-item ${view === 'work' && workMode === 'sessions' ? 'active' : ''}`}
-            title={`Tasks & sessions · ${bindingLabel(hotkeys.gotoTasks)}`}
+            title={`Agents · ${bindingLabel(hotkeys.gotoTasks)}`}
             onClick={() => { setView('work'); setWorkMode('sessions') }}
           >
-            <Icon name="message" size={17} />
+            <Icon name="bot" size={17} />
             {modHeld && <span className="ab-badge">{bindingRestLabel(hotkeys.gotoTasks)}</span>}
           </button>
           <button
@@ -926,6 +928,9 @@ export default function App() {
         {view === 'work' && (
           <>
             <Sidebar
+              collapsed={sidebarCollapsed}
+              setCollapsed={setSidebarCollapsed}
+              seeded={sidebarSeeded}
               width={sidebarWidth}
               tree={tree}
               ws={ws?.name ?? null}
@@ -1091,8 +1096,8 @@ export default function App() {
       )}
       {newTask && (
         <NameModal
-          title={`New task in ${newTask}`}
-          placeholder="task name"
+          title={`New scope in ${newTask}`}
+          placeholder="scope name"
           onClose={() => setNewTask(null)}
           onSubmit={run(async (name) => {
             try {

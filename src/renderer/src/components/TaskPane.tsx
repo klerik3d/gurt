@@ -47,7 +47,7 @@ export function TaskPane({
   useEffect(() => {
     setCapInput(taskData?.maxConcurrentSessions ? String(taskData.maxConcurrentSessions) : '')
   }, [taskData?.maxConcurrentSessions])
-  if (!taskData) return <div className="placeholder">task not found</div>
+  if (!taskData) return <div className="placeholder">scope not found</div>
 
   const commitCap = (): void => {
     const n = capInput.trim() === '' ? undefined : Number(capInput)
@@ -156,7 +156,7 @@ export function TaskPane({
               }}
             />
           </div>
-          {queued.length === 0 && <div className="tp-dashed">no queued sessions in this task</div>}
+          {queued.length === 0 && <div className="tp-dashed">no queued sessions in this scope</div>}
           {queued.map((s) => (
             <div key={s.id} className="queue-row">
               <span className="queue-pos mono">#{positions[s.id]}</span>

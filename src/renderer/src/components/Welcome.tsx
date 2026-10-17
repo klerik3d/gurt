@@ -488,7 +488,7 @@ export function Welcome({
                   <span className="wc-hint faint">
                     {!ready
                       ? 'fix the red rows above first'
-                      : 'opens your browser, then creates a workspace, a task and an operator session'}
+                      : 'opens your browser, then creates a workspace, a scope and an operator session'}
                   </span>
                 </div>
               ) : (

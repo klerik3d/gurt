@@ -45,13 +45,13 @@ export interface HotkeyDef {
  *  own remap. */
 export const HOTKEY_DEFS: HotkeyDef[] = [
   { id: 'palette', label: 'Command palette', hint: 'open the command palette' },
-  { id: 'newSession', label: 'New session', hint: 'start a new session draft in the current task' },
-  { id: 'newTask', label: 'New task', hint: 'create a new task in the current workspace' },
+  { id: 'newSession', label: 'New session', hint: 'start a new session draft in the current scope' },
+  { id: 'newTask', label: 'New scope', hint: 'create a new scope in the current workspace' },
   { id: 'workspaceNext', label: 'Next workspace', hint: 'cycle to the next workspace' },
   { id: 'workspacePrev', label: 'Previous workspace', hint: 'cycle to the previous workspace' },
   { id: 'gotoDashboard', label: 'Go to dashboard', hint: 'open the dashboard' },
-  { id: 'gotoTasks', label: 'Go to tasks', hint: 'open tasks & sessions, focusing the list' },
-  { id: 'gotoDiff', label: 'Go to diff', hint: 'open task changes, focusing the list' },
+  { id: 'gotoTasks', label: 'Go to agents', hint: 'open agents, focusing the list' },
+  { id: 'gotoDiff', label: 'Go to diff', hint: 'open scope changes, focusing the list' },
   { id: 'gotoSettings', label: 'Go to settings', hint: 'open settings' }
 ]
 

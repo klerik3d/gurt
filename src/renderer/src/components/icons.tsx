@@ -7,6 +7,7 @@ export type IconName =
   | 'search'
   | 'plus'
   | 'message'
+  | 'bot'
   | 'box'
   | 'branch'
   | 'sliders'
@@ -71,6 +72,13 @@ const PATHS: Record<IconName, JSX.Element> = {
     <>
       <line x1="12" y1="5" x2="12" y2="19" />
       <line x1="5" y1="12" x2="19" y2="12" />
+    </>
+  ),
+  bot: (
+    <>
+      <path d="M12 8V4H8" />
+      <rect x="4" y="8" width="16" height="12" rx="2" />
+      <path d="M2 14h2m16 0h2M9 13v2m6-2v2" />
     </>
   ),
   message: (

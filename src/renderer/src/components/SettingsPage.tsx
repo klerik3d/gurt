@@ -1655,7 +1655,7 @@ function SkillModal({
     const used = await window.gurt.skillUsedBy(ws, initial!.name).catch(() => [] as string[])
     if (used.length) {
       setError(
-        `selected by session(s) in task(s): ${used.join(', ')} — unselect it there first`
+        `selected by session(s) in scope(s): ${used.join(', ')} — unselect it there first`
       )
       return
     }

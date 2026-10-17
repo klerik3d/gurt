@@ -57,7 +57,7 @@ body {
 }
 ::-webkit-scrollbar-thumb {
   background: rgba(114, 110, 102, 0.4);
-  border-radius: 6px;
+  border-radius: 4px;
   border: 2px solid transparent;
   background-clip: padding-box;
 }
@@ -129,7 +129,7 @@ body {
   font-size: 10.5px;
   color: var(--faint);
   border: 1px solid var(--border);
-  border-radius: 5px;
+  border-radius: 3.333px;
   padding: 2px 7px;
 }
 
@@ -196,7 +196,7 @@ button:disabled {
   background: transparent;
   color: var(--text);
   border: 1px solid var(--border2);
-  border-radius: 8px;
+  border-radius: 5.333px;
   padding: 7px 14px;
   font-size: 12.5px;
 }
@@ -226,12 +226,12 @@ button:disabled {
 .btn-sm {
   padding: 5px 12px;
   font-size: 12px;
-  border-radius: 7px;
+  border-radius: 4.667px;
 }
 .btn-xs {
   padding: 3px 11px;
   font-size: 11.5px;
-  border-radius: 6px;
+  border-radius: 4px;
   color: var(--dim);
 }
 .btn-text {
@@ -270,7 +270,7 @@ button:disabled {
   width: 26px;
   height: 26px;
   flex: none;
-  border-radius: 7px;
+  border-radius: 4.667px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -296,7 +296,7 @@ button:disabled {
   background: var(--app);
   color: var(--text);
   border: 1px solid var(--border2);
-  border-radius: 8px;
+  border-radius: 5.333px;
   padding: 0 12px;
   font-size: 13px;
   font-family: inherit;
@@ -348,7 +348,7 @@ textarea.input {
   font-size: 10px;
   color: var(--dim);
   border: 1px solid var(--border2);
-  border-radius: 10px;
+  border-radius: 6.667px;
   padding: 1px 8px;
   white-space: nowrap;
   flex: none;
@@ -400,7 +400,7 @@ textarea.input {
   font-size: 11.5px;
   color: var(--dim);
   border: 1px solid var(--border2);
-  border-radius: 7px;
+  border-radius: 4.667px;
   padding: 4px 12px;
   background: transparent;
 }
@@ -422,7 +422,7 @@ textarea.input {
   font-size: 11px;
   color: var(--dim);
   border: 1px solid var(--border2);
-  border-radius: 6px;
+  border-radius: 4px;
   padding: 4px 9px;
   background: var(--app);
 }
@@ -441,7 +441,7 @@ textarea.input {
   font-size: 11px;
   color: var(--faint);
   border: 1px dashed var(--border2);
-  border-radius: 6px;
+  border-radius: 4px;
   padding: 4px 9px;
 }
 .chip-dashed.clickable:hover {
@@ -454,7 +454,7 @@ textarea.input {
 .menu {
   background: var(--surface);
   border: 1px solid var(--border2);
-  border-radius: 10px;
+  border-radius: 6.667px;
   box-shadow: 0 16px 40px -8px rgba(0, 0, 0, 0.7);
   padding: 6px;
   z-index: 40;
@@ -464,7 +464,7 @@ textarea.input {
   align-items: center;
   gap: 10px;
   padding: 7px 9px;
-  border-radius: 7px;
+  border-radius: 4.667px;
   font-size: 12.5px;
   color: var(--dim);
   cursor: pointer;
@@ -533,7 +533,7 @@ textarea.input {
   background: var(--panel);
   color: var(--text);
   border: 1px solid var(--border2);
-  border-radius: 7px;
+  border-radius: 4.667px;
   padding: 0 9px;
   font-size: 12.5px;
   font-family: inherit;
@@ -582,7 +582,7 @@ textarea.input {
   padding: 0 14px;
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: 4.667px;
   font-family: var(--mono);
   font-size: 12px;
   color: var(--dim);
@@ -599,7 +599,7 @@ textarea.input {
   gap: 6px;
   margin: -3px -6px;
   padding: 3px 6px;
-  border-radius: 6px;
+  border-radius: 4px;
   font-weight: 600;
   color: var(--text);
   -webkit-app-region: no-drag;
@@ -635,7 +635,7 @@ textarea.input {
   flex: none;
   margin-left: 8px;
   padding: 2px 9px;
-  border-radius: 999px;
+  border-radius: 4px;
   font-size: 11.5px;
   font-weight: 600;
   background: var(--accent);
@@ -663,7 +663,7 @@ textarea.input {
 .tb-btn {
   width: 30px;
   height: 30px;
-  border-radius: 8px;
+  border-radius: 5.333px;
   -webkit-app-region: no-drag;
 }
 
@@ -692,7 +692,7 @@ textarea.input {
   position: relative;
   width: 36px;
   height: 36px;
-  border-radius: 9px;
+  border-radius: 6px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -714,7 +714,7 @@ textarea.input {
   min-width: 13px;
   height: 13px;
   padding: 0 2px;
-  border-radius: 4px;
+  border-radius: 2.667px;
   background: var(--surface);
   border: 1px solid var(--border);
   color: var(--dim);
@@ -759,14 +759,14 @@ textarea.input {
 .foot-boot-track {
   width: 90px;
   height: 4px;
-  border-radius: 2px;
+  border-radius: 1.333px;
   background: var(--hover);
   overflow: hidden;
 }
 .foot-boot-fill {
   display: block;
   height: 100%;
-  border-radius: 2px;
+  border-radius: 1.333px;
   background: var(--accent);
   transition: width 200ms ease;
 }
@@ -778,7 +778,7 @@ textarea.input {
   min-width: 0;
   background: var(--app);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 6.667px;
   /* Same fix as .settings: a full-bleed opaque child (.chat, .session-pane,
      .task-pane) would otherwise square off this border's rounded corners. */
   overflow: hidden;
@@ -819,7 +819,7 @@ textarea.input {
   flex: none;
   background: var(--app);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 6.667px;
   display: flex;
   flex-direction: column;
 }
@@ -953,7 +953,7 @@ textarea.input {
   color: var(--text);
   background: var(--app);
   border: 1px solid var(--accent);
-  border-radius: 5px;
+  border-radius: 3.333px;
   padding: 1px 5px;
   outline: none;
 }
@@ -1023,7 +1023,7 @@ textarea.input {
 }
 
 .chat-head {
-  height: 44px;
+  height: 36px;
   flex: none;
   display: flex;
   align-items: center;
@@ -1044,7 +1044,7 @@ textarea.input {
   color: var(--dim);
   background: transparent;
   border: none;
-  border-radius: 6px;
+  border-radius: 4px;
   padding: 5px 11px;
   cursor: pointer;
 }
@@ -1072,7 +1072,7 @@ textarea.input {
   color: var(--dim);
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 20px;
+  border-radius: 13.333px;
   padding: 3px 10px;
   white-space: nowrap;
   /* Last line of defence: the marks inside already collapse long lists into
@@ -1281,7 +1281,7 @@ textarea.input {
   font-size: 12px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: 2.667px;
   padding: 1px 5px;
 }
 .msg-text.markdown pre {
@@ -1290,7 +1290,7 @@ textarea.input {
   line-height: 1.6;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 5.333px;
   padding: 9px 13px;
   margin: 0;
   overflow: auto;
@@ -1316,7 +1316,7 @@ textarea.input {
   padding: 0;
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 4px;
   color: var(--dim);
   opacity: 0;
   transition: opacity 0.1s ease;
@@ -1380,13 +1380,13 @@ textarea.input {
 .tool-row {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 5.333px;
   overflow: hidden;
 }
 .tool-card {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 5.333px;
   overflow: hidden;
 }
 .tool-card .tool-head {
@@ -1424,7 +1424,7 @@ textarea.input {
   font-size: 10px;
   color: var(--red);
   border: 1px solid var(--red);
-  border-radius: 4px;
+  border-radius: 2.667px;
   padding: 1px 6px;
   flex: none;
 }
@@ -1458,7 +1458,7 @@ textarea.input {
 .diffline {
   white-space: pre;
   padding: 1px 6px;
-  border-radius: 4px;
+  border-radius: 2.667px;
   color: var(--dim);
 }
 .diffline.add {
@@ -1477,7 +1477,7 @@ textarea.input {
 .perm-card {
   background: var(--surface);
   border: 1px solid var(--border2);
-  border-radius: 10px;
+  border-radius: 6.667px;
   overflow: hidden;
   box-shadow: 0 8px 24px -12px rgba(0, 0, 0, 0.5);
 }
@@ -1580,7 +1580,7 @@ textarea.input {
   padding: 8px 10px;
   background: var(--panel);
   border: 1px dashed var(--border2);
-  border-radius: 10px;
+  border-radius: 6.667px;
 }
 .pending-row {
   display: flex;
@@ -1629,7 +1629,7 @@ textarea.input {
   flex-direction: column;
   background: var(--panel);
   border: 1px solid var(--border2);
-  border-radius: 11px;
+  border-radius: 7.333px;
   transition:
     border-color 0.15s,
     box-shadow 0.15s;
@@ -1711,7 +1711,7 @@ textarea.input {
   font-weight: 600;
   font-size: 12px;
   padding: 6px 14px;
-  border-radius: 7px;
+  border-radius: 4.667px;
   flex: none;
 }
 .send-btn:hover:not(:disabled) {
@@ -1751,7 +1751,7 @@ textarea.input {
   bottom: calc(100% + 8px);
   background: var(--surface);
   border: 1px solid var(--border2);
-  border-radius: 12px;
+  border-radius: 8px;
   box-shadow: 0 24px 60px -20px rgba(0, 0, 0, 0.7);
   z-index: 30;
   overflow: hidden;
@@ -1863,7 +1863,7 @@ textarea.input {
   padding: 9px 12px;
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 9px;
+  border-radius: 6px;
   color: var(--text);
   text-align: left;
   font-size: 13px;
@@ -1937,7 +1937,7 @@ textarea.input {
 .modal {
   background: var(--surface);
   border: 1px solid var(--border2);
-  border-radius: 14px;
+  border-radius: 9.333px;
   width: 460px;
   max-width: 92vw;
   max-height: 90vh;
@@ -2017,7 +2017,7 @@ textarea.input {
   gap: 10px;
   margin-top: 18px;
   border: 1px solid var(--accent);
-  border-radius: 11px;
+  border-radius: 7.333px;
   background: var(--app);
   box-shadow: var(--glow);
   padding: 13px 14px 10px;
@@ -2062,7 +2062,7 @@ textarea.input {
   padding: 14px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 6.667px;
 }
 .hc-block {
   display: flex;
@@ -2101,7 +2101,7 @@ textarea.input {
   padding: 8px 11px;
   background: var(--surface);
   border: 1px solid var(--border2);
-  border-radius: 9px;
+  border-radius: 6px;
   font-family: var(--ui);
   font-size: 11px;
   font-weight: 400;
@@ -2167,7 +2167,7 @@ textarea.input {
 }
 .ns-section .mcp-row {
   padding: 8px 11px;
-  border-radius: 8px;
+  border-radius: 5.333px;
 }
 .mcp-name {
   font-family: var(--mono);
@@ -2210,7 +2210,7 @@ textarea.input {
   background: var(--panel);
   color: var(--text);
   border: 1px solid var(--border2);
-  border-radius: 11px;
+  border-radius: 7.333px;
   padding: 12px 14px;
   font-family: var(--ui);
   font-size: 13.5px;
@@ -2252,7 +2252,7 @@ textarea.input {
   line-height: 1.6;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 9px;
+  border-radius: 6px;
 }
 
 /* ---- task pane (#3a) ---- */
@@ -2296,7 +2296,7 @@ textarea.input {
   background: var(--app);
   color: var(--text);
   border: 1px solid var(--border2);
-  border-radius: 6px;
+  border-radius: 4px;
   padding: 0 8px;
   font-size: 11.5px;
   font-family: inherit;
@@ -2308,7 +2308,7 @@ textarea.input {
 .tp-dashed {
   padding: 18px;
   border: 1px dashed var(--border2);
-  border-radius: 9px;
+  border-radius: 6px;
   font-size: 12.5px;
   color: var(--faint);
   text-align: center;
@@ -2321,7 +2321,7 @@ textarea.input {
   padding: 9px 12px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 9px;
+  border-radius: 6px;
 }
 .env-name {
   font-size: 13px;
@@ -2531,7 +2531,7 @@ textarea.input {
   flex: none;
   min-width: 15px;
   text-align: center;
-  border-radius: 7px;
+  border-radius: 4.667px;
   background: var(--accent);
   color: var(--on-accent);
   font-size: 10px;
@@ -2569,10 +2569,10 @@ textarea.input {
   border-radius: 0;
 }
 .review-view .btn:first-child {
-  border-radius: 6px 0 0 6px;
+  border-radius: 4px 0 0 4px;
 }
 .review-view .btn:last-child {
-  border-radius: 0 6px 6px 0;
+  border-radius: 0 4px 4px 0;
   margin-left: -1px;
 }
 .review-view .btn.active {
@@ -2651,7 +2651,7 @@ textarea.input {
   width: 14px;
   height: 14px;
   border: 0;
-  border-radius: 4px;
+  border-radius: 2.667px;
   background: var(--accent);
   color: var(--on-accent);
   font-size: 11px;
@@ -2679,7 +2679,7 @@ textarea.input {
 }
 .split-word {
   background: rgba(77, 163, 255, 0.22);
-  border-radius: 3px;
+  border-radius: 2px;
 }
 
 /* Syntax coloring (syntaxHighlight.ts): the app is dark-only, so this is a
@@ -2793,7 +2793,7 @@ textarea.input {
   z-index: 1;
   padding: 1px 6px;
   border: 0;
-  border-radius: 4px;
+  border-radius: 2.667px;
   background: var(--accent);
   color: var(--on-accent);
   font-size: 10px;
@@ -2863,7 +2863,7 @@ textarea.input {
   margin: 3px 10px;
   padding: 5px 8px;
   border-left: 2px solid var(--accent);
-  border-radius: 0 6px 6px 0;
+  border-radius: 0 4px 4px 0;
   background: var(--surface);
   font-family: var(--ui);
   font-size: 12px;
@@ -2890,7 +2890,7 @@ textarea.input {
   margin: 3px 10px;
   padding: 6px 8px;
   border-left: 2px solid var(--accent);
-  border-radius: 0 6px 6px 0;
+  border-radius: 0 4px 4px 0;
   background: var(--surface);
   font-family: var(--ui);
 }
@@ -3000,7 +3000,7 @@ textarea.input {
   min-width: 0;
   background: var(--app);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 6.667px;
   /* .set-content scrolls (overflow-y: auto), which promotes it to its own
      compositor layer — without clipping here that layer paints a square
      corner over this border's curve. */
@@ -3035,7 +3035,7 @@ textarea.input {
   align-items: center;
   gap: 9px;
   padding: 7px 10px;
-  border-radius: 7px;
+  border-radius: 4.667px;
   font-size: 13px;
   color: var(--dim);
   cursor: pointer;
@@ -3119,7 +3119,7 @@ textarea.input {
   padding: 13px 16px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 6.667px;
 }
 .set-row.clickable:hover {
   border-color: var(--border2);
@@ -3178,7 +3178,7 @@ textarea.input {
   color: var(--dim);
   background: var(--app);
   border: 1px solid var(--border2);
-  border-radius: 8px;
+  border-radius: 5.333px;
   cursor: pointer;
 }
 .seg-btn:hover {
@@ -3233,7 +3233,7 @@ textarea.input {
   color: var(--yellow);
   background: var(--app);
   border: 1px solid var(--border2);
-  border-radius: 9px;
+  border-radius: 6px;
 }
 /* A local MCP server that did not start, in the session pane (§8.2): the
    reason, never the environment (§7). */
@@ -3245,7 +3245,7 @@ textarea.input {
   padding: 9px 11px;
   background: var(--app);
   border: 1px solid var(--border2);
-  border-radius: 9px;
+  border-radius: 6px;
 }
 .mcp-fail-row {
   display: flex;
@@ -3268,7 +3268,7 @@ textarea.input {
   padding: 9px 11px;
   background: var(--app);
   border: 1px solid var(--border2);
-  border-radius: 9px;
+  border-radius: 6px;
 }
 .mcp-probe-head {
   display: flex;
@@ -3300,7 +3300,7 @@ textarea.input {
   line-height: 1.55;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: 4.667px;
 }
 .mcp-probe-row {
   display: grid;
@@ -3342,7 +3342,7 @@ textarea.input {
   padding: 8px 14px;
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 0 0 10px 10px;
+  border-radius: 0 0 6.667px 6.667px;
   font-size: 11px;
   line-height: 1.5;
   color: var(--faint);
@@ -3353,7 +3353,7 @@ textarea.input {
 .set-card {
   background: var(--surface);
   border: 1px solid var(--border2);
-  border-radius: 10px;
+  border-radius: 6.667px;
 }
 .set-card-head {
   display: flex;
@@ -3362,7 +3362,7 @@ textarea.input {
   padding: 12px 16px;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
-  border-radius: 10px 10px 0 0;
+  border-radius: 6.667px 6.667px 0 0;
   cursor: pointer;
 }
 .set-card-body {
@@ -3480,7 +3480,7 @@ textarea.input {
   display: flex;
   background: var(--app);
   border: 1px solid var(--border);
-  border-radius: 9px;
+  border-radius: 6px;
   overflow: hidden;
   height: 190px;
   font-size: 11px;
@@ -3571,7 +3571,7 @@ textarea.input {
   max-width: 92vw;
   background: var(--surface);
   border: 1px solid var(--border2);
-  border-radius: 14px;
+  border-radius: 9.333px;
   overflow: hidden;
   box-shadow: 0 40px 90px -24px rgba(0, 0, 0, 0.8);
   display: flex;
@@ -3613,7 +3613,7 @@ textarea.input {
   align-items: center;
   gap: 11px;
   padding: 9px 10px;
-  border-radius: 8px;
+  border-radius: 5.333px;
   cursor: pointer;
 }
 .pal-item.active {
@@ -3653,7 +3653,7 @@ textarea.input {
 .dialog {
   background: var(--surface);
   border: 1px solid var(--border2);
-  border-radius: 14px;
+  border-radius: 9.333px;
   width: 380px;
   max-width: 90vw;
   padding: 18px;
@@ -3680,7 +3680,7 @@ textarea.input {
 }
 .dialog-buttons button {
   border: 1px solid var(--border2);
-  border-radius: 7px;
+  border-radius: 4.667px;
   padding: 6px 13px;
   font-size: 12px;
   color: var(--text);
@@ -3719,7 +3719,7 @@ textarea.input {
   min-width: 14px;
   height: 14px;
   padding: 0 3px;
-  border-radius: 7px;
+  border-radius: 4.667px;
   background: var(--red);
   color: #fff;
   font-family: var(--mono);
@@ -3736,7 +3736,7 @@ textarea.input {
   max-width: 90vw;
   background: var(--surface);
   border: 1px solid var(--border2);
-  border-radius: 12px;
+  border-radius: 8px;
   box-shadow: 0 24px 60px -16px rgba(0, 0, 0, 0.75);
   display: flex;
   flex-direction: column;
@@ -3763,7 +3763,7 @@ textarea.input {
   align-items: flex-start;
   gap: 9px;
   padding: 9px 8px;
-  border-radius: 8px;
+  border-radius: 5.333px;
   cursor: pointer;
 }
 .notif-row:hover,
@@ -3801,7 +3801,7 @@ textarea.input {
   flex: none;
   width: 20px;
   height: 20px;
-  border-radius: 5px;
+  border-radius: 3.333px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -3887,7 +3887,7 @@ textarea.input {
   padding: 14px 16px 12px;
   background: var(--surface);
   border: 1px solid var(--border2);
-  border-radius: 10px;
+  border-radius: 6.667px;
 }
 .dash-card-head {
   display: flex;
@@ -3909,7 +3909,7 @@ textarea.input {
 .dash-meter {
   position: relative;
   height: 6px;
-  border-radius: 3px;
+  border-radius: 2px;
   background: var(--hover);
   overflow: hidden;
 }
@@ -3918,7 +3918,7 @@ textarea.input {
   inset: 0 auto 0 0;
   background: var(--accent);
   opacity: 0.55;
-  border-radius: 3px;
+  border-radius: 2px;
 }
 
 .dash-row {
@@ -3932,7 +3932,7 @@ textarea.input {
   padding: 8px 12px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 9px;
+  border-radius: 6px;
   font-size: 12.5px;
   min-width: 0;
 }
@@ -4100,7 +4100,7 @@ textarea.input {
   padding: 7px 10px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 5.333px;
   min-width: 0;
 }
 .dash-card-row:hover {
@@ -4135,7 +4135,7 @@ textarea.input {
   padding: 10px 12px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 9px;
+  border-radius: 6px;
 }
 .net-head {
   display: flex;
@@ -4226,7 +4226,7 @@ textarea.input {
   color: var(--text);
   background: var(--app);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 5.333px;
   resize: vertical;
 }
 .net-domains:focus {
@@ -4331,7 +4331,7 @@ textarea.input {
   padding: 11px 14px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 6.667px;
   /* The sweep is fast by design (§3.5), so the transition has to be too: this
      is what keeps a row from snapping between states, not what paces them. */
   transition:
@@ -4419,7 +4419,7 @@ textarea.input {
   color: var(--text);
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 9px;
+  border-radius: 6px;
 }
 .wc-token:focus {
   outline: none;
@@ -4448,7 +4448,7 @@ textarea.input {
   padding: 12px 14px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 6.667px;
 }
 
 /* Task diff mode: the task tree stays in place; repositories replace sessions. */
