@@ -24,10 +24,13 @@
 // The credentials the proxy holds live in its heap and in the one file mounted
 // into it. The agent cannot reach either: there is no docker client in the
 // session container and no socket to use one on.
+import { createHash, randomBytes } from 'node:crypto'
+import { existsSync, promises as fs } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { run, type LogSink } from '../provision'
 import { createLogger } from '../log'
+import { gurtRoot } from '../store'
 import {
   PROXY_ALIAS,
   PROXY_CONFIG_TARGET,
@@ -87,21 +90,54 @@ export const proxyContainerName = (session: string): string => `gurt-proxy-${ses
 const moduleDir = path.dirname(fileURLToPath(import.meta.url))
 
 /**
- * Host path of the proxy script, following `devcontainerCliPath()`'s
+ * Where the proxy script ships, following `devcontainerCliPath()`'s
  * dev-vs-packaged split: in a packaged build the app lives inside app.asar,
- * which only Electron's own fs can read, while a bind source has to be a real
- * file on disk — so the path is redirected to the unpacked mirror (`asarUnpack`
- * in electron-builder.yml already carries `resources/**`).
+ * which only Electron's own fs can read, so the path is redirected to the
+ * unpacked mirror (`asarUnpack` in electron-builder.yml already carries
+ * `resources/**`).
+ */
+function bundledProxyScriptPath(): string {
+  return path
+    .join(moduleDir, '..', '..', 'resources', 'proxy', 'gurt-proxy.mjs')
+    .replace(`${path.sep}app.asar${path.sep}`, `${path.sep}app.asar.unpacked${path.sep}`)
+}
+
+/** Staged copies of the proxy script, on the host. A sibling of
+ *  `proxyConfigDir()`, not inside it: that one holds per-session directories. */
+const proxyScriptDir = (): string => path.join(gurtRoot, 'proxy-script')
+
+/**
+ * Host path of the proxy script — the bind source for `docker run`.
+ *
+ * Not the bundled path itself: a packaged app sits under `/Applications`,
+ * which Docker Desktop does not share into its VM by default, so a bind from
+ * there fails with "bind source path does not exist". The script is copied
+ * under `~/.gurt` (inside `/Users`, shared by every mac docker runtime) and
+ * mounted from there. The copy is named by content hash, so an app update
+ * that changes the script changes the bind source, and `reusable()` replaces
+ * a proxy still running the old one; a copy is never rewritten in place.
  *
  * `GURT_PROXY_SCRIPT` overrides it, which is how the docker smoke test points
  * the container at a script it can assert against.
  */
-export function proxyScriptPath(): string {
+export function proxyScriptPath(): Promise<string> {
   const override = process.env['GURT_PROXY_SCRIPT']
-  if (override) return override
-  return path
-    .join(moduleDir, '..', '..', 'resources', 'proxy', 'gurt-proxy.mjs')
-    .replace(`${path.sep}app.asar${path.sep}`, `${path.sep}app.asar.unpacked${path.sep}`)
+  if (override) return Promise.resolve(override)
+  return stageProxyScript()
+}
+
+async function stageProxyScript(): Promise<string> {
+  const body = await fs.readFile(bundledProxyScriptPath())
+  const hash = createHash('sha256').update(body).digest('hex').slice(0, 16)
+  const dest = path.join(proxyScriptDir(), `gurt-proxy-${hash}.mjs`)
+  if (existsSync(dest)) return dest
+  await fs.mkdir(proxyScriptDir(), { recursive: true })
+  // Temp file + rename: a concurrent reader never sees a half-written script.
+  // 0644 because the container runs as the host user (`userArgs()`), not root.
+  const tmp = `${dest}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`
+  await fs.writeFile(tmp, body, { mode: 0o644 })
+  await fs.rename(tmp, dest)
+  return dest
 }
 
 /** What a session's proxy is, once it is up. */
@@ -283,7 +319,7 @@ export class ProxyManager {
     if (!got || !got.running) return false
     if (got.image !== PROXY_IMAGE) return false
     return (
-      got.mounts[PROXY_SCRIPT_TARGET] === proxyScriptPath() &&
+      got.mounts[PROXY_SCRIPT_TARGET] === (await proxyScriptPath()) &&
       got.mounts[CONFIG_MOUNT_TARGET] === proxyConfigMount(session)
     )
   }
@@ -295,6 +331,7 @@ export class ProxyManager {
       timeoutMs: DOCKER_TIMEOUT_MS
     }).catch(() => {})
     sink(`proxy: starting ${proxyContainerName(session)}`)
+    const script = await proxyScriptPath()
     const out = await run(
       'docker',
       [
@@ -308,7 +345,7 @@ export class ProxyManager {
         // Host-side MCP (`github`, `gurt`) is reached here, and only from here:
         // in internal mode the session container has no route to the host at all.
         '--add-host', 'host.docker.internal:host-gateway',
-        '--mount', `type=bind,source=${proxyScriptPath()},target=${PROXY_SCRIPT_TARGET},readonly`,
+        '--mount', `type=bind,source=${script},target=${PROXY_SCRIPT_TARGET},readonly`,
         '--mount', `type=bind,source=${proxyConfigMount(session)},target=${CONFIG_MOUNT_TARGET},readonly`,
         // Nothing in this container is allowed to be interesting: no writable
         // filesystem, no capabilities, no privilege escalation, no docker

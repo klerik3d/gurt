@@ -60,7 +60,12 @@ const env = {
   GIT_COMMITTER_NAME: 'Smoke', GIT_COMMITTER_EMAIL: 'smoke@example.test'
 }
 delete env.ELECTRON_RUN_AS_NODE
-const app = await _electron.launch({ executablePath: require('electron'), args: [appDir, '--no-sandbox'], env })
+// Keep layout preferences from earlier launches out of this fixture.
+const app = await _electron.launch({
+  executablePath: require('electron'),
+  args: [appDir, '--no-sandbox', `--user-data-dir=${path.join(scratch, 'electron-profile')}`],
+  env
+})
 const errors = []
 try {
   const page = await app.firstWindow()

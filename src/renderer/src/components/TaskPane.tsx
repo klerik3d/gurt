@@ -296,6 +296,9 @@ function ChangesSection({
   const openVscode = (repo: string) =>
     act(repo, () => window.gurt.changesOpenVscode(ws, task, repo))
 
+  const openTerminal = (repo: string) =>
+    act(repo, () => window.gurt.changesOpenTerminal(ws, task, repo))
+
   // Lock state, refreshed with the panel. Read-only here: the toggle lives in
   // the review surface, next to what it protects.
   useEffect(() => {
@@ -319,13 +322,24 @@ function ChangesSection({
         </button>
         {only && locks[only.repo] && <LockTag />}
         {only && (
-          <button
-            className="btn btn-sm"
-            disabled={busyRepos.has(only.repo)}
-            onClick={run(() => openVscode(only.repo))}
-          >
-            Open in VS Code
-          </button>
+          <>
+            <button
+              className="icon-sq bordered"
+              title="Open in VS Code"
+              disabled={busyRepos.has(only.repo)}
+              onClick={run(() => openVscode(only.repo))}
+            >
+              <Icon name="vscode" size={13} />
+            </button>
+            <button
+              className="icon-sq bordered"
+              title="Open in Terminal"
+              disabled={busyRepos.has(only.repo)}
+              onClick={run(() => openTerminal(only.repo))}
+            >
+              <Icon name="terminal" size={13} />
+            </button>
+          </>
         )}
       </div>
       {rendered.length === 0 && <div className="tp-empty">No changes</div>}
@@ -337,11 +351,20 @@ function ChangesSection({
               {locks[r.repo] && <LockTag />}
               <span className="spacer" />
               <button
-                className="btn btn-xs"
+                className="icon-sq bordered"
+                title="Open in VS Code"
                 disabled={busyRepos.has(r.repo)}
                 onClick={run(() => openVscode(r.repo))}
               >
-                Open in VS Code
+                <Icon name="vscode" size={12} />
+              </button>
+              <button
+                className="icon-sq bordered"
+                title="Open in Terminal"
+                disabled={busyRepos.has(r.repo)}
+                onClick={run(() => openTerminal(r.repo))}
+              >
+                <Icon name="terminal" size={12} />
               </button>
             </div>
           )}

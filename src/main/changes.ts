@@ -12,6 +12,7 @@ import { cloneDir, taskDir } from './store'
 import { hostGitAccessForRepo, type HostGitAccess } from './git/env'
 import { canonicalRepoId } from '../shared/repoId'
 import { createLogger } from './log'
+import { openInTerminal } from './terminal'
 
 const log = createLogger('changes')
 
@@ -501,11 +502,16 @@ export async function renameTaskBranches(ws: string, task: string, oldTask: stri
   }
 }
 
-/** MVP escape hatch: open the clone with host VS Code. */
-export function openInVscode(ws: string, task: string, repo: string): Promise<void> {
-  const dir = cloneDir(ws, task, repo)
+/** MVP escape hatch: open the clone with host VS Code. `--disable-workspace-trust`
+ *  skips the first-open trust prompt — the clone lives under gurt's own managed
+ *  task dir, so there is nothing an untrusted-workspace gate would protect
+ *  against here. */
+function launchVscode(dir: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn('code', ['--new-window', dir], { stdio: 'ignore', detached: true })
+    const child = spawn('code', ['--new-window', '--disable-workspace-trust', dir], {
+      stdio: 'ignore',
+      detached: true
+    })
     child.on('error', () =>
       reject(new Error('could not launch "code" — install the VS Code shell command'))
     )
@@ -514,4 +520,21 @@ export function openInVscode(ws: string, task: string, repo: string): Promise<vo
       resolve()
     })
   })
+}
+
+export function openInVscode(ws: string, task: string, repo: string): Promise<void> {
+  return launchVscode(cloneDir(ws, task, repo))
+}
+
+/** Open the whole task directory (every repo clone) in one VS Code window. */
+export function openTaskInVscode(ws: string, task: string): Promise<void> {
+  return launchVscode(taskDir(ws, task))
+}
+
+export function openTaskInTerminal(ws: string, task: string): Promise<void> {
+  return openInTerminal(taskDir(ws, task))
+}
+
+export function openRepoInTerminal(ws: string, task: string, repo: string): Promise<void> {
+  return openInTerminal(cloneDir(ws, task, repo))
 }

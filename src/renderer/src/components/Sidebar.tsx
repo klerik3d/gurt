@@ -305,6 +305,29 @@ export function Sidebar({
             </div>
             <div className="menu-sep" />
             <div
+              className="menu-item"
+              onMouseDown={(e) => {
+                e.preventDefault()
+                close()
+                fire(() => window.gurt.taskOpenVscode(row.ws, row.task))
+              }}
+            >
+              <Icon name="vscode" size={13} />
+              <span>Open in VS Code</span>
+            </div>
+            <div
+              className="menu-item"
+              onMouseDown={(e) => {
+                e.preventDefault()
+                close()
+                fire(() => window.gurt.taskOpenTerminal(row.ws, row.task))
+              }}
+            >
+              <Icon name="terminal" size={13} className="faint" />
+              <span>Open in Terminal</span>
+            </div>
+            <div className="menu-sep" />
+            <div
               className="menu-item danger"
               onMouseDown={(e) => {
                 e.preventDefault()

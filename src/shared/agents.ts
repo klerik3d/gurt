@@ -67,7 +67,7 @@ export const AGENT_DEFS: AgentDef[] = [
     label: 'claude code',
     // @agentclientprotocol/claude-agent-acp bundles the Claude Agent SDK — the
     // claude-code devcontainer feature is not needed.
-    adapterPackages: ['@agentclientprotocol/claude-agent-acp@0.76.0'],
+    adapterPackages: ['@agentclientprotocol/claude-agent-acp@0.81.2'],
     bin: 'claude-agent-acp',
     binArgs: [],
     secretEnv: 'CLAUDE_CODE_OAUTH_TOKEN',
