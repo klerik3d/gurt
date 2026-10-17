@@ -25,6 +25,7 @@ import { fileURLToPath } from 'node:url'
 const SMOKES = [
   'smoke.mjs',
   'smoke-git-credentials.mjs',
+  'smoke-diff-mode.mjs',
   'smoke-delete-row.mjs',
   'smoke-session-copy.mjs',
   'smoke-roles.mjs',

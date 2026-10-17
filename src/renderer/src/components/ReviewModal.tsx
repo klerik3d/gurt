@@ -353,6 +353,35 @@ export function ReviewModal({
   )
 }
 
+/** The same diff renderer without review state or comment affordances. */
+export function ReadOnlyDiff({ before, after, path, mode }: {
+  before: string
+  after: string
+  path: string
+  mode: ViewMode
+}) {
+  const [expanded, setExpanded] = useState<ReadonlySet<number>>(new Set())
+  return (
+    <DiffView
+      mode={mode}
+      before={before}
+      after={after}
+      path={path}
+      comments={[]}
+      expanded={expanded}
+      onExpand={(at) => setExpanded((s) => new Set(s).add(at))}
+      draft={null}
+      canComment={false}
+      onDraft={() => {}}
+      onSubmit={() => {}}
+      onResolve={() => {}}
+      onDelete={() => {}}
+      jump={null}
+      onJumped={() => {}}
+    />
+  )
+}
+
 /** Text width, in px, of a monospace string — used to size the horizontal
  *  scroll tracks. A single offscreen canvas is reused across calls. */
 let measureCanvas: HTMLCanvasElement | null = null

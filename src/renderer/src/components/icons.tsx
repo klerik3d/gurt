@@ -42,8 +42,23 @@ export type IconName =
   | 'fold'
   | 'sort'
   | 'info'
+  | 'list'
+  | 'tree'
 
 const PATHS: Record<IconName, JSX.Element> = {
+  list: (
+    <>
+      <path d="M9 6h12M9 12h12M9 18h12" />
+      <path d="M3 6h1M3 12h1M3 18h1" />
+    </>
+  ),
+  tree: (
+    <>
+      <path d="M4 3v14h5M4 7h5" />
+      <rect x="10" y="4" width="10" height="6" rx="1" />
+      <rect x="10" y="14" width="10" height="6" rx="1" />
+    </>
+  ),
   search: (
     <>
       <circle cx="11" cy="11" r="7" />

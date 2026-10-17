@@ -1,5 +1,5 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, ReactNode } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react'
 import type { RepoChanges, SessionActivity, Tree } from '../../../shared/types'
 import { isActionable, isDelivered, sessionStatus } from '../../../shared/types'
 import type { Selection } from '../App'
@@ -15,6 +15,8 @@ import { AgentMark } from './tags'
 import { deleteSession, duplicateSession } from './SessionActions'
 import { Modal } from './Modal'
 import { fire, run } from '../async'
+import { RowContextMenu } from './RowContextMenu'
+import { TaskRepositories, type DiffFileSelection, type FileLayout } from './DiffSidebar'
 
 /** One visible line of the tree — the unit arrow-key navigation moves over. */
 type Row =
@@ -110,10 +112,18 @@ export function Sidebar({
   readStateReady,
   onNewSession,
   onSelectTask,
-  onSelectSession
+  onSelectSession,
+  mode = 'sessions',
+  diffFile,
+  onSelectDiffFile,
+  onRefreshChanges
 }: {
   /** Current sidebar width in px (user-draggable). */
   width: number
+  mode?: 'sessions' | 'diff'
+  diffFile?: DiffFileSelection | null
+  onSelectDiffFile: (file: DiffFileSelection) => void
+  onRefreshChanges: (ws: string, task: string) => Promise<void>
   tree: Tree | null
   /** Name of the workspace currently shown; null while the tree loads. */
   ws: string | null
@@ -132,6 +142,11 @@ export function Sidebar({
   onSelectTask: (ws: string, task: string) => void
   onSelectSession: (id: string) => void
 }) {
+  const [fileLayout, setFileLayout] = useState<FileLayout>(() =>
+    localStorage.getItem('gurt.diff.fileLayout') === 'tree' ? 'tree' : 'list'
+  )
+  const [refreshing, setRefreshing] = useState(false)
+  const [refreshError, setRefreshError] = useState('')
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const [creatingTask, setCreatingTask] = useState(false)
   const [taskDraftName, setTaskDraftName] = useState('')
@@ -188,7 +203,7 @@ export function Sidebar({
   const seedKey = tasks.length && readStateReady ? `${wsName}#${focusSignal ?? 0}` : null
   const seeded = useRef<string | null>(null)
   useEffect(() => {
-    if (!seedKey || seeded.current === seedKey) return
+    if (mode === 'diff' || !seedKey || seeded.current === seedKey) return
     seeded.current = seedKey
     // The open session's own task stays up — folding it would hide the row for
     // what the pane is showing.
@@ -200,7 +215,7 @@ export function Sidebar({
       t.sessions.length > 0 &&
       t.sessions.every((s) => sessionStatus({ ...s, ...activity[s.id] }) === 'idle-read')
     setCollapsed(new Set(tasks.filter(read).map((t) => `${wsName}/${t.name}`)))
-  }, [seedKey, tasks, activity, wsName, selection])
+  }, [seedKey, tasks, activity, wsName, selection, mode])
 
   const setCollapse = (ws2: string, task: string, on: boolean) => {
     setCollapsed((prev) => {
@@ -365,7 +380,7 @@ export function Sidebar({
   const rows: Row[] = []
   for (const task of tasks) {
     rows.push({ kind: 'task', ws: wsName, task: task.name })
-    if (!collapsed.has(`${wsName}/${task.name}`))
+    if (mode === 'sessions' && !collapsed.has(`${wsName}/${task.name}`))
       for (const s of task.sessions)
         rows.push({ kind: 'session', id: s.id, ws: wsName, task: task.name })
   }
@@ -438,7 +453,7 @@ export function Sidebar({
   }
 
   const onTreeKey = (e: ReactKeyboardEvent) => {
-    if (renaming || !rows.length) return
+    if (e.target !== treeRef.current || renaming || !rows.length) return
     const cur = rows[cursor]
     const collapsedNow = cur?.kind === 'task' && collapsed.has(`${cur.ws}/${cur.task}`)
     switch (e.key) {
@@ -497,11 +512,50 @@ export function Sidebar({
 
   return (
     <aside className="sidebar" style={{ width }}>
-      <div className="sb-head">
+      <div className={`sb-head${mode === 'diff' ? ' sb-head-diff' : ''}`}>
         <div className="sb-ws">
           <span className="sb-ws-name">Tasks</span>
         </div>
         <span className="spacer" />
+        {mode === 'diff' && (
+          <>
+            <div className="diff-layout" role="group" aria-label="Changed files layout">
+              {(['list', 'tree'] as const).map((layout) => (
+                <button
+                  key={layout}
+                  className={`icon-sq${fileLayout === layout ? ' active' : ''}`}
+                  title={layout === 'list' ? 'File list' : 'File tree'}
+                  aria-label={layout === 'list' ? 'File list' : 'File tree'}
+                  aria-pressed={fileLayout === layout}
+                  onClick={() => {
+                    setFileLayout(layout)
+                    localStorage.setItem('gurt.diff.fileLayout', layout)
+                  }}
+                >
+                  <Icon name={layout === 'list' ? 'list' : 'tree'} size={13} />
+                </button>
+              ))}
+            </div>
+            <button
+              className="icon-sq"
+              title="Refresh changes"
+              disabled={refreshing || !tasks.length}
+              onClick={run(async () => {
+                setRefreshing(true)
+                setRefreshError('')
+                try {
+                  await Promise.all(tasks.map((t) => onRefreshChanges(wsName, t.name)))
+                } catch (e) {
+                  setRefreshError(String(e))
+                } finally {
+                  setRefreshing(false)
+                }
+              })}
+            >
+              <Icon name="history" size={14} className={refreshing ? 'diff-refreshing' : undefined} />
+            </button>
+          </>
+        )}
         <div className="sb-sort" ref={sortPopRef}>
           <button
             className={`icon-sq ${sortOpen ? 'active' : ''}`}
@@ -579,6 +633,7 @@ export function Sidebar({
         </div>
       </div>
 
+      {mode === 'diff' && refreshError && <div className="error diff-refresh-error">{refreshError}</div>}
       <div className="sb-tree" ref={treeRef} tabIndex={0} role="tree" onKeyDown={onTreeKey}>
         {tasks.map((task) => {
           const tkey = `${wsName}/${task.name}`
@@ -626,7 +681,18 @@ export function Sidebar({
                   </>
                 )}
               </div>
-              {!isCollapsed &&
+              {!isCollapsed && mode === 'diff' && (
+                <TaskRepositories
+                  ws={wsName}
+                  task={task.name}
+                  changes={changes[tkey]}
+                  layout={fileLayout}
+                  selection={diffFile ?? null}
+                  onSelect={onSelectDiffFile}
+                  onRefresh={() => onRefreshChanges(wsName, task.name)}
+                />
+              )}
+              {!isCollapsed && mode === 'sessions' &&
                 task.sessions.map((s) => {
                   const status = sessionStatus({ ...s, ...activity[s.id] })
                   const dot = SESSION_DOT[status]
@@ -666,7 +732,7 @@ export function Sidebar({
                     </div>
                   )
                 })}
-              {!isCollapsed && task.sessions.length === 0 && (
+              {!isCollapsed && mode === 'sessions' && task.sessions.length === 0 && (
                 <div className="sb-empty">no sessions — “+” to add one</div>
               )}
             </div>
@@ -685,45 +751,6 @@ export function Sidebar({
       </div>
       {ctxMenu && renderCtxMenu(ctxMenu, () => setCtxMenu(null))}
     </aside>
-  )
-}
-
-/** A row's actions at the pointer instead of behind a button — opened by
- *  right-click (or a trackpad's two-finger tap, which the browser already
- *  maps to the same `contextmenu` event). Closes like any other dropdown:
- *  outside click or Escape. */
-function RowContextMenu({
-  x,
-  y,
-  onClose,
-  children
-}: {
-  x: number
-  y: number
-  onClose: () => void
-  children: ReactNode
-}) {
-  const ref = useRef<HTMLDivElement>(null)
-  useOutsideClose(true, ref, onClose)
-  // Anchored at the raw pointer position first, then nudged back on-screen
-  // once its real size is known — a menu that opens near the window edge
-  // should still land fully inside it, not spill off.
-  const [pos, setPos] = useState({ x, y })
-  useLayoutEffect(() => {
-    const el = ref.current
-    if (!el) return
-    const margin = 6
-    const rect = el.getBoundingClientRect()
-    setPos({
-      x: Math.max(margin, Math.min(x, window.innerWidth - rect.width - margin)),
-      y: Math.max(margin, Math.min(y, window.innerHeight - rect.height - margin))
-    })
-  }, [x, y])
-
-  return (
-    <div className="menu ctx-menu" ref={ref} style={{ left: pos.x, top: pos.y }}>
-      {children}
-    </div>
   )
 }
 
