@@ -101,7 +101,7 @@ const openSettings = async (section) => {
   await page.click('.activitybar .ab-item[title^="Settings"]')
   await page.click(`.set-nav-item:has-text("${section}")`)
 }
-const openWork = () => page.click('.activitybar .ab-item[title^="Tasks & sessions"]')
+const openWork = () => page.click('.activitybar .ab-item[title^="Agents"]')
 
 await page.waitForSelector('.sidebar', { timeout: 15000 })
 
@@ -138,7 +138,7 @@ await page.waitForSelector('.set-row-label:text-is("hello-env")', { timeout: 500
 
 // --- task --------------------------------------------------------------
 await openWork()
-await page.click('button[title^="New task"]')
+await page.click('button[title^="New scope"]')
 await page.waitForSelector('.sb-newtask-menu input', { timeout: 5000 })
 await page.fill('.sb-newtask-menu input', 't')
 await page.press('.sb-newtask-menu input', 'Enter')

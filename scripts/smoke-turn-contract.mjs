@@ -123,7 +123,7 @@ await clickText('.repo-form', 'Add')
 await page.waitForFunction(() => [...document.querySelectorAll('.repo-row')].some((r) => r.textContent.includes('alpha')))
 await page.click('.modal-header .icon-btn')
 await modalGone()
-await nameModal('new task', 't1')
+await nameModal('new scope', 't1')
 await page.waitForSelector('.task-node')
 
 // run a trivial-edit session — the agent edits, then the turn contract makes it

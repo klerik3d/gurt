@@ -193,7 +193,7 @@ try {
   assert.equal(await page.locator('.placeholder').count(), 1, 'skipping lands on the pane behind')
   // A skip is about this launch: the store still has no session, so the rule
   // that showed it has not changed, and only the skip is holding it closed.
-  await page.click('.ab-item[title^="Tasks"]')
+  await page.click('.ab-item[title^="Agents"]')
   assert.equal(await page.locator('.wc').count(), 0, 'and it stays closed until asked for')
 
   // ⌘K reaches it under every mode — that is the guarantee the checkbox is
@@ -242,7 +242,7 @@ try {
   console.log('first run: Settings → Machine shows the checklist OK')
 
   // --- creating a session by hand is the way out of the welcome screen ---
-  await page.click('.ab-item[title^="Tasks"]')
+  await page.click('.ab-item[title^="Agents"]')
   await page.click('.sb-task', { button: 'right' })
   await page.waitForSelector('.ctx-menu', { timeout: 5000 })
   await page.click('.ctx-menu .menu-item:has-text("New session")')

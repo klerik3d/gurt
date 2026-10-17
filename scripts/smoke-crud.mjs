@@ -111,7 +111,7 @@ const openSettings = async (section) => {
   await page.click('.activitybar .ab-item[title^="Settings"]')
   await page.click(`.set-nav-item:has-text("${section}")`)
 }
-const openWork = () => page.click('.activitybar .ab-item[title^="Tasks & sessions"]')
+const openWork = () => page.click('.activitybar .ab-item[title^="Agents"]')
 
 /** Confirms are an in-app dialog (dialog.tsx), not the OS one. */
 const confirm = async () => {
@@ -254,7 +254,7 @@ console.log('envs defined')
 
 // --- task --------------------------------------------------------------
 await openWork()
-await page.click('button[title^="New task"]')
+await page.click('button[title^="New scope"]')
 await page.waitForSelector('.sb-newtask-menu input', { timeout: 5000 })
 await page.fill('.sb-newtask-menu input', 'try2')
 await page.press('.sb-newtask-menu input', 'Enter')
@@ -339,7 +339,7 @@ if (await page.locator(CONTAINER_ROW('executor 2')).count()) {
 await openWork()
 await page.click('.sb-task:has(.sb-task-name:text-is("try2"))', { button: 'right' })
 await page.waitForSelector('.ctx-menu', { timeout: 5000 })
-await page.click('.ctx-menu .menu-item:has-text("Delete task")')
+await page.click('.ctx-menu .menu-item:has-text("Delete scope")')
 await confirm()
 await page.waitForFunction(() => document.querySelectorAll('.sb-task').length === 0, undefined, {
   timeout: 120000
