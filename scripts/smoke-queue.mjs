@@ -96,7 +96,7 @@ const openSettings = async (page, section) => {
   await page.click('.activitybar .ab-item[title^="Settings"]')
   await page.click(`.set-nav-item:has-text("${section}")`)
 }
-const openWork = (page) => page.click('.activitybar .ab-item[title^="Tasks & sessions"]')
+const openWork = (page) => page.click('.activitybar .ab-item[title^="Agents"]')
 
 // Sessions are named after their role ("executor", "executor 2", …) and the
 // sidebar row carries its status as the row title (see SESSION_DOT). `started`
@@ -203,7 +203,7 @@ console.log('ws + repo + env ready')
 
 // --- task --------------------------------------------------------------
 await openWork(page)
-await page.click('button[title^="New task"]')
+await page.click('button[title^="New scope"]')
 await page.waitForSelector('.sb-newtask-menu input', { timeout: 5000 })
 await page.fill('.sb-newtask-menu input', 'q')
 await page.press('.sb-newtask-menu input', 'Enter')

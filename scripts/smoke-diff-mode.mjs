@@ -112,7 +112,7 @@ try {
   await page.waitForSelector('.diff-pane .split-pane.add')
 
   // Switching back retains the selected session; switching again retains the layout.
-  await page.locator('button[title^="Tasks & sessions"]').click()
+  await page.locator('button[title^="Agents"]').click()
   assert.equal(await page.locator('.sb-session.selected').innerText(), 'Build navigation')
   await page.keyboard.press('Control+3')
   assert.equal(await page.getByRole('button', { name: 'File tree', exact: true }).getAttribute('aria-pressed'), 'true')
@@ -136,6 +136,22 @@ try {
     r.querySelector('.diff-repo-name')?.textContent === 'frontend' &&
     r.getAttribute('aria-busy') === 'false' && r.querySelector('.diff-behind')?.textContent === '↓0'))
   assert.equal(fs.readFileSync(path.join(clone, 'upstream.txt'), 'utf8'), 'new upstream\n')
+  // Manual folding survives both mode switches and Sidebar unmounts, including hotkeys.
+  await page.locator('button[title^="Agents"]').click()
+  await page.locator('.sb-task .sb-chev').click()
+  for (const destination of ['Diff', 'Dashboard']) {
+    for (const viaKeyboard of [false, true]) {
+      await page.locator(`.activitybar button[title^="${destination}"]`).click()
+      if (viaKeyboard) await page.keyboard.press('Control+2')
+      else await page.locator('button[title^="Agents"]').click()
+      await page.waitForFunction(() => document.querySelector('.sb-task')?.getAttribute('aria-expanded') === 'false')
+      assert.equal(await page.locator('.sb-session').count(), 0, `${destination} return preserves collapsed scope`)
+    }
+  }
+  await page.locator('.sb-task .sb-chev').click()
+  await page.locator('.activitybar button[title^="Dashboard"]').click()
+  await page.locator('button[title^="Agents"]').click()
+  await page.waitForSelector('.sb-session')
   assert.deepEqual(errors, [], 'no renderer exceptions')
   console.log(`PASS diff mode: list/tree, inline diff, session restore, commit/push/update. Screenshot: ${scratch}/diff-tree.png`)
 } finally {

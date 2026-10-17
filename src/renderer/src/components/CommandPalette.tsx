@@ -88,7 +88,7 @@ export function CommandPalette({
 
     const actions: ActionItem[] = [
       { kind: 'action', id: 'new-session', title: 'New session…', keys: bindingLabel(hotkeys.newSession) },
-      { kind: 'action', id: 'new-task', title: 'New task…', keys: bindingLabel(hotkeys.newTask) },
+      { kind: 'action', id: 'new-task', title: 'New scope…', keys: bindingLabel(hotkeys.newTask) },
       { kind: 'action', id: 'welcome', title: 'Welcome & machine setup', keys: '' },
       { kind: 'action', id: 'open-logs', title: 'Open logs folder', keys: '' },
       { kind: 'action', id: 'check-updates', title: 'Check for updates', keys: '' }
@@ -206,7 +206,7 @@ export function CommandPalette({
         <Icon name="branch" size={15} className="dim" />
         <span className={`pal-title ${active ? 'strong' : ''}`}>{item.task}</span>
         <span className="pal-meta mono">
-          task · {item.sessions} session{item.sessions === 1 ? '' : 's'}
+          scope · {item.sessions} session{item.sessions === 1 ? '' : 's'}
         </span>
       </div>
     )
@@ -220,7 +220,7 @@ export function CommandPalette({
           <input
             autoFocus
             className="pal-input"
-            placeholder="Jump to a session, task, or run a command…"
+            placeholder="Jump to a session, scope, or run a command…"
             value={query}
             onChange={(e) => {
               setQuery(e.target.value)
@@ -235,7 +235,7 @@ export function CommandPalette({
           {groups.actions.map(row)}
           {groups.sessions.length > 0 && <div className="seclabel pal-group">SESSIONS</div>}
           {groups.sessions.map(row)}
-          {groups.tasks.length > 0 && <div className="seclabel pal-group">TASKS</div>}
+          {groups.tasks.length > 0 && <div className="seclabel pal-group">SCOPES</div>}
           {groups.tasks.map(row)}
           {items.length === 0 && <div className="menu-empty">nothing matches “{query}”</div>}
         </div>

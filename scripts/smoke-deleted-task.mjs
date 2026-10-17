@@ -100,7 +100,7 @@ try {
   await page.click('.sb-task-name:has-text("t")')
   await page.click('.sb-task', { button: 'right' })
   await page.waitForSelector('.ctx-menu', { timeout: 5000 })
-  await page.click('.ctx-menu .menu-item:has-text("Delete task")')
+  await page.click('.ctx-menu .menu-item:has-text("Delete scope")')
   await page.waitForSelector('.dialog', { timeout: 5000 })
   await page.click('.dialog-ok')
   await page.waitForFunction(() => document.querySelectorAll('.sb-task').length === 0, null, {
@@ -114,7 +114,7 @@ try {
   // session anywhere, and the deleted dir stays gone. What it offers instead is
   // the ordinary "new task" flow, since a session cannot exist outside a task.
   await page.keyboard.press('Control+n')
-  await page.waitForSelector('.modal:has-text("New task in w")', { timeout: 5000 })
+  await page.waitForSelector('.modal:has-text("New scope in w")', { timeout: 5000 })
   assert.equal(await page.locator('.sb-session').count(), 0, 'no session was created for a dead task')
   await new Promise((r) => setTimeout(r, 700)) // a late persist would show up here
   assert.deepEqual(diskTasks(), [], 'the deleted task dir is not resurrected by ⌘N')

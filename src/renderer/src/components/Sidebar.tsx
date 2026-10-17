@@ -102,6 +102,9 @@ function useTaskSort(): [TaskSort, (s: TaskSort) => void] {
 }
 
 export function Sidebar({
+  collapsed,
+  setCollapsed,
+  seeded,
   width,
   tree,
   ws,
@@ -118,6 +121,9 @@ export function Sidebar({
   onSelectDiffFile,
   onRefreshChanges
 }: {
+  collapsed: Set<string>
+  setCollapsed: React.Dispatch<React.SetStateAction<Set<string>>>
+  seeded: React.RefObject<Set<string>>
   /** Current sidebar width in px (user-draggable). */
   width: number
   mode?: 'sessions' | 'diff'
@@ -147,7 +153,6 @@ export function Sidebar({
   )
   const [refreshing, setRefreshing] = useState(false)
   const [refreshError, setRefreshError] = useState('')
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const [creatingTask, setCreatingTask] = useState(false)
   const [taskDraftName, setTaskDraftName] = useState('')
   const taskPopRef = useRef<HTMLDivElement>(null)
@@ -195,16 +200,11 @@ export function Sidebar({
     if (focusSignal) treeRef.current?.focus()
   }, [focusSignal])
 
-  // Entering the tree folds away the tasks holding nothing new, so the list
-  // opens on what still wants the user. Seeded once per entry (mount, ⌘2, a
-  // workspace switch) rather than derived from the marks: recomputing live
-  // would fold a task shut under the cursor the moment its last session was
-  // read, and would fight every manual unfold.
-  const seedKey = tasks.length && readStateReady ? `${wsName}#${focusSignal ?? 0}` : null
-  const seeded = useRef<string | null>(null)
+  // Seed each workspace once; navigation must preserve manual folding.
+  const seedKey = tasks.length && readStateReady ? wsName : null
   useEffect(() => {
-    if (mode === 'diff' || !seedKey || seeded.current === seedKey) return
-    seeded.current = seedKey
+    if (mode === 'diff' || !seedKey || seeded.current.has(seedKey)) return
+    seeded.current.add(seedKey)
     // The open session's own task stays up — folding it would hide the row for
     // what the pane is showing.
     const open = tasks.find(
@@ -214,10 +214,11 @@ export function Sidebar({
       t !== open &&
       t.sessions.length > 0 &&
       t.sessions.every((s) => sessionStatus({ ...s, ...activity[s.id] }) === 'idle-read')
-    setCollapsed(new Set(tasks.filter(read).map((t) => `${wsName}/${t.name}`)))
-  }, [seedKey, tasks, activity, wsName, selection, mode])
+    setCollapsed((prev) => new Set([...prev, ...tasks.filter(read).map((t) => `${wsName}/${t.name}`)]))
+  }, [seedKey, tasks, activity, wsName, selection, mode, seeded, setCollapsed])
 
   const setCollapse = (ws2: string, task: string, on: boolean) => {
+    seeded.current.add(ws2)
     setCollapsed((prev) => {
       const next = new Set(prev)
       if (on) next.add(`${ws2}/${task}`)
@@ -237,11 +238,12 @@ export function Sidebar({
   const allCollapsed = allTaskKeys.length > 0 && allTaskKeys.every((k) => collapsed.has(k))
   const toggleCollapseAll = () => {
     if (!wsData || !allTaskKeys.length) return
+    seeded.current.add(wsName)
     if (allCollapsed) {
-      setCollapsed(new Set())
+      setCollapsed((prev) => new Set([...prev].filter((key) => !allTaskKeys.includes(key))))
       return
     }
-    setCollapsed(new Set(allTaskKeys))
+    setCollapsed((prev) => new Set([...prev, ...allTaskKeys]))
     // Same reasoning as setCollapse: a selected session about to be hidden
     // moves the selection up to its task.
     if (selection?.type === 'session') {
@@ -254,9 +256,9 @@ export function Sidebar({
     if (!ws) return
     const dirty = await window.gurt.taskDirtyRepos(ws, taskName).catch(() => [])
     const warning = dirty.length
-      ? `Task "${taskName}" has uncommitted changes in: ${dirty.join(', ')}. Delete anyway and permanently lose them, along with all environments and sessions?`
-      : `Delete task "${taskName}" with all its environments, clones and sessions?`
-    if (await confirmDialog(warning, { title: 'Delete task', confirmText: 'Delete', danger: true }))
+      ? `Scope "${taskName}" has uncommitted changes in: ${dirty.join(', ')}. Delete anyway and permanently lose them, along with all environments and sessions?`
+      : `Delete scope "${taskName}" with all its environments, clones and sessions?`
+    if (await confirmDialog(warning, { title: 'Delete scope', confirmText: 'Delete', danger: true }))
       window.gurt.removeTask(ws, taskName).catch((e: unknown) => alertDialog(String(e)))
   }
 
@@ -336,7 +338,7 @@ export function Sidebar({
               }}
             >
               <Icon name="trash" size={13} className="faint" />
-              <span>Delete task</span>
+              <span>Delete scope</span>
             </div>
           </>
         ) : (
@@ -453,7 +455,7 @@ export function Sidebar({
           live.length &&
           !(await confirmDialog(
             `Renaming "${r.task}" stops the container(s) of: ${live.map((s) => s.title).join(', ')}. Continue?`,
-            { title: 'Rename task', confirmText: 'Rename' }
+            { title: 'Rename scope', confirmText: 'Rename' }
           ))
         )
           return
@@ -537,7 +539,7 @@ export function Sidebar({
     <aside className="sidebar" style={{ width }}>
       <div className={`sb-head${mode === 'diff' ? ' sb-head-diff' : ''}`}>
         <div className="sb-ws">
-          <span className="sb-ws-name">Tasks</span>
+          <span className="sb-ws-name">Scopes</span>
         </div>
         <span className="spacer" />
         {mode === 'diff' && (
@@ -582,7 +584,7 @@ export function Sidebar({
         <div className="sb-sort" ref={sortPopRef}>
           <button
             className={`icon-sq ${sortOpen ? 'active' : ''}`}
-            title={`Sort tasks · ${SORT_KEY_LABEL[sort.key]}, ${SORT_DIR_LABEL[sort.key][sort.dir]}`}
+            title={`Sort scopes · ${SORT_KEY_LABEL[sort.key]}, ${SORT_DIR_LABEL[sort.key][sort.dir]}`}
             disabled={!allTaskKeys.length}
             onClick={() => setSortOpen((o) => !o)}
           >
@@ -634,7 +636,7 @@ export function Sidebar({
         <div className="sb-newtask" ref={taskPopRef}>
           <button
             className="icon-sq"
-            title={`New task · ${bindingLabel(hotkeys.newTask)}`}
+            title={`New scope · ${bindingLabel(hotkeys.newTask)}`}
             onClick={() => setCreatingTask((o) => !o)}
           >
             <Icon name="plus" size={14} />
@@ -645,7 +647,7 @@ export function Sidebar({
                 <input
                   autoFocus
                   className="input"
-                  placeholder="task name"
+                  placeholder="scope name"
                   value={taskDraftName}
                   onChange={(e) => setTaskDraftName(e.target.value)}
                   onKeyDown={run((e) => e.key === 'Enter' && submitNewTask())}
@@ -763,7 +765,7 @@ export function Sidebar({
         })}
         {wsData && wsData.tasks.length === 0 && (
           <div className="sb-empty" style={{ paddingLeft: 18 }}>
-            no tasks yet — “+” above to add one
+            no scopes yet — “+” above to add one
           </div>
         )}
         {tree && tree.workspaces.length === 0 && (
@@ -890,7 +892,7 @@ export function DeleteWorkspaceModal({
     <Modal title="Delete workspace" onClose={onClose}>
       <div className="modal-body">
         <p>
-          Permanently delete workspace "<strong>{ws}</strong>"? Every task, environment, clone and
+          Permanently delete workspace "<strong>{ws}</strong>"? Every scope, environment, clone and
           session in it — including any uncommitted changes — is deleted with it. This cannot be
           undone.
         </p>

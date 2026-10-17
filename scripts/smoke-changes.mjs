@@ -273,7 +273,7 @@ await page.fill('.modal input', 'personal')
 await page.click('.modal .btn-primary')
 await modalGone(page)
 // The task popover is inline — no modal, commit with Enter.
-await clickTitle(page, 'New task')
+await clickTitle(page, 'New scope')
 await page.waitForSelector('.sb-newtask-menu input')
 await page.fill('.sb-newtask-menu input', 't1')
 await page.press('.sb-newtask-menu input', 'Enter')

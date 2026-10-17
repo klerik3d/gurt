@@ -130,7 +130,7 @@ try {
   await page.click('.sb-task-name:has-text("t")')
   await page.keyboard.press('Delete')
   await page.waitForSelector('.dialog', { timeout: 5000 })
-  assert.equal(await page.locator('.dialog-title').innerText(), 'Delete task')
+  assert.equal(await page.locator('.dialog-title').innerText(), 'Delete scope')
   await page.click('.dialog-ok')
   await page.waitForFunction(() => document.querySelectorAll('.sb-task').length === 0, null, {
     timeout: 10000
