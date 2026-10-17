@@ -529,7 +529,7 @@ function LockTag(): JSX.Element {
 
 /** Small commit dialog. The message prefills from the session's latest change
  *  proposal (subject + body) when one exists, else falls back to `gurt: <task>`. */
-function CommitModal({
+export function CommitModal({
   ws,
   task,
   repo,

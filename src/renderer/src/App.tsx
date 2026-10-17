@@ -17,6 +17,8 @@ import { EnvRepoMarks } from './components/tags'
 import { Sidebar, NameModal, DeleteWorkspaceModal } from './components/Sidebar'
 import { SessionPane } from './components/SessionPane'
 import { TaskPane } from './components/TaskPane'
+import { DiffPane } from './components/DiffPane'
+import type { DiffFileSelection } from './components/DiffSidebar'
 import { SettingsPage, type SettingsSection } from './components/SettingsPage'
 import { Dashboard } from './components/Dashboard'
 import { CommandPalette } from './components/CommandPalette'
@@ -73,6 +75,8 @@ export default function App() {
   const { turns: usage, loaded: readStateReady } = useUsage()
   const [selection, setSelection] = useState<Selection>(null)
   const [view, setView] = useState<View>('work')
+  const [workMode, setWorkMode] = useState<'sessions' | 'diff'>('sessions')
+  const [diffFile, setDiffFile] = useState<DiffFileSelection | null>(null)
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('environments')
   const [snapshots, setSnapshots] = useState<Record<string, SessionSnapshot>>({})
   const [logs, setLogs] = useState<Record<string, string[]>>({})
@@ -193,15 +197,25 @@ export default function App() {
     window.gurt.getTree().then(setTree).catch(logErr('getTree'))
   }, [])
 
+  const changesSeq = useRef(new Map<string, number>())
+
   /** `fetch` reaches the network — only the panel's own triggers pass it. */
-  const refreshChanges = useCallback((ws: string, task: string, fetch = false) => {
+  const loadChanges = useCallback((ws: string, task: string, fetch = false) => {
     const key = `${ws}/${task}`
     changesRequested.current.add(key)
-    window.gurt
+    const seq = (changesSeq.current.get(key) ?? 0) + 1
+    changesSeq.current.set(key, seq)
+    return window.gurt
       .getTaskChanges(ws, task, { fetch })
-      .then((c) => setChanges((prev) => ({ ...prev, [key]: c })))
-      .catch(logErr('getTaskChanges'))
+      .then((c) => {
+        if (changesSeq.current.get(key) === seq)
+          setChanges((prev) => ({ ...prev, [key]: c }))
+      })
   }, [])
+
+  const refreshChanges = useCallback((ws: string, task: string, fetch = false) => {
+    void loadChanges(ws, task, fetch).catch(logErr('getTaskChanges'))
+  }, [loadChanges])
 
   /** The task pane's own refresh trigger, bound to the current selection. Stable
    *  per selection: the pane refreshes when it opens or switches task, not on
@@ -390,6 +404,7 @@ export default function App() {
 
   const selectSession = useCallback((id: string) => {
     setView('work')
+    setWorkMode('sessions')
     setForceWelcome(false)
     setSelection({ type: 'session', id })
     // Opening a session is what "reviewed" means on the dashboard — the same
@@ -631,6 +646,13 @@ export default function App() {
       } else if (bindingMatchesEvent(hotkeys.gotoTasks, e)) {
         e.preventDefault()
         setView('work')
+        setWorkMode('sessions')
+        setFocusTasksSignal((n) => n + 1)
+      } else if (bindingMatchesEvent(hotkeys.gotoDiff, e)) {
+        e.preventDefault()
+        setView('work')
+        setWorkMode('diff')
+        setForceWelcome(false)
         setFocusTasksSignal((n) => n + 1)
       } else if (bindingMatchesEvent(hotkeys.gotoSettings, e)) {
         e.preventDefault()
@@ -696,7 +718,7 @@ export default function App() {
   // while the user sits on it — which is the plainest "seen" there is. Read off
   // the busy edge rather than off `idle`, so that marking a session unread by
   // hand survives: the status alone would flip back the moment it went unread.
-  const openId = view === 'work' ? (activeInfo?.id ?? null) : null
+  const openId = view === 'work' && workMode === 'sessions' ? (activeInfo?.id ?? null) : null
   const openBusy = !!(openId && activity[openId]?.busy)
   const wasOpen = useRef<{ id: string | null; busy: boolean }>({ id: null, busy: false })
   useEffect(() => {
@@ -704,6 +726,27 @@ export default function App() {
     wasOpen.current = { id: openId, busy: openBusy }
     if (openId && was.id === openId && was.busy && !openBusy) markSeen(openId)
   }, [openId, openBusy])
+
+  // A mode changes what a task shows, without replacing its session selection.
+  const diffTask = selection?.type === 'task'
+    ? { ws: selection.ws, task: selection.task }
+    : selection?.type === 'session'
+      ? (() => {
+          for (const w of workspaces) {
+            const owner = w.tasks.find((t) => t.sessions.some((s) => s.id === selection.id))
+            if (owner) return { ws: w.name, task: owner.name }
+          }
+          return null
+        })()
+      : null
+  const activeDiffFile = diffTask && diffFile?.ws === diffTask.ws && diffFile.task === diffTask.task
+    ? diffFile : null
+  const diffWorkspace = ws?.name
+  useEffect(() => {
+    if (view !== 'work' || workMode !== 'diff' || !diffWorkspace) return
+    const workspace = treeRef.current?.workspaces.find((w) => w.name === diffWorkspace)
+    for (const task of workspace?.tasks ?? []) refreshChanges(diffWorkspace, task.name, true)
+  }, [view, workMode, diffWorkspace, refreshChanges])
 
   // The workspace name itself is now the interactive `.tb-ws` button — this is
   // only the rest of the breadcrumb, shown as plain text after it. Dropping
@@ -716,13 +759,15 @@ export default function App() {
       ? 'settings'
       : view === 'dashboard'
         ? 'dashboard'
-        : activeInfo
-          ? `${activeInfo.task} · ${activeInfo.title}`
-          : selection?.type === 'task'
-            ? selection.task
-            : null
+        : workMode === 'diff'
+          ? `${diffTask?.task ? `${diffTask.task} · ` : ''}diff`
+          : activeInfo
+            ? `${activeInfo.task} · ${activeInfo.title}`
+            : selection?.type === 'task'
+              ? selection.task
+              : null
 
-  const crumbDot = view === 'work' && activeStatus ? SESSION_DOT[activeStatus] : null
+  const crumbDot = view === 'work' && workMode === 'sessions' && activeStatus ? SESSION_DOT[activeStatus] : null
 
   return (
     <div className="app">
@@ -850,12 +895,22 @@ export default function App() {
             {modHeld && <span className="ab-badge">{bindingRestLabel(hotkeys.gotoDashboard)}</span>}
           </button>
           <button
-            className={`ab-item ${view === 'work' ? 'active' : ''}`}
+            className={`ab-item ${view === 'work' && workMode === 'sessions' ? 'active' : ''}`}
             title={`Tasks & sessions · ${bindingLabel(hotkeys.gotoTasks)}`}
-            onClick={() => setView('work')}
+            onClick={() => { setView('work'); setWorkMode('sessions') }}
           >
             <Icon name="message" size={17} />
             {modHeld && <span className="ab-badge">{bindingRestLabel(hotkeys.gotoTasks)}</span>}
+          </button>
+          <button
+            className={`ab-item ${view === 'work' && workMode === 'diff' ? 'active' : ''}`}
+            title={`Diff · ${bindingLabel(hotkeys.gotoDiff)}`}
+            aria-label="Diff"
+            aria-pressed={view === 'work' && workMode === 'diff'}
+            onClick={() => { setView('work'); setWorkMode('diff'); setForceWelcome(false) }}
+          >
+            <Icon name="branch" size={18} />
+            {modHeld && <span className="ab-badge">{bindingRestLabel(hotkeys.gotoDiff)}</span>}
           </button>
           <span className="spacer" />
           <button
@@ -874,7 +929,14 @@ export default function App() {
               width={sidebarWidth}
               tree={tree}
               ws={ws?.name ?? null}
-              selection={selection}
+              selection={workMode === 'diff' && diffTask ? { type: 'task', ...diffTask } : selection}
+              mode={workMode}
+              diffFile={activeDiffFile}
+              onSelectDiffFile={(file) => {
+                if (file.ws !== diffTask?.ws || file.task !== diffTask?.task) selectTask(file.ws, file.task)
+                setDiffFile(file)
+              }}
+              onRefreshChanges={(w, t) => loadChanges(w, t, true)}
               changes={changes}
               activity={activity}
               focusSignal={focusTasksSignal}
@@ -885,7 +947,7 @@ export default function App() {
             />
             <div className="sidebar-resizer" onMouseDown={startSidebarResize} />
             <main className="main">
-              {selection?.type === 'session' && (
+              {workMode === 'sessions' && selection?.type === 'session' && (
                 <SessionPane
                   tree={tree}
                   snapshot={snapshots[selection.id]}
@@ -897,7 +959,7 @@ export default function App() {
                   onDeleted={() => setSelection(null)}
                 />
               )}
-              {selection?.type === 'task' && (
+              {workMode === 'sessions' && selection?.type === 'task' && (
                 <TaskPane
                   tree={tree}
                   ws={selection.ws}
@@ -909,7 +971,14 @@ export default function App() {
                   onSelectSession={selectSession}
                 />
               )}
-              {!selection && (
+              {workMode === 'diff' && (
+                <DiffPane
+                  file={activeDiffFile}
+                  task={diffTask?.task}
+                  changes={diffTask ? changes[`${diffTask.ws}/${diffTask.task}`] : undefined}
+                />
+              )}
+              {workMode === 'sessions' && !selection && (
                 <div className="placeholder">
                   <div className="placeholder-logo">
                     <Logo size={240} />

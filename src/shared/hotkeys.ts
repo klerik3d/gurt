@@ -31,6 +31,7 @@ export type HotkeyActionId =
   | 'workspacePrev'
   | 'gotoDashboard'
   | 'gotoTasks'
+  | 'gotoDiff'
   | 'gotoSettings'
 
 export interface HotkeyDef {
@@ -50,6 +51,7 @@ export const HOTKEY_DEFS: HotkeyDef[] = [
   { id: 'workspacePrev', label: 'Previous workspace', hint: 'cycle to the previous workspace' },
   { id: 'gotoDashboard', label: 'Go to dashboard', hint: 'open the dashboard' },
   { id: 'gotoTasks', label: 'Go to tasks', hint: 'open tasks & sessions, focusing the list' },
+  { id: 'gotoDiff', label: 'Go to diff', hint: 'open task changes, focusing the list' },
   { id: 'gotoSettings', label: 'Go to settings', hint: 'open settings' }
 ]
 
@@ -61,6 +63,7 @@ export const HOTKEY_DEFAULTS: Record<HotkeyActionId, HotkeyBinding> = {
   workspacePrev: { code: 'Backquote', mod: true, shift: true, alt: false },
   gotoDashboard: { code: 'Digit1', mod: true, shift: false, alt: false },
   gotoTasks: { code: 'Digit2', mod: true, shift: false, alt: false },
+  gotoDiff: { code: 'Digit3', mod: true, shift: false, alt: false },
   gotoSettings: { code: 'Digit0', mod: true, shift: false, alt: false }
 }
 
