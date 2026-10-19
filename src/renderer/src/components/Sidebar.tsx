@@ -16,7 +16,16 @@ import { deleteSession, duplicateSession } from './SessionActions'
 import { Modal } from './Modal'
 import { fire, run } from '../async'
 import { RowContextMenu } from './RowContextMenu'
-import { TaskRepositories, type DiffFileSelection, type FileLayout } from './DiffSidebar'
+import {
+  TaskRepositories,
+  diffRowKey,
+  diffRows,
+  type DiffFileSelection,
+  type DiffFolding,
+  type DiffNav,
+  type DiffRow,
+  type FileLayout
+} from './DiffSidebar'
 
 /** One visible line of the tree — the unit arrow-key navigation moves over. */
 type Row =
@@ -24,6 +33,24 @@ type Row =
   | { kind: 'session'; id: string; ws: string; task: string }
 
 const rowKey = (r: Row) => (r.kind === 'task' ? `t:${r.ws}/${r.task}` : `s:${r.id}`)
+
+/** Rows arrow keys walk: diff mode adds a task's repos, folders and files. */
+type NavRow = Row | { kind: 'diff'; ws: string; task: string; row: DiffRow }
+
+const navKey = (r: NavRow) => (r.kind === 'diff' ? `d:${r.ws}/${r.task}/${diffRowKey(r.row)}` : rowKey(r))
+
+/** Nesting level — Left walks to the nearest row above with a smaller one. */
+const navDepth = (r: NavRow) =>
+  r.kind === 'task' ? 0 : r.kind === 'session' || r.row.kind === 'repo' ? 1 : 2 + r.row.depth
+
+/** Returns the same set when nothing changes, so a no-op fold doesn't re-render. */
+const toggled = (prev: Set<string>, key: string, on: boolean) => {
+  if (prev.has(key) === on) return prev
+  const next = new Set(prev)
+  if (on) next.add(key)
+  else next.delete(key)
+  return next
+}
 
 /** What the task list is ordered by, and which way round. */
 export type TaskSortKey = 'name' | 'created'
@@ -174,7 +201,14 @@ export function Sidebar({
    *  commit a second time — against a name that no longer exists. */
   const renameSettled = useRef(false)
   const treeRef = useRef<HTMLDivElement>(null)
-  const selectedRef = useRef<HTMLDivElement>(null)
+  /** Diff-mode folding lives here, not in the rows, so arrow keys see it too. */
+  const [openRepos, setOpenRepos] = useState<Set<string>>(() => new Set())
+  const [closedFolders, setClosedFolders] = useState<Set<string>>(() => new Set())
+  /** Where the diff-mode cursor sits within the selected task: `key` null is the
+   *  task row itself. Repos and folders aren't selections App knows about, so
+   *  the cursor has to be kept here; it only counts while its task is selected. */
+  const [diffCursor, setDiffCursor] = useState<{ ws: string; task: string; key: string | null } | null>(null)
+  const [repoMenu, setRepoMenu] = useState<{ ws: string; task: string; repo: string; x: number; y: number } | null>(null)
 
   const wsData = tree?.workspaces.find((w) => w.name === ws)
   const [sort, setSort] = useTaskSort()
@@ -187,11 +221,6 @@ export function Sidebar({
   /** Owner of every task in `tasks`. Empty only when there is no workspace, and
    *  then `tasks` is empty too, so nothing below ever reads the empty string. */
   const wsName = wsData?.name ?? ''
-
-  // Keyboard navigation can walk the selection out of view — follow it.
-  useEffect(() => {
-    selectedRef.current?.scrollIntoView({ block: 'nearest' })
-  }, [selection])
 
   // ⌘2: focus the tree so arrow keys work immediately, no click first. Fires
   // on mount too (App bumps the signal before the work view has mounted this
@@ -273,7 +302,7 @@ export function Sidebar({
   const openContextMenu = (e: ReactMouseEvent, row: Row) => {
     e.preventDefault()
     e.stopPropagation()
-    selectRow(row)
+    moveTo(row)
     setCtxMenu({ row, x: e.clientX, y: e.clientY })
   }
 
@@ -409,27 +438,96 @@ export function Sidebar({
     }
   }
 
+  const folding = (task: string): DiffFolding => ({
+    repoOpen: (repo) => openRepos.has(`${wsName}/${task}/${repo}`),
+    folderOpen: (repo, path) => !closedFolders.has(`${wsName}/${task}/${repo}/${path}`)
+  })
+
   // The tree as the user sees it, top to bottom — collapsed tasks contribute
   // only their own row. Arrow keys walk this list; nothing else needs the shape.
-  const rows: Row[] = []
+  const rows: NavRow[] = []
   for (const task of tasks) {
     rows.push({ kind: 'task', ws: wsName, task: task.name })
-    if (mode === 'sessions' && !collapsed.has(`${wsName}/${task.name}`))
+    if (collapsed.has(`${wsName}/${task.name}`)) continue
+    if (mode === 'sessions')
       for (const s of task.sessions)
         rows.push({ kind: 'session', id: s.id, ws: wsName, task: task.name })
+    else
+      for (const row of diffRows(changes[`${wsName}/${task.name}`] ?? [], fileLayout, folding(task.name)))
+        rows.push({ kind: 'diff', ws: wsName, task: task.name, row })
   }
   const isSelected = (r: Row) =>
     r.kind === 'task'
       ? selection?.type === 'task' && selection.ws === r.ws && selection.task === r.task
       : selection?.type === 'session' && selection.id === r.id
-  const cursor = rows.findIndex(isSelected)
-  /** Select a row by reference. Undefined is a no-op: the callers below step the
-   *  cursor with clamped arithmetic, so it only happens on an empty tree. */
-  const selectRow = (r: Row | undefined): void => {
+  const cursor = (() => {
+    if (mode === 'diff' && selection?.type === 'task') {
+      const { ws: sws, task: stask } = selection
+      const key =
+        diffCursor?.ws === sws && diffCursor.task === stask
+          ? diffCursor.key
+          : diffFile
+            ? diffRowKey({ kind: 'file', repo: diffFile.repo, path: diffFile.path })
+            : null
+      const at = key === null ? -1 : rows.findIndex(
+        (r) => r.kind === 'diff' && r.ws === sws && r.task === stask && diffRowKey(r.row) === key
+      )
+      if (at >= 0) return at
+    }
+    return rows.findIndex((r) => r.kind !== 'diff' && isSelected(r))
+  })()
+  const cursorRow = rows[cursor]
+  const cursorKey = cursorRow ? navKey(cursorRow) : null
+
+  // Keyboard navigation can walk the cursor out of view — follow it.
+  useEffect(() => {
+    treeRef.current?.querySelector('.cursor')?.scrollIntoView({ block: 'nearest' })
+  }, [cursorKey])
+
+  /** Put the cursor on a row by reference. Undefined is a no-op: the callers
+   *  below step the cursor with clamped arithmetic, so it only happens on an
+   *  empty tree. Files select themselves into the diff pane, like sessions do. */
+  const moveTo = (r: NavRow | undefined): void => {
     if (!r) return
+    if (r.kind === 'session') return onSelectSession(r.id)
+    if (mode === 'diff') setDiffCursor({ ws: r.ws, task: r.task, key: r.kind === 'diff' ? diffRowKey(r.row) : null })
     if (r.kind === 'task') onSelectTask(r.ws, r.task)
-    else onSelectSession(r.id)
+    else if (r.row.kind === 'file')
+      onSelectDiffFile({ ws: r.ws, task: r.task, repo: r.row.repo, path: r.row.path })
+    // Re-selecting the task it is already on would drop App's session selection.
+    else if (!(selection?.type === 'task' && selection.ws === r.ws && selection.task === r.task))
+      onSelectTask(r.ws, r.task)
   }
+
+  /** Open (true), closed (false), or a leaf with nothing to fold (undefined). */
+  const isExpanded = (r: NavRow): boolean | undefined => {
+    if (r.kind === 'task') return !collapsed.has(`${r.ws}/${r.task}`)
+    if (r.kind === 'session' || r.row.kind === 'file') return undefined
+    const f = folding(r.task)
+    return r.row.kind === 'repo' ? f.repoOpen(r.row.repo) : f.folderOpen(r.row.repo, r.row.path)
+  }
+  const setRepoOpen = (task: string, repo: string, on: boolean) =>
+    setOpenRepos((prev) => toggled(prev, `${wsName}/${task}/${repo}`, on))
+  const setFolderOpen = (task: string, repo: string, path: string, on: boolean) =>
+    setClosedFolders((prev) => toggled(prev, `${wsName}/${task}/${repo}/${path}`, !on))
+  const setExpanded = (r: NavRow, on: boolean) => {
+    if (r.kind === 'task') setCollapse(r.ws, r.task, !on)
+    else if (r.kind === 'diff' && r.row.kind === 'repo') setRepoOpen(r.task, r.row.repo, on)
+    else if (r.kind === 'diff' && r.row.kind === 'folder') setFolderOpen(r.task, r.row.repo, r.row.path, on)
+  }
+
+  const diffNav = (task: string): DiffNav => ({
+    ...folding(task),
+    setRepoOpen: (repo, on) => setRepoOpen(task, repo, on),
+    setFolderOpen: (repo, path, on) => setFolderOpen(task, repo, path, on),
+    cursor: cursorRow?.kind === 'diff' && cursorRow.task === task ? diffRowKey(cursorRow.row) : null,
+    point: (row) => {
+      moveTo({ kind: 'diff', ws: wsName, task, row })
+      treeRef.current?.focus()
+    },
+    menu: repoMenu?.ws === wsName && repoMenu.task === task ? repoMenu : null,
+    setMenu: (m) => setRepoMenu(m && { ws: wsName, task, ...m })
+  })
 
   const startRename = (r: Row) => {
     renameSettled.current = false
@@ -488,37 +586,52 @@ export function Sidebar({
 
   const onTreeKey = (e: ReactKeyboardEvent) => {
     if (e.target !== treeRef.current || renaming || !rows.length) return
-    const cur = rows[cursor]
-    const collapsedNow = cur?.kind === 'task' && collapsed.has(`${cur.ws}/${cur.task}`)
+    const cur = cursorRow
+    const expanded = cur && isExpanded(cur)
     switch (e.key) {
       case 'ArrowDown':
-        selectRow(rows[Math.min(cursor + 1, rows.length - 1)])
+        moveTo(rows[Math.min(cursor + 1, rows.length - 1)])
         break
       case 'ArrowUp':
-        selectRow(rows[Math.max(cursor - 1, 0)])
+        moveTo(rows[Math.max(cursor - 1, 0)])
         break
-      case 'ArrowRight':
-        if (!cur) return
-        // Expand first; on an already-expanded task, step into its sessions.
-        if (cur.kind !== 'task') return
-        if (collapsedNow) setCollapse(cur.ws, cur.task, false)
-        else if (rows[cursor + 1]?.kind === 'session') selectRow(rows[cursor + 1])
+      case 'ArrowRight': {
+        // Expand first; on an already-expanded row, step into its children.
+        if (!cur || expanded === undefined) return
+        const next = rows[cursor + 1]
+        if (!expanded) setExpanded(cur, true)
+        else if (next && navDepth(next) > navDepth(cur)) moveTo(next)
         break
+      }
       case 'ArrowLeft':
         if (!cur) return
-        // Mirror of Right: out of the sessions to the task, then collapse it.
-        if (cur.kind === 'session') onSelectTask(cur.ws, cur.task)
-        else if (!collapsedNow) setCollapse(cur.ws, cur.task, true)
+        // Mirror of Right: collapse first, then out to the parent row.
+        if (expanded) setExpanded(cur, false)
+        else moveTo(rows.slice(0, cursor).reverse().find((r) => navDepth(r) < navDepth(cur)))
         break
       case 'Enter':
       case 'F2':
-        if (cur) startRename(cur)
+        // Diff rows have no name to edit — Enter folds repos and folders instead.
+        if (cur?.kind === 'diff') {
+          if (e.key === 'Enter' && expanded !== undefined) setExpanded(cur, !expanded)
+        } else if (cur) startRename(cur)
         break
+      case 'ContextMenu':
+      case 'F10': {
+        if (e.key === 'F10' && !e.shiftKey) return
+        if (!cur || (cur.kind === 'diff' && cur.row.kind !== 'repo')) return
+        const rect = treeRef.current?.querySelector('.cursor')?.getBoundingClientRect()
+        if (!rect) return
+        const pos = { x: rect.left + 20, y: rect.bottom }
+        if (cur.kind === 'diff') setRepoMenu({ ws: cur.ws, task: cur.task, repo: cur.row.repo, ...pos })
+        else setCtxMenu({ row: cur, ...pos })
+        break
+      }
       // Both keys: ⌦ where the keyboard has one, ⌫ where Delete *is* backspace.
       // Neither acts on its own — the confirmation is the whole safety net.
       case 'Delete':
       case 'Backspace': {
-        if (!cur) return
+        if (!cur || cur.kind === 'diff') return
         // The dialog takes the caret and never hands it back — the tree needs it
         // to go on navigating, whichever way the answer went.
         if (cur.kind === 'task') {
@@ -532,7 +645,7 @@ export function Sidebar({
         const next = rows[cursor + 1] ?? rows[cursor - 1]
         fire(() =>
           deleteRow(cur.id).then((deleted) => {
-            if (deleted && next) selectRow(next)
+            if (deleted && next) moveTo(next)
             treeRef.current?.focus()
           })
         )
@@ -678,12 +791,11 @@ export function Sidebar({
           return (
             <div key={task.name} className="sb-group">
               <div
-                className={`sb-task ${taskSelected ? 'selected' : ''}`}
-                ref={taskSelected ? selectedRef : undefined}
+                className={`sb-task ${taskSelected ? 'selected' : ''}${cursorKey === rowKey(row) ? ' cursor' : ''}`}
                 role="treeitem"
                 aria-expanded={!isCollapsed}
                 aria-selected={taskSelected}
-                onClick={() => onSelectTask(wsName, task.name)}
+                onClick={() => moveTo(row)}
                 onDoubleClick={() => startRename(row)}
                 onContextMenu={editing ? undefined : (e) => openContextMenu(e, row)}
               >
@@ -722,7 +834,7 @@ export function Sidebar({
                   changes={changes[tkey]}
                   layout={fileLayout}
                   selection={diffFile ?? null}
-                  onSelect={onSelectDiffFile}
+                  nav={diffNav(task.name)}
                   onRefresh={() => onRefreshChanges(wsName, task.name)}
                 />
               )}
@@ -736,8 +848,7 @@ export function Sidebar({
                   return (
                     <div
                       key={s.id}
-                      className={`sb-session ${selected ? 'selected' : ''}`}
-                      ref={selected ? selectedRef : undefined}
+                      className={`sb-session ${selected ? 'selected' : ''}${cursorKey === rowKey(srow) ? ' cursor' : ''}`}
                       role="treeitem"
                       aria-selected={selected}
                       title={dot.label}
