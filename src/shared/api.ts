@@ -292,6 +292,8 @@ export interface GurtApi {
   /** Open every repo clone under the task dir in one VS Code window. */
   taskOpenVscode(ws: string, task: string): Promise<void>
   taskOpenTerminal(ws: string, task: string): Promise<void>
+  /** Copy the absolute scope directory path to the host clipboard. */
+  taskCopyPath(ws: string, task: string): Promise<void>
   createSession(
     ref: EnvRef,
     /** The session's repos (repo names); empty for a repo-less draft. More than
@@ -529,6 +531,7 @@ const METHODS = {
   changesOpenTerminal: 'none', // host GUI
   taskOpenVscode: 'none', // host GUI
   taskOpenTerminal: 'none', // host GUI
+  taskCopyPath: 'none', // host clipboard
   createSession: 'none', //     phase 1; §13 question 2
   sessionRun: 'none', //        §2.4: does not start sessions
   sessionEnqueue: 'none', //    §2.4

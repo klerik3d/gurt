@@ -1,7 +1,7 @@
 // The whole Electron-facing surface: broadcast bridge, the `GurtApi`
 // implementation over the kernel, and handler registration. Everything
 // domain-shaped lives in kernel.ts and below.
-import { BrowserWindow, ipcMain, shell } from 'electron'
+import { BrowserWindow, clipboard, ipcMain, shell } from 'electron'
 import { API_METHODS, type GurtApi } from '../shared/api'
 import { isSessionRole, targetKey } from '../shared/types'
 import { MCP_DEFS } from '../shared/mcp'
@@ -317,6 +317,9 @@ export function registerIpc(): void {
     changesOpenTerminal: (ws, task, repo) => changes.openRepoInTerminal(ws, task, repo),
     taskOpenVscode: (ws, task) => changes.openTaskInVscode(ws, task),
     taskOpenTerminal: (ws, task) => changes.openTaskInTerminal(ws, task),
+    taskCopyPath: async (ws, task) => {
+      clipboard.writeText(store.taskDir(ws, task))
+    },
     createSession: async (
       ref,
       repos,
