@@ -277,9 +277,7 @@ export function Sidebar({
     setCtxMenu({ row, x: e.clientX, y: e.clientY })
   }
 
-  /** The open context menu's contents — a task gets "new session" / "delete
-   *  task", a session gets "duplicate as draft" / "mark unread" (only once it
-   *  reads as seen) / "delete session". */
+  /** The open context menu's contents: scope actions or session actions. */
   const renderCtxMenu = (menu: { row: Row; x: number; y: number }, close: () => void) => {
     const { row } = menu
     // Only a session that already reads as seen has a mark worth handing back.
@@ -327,6 +325,17 @@ export function Sidebar({
             >
               <Icon name="terminal" size={13} className="faint" />
               <span>Open in Terminal</span>
+            </div>
+            <div
+              className="menu-item"
+              onMouseDown={(e) => {
+                e.preventDefault()
+                close()
+                fire(() => window.gurt.taskCopyPath(row.ws, row.task))
+              }}
+            >
+              <Icon name="copy" size={13} className="faint" />
+              <span>Copy path</span>
             </div>
             <div className="menu-sep" />
             <div
