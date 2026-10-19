@@ -92,6 +92,22 @@ try {
   assert.match(await page.locator('.diff-pane .split').innerText(), /comments = false/)
   assert.equal(await page.locator('.modal, .split-add, .review-foot').count(), 0, 'inline diff has no review UI')
 
+  // The tree keeps the caret and its arrow keys walk repos and files too.
+  assert.equal(await page.evaluate(() => document.activeElement?.className), 'sb-tree', 'a row click leaves focus on the tree')
+  await page.keyboard.press('ArrowDown')
+  assert.equal(await frontend.locator('button[title="src/new.ts"]').getAttribute('aria-pressed'), 'true', 'ArrowDown selects the next file')
+  await page.keyboard.press('ArrowUp')
+  assert.equal(await frontend.locator('button[title="src/app.ts"]').getAttribute('aria-pressed'), 'true', 'ArrowUp selects the previous file')
+  await page.keyboard.press('ArrowLeft')
+  assert.equal(await frontend.locator('.diff-repo-row.cursor').count(), 1, 'ArrowLeft walks out to the repo')
+  await page.keyboard.press('ArrowLeft')
+  assert.equal(await frontend.locator('.diff-file-row').count(), 0, 'ArrowLeft on an open repo collapses it')
+  await page.keyboard.press('ArrowRight')
+  assert.equal(await frontend.locator('.diff-file-row').count(), 4, 'ArrowRight expands the repo')
+  await page.keyboard.press('ArrowRight')
+  assert.equal(await frontend.locator('.diff-file-row.cursor').count(), 1, 'ArrowRight steps into the files')
+  await frontend.locator('button[title="src/app.ts"]').click()
+
   await page.getByRole('button', { name: 'File tree', exact: true }).click()
   assert.equal(await frontend.locator('.diff-folder').innerText(), 'src')
   assert.equal(await frontend.locator('button[title="unchanged.txt"]').count(), 0)

@@ -1,4 +1,5 @@
-import { useMemo, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
+import type { MouseEvent as ReactMouseEvent } from 'react'
 import type { ChangedFile, RepoChanges } from '../../../shared/types'
 import { isActionable, isDelivered } from '../../../shared/types'
 import { run } from '../async'
@@ -41,13 +42,73 @@ function fileTree(files: ChangedFile[]): FileNode[] {
   return [...root.values()]
 }
 
-export function TaskRepositories({ ws, task, changes, layout, selection, onSelect, onRefresh }: {
+/** One visible line under a task in diff mode — the rows the sidebar's arrow
+ *  keys walk, built by the same function the rendering reads so the two can't
+ *  drift apart. */
+export type DiffRow =
+  | { kind: 'repo'; repo: string }
+  | { kind: 'folder'; repo: string; path: string; name: string; depth: number }
+  | { kind: 'file'; repo: string; path: string; file: ChangedFile; depth: number; flat: boolean }
+
+export const diffRowKey = (r: { kind: DiffRow['kind']; repo: string; path?: string }): string =>
+  r.kind === 'repo' ? `repo:${r.repo}` : `${r.kind}:${r.repo}:${r.path}`
+
+/** Folding the sidebar owns — repos start closed, folders open. */
+export interface DiffFolding {
+  repoOpen: (repo: string) => boolean
+  folderOpen: (repo: string, path: string) => boolean
+}
+
+/** Everything a task's repositories need from the tree they sit in. */
+export interface DiffNav extends DiffFolding {
+  setRepoOpen: (repo: string, open: boolean) => void
+  setFolderOpen: (repo: string, path: string, open: boolean) => void
+  /** Key of the row the tree's cursor is on, when it is in this task. */
+  cursor: string | null
+  /** A click landed on this row: move the cursor there, focus back on the tree. */
+  point: (row: DiffRow) => void
+  menu: { repo: string; x: number; y: number } | null
+  setMenu: (menu: { repo: string; x: number; y: number } | null) => void
+}
+
+export function diffRows(changes: RepoChanges[], layout: FileLayout, folding: DiffFolding): DiffRow[] {
+  return changes.flatMap((r): DiffRow[] => [
+    { kind: 'repo', repo: r.repo },
+    ...(folding.repoOpen(r.repo) ? fileRows(r, layout, folding) : [])
+  ])
+}
+
+function fileRows(r: RepoChanges, layout: FileLayout, folding: DiffFolding): DiffRow[] {
+  if (layout === 'list')
+    return [...r.files]
+      .sort((a, b) => a.path.localeCompare(b.path))
+      .map((file) => ({ kind: 'file', repo: r.repo, path: file.path, file, depth: 0, flat: true }))
+  const out: DiffRow[] = []
+  const walk = (nodes: FileNode[], depth: number) => {
+    for (const node of [...nodes].sort((a, b) => Number(!!a.file) - Number(!!b.file) || a.name.localeCompare(b.name))) {
+      if (node.file) {
+        out.push({ kind: 'file', repo: r.repo, path: node.path, file: node.file, depth, flat: false })
+        continue
+      }
+      out.push({ kind: 'folder', repo: r.repo, path: node.path, name: node.name, depth })
+      if (folding.folderOpen(r.repo, node.path)) walk([...node.children.values()], depth + 1)
+    }
+  }
+  walk(fileTree(r.files), 0)
+  return out
+}
+
+/** Rows are buttons for the click, not for focus: the tree holds the caret and
+ *  walks them with its own cursor, so a click must not leave focus on one. */
+const keepTreeFocus = (e: ReactMouseEvent) => e.preventDefault()
+
+export function TaskRepositories({ ws, task, changes, layout, selection, nav, onRefresh }: {
   ws: string
   task: string
   changes: RepoChanges[] | undefined
   layout: FileLayout
   selection: DiffFileSelection | null
-  onSelect: (file: DiffFileSelection) => void
+  nav: DiffNav
   onRefresh: () => Promise<void>
 }) {
   if (!changes) return <div className="sb-empty">loading repositories…</div>
@@ -61,9 +122,9 @@ export function TaskRepositories({ ws, task, changes, layout, selection, onSelec
           task={task}
           repo={repo}
           layout={layout}
+          nav={nav}
           activePath={selection?.ws === ws && selection.task === task && selection.repo === repo.repo
             ? selection.path : null}
-          onSelect={(path) => onSelect({ ws, task, repo: repo.repo, path })}
           onRefresh={onRefresh}
         />
       ))}
@@ -71,23 +132,24 @@ export function TaskRepositories({ ws, task, changes, layout, selection, onSelec
   )
 }
 
-function Repository({ ws, task, repo: r, layout, activePath, onSelect, onRefresh }: {
+function Repository({ ws, task, repo: r, layout, nav, activePath, onRefresh }: {
   ws: string
   task: string
   repo: RepoChanges
   layout: FileLayout
+  nav: DiffNav
   activePath: string | null
-  onSelect: (path: string) => void
   onRefresh: () => Promise<void>
 }) {
-  const [open, setOpen] = useState(false)
-  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
+  const open = nav.repoOpen(r.repo)
+  const menu = nav.menu?.repo === r.repo ? nav.menu : null
+  const setMenu = (m: { x: number; y: number } | null) => nav.setMenu(m && { repo: r.repo, ...m })
+  const repoRow: DiffRow = { kind: 'repo', repo: r.repo }
   const [committing, setCommitting] = useState(false)
   const [busy, setBusy] = useState(false)
   const inFlight = useRef(false)
   const [error, setError] = useState('')
   const hasChanges = isActionable(r) || isDelivered(r)
-  const nodes = useMemo(() => fileTree(r.files), [r.files])
   const act = async (fn: () => Promise<void>) => {
     if (inFlight.current) return
     inFlight.current = true
@@ -111,22 +173,19 @@ function Repository({ ws, task, repo: r, layout, activePath, onSelect, onRefresh
   return (
     <div className="diff-repo" aria-busy={busy}>
       <button
-        className={`diff-repo-row${activePath ? ' here' : ''}`}
+        className={`diff-repo-row${activePath ? ' here' : ''}${nav.cursor === diffRowKey(repoRow) ? ' cursor' : ''}`}
+        tabIndex={-1}
         aria-expanded={open}
         title={`${r.repo} · ${r.files.length} changed files${busy ? ' · working…' : ''}`}
-        onClick={() => setOpen((v) => !v)}
-        onKeyDown={(e) => {
-          if (e.key === 'ArrowRight') { e.preventDefault(); setOpen(true) }
-          if (e.key === 'ArrowLeft') { e.preventDefault(); setOpen(false) }
-          if (e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) {
-            e.preventDefault()
-            const rect = e.currentTarget.getBoundingClientRect()
-            setMenu({ x: rect.left + 20, y: rect.bottom })
-          }
+        onMouseDown={keepTreeFocus}
+        onClick={() => {
+          nav.point(repoRow)
+          nav.setRepoOpen(r.repo, !open)
         }}
         onContextMenu={(e) => {
           e.preventDefault()
           e.stopPropagation()
+          nav.point(repoRow)
           setMenu({ x: e.clientX, y: e.clientY })
         }}
       >
@@ -159,11 +218,9 @@ function Repository({ ws, task, repo: r, layout, activePath, onSelect, onRefresh
                 : 'No uncommitted files'}
             </div>
           )}
-          {layout === 'list'
-            ? [...r.files].sort((a, b) => a.path.localeCompare(b.path)).map((file) => (
-                <FileRow key={file.path} file={file} depth={0} flat active={activePath === file.path} onSelect={onSelect} />
-              ))
-            : <FileTree nodes={nodes} depth={0} activePath={activePath} onSelect={onSelect} />}
+          {fileRows(r, layout, nav).map((row) => row.kind === 'folder'
+            ? <Folder key={row.path} row={row} nav={nav} />
+            : row.kind === 'file' && <FileRow key={row.path} row={row} nav={nav} active={activePath === row.path} />)}
         </div>
       )}
       {menu && (
@@ -206,53 +263,43 @@ function Repository({ ws, task, repo: r, layout, activePath, onSelect, onRefresh
   )
 }
 
-function FileTree({ nodes, depth, activePath, onSelect }: {
-  nodes: FileNode[]
-  depth: number
-  activePath: string | null
-  onSelect: (path: string) => void
-}) {
-  return [...nodes]
-    .sort((a, b) => Number(!!a.file) - Number(!!b.file) || a.name.localeCompare(b.name))
-    .map((node) => node.file
-      ? <FileRow key={node.path} file={node.file} depth={depth} active={node.path === activePath} onSelect={onSelect} />
-      : <Folder key={node.path} node={node} depth={depth} activePath={activePath} onSelect={onSelect} />)
-}
-
-function Folder({ node, depth, activePath, onSelect }: {
-  node: FileNode
-  depth: number
-  activePath: string | null
-  onSelect: (path: string) => void
-}) {
-  const [open, setOpen] = useState(true)
+function Folder({ row, nav }: { row: Extract<DiffRow, { kind: 'folder' }>; nav: DiffNav }) {
+  const open = nav.folderOpen(row.repo, row.path)
   return (
-    <div>
-      <button className="diff-file-row diff-folder" style={{ paddingLeft: 42 + depth * 14 }} aria-expanded={open} onClick={() => setOpen((v) => !v)}>
-        <Icon name="chevron" size={10} style={open ? undefined : { transform: 'rotate(-90deg)' }} />
-        <Icon name="folder" size={12} />
-        <span className="diff-file-name">{node.name}</span>
-      </button>
-      {open && <FileTree nodes={[...node.children.values()]} depth={depth + 1} activePath={activePath} onSelect={onSelect} />}
-    </div>
+    <button
+      className={`diff-file-row diff-folder${nav.cursor === diffRowKey(row) ? ' cursor' : ''}`}
+      style={{ paddingLeft: 42 + row.depth * 14 }}
+      tabIndex={-1}
+      aria-expanded={open}
+      onMouseDown={keepTreeFocus}
+      onClick={() => {
+        nav.point(row)
+        nav.setFolderOpen(row.repo, row.path, !open)
+      }}
+    >
+      <Icon name="chevron" size={10} style={open ? undefined : { transform: 'rotate(-90deg)' }} />
+      <Icon name="folder" size={12} />
+      <span className="diff-file-name">{row.name}</span>
+    </button>
   )
 }
 
-function FileRow({ file, depth, flat, active, onSelect }: {
-  file: ChangedFile
-  depth: number
-  flat?: boolean
+function FileRow({ row, nav, active }: {
+  row: Extract<DiffRow, { kind: 'file' }>
+  nav: DiffNav
   active: boolean
-  onSelect: (path: string) => void
 }) {
+  const { file, flat } = row
   const slash = file.path.lastIndexOf('/')
   return (
     <button
-      className={`diff-file-row${active ? ' selected' : ''}`}
-      style={{ paddingLeft: 42 + depth * 14 }}
+      className={`diff-file-row${active ? ' selected' : ''}${nav.cursor === diffRowKey(row) ? ' cursor' : ''}`}
+      style={{ paddingLeft: 42 + row.depth * 14 }}
+      tabIndex={-1}
       title={file.path}
       aria-pressed={active}
-      onClick={() => onSelect(file.path)}
+      onMouseDown={keepTreeFocus}
+      onClick={() => nav.point(row)}
     >
       <Icon name="file" size={12} className="faint" />
       <span className="diff-file-name">{file.path.slice(slash + 1)}</span>

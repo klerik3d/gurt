@@ -941,9 +941,11 @@ textarea.input {
   color: var(--text);
 }
 /* The focused tree marks its cursor row, so keyboard nav has something to follow. */
-.sb-tree:focus-visible .sb-task.selected,
-.sb-tree:focus-visible .sb-session.selected {
+.sb-tree:focus-visible .cursor {
   box-shadow: inset 0 0 0 1px var(--border2);
+}
+.sb-tree:focus-visible .diff-file-row.selected.cursor {
+  box-shadow: inset 2px 0 var(--accent), inset 0 0 0 1px var(--border2);
 }
 .sb-rename {
   flex: 1;
