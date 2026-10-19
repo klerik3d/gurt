@@ -164,6 +164,7 @@ const SAFE_ARGS = new Set([
   'changesOpenTerminal',
   'taskOpenVscode',
   'taskOpenTerminal',
+  'taskCopyPath',
   // Notifications and shell. Ids, and a prefs object of booleans/enums.
   'markNotificationRead',
   'markAllRead',
