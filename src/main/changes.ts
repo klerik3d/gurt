@@ -7,6 +7,7 @@ import { promises as fs } from 'node:fs'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
 import type { ChangedFile, DiffPair, DiffTarget, RepoChanges, ThreadCommit } from '../shared/types'
+import type { UpdateStrategy } from '../shared/api'
 import { run } from './provision'
 import { cloneDir, taskDir } from './store'
 import { hostGitAccessForRepo, type HostGitAccess } from './git/env'
@@ -242,7 +243,8 @@ async function repoChanges(
     ? await git(dir, access, ['rev-list', '--count', `HEAD..${base}`]).catch(() => '0')
     : '0'
   const behind = parseInt(behindOut.trim(), 10) || 0
-  const conflicted = !!(await revParse(dir, access, 'MERGE_HEAD'))
+  const conflicted =
+    !!(await revParse(dir, access, 'MERGE_HEAD')) || !!(await revParse(dir, access, 'REBASE_HEAD'))
 
   return {
     repo,
@@ -455,12 +457,17 @@ export async function push(ws: string, task: string, repo: string): Promise<void
 }
 
 /**
- * Merges the fetched default branch into the task branch. Exit code 1 (merge
- * left conflicts) is not an error here — it surfaces as `conflicted` on the
+ * Merges or rebases the fetched default branch into the task branch. Exit code
+ * 1 (left conflicts) is not an error here — it surfaces as `conflicted` on the
  * next `getTaskChanges`, for the user (or agent, inside the container) to
  * resolve like any other local conflict, rather than on the forge.
  */
-export async function updateFromMain(ws: string, task: string, repo: string): Promise<void> {
+export async function updateFromMain(
+  ws: string,
+  task: string,
+  repo: string,
+  strategy: UpdateStrategy
+): Promise<void> {
   const dir = cloneDir(ws, task, repo)
   const access = await hostGitAccessForRepo(ws, repo)
   await serialized(dir, async () => {
@@ -468,7 +475,11 @@ export async function updateFromMain(ws: string, task: string, repo: string): Pr
     const def = await defaultBranch(dir, access)
     // Nothing to merge from an empty remote — the default branch has no ref yet.
     if (!(await revParse(dir, access, `origin/${def}`))) return
-    await git(dir, access, ['merge', `origin/${def}`, '--no-edit'], { okCodes: [0, 1] })
+    if (strategy === 'rebase') {
+      await git(dir, access, ['rebase', `origin/${def}`], { okCodes: [0, 1] })
+    } else {
+      await git(dir, access, ['merge', `origin/${def}`, '--no-edit'], { okCodes: [0, 1] })
+    }
   })
 }
 
