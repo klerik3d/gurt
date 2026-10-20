@@ -16,6 +16,7 @@ import { Icon, Logo } from './components/icons'
 import { EnvRepoMarks } from './components/tags'
 import { Sidebar, NameModal, DeleteWorkspaceModal } from './components/Sidebar'
 import { SessionPane } from './components/SessionPane'
+import { TerminalSidebar } from './components/TerminalSidebar'
 import { TaskPane } from './components/TaskPane'
 import { DiffPane } from './components/DiffPane'
 import type { DiffFileSelection } from './components/DiffSidebar'
@@ -77,6 +78,8 @@ export default function App() {
   const { turns: usage, loaded: readStateReady } = useUsage()
   const [selection, setSelection] = useState<Selection>(null)
   const [view, setView] = useState<View>('work')
+  const [leftSidebarVisible, setLeftSidebarVisible] = useState(true)
+  const [terminalVisible, setTerminalVisible] = useState(false)
   const [workMode, setWorkMode] = useState<'sessions' | 'diff'>('sessions')
   const [diffFile, setDiffFile] = useState<DiffFileSelection | null>(null)
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('environments')
@@ -112,8 +115,7 @@ export default function App() {
   const hotkeys = useHotkeys()
   const [sidebarCollapsed, setSidebarCollapsed] = useState<Set<string>>(new Set())
   const sidebarSeeded = useRef(new Set<string>())
-  /** Bumped on every ⌘2 (`gotoTasks`) — Sidebar focuses its tree whenever this
-   *  changes, including on the mount that follows switching into the work view. */
+  /** Bumped when a left activity item is activated; focuses its tree when visible. */
   const [focusTasksSignal, setFocusTasksSignal] = useState(0)
   /** ⌘/Ctrl held alone, past `MOD_HOLD_DELAY_MS` — drives the activity bar's
    *  "hold to see the shortcut" badges (below). Delayed so a quick chord
@@ -632,9 +634,16 @@ export default function App() {
   // fires. Harmless no-op on other platforms, which just never emit it.
   useEffect(() => window.gurt.onHotkeyCycleWorkspace(cycleWorkspace), [cycleWorkspace])
 
+  const toggleWorkSidebar = useCallback((mode: 'sessions' | 'diff') => {
+    setLeftSidebarVisible((visible) => view === 'work' && workMode === mode ? !visible : true)
+    setView('work')
+    setWorkMode(mode)
+    setForceWelcome(false)
+    setFocusTasksSignal((n) => n + 1)
+  }, [view, workMode])
+
   // Global hotkeys: palette · new session · new task · cycle workspaces ·
-  // go to dashboard/tasks/settings (default ⌘K / ⌘N / ⌘⇧N / ⌘` / ⌘⇧` /
-  // ⌘1 / ⌘2 / ⌘0, remappable in Settings → Hotkeys).
+  // navigation and sidebar toggles (remappable in Settings → Hotkeys).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey)) return
@@ -658,15 +667,13 @@ export default function App() {
         setView('dashboard')
       } else if (bindingMatchesEvent(hotkeys.gotoTasks, e)) {
         e.preventDefault()
-        setView('work')
-        setWorkMode('sessions')
-        setFocusTasksSignal((n) => n + 1)
+        if (!e.repeat) toggleWorkSidebar('sessions')
       } else if (bindingMatchesEvent(hotkeys.gotoDiff, e)) {
         e.preventDefault()
-        setView('work')
-        setWorkMode('diff')
-        setForceWelcome(false)
-        setFocusTasksSignal((n) => n + 1)
+        if (!e.repeat) toggleWorkSidebar('diff')
+      } else if (bindingMatchesEvent(hotkeys.toggleTerminal, e)) {
+        e.preventDefault()
+        if (!e.repeat && view === 'work') setTerminalVisible((visible) => !visible)
       } else if (bindingMatchesEvent(hotkeys.gotoSettings, e)) {
         e.preventDefault()
         setView('settings')
@@ -674,7 +681,7 @@ export default function App() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [ws, openNewSession, hotkeys, cycleWorkspace])
+  }, [ws, openNewSession, hotkeys, cycleWorkspace, toggleWorkSidebar, view])
 
   const positions = queuePositions(tree)
   // The dropdown reads from whichever is driving it: the switcher's MRU
@@ -908,19 +915,20 @@ export default function App() {
             {modHeld && <span className="ab-badge">{bindingRestLabel(hotkeys.gotoDashboard)}</span>}
           </button>
           <button
-            className={`ab-item ${view === 'work' && workMode === 'sessions' ? 'active' : ''}`}
+            className={`ab-item ${view === 'work' && workMode === 'sessions' && leftSidebarVisible ? 'active' : ''}`}
             title={`Agents · ${bindingLabel(hotkeys.gotoTasks)}`}
-            onClick={() => { setView('work'); setWorkMode('sessions') }}
+            aria-pressed={view === 'work' && workMode === 'sessions' && leftSidebarVisible}
+            onClick={() => toggleWorkSidebar('sessions')}
           >
             <Icon name="bot" size={17} />
             {modHeld && <span className="ab-badge">{bindingRestLabel(hotkeys.gotoTasks)}</span>}
           </button>
           <button
-            className={`ab-item ${view === 'work' && workMode === 'diff' ? 'active' : ''}`}
+            className={`ab-item ${view === 'work' && workMode === 'diff' && leftSidebarVisible ? 'active' : ''}`}
             title={`Diff · ${bindingLabel(hotkeys.gotoDiff)}`}
             aria-label="Diff"
-            aria-pressed={view === 'work' && workMode === 'diff'}
-            onClick={() => { setView('work'); setWorkMode('diff'); setForceWelcome(false) }}
+            aria-pressed={view === 'work' && workMode === 'diff' && leftSidebarVisible}
+            onClick={() => toggleWorkSidebar('diff')}
           >
             <Icon name="branch" size={18} />
             {modHeld && <span className="ab-badge">{bindingRestLabel(hotkeys.gotoDiff)}</span>}
@@ -938,30 +946,32 @@ export default function App() {
 
         {view === 'work' && (
           <>
-            <Sidebar
-              collapsed={sidebarCollapsed}
-              setCollapsed={setSidebarCollapsed}
-              seeded={sidebarSeeded}
-              width={sidebarWidth}
-              tree={tree}
-              ws={ws?.name ?? null}
-              selection={workMode === 'diff' && diffTask ? { type: 'task', ...diffTask } : selection}
-              mode={workMode}
-              diffFile={activeDiffFile}
-              onSelectDiffFile={(file) => {
-                if (file.ws !== diffTask?.ws || file.task !== diffTask?.task) selectTask(file.ws, file.task)
-                setDiffFile(file)
-              }}
-              onRefreshChanges={(w, t) => loadChanges(w, t, true)}
-              changes={changes}
-              activity={activity}
-              focusSignal={focusTasksSignal}
-              readStateReady={readStateReady}
-              onNewSession={(w, t) => createDraft(w, t)}
-              onSelectTask={selectTask}
-              onSelectSession={selectSession}
-            />
-            <div className="sidebar-resizer" onMouseDown={startSidebarResize} />
+            <div className="left-sidebar" hidden={!leftSidebarVisible}>
+              <Sidebar
+                collapsed={sidebarCollapsed}
+                setCollapsed={setSidebarCollapsed}
+                seeded={sidebarSeeded}
+                width={sidebarWidth}
+                tree={tree}
+                ws={ws?.name ?? null}
+                selection={workMode === 'diff' && diffTask ? { type: 'task', ...diffTask } : selection}
+                mode={workMode}
+                diffFile={activeDiffFile}
+                onSelectDiffFile={(file) => {
+                  if (file.ws !== diffTask?.ws || file.task !== diffTask?.task) selectTask(file.ws, file.task)
+                  setDiffFile(file)
+                }}
+                onRefreshChanges={(w, t) => loadChanges(w, t, true)}
+                changes={changes}
+                activity={activity}
+                focusSignal={focusTasksSignal}
+                readStateReady={readStateReady}
+                onNewSession={(w, t) => createDraft(w, t)}
+                onSelectTask={selectTask}
+                onSelectSession={selectSession}
+              />
+              <div className="sidebar-resizer" onMouseDown={startSidebarResize} />
+            </div>
             <main className="main">
               {workMode === 'sessions' && selection?.type === 'session' && (
                 <SessionPane
@@ -1030,6 +1040,25 @@ export default function App() {
             section={settingsSection}
             onSection={setSettingsSection}
           />
+        )}
+        <TerminalSidebar
+          visible={view === 'work' && terminalVisible}
+          scope={diffTask && diffTask.ws === ws?.name && ws.tasks.some((t) => t.name === diffTask.task) ? diffTask : null}
+          onHide={() => setTerminalVisible(false)}
+        />
+        {view === 'work' && (
+          <div className="activitybar activitybar-right">
+            <button
+              className={`ab-item ${terminalVisible ? 'active' : ''}`}
+              title={`Terminal · ${bindingLabel(hotkeys.toggleTerminal)}`}
+              aria-label="Terminal"
+              aria-pressed={terminalVisible}
+              onClick={() => setTerminalVisible((visible) => !visible)}
+            >
+              <Icon name="terminal" size={17} />
+              {modHeld && <span className="ab-badge">{bindingRestLabel(hotkeys.toggleTerminal)}</span>}
+            </button>
+          </div>
         )}
       </div>
 

@@ -11,6 +11,7 @@
     "npm": ">=9"
   },
   "scripts": {
+    "postinstall": "node scripts/prepare-terminal.mjs",
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "dist": "npm run build && electron-builder --mac --publish never",
@@ -25,6 +26,7 @@
   "lavamoat": {
     "allowScripts": {
       "electron": true,
+      "node-pty#1.1.0": true,
       "esbuild#0.25.12": true,
       "vite>esbuild#0.28.2": true,
       "electron-builder>app-builder-lib>electron-builder-squirrel-windows>electron-winstaller": false,
@@ -35,9 +37,12 @@
   "dependencies": {
     "@devcontainers/cli": "0.88.0",
     "@modelcontextprotocol/sdk": "^1.30.0",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "electron-updater": "^6.8.9",
     "highlight.js": "^11.12.0",
     "jsonc-parser": "^3.3.1",
+    "node-pty": "^1.1.0",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
     "zod": "^4.4.3"
@@ -54,7 +59,7 @@
     "@vitejs/plugin-react": "^5.2.0",
     "diff": "^9.0.0",
     "electron": "^43.8.0",
-    "electron-builder": "26.17.0",
+    "electron-builder": "^26.5.0",
     "electron-vite": "5.0.0",
     "esbuild": "0.25.12",
     "eslint": "^10.9.0",

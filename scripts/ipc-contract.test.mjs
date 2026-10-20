@@ -214,6 +214,8 @@ test('preload exposes nothing beyond API_METHODS + the known event hooks', () =>
     'log',
     'logLevel',
     'onTreeChanged',
+    'onTerminalChanged',
+    'onTerminalOutput',
     'onSessionChanged',
     'onSessionLog',
     'onSessionTurn',

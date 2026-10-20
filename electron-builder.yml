@@ -25,6 +25,8 @@ files:
 #  - the icon, which is handed to nativeImage/BrowserWindow by path
 asarUnpack:
   - node_modules/@devcontainers/cli/**
+  # Native PTY binding and macOS spawn-helper must be real files.
+  - node_modules/node-pty/**
   - resources/**
 
 mac:

@@ -29,7 +29,9 @@ npm lifecycle scripts are disabled globally (`ignore-scripts=true` in
 in `package.json` and run explicitly via `npx allow-scripts` — hence the
 `setup` script instead of a bare `npm ci`. Electron no longer declares a
 postinstall script at all, so `setup` also runs its `install.js` directly to
-unpack the binary into `node_modules/electron/dist/`.
+unpack the binary into `node_modules/electron/dist/`. The allow-listed node-pty
+install prepares the native terminal binding; the root postinstall also marks
+its macOS spawn helper executable before development or packaging.
 
 ## Running in dev
 

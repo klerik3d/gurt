@@ -7,6 +7,7 @@ import type {
   SessionState,
   StoredProposal
 } from './types'
+import type { TerminalInfo, TerminalOutput } from './terminal'
 import type { DoctorRow } from './doctor'
 import type { SessionTraffic } from './proxy'
 import type { SessionMcpFailures } from './mcp'
@@ -40,6 +41,8 @@ export interface EventError {
 }
 
 export interface DomainEvents {
+  'terminal.changed': TerminalInfo[]
+  'terminal.output': TerminalOutput
   /** Boot restore progress (settings, session restore, container reconcile).
    *  Mutating IPC waits on the kernel's `ready`, so the wait is surfaced: the
    *  renderer's footer mirrors these until `done`. `percent` is coarse. */
