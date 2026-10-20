@@ -31,6 +31,7 @@ import { useOutsideClose } from './hooks'
 import { isReviewed, lastTurnEnds, markSeen, useSeen, useUsage } from './reviewed'
 import { useAgents } from './useAgents'
 import { DialogHost, alertDialog } from './dialog'
+import { ToastHost } from './toast'
 import { logErr } from './log'
 import { run } from './async'
 import { bindingLabel, bindingMatchesEvent, bindingRestLabel } from '../../shared/hotkeys'
@@ -1143,18 +1144,21 @@ export default function App() {
           onDeleted={() => setDeletingWorkspace(null)}
         />
       )}
-      <NotificationPopups
-        notifications={popups.filter((n) =>
-          notifications.some((item) => item.id === n.id && !item.read)
-        )}
-        tree={tree}
-        onDismiss={closePopup}
-        onOpen={(n) => {
-          closePopup(n.id)
-          markNotificationRead(n.id)
-          selectSession(n.sessionId)
-        }}
-      />
+      <div className="popup-stack">
+        <NotificationPopups
+          notifications={popups.filter((n) =>
+            notifications.some((item) => item.id === n.id && !item.read)
+          )}
+          tree={tree}
+          onDismiss={closePopup}
+          onOpen={(n) => {
+            closePopup(n.id)
+            markNotificationRead(n.id)
+            selectSession(n.sessionId)
+          }}
+        />
+        <ToastHost />
+      </div>
       <DialogHost />
     </div>
   )

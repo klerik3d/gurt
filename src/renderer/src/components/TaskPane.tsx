@@ -4,6 +4,7 @@ import type { DiffTarget, RepoChanges, Tree } from '../../../shared/types'
 import { isActionable, isDelivered } from '../../../shared/types'
 import { agentKind, agentName, useAgents } from '../useAgents'
 import { alertDialog, confirmDialog } from '../dialog'
+import { showToast } from '../toast'
 import { useOutsideClose } from '../hooks'
 import { containerDot } from '../status'
 import { Icon, Dot } from './icons'
@@ -259,8 +260,6 @@ function ChangesSection({
   /** Repos held by a manual review — the lock tag and the panel's Review button
    *  read it; the surface itself owns the toggling. */
   const [locks, setLocks] = useState<Record<string, boolean>>({})
-  /** repo -> last action error, rendered inline in its group. */
-  const [errors, setErrors] = useState<Record<string, string>>({})
   /** Repos with an action in flight — their buttons are disabled. A set, not a
    *  single slot: with several repos, action A finishing must not re-enable
    *  repo B's buttons while B's own action is still running. */
@@ -278,11 +277,10 @@ function ChangesSection({
 
   const act = async (repo: string, fn: () => Promise<void>) => {
     setBusyRepos((prev) => new Set(prev).add(repo))
-    setErrors((prev) => ({ ...prev, [repo]: '' }))
     try {
       await fn()
     } catch (e) {
-      setErrors((prev) => ({ ...prev, [repo]: e instanceof Error ? e.message : String(e) }))
+      showToast(`${repo}: ${e instanceof Error ? e.message : String(e)}`)
     } finally {
       setBusyRepos((prev) => {
         const next = new Set(prev)
@@ -486,7 +484,6 @@ function ChangesSection({
               </div>
             </div>
           )}
-          {errors[r.repo] && <div className="error changes-error">{errors[r.repo]}</div>}
         </div>
       ))}
       {review && (
