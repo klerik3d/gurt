@@ -3,6 +3,7 @@ import type { MouseEvent as ReactMouseEvent } from 'react'
 import type { ChangedFile, RepoChanges } from '../../../shared/types'
 import { isActionable, isDelivered } from '../../../shared/types'
 import { run } from '../async'
+import { showToast } from '../toast'
 import { Icon } from './icons'
 import { RowContextMenu } from './RowContextMenu'
 import { CommitModal } from './TaskPane'
@@ -148,22 +149,20 @@ function Repository({ ws, task, repo: r, layout, nav, activePath, onRefresh }: {
   const [committing, setCommitting] = useState(false)
   const [busy, setBusy] = useState(false)
   const inFlight = useRef(false)
-  const [error, setError] = useState('')
   const hasChanges = isActionable(r) || isDelivered(r)
   const act = async (fn: () => Promise<void>) => {
     if (inFlight.current) return
     inFlight.current = true
     setBusy(true)
-    setError('')
     try {
       await fn()
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      showToast(`${r.repo}: ${e instanceof Error ? e.message : String(e)}`)
     } finally {
       try {
         await onRefresh()
       } catch (e) {
-        setError(String(e))
+        showToast(`${r.repo}: ${String(e)}`)
       }
       inFlight.current = false
       setBusy(false)
@@ -208,7 +207,6 @@ function Repository({ ws, task, repo: r, layout, nav, activePath, onRefresh }: {
           {r.conflicted ? '!' : `↓${r.behind}`}
         </span>
       </button>
-      {error && <div className="error diff-repo-error">{error}</div>}
       {open && (
         <div className="diff-files" role="group" aria-label={`Changed files in ${r.repo}`}>
           {r.files.length === 0 && (
