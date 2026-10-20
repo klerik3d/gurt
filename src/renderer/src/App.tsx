@@ -26,6 +26,7 @@ import { Welcome } from './components/Welcome'
 import { PREPARE_LOG_KEY, WELCOME_MODE_DEFAULT, welcomeShows } from '../../shared/doctor'
 import type { WelcomeMode } from '../../shared/doctor'
 import { NotificationsPanel } from './components/NotificationsPanel'
+import { NotificationPopups } from './components/NotificationPopups'
 import { useOutsideClose } from './hooks'
 import { isReviewed, lastTurnEnds, markSeen, useSeen, useUsage } from './reviewed'
 import { useAgents } from './useAgents'
@@ -133,6 +134,10 @@ export default function App() {
       .then((p) => setBoot((prev) => (prev && prev.percent > p.percent ? prev : p)))
       .catch(logErr('getBootProgress'))
     return off
+  }, [])
+  const [popups, setPopups] = useState<NotificationRecord[]>([])
+  const closePopup = useCallback((id: string) => {
+    setPopups((prev) => prev.filter((n) => n.id !== id))
   }, [])
   const [notifications, setNotifications] = useState<NotificationRecord[]>([])
   /** Invalidates in-flight notification resyncs: a push (created/read) that
@@ -266,6 +271,9 @@ export default function App() {
       // A push supersedes any resync still in flight — its reply predates this
       // record and would clobber it.
       notifSyncSeq.current++
+      if (record.type !== 'error' && !record.read) {
+        setPopups((prev) => [...prev.filter((n) => n.id !== record.id), record].slice(-3))
+      }
       // Same cap as main's ring (§6: in-memory, oldest dropped) — otherwise
       // this array outlives it and the two permanently disagree.
       setNotifications((prev) => [...prev, record].slice(-NOTIFICATION_RING_CAP))
@@ -275,6 +283,7 @@ export default function App() {
     // markRead/markAllRead calls — mirror it so the badge doesn't go stale.
     const offNotifRead = window.gurt.onNotificationRead(({ sessionId }) => {
       notifSyncSeq.current++
+      setPopups((prev) => prev.filter((n) => n.sessionId !== sessionId))
       setNotifications((prev) =>
         prev.map((n) => (n.sessionId === sessionId && !n.read ? { ...n, read: true } : n))
       )
@@ -405,6 +414,7 @@ export default function App() {
   }, [sidebarWidth])
 
   const selectSession = useCallback((id: string) => {
+    setPopups((prev) => prev.filter((n) => n.sessionId !== id))
     setView('work')
     setWorkMode('sessions')
     setForceWelcome(false)
@@ -1133,6 +1143,18 @@ export default function App() {
           onDeleted={() => setDeletingWorkspace(null)}
         />
       )}
+      <NotificationPopups
+        notifications={popups.filter((n) =>
+          notifications.some((item) => item.id === n.id && !item.read)
+        )}
+        tree={tree}
+        onDismiss={closePopup}
+        onOpen={(n) => {
+          closePopup(n.id)
+          markNotificationRead(n.id)
+          selectSession(n.sessionId)
+        }}
+      />
       <DialogHost />
     </div>
   )
