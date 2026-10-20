@@ -425,10 +425,20 @@ function ChangesSection({
                   disabled={busyRepos.has(r.repo) || r.conflicted}
                   title={r.conflicted ? 'resolve the conflicts below, then commit' : undefined}
                   onClick={run(() =>
-                    act(r.repo, () => window.gurt.changesUpdateFromMain(ws, task, r.repo))
+                    act(r.repo, () => window.gurt.changesUpdateFromMain(ws, task, r.repo, 'merge'))
                   )}
                 >
-                  Update from {r.defaultBranch}
+                  Merge pull from {r.defaultBranch}
+                </button>
+                <button
+                  className="btn btn-sm"
+                  disabled={busyRepos.has(r.repo) || r.conflicted}
+                  title={r.conflicted ? 'resolve the conflicts below, then commit' : undefined}
+                  onClick={run(() =>
+                    act(r.repo, () => window.gurt.changesUpdateFromMain(ws, task, r.repo, 'rebase'))
+                  )}
+                >
+                  Rebase onto {r.defaultBranch}
                 </button>
               </div>
             </div>

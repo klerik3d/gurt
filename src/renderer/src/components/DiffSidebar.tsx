@@ -230,10 +230,20 @@ function Repository({ ws, task, repo: r, layout, nav, activePath, onRefresh }: {
             disabled={busy || r.conflicted}
             onClick={run(async () => {
               setMenu(null)
-              await act(() => window.gurt.changesUpdateFromMain(ws, task, r.repo))
+              await act(() => window.gurt.changesUpdateFromMain(ws, task, r.repo, 'merge'))
             })}
           >
-            <Icon name="history" size={13} /> Update from {r.defaultBranch}
+            <Icon name="history" size={13} /> Merge pull from {r.defaultBranch}
+          </button>
+          <button
+            className="menu-item diff-menu-action"
+            disabled={busy || r.conflicted}
+            onClick={run(async () => {
+              setMenu(null)
+              await act(() => window.gurt.changesUpdateFromMain(ws, task, r.repo, 'rebase'))
+            })}
+          >
+            <Icon name="branch" size={13} /> Rebase onto {r.defaultBranch}
           </button>
           <button className="menu-item diff-menu-action" disabled={busy || !r.dirty} onClick={() => {
             setMenu(null)

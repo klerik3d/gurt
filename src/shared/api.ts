@@ -39,6 +39,8 @@ import type { DoctorReport, DoctorRow, FirstRunResult, WelcomeMode } from './doc
 
 export type CreateAction = 'run' | 'queue' | 'draft'
 
+export type UpdateStrategy = 'merge' | 'rebase'
+
 /** Where the boot restore currently is — what the footer's startup bar shows.
  *  `done` flips once the kernel is ready (or its restore failed; the app is
  *  usable either way). */
@@ -281,8 +283,13 @@ export interface GurtApi {
   ): Promise<{ sessionId: string }>
   changesCommit(ws: string, task: string, repo: string, message: string): Promise<void>
   changesPush(ws: string, task: string, repo: string): Promise<void>
-  /** Merge the fetched default branch into the task branch; conflicts surface as `conflicted`. */
-  changesUpdateFromMain(ws: string, task: string, repo: string): Promise<void>
+  /** Merge or rebase the fetched default branch into the task branch; conflicts surface as `conflicted`. */
+  changesUpdateFromMain(
+    ws: string,
+    task: string,
+    repo: string,
+    strategy: UpdateStrategy
+  ): Promise<void>
   /** Newest change proposal for this env, if any — the Commit modal prefills from it. */
   latestProposal(ws: string, task: string, repo: string): Promise<StoredProposal | undefined>
   /** Open the browser at the forge's compare URL (impl: `prUrl` + `shell.openExternal`). */

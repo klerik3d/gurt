@@ -147,7 +147,7 @@ try {
   assert.equal(git(origin, 'rev-parse', 'navigation'), git(clone, 'rev-parse', 'HEAD'))
 
   await frontend.locator('.diff-repo-row').click({ button: 'right' })
-  await page.getByRole('button', { name: 'Update from main', exact: true }).click()
+  await page.getByRole('button', { name: 'Merge pull from main', exact: true }).click()
   await page.waitForFunction(() => [...document.querySelectorAll('.diff-repo')].some((r) =>
     r.querySelector('.diff-repo-name')?.textContent === 'frontend' &&
     r.getAttribute('aria-busy') === 'false' && r.querySelector('.diff-behind')?.textContent === '↓0'))
