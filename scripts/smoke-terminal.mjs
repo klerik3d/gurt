@@ -6,6 +6,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
+import { setTimeout as delay } from 'node:timers/promises'
 
 const appDir = fileURLToPath(new URL('..', import.meta.url))
 const scratch = fs.mkdtempSync(path.join(process.env.SCRATCH ?? os.tmpdir(), 'gurt-terminal-smoke-'))
@@ -32,12 +33,20 @@ try {
   page = await app.firstWindow()
   page.on('pageerror', (error) => errors.push(error.message))
   page.setDefaultTimeout(15000)
+  // IPC predicates return promises; retry their resolved values explicitly.
+  const waitFor = async (check, arg) => {
+    const deadline = Date.now() + 15000
+    while (!await page.evaluate(check, arg)) {
+      if (Date.now() >= deadline) throw new Error(`Timed out: ${check}`)
+      await delay(25)
+    }
+  }
   await page.waitForSelector('.sb-task-name')
-  await page.waitForFunction(async () => (await window.gurt.getBootProgress()).done)
+  await waitFor(async () => (await window.gurt.getBootProgress()).done)
   const scope = (name) => page.locator('.sb-task-name').filter({ hasText: new RegExp(`^${name}$`) })
   const list = () => page.evaluate(() => window.gurt.terminalList())
   const snapshot = (id) => page.evaluate((id) => window.gurt.terminalSnapshot(id), id)
-  const output = (id, text) => page.waitForFunction(async ([id, text]) =>
+  const output = (id, text) => waitFor(async ([id, text]) =>
     (await window.gurt.terminalSnapshot(id)).data.includes(text), [id, text])
   await scope('alpha').click()
   assert.equal(await page.locator('.activitybar-right').count(), 1)
@@ -51,7 +60,7 @@ try {
   await page.getByRole('tab', { name: 'Terminal 1', exact: true }).dblclick()
   await page.getByRole('textbox', { name: 'Terminal name', exact: true }).fill('Server')
   await page.keyboard.press('Enter')
-  await page.waitForFunction(async (id) => (await window.gurt.terminalSnapshot(id)).info.title === 'Server', a.id)
+  await waitFor(async (id) => (await window.gurt.terminalSnapshot(id)).info.title === 'Server', a.id)
   await page.getByRole('tab', { name: 'Server', exact: true }).focus()
   await page.keyboard.press('F2')
   await page.getByRole('textbox', { name: 'Terminal name', exact: true }).fill('Discarded')
@@ -92,10 +101,10 @@ try {
   await page.keyboard.press('Control+2')
 
   await page.getByRole('button', { name: 'New terminal', exact: true }).click()
-  await page.waitForFunction(async () => (await window.gurt.terminalList()).length === 2)
+  await waitFor(async () => (await window.gurt.terminalList()).length === 2)
   const second = (await list())[1]
   await scope('beta').click()
-  await page.waitForFunction(async () => (await window.gurt.terminalList()).length === 3)
+  await waitFor(async () => (await window.gurt.terminalList()).length === 3)
   await scope('alpha').click()
   await page.waitForSelector('.terminal-sidebar .xterm-helper-textarea:focus')
   assert.equal(await page.locator('.terminal-tab.active [role=tab]').innerText(), 'Terminal 2', 'active tab is remembered per scope')
@@ -111,7 +120,7 @@ try {
   await page.locator('.tb-ws-btn').click()
   await page.locator('.tb-ws-menu .menu-item').filter({ hasText: 'other' }).click()
   await scope('alpha').click()
-  await page.waitForFunction(async () => (await window.gurt.terminalList()).length === 4)
+  await waitFor(async () => (await window.gurt.terminalList()).length === 4)
   await page.locator('.tb-ws-btn').click()
   await page.locator('.tb-ws-menu .menu-item').filter({ hasText: 'demo' }).click()
   await scope('alpha').click()
@@ -126,7 +135,7 @@ try {
   await page.mouse.down()
   await page.mouse.move(rect.x - 100, rect.y + rect.height / 2)
   await page.mouse.up()
-  await page.waitForFunction(async ([id, before]) => (await window.gurt.terminalSnapshot(id)).info.cols > before, [a.id, before])
+  await waitFor(async ([id, before]) => (await window.gurt.terminalSnapshot(id)).info.cols > before, [a.id, before])
 
   await page.keyboard.press('Control+1')
   assert.equal(await page.locator('.activitybar-right').count(), 0)
@@ -142,7 +151,7 @@ try {
   await page.locator('.hotkey-conflict').getByRole('button', { name: 'cancel', exact: true }).click()
   await terminalHotkey.getByRole('button', { name: 'change', exact: true }).click()
   await page.keyboard.press('Control+5')
-  await page.waitForFunction(async () => (await window.gurt.getHotkeys()).toggleTerminal.code === 'Digit5')
+  await waitFor(async () => (await window.gurt.getHotkeys()).toggleTerminal.code === 'Digit5')
   await page.keyboard.press('Control+2')
   await page.waitForSelector('.terminal-sidebar .xterm-helper-textarea:focus')
   assert.equal((await list()).length, 4)
@@ -157,7 +166,7 @@ try {
   await page.evaluate((id) => window.gurt.terminalClose(id), second.id)
   assert.equal((await list()).length, 3)
   await page.evaluate(() => window.gurt.removeTask('demo', 'alpha'))
-  await page.waitForFunction(async () => !(await window.gurt.terminalList()).some((s) => s.workspace === 'demo' && s.task === 'alpha'))
+  await waitFor(async () => !(await window.gurt.terminalList()).some((s) => s.workspace === 'demo' && s.task === 'alpha'))
   await page.waitForSelector('.terminal-session', { state: 'attached' })
   assert.equal((await list()).length, 2)
   await page.evaluate(() => window.gurt.removeWorkspace('other'))
