@@ -59,7 +59,7 @@
     "@vitejs/plugin-react": "^5.2.0",
     "diff": "^9.0.0",
     "electron": "^43.8.0",
-    "electron-builder": "^26.5.0",
+    "electron-builder": "26.17.0",
     "electron-vite": "5.0.0",
     "esbuild": "0.25.12",
     "eslint": "^10.9.0",

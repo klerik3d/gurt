@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
@@ -132,6 +132,7 @@ function TerminalTab({ info, active, onSelect, onError }: {
   const [editing, setEditing] = useState(false)
   const [name, setName] = useState(info.title)
   const finished = useRef(false)
+  const refocusTab = useRef(false)
   const button = useRef<HTMLButtonElement>(null)
   const startRename = () => {
     finished.current = false
@@ -141,13 +142,19 @@ function TerminalTab({ info, active, onSelect, onError }: {
   const finish = (save: boolean, refocus: boolean) => {
     if (finished.current) return
     finished.current = true
+    refocusTab.current = refocus
     setEditing(false)
     const title = name.trim()
     if (save && title && title !== info.title)
       void window.gurt.terminalRename(info.id, title).catch((e: unknown) =>
         onError(e instanceof Error ? e.message : String(e)))
-    if (refocus) requestAnimationFrame(() => button.current?.focus())
   }
+  useLayoutEffect(() => {
+    if (!editing && refocusTab.current) {
+      refocusTab.current = false
+      button.current?.focus()
+    }
+  }, [editing])
   useEffect(() => {
     if (active) button.current?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
   }, [active])
