@@ -40,6 +40,9 @@ const { createUsageLedger, USAGE_RETENTION_MS, createBus } = await import(
 )
 
 const LEDGER = path.join(GURT_ROOT, 'usage.jsonl')
+// Relative to now: fixed dates age past USAGE_RETENTION_MS and get pruned at load.
+const T0 = Date.now() - 86_400_000
+const at = (min) => new Date(T0 + min * 60_000).toISOString()
 const turn = (ts, extra = {}) => ({
   ts,
   agent: 'work',
@@ -82,8 +85,8 @@ test('append', async () => {
 
   let changed = 0
   bus.on('usage.changed', () => changed++)
-  bus.emit('agent.turn', turn('2026-08-19T09:00:00.000Z'))
-  bus.emit('agent.turn', turn('2026-08-19T09:05:00.000Z', { sessionId: 's2' }))
+  bus.emit('agent.turn', turn(at(0)))
+  bus.emit('agent.turn', turn(at(5), { sessionId: 's2' }))
   assert.equal(ledger.list().length, 2, 'in memory immediately — the UI does not wait on disk')
   assert.equal(changed, 2, 'every filed turn wakes the dashboard')
   await until(() => readFile().length === 2, 'both turns on disk')
@@ -95,7 +98,7 @@ test('reload', async () => {
   const ledger = createUsageLedger(createBus())
   await ledger.ready
   assert.equal(ledger.list().length, 2, 'a relaunch reads the ledger back')
-  assert.equal(ledger.list()[0].ts, '2026-08-19T09:00:00.000Z')
+  assert.equal(ledger.list()[0].ts, at(0))
 })
 
 // --- merge: a turn filed while the load is still in flight ------------------
@@ -103,7 +106,7 @@ test('merge: a turn filed while the load is still in flight', async () => {
   const bus = createBus()
   const ledger = createUsageLedger(bus)
   // Synchronous — lands in memory before `readUsage` resolves.
-  bus.emit('agent.turn', turn('2026-08-19T09:09:00.000Z', { sessionId: 's3' }))
+  bus.emit('agent.turn', turn(at(9), { sessionId: 's3' }))
   await ledger.ready
   const ids = ledger.list().map((r) => r.sessionId)
   assert.deepEqual(ids, ['s1', 's2', 's3'], 'kept, ordered by ts, and not doubled')
