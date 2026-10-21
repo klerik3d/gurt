@@ -32,6 +32,7 @@ export type HotkeyActionId =
   | 'gotoDashboard'
   | 'gotoTasks'
   | 'gotoDiff'
+  | 'toggleTerminal'
   | 'gotoSettings'
 
 export interface HotkeyDef {
@@ -50,8 +51,9 @@ export const HOTKEY_DEFS: HotkeyDef[] = [
   { id: 'workspaceNext', label: 'Next workspace', hint: 'cycle to the next workspace' },
   { id: 'workspacePrev', label: 'Previous workspace', hint: 'cycle to the previous workspace' },
   { id: 'gotoDashboard', label: 'Go to dashboard', hint: 'open the dashboard' },
-  { id: 'gotoTasks', label: 'Go to agents', hint: 'open agents, focusing the list' },
-  { id: 'gotoDiff', label: 'Go to diff', hint: 'open scope changes, focusing the list' },
+  { id: 'gotoTasks', label: 'Go to agents', hint: 'show or hide scopes, focusing the list' },
+  { id: 'gotoDiff', label: 'Go to diff', hint: 'show or hide scope changes, focusing the list' },
+  { id: 'toggleTerminal', label: 'Toggle terminal', hint: 'show or hide the scope terminal' },
   { id: 'gotoSettings', label: 'Go to settings', hint: 'open settings' }
 ]
 
@@ -64,6 +66,7 @@ export const HOTKEY_DEFAULTS: Record<HotkeyActionId, HotkeyBinding> = {
   gotoDashboard: { code: 'Digit1', mod: true, shift: false, alt: false },
   gotoTasks: { code: 'Digit2', mod: true, shift: false, alt: false },
   gotoDiff: { code: 'Digit3', mod: true, shift: false, alt: false },
+  toggleTerminal: { code: 'Digit4', mod: true, shift: false, alt: false },
   gotoSettings: { code: 'Digit0', mod: true, shift: false, alt: false }
 }
 

@@ -1,7 +1,7 @@
 // The whole Electron-facing surface: broadcast bridge, the `GurtApi`
 // implementation over the kernel, and handler registration. Everything
 // domain-shaped lives in kernel.ts and below.
-import { BrowserWindow, clipboard, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, clipboard, ipcMain, shell } from 'electron'
 import { API_METHODS, type GurtApi } from '../shared/api'
 import { isSessionRole, targetKey } from '../shared/types'
 import { MCP_DEFS } from '../shared/mcp'
@@ -55,6 +55,8 @@ function broadcast(channel: string, ...args: unknown[]): void {
  * not at each call site's discretion.
  */
 const OPAQUE_ARGS = new Set<keyof GurtApi>([
+  'terminalWrite',
+  'terminalRename',
   'createSession',
   // A SKILL.md is a whole document the user wrote — prose, like a prompt.
   'addSkill',
@@ -96,6 +98,9 @@ function argCtx(method: keyof GurtApi, args: unknown[]): unknown {
 
 export function registerIpc(): void {
   const kernel = createKernel()
+  app.on('before-quit', () => kernel.terminals.dispose())
+  kernel.bus.on('terminal.changed', (sessions) => broadcast('terminal-changed', sessions))
+  kernel.bus.on('terminal.output', (event) => broadcast('terminal-output', event))
 
   kernel.bus.on('tree.changed', () => broadcast('tree-changed'))
   kernel.bus.on('session.changed', ({ sessionId }) => {
@@ -123,6 +128,14 @@ export function registerIpc(): void {
   setInterval(() => void kernel.planUsage.get(), POLL_INTERVAL_MS)
 
   const impl: GurtApi = {
+    terminalList: async () => kernel.terminals.list(),
+    terminalEnsure: (ws, task) => kernel.terminals.ensure(ws, task),
+    terminalCreate: (ws, task) => kernel.terminals.create(ws, task),
+    terminalSnapshot: async (id) => kernel.terminals.snapshot(id),
+    terminalWrite: async (id, data) => kernel.terminals.write(id, data),
+    terminalResize: async (id, cols, rows) => kernel.terminals.resize(id, cols, rows),
+    terminalClose: async (id) => kernel.terminals.close(id),
+    terminalRename: async (id, title) => kernel.terminals.rename(id, title),
     getTree: () => kernel.tree(),
     getMcpDefs: async () => MCP_DEFS,
     getAgents: () => store.getAgents(),

@@ -37,6 +37,8 @@ import type { NotificationPrefs, NotificationRecord } from './notifications'
 import type { HotkeyMap } from './hotkeys'
 import type { DoctorReport, DoctorRow, FirstRunResult, WelcomeMode } from './doctor'
 
+import type { TerminalInfo, TerminalSnapshot } from './terminal'
+
 export type CreateAction = 'run' | 'queue' | 'draft'
 
 export type UpdateStrategy = 'merge' | 'rebase'
@@ -87,6 +89,15 @@ export interface SessionDraftPatch {
 }
 
 export interface GurtApi {
+  /** Host terminals: memory-only, owned by the scope. Never exposed to agents. */
+  terminalList(): Promise<TerminalInfo[]>
+  terminalEnsure(ws: string, task: string): Promise<TerminalInfo>
+  terminalCreate(ws: string, task: string): Promise<TerminalInfo>
+  terminalSnapshot(id: string): Promise<TerminalSnapshot>
+  terminalWrite(id: string, data: string): Promise<void>
+  terminalResize(id: string, cols: number, rows: number): Promise<void>
+  terminalClose(id: string): Promise<void>
+  terminalRename(id: string, title: string): Promise<void>
   getTree(): Promise<Tree>
   getMcpDefs(): Promise<McpDef[]>
   getAgents(): Promise<AgentsFile>
@@ -471,6 +482,14 @@ export type Exposure = 'read' | 'write' | 'none'
  * docs/requirements-session-operator.md §13 question 1.
  */
 const METHODS = {
+  terminalList: 'none',
+  terminalEnsure: 'none',
+  terminalCreate: 'none',
+  terminalSnapshot: 'none',
+  terminalWrite: 'none',
+  terminalResize: 'none',
+  terminalClose: 'none',
+  terminalRename: 'none',
   getTree: 'read', //           scoped host-side to the operator's workspace
   getMcpDefs: 'read',
   getAgents: 'read', //         credential links only; values scrubbed (§8)
@@ -609,6 +628,8 @@ export type WriteMethod = {
 
 /** Push channels main broadcasts to the renderer, with their payloads. */
 export interface GurtEvents {
+  'terminal-changed': DomainEvents['terminal.changed']
+  'terminal-output': DomainEvents['terminal.output']
   'tree-changed': void
   /** Snapshot without `entries` — timeline deltas ride `session-log`. */
   'session-changed': SessionSnapshot

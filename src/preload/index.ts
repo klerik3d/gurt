@@ -29,6 +29,8 @@ const api: Record<string, unknown> = {
     ipcRenderer.send('log', level, scope, msg, ctx, ts),
   logLevel,
   onTreeChanged: subscribe('tree-changed'),
+  onTerminalChanged: subscribe('terminal-changed'),
+  onTerminalOutput: subscribe('terminal-output'),
   onSessionChanged: subscribe('session-changed'),
   onSessionLog: subscribe('session-log'),
   onSessionTurn: subscribe('session-turn'),

@@ -26,6 +26,7 @@ const SMOKES = [
   'smoke.mjs',
   'smoke-git-credentials.mjs',
   'smoke-diff-mode.mjs',
+  'smoke-terminal.mjs',
   'smoke-delete-row.mjs',
   'smoke-session-copy.mjs',
   'smoke-roles.mjs',

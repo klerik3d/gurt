@@ -12,6 +12,8 @@ declare global {
        *  renderer skip the IPC send for records main would filter anyway. */
       logLevel: string
       onTreeChanged(cb: () => void): () => void
+      onTerminalChanged(cb: (event: GurtEvents['terminal-changed']) => void): () => void
+      onTerminalOutput(cb: (event: GurtEvents['terminal-output']) => void): () => void
       onSessionChanged(cb: (snapshot: GurtEvents['session-changed']) => void): () => void
       onSessionLog(cb: (event: GurtEvents['session-log']) => void): () => void
       onSessionTurn(cb: (event: GurtEvents['session-turn']) => void): () => void

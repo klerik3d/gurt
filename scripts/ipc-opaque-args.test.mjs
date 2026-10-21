@@ -59,6 +59,13 @@ process.env.GURT_LOG = 'debug'
  * neither list and fails the first check below until someone classifies it.
  */
 const SAFE_ARGS = new Set([
+  // Terminal control takes only scope/session ids and dimensions; input is opaque.
+  'terminalList',
+  'terminalEnsure',
+  'terminalCreate',
+  'terminalSnapshot',
+  'terminalResize',
+  'terminalClose',
   // Reads. No arguments at all, or a workspace/task/repo/session key.
   'getTree',
   'getBootProgress',

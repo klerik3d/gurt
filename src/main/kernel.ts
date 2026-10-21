@@ -14,6 +14,7 @@ import * as store from './store'
 import { cloneDir } from './store'
 import * as changes from './changes'
 import { createBus, type Bus } from './bus'
+import { TerminalManager } from './terminals'
 import { ContainerManager } from './containers'
 import { traffic } from './proxy/traffic'
 import { SessionManager, type RestoredSession } from './sessions'
@@ -37,6 +38,7 @@ const containerLog = createLogger('containers')
 
 export interface Kernel {
   bus: Bus
+  terminals: TerminalManager
   containers: ContainerManager
   sessions: SessionManager
   /** Manual review state — comments and the per-clone review lock. */
@@ -130,6 +132,10 @@ async function defaultEnvsForRepo(ws: string, repo: string): Promise<string[]> {
 
 export function createKernel(): Kernel {
   const bus = createBus()
+  const terminals = new TerminalManager(
+    (sessions) => bus.emit('terminal.changed', sessions),
+    (event) => bus.emit('terminal.output', event)
+  )
 
   // The proxy watcher is a module singleton (the proxy manager feeds it from
   // wherever a session's container is ensured); this is the one seam between it
@@ -419,6 +425,7 @@ export function createKernel(): Kernel {
 
   const kernel: Kernel = {
     bus,
+    terminals,
     containers,
     sessions,
     review,
@@ -436,29 +443,38 @@ export function createKernel(): Kernel {
     },
 
     async deleteTask(ws: string, task: string): Promise<void> {
-      await containers.teardownTask(ws, task)
-      sessions.dropTaskSessions(ws, task)
-      review.dropTask(ws, task)
-      await store.removeTaskDir(ws, task)
-      bus.emit('tree.changed', undefined)
+      await terminals.withScopeBlocked(ws, task, async () => {
+        await containers.teardownTask(ws, task)
+        terminals.dropScope(ws, task)
+        sessions.dropTaskSessions(ws, task)
+        review.dropTask(ws, task)
+        await store.removeTaskDir(ws, task)
+        bus.emit('tree.changed', undefined)
+      })
     },
 
     async deleteWorkspace(ws: string): Promise<void> {
-      await containers.teardownWorkspace(ws)
-      sessions.dropWorkspaceSessions(ws)
-      review.dropWorkspace(ws)
-      await store.removeWorkspaceDir(ws)
-      bus.emit('tree.changed', undefined)
+      await terminals.withScopeBlocked(ws, undefined, async () => {
+        await containers.teardownWorkspace(ws)
+        terminals.dropScope(ws)
+        sessions.dropWorkspaceSessions(ws)
+        review.dropWorkspace(ws)
+        await store.removeWorkspaceDir(ws)
+        bus.emit('tree.changed', undefined)
+      })
     },
 
     async renameTask(ws: string, task: string, newName: string): Promise<void> {
       if (newName === task) return
-      await containers.stopTask(ws, task)
-      await store.renameTask(ws, task, newName)
-      await changes.renameTaskBranches(ws, newName, task)
-      sessions.renameTask(ws, task, newName)
-      review.renameTask(ws, task, newName)
-      bus.emit('tree.changed', undefined)
+      await terminals.withScopeBlocked(ws, task, async () => {
+        await containers.stopTask(ws, task)
+        await store.renameTask(ws, task, newName)
+        terminals.renameScope(ws, task, newName)
+        await changes.renameTaskBranches(ws, newName, task)
+        sessions.renameTask(ws, task, newName)
+        review.renameTask(ws, task, newName)
+        bus.emit('tree.changed', undefined)
+      })
     },
 
     async taskDirtyRepos(ws: string, task: string): Promise<string[]> {

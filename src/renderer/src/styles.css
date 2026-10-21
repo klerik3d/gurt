@@ -4657,3 +4657,64 @@ textarea.input {
 .notification-popup:hover {
   border-color: var(--dim);
 }
+
+
+/* Scope terminals stay mounted while their panel or scope is hidden. */
+.left-sidebar { display: contents; }
+.left-sidebar[hidden], .terminal-sidebar[hidden], .terminal-session[hidden] { display: none; }
+.activitybar-right { width: 36px; margin-right: 0; margin-left: 4px; }
+.activitybar-right .ab-item { width: 32px; height: 32px; }
+.terminal-sidebar {
+  flex: none;
+  max-width: 65%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--app);
+  border: 1px solid var(--border);
+  border-radius: 6.667px;
+}
+.terminal-header {
+  display: flex;
+  flex: none;
+  align-items: center;
+  min-height: 36px;
+  padding: 0 6px;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  color: var(--dim);
+}
+.terminal-icon { display: flex; flex: none; padding: 0 4px; color: var(--faint); }
+.terminal-heading { flex: 1; min-width: 0; padding: 8px 4px; }
+.terminal-actions { display: flex; flex: none; gap: 2px; }
+.terminal-actions button { display: flex; padding: 4px; border-radius: 3px; }
+.terminal-actions button:hover { background: var(--hover); color: var(--text); }
+.terminal-tabs { display: flex; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: thin; }
+.terminal-tab {
+  display: flex;
+  flex: none;
+  align-items: center;
+  min-width: 0;
+  height: 35px;
+  padding: 0 4px;
+  gap: 2px;
+  color: var(--faint);
+  border-bottom: 2px solid transparent;
+}
+.terminal-tab.active { color: var(--text); border-bottom-color: var(--accent); }
+.terminal-tab-label { max-width: 160px; padding: 8px 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.terminal-tab-label[hidden] { display: none; }
+.terminal-tab-close { display: flex; flex: none; padding: 3px; border-radius: 3px; opacity: 0; }
+.terminal-tab:hover .terminal-tab-close, .terminal-tab:focus-within .terminal-tab-close, .terminal-tab.active .terminal-tab-close { opacity: 1; }
+.terminal-tab-close:hover { background: var(--hover); color: var(--text); }
+.terminal-tab-label:hover { color: var(--text); }
+.terminal-rename { width: 120px; min-width: 0; padding: 3px 4px; background: var(--surface); color: var(--text); border: 1px solid var(--accent); border-radius: 3px; font: inherit; }
+.terminal-exited { width: 5px; height: 5px; border-radius: 50%; background: var(--faint); }
+.terminal-session { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.terminal-screen { flex: 1; min-height: 0; overflow: hidden; padding: 6px; }
+.terminal-screen .xterm { height: 100%; }
+.terminal-status { flex: none; padding: 6px 10px; color: var(--dim); overflow-wrap: anywhere; }
+.terminal-status.error { color: var(--red); }
+.terminal-empty { padding: 20px 12px; color: var(--faint); }
+.terminal-empty button { color: var(--accent); }

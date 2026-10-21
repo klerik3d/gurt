@@ -104,6 +104,29 @@ Sidebar: workspace → task → session. A task click opens the **task pane** (t
 containers of its sessions + this task's queued sessions). A session click opens
 its pane: chat when `started`, otherwise the start prompt + actions.
 
+### Scope terminals
+
+The narrow right activity bar is available in Scope and Git modes. Its terminal
+button (default **⌘/Ctrl+4**, configurable in Settings → Hotkeys) toggles a
+resizable terminal panel. Opening it creates the first shell for the selected
+scope if needed; **+** adds another terminal and each tab's **×** closes it.
+Tabs sit in the panel header, start as **Terminal 1**, **Terminal 2**, and can be
+renamed with a double-click or **F2**. **Enter** saves and **Escape** cancels.
+Shells start on the host in `~/.gurt/<workspace>/<scope>/`.
+
+Switching scopes, workspaces, agent environments or views, and hiding the panel,
+keeps each shell running with its screen, scrollback and unfinished input intact.
+Terminals live only for the current application run: quitting closes them, and
+no terminal session or screen is restored at startup. Deleting a scope or
+workspace closes its terminals and discards their in-memory state. This uses
+xterm.js in the renderer and node-pty in the main process; terminal input and
+output are excluded from application logs and from the agent tool surface.
+
+Both sidebars toggle on a repeated activity-bar click or shortcut. **⌘/Ctrl+2**
+and **⌘/Ctrl+3** show/hide the left Scope and Git sidebar respectively; selecting
+a different mode opens its sidebar. The central view stays open when its sidebar
+is hidden.
+
 ### Duplicate / delete
 
 A session set up wrong is usually noticed once it is already running, so both
