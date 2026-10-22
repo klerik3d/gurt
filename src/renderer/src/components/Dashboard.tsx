@@ -371,7 +371,7 @@ function AgentCard({
 /**
  * The provider's own numbers: how much of each window is used, and when it
  * resets. They cover usage from claude.ai and other machines too, which is
- * exactly why they are worth a network call. A failed poll is not announced
+ * why they are useful beyond the local turn ledger. A failed poll is not announced
  * here — the last good read stays up, and only its age going yellow says the
  * numbers have stopped moving.
  */
@@ -412,8 +412,7 @@ function PlanMeter({ w, now }: { w: PlanWindow; now: number }): JSX.Element {
       </span>
       <span
         className={`dash-plan-pct ${tone === 'accent' ? '' : tone}`}
-        // The raw figure, so a 0–1 vs 0–100 mismatch is visible immediately
-        // rather than silently drawn as 1% — see PlanWindow.utilization.
+        // SDK reports fractions; the profile endpoint reports percentages.
         title={`reported utilization: ${w.raw}`}
       >
         {Math.round(w.utilization)}% used

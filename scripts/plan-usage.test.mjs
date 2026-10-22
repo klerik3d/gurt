@@ -22,7 +22,8 @@ await bundle({
   stdin: {
     contents: [
       `export * from ${S('src/shared/planUsage.ts')}`,
-      `export { createPlanUsage, parsePlanWindows } from ${S('src/main/planUsage.ts')}`,
+      `export { createPlanUsage, parsePlanWindows, parseClaudeRateLimit } from ${S('src/main/planUsage.ts')}`,
+      `export { SessionManager } from ${S('src/main/sessions.ts')}`,
       `export { createBus } from ${S('src/main/bus.ts')}`
     ].join('\n'),
     resolveDir: ROOT,
@@ -32,7 +33,7 @@ await bundle({
   outfile
 })
 
-const { parsePlanWindows, isOauthToken, tightest, createPlanUsage, createBus } = await import(
+const { parsePlanWindows, parseClaudeRateLimit, SessionManager, isOauthToken, tightest, createPlanUsage, createBus } = await import(
   pathToFileURL(outfile).href
 )
 
@@ -187,13 +188,16 @@ test('token gate', () => {
 // --- the fetcher: rate floor and cache retention -----------------------------
 const AGENTS = { work: { kind: 'claude-code', label: 'work', credentialId: 'c1' } }
 const CREDS = [{ id: 'c1', kind: 'agent-token', label: 't', data: { secret: 'sk-ant-oat01-x' } }]
+const OAUTH_CREDS = [{ id: 'c1', kind: 'oauth', label: 't', data: {
+  access: 'sk-ant-oat01-x', refresh: 'refresh', provider: 'anthropic'
+} }]
 
 function harness({ responses }) {
   let calls = 0
   let clock = 1_000_000
   const store = createPlanUsage(createBus(), {
     agents: async () => AGENTS,
-    credentials: async () => CREDS,
+    credentials: async () => OAUTH_CREDS,
     now: () => clock,
     fetchImpl: async () => {
       const r = responses[Math.min(calls++, responses.length - 1)]
@@ -268,4 +272,89 @@ test('other kinds never touch this endpoint at all', async () => {
     fetchImpl: async () => assert.fail('codex has no claude plan window')
   })
   assert.deepEqual(await store.get(), {})
+})
+
+// Captured from a successful setup-token probe on 2026-10-22.
+const LIVE_LIMIT = {
+  status: 'allowed', resetsAt: 1792673400, rateLimitType: 'five_hour',
+  overageStatus: 'rejected', overageDisabledReason: 'org_level_disabled',
+  isUsingOverage: false,
+  unifiedWindows: {
+    five_hour: { utilization: 0.7, resetsAt: 1792673400 },
+    seven_day: { utilization: 0.41, resetsAt: 1793044800 }
+  }
+}
+
+test('SDK fractions have explicit units, including zero, one and small values', () => {
+  const windows = parseClaudeRateLimit(LIVE_LIMIT)
+  assert.equal(windows[0].utilization, 70)
+  assert.equal(windows[0].raw, 0.7)
+  assert.equal(windows[0].resetsAt, new Date(1792673400 * 1000).toISOString())
+  assert.equal(windows[1].utilization, 41)
+  for (const raw of [0, 0.001, 1, 1.2]) {
+    const [w] = parseClaudeRateLimit({ rateLimitType: 'five_hour', utilization: raw })
+    assert.equal(w.utilization, Math.min(100, raw * 100))
+  }
+  for (const body of [null, {}, { status: 'allowed' }, {
+    unifiedWindows: { five_hour: { utilization: '0.7' }, seven_day: { utilization: -1 } }
+  }]) assert.deepEqual(parseClaudeRateLimit(body), [])
+  assert.equal(parsePlanWindows({ five_hour: { utilization: 0.7 } })[0].utilization, 0.7,
+    'endpoint percentages are never treated as SDK fractions')
+})
+
+test('ACP usage metadata reaches dashboard cache with a token and no profile poll', async () => {
+  const bus = createBus()
+  let changed = 0
+  bus.on('usage.changed', () => changed++)
+  let clock = 1792660000000
+  const store = createPlanUsage(bus, {
+    agents: async () => AGENTS,
+    credentials: async () => CREDS,
+    now: () => clock,
+    fetchImpl: async () => assert.fail('setup-token must not call the profile endpoint')
+  })
+  assert.deepEqual((await store.get()).work.windows, [])
+  const session = { info: { agent: 'work' } }
+  const manager = {
+    bySessionId: () => session,
+    agentKinds: new Map([['work', 'claude-code']]),
+    bus
+  }
+  const update = (metadata) => SessionManager.prototype.onSessionUpdate.call(manager, {
+    sessionId: 's1', update: {
+      sessionUpdate: 'usage_update', used: 100, size: 200000, _meta: metadata
+    }
+  })
+  update({ '_claude/rateLimit': LIVE_LIMIT })
+  const first = (await store.get()).work
+  assert.deepEqual(first.windows.map((w) => w.utilization), [70, 41])
+  assert.equal(first.error, undefined)
+  assert.equal(first.fetchedAt, new Date(clock).toISOString())
+  assert.equal(changed, 1)
+  assert.deepEqual(session.usage, { used: 100, size: 200000 })
+  clock += 180000
+  update({ '_claude/rateLimit': { status: 'allowed' } })
+  update(null)
+  assert.deepEqual((await store.get()).work, first, 'missing data preserves last known limits')
+  manager.agentKinds.set('work', 'codex')
+  update({ '_claude/rateLimit': LIVE_LIMIT })
+  assert.equal(changed, 1, 'metadata on other agent kinds cannot update Claude limits')
+})
+
+test('an in-flight profile poll cannot overwrite a newer session snapshot', async () => {
+  const bus = createBus()
+  let release
+  const response = new Promise((resolve) => { release = resolve })
+  const store = createPlanUsage(bus, {
+    agents: async () => AGENTS, credentials: async () => OAUTH_CREDS,
+    fetchImpl: async () => response
+  })
+  const pending = store.get()
+  // Let agent/credential resolution reach the pending network request.
+  await new Promise((resolve) => setImmediate(resolve))
+  bus.emit('agent.planUsage', { agent: 'work', windows: parseClaudeRateLimit(LIVE_LIMIT) })
+  release({ ok: false, status: 403 })
+  const result = (await pending).work
+  assert.equal(result.windows[0].utilization, 70)
+  assert.equal(result.error, undefined)
 })

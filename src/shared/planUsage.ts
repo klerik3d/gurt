@@ -1,3 +1,8 @@
+// Live Claude SDK rate_limit_event snapshots are the primary source for token
+// credentials. ACP forwards them as usage_update._meta['_claude/rateLimit'].
+// unifiedWindows utilization is a fraction: 0.7 means 70%. No profile scope or
+// additional model request is needed; values update after normal responses.
+//
 // Plan limits as the provider itself reports them — the other half of the
 // dashboard's agent cards, and the only half that knows what is *left*.
 //
@@ -40,11 +45,8 @@ export interface PlanWindow {
   /**
    * How much of the window is consumed.
    *
-   * Read as a PERCENT (0–100), which is how the field reads in the CLI's own
-   * string table. It is the one thing here that could not be confirmed without
-   * a live response, so the raw value rides along in {@link raw} and the UI
-   * shows it on hover: if a plan ever reports a 0–1 fraction instead, the
-   * mismatch is visible on the first render rather than silently drawn as 1%.
+   * Normalized percentage (0–100). SDK fractions are multiplied by 100;
+   * the usage endpoint already reports percentages.
    */
   utilization: number
   /** Exactly what the field held, before clamping — see {@link utilization}. */
