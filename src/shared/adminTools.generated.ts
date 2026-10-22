@@ -64,7 +64,7 @@ export const ADMIN_TOOLS: readonly AdminToolDef[] = [
     description: "GurtApi.setAgents",
     bindWs: false,
     params: ["agents"],
-    input: { "agents": z.record(z.string(), z.strictObject({ "kind": z.string(), "label": z.string(), "credentialId": z.string().optional(), "secretEnv": z.string().optional(), "env": z.record(z.string(), z.string()).optional() })) }
+    input: { "agents": z.record(z.string(), z.strictObject({ "kind": z.string(), "label": z.string(), "credentialId": z.string().optional(), "secretEnv": z.string().optional(), "env": z.record(z.string(), z.string()).optional(), "config": z.record(z.string(), z.unknown()).optional() })) }
   },
   {
     name: "get_agent_config",
