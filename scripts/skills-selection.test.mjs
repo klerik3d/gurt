@@ -242,6 +242,7 @@ test('every agent kind says where it reads skills, or that it does not', () => {
   assert.equal(m.agentDef('codex').skillsDir, '.agents/skills')
   assert.equal(m.agentDef('gemini').skillsDir, '.gemini/skills')
   assert.equal(m.agentDef('opencode').skillsDir, '.config/opencode/skills')
+  assert.equal(m.agentDef('pi').skillsDir, '.pi/agent/skills')
 })
 
 test('a kind that reads no skills directory mounts nothing', () => {

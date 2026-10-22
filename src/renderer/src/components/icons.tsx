@@ -39,6 +39,7 @@ export type IconName =
   | 'agent-codex'
   | 'agent-gemini'
   | 'agent-opencode'
+  | 'agent-pi'
   | 'agent-generic'
   | 'bell'
   | 'fold'
@@ -286,6 +287,10 @@ const PATHS: Record<IconName, JSX.Element> = {
     />
   ),
   'agent-opencode': <path fillRule="evenodd" d="M16 6H8v12h8V6zm4 16H4V2h16v20z" />,
+  // pi ships no mark of its own here — a plain π glyph, drawn for gurt.
+  'agent-pi': (
+    <path d="M3 4h18v3h-4v10.5c0 .83.67 1.5 1.5 1.5H20v3h-1.5a4.5 4.5 0 0 1-4.5-4.5V7h-4v14H7V7H3z" />
+  ),
   'agent-generic': (
     <>
       <rect x="4" y="8" width="16" height="12" rx="2" />
@@ -340,12 +345,14 @@ const FILLED = new Set<IconName>([
   'agent-claude',
   'agent-codex',
   'agent-gemini',
-  'agent-opencode'
+  'agent-opencode',
+  'agent-pi'
 ])
 
 /** Brand marks keep their real color instead of inheriting currentColor —
  *  the whole point is at-a-glance recognition. opencode has no signature
- *  color in its own branding, so it's absent here and stays currentColor. */
+ *  color in its own branding, and pi's glyph is not a brand mark, so both are
+ *  absent here and stay currentColor. */
 const BRAND_COLOR: Partial<Record<IconName, string>> = {
   vscode: '#0098FF',
   'agent-claude': '#D97757',

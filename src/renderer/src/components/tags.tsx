@@ -23,7 +23,8 @@ const AGENT_ICONS: Record<string, IconName> = {
   'claude-code': 'agent-claude',
   codex: 'agent-codex',
   gemini: 'agent-gemini',
-  opencode: 'agent-opencode'
+  opencode: 'agent-opencode',
+  pi: 'agent-pi'
 }
 
 export const agentIcon = (kind?: string): IconName => (kind && AGENT_ICONS[kind]) || 'agent-generic'

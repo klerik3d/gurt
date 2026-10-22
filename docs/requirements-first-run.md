@@ -629,6 +629,7 @@ per-kind fact (`oauthAuthFile` in `main/oauth/materialize.ts`):
 | codex | `openai` | `~/.codex/auth.json`, env var suppressed |
 | gemini | `google` | `~/.gemini/oauth_creds.json`, env var suppressed |
 | opencode | **null** | — no verified delivery; API key only |
+| pi | **null** | — `/login` writes `~/.pi/agent/auth.json`, unverified; API key only |
 
 A kind is listed only once that document says how its CLI consumes a
 sign-in. **opencode is null on purpose**: pointing it at the anthropic
@@ -878,6 +879,7 @@ the provider offers — none of them consumes tokens or creates state:
 | `codex` | `OPENAI_API_KEY` | `GET https://api.openai.com/v1/models`, `Authorization: Bearer` |
 | `gemini` | `GEMINI_API_KEY` | `GET https://generativelanguage.googleapis.com/v1beta/models?key=…` |
 | `opencode` | `ANTHROPIC_API_KEY` | the Anthropic API-key branch above (`/v1/models`, `x-api-key`) |
+| `pi` | `ANTHROPIC_API_KEY` | the Anthropic API-key branch above (`/v1/models`, `x-api-key`) |
 
 Two hazards, both already solved once in this repo and both to be
 reused rather than re-derived:
