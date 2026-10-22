@@ -1,3 +1,4 @@
+import { clientConfigFile } from '../shared/clientConfig'
 import { promises as fs } from 'node:fs'
 import { existsSync } from 'node:fs'
 import { execFile } from 'node:child_process'
@@ -269,6 +270,7 @@ export const STORED_AGENT = z.looseObject({
   credentialId: z.string().optional().catch(undefined),
   secretEnv: z.string().optional().catch(undefined),
   env: z.record(z.string(), z.string()).optional().catch(undefined),
+  config: z.record(z.string(), z.unknown()).optional().catch(undefined),
   secret: z.string().optional().catch(undefined),
   oauthToken: z.string().optional().catch(undefined),
   enabled: z.boolean().optional().catch(undefined)
@@ -390,7 +392,8 @@ export function liftAgent(id: string, raw: unknown): { data: StoredAgent; instan
       label: a.label || agentDef(kind)?.label || kind,
       ...(a.credentialId ? { credentialId: a.credentialId } : {}),
       ...(a.secretEnv ? { secretEnv: a.secretEnv } : {}),
-      ...(a.env ? { env: a.env } : {})
+      ...(a.env ? { env: a.env } : {}),
+      ...(a.config ? { config: a.config } : {})
     }
   }
 }
@@ -409,6 +412,7 @@ export async function getAgents(): Promise<AgentsFile> {
 }
 
 export async function setAgents(agents: AgentsFile): Promise<void> {
+  for (const agent of Object.values(agents)) clientConfigFile(agent.kind, agent.config)
   await writeJson(agentsFile(), agents)
   await journal('agents: registry replaced', 'setAgents', 'agents')
 }
