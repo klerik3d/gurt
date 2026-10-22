@@ -28,14 +28,17 @@ const electronPath = require('electron') // path string to the electron binary
 const env = { ...process.env, GURT_ROOT, GURT_WELCOME: 'never', DISPLAY: process.env.DISPLAY ?? ':99' }
 delete env.ELECTRON_RUN_AS_NODE // inherited from the VSCode extension host shell
 
-const app = await _electron.launch({
+// Isolate persisted UI state from other smoke fixtures and the user's app.
+const electronProfile = fs.mkdtempSync(path.join(path.dirname(GURT_ROOT), 'electron-profile-'))
+const launch = () => _electron.launch({
   executablePath: electronPath,
-  args: [APP_DIR, '--no-sandbox'],
+  args: [APP_DIR, '--no-sandbox', `--user-data-dir=${electronProfile}`],
   env,
   timeout: 30000
 })
 
-const page = await app.firstWindow()
+let app = await launch()
+let page = await app.firstWindow()
 page.on('console', (m) => {
   if (m.type() === 'error') console.log('[console.error]', m.text())
 })
@@ -182,5 +185,21 @@ assert.equal(
 )
 console.log('persisted across reload OK')
 
+// The selected session and its Config tab must survive both reload and restart.
+await page.reload()
+await page.waitForSelector('.ns-body .chip-tag:has-text("octocat/Hello-World")', { timeout: 15000 })
+assert.equal(await page.locator('.tab-btn.active').innerText(), 'Config')
+await app.close()
+app = await launch()
+page = await app.firstWindow()
+await page.waitForSelector('.ns-body .chip-tag:has-text("octocat/Hello-World")', { timeout: 15000 })
+assert.equal(await page.locator('.tab-btn.active').innerText(), 'Config')
+console.log('selected session and Config tab restored after reload and restart OK')
+
+// Leave a non-default view saved: subsequent smoke fixtures must still start fresh.
+await openSettings('Credentials')
+await page.reload()
+await page.waitForSelector('.set-title:text-is("Credentials")', { timeout: 15000 })
+console.log('settings section restored after reload OK')
 await app.close()
 console.log('SMOKE PASS')

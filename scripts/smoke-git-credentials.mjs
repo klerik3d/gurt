@@ -64,11 +64,13 @@ delete env.ELECTRON_RENDERER_URL
 
 // ELECTRON overrides the binary — needed when this checkout's node_modules
 // was installed for another platform (e.g. inside a linux container).
+// Isolate persisted UI state from other smoke fixtures and the user's app.
+const electronProfile = fs.mkdtempSync(path.join(path.dirname(GURT_ROOT), 'electron-profile-'))
 const app = await _electron.launch({
   executablePath:
     process.env.ELECTRON ??
     electronPath,
-  args: [APP_DIR],
+  args: [APP_DIR, `--user-data-dir=${electronProfile}`],
   env,
   timeout: 30000
 })
