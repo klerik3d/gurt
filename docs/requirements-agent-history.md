@@ -131,6 +131,7 @@ Verified against the pinned artifacts (method and evidence in §3.4):
 | gemini | @google/gemini-cli@0.59.0 | `.gemini/tmp/<shortId>/chats/session-*`, `.gemini/history/<shortId>`, and the registry `.gemini/projects.json` that assigns `<shortId>` | **workable** — `oauth_creds.json` is a top-level file; the two directories and `projects.json` are separately addressable siblings of it | absolute project root, via the registry |
 | codex | codex-acp@1.11.0 (bundles @openai/codex@0.153.4) | `.codex/sessions/<Y>/<M>/<D>/rollout-*.jsonl`, indexed by `.codex/state_5.sqlite` and `.codex/thread_history_1.sqlite` | **awkward** — `sessions/` is a subdirectory, but the two index DBs are top-level files sitting *next to* `auth.json` | `threads.cwd` **and an absolute `rollout_path`** stored in the index |
 | opencode | opencode-ai@1.18.30 | `.local/share/opencode/opencode.db` — one sqlite file | **none — see §3.3** | `session.directory` / `project.worktree`, absolute |
+| pi | pi-acp@0.0.34 + @earendil-works/pi-coding-agent@1.0.2 | `.pi/agent/sessions/<cwd-group>/…jsonl`, plus pi-acp's `.pi/pi-acp/session-map.json` | **workable** — `auth.json` is a top-level file in `.pi/agent`, a sibling of `sessions/`; not yet live-checked, so `historyPaths` is `[]` | cwd, plus absolute session-file paths in the pi-acp map |
 
 ### 3.1 One bind, several links
 

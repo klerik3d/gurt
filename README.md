@@ -52,7 +52,7 @@ tree is never polluted with gurt files.
 - **repo** — registered per workspace: git URL + optional credential link;
   add/edit/delete via Settings → Repos
 - **agent** — an instance of a built-in kind (claude code / codex / gemini /
-  opencode).
+  opencode / pi).
   The registry starts empty; add instances as needed via ⚙ in the sidebar. Each
   maps to its secret by linking an `agent-token` credential (never storing it
   inline, like a repo's credential link); env var name + extra env are per-agent
@@ -191,7 +191,8 @@ with the Docker labels as the source of truth (hence the reconcile at boot).
    npm-installed globally via `devcontainer exec` (claude:
    `@agentclientprotocol/claude-agent-acp`, codex: `@agentclientprotocol/codex-acp`,
    gemini: `@google/gemini-cli` (run as `gemini --experimental-acp`),
-   opencode: `opencode-ai`) — cached per **container id**, so a container that is
+   opencode: `opencode-ai`, pi: `pi-acp` + `@earendil-works/pi-coding-agent`,
+   the CLI the adapter spawns) — cached per **container id**, so a container that is
    stopped and restarted keeps its install and a replaced one reinstalls.
 5. the session's own Docker network (`gurt-s-<id>`, labelled
    `gurt.session=<id>`) and its **proxy container** are ensured, and the
@@ -286,7 +287,8 @@ workspace can switch some on for every new draft (`defaultSkills`, the row's
 Delivery is files, not configuration. At start the selected skills are copied
 into the session's own scratch dir and bind-mounted **read-only** into its
 container, linked at the agent kind's own skills directory (`AgentDef.skillsDir`
-— `~/.claude/skills` for claude code, `~/.config/opencode/skills` for opencode).
+— `~/.claude/skills` for claude code, `~/.config/opencode/skills` for opencode,
+`~/.pi/agent/skills` for pi).
 A kind whose pinned CLI reads no such directory gets neither mount nor link, and
 the config tab says "does not support skills" instead of offering the pickers.
 A skill that was not picked is physically absent, and nothing gurt writes ever

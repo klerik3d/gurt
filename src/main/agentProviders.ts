@@ -47,7 +47,7 @@ interface AgentProvider {
 }
 
 /** Anthropic's cheapest authenticated read. Used by the API-key branch of
- *  claude-code and by opencode, whose `secretEnv` is `ANTHROPIC_API_KEY`. */
+ *  claude-code and by opencode and pi, whose `secretEnv` is `ANTHROPIC_API_KEY`. */
 const anthropicApiKey = (token: string): { url: string; headers: Record<string, string> } => ({
   url: 'https://api.anthropic.com/v1/models?limit=1',
   headers: { 'x-api-key': token, 'anthropic-version': '2023-06-01' }
@@ -90,7 +90,8 @@ const PROVIDERS: Record<string, AgentProvider> = {
       headers: { 'x-goog-api-key': token }
     })
   },
-  opencode: { label: 'Anthropic', request: anthropicApiKey }
+  opencode: { label: 'Anthropic', request: anthropicApiKey },
+  pi: { label: 'Anthropic', request: anthropicApiKey }
 }
 
 /** Whether this build can check a kind's token at all — the welcome screen

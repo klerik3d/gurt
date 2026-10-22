@@ -145,7 +145,8 @@ const PROVIDER_VENDOR: Record<string, string> = {
   'claude-code': 'Anthropic',
   codex: 'OpenAI',
   gemini: 'Google',
-  opencode: 'local'
+  opencode: 'local',
+  pi: 'local'
 }
 
 /** Nav label for a section — the id capitalized, unless {@link SECTION_LABEL}

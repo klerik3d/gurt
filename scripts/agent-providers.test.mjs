@@ -92,6 +92,7 @@ test('each kind asks its own provider, authenticated the way that provider wants
   assert.match(asked['codex'].url, /api\.openai\.com/)
   assert.match(asked['gemini'].url, /generativelanguage\.googleapis\.com/)
   assert.match(asked['opencode'].url, /api\.anthropic\.com/)
+  assert.match(asked['pi'].url, /api\.anthropic\.com/)
   // The token never rides the query string, where a URL logged by anything
   // downstream would carry it.
   for (const [kind, req] of Object.entries(asked))
