@@ -13,7 +13,7 @@ import { TrafficPanel } from './Network'
 import { Chat } from './Chat'
 import { ConfigTab } from './ConfigTab'
 import { SessionMenu, deleteSession, duplicateSession } from './SessionActions'
-import { TabBar, type SessionTab } from './SessionTabs'
+import { TabBar, useSessionTab, type SessionTab } from './SessionTabs'
 import { VscodeButton } from './VscodeButton'
 import { run } from '../async'
 
@@ -143,18 +143,16 @@ function NonStartedPane({
   const { info } = snapshot
   const mcpFailures = useMcpFailures(sessionId)
   const [text, setText] = useState(info.startPrompt)
-  const [activeTab, setActiveTab] = useState<SessionTab>('chat')
+  const [activeTab, setActiveTab] = useSessionTab(sessionId)
   // Run/queue both flip `info.state` away from 'draft', which normally swaps
   // this whole body out on its own — but that swap rides the same IPC round
   // trip the click kicked off, so for a beat the draft view (and its buttons)
   // just sits there with nothing to show the click landed. This is the beat.
   const [submitting, setSubmitting] = useState<'run' | 'queue' | null>(null)
 
-  // Keep the editor in sync when the persisted prompt changes elsewhere, and
-  // land back on the chat tab when the selection switches to another session.
+  // Keep the editor in sync when the selection switches to another session.
   useEffect(() => {
     setText(info.startPrompt)
-    setActiveTab('chat')
     setSubmitting(null)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId])

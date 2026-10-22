@@ -54,9 +54,11 @@ const env = { ...process.env, GURT_ROOT, GURT_WELCOME: 'never', DISPLAY: process
 delete env.ELECTRON_RUN_AS_NODE
 delete env.ELECTRON_RENDERER_URL
 
+// Isolate persisted UI state from other smoke fixtures and the user's app.
+const electronProfile = fs.mkdtempSync(path.join(path.dirname(GURT_ROOT), 'electron-profile-'))
 const app = await _electron.launch({
   executablePath: electronPath,
-  args: [APP_DIR, '--no-sandbox'],
+  args: [APP_DIR, '--no-sandbox', `--user-data-dir=${electronProfile}`],
   env,
   timeout: 30000
 })

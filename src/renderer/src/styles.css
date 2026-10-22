@@ -4718,3 +4718,32 @@ textarea.input {
 .terminal-status.error { color: var(--red); }
 .terminal-empty { padding: 20px 12px; color: var(--faint); }
 .terminal-empty button { color: var(--accent); }
+
+/* Desktop chrome does not participate in text selection; content does. */
+body { user-select: none; }
+input, textarea, [contenteditable="true"], pre, code, .msg-text, .msg-sys,
+.diff-line, .diff-code, .split-code, .split-note-text, .xterm, .error, .selectable { user-select: text; }
+button { user-select: none; }
+
+.dash-plan-primary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
+  gap: 12px;
+}
+.dash-plan-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.dash-plan-label { width: auto; white-space: normal; color: var(--text); }
+.dash-plan-pct { grid-column: 2; grid-row: 1; width: auto; font-size: 18px; }
+.dash-plan-meter { grid-column: 1 / -1; grid-row: 2; width: 100%; height: 6px; }
+.dash-plan-reset { grid-column: 1 / -1; width: auto; white-space: normal; line-height: 1.5; }
+.dash-plan-details summary { cursor: pointer; color: var(--dim); padding: 6px 0; font-size: 11px; }
+.cred-filters { display: flex; gap: 8px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; }
+.cred-filters .input { flex: 1; min-width: 180px; }
+.cred-usage { display: flex; flex-wrap: wrap; gap: 4px; flex: 1; min-width: 0; }
+.cred-usage .tag { white-space: normal; overflow-wrap: anywhere; }

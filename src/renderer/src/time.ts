@@ -16,11 +16,10 @@ export function relativeTime(iso: string): string {
  *  uses, so the two surfaces read the same. */
 export function resetClock(iso: string): string {
   const d = new Date(iso)
-  const h = d.getHours() % 12 || 12
-  const min = d.getMinutes()
-  const time = `${h}${min ? `:${String(min).padStart(2, '0')}` : ''}${d.getHours() < 12 ? 'am' : 'pm'}`
-  if (new Date().toDateString() === d.toDateString()) return time
-  return `${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} at ${time}`
+  if (!Number.isFinite(d.getTime())) return 'unknown'
+  const time = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+  if (new Date().toDateString() === d.toDateString()) return `today at ${time}`
+  return `${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} at ${time}`
 }
 
 /** Wall clock since something started: `12s`, `1:05`, `1:02:03`. Shown where a

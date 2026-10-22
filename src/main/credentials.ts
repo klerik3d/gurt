@@ -21,6 +21,7 @@ import {
   CREDENTIAL_KINDS,
   checkMcpSecret,
   credentialIdentity,
+  resolveForRepo,
   resolveMcpCredential,
   resolveMcpEnvSecret
 } from '../shared/credentials'
@@ -350,10 +351,13 @@ export async function sealPlaintextSecrets(): Promise<void> {
  */
 export async function credentialUsedBy(credentialId: string): Promise<string[]> {
   const used: string[] = []
+  const { credentials } = await read()
   for (const ws of await listWorkspaces()) {
     const data = await getWorkspace(ws)
     for (const repo of data.repos)
       if (repo.credentialId === credentialId) used.push(`${ws}/${repo.name}`)
+      else if (!repo.credentialId && resolveForRepo(credentials, repo)?.entry?.id === credentialId)
+        used.push(`${ws}/${repo.name} (auto)`)
     for (const server of data.mcpServers ?? [])
       if (server.credentialId === credentialId) used.push(`mcp "${mcpLabel(server)}" (${ws})`)
   }

@@ -1,5 +1,6 @@
+import { usePreference, z } from '../persisted'
 /** Which pane of a session is showing — chat/prompt, its config, or its
- *  provisioning/container logs. Local per-session UI state, not persisted. */
+ *  provisioning/container logs. Persisted per-session UI state. */
 export type SessionTab = 'chat' | 'config' | 'logs'
 
 const TABS: { id: SessionTab; label: string }[] = [
@@ -29,4 +30,9 @@ export function TabBar({
       ))}
     </div>
   )
+}
+
+export function useSessionTab(sessionId: string): [SessionTab, (tab: SessionTab) => void] {
+  const [tabs, setTabs] = usePreference<Record<string, SessionTab>>('sessionTabs', {}, z.record(z.string(), z.enum(['chat', 'config', 'logs'])))
+  return [tabs[sessionId] ?? 'chat', (tab) => setTabs((previous) => ({ ...previous, [sessionId]: tab }))]
 }
