@@ -12,6 +12,7 @@ import type { DoctorRow } from './doctor'
 import type { SessionTraffic } from './proxy'
 import type { SessionMcpFailures } from './mcp'
 import type { TurnRecord } from './usage'
+import type { PlanWindow } from './planUsage'
 import type { NotificationRecord } from './notifications'
 
 /** Why a container reached its new status — the "who asked for this" a status
@@ -102,6 +103,8 @@ export interface DomainEvents {
    *  one is a round-trip of its own and costs the same quota. The usage ledger
    *  is the only consumer; `session.turn` stays the lifecycle signal. */
   'agent.turn': TurnRecord
+  /** Subscription limits received with a normal Claude response. */
+  'agent.planUsage': { agent: string; windows: PlanWindow[] }
   /** The usage ledger grew or was pruned — the dashboard refetches. */
   'usage.changed': void
   /** Provisioning output of one session's container; `key` is the session id. */

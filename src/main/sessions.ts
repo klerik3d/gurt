@@ -44,6 +44,7 @@ import type { CreateAction } from '../shared/api'
 import { taskKey } from '../shared/keys'
 import { sanitizeSkillSelection } from '../shared/skills'
 import { limitResetAt, turnOutcome, usageFields } from '../shared/usage'
+import { parseClaudeRateLimit } from './planUsage'
 import type { Bus } from './bus'
 import type { ContainerStatusReason, SessionStateReason } from '../shared/events'
 import type { LaunchContext } from './containers'
@@ -2729,6 +2730,11 @@ export class SessionManager {
       case 'usage_update': {
         const u = parseOrDrop(USAGE_UPDATE, raw, 'usage_update')
         if (!u) return
+        const agent = s.info.agent
+        if (agent && this.agentKinds.get(agent) === 'claude-code') {
+          const windows = parseClaudeRateLimit(u._meta?.['_claude/rateLimit'])
+          if (windows.length) this.bus.emit('agent.planUsage', { agent, windows })
+        }
         s.usage = { used: u.used, size: u.size, ...(u.cost ? { cost: u.cost } : {}) }
         this.bus.emit('session.changed', { sessionId: s.info.id })
         break

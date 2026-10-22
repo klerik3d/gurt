@@ -1,11 +1,8 @@
-// Reads a subscription's real plan limits from the provider and caches them.
+// Caches subscription limits from live Claude sessions and optional OAuth polls.
 //
-// See shared/planUsage.ts for what the endpoint is and why it is worth using
-// despite being unpublished. This module is the network half: one poll per
-// agent instance, rate-limited hard, with the last good read kept and served
-// while a later attempt is failing — plus the parse of what comes back, which
-// lives here rather than in shared because the renderer never runs it (and
-// would otherwise carry zod for it).
+// Token credentials use rate-limit events from normal session responses.
+// Browser OAuth credentials can also poll the unpublished usage endpoint.
+// Both sources preserve the last good snapshot when data is unavailable.
 import { z } from 'zod'
 import type { CredentialEntry } from '../shared/credentials'
 import { resolveAgentSecret } from '../shared/credentials'
@@ -143,6 +140,33 @@ export function parsePlanWindows(body: unknown): PlanWindow[] {
   return [...known, ...rest]
 }
 
+/** SDK events use fractions (0.7 = 70%), unlike the usage endpoint's percent.
+ * Confirmed with a setup-token response; never infer units from the value. */
+export function parseClaudeRateLimit(body: unknown): PlanWindow[] {
+  if (!isRecord(body)) return []
+  const windows = isRecord(body['unifiedWindows'])
+    ? body['unifiedWindows']
+    : typeof body['rateLimitType'] === 'string'
+      ? { [body['rateLimitType']]: body }
+      : {}
+  const out: PlanWindow[] = []
+  for (const [id, value] of Object.entries(windows)) {
+    const parsed = USAGE_NODE.safeParse(value)
+    if (!parsed.success) continue
+    const raw = parsed.data.utilization
+    if (typeof raw !== 'number' || !Number.isFinite(raw) || raw < 0) continue
+    const resetsAt = resetOf(parsed.data)
+    out.push({
+      id,
+      label: PLAN_WINDOW_LABELS[id] ?? id.replace(/_/g, ' '),
+      utilization: Math.min(100, raw * 100),
+      raw,
+      ...(resetsAt ? { resetsAt } : {})
+    })
+  }
+  return out
+}
+
 const ENDPOINT = 'https://api.anthropic.com/api/oauth/usage'
 /** The CLI's own timeout for this call. */
 const TIMEOUT_MS = 5_000
@@ -234,11 +258,20 @@ export function createPlanUsage(bus: Bus, deps: PlanUsageDeps): PlanUsageStore {
     cache.set(agent, { ...prev, ...next })
   }
 
+  bus.on('agent.planUsage', ({ agent, windows }) => {
+    if (!windows.length) return
+    patch(agent, { windows, fetchedAt: new Date(now()).toISOString(), error: undefined })
+    bus.emit('usage.changed', undefined)
+  })
+
   async function poll(agent: string, secret: string): Promise<void> {
     const started = now()
+    const previous = cache.get(agent)
     lastAttempt.set(agent, started)
     try {
       const windows = parsePlanWindows(await fetchUsage(secret, doFetch))
+      // A live response received during this request is the newer snapshot.
+      if (cache.get(agent) !== previous) return
       if (!windows.length) {
         // A 200 we cannot read is a shape change, not an empty plan: keep the
         // previous windows rather than blanking every meter to zero.
@@ -248,6 +281,7 @@ export function createPlanUsage(bus: Bus, deps: PlanUsageDeps): PlanUsageStore {
       }
       patch(agent, { windows, fetchedAt: new Date(started).toISOString(), error: undefined })
     } catch (e) {
+      if (cache.get(agent) !== previous) return
       const error = e instanceof Error ? e.message : String(e)
       patch(agent, { error })
       // A named Retry-After outranks the floor: pushing the last-attempt mark
@@ -268,11 +302,17 @@ export function createPlanUsage(bus: Bus, deps: PlanUsageDeps): PlanUsageStore {
       // claude-code only: these windows belong to that plan, and every other
       // kind would collect nothing but 401s.
       if (a.kind !== 'claude-code') continue
-      const { secret } = resolveAgentSecret(creds, a.credentialId)
+      const { secret, entry } = resolveAgentSecret(creds, a.credentialId)
       if (!secret || !isOauthToken(secret)) {
         // Not a failure and not worth retrying: an API-key agent bills per
         // token and has no plan window to report.
         if (!cache.has(id)) patch(id, { error: 'no subscription token linked' })
+        continue
+      }
+      // setup-token can run inference but lacks user:profile. Its real limits
+      // arrive with normal session responses; never poll it into repeated 403s.
+      if (entry?.kind === 'agent-token') {
+        if (!cache.has(id)) patch(id, { error: 'waiting for usage from a Claude response' })
         continue
       }
       const pending = inFlight.get(id)

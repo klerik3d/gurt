@@ -172,6 +172,7 @@ export const CONFIG_OPTION_UPDATE = z.looseObject({ configOptions: CONFIG_OPTION
 export const USAGE_UPDATE = z.looseObject({
   used: z.number(),
   size: z.number(),
+  _meta: z.record(z.string(), z.unknown()).nullish().catch(undefined),
   cost: z
     .looseObject({ amount: z.number(), currency: z.string() })
     .nullish()
