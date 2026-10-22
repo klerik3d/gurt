@@ -2,6 +2,7 @@
 export function clientConfigPath(kind: string): string | undefined {
   switch (kind) {
     case 'claude-code': return '.claude/settings.json'
+    case 'pi': return '.pi/agent/settings.json'
     case 'opencode': return '.config/opencode/opencode.json'
     default: return undefined
   }
@@ -25,6 +26,10 @@ export function clientConfigFile(kind: string, config: Record<string, unknown> |
 
 export function clientConfigExample(kind: string): Record<string, unknown> {
   if (kind === 'claude-code') return { attribution: { commit: '', pr: '', sessionUrl: false } }
+  if (kind === 'pi') return {
+    defaultProvider: 'openrouter',
+    defaultModel: 'anthropic/claude-sonnet-4.5'
+  }
   if (kind === 'opencode') return {
     $schema: 'https://opencode.ai/config.json',
     model: 'openrouter/anthropic/claude-sonnet-4.5',

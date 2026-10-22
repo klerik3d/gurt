@@ -1,6 +1,6 @@
 # Client JSON configuration
 
-In **Settings → Clients**, open a Claude Code or OpenCode profile and edit
+In **Settings → Clients**, open a Claude Code, OpenCode, or Pi profile and edit
 **Config JSON**. Each profile has its own native JSON object, stored under
 `config` in `~/.gurt/agents.json`. Invalid JSON and non-object values cannot
 be saved. Other client kinds do not yet expose this field.
@@ -12,6 +12,7 @@ user config inside that session’s container:
 | --- | --- |
 | Claude Code | `~/.claude/settings.json` |
 | OpenCode | `~/.config/opencode/opencode.json` |
+| Pi | `~/.pi/agent/settings.json` |
 
 The profile owns the complete contents of this file. Clearing a previously
 saved config writes `{}` on the next launch, removing its previous settings.
@@ -63,3 +64,23 @@ network policy allows the provider endpoint.
 
 See [OpenCode config](https://opencode.ai/docs/config/) and
 [OpenRouter provider settings](https://opencode.ai/docs/providers/#openrouter).
+
+## Pi through OpenRouter
+
+Link your OpenRouter key from **Credentials** and set **Secret env var** to
+`OPENROUTER_API_KEY`. The **Example: OpenRouter** button sets this variable
+name and inserts:
+
+```json
+{
+  "defaultProvider": "openrouter",
+  "defaultModel": "anthropic/claude-sonnet-4.5"
+}
+```
+
+Replace `defaultModel` with the desired model ID from Pi's provider catalog.
+Pi uses the provider in a separate field; do not add `openrouter/` to this model
+ID. Other Pi settings, such as `defaultThinkingLevel` and `enabledModels`, can
+be included in the same object. Custom model definitions belong to Pi's separate
+`models.json`; this editor writes `settings.json` only. `PI_CODING_AGENT_DIR`
+redirects Pi away from the default agent directory.
