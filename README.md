@@ -563,3 +563,5 @@ node scripts/log.test.mjs              # app log: writer, rotation, sanitization
 Licensed under the [Apache License 2.0](LICENSE). The project name and logo
 are not covered by this license. Contributions require signing the
 [CLA](CLA.md) — see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+Client-specific JSON settings: [Claude Code attribution and OpenCode/OpenRouter](docs/client-config.md).

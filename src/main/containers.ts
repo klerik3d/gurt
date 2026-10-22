@@ -1,3 +1,4 @@
+import { clientConfigFile } from '../shared/clientConfig'
 // Container lifecycle. One container per session, strictly: created at the
 // session's first start, stopped when it goes idle, destroyed with it. Nothing
 // here is keyed by env — an env is a *definition* (which devcontainer.json to
@@ -862,6 +863,15 @@ export class ContainerManager {
         this.logFor(sessionId)(`wrote ~/${authFile.path} (oauth sign-in, access token only)`)
         envSecret = ''
       }
+    }
+    // Rewrite on every adapter launch, including {} when the user clears config.
+    const configFile = clientConfigFile(cfg.kind, cfg.config)
+    if (configFile) {
+      await this.timed(sessionId, 'client-config-write', () =>
+        writeContainerUserFile(
+          sessionId, target.configArgs, hostWorkspaceFolder, configFile.path, configFile.content
+        )
+      )
     }
     // claude-code only (§3.2): pin the mangled-cwd directory name its own
     // history keys by to a constant — the session id, already what the host

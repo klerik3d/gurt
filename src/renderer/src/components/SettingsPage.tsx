@@ -1,3 +1,4 @@
+import { clientConfigPath, parseClientConfig, clientConfigExample } from '../../../shared/clientConfig'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { JSX } from 'react'
 import type { AgentInstance, AgentsFile, EnvConfig, RepoConfig, Tree } from '../../../shared/types'
@@ -2580,6 +2581,7 @@ function ClientsSection() {
   /** Draft of the expanded card, editable without touching the saved file. */
   const [draft, setDraft] = useState<AgentInstance | null>(null)
   const [draftEnv, setDraftEnv] = useState('')
+  const [draftConfig, setDraftConfig] = useState('')
   const [error, setError] = useState('')
 
   const load = () => {
@@ -2595,6 +2597,7 @@ function ClientsSection() {
     setOpen(id)
     setDraft({ ...inst })
     setDraftEnv(envToText(inst.env))
+    setDraftConfig(inst.config ? JSON.stringify(inst.config, null, 2) : '')
     setError('')
   }
 
@@ -2632,6 +2635,17 @@ function ClientsSection() {
     }
     const env = textToEnv(draftEnv)
     const inst: AgentInstance = { ...draft, ...(env ? { env } : {}) }
+    if (!env) delete inst.env
+    try {
+      if (clientConfigPath(inst.kind) && (draftConfig.trim() || draft.config !== undefined)) {
+        inst.config = parseClientConfig(draftConfig)
+      } else {
+        delete inst.config
+      }
+    } catch (e) {
+      setError(`Invalid config: ${String(e)}`)
+      return
+    }
     const out: AgentsFile = {}
     const taken = new Set(Object.keys(agents).filter((id) => !isTemp(id) && id !== open))
     for (const [id, a] of Object.entries(agents)) {
@@ -2734,7 +2748,13 @@ function ClientsSection() {
                   </label>
                   <ProviderCombo
                     value={draft.kind}
-                    onPick={(kind) => setDraft({ ...draft, kind })}
+                    onPick={(kind) => {
+                      if (kind === draft.kind) return
+                      const next = { ...draft, kind }
+                      delete next.config
+                      setDraft(next)
+                      setDraftConfig('')
+                    }}
                   />
                   <div className="fld narrow">
                     <div className="fld-head">
@@ -2769,6 +2789,33 @@ function ClientsSection() {
                       onChange={(e) => setDraftEnv(e.target.value)}
                     />
                   </label>
+                  {clientConfigPath(draft.kind) && (
+                    <div className="fld">
+                      <label className="seclabel" htmlFor="client-config-json">CONFIG JSON</label>
+                      <textarea
+                        id="client-config-json"
+                        className="input mono"
+                        rows={10}
+                        spellCheck={false}
+                        placeholder="{}"
+                        value={draftConfig}
+                        onChange={(e) => setDraftConfig(e.target.value)}
+                      />
+                      <div className="fld-hint">
+                        Native client settings. Applied on the next session start or restart.
+                        Clear to reset. Keep API keys in Credentials.
+                        {draft.kind === 'opencode' && ' For OpenRouter, set Secret env var to OPENROUTER_API_KEY.'}
+                      </div>
+                      {!draftConfig.trim() && (
+                        <button className="btn" type="button" onClick={() => {
+                          setDraftConfig(JSON.stringify(clientConfigExample(draft.kind), null, 2))
+                          if (draft.kind === 'opencode') setDraft({ ...draft, secretEnv: 'OPENROUTER_API_KEY' })
+                        }}>
+                          {draft.kind === 'claude-code' ? 'Example: no attribution' : 'Example: OpenRouter'}
+                        </button>
+                      )}
+                    </div>
+                  )}
                   {error && <div className="error">{error}</div>}
                   <div className="set-card-foot">
                     <span className="spacer" />

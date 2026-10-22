@@ -101,6 +101,8 @@ export interface AgentInstance {
   secretEnv?: string
   /** Extra env vars injected into the adapter (base URL, provider, ...). */
   env?: Record<string, string>
+  /** Native client JSON settings, materialized in the session container at launch. */
+  config?: Record<string, unknown>
 }
 
 /** agents.json — registry of agent instances, keyed by a stable instance id. */
