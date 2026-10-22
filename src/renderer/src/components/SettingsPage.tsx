@@ -2804,12 +2804,12 @@ function ClientsSection() {
                       <div className="fld-hint">
                         Native client settings. Applied on the next session start or restart.
                         Clear to reset. Keep API keys in Credentials.
-                        {draft.kind === 'opencode' && ' For OpenRouter, set Secret env var to OPENROUTER_API_KEY.'}
+                        {(draft.kind === 'opencode' || draft.kind === 'pi') && ' For OpenRouter, set Secret env var to OPENROUTER_API_KEY.'}
                       </div>
                       {!draftConfig.trim() && (
                         <button className="btn" type="button" onClick={() => {
                           setDraftConfig(JSON.stringify(clientConfigExample(draft.kind), null, 2))
-                          if (draft.kind === 'opencode') setDraft({ ...draft, secretEnv: 'OPENROUTER_API_KEY' })
+                          if (draft.kind === 'opencode' || draft.kind === 'pi') setDraft({ ...draft, secretEnv: 'OPENROUTER_API_KEY' })
                         }}>
                           {draft.kind === 'claude-code' ? 'Example: no attribution' : 'Example: OpenRouter'}
                         </button>
