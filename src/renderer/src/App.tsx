@@ -1,3 +1,4 @@
+import { usePreference, readPreference, selectionSchema, diffFileSchema, z } from './persisted'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import type {
@@ -76,13 +77,13 @@ export default function App() {
   const [tree, setTree] = useState<Tree | null>(null)
   const seenMarks = useSeen()
   const { turns: usage, loaded: readStateReady } = useUsage()
-  const [selection, setSelection] = useState<Selection>(null)
-  const [view, setView] = useState<View>('work')
-  const [leftSidebarVisible, setLeftSidebarVisible] = useState(true)
-  const [terminalVisible, setTerminalVisible] = useState(false)
-  const [workMode, setWorkMode] = useState<'sessions' | 'diff'>('sessions')
-  const [diffFile, setDiffFile] = useState<DiffFileSelection | null>(null)
-  const [settingsSection, setSettingsSection] = useState<SettingsSection>('environments')
+  const [selection, setSelection] = usePreference<Selection>('selection', null, selectionSchema)
+  const [view, setView] = usePreference<View>('view', 'work', z.enum(['work', 'dashboard', 'settings']))
+  const [leftSidebarVisible, setLeftSidebarVisible] = usePreference('leftSidebar', true, z.boolean())
+  const [terminalVisible, setTerminalVisible] = usePreference('terminalVisible', false, z.boolean())
+  const [workMode, setWorkMode] = usePreference<'sessions' | 'diff'>('workMode', 'sessions', z.enum(['sessions', 'diff']))
+  const [diffFile, setDiffFile] = usePreference<DiffFileSelection | null>('diffFile', null, diffFileSchema)
+  const [settingsSection, setSettingsSection] = usePreference<SettingsSection>('settingsSection', 'environments', z.enum(['environments', 'repos', 'clients', 'agentAccess', 'mcp', 'skills', 'credentials', 'notifications', 'hotkeys', 'machine']))
   const [snapshots, setSnapshots] = useState<Record<string, SessionSnapshot>>({})
   const [logs, setLogs] = useState<Record<string, string[]>>({})
   /** Per-task git changes snapshot, keyed `ws/task` — read by TaskPane and the sidebar badge. */
@@ -113,8 +114,14 @@ export default function App() {
   }, [])
   const agents = useAgents()
   const hotkeys = useHotkeys()
-  const [sidebarCollapsed, setSidebarCollapsed] = useState<Set<string>>(new Set())
-  const sidebarSeeded = useRef(new Set<string>())
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<Set<string>>(() => new Set(readPreference('sidebarCollapsed', [], z.array(z.string()))))
+  const sidebarSeeded = useRef(new Set(readPreference('sidebarSeeded', [], z.array(z.string()))))
+  useEffect(() => {
+    try {
+      localStorage.setItem('gurt.ui.sidebarCollapsed', JSON.stringify([...sidebarCollapsed]))
+      localStorage.setItem('gurt.ui.sidebarSeeded', JSON.stringify([...sidebarSeeded.current]))
+    } catch { /* Storage is optional. */ }
+  }, [sidebarCollapsed])
   /** Bumped when a left activity item is activated; focuses its tree when visible. */
   const [focusTasksSignal, setFocusTasksSignal] = useState(0)
   /** ⌘/Ctrl held alone, past `MOD_HOLD_DELAY_MS` — drives the activity bar's
@@ -162,7 +169,7 @@ export default function App() {
   const [newTask, setNewTask] = useState<string | null>(null)
   const [newWorkspace, setNewWorkspace] = useState(false)
   const [deletingWorkspace, setDeletingWorkspace] = useState<string | null>(null)
-  const [curWs, setCurWs] = useState<string | null>(null)
+  const [curWs, setCurWs] = usePreference<string | null>('workspace', null, z.string().nullable())
   /** Titlebar workspace-switcher dropdown — the single place to change `curWs`
    *  now, visible from every view (see the sidebar's now-static readout). */
   const [wsMenuOpen, setWsMenuOpen] = useState(false)
@@ -347,7 +354,7 @@ export default function App() {
   useEffect(() => {
     if (tree && !tree.workspaces.some((w) => w.name === curWs))
       setCurWs(tree.workspaces[0]?.name ?? null)
-  }, [tree, curWs])
+  }, [tree, curWs, setCurWs])
 
   // Track activation order for cycleWorkspace: every time curWs changes (via
   // any path — hotkey, titlebar dropdown, selectSession/selectTask jumping to
@@ -371,7 +378,7 @@ export default function App() {
   // Only what the tree has already shown is pruned: creating a task or session
   // selects it right after the IPC returns, one tree refresh *before* it shows
   // up in `tree` — pruning on absence alone would wipe every fresh selection.
-  const treeKnown = useRef<Set<string>>(new Set())
+  const treeKnown = useRef<Set<string>>(new Set(selection ? [selection.type === 'session' ? `session:${selection.id}` : `task:${selection.ws}/${selection.task}`] : []))
   useEffect(() => {
     if (!tree) return
     const alive = new Set<string>()
@@ -387,7 +394,7 @@ export default function App() {
       : null
     if (key && treeKnown.current.has(key) && !alive.has(key)) setSelection(null)
     treeKnown.current = alive
-  }, [tree, selection])
+  }, [tree, selection, setSelection])
 
   // Drag the divider between sidebar and main; the new width is clientX
   // minus the sidebar's left offset (see SIDEBAR_LEFT_OFFSET).
@@ -438,20 +445,25 @@ export default function App() {
     setNotifications((prev) =>
       prev.map((n) => (n.sessionId === id && !n.read ? { ...n, read: true } : n))
     )
-    window.gurt
-      .sessionSnapshot(id)
-      .then((snap) => {
-        if (snap) setSnapshots((prev) => ({ ...prev, [id]: snap }))
-      })
-      .catch(logErr('sessionSnapshot'))
-  }, [])
+  }, [setView, setWorkMode, setSelection, setCurWs])
+
+  // Reload the selected session on restore as well as explicit navigation.
+  const selectedSessionId = selection?.type === 'session' ? selection.id : null
+  useEffect(() => {
+    if (!selectedSessionId || view !== 'work' || workMode !== 'sessions') return
+    let cancelled = false
+    window.gurt.sessionSnapshot(selectedSessionId).then((snap) => {
+      if (!cancelled && snap) setSnapshots((prev) => ({ ...prev, [selectedSessionId]: snap }))
+    }).catch(logErr('sessionSnapshot'))
+    return () => { cancelled = true }
+  }, [selectedSessionId, view, workMode])
 
   const selectTask = useCallback((tws: string, task: string) => {
     setView('work')
     setForceWelcome(false)
     setSelection({ type: 'task', ws: tws, task })
     setCurWs(tws)
-  }, [])
+  }, [setView, setSelection, setCurWs])
 
   const markNotificationRead = useCallback((id: string) => {
     setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, read: true } : n)))
@@ -578,7 +590,7 @@ export default function App() {
     // session/task was open so the sidebar/breadcrumb don't show stale content.
     setSelection(null)
     setCurWs(target)
-  }, [ws])
+  }, [ws, setSelection, setCurWs])
 
   useEffect(() => {
     const onKeyUp = (e: KeyboardEvent) => {
@@ -640,7 +652,7 @@ export default function App() {
     setWorkMode(mode)
     setForceWelcome(false)
     setFocusTasksSignal((n) => n + 1)
-  }, [view, workMode])
+  }, [view, workMode, setLeftSidebarVisible, setView, setWorkMode])
 
   // Global hotkeys: palette · new session · new task · cycle workspaces ·
   // navigation and sidebar toggles (remappable in Settings → Hotkeys).
@@ -681,7 +693,7 @@ export default function App() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [ws, openNewSession, hotkeys, cycleWorkspace, toggleWorkSidebar, view])
+  }, [ws, openNewSession, hotkeys, cycleWorkspace, toggleWorkSidebar, view, setView, setTerminalVisible])
 
   const positions = queuePositions(tree)
   // The dropdown reads from whichever is driving it: the switcher's MRU

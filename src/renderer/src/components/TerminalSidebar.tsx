@@ -1,3 +1,4 @@
+import { usePreference, z } from '../persisted'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import { Terminal } from '@xterm/xterm'
@@ -196,10 +197,10 @@ export function TerminalSidebar({
   onHide: () => void
 }) {
   const [sessions, setSessions] = useState<TerminalInfo[]>([])
-  const [active, setActive] = useState<Record<string, string>>({})
+  const [active, setActive] = usePreference<Record<string, string>>('activeTerminals', {}, z.record(z.string(), z.string()))
   const [error, setError] = useState('')
   const [opening, setOpening] = useState(false)
-  const [width, setWidth] = useState(420)
+  const [width, setWidth] = usePreference('terminalWidth', 420, z.number().min(200).max(1200))
   const sidebar = useRef<HTMLElement>(null)
   const dragCleanup = useRef<() => void>(() => {})
   const ws = scope?.ws
@@ -226,7 +227,7 @@ export function TerminalSidebar({
       if (!changed) setSessions(list)
     }).catch(logErr('terminalList'))
     return () => { changed = true; off(); dragCleanup.current() }
-  }, [])
+  }, [setActive])
 
   useEffect(() => {
     if (!visible || !ws || !task) return
@@ -240,7 +241,7 @@ export function TerminalSidebar({
       if (!cancelled) setError(e instanceof Error ? e.message : String(e))
     }).finally(() => { if (!cancelled) setOpening(false) })
     return () => { cancelled = true }
-  }, [visible, ws, task, key])
+  }, [visible, ws, task, key, setActive])
 
   const create = () => {
     if (!ws || !task) return
@@ -271,7 +272,7 @@ export function TerminalSidebar({
     window.addEventListener('mousemove', move)
     window.addEventListener('mouseup', stop)
     window.addEventListener('blur', stop)
-  }, [])
+  }, [setWidth])
 
   return (
     <>

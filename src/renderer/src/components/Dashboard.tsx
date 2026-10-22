@@ -1,3 +1,4 @@
+import { usePreference, z } from '../persisted'
 // The dashboard: what the agents have spent, what is running, and what finished
 // while you were elsewhere. Read-only over state the rest of the app already
 // owns — the one thing it adds is the usage ledger (see shared/usage.ts).
@@ -236,6 +237,7 @@ export function Dashboard({
   const { turns: usage } = useUsage()
   const plan = usePlanUsage()
   const now = useNow()
+  const [showAllAgents, setShowAllAgents] = usePreference('allDashboardAgents', false, z.boolean())
   const { collapsed, toggle: toggleWorkspace } = useCollapsedWorkspaces()
 
   const rows = allSessions(tree, activity)
@@ -259,7 +261,15 @@ export function Dashboard({
   // still knows — turns of a since-deleted instance are spent quota, and
   // dropping them would quietly under-count the window they landed in.
   const ledgerAgents = [...new Set(usage.map((r) => r.agent))].filter((id) => !agents[id])
-  const cards = [...Object.keys(agents), ...ledgerAgents]
+  const recent = new Map<string, { count: number; last: string }>()
+  for (const turn of usage) {
+    if (Date.parse(turn.ts) < now - 30 * 24 * 60 * 60_000) continue
+    const previous = recent.get(turn.agent)
+    recent.set(turn.agent, { count: (previous?.count ?? 0) + 1, last: turn.ts > (previous?.last ?? '') ? turn.ts : (previous?.last ?? turn.ts) })
+  }
+  const cards = [...Object.keys(agents), ...ledgerAgents].sort((a, b) =>
+    (recent.get(b)?.count ?? 0) - (recent.get(a)?.count ?? 0) ||
+    (recent.get(b)?.last ?? '').localeCompare(recent.get(a)?.last ?? '') || a.localeCompare(b))
 
   return (
     <div className="dash">
@@ -267,12 +277,17 @@ export function Dashboard({
         <section className="dash-section">
           <div className="dash-sec-head">
             <span className="seclabel">AGENTS</span>
+            <span className="dash-sec-hint">Most used · last 30 days</span>
+            <span className="spacer" />
+            {cards.length > 4 && <button className="btn-text" aria-expanded={showAllAgents} onClick={() => setShowAllAgents((v) => !v)}>
+              {showAllAgents ? 'Show fewer' : `Show ${cards.length - 4} more`}
+            </button>}
           </div>
           {cards.length === 0 && (
             <div className="tp-dashed">no agents yet — add one in Settings → Agents</div>
           )}
           <div className="dash-cards">
-            {cards.map((id) => (
+            {(showAllAgents ? cards : cards.slice(0, 4)).map((id) => (
               <AgentCard
                 key={id}
                 id={id}
@@ -363,7 +378,8 @@ function AgentCard({
           </span>
         )}
       </div>
-      {!!plan?.windows.length && <PlanMeters plan={plan} now={now} />}
+      {plan?.windows.length ? <PlanMeters plan={plan} now={now} /> :
+        <div className="faint">Usage limits unavailable</div>}
     </div>
   )
 }
@@ -380,9 +396,17 @@ function PlanMeters({ plan, now }: { plan: PlanUsage; now: number }): JSX.Elemen
   const stale = age !== undefined && age > STALE_AFTER_MS
   return (
     <div className="dash-plan">
-      {plan.windows.map((w) => (
-        <PlanMeter key={w.id} w={w} now={now} />
-      ))}
+      <div className="dash-plan-primary">
+        {['five_hour', 'seven_day'].map((id) => {
+          const w = plan.windows.find((window) => window.id === id)
+          return w ? <PlanMeter key={id} w={w} now={now} /> :
+            <div className="dash-plan-row" key={id}><span>{id === 'five_hour' ? '5-hour window' : 'Weekly window'}</span><span className="faint">Not reported</span></div>
+        })}
+      </div>
+      {plan.windows.some((w) => !['five_hour', 'seven_day'].includes(w.id)) && <details className="dash-plan-details">
+        <summary>Other limits</summary>
+        <div className="dash-plan-primary">{plan.windows.filter((w) => !['five_hour', 'seven_day'].includes(w.id)).map((w) => <PlanMeter key={w.id} w={w} now={now} />)}</div>
+      </details>}
       <div className="dash-plan-foot">
         <span className="faint">{TIME_ZONE}</span>
         <span className="spacer" />
@@ -403,11 +427,11 @@ function PlanMeter({ w, now }: { w: PlanWindow; now: number }): JSX.Element {
   const tone = w.utilization >= 95 ? 'red' : w.utilization >= 80 ? 'yellow' : 'accent'
   return (
     <div className="dash-plan-row">
-      <span className="dash-plan-label">{w.label}</span>
-      <span className="dash-meter dash-plan-meter">
+      <span className="dash-plan-label">{w.id === 'five_hour' ? '5-hour window' : w.id === 'seven_day' ? 'Weekly window' : w.label}</span>
+      <span className="dash-meter dash-plan-meter" role="progressbar" aria-label={w.label} aria-valuenow={w.utilization} aria-valuemin={0} aria-valuemax={100}>
         <span
           className={`dash-meter-fill fill-${tone}`}
-          style={{ width: `${Math.max(1, w.utilization)}%` }}
+          style={{ width: `${Math.min(100, Math.max(0, w.utilization))}%` }}
         />
       </span>
       <span
@@ -418,7 +442,7 @@ function PlanMeter({ w, now }: { w: PlanWindow; now: number }): JSX.Element {
         {Math.round(w.utilization)}% used
       </span>
       <span className="dash-plan-reset faint">
-        {w.resetsAt && left !== undefined && left > 0 ? `resets ${resetClock(w.resetsAt)}` : ''}
+        {w.resetsAt && left !== undefined && Number.isFinite(left) ? (left > 0 ? `Resets ${resetClock(w.resetsAt)} · in ${formatDuration(left)}` : 'Reset due · awaiting update') : 'Reset time not reported'}
       </span>
     </div>
   )

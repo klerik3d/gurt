@@ -31,7 +31,7 @@ import { AgentMark, EnvRepoMarks, hasNetMark, McpFailBanner, McpMarks, NetMark, 
 import { NetButton } from './Network'
 import { ConfigTab } from './ConfigTab'
 import { SessionMenu } from './SessionActions'
-import { TabBar, type SessionTab } from './SessionTabs'
+import { TabBar, useSessionTab } from './SessionTabs'
 import { VscodeButton } from './VscodeButton'
 import { run } from '../async'
 import { elapsedClock } from '../time'
@@ -90,8 +90,7 @@ export function Chat({
   onSelect: (id: string) => void
   onDeleted: () => void
 }) {
-  const [activeTab, setActiveTab] = useState<SessionTab>('chat')
-  useEffect(() => setActiveTab('chat'), [sessionId])
+  const [activeTab, setActiveTab] = useSessionTab(sessionId)
   const feedRef = useRef<HTMLDivElement>(null)
   const innerRef = useRef<HTMLDivElement>(null)
   /** Follow-the-tail flag: true until the user scrolls away from the bottom. */

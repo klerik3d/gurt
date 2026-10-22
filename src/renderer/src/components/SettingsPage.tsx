@@ -1,3 +1,4 @@
+import { usePreference, z } from '../persisted'
 import { clientConfigPath, parseClientConfig, clientConfigExample } from '../../../shared/clientConfig'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { JSX } from 'react'
@@ -294,11 +295,7 @@ export function SettingsPage({
   section: SettingsSection
   onSection: (s: SettingsSection) => void
 }) {
-  const [openGroups, setOpenGroups] = useState<Record<NavGroup, boolean>>({
-    general: true,
-    registry: true,
-    advanced: true
-  })
+  const [openGroups, setOpenGroups] = usePreference<Record<NavGroup, boolean>>('settingsGroups', { general: true, registry: true, advanced: true }, z.object({ general: z.boolean(), registry: z.boolean(), advanced: z.boolean() }))
   const toggleGroup = (g: NavGroup) => setOpenGroups((prev) => ({ ...prev, [g]: !prev[g] }))
   return (
     <div className="settings">
@@ -3242,6 +3239,9 @@ const KIND_TAG: Record<CredentialKind, string> = {
 const kindTag = (kind: string): string => KIND_TAG[kind as CredentialKind] ?? kind
 
 function CredentialsSection() {
+  const [usage, setUsage] = useState<Record<string, string[] | null>>({})
+  const [filter, setFilter] = usePreference<'all' | 'unused' | 'used'>('credentialFilter', 'all', z.enum(['all', 'unused', 'used']))
+  const [query, setQuery] = usePreference('credentialSearch', '', z.string())
   const [entries, setEntries] = useState<CredentialEntry[] | null>(null)
   const [open, setOpen] = useState<string | null>(null)
   const [draft, setDraft] = useState<CredentialEntry | null>(null)
@@ -3266,6 +3266,16 @@ function CredentialsSection() {
       })
       .catch((e: unknown) => setError(String(e)))
   }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    setUsage({})
+    void Promise.all((entries ?? []).map(async (entry) => {
+      try { return [entry.id, await window.gurt.credentialUsedBy(entry.id)] as const }
+      catch { return [entry.id, null] as const }
+    })).then((pairs) => { if (!cancelled) setUsage(Object.fromEntries(pairs)) })
+    return () => { cancelled = true }
+  }, [entries])
 
   const expand = (c: CredentialEntry) => {
     setOpen(c.id)
@@ -3420,6 +3430,14 @@ function CredentialsSection() {
     }
   }
 
+  const visible = (entries ?? []).filter((c) => c.id === open || (
+    (filter === 'all' || (Array.isArray(usage[c.id]) && (filter === 'unused' ? usage[c.id]!.length === 0 : usage[c.id]!.length > 0))) &&
+    [c.label, kindTag(c.kind), ...c.hosts, ...(usage[c.id] ?? [])].join(' ').toLowerCase().includes(query.toLowerCase())
+  ))
+  const usageMarkers = (id: string) => <span className="cred-usage">
+    {usage[id] === undefined ? <span className="faint">Checking usage…</span> : usage[id] === null ? <span className="yellow">Usage unavailable</span> :
+      usage[id].length ? usage[id].map((label) => <span key={label} className="tag" title={label}>{label}</span>) : <span className="tag faint">Unused</span>}
+  </span>
   const count = (entries ?? []).filter((c) => c.label.trim()).length
   const kindDef = (kind: CredentialKind): CredentialKindDef | undefined =>
     CREDENTIAL_KINDS.find((k) => k.kind === kind)
@@ -3443,8 +3461,14 @@ function CredentialsSection() {
           secrets are stored unencrypted — no system keystore available
         </div>
       )}
+      <div className="cred-filters">
+        {(['all', 'unused', 'used'] as const).map((value) => <button key={value} className={`btn btn-xs${filter === value ? ' active' : ''}`} aria-pressed={filter === value} onClick={() => setFilter(value)}>
+          {value === 'all' ? 'All' : value === 'unused' ? 'Unused' : 'In use'}
+        </button>)}
+        <input className="input" aria-label="Search credentials" placeholder="Search name, type, host or usage…" value={query} onChange={(e) => setQuery(e.target.value)} />
+      </div>
       <div className="set-list">
-        {(entries ?? []).map((c) => {
+        {visible.map((c) => {
           if (open !== c.id) {
             if (!c.label.trim()) return null
             return (
@@ -3454,6 +3478,7 @@ function CredentialsSection() {
                 <span className="cred-tag">
                   <span className="tag">{kindTag(c.kind)}</span>
                 </span>
+                {usageMarkers(c.id)}
                 <span className="cred-preview mono">{maskedPreview(c)}</span>
                 <Icon name="chevron" size={12} className="faint" style={{ transform: 'rotate(-90deg)' }} />
               </div>
@@ -3468,6 +3493,7 @@ function CredentialsSection() {
                 <span className="cred-tag">
                   <span className="tag">{kindTag(draft?.kind ?? c.kind)}</span>
                 </span>
+                {usageMarkers(c.id)}
                 <span className="cred-preview mono">{maskedPreview(c)}</span>
                 <Icon name="chevron" size={12} className="faint" />
               </div>
@@ -3593,6 +3619,7 @@ function CredentialsSection() {
             </div>
           )
         })}
+        {count > 0 && visible.length === 0 && <div className="tp-dashed">No credentials match these filters</div>}
         {count === 0 && open === null && <div className="tp-dashed">no credentials yet</div>}
       </div>
     </>
