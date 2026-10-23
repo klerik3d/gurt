@@ -33,7 +33,7 @@ await bundle({
   outfile
 })
 
-const { parsePlanWindows, parseClaudeRateLimit, SessionManager, isOauthToken, tightest, createPlanUsage, createBus } = await import(
+const { windowElapsedPercent, parsePlanWindows, parseClaudeRateLimit, SessionManager, isOauthToken, tightest, createPlanUsage, createBus } = await import(
   pathToFileURL(outfile).href
 )
 
@@ -357,4 +357,19 @@ test('an in-flight profile poll cannot overwrite a newer session snapshot', asyn
   const result = (await pending).work
   assert.equal(result.windows[0].utilization, 70)
   assert.equal(result.error, undefined)
+})
+
+
+test('window time progress uses duration and clamps at window boundaries', () => {
+  const reset = Date.parse('2026-10-22T12:00:00Z')
+  const window = { id: 'five_hour', resetsAt: new Date(reset).toISOString() }
+  assert.equal(windowElapsedPercent(window, reset - 2.5 * 60 * 60_000), 50)
+  assert.equal(windowElapsedPercent(window, reset - 6 * 60 * 60_000), 0)
+  assert.equal(windowElapsedPercent(window, reset + 60_000), 100)
+  for (const id of ['seven_day', 'seven_day_sonnet', 'weekly_scoped']) {
+    assert.equal(windowElapsedPercent({ ...window, id }, reset - 3.5 * 24 * 60 * 60_000), 50)
+  }
+  assert.equal(windowElapsedPercent({ ...window, id: 'extra_usage' }, reset), undefined)
+  assert.equal(windowElapsedPercent({ id: 'five_hour' }, reset), undefined)
+  assert.equal(windowElapsedPercent({ ...window, resetsAt: 'invalid' }, reset), undefined)
 })
