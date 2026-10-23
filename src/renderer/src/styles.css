@@ -3898,6 +3898,7 @@ textarea.input {
   gap: 9px;
   font-size: 12.5px;
 }
+.dash-usage-unavailable { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dash-card-name {
   min-width: 0;
   overflow: hidden;
