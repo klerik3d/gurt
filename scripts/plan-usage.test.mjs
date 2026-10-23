@@ -417,7 +417,7 @@ test('Codex polling refreshes auth, uses account headers, coalesces and retains 
   let clock = 1792700000000
   let calls = 0
   let refreshes = 0
-  let response = { ok: true, json: async () => CODEX_USAGE }
+  let response = Response.json(CODEX_USAGE)
   const store = createPlanUsage(createBus(), {
     agents: async () => CODEX_AGENTS, credentials: async () => CODEX_CREDS, now: () => clock,
     freshCredential: async (id) => {
@@ -439,10 +439,10 @@ test('Codex polling refreshes auth, uses account headers, coalesces and retains 
   await store.get()
   assert.equal(refreshes, 1)
   clock += 61000
-  response = { ok: true, json: async () => ({ rate_limit: null }) }
+  response = Response.json({ rate_limit: null })
   assert.deepEqual((await store.get()).cx.windows, first.cx.windows)
   clock += 61000
-  response = { ok: false, status: 429, headers: { get: () => '120' } }
+  response = new Response(null, { status: 429, headers: { 'Retry-After': '120' } })
   const failed = (await store.get()).cx
   assert.deepEqual(failed.windows, first.cx.windows)
   assert.equal(failed.fetchedAt, first.cx.fetchedAt)
