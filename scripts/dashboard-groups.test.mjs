@@ -19,7 +19,7 @@ const S = (rel) => JSON.stringify(path.join(ROOT, rel))
 
 await bundle({
   stdin: {
-    contents: `export { boardByWorkspace, summarize, COLUMNS } from ${S('src/renderer/src/components/Dashboard.tsx')}`,
+    contents: `export { boardByWorkspace, summarize, COLUMNS, resetCountdown } from ${S('src/renderer/src/components/Dashboard.tsx')}`,
     resolveDir: ROOT,
     loader: 'ts',
     sourcefile: 'entry.ts'
@@ -27,7 +27,7 @@ await bundle({
   outfile
 })
 
-const { boardByWorkspace, summarize, COLUMNS } = await import(pathToFileURL(outfile).href)
+const { boardByWorkspace, summarize, COLUMNS, resetCountdown } = await import(pathToFileURL(outfile).href)
 
 /** A row as `allSessions` builds them. */
 const row = (id, status, workspace, task, extra = {}) => ({
@@ -190,4 +190,13 @@ test('the folded summary', () => {
     '1 needs you · 1 running · 1 queued · 1 draft · 1 to review',
     'summary reads left-to-right the way the board does'
   )
+})
+
+
+test('reset countdown keeps minutes across hours and days', () => {
+  assert.equal(resetCountdown((24 * 60 + 5 * 60 + 31) * 60_000), '1d 5h 31m')
+  assert.equal(resetCountdown(5 * 60 * 60_000), '5h 0m')
+  assert.equal(resetCountdown(1), '1m')
+  assert.equal(resetCountdown(0), 'due')
+  assert.equal(resetCountdown(-60_000), 'due')
 })

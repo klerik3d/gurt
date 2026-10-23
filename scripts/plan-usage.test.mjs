@@ -22,7 +22,7 @@ await bundle({
   stdin: {
     contents: [
       `export * from ${S('src/shared/planUsage.ts')}`,
-      `export { createPlanUsage, parsePlanWindows, parseClaudeRateLimit } from ${S('src/main/planUsage.ts')}`,
+      `export { createPlanUsage, parsePlanWindows, parseClaudeRateLimit, parseCodexPlanWindows } from ${S('src/main/planUsage.ts')}`,
       `export { SessionManager } from ${S('src/main/sessions.ts')}`,
       `export { createBus } from ${S('src/main/bus.ts')}`
     ].join('\n'),
@@ -33,7 +33,7 @@ await bundle({
   outfile
 })
 
-const { windowElapsedPercent, parsePlanWindows, parseClaudeRateLimit, SessionManager, isOauthToken, tightest, createPlanUsage, createBus } = await import(
+const { parseCodexPlanWindows, windowElapsedPercent, parsePlanWindows, parseClaudeRateLimit, SessionManager, isOauthToken, tightest, createPlanUsage, createBus } = await import(
   pathToFileURL(outfile).href
 )
 
@@ -271,7 +271,7 @@ test('other kinds never touch this endpoint at all', async () => {
     credentials: async () => CREDS,
     fetchImpl: async () => assert.fail('codex has no claude plan window')
   })
-  assert.deepEqual(await store.get(), {})
+  assert.deepEqual((await store.get()).cx.windows, [])
 })
 
 // Captured from a successful setup-token probe on 2026-10-22.
@@ -372,4 +372,102 @@ test('window time progress uses duration and clamps at window boundaries', () =>
   assert.equal(windowElapsedPercent({ ...window, id: 'extra_usage' }, reset), undefined)
   assert.equal(windowElapsedPercent({ id: 'five_hour' }, reset), undefined)
   assert.equal(windowElapsedPercent({ ...window, resetsAt: 'invalid' }, reset), undefined)
+})
+
+
+const CODEX_USAGE = { rate_limit: {
+  primary_window: { used_percent: 42, limit_window_seconds: 18000, reset_at: 1792760000 },
+  secondary_window: { used_percent: 0.7, limit_window_seconds: 604800, reset_at: 1793000000 }
+}, code_review_rate_limit: { primary_window: { used_percent: 99, limit_window_seconds: 604800, reset_at: 1793000000 } } }
+const CODEX_CREDS = [{ id: 'cx-login', kind: 'oauth', label: 'ChatGPT', data: {
+  provider: 'openai', access: 'old-access', refresh: 'refresh', accountId: 'old-account'
+} }]
+const CODEX_AGENTS = { cx: { kind: 'codex', label: 'Codex', credentialId: 'cx-login' } }
+
+test('Codex quota percentages, durations and resets remain provider-reported', () => {
+  const windows = parseCodexPlanWindows(CODEX_USAGE)
+  assert.deepEqual(windows.map((w) => [w.id, w.label, w.utilization]), [
+    ['codex_primary', '5h', 42], ['codex_secondary', 'week', 0.7]
+  ])
+  assert.equal(windows[0].resetsAt, new Date(1792760000000).toISOString())
+  assert.equal(windowElapsedPercent(windows[0], 1792760000000 - 9000000), 50)
+  const [short] = parseCodexPlanWindows({ rate_limit: { primary_window: {
+    used_percent: 25, limit_window_seconds: 900, reset_at: 1792760000
+  } } })
+  assert.equal(short.label, '15m')
+  assert.equal(windowElapsedPercent(short, 1792760000000 - 450000), 50)
+})
+
+test('Codex missing or malformed data never becomes zero usage or a guessed duration', () => {
+  for (const body of [null, {}, { rate_limit: null }, { rate_limit: { primary_window: { used_percent: '42' } } },
+    { rate_limit: { primary_window: { used_percent: -1 } } }]) assert.deepEqual(parseCodexPlanWindows(body), [])
+  const [partial] = parseCodexPlanWindows({ rate_limit: { primary_window: { used_percent: 0 } } })
+  assert.equal(partial.utilization, 0)
+  assert.equal(partial.durationSeconds, undefined)
+  assert.equal(windowElapsedPercent(partial, Date.now()), undefined)
+  const [invalid] = parseCodexPlanWindows({ rate_limit: { primary_window: {
+    used_percent: 120, limit_window_seconds: -1, reset_at: 1e100
+  } } })
+  assert.equal(invalid.utilization, 100)
+  assert.equal(invalid.resetsAt, undefined)
+  assert.equal(invalid.durationSeconds, undefined)
+})
+
+test('Codex polling refreshes auth, uses account headers, coalesces and retains last good limits', async () => {
+  let clock = 1792700000000
+  let calls = 0
+  let refreshes = 0
+  let response = Response.json(CODEX_USAGE)
+  const store = createPlanUsage(createBus(), {
+    agents: async () => CODEX_AGENTS, credentials: async () => CODEX_CREDS, now: () => clock,
+    freshCredential: async (id) => {
+      assert.equal(id, 'cx-login'); refreshes++
+      return { ...CODEX_CREDS[0], data: { ...CODEX_CREDS[0].data, access: 'fresh-access', accountId: 'fresh-account' } }
+    },
+    fetchImpl: async (url, init) => {
+      calls++
+      assert.equal(url, 'https://chatgpt.com/backend-api/wham/usage')
+      assert.equal(init.headers.Authorization, 'Bearer fresh-access')
+      assert.equal(init.headers['ChatGPT-Account-Id'], 'fresh-account')
+      assert.equal(init.headers['anthropic-beta'], undefined)
+      return response
+    }
+  })
+  const [first] = await Promise.all([store.get(), store.get()])
+  assert.equal(calls, 1)
+  assert.equal(first.cx.windows.length, 2)
+  await store.get()
+  assert.equal(refreshes, 1)
+  clock += 61000
+  response = Response.json({ rate_limit: null })
+  assert.deepEqual((await store.get()).cx.windows, first.cx.windows)
+  clock += 61000
+  response = new Response(null, { status: 429, headers: { 'Retry-After': '120' } })
+  const failed = (await store.get()).cx
+  assert.deepEqual(failed.windows, first.cx.windows)
+  assert.equal(failed.fetchedAt, first.cx.fetchedAt)
+  assert.match(failed.error, /rate limited/)
+  clock += 61000
+  await store.get()
+  assert.equal(calls, 3, 'Retry-After stops another poll')
+})
+
+test('Codex refresh failures stop requests and API keys / other OAuth providers are never polled', async () => {
+  const store = createPlanUsage(createBus(), {
+    agents: async () => CODEX_AGENTS, credentials: async () => CODEX_CREDS,
+    freshCredential: async () => { throw new Error('sign in again') },
+    fetchImpl: async () => assert.fail('failed refresh must not send an expired token')
+  })
+  assert.match((await store.get()).cx.error, /sign in again/)
+  for (const entry of [
+    { ...CODEX_CREDS[0], kind: 'agent-token', data: { secret: 'api-key' } },
+    { ...CODEX_CREDS[0], data: { ...CODEX_CREDS[0].data, provider: 'anthropic' } },
+    { ...CODEX_CREDS[0], data: { ...CODEX_CREDS[0].data, signedOut: 'true' } }
+  ]) {
+    const skip = createPlanUsage(createBus(), {
+      agents: async () => CODEX_AGENTS, credentials: async () => [entry],
+      fetchImpl: async () => assert.fail('ineligible credential must not be sent to Codex')
+    })
+    assert.deepEqual((await skip.get()).cx.windows, [])
+  }
 })

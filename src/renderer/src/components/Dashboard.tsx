@@ -13,13 +13,14 @@ import { formatDuration } from '../../../shared/usage'
 import { SESSION_DOT } from '../status'
 import { agentKind, agentName, useAgents } from '../useAgents'
 import { markAllSeen, markSeen, useUsage } from '../reviewed'
-import { relativeTime, resetClock } from '../time'
+import { relativeTime } from '../time'
 import { logErr } from '../log'
 import { Dot, Icon } from './icons'
 import { agentIcon } from './tags'
 
 /** Cards a column shows before collapsing the rest into a "+N more" line. */
 const COLUMN_ROWS = 12
+type MeterLayout = 'touching' | 'overlay'
 
 /** The reset clocks render in this machine's timezone — named once next to
  *  them so the reader doesn't have to guess whose 6:30pm it is. */
@@ -38,7 +39,7 @@ function useNow(everyMs = 30_000): number {
 
 /**
  * Provider-reported plan limits. Main polls the endpoint in the background
- * (every 3 minutes per claude-code instance, rate-floored — see
+ * (every 3 minutes per eligible instance, rate-floored — see
  * main/planUsage.ts) and announces each sweep over `usage.changed`, so this
  * only reads the cache: once on mount, then on that signal.
  */
@@ -238,6 +239,7 @@ export function Dashboard({
   const plan = usePlanUsage()
   const now = useNow()
   const [showAllAgents, setShowAllAgents] = usePreference('allDashboardAgents', false, z.boolean())
+  const [meterLayout, setMeterLayout] = usePreference<MeterLayout>('dashboardMeterLayout', 'touching', z.enum(['touching', 'overlay']))
   const { collapsed, toggle: toggleWorkspace } = useCollapsedWorkspaces()
 
   const rows = allSessions(tree, activity)
@@ -279,6 +281,9 @@ export function Dashboard({
             <span className="seclabel">AGENTS</span>
             <span className="dash-sec-hint">Most used · last 14 days</span>
             <span className="spacer" />
+            <button className="btn-text dash-meter-toggle" title="Switch usage/time bars between touching and overlay" aria-label="Overlay usage and time bars" aria-pressed={meterLayout === 'overlay'} onClick={() => setMeterLayout((v) => v === 'touching' ? 'overlay' : 'touching')}>
+              {meterLayout === 'touching' ? 'Bars: touching' : 'Bars: overlay'}
+            </button>
             {cards.length > 4 && <button className="btn-text" aria-expanded={showAllAgents} onClick={() => setShowAllAgents((v) => !v)}>
               {showAllAgents ? 'Show fewer' : `Show ${cards.length - 4} more`}
             </button>}
@@ -295,6 +300,7 @@ export function Dashboard({
                 kind={agentKind(agents, id) ?? usage.find((r) => r.agent === id)?.kind ?? ''}
                 known={!!agents[id]}
                 plan={plan[id]}
+                meterLayout={meterLayout}
                 live={rows.filter((r) => r.info.agent === id && r.status === 'running').length}
                 now={now}
               />
@@ -335,7 +341,7 @@ export function Dashboard({
 
 /**
  * One agent instance: whatever usage its own provider actually reports. A
- * claude-code instance on a subscription gets the plan meters; an instance
+ * Claude or Codex instance on a subscription gets the plan meters; an instance
  * whose provider reports nothing (an API key, a kind with no usage surface
  * yet) gets no substitute — gurt's own turn counts measure something else,
  * and here they read as noise.
@@ -346,6 +352,7 @@ function AgentCard({
   kind,
   known,
   plan,
+  meterLayout,
   live,
   now
 }: {
@@ -356,6 +363,7 @@ function AgentCard({
   known: boolean
   /** Provider-reported limits, when this instance has a subscription token. */
   plan: PlanUsage | undefined
+  meterLayout: MeterLayout
   live: number
   now: number
 }) {
@@ -363,8 +371,7 @@ function AgentCard({
     <div className="dash-card">
       <div className="dash-card-head">
         <Icon name={agentIcon(kind)} size={15} />
-        <span className="dash-card-name">{label}</span>
-        <span className="dim">{kind || 'unknown kind'}</span>
+        <span className="dash-card-name" title={`${label} · ${kind || 'unknown kind'}`}>{label}</span>
         <span className="spacer" />
         {live > 0 && (
           <span className="dash-live">
@@ -378,7 +385,7 @@ function AgentCard({
           </span>
         )}
       </div>
-      {plan?.windows.length ? <PlanMeters plan={plan} now={now} /> :
+      {plan?.windows.length ? <PlanMeters plan={plan} now={now} layout={meterLayout} /> :
         <div className="faint">Usage limits unavailable</div>}
     </div>
   )
@@ -391,68 +398,57 @@ function AgentCard({
  * here — the last good read stays up, and only its age going yellow says the
  * numbers have stopped moving.
  */
-function PlanMeters({ plan, now }: { plan: PlanUsage; now: number }): JSX.Element {
-  const age = plan.fetchedAt ? now - Date.parse(plan.fetchedAt) : undefined
-  const stale = age !== undefined && age > STALE_AFTER_MS
+function PlanMeters({ plan, now, layout }: { plan: PlanUsage; now: number; layout: MeterLayout }): JSX.Element {
+  const ids = plan.windows.some((w) => w.id.startsWith('codex_'))
+    ? plan.windows.filter((w) => w.id.startsWith('codex_')).map((w) => w.id)
+    : ['five_hour', 'seven_day']
+  const stale = !!plan.fetchedAt && now - Date.parse(plan.fetchedAt) > STALE_AFTER_MS
   return (
     <div className="dash-plan">
-      <div className="dash-plan-primary">
-        {['five_hour', 'seven_day'].map((id) => {
-          const w = plan.windows.find((window) => window.id === id)
-          return w ? <PlanMeter key={id} w={w} now={now} /> :
-            <div className="dash-plan-row" key={id}><span>{id === 'five_hour' ? '5-hour window' : 'Weekly window'}</span><span className="faint">Not reported</span></div>
-        })}
-      </div>
-      {plan.windows.some((w) => !['five_hour', 'seven_day'].includes(w.id)) && <details className="dash-plan-details">
-        <summary>Other limits</summary>
-        <div className="dash-plan-primary">{plan.windows.filter((w) => !['five_hour', 'seven_day'].includes(w.id)).map((w) => <PlanMeter key={w.id} w={w} now={now} />)}</div>
-      </details>}
-      <div className="dash-plan-foot">
-        <span className="faint">{TIME_ZONE}</span>
-        <span className="spacer" />
-        {plan.fetchedAt && (
-          <span className={stale ? 'yellow' : 'faint'}>
-            updated {relativeTime(plan.fetchedAt)}
-          </span>
-        )}
-      </div>
+      {ids.map((id) => {
+        const w = plan.windows.find((window) => window.id === id)
+        return w ? <PlanMeter key={id} w={w} now={now} layout={layout} stale={stale} /> :
+          <div className="dash-plan-missing" key={id}><span>{id === 'five_hour' ? '5h' : 'week'}</span><span>—</span></div>
+      })}
     </div>
   )
 }
 
-function PlanMeter({ w, now }: { w: PlanWindow; now: number }): JSX.Element {
+/** Keep minute precision even for weekly resets. */
+export function resetCountdown(ms: number): string {
+  if (ms <= 0) return 'due'
+  const minutes = Math.ceil(ms / 60_000)
+  const days = Math.floor(minutes / 1440)
+  const hours = Math.floor(minutes % 1440 / 60)
+  return [days ? `${days}d` : '', hours || days ? `${hours}h` : '', `${minutes % 60}m`].filter(Boolean).join(' ')
+}
+
+function PlanMeter({ w, now, layout, stale }: { w: PlanWindow; now: number; layout: MeterLayout; stale: boolean }): JSX.Element {
   const elapsed = windowElapsedPercent(w, now)
-  const left = w.resetsAt ? Date.parse(w.resetsAt) - now : undefined
-  // Warn well before the wall: past four fifths, the remaining headroom is
-  // what the user is actually deciding against.
-  const tone = w.utilization >= 95 ? 'red' : w.utilization >= 80 ? 'yellow' : 'accent'
+  const reset = w.resetsAt ? Date.parse(w.resetsAt) : NaN
+  const left = reset - now
+  const active = Number.isFinite(left) && left > 0
+  const ahead = elapsed !== undefined && active && !stale ? w.utilization - elapsed : undefined
+  const tone = ahead === undefined ? 'neutral' : ahead > 0 ? 'ahead' : 'within'
+  const comparison = ahead === undefined ? 'Pace unavailable' : ahead > 0 ? `Usage ahead of time by ${Math.round(ahead)} percentage points` : `Usage within elapsed time (${Math.round(-ahead)} percentage points behind)`
+  const detail = `${Math.round(w.utilization)}% used · ${elapsed === undefined ? 'time unknown' : `${Math.round(elapsed)}% time elapsed`} · ${comparison}${stale ? ' · stale data' : ''}`
+  const resetDetail = Number.isFinite(reset) ? `${new Date(reset).toLocaleString()} (${TIME_ZONE})${!active ? ' · awaiting update' : ''}` : 'Reset time not reported'
   return (
     <div className="dash-plan-row">
-      <span className="dash-plan-label">{w.id === 'five_hour' ? '5-hour window' : w.id === 'seven_day' ? 'Weekly window' : w.label}</span>
-      <span className="dash-meter dash-plan-meter" role="progressbar" aria-label={`${w.label}: quota used`} aria-valuenow={w.utilization} aria-valuemin={0} aria-valuemax={100}>
-        <span
-          className={`dash-meter-fill fill-${tone}`}
-          style={{ width: `${Math.min(100, Math.max(0, w.utilization))}%` }}
-        />
-      </span>
-      <span
-        className={`dash-plan-pct ${tone === 'accent' ? '' : tone}`}
-        // SDK reports fractions; the profile endpoint reports percentages.
-        title={`reported utilization: ${w.raw}`}
-      >
-        {Math.round(w.utilization)}% used
-      </span>
-      {elapsed !== undefined && (
-        <div className="dash-plan-elapsed">
-          <span className="dash-meter" role="progressbar" aria-label={`${w.label}: time elapsed`} aria-valuenow={Math.round(elapsed)} aria-valuemin={0} aria-valuemax={100}>
-            <span className="dash-meter-fill fill-time" style={{ width: `${elapsed}%` }} />
-          </span>
-          <span className="faint">{Math.round(elapsed)}% time elapsed</span>
-        </div>
-      )}
-      <span className="dash-plan-reset faint">
-        {w.resetsAt && left !== undefined && Number.isFinite(left) ? (left > 0 ? `Resets ${resetClock(w.resetsAt)} · in ${formatDuration(left)}` : 'Reset due · awaiting update') : 'Reset time not reported'}
-      </span>
+      <div className="dash-plan-legend">
+        <span className="dash-plan-label" title={detail}>{w.id === 'five_hour' ? '5h' : w.id === 'seven_day' ? 'week' : w.label}{stale && <span className="yellow" aria-label="Stale usage"> ·</span>}</span>
+        <span className="dash-plan-reset" title={resetDetail}>
+          {Number.isFinite(reset) ? <>{resetCountdown(left)}<span className="faint"> · {new Date(reset).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })}</span></> : '—'}
+        </span>
+      </div>
+      <div className={`dash-plan-bars ${layout} pace-${tone}`} title={detail}>
+        <span className="dash-plan-time" role="progressbar" aria-label={`${w.label}: time elapsed`} aria-valuenow={elapsed === undefined ? undefined : Math.round(elapsed)} aria-valuetext={elapsed === undefined ? 'Unknown' : `${Math.round(elapsed)}% time elapsed`} aria-valuemin={0} aria-valuemax={100}>
+          <span style={{ width: `${elapsed ?? 0}%` }} />
+        </span>
+        <span className="dash-plan-used" role="progressbar" aria-label={`${w.label}: quota used`} aria-valuenow={w.utilization} aria-valuetext={detail} aria-valuemin={0} aria-valuemax={100}>
+          <span style={{ width: `${Math.min(100, Math.max(0, w.utilization))}%` }} />
+        </span>
+      </div>
     </div>
   )
 }
