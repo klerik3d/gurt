@@ -3874,15 +3874,20 @@ textarea.input {
 }
 .dash-cards {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
-  gap: 12px;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(230px, 1fr);
+  gap: 10px;
+  overflow-x: auto;
+  padding-bottom: 3px;
+  scrollbar-width: thin;
 }
 
 .dash-card {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  padding: 14px 16px 12px;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px 12px;
   background: var(--surface);
   border: 1px solid var(--border2);
   border-radius: 6.667px;
@@ -3894,6 +3899,10 @@ textarea.input {
   font-size: 12.5px;
 }
 .dash-card-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-weight: 500;
 }
 .dash-live {
@@ -3903,22 +3912,6 @@ textarea.input {
   font-size: 11px;
   color: var(--green);
 }
-/* Fill = the provider's reported utilization of the window. */
-.dash-meter {
-  position: relative;
-  height: 6px;
-  border-radius: 2px;
-  background: var(--hover);
-  overflow: hidden;
-}
-.dash-meter-fill {
-  position: absolute;
-  inset: 0 auto 0 0;
-  background: var(--accent);
-  opacity: 0.55;
-  border-radius: 2px;
-}
-
 .dash-row {
   display: flex;
   align-items: center;
@@ -3966,64 +3959,24 @@ textarea.input {
   flex: none;
 }
 
-/* Plan meters: the provider's own utilization, not gurt's estimate. */
-.dash-plan {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-}
-.dash-plan-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 11.5px;
-}
-.dash-plan-label {
-  flex: none;
-  width: 168px;
-  color: var(--dim);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.dash-plan-meter {
-  display: block;
-  flex: 1;
-  min-width: 60px;
-}
-.dash-plan-pct {
-  flex: none;
-  width: 64px;
-  text-align: right;
-  font-family: var(--mono);
-  font-size: 11px;
-}
-.dash-plan-reset {
-  flex: none;
-  /* "resets Aug 20 at 12am" — the longest form this renders. */
-  width: 136px;
-  font-size: 11px;
-  white-space: nowrap;
-}
-.dash-plan-foot {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 10.5px;
-}
-/* Fill tone tracks how close the window is to its limit. */
-.dash-meter-fill.fill-accent {
-  background: var(--accent);
-  opacity: 0.7;
-}
-.dash-meter-fill.fill-yellow {
-  background: var(--yellow);
-  opacity: 0.8;
-}
-.dash-meter-fill.fill-red {
-  background: var(--red);
-  opacity: 0.85;
-}
+/* Two windows per agent; both bars share the full card width and scale. */
+.dash-plan { display: grid; gap: 10px; }
+.dash-plan-row { min-width: 0; }
+.dash-plan-legend, .dash-plan-missing { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 10px; color: var(--dim); }
+.dash-plan-legend { margin-bottom: 4px; font-family: var(--mono); }
+.dash-plan-label { flex: none; }
+.dash-plan-reset { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.dash-plan-bars { position: relative; height: 18px; border-radius: 2px; overflow: hidden; background: var(--hover); --pace-color: var(--dim); }
+.dash-plan-bars.pace-ahead { --pace-color: var(--yellow); }
+.dash-plan-bars.pace-within { --pace-color: var(--green); }
+.dash-plan-time, .dash-plan-used { display: block; height: 9px; }
+.dash-plan-time > span, .dash-plan-used > span { display: block; height: 100%; }
+.dash-plan-time > span { background: var(--accent); opacity: 0.45; border-right: 1px solid var(--accent); }
+.dash-plan-used > span { background: var(--pace-color); opacity: 0.9; }
+.dash-plan-bars.overlay .dash-plan-time { position: absolute; inset: 0; height: 18px; }
+.dash-plan-bars.overlay .dash-plan-used { position: absolute; inset: 5px 0; height: 8px; }
+.dash-meter-toggle { font-size: 10px; color: var(--faint); white-space: nowrap; }
+.dash-card-head > svg, .dash-live { flex: none; }
 
 /* Task groups in the session list. Same fold, same chevron and same collapse
    key as the sidebar's task rows — one task behaves identically in both. */
@@ -4725,34 +4678,6 @@ input, textarea, [contenteditable="true"], pre, code, .msg-text, .msg-sys,
 .diff-line, .diff-code, .split-code, .split-note-text, .xterm, .error, .selectable { user-select: text; }
 button { user-select: none; }
 
-.dash-plan-primary {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
-  gap: 12px;
-}
-.dash-plan-row {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 10px;
-  padding: 14px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-}
-.dash-plan-label { width: auto; white-space: normal; color: var(--text); }
-.dash-plan-pct { grid-column: 2; grid-row: 1; width: auto; font-size: 18px; }
-.dash-plan-meter { grid-column: 1 / -1; grid-row: 2; width: 100%; height: 6px; }
-.dash-plan-reset { grid-column: 1 / -1; width: auto; white-space: normal; line-height: 1.5; }
-.dash-plan-details summary { cursor: pointer; color: var(--dim); padding: 6px 0; font-size: 11px; }
-.dash-plan-elapsed {
-  grid-column: 1 / -1;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 10px;
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-}
-.dash-meter-fill.fill-time { background: var(--dim); opacity: 0.6; }
 .cred-filters { display: flex; gap: 8px; align-items: center; width: 100%; max-width: 520px; margin-bottom: 12px; flex-wrap: wrap; }
 .cred-filter-options { display: flex; align-items: center; gap: 4px; flex: none; }
 .cred-filters .btn { height: 28px; padding: 0 8px; display: inline-flex; align-items: center; justify-content: center; }

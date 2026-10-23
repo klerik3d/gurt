@@ -3461,15 +3461,15 @@ function CredentialsSection() {
           secrets are stored unencrypted — no system keystore available
         </div>
       )}
-      <div className="cred-filters">
-        <div className="cred-filter-options" role="group" aria-label="Credential usage">
-          {(['all', 'unused', 'used'] as const).map((value) => <button key={value} className={`btn btn-xs${filter === value ? ' active' : ''}`} aria-pressed={filter === value} onClick={() => setFilter(value)}>
-            {value === 'all' ? 'All' : value === 'unused' ? 'Unused' : 'In use'}
-          </button>)}
-        </div>
-        <input className="input" aria-label="Search credentials" placeholder="Search name, type, host or usage…" value={query} onChange={(e) => setQuery(e.target.value)} />
-      </div>
       <div className="set-list">
+        <div className="cred-filters">
+          <div className="cred-filter-options" role="group" aria-label="Credential usage">
+            {(['all', 'unused', 'used'] as const).map((value) => <button key={value} className={`btn btn-xs${filter === value ? ' active' : ''}`} aria-pressed={filter === value} onClick={() => setFilter(value)}>
+              {value === 'all' ? 'All' : value === 'unused' ? 'Unused' : 'In use'}
+            </button>)}
+          </div>
+          <input className="input" aria-label="Search credentials" placeholder="Search name, type, host or usage…" value={query} onChange={(e) => setQuery(e.target.value)} />
+        </div>
         {visible.map((c) => {
           if (open !== c.id) {
             if (!c.label.trim()) return null
