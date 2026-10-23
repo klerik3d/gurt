@@ -86,3 +86,13 @@ export const tightest = (windows: PlanWindow[]): PlanWindow | undefined =>
   windows.length
     ? windows.reduce((a, b) => (b.utilization > a.utilization ? b : a))
     : undefined
+
+/** Time progress is only meaningful for windows with a known duration/reset. */
+export function windowElapsedPercent(window: PlanWindow, now: number): number | undefined {
+  const hours = window.id === 'five_hour' ? 5
+    : window.id === 'seven_day' || window.id.startsWith('seven_day_') || window.id === 'weekly_scoped' ? 7 * 24
+      : undefined
+  const reset = window.resetsAt ? Date.parse(window.resetsAt) : NaN
+  if (hours === undefined || !Number.isFinite(reset) || !Number.isFinite(now)) return undefined
+  return Math.min(100, Math.max(0, (1 - (reset - now) / (hours * 60 * 60_000)) * 100))
+}

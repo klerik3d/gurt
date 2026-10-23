@@ -7,7 +7,7 @@ import type { JSX } from 'react'
 import type { RepoChanges, SessionActivity, SessionInfo, Tree } from '../../../shared/types'
 import { sessionStatus } from '../../../shared/types'
 import type { PlanUsage, PlanWindow } from '../../../shared/planUsage'
-import { STALE_AFTER_MS } from '../../../shared/planUsage'
+import { STALE_AFTER_MS, windowElapsedPercent } from '../../../shared/planUsage'
 import type { TurnRecord } from '../../../shared/usage'
 import { formatDuration } from '../../../shared/usage'
 import { SESSION_DOT } from '../status'
@@ -263,7 +263,7 @@ export function Dashboard({
   const ledgerAgents = [...new Set(usage.map((r) => r.agent))].filter((id) => !agents[id])
   const recent = new Map<string, { count: number; last: string }>()
   for (const turn of usage) {
-    if (Date.parse(turn.ts) < now - 30 * 24 * 60 * 60_000) continue
+    if (Date.parse(turn.ts) < now - 14 * 24 * 60 * 60_000) continue
     const previous = recent.get(turn.agent)
     recent.set(turn.agent, { count: (previous?.count ?? 0) + 1, last: turn.ts > (previous?.last ?? '') ? turn.ts : (previous?.last ?? turn.ts) })
   }
@@ -277,7 +277,7 @@ export function Dashboard({
         <section className="dash-section">
           <div className="dash-sec-head">
             <span className="seclabel">AGENTS</span>
-            <span className="dash-sec-hint">Most used · last 30 days</span>
+            <span className="dash-sec-hint">Most used · last 14 days</span>
             <span className="spacer" />
             {cards.length > 4 && <button className="btn-text" aria-expanded={showAllAgents} onClick={() => setShowAllAgents((v) => !v)}>
               {showAllAgents ? 'Show fewer' : `Show ${cards.length - 4} more`}
@@ -421,6 +421,7 @@ function PlanMeters({ plan, now }: { plan: PlanUsage; now: number }): JSX.Elemen
 }
 
 function PlanMeter({ w, now }: { w: PlanWindow; now: number }): JSX.Element {
+  const elapsed = windowElapsedPercent(w, now)
   const left = w.resetsAt ? Date.parse(w.resetsAt) - now : undefined
   // Warn well before the wall: past four fifths, the remaining headroom is
   // what the user is actually deciding against.
@@ -428,7 +429,7 @@ function PlanMeter({ w, now }: { w: PlanWindow; now: number }): JSX.Element {
   return (
     <div className="dash-plan-row">
       <span className="dash-plan-label">{w.id === 'five_hour' ? '5-hour window' : w.id === 'seven_day' ? 'Weekly window' : w.label}</span>
-      <span className="dash-meter dash-plan-meter" role="progressbar" aria-label={w.label} aria-valuenow={w.utilization} aria-valuemin={0} aria-valuemax={100}>
+      <span className="dash-meter dash-plan-meter" role="progressbar" aria-label={`${w.label}: quota used`} aria-valuenow={w.utilization} aria-valuemin={0} aria-valuemax={100}>
         <span
           className={`dash-meter-fill fill-${tone}`}
           style={{ width: `${Math.min(100, Math.max(0, w.utilization))}%` }}
@@ -441,6 +442,14 @@ function PlanMeter({ w, now }: { w: PlanWindow; now: number }): JSX.Element {
       >
         {Math.round(w.utilization)}% used
       </span>
+      {elapsed !== undefined && (
+        <div className="dash-plan-elapsed">
+          <span className="dash-meter" role="progressbar" aria-label={`${w.label}: time elapsed`} aria-valuenow={Math.round(elapsed)} aria-valuemin={0} aria-valuemax={100}>
+            <span className="dash-meter-fill fill-time" style={{ width: `${elapsed}%` }} />
+          </span>
+          <span className="faint">{Math.round(elapsed)}% time elapsed</span>
+        </div>
+      )}
       <span className="dash-plan-reset faint">
         {w.resetsAt && left !== undefined && Number.isFinite(left) ? (left > 0 ? `Resets ${resetClock(w.resetsAt)} · in ${formatDuration(left)}` : 'Reset due · awaiting update') : 'Reset time not reported'}
       </span>

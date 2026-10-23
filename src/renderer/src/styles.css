@@ -4743,7 +4743,19 @@ button { user-select: none; }
 .dash-plan-meter { grid-column: 1 / -1; grid-row: 2; width: 100%; height: 6px; }
 .dash-plan-reset { grid-column: 1 / -1; width: auto; white-space: normal; line-height: 1.5; }
 .dash-plan-details summary { cursor: pointer; color: var(--dim); padding: 6px 0; font-size: 11px; }
-.cred-filters { display: flex; gap: 8px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; }
-.cred-filters .input { flex: 1; min-width: 180px; }
+.dash-plan-elapsed {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.dash-meter-fill.fill-time { background: var(--dim); opacity: 0.6; }
+.cred-filters { display: flex; gap: 8px; align-items: center; width: 100%; max-width: 520px; margin-bottom: 12px; flex-wrap: wrap; }
+.cred-filter-options { display: flex; align-items: center; gap: 4px; flex: none; }
+.cred-filters .btn { height: 28px; padding: 0 8px; display: inline-flex; align-items: center; justify-content: center; }
+.cred-filters .input { flex: 1 1 220px; min-width: 0; width: 100%; height: 28px; padding: 0 8px; margin: 0; font-size: 11px; }
 .cred-usage { display: flex; flex-wrap: wrap; gap: 4px; flex: 1; min-width: 0; }
 .cred-usage .tag { white-space: normal; overflow-wrap: anywhere; }
