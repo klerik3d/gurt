@@ -53,6 +53,8 @@ export interface PlanWindow {
   raw: number
   /** ISO instant the window resets, when reported. */
   resetsAt?: string
+  /** Provider-reported duration; Codex windows need not be 5h or weekly. */
+  durationSeconds?: number
 }
 
 /** What one agent instance's plan looks like right now. */
@@ -93,6 +95,7 @@ export function windowElapsedPercent(window: PlanWindow, now: number): number | 
     : window.id === 'seven_day' || window.id.startsWith('seven_day_') || window.id === 'weekly_scoped' ? 7 * 24
       : undefined
   const reset = window.resetsAt ? Date.parse(window.resetsAt) : NaN
-  if (hours === undefined || !Number.isFinite(reset) || !Number.isFinite(now)) return undefined
-  return Math.min(100, Math.max(0, (1 - (reset - now) / (hours * 60 * 60_000)) * 100))
+  const duration = window.durationSeconds ?? (hours === undefined ? undefined : hours * 3600)
+  if (duration === undefined || !Number.isFinite(duration) || duration <= 0 || !Number.isFinite(reset) || !Number.isFinite(now)) return undefined
+  return Math.min(100, Math.max(0, (1 - (reset - now) / (duration * 1000)) * 100))
 }

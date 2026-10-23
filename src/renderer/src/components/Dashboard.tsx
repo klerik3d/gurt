@@ -39,7 +39,7 @@ function useNow(everyMs = 30_000): number {
 
 /**
  * Provider-reported plan limits. Main polls the endpoint in the background
- * (every 3 minutes per claude-code instance, rate-floored — see
+ * (every 3 minutes per eligible instance, rate-floored — see
  * main/planUsage.ts) and announces each sweep over `usage.changed`, so this
  * only reads the cache: once on mount, then on that signal.
  */
@@ -341,7 +341,7 @@ export function Dashboard({
 
 /**
  * One agent instance: whatever usage its own provider actually reports. A
- * claude-code instance on a subscription gets the plan meters; an instance
+ * Claude or Codex instance on a subscription gets the plan meters; an instance
  * whose provider reports nothing (an API key, a kind with no usage surface
  * yet) gets no substitute — gurt's own turn counts measure something else,
  * and here they read as noise.
@@ -399,10 +399,13 @@ function AgentCard({
  * numbers have stopped moving.
  */
 function PlanMeters({ plan, now, layout }: { plan: PlanUsage; now: number; layout: MeterLayout }): JSX.Element {
+  const ids = plan.windows.some((w) => w.id.startsWith('codex_'))
+    ? plan.windows.filter((w) => w.id.startsWith('codex_')).map((w) => w.id)
+    : ['five_hour', 'seven_day']
   const stale = !!plan.fetchedAt && now - Date.parse(plan.fetchedAt) > STALE_AFTER_MS
   return (
     <div className="dash-plan">
-      {['five_hour', 'seven_day'].map((id) => {
+      {ids.map((id) => {
         const w = plan.windows.find((window) => window.id === id)
         return w ? <PlanMeter key={id} w={w} now={now} layout={layout} stale={stale} /> :
           <div className="dash-plan-missing" key={id}><span>{id === 'five_hour' ? '5h' : 'week'}</span><span>—</span></div>
@@ -433,7 +436,7 @@ function PlanMeter({ w, now, layout, stale }: { w: PlanWindow; now: number; layo
   return (
     <div className="dash-plan-row">
       <div className="dash-plan-legend">
-        <span className="dash-plan-label" title={detail}>{w.id === 'five_hour' ? '5h' : 'week'}{stale && <span className="yellow" aria-label="Stale usage"> ·</span>}</span>
+        <span className="dash-plan-label" title={detail}>{w.id === 'five_hour' ? '5h' : w.id === 'seven_day' ? 'week' : w.label}{stale && <span className="yellow" aria-label="Stale usage"> ·</span>}</span>
         <span className="dash-plan-reset" title={resetDetail}>
           {Number.isFinite(reset) ? <>{resetCountdown(left)}<span className="faint"> · {new Date(reset).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })}</span></> : '—'}
         </span>

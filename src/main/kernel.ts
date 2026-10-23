@@ -24,6 +24,7 @@ import { createNotifications, type Notifications } from './notifications'
 import { createUsageLedger, type UsageLedger } from './usage'
 import { createPlanUsage, type PlanUsageStore } from './planUsage'
 import { listCredentials } from './credentials'
+import { resolveOAuthAccess } from './oauth'
 import { createLogger, dropSessionLog, sessionLogLine } from './log'
 
 const log = createLogger('kernel')
@@ -318,7 +319,13 @@ export function createKernel(): Kernel {
   // touches the network on its own.
   const planUsage = createPlanUsage(bus, {
     agents: () => store.getAgents(),
-    credentials: () => listCredentials()
+    credentials: () => listCredentials(),
+    freshCredential: async (id) => {
+      const access = await resolveOAuthAccess(id)
+      const entry = (await listCredentials()).find((c) => c.id === id)
+      if (!entry) throw new Error('linked credential no longer exists')
+      return { ...entry, data: { ...entry.data, access } }
+    }
   })
 
   // Idle auto-stop policy: a session's container is stopped after it has sat

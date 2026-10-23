@@ -1,4 +1,4 @@
-// Caches subscription limits from live Claude sessions and optional OAuth polls.
+// Caches subscription limits from live Claude sessions and Claude/Codex OAuth polls.
 //
 // Token credentials use rate-limit events from normal session responses.
 // Browser OAuth credentials can also poll the unpublished usage endpoint.
@@ -167,7 +167,34 @@ export function parseClaudeRateLimit(body: unknown): PlanWindow[] {
   return out
 }
 
+/** Codex CLI's /backend-api/wham/usage response (backend-client, v0.160.1).
+ * Only the main quota is shown; code-review and model-specific pools are separate.
+ * Percentages and duration seconds are explicit, never inferred from magnitudes. */
+export function parseCodexPlanWindows(body: unknown): PlanWindow[] {
+  if (!isRecord(body) || !isRecord(body['rate_limit'])) return []
+  const out: PlanWindow[] = []
+  for (const slot of ['primary', 'secondary']) {
+    const value = body['rate_limit'][`${slot}_window`]
+    if (!isRecord(value)) continue
+    const raw = value['used_percent']
+    if (typeof raw !== 'number' || !Number.isFinite(raw) || raw < 0) continue
+    const seconds = value['limit_window_seconds']
+    const durationSeconds = typeof seconds === 'number' && Number.isFinite(seconds) && seconds > 0 ? seconds : undefined
+    const reset = value['reset_at']
+    const at = typeof reset === 'number' && Number.isFinite(reset) && reset > 0 ? new Date(reset * 1000) : undefined
+    const resetsAt = at && Number.isFinite(at.getTime()) ? at.toISOString() : undefined
+    const label = durationSeconds === 604800 ? 'week'
+      : durationSeconds !== undefined && durationSeconds % 3600 === 0 ? `${durationSeconds / 3600}h`
+        : durationSeconds !== undefined ? `${durationSeconds / 60}m` : slot
+    out.push({ id: `codex_${slot}`, label, utilization: Math.min(100, raw), raw,
+      ...(durationSeconds !== undefined ? { durationSeconds } : {}),
+      ...(resetsAt ? { resetsAt } : {}) })
+  }
+  return out
+}
+
 const ENDPOINT = 'https://api.anthropic.com/api/oauth/usage'
+const CODEX_ENDPOINT = 'https://chatgpt.com/backend-api/wham/usage'
 /** The CLI's own timeout for this call. */
 const TIMEOUT_MS = 5_000
 /**
@@ -177,7 +204,7 @@ const TIMEOUT_MS = 5_000
  */
 const MIN_INTERVAL_MS = 60_000
 /**
- * The background cadence: the app polls every claude-code instance on this
+ * The background cadence: the app polls eligible subscription instances on this
  * clock (wired in ipc.ts, not here, so tests that build the store directly
  * don't inherit a live timer). Three minutes keeps the meters within one
  * dashboard glance of current while staying far above the floor.
@@ -204,6 +231,8 @@ export interface PlanUsageDeps {
   credentials: () => Promise<CredentialEntry[]>
   /** Injected by tests; defaults to the platform fetch. */
   fetchImpl?: typeof fetch
+  /** Refresh OAuth and re-read account metadata before a Codex request. */
+  freshCredential?: (id: string) => Promise<CredentialEntry>
   now?: () => number
 }
 
@@ -213,10 +242,15 @@ class FetchUsageError extends Error {
 }
 
 /** One GET, returning the parsed body or throwing with a short reason. */
-async function fetchUsage(secret: string, doFetch: typeof fetch): Promise<unknown> {
-  const res = await doFetch(ENDPOINT, {
+async function fetchUsage(secret: string, doFetch: typeof fetch, codex?: CredentialEntry): Promise<unknown> {
+  const res = await doFetch(codex ? CODEX_ENDPOINT : ENDPOINT, {
     method: 'GET',
-    headers: {
+    headers: codex ? {
+      Authorization: `Bearer ${secret}`,
+      ...(codex.data['accountId'] ? { 'ChatGPT-Account-Id': codex.data['accountId'] } : {}),
+      'User-Agent': 'codex-cli',
+      Accept: 'application/json'
+    } : {
       // An OAuth token rides `Authorization`, never `x-api-key`, and the
       // endpoint sits behind the same oauth beta gate as the rest of that surface.
       Authorization: `Bearer ${secret}`,
@@ -264,12 +298,20 @@ export function createPlanUsage(bus: Bus, deps: PlanUsageDeps): PlanUsageStore {
     bus.emit('usage.changed', undefined)
   })
 
-  async function poll(agent: string, secret: string): Promise<void> {
+  async function poll(agent: string, secret: string, codex?: CredentialEntry): Promise<void> {
     const started = now()
     const previous = cache.get(agent)
     lastAttempt.set(agent, started)
     try {
-      const windows = parsePlanWindows(await fetchUsage(secret, doFetch))
+      if (codex) {
+        codex = deps.freshCredential ? await deps.freshCredential(codex.id) : codex
+        const resolved = resolveAgentSecret([codex], codex.id)
+        if (codex.kind !== 'oauth' || codex.data['provider'] !== 'openai' || resolved.error || !resolved.secret)
+          throw new Error('no ChatGPT sign-in linked')
+        secret = resolved.secret
+      }
+      const body = await fetchUsage(secret, doFetch, codex)
+      const windows = codex ? parseCodexPlanWindows(body) : parsePlanWindows(body)
       // A live response received during this request is the newer snapshot.
       if (cache.get(agent) !== previous) return
       if (!windows.length) {
@@ -292,18 +334,20 @@ export function createPlanUsage(bus: Bus, deps: PlanUsageDeps): PlanUsageStore {
     }
   }
 
-  /** Poll every claude-code instance whose linked secret is a subscription
-   *  token and whose last attempt is past the floor. */
+  /** Poll eligible subscription instances whose last attempt is past the floor. */
   async function refreshAll(): Promise<Record<string, PlanUsage>> {
     const agents = await deps.agents().catch(() => ({}))
     const creds = await deps.credentials().catch(() => [])
     const work: Promise<void>[] = []
     for (const [id, a] of Object.entries(agents)) {
-      // claude-code only: these windows belong to that plan, and every other
-      // kind would collect nothing but 401s.
-      if (a.kind !== 'claude-code') continue
-      const { secret, entry } = resolveAgentSecret(creds, a.credentialId)
-      if (!secret || !isOauthToken(secret)) {
+      if (a.kind !== 'claude-code' && a.kind !== 'codex') continue
+      const { secret, entry, error } = resolveAgentSecret(creds, a.credentialId)
+      const codex = a.kind === 'codex'
+      if (codex && (entry?.kind !== 'oauth' || entry.data['provider'] !== 'openai' || error)) {
+        cache.set(id, { agent: id, windows: [], error: 'no ChatGPT sign-in linked' })
+        continue
+      }
+      if (!codex && (!secret || !isOauthToken(secret))) {
         // Not a failure and not worth retrying: an API-key agent bills per
         // token and has no plan window to report.
         if (!cache.has(id)) patch(id, { error: 'no subscription token linked' })
@@ -311,7 +355,7 @@ export function createPlanUsage(bus: Bus, deps: PlanUsageDeps): PlanUsageStore {
       }
       // setup-token can run inference but lacks user:profile. Its real limits
       // arrive with normal session responses; never poll it into repeated 403s.
-      if (entry?.kind === 'agent-token') {
+      if (!codex && entry?.kind === 'agent-token') {
         if (!cache.has(id)) patch(id, { error: 'waiting for usage from a Claude response' })
         continue
       }
@@ -321,7 +365,7 @@ export function createPlanUsage(bus: Bus, deps: PlanUsageDeps): PlanUsageStore {
         continue
       }
       if (now() - (lastAttempt.get(id) ?? 0) < MIN_INTERVAL_MS) continue
-      const p = poll(id, secret).finally(() => inFlight.delete(id))
+      const p = poll(id, secret, codex ? entry : undefined).finally(() => inFlight.delete(id))
       inFlight.set(id, p)
       work.push(p)
     }
