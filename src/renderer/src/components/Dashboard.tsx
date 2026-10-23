@@ -386,7 +386,7 @@ function AgentCard({
         )}
       </div>
       {plan?.windows.length ? <PlanMeters plan={plan} now={now} layout={meterLayout} /> :
-        <div className="faint">Usage limits unavailable</div>}
+        <div className="dash-usage-unavailable faint" title={plan?.error}>{plan?.error || 'Usage limits unavailable'}</div>}
     </div>
   )
 }

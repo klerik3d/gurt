@@ -306,7 +306,7 @@ export function createPlanUsage(bus: Bus, deps: PlanUsageDeps): PlanUsageStore {
       if (codex) {
         codex = deps.freshCredential ? await deps.freshCredential(codex.id) : codex
         const resolved = resolveAgentSecret([codex], codex.id)
-        if (codex.kind !== 'oauth' || codex.data['provider'] !== 'openai' || resolved.error || !resolved.secret)
+        if (codex.kind !== 'oauth' || codex.data['providerId'] !== 'openai' || resolved.error || !resolved.secret)
           throw new Error('no ChatGPT sign-in linked')
         secret = resolved.secret
       }
@@ -343,8 +343,8 @@ export function createPlanUsage(bus: Bus, deps: PlanUsageDeps): PlanUsageStore {
       if (a.kind !== 'claude-code' && a.kind !== 'codex') continue
       const { secret, entry, error } = resolveAgentSecret(creds, a.credentialId)
       const codex = a.kind === 'codex'
-      if (codex && (entry?.kind !== 'oauth' || entry.data['provider'] !== 'openai' || error)) {
-        cache.set(id, { agent: id, windows: [], error: 'no ChatGPT sign-in linked' })
+      if (codex && (entry?.kind !== 'oauth' || entry.data['providerId'] !== 'openai' || error)) {
+        cache.set(id, { agent: id, windows: [], error: error ?? 'Link a ChatGPT sign-in in Settings → Agents' })
         continue
       }
       if (!codex && (!secret || !isOauthToken(secret))) {

@@ -189,7 +189,7 @@ test('token gate', () => {
 const AGENTS = { work: { kind: 'claude-code', label: 'work', credentialId: 'c1' } }
 const CREDS = [{ id: 'c1', kind: 'agent-token', label: 't', data: { secret: 'sk-ant-oat01-x' } }]
 const OAUTH_CREDS = [{ id: 'c1', kind: 'oauth', label: 't', data: {
-  access: 'sk-ant-oat01-x', refresh: 'refresh', provider: 'anthropic'
+  access: 'sk-ant-oat01-x', refresh: 'refresh', providerId: 'anthropic'
 } }]
 
 function harness({ responses }) {
@@ -380,7 +380,7 @@ const CODEX_USAGE = { rate_limit: {
   secondary_window: { used_percent: 0.7, limit_window_seconds: 604800, reset_at: 1793000000 }
 }, code_review_rate_limit: { primary_window: { used_percent: 99, limit_window_seconds: 604800, reset_at: 1793000000 } } }
 const CODEX_CREDS = [{ id: 'cx-login', kind: 'oauth', label: 'ChatGPT', data: {
-  provider: 'openai', access: 'old-access', refresh: 'refresh', accountId: 'old-account'
+  providerId: 'openai', access: 'old-access', refresh: 'refresh', accountId: 'old-account'
 } }]
 const CODEX_AGENTS = { cx: { kind: 'codex', label: 'Codex', credentialId: 'cx-login' } }
 
@@ -413,7 +413,7 @@ test('Codex missing or malformed data never becomes zero usage or a guessed dura
   assert.equal(invalid.durationSeconds, undefined)
 })
 
-test('Codex polling refreshes auth, uses account headers, coalesces and retains last good limits', async () => {
+test('Codex OAuth providerId reaches polling, refreshes auth and retains last good limits', async () => {
   let clock = 1792700000000
   let calls = 0
   let refreshes = 0
@@ -461,7 +461,7 @@ test('Codex refresh failures stop requests and API keys / other OAuth providers 
   assert.match((await store.get()).cx.error, /sign in again/)
   for (const entry of [
     { ...CODEX_CREDS[0], kind: 'agent-token', data: { secret: 'api-key' } },
-    { ...CODEX_CREDS[0], data: { ...CODEX_CREDS[0].data, provider: 'anthropic' } },
+    { ...CODEX_CREDS[0], data: { ...CODEX_CREDS[0].data, providerId: 'anthropic', provider: 'openai' } },
     { ...CODEX_CREDS[0], data: { ...CODEX_CREDS[0].data, signedOut: 'true' } }
   ]) {
     const skip = createPlanUsage(createBus(), {
@@ -470,4 +470,14 @@ test('Codex refresh failures stop requests and API keys / other OAuth providers 
     })
     assert.deepEqual((await skip.get()).cx.windows, [])
   }
+})
+
+
+test('Codex signed-out credential preserves the actionable sign-in error', async () => {
+  const store = createPlanUsage(createBus(), {
+    agents: async () => CODEX_AGENTS,
+    credentials: async () => [{ ...CODEX_CREDS[0], data: { ...CODEX_CREDS[0].data, signedOut: 'true' } }],
+    fetchImpl: async () => assert.fail('signed-out credential must not be sent')
+  })
+  assert.match((await store.get()).cx.error, /sign in again in Credentials/)
 })
