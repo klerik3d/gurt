@@ -4,7 +4,7 @@
 // tests).
 import { startGc } from './gc'
 import type { DiffTarget, ReviewState, Tree } from '../shared/types'
-import { OPERATOR_ENV_NAME, isSessionRole, targetKey } from '../shared/types'
+import { isBundledEnv, isSessionRole, targetKey } from '../shared/types'
 import type { BootProgress, SessionDraftPatch } from '../shared/api'
 import { NOTIFICATION_DEFAULTS } from '../shared/notifications'
 import { sanitizeSkillSelection } from '../shared/skills'
@@ -115,10 +115,10 @@ async function assertDraftTarget(
   for (const r of repos)
     if (!wsData.repos.some((c) => c.name === r))
       throw new Error(`repo "${r}" is not registered in "${ws}"`)
-  // The bundled operator default resolves by name wherever a workspace env
-  // would — the two share one name space, and the store reserves the name
+  // The bundled envs resolve by name wherever a workspace env would — they
+  // share one name space, and the store reserves their names
   // (docs/requirements-session-operator.md §2.2).
-  if (env !== undefined && env !== OPERATOR_ENV_NAME && !wsData.envs.some((e) => e.name === env))
+  if (env !== undefined && !isBundledEnv(env) && !wsData.envs.some((e) => e.name === env))
     throw new Error(`environment "${env}" is not registered in "${ws}"`)
   if (agent && wsData.deniedAgents?.includes(agent))
     throw new Error(`agent "${agent}" is not allowed in workspace "${ws}"`)

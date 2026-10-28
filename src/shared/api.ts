@@ -14,6 +14,8 @@ import type {
   PromptContext,
   PromptImage,
   RepoChanges,
+  PublishResult,
+  PublishSpec,
   RepoConfig,
   ReviewComment,
   ReviewState,
@@ -123,6 +125,12 @@ export interface GurtApi {
   /** Delete a whole workspace: every task, environment, clone and session goes with it. */
   removeWorkspace(name: string): Promise<void>
   addRepo(ws: string, repo: RepoConfig): Promise<void>
+  /** Create a repo gurt owns — a bare repo with one empty commit under
+   *  `~/.gurt/<ws>/repos/` — and register it (docs/requirements-new-projects.md §2). */
+  createLocalRepo(ws: string, name: string): Promise<RepoConfig>
+  /** Publish a local repo: create it on the forge, push its history, re-point
+   *  every clone, and optionally adopt its devcontainer as an env (§6). */
+  publishRepo(ws: string, name: string, spec: PublishSpec): Promise<PublishResult>
   /** Resolves credentials the same way session clones do (by registered repo,
    *  honoring a repo-linked credential), so it works for private repos too.
    *  When the found config has `build.dockerfile`, the companion Dockerfile is
@@ -302,6 +310,9 @@ export interface GurtApi {
     repo: string,
     strategy: UpdateStrategy
   ): Promise<void>
+  /** Local repos only: fast-forward the local origin's default branch to the
+   *  task branch — their delivery, in place of a pull request. */
+  changesMergeToMain(ws: string, task: string, repo: string): Promise<void>
   /** Newest change proposal for this env, if any — the Commit modal prefills from it. */
   latestProposal(ws: string, task: string, repo: string): Promise<StoredProposal | undefined>
   /** Open the browser at the forge's compare URL (impl: `prUrl` + `shell.openExternal`). */
@@ -509,6 +520,8 @@ const METHODS = {
   createWorkspace: 'none', //   bootstrap (§10); binds the operator's authority
   removeWorkspace: 'none', //   destroys clones and their uncommitted work
   addRepo: 'write',
+  createLocalRepo: 'write', //  addRepo plus the empty bare repo it points at
+  publishRepo: 'none', //       creates a repo on an external forge with a credential
   discoverDevcontainer: 'read', // repo file contents, by the §2.4 exception
   discoverDockerfiles: 'read', //  repo file contents, by the §2.4 exception
   envImageStatus: 'read',
@@ -557,6 +570,7 @@ const METHODS = {
   changesCommit: 'none', //     writes to repos and remotes
   changesPush: 'none', //       writes to repos and remotes
   changesUpdateFromMain: 'none',
+  changesMergeToMain: 'none', // writes to repos and remotes
   latestProposal: 'none', //    repo content
   changesOpenPr: 'none', //     host browser
   changesOpenVscode: 'none', // host GUI

@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import type {
   AgentConfig,
   McpMode,
+  RepoConfig,
   SessionConfigOption,
   SessionInfo,
   SessionMode,
@@ -14,6 +15,7 @@ import type {
 import {
   OPERATOR_ENV_NAME,
   SESSION_ROLES,
+  STARTER_ENV_NAME,
   operatorEnvName,
   roleAllowsMultiRepo,
   roleNeedsRepo,
@@ -233,6 +235,10 @@ function shortRepoUrl(url: string): string {
   return /[:/]([^:/]+\/[^:/]+)$/.exec(cleaned)?.[1] ?? cleaned
 }
 
+/** How a repo reads in a chip: a local repo's url is a storage path nobody
+ *  needs to see, so it goes by its name (docs/requirements-new-projects.md §2). */
+const repoChipLabel = (r: RepoConfig): string => (r.local ? r.name : shortRepoUrl(r.url))
+
 export function ConfigTab({ tree, snapshot }: { tree: Tree | null; snapshot: SessionSnapshot }) {
   if (snapshot.info.state === 'draft' && tree) return <DraftConfig tree={tree} info={snapshot.info} />
   return <LiveConfig snapshot={snapshot} />
@@ -257,6 +263,8 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [picker, setPicker] = useState<'env' | 'repo' | 'client' | 'role' | null>(null)
   const [repoFilter, setRepoFilter] = useState('')
+  // The name being typed for a new local repo; null = not creating one.
+  const [newRepo, setNewRepo] = useState<string | null>(null)
   const [error, setError] = useState('')
 
   const wsData = tree.workspaces.find((w) => w.name === info.workspace)
@@ -323,6 +331,13 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
       setPicker(null)
       return
     }
+    // The starter claims no repo — it exists for whatever repo is picked, a
+    // freshly created one most of all — so picking it keeps the selection.
+    if (name === STARTER_ENV_NAME) {
+      patch({ env: name })
+      setPicker(null)
+      return
+    }
     const def = envs.find((e) => e.name === name)?.repo
     patch({ env: name, repos: def ? [def] : [] })
     setPicker(null)
@@ -363,6 +378,27 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
         ? [...repos, name]
         : [name]
     patch({ repos: next })
+  }
+
+  // A new local repo, made right here and picked at once — and, being new, it
+  // has no devcontainer, so a draft with no env yet gets the starter
+  // (docs/requirements-new-projects.md §5). It is a workspace repo from then
+  // on, offered to every later session like any other.
+  const createRepo = async (): Promise<void> => {
+    const name = (newRepo ?? '').trim()
+    if (!name) return
+    try {
+      const created = await window.gurt.createLocalRepo(info.workspace, name)
+      patch({
+        repos: roleAllowsMultiRepo(role) ? [...repos, created.name] : [created.name],
+        ...(info.env ? {} : { env: STARTER_ENV_NAME })
+      })
+      setNewRepo(null)
+      setRepoFilter('')
+      setPicker(null)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
   }
 
   const mcpMode = (id: string): McpMode | undefined => mcp.find((m) => m.id === id)?.mode
@@ -577,6 +613,23 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
                     <span className="menu-meta mono">bundled default</span>
                   </div>
                 )}
+                {/* The bundled starter (docs/requirements-new-projects.md §3):
+                    image-only, so it runs any repo — a new one with no
+                    devcontainer of its own included. */}
+                {role !== 'operator' && (
+                  <div
+                    className={`menu-item ${info.env === STARTER_ENV_NAME ? 'active' : ''}`}
+                    title="node 22 on Debian 13 (trixie) with git, python3 and build tools — for a project with no devcontainer yet"
+                    onMouseDown={(ev) => {
+                      ev.preventDefault()
+                      pickEnv(STARTER_ENV_NAME)
+                    }}
+                  >
+                    <Icon name="box" size={13} className="dim" style={{ flex: 'none' }} />
+                    {STARTER_ENV_NAME}
+                    <span className="menu-meta mono">bundled</span>
+                  </div>
+                )}
                 {envs.length ? (
                   envs.map((e) => (
                     <div
@@ -592,8 +645,6 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
                       {e.repo && <span className="menu-meta mono">{e.repo}</span>}
                     </div>
                   ))
-                ) : role !== 'operator' ? (
-                  <div className="menu-empty">no environments — add one in Settings → Environments</div>
                 ) : null}
               </>
             }
@@ -629,49 +680,80 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
             onClose={() => {
               setPicker(null)
               setRepoFilter('')
+              setNewRepo(null)
             }}
             menu={
-              allRepos.length ? (
-                <>
-                  {/* Only worth the extra row once there's enough repos that
-                      scanning the list by eye stops being faster than typing. */}
-                  {allRepos.length > 6 && (
-                    <input
-                      autoFocus
-                      type="text"
-                      className="menu-filter"
-                      placeholder="filter repositories…"
-                      value={repoFilter}
-                      onChange={(e) => setRepoFilter(e.target.value)}
-                      onMouseDown={(e) => e.stopPropagation()}
-                      onKeyDown={(e) => e.stopPropagation()}
-                    />
-                  )}
-                  {filteredRepos.length ? (
-                    filteredRepos.map((r) => {
-                      const active = repos.includes(r.name)
-                      return (
-                        <div
-                          key={r.name}
-                          className={`menu-item ${active ? 'active' : ''}`}
-                          onMouseDown={(e) => {
-                            e.preventDefault()
-                            toggleRepo(r.name)
-                          }}
-                        >
-                          <Icon name="branch" size={11} className="faint" style={{ flex: 'none' }} />
-                          <span className="menu-item-name">{r.name}</span>
-                          <span className="menu-meta mono">{shortRepoUrl(r.url)}</span>
-                        </div>
-                      )
-                    })
-                  ) : (
-                    <div className="menu-empty">no repositories match &quot;{repoFilter}&quot;</div>
-                  )}
-                </>
-              ) : (
-                <div className="menu-empty">no repositories — add one in Settings</div>
-              )
+              <>
+                {allRepos.length ? (
+                  <>
+                    {/* Only worth the extra row once there's enough repos that
+                        scanning the list by eye stops being faster than typing. */}
+                    {allRepos.length > 6 && (
+                      <input
+                        autoFocus
+                        type="text"
+                        className="menu-filter"
+                        placeholder="filter repositories…"
+                        value={repoFilter}
+                        onChange={(e) => setRepoFilter(e.target.value)}
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onKeyDown={(e) => e.stopPropagation()}
+                      />
+                    )}
+                    {filteredRepos.length ? (
+                      filteredRepos.map((r) => {
+                        const active = repos.includes(r.name)
+                        return (
+                          <div
+                            key={r.name}
+                            className={`menu-item ${active ? 'active' : ''}`}
+                            onMouseDown={(e) => {
+                              e.preventDefault()
+                              toggleRepo(r.name)
+                            }}
+                          >
+                            <Icon name="branch" size={11} className="faint" style={{ flex: 'none' }} />
+                            <span className="menu-item-name">{r.name}</span>
+                            <span className="menu-meta mono">{r.local ? 'local' : shortRepoUrl(r.url)}</span>
+                          </div>
+                        )
+                      })
+                    ) : (
+                      <div className="menu-empty">no repositories match &quot;{repoFilter}&quot;</div>
+                    )}
+                  </>
+                ) : (
+                  <div className="menu-empty">no repositories yet</div>
+                )}
+                {newRepo === null ? (
+                  <div
+                    className="menu-item"
+                    title="a repository kept by gurt on this machine — no forge needed; publish it later from Settings → Repos"
+                    onMouseDown={(e) => {
+                      e.preventDefault()
+                      setNewRepo('')
+                    }}
+                  >
+                    <Icon name="plus" size={11} className="faint" style={{ flex: 'none' }} />
+                    <span className="menu-item-name">new local repository…</span>
+                  </div>
+                ) : (
+                  <input
+                    autoFocus
+                    type="text"
+                    className="menu-filter"
+                    placeholder="name, then Enter"
+                    value={newRepo}
+                    onChange={(e) => setNewRepo(e.target.value)}
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => {
+                      e.stopPropagation()
+                      if (e.key === 'Enter') void createRepo()
+                      if (e.key === 'Escape') setNewRepo(null)
+                    }}
+                  />
+                )}
+              </>
             }
           >
             {roleAllowsMultiRepo(role) ? (
@@ -686,7 +768,7 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
                 return (
                   <span className="chip-tag" key={name}>
                     <Icon name="branch" size={11} className="faint" style={{ flex: 'none' }} />
-                    {cfg ? shortRepoUrl(cfg.url) : name}
+                    {cfg ? repoChipLabel(cfg) : name}
                   </span>
                 )
               })
@@ -708,7 +790,7 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
                 return (
                   <span className="chip-tag" key={name}>
                     <Icon name="branch" size={11} className="faint" style={{ flex: 'none' }} />
-                    {cfg ? shortRepoUrl(cfg.url) : name}
+                    {cfg ? repoChipLabel(cfg) : name}
                     <span
                       className="chip-x"
                       title="remove"

@@ -30,6 +30,7 @@ import * as store from './store'
 import * as changes from './changes'
 import { normalizeGcSettings } from '../shared/gc'
 import { runGc } from './gc'
+import { createLocalRepo, publishLocalRepo } from './localRepo'
 import { normalizeNotificationPrefs } from '../shared/notifications'
 import { sanitizeHotkeys } from '../shared/hotkeys'
 import { initAppMenu } from './menu'
@@ -169,6 +170,16 @@ export function registerIpc(): void {
     addRepo: async (ws, repo) => {
       await store.addRepo(ws, repo)
       kernel.bus.emit('tree.changed', undefined)
+    },
+    createLocalRepo: async (ws, name) => {
+      const repo = await createLocalRepo(ws, name)
+      kernel.bus.emit('tree.changed', undefined)
+      return repo
+    },
+    publishRepo: async (ws, name, spec) => {
+      const result = await publishLocalRepo(ws, name, spec)
+      kernel.bus.emit('tree.changed', undefined)
+      return result
     },
     discoverDevcontainer: (ws, repo) => discoverDevcontainer(ws, repo),
     discoverDockerfiles: (ws, repo) => discoverDockerfiles(ws, repo),
@@ -325,6 +336,7 @@ export function registerIpc(): void {
     changesPush: (ws, task, repo) => changes.push(ws, task, repo),
     changesUpdateFromMain: (ws, task, repo, strategy) =>
       changes.updateFromMain(ws, task, repo, strategy),
+    changesMergeToMain: (ws, task, repo) => changes.mergeToMain(ws, task, repo),
     latestProposal: async (ws, task, repo) => kernel.sessions.latestProposal(ws, task, repo),
     changesOpenPr: async (ws, task, repo) => {
       await shell.openExternal(await kernel.prUrl(ws, task, repo))

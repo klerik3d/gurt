@@ -257,7 +257,8 @@ async function repoChanges(
     integrated,
     behind,
     conflicted,
-    ...(url ? { prUrl: url } : {})
+    ...(url ? { prUrl: url } : {}),
+    ...(access.mode === 'local' ? { local: true as const } : {})
   }
 }
 
@@ -480,6 +481,35 @@ export async function updateFromMain(
     } else {
       await git(dir, access, ['merge', `origin/${def}`, '--no-edit'], { okCodes: [0, 1] })
     }
+  })
+}
+
+/**
+ * Delivery for a local repo (docs/requirements-new-projects.md §4): with no
+ * forge to open a pull request on, the task branch lands by fast-forwarding the
+ * local origin's default branch to it. Fast-forward only — a branch behind the
+ * default is refused, and "update from main" is the way forward, exactly as a
+ * forge would refuse to merge it without one. Afterwards `origin/<def>` is
+ * HEAD, the thread is empty and reads as integrated.
+ */
+export async function mergeToMain(ws: string, task: string, repo: string): Promise<void> {
+  const dir = cloneDir(ws, task, repo)
+  const access = await hostGitAccessForRepo(ws, repo)
+  if (access.mode !== 'local')
+    throw new Error(`repo "${repo}" has a forge — deliver it through a pull request`)
+  await serialized(dir, async () => {
+    await git(dir, access, ['fetch', 'origin'], { timeoutMs: FETCH_TIMEOUT_MS })
+    const def = await defaultBranch(dir, access)
+    const base = await revParse(dir, access, `origin/${def}`)
+    if (base) {
+      const behind = await git(dir, access, ['rev-list', '--count', `HEAD..origin/${def}`])
+      if (parseInt(behind.trim(), 10) > 0)
+        throw new Error(`${branchFor(task)} is behind ${def} — update from ${def} first`)
+    }
+    await git(dir, access, ['push', 'origin', `HEAD:refs/heads/${def}`], {
+      timeoutMs: PUSH_TIMEOUT_MS
+    })
+    await git(dir, access, ['fetch', 'origin'], { timeoutMs: FETCH_TIMEOUT_MS })
   })
 }
 

@@ -116,8 +116,12 @@ const SAFE_ARGS = new Set([
   'createWorkspace',
   'removeWorkspace',
   'addRepo',
+  'createLocalRepo',
   'updateRepo',
   'removeRepo',
+  // A credential id, forge repo/org names and two flags — no prose, no secret
+  // (the credential is resolved host-side by id).
+  'publishRepo',
   'removeEnv',
   // A workspace and an agent-instance id (or a list of them) — identifiers,
   // not prose.
@@ -168,6 +172,7 @@ const SAFE_ARGS = new Set([
   // Changes panel, minus `changesCommit`: repo keys only.
   'changesPush',
   'changesUpdateFromMain',
+  'changesMergeToMain',
   'changesOpenPr',
   'changesOpenVscode',
   'changesOpenTerminal',

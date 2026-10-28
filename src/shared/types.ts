@@ -122,6 +122,38 @@ export interface RepoConfig {
    * auth and matching operate on the canonical repo identity (see `repoId.ts`).
    */
   credentialId?: string
+  /**
+   * gurt owns this repo's storage: a bare repository it created under
+   * `~/.gurt/<ws>/repos/<name>.git`, which `url` points at
+   * (docs/requirements-new-projects.md §2). Such a repo has no forge yet —
+   * publishing it moves `url` to the forge and drops the flag. Absent = an
+   * ordinary repo the user registered by URL.
+   */
+  local?: true
+}
+
+/** What publishing a local repo asks for (docs/requirements-new-projects.md §6). */
+export interface PublishSpec {
+  /** A `git-token` credential for the forge — it creates the repo, pushes the
+   *  history, and stays linked to the repo afterwards. */
+  credentialId: string
+  /** Repository name on the forge; defaults to the gurt repo's name. */
+  remoteName?: string | undefined
+  /** Organization to create it in; absent = the credential's own account. */
+  owner?: string | undefined
+  private: boolean
+  /** Also turn the repo's own devcontainer (if it has one) into a workspace
+   *  env defaulting to this repo — the "adopt" half of §6. */
+  adoptEnv: boolean
+}
+
+export interface PublishResult {
+  url: string
+  webUrl: string
+  /** Name of the env created from the repo's devcontainer, when one was. */
+  env?: string
+  /** Why no env was created although `adoptEnv` asked for one. */
+  envNote?: string
 }
 
 /**
@@ -162,6 +194,18 @@ export const OPERATOR_ENV_NAME = 'operator'
  *  ordinary session on an ordinary env. */
 export const operatorEnvName = (ws: Pick<WorkspaceFile, 'operatorEnv'>): string =>
   ws.operatorEnv ?? OPERATOR_ENV_NAME
+
+/**
+ * Name of the bundled starter environment (docs/requirements-new-projects.md
+ * §3): an image-only env for a project that has no devcontainer of its own yet.
+ * Code, not user data, exactly like the operator default — and reserved in the
+ * env name space the same way.
+ */
+export const STARTER_ENV_NAME = 'starter'
+
+/** Env names that resolve to a bundled config rather than a workspace entry. */
+export const isBundledEnv = (name: string): boolean =>
+  name === OPERATOR_ENV_NAME || name === STARTER_ENV_NAME
 
 /** <workspace>/workspace.json */
 export interface WorkspaceFile {
@@ -918,6 +962,9 @@ export interface RepoChanges {
   integrated: boolean
   /** Forge compare URL — present only when the origin matches a forge and a commit is pushed. */
   prUrl?: string
+  /** The repo is local to gurt (`RepoConfig.local`): no forge, so the thread
+   *  is delivered by merging into the default branch, not by a pull request. */
+  local?: true
   /** Commits on `<default>` not yet in this branch — the "update from main" signal. */
   behind: number
   /** A prior update-from-main merge left conflicts unresolved (`MERGE_HEAD` present). */

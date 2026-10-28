@@ -40,7 +40,27 @@ export interface ForgeProvider {
    * rejected, so an unverified credential is never stored.
    */
   identity(cred: CredentialEntry, host: string): Promise<GitIdentity>
+  /**
+   * Create an empty repository on the forge as the credential's owner (or in
+   * `owner`, an organization it can create in) — the forge half of publishing a
+   * local repo (docs/requirements-new-projects.md §6). Throws with a readable
+   * message on any refusal; nothing is retried.
+   */
+  createRepo(
+    cred: CredentialEntry,
+    host: string,
+    spec: { name: string; owner?: string | undefined; private: boolean }
+  ): Promise<{ cloneUrl: string; webUrl: string }>
 }
+
+/** The slice of GitHub's create-repository response this reads. */
+const GITHUB_REPO = z.looseObject({
+  clone_url: z.string(),
+  html_url: z.string()
+})
+
+const githubApi = (host: string): string =>
+  host === 'github.com' ? 'https://api.github.com' : `https://${host}/api/v3`
 
 const github: ForgeProvider = {
   id: 'github',
@@ -60,8 +80,7 @@ const github: ForgeProvider = {
     if (cred.kind !== 'git-token')
       throw new Error(`cannot verify a ${cred.kind} credential against github`)
     if (!cred.data['secret']) throw new Error(`credential "${cred.label}": token is empty`)
-    const url =
-      host === 'github.com' ? 'https://api.github.com/user' : `https://${host}/api/v3/user`
+    const url = `${githubApi(host)}/user`
     let res: Response
     try {
       res = await fetch(url, {
@@ -85,6 +104,50 @@ const github: ForgeProvider = {
     // The noreply form github attributes to the account regardless of the
     // profile email's visibility setting.
     return { name: u.name || u.login, email: u.email || `${u.id}+${u.login}@users.noreply.github.com` }
+  },
+  async createRepo(cred, host, spec) {
+    if (cred.kind !== 'git-token' || !cred.data['secret'])
+      throw new Error(`credential "${cred.label}" cannot create repositories on github`)
+    const url = spec.owner
+      ? `${githubApi(host)}/orgs/${encodeURIComponent(spec.owner)}/repos`
+      : `${githubApi(host)}/user/repos`
+    let res: Response
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${cred.data['secret']}`,
+          Accept: 'application/vnd.github+json',
+          'Content-Type': 'application/json',
+          'User-Agent': 'gurt'
+        },
+        // Empty on purpose: no README, no license — the local history is what
+        // gets pushed into it, and an initial commit there would diverge.
+        body: JSON.stringify({ name: spec.name, private: spec.private, auto_init: false })
+      })
+    } catch (e) {
+      throw new Error(
+        `could not reach ${url} — ${e instanceof Error ? e.message : String(e)}`,
+        { cause: e }
+      )
+    }
+    if (!res.ok) {
+      // GitHub explains a refusal (name taken, no org permission, token scope)
+      // in `message` + `errors[].message`; the status alone says little.
+      const body = (await res.json().catch(() => null)) as {
+        message?: unknown
+        errors?: { message?: unknown }[]
+      } | null
+      const detail = [body?.message, ...(body?.errors ?? []).map((e) => e.message)]
+        .filter((m): m is string => typeof m === 'string' && !!m)
+        .join(' — ')
+      throw new Error(
+        `github refused to create "${spec.owner ? `${spec.owner}/` : ''}${spec.name}" ` +
+          `(HTTP ${res.status})${detail ? `: ${detail}` : ''}`
+      )
+    }
+    const repo = GITHUB_REPO.parse(await res.json())
+    return { cloneUrl: repo.clone_url, webUrl: repo.html_url }
   }
 }
 

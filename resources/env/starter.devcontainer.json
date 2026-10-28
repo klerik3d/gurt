@@ -1,0 +1,15 @@
+{
+  // The bundled starter environment (docs/requirements-new-projects.md §3).
+  // Image-only — no build section, so it needs no repository to build from and
+  // starts on an empty one. Offered to every role beside the workspace's own
+  // envs, for the project that has no devcontainer yet.
+  //
+  // node:22-trixie: Debian 13 is the floor, not bookworm. The full variant
+  // rather than the operator's -slim, because it sits on buildpack-deps — git
+  // (the clone is committed to from inside the container), python3, make and a
+  // C toolchain are there out of the box, which is what "just try something"
+  // usually reaches for first. Bump deliberately with gurt
+  // releases, and pin by digest the way resources/env/devcontainer.json does
+  // (`docker manifest inspect node:22-trixie`).
+  "image": "node:22-trixie"
+}
