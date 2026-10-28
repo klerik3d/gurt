@@ -346,7 +346,8 @@ export interface GurtApi {
   sessionRun(id: string): Promise<void>
   sessionEnqueue(id: string): Promise<void>
   sessionCancelQueue(id: string): Promise<void>
-  sessionEditPrompt(id: string, text: string): Promise<void>
+  /** `images` ride with the draft until it starts (held in memory, not persisted). */
+  sessionEditPrompt(id: string, text: string, images?: PromptImage[]): Promise<void>
   /** Rename a session's display title (sidebar/pane header) — cosmetic only. */
   renameSession(id: string, title: string): Promise<void>
   /** Change a draft's settings (agent, repo, mode, MCP, prompt) before it starts. */
