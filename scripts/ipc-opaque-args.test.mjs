@@ -79,6 +79,8 @@ const SAFE_ARGS = new Set([
   // minted by the provider's browser flow, never carried over IPC.
   'firstRunSignIn',
   'firstRunCancelSignIn',
+  'getGcSettings',
+  'gcRunNow',
   'getWelcomeMode',
   'setWelcomeMode',
   'getMcpDefs',
@@ -183,7 +185,8 @@ const SAFE_ARGS = new Set([
   'installUpdate',
   // A map of action id -> key code/booleans; no prose ever passes through it.
   'getHotkeys',
-  'setHotkeys'
+  'setHotkeys',
+  'setGcSettings'
 ])
 
 /**

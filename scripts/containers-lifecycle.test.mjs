@@ -329,7 +329,7 @@ test('release removes the container, clears the record, detaches first', async (
 
   await manager.release('s1', 'session-deleted')
 
-  assert.deepEqual(mutations(), [['rm', '-f', 'c-alpha']], 'the container is removed, once')
+  assert.deepEqual(mutations(), [['rm', '-fv', 'c-alpha']], 'the container is removed, once')
   assert.deepEqual(alive(), [], 'the daemon no longer has it')
   assert.deepEqual(cleared, ['s1'], 'the container record is cleared')
   assert.equal(sessions.get('s1').container, undefined)
@@ -349,12 +349,12 @@ test('teardown is idempotent, and harmless on an unknown session', async () => {
   const before = calls().length
   await manager.release('s1', 'session-deleted')
   await manager.release('s1', 'session-deleted')
-  assert.deepEqual(mutations(), [['rm', '-f', 'c-alpha']], 'a repeat teardown removes nothing new')
+  assert.deepEqual(mutations(), [['rm', '-fv', 'c-alpha']], 'a repeat teardown removes nothing new')
   assert.ok(calls().length > before, 'it still asks the daemon (and finds nothing)')
   assert.deepEqual(alive(), [])
   // A teardown of a session that never existed at all is equally quiet.
   await manager.release('never-existed', 'session-deleted')
-  assert.deepEqual(mutations(), [['rm', '-f', 'c-alpha']])
+  assert.deepEqual(mutations(), [['rm', '-fv', 'c-alpha']])
 })
 
 // ==========================================================================
@@ -369,7 +369,7 @@ test('teardown sweeps by label, not by record', async () => {
   await manager.release('s2', 'session-deleted')
   assert.deepEqual(
     mutations(),
-    [['rm', '-f', 'c-unrecorded']],
+    [['rm', '-fv', 'c-unrecorded']],
     'a container the record never named is still removed'
   )
   assert.deepEqual(alive(), [])
@@ -413,7 +413,7 @@ test('an unreachable daemon does not turn teardown into a no-op', async () => {
     // The proxy has no record to fall back to, so a blind teardown falls back
     // to the name it would have given it — same principle as the recorded id:
     // remove what we can name rather than read silence as "there is nothing".
-    [['rm', '-f', 'c-blind'], ['rm', '-f', 'gurt-proxy-s6']],
+    [['rm', '-fv', 'c-blind'], ['rm', '-fv', 'gurt-proxy-s6']],
     'an unreachable daemon falls back to the recorded id instead of removing nothing'
   )
   assert.deepEqual(cleared, ['s6'], 'the record is cleared either way')
@@ -436,7 +436,7 @@ test('a session dropped mid-teardown does not leak its container', async () => {
   await inflight
   assert.deepEqual(
     mutations(),
-    [['rm', '-f', 'c-race'], ['rm', '-f', 'gurt-proxy-s7']],
+    [['rm', '-fv', 'c-race'], ['rm', '-fv', 'gurt-proxy-s7']],
     'a session deleted mid-teardown still takes its container with it'
   )
   assert.deepEqual(alive(), [])
@@ -582,7 +582,7 @@ test('release takes the proxy and the network with the container', async () => {
   // Ordering is the whole trick: a network with live endpoints refuses to be
   // removed, so everything on it goes (or is disconnected) first.
   const order = calls().filter(
-    (a) => (a[0] === 'rm' && a[1] === '-f') || (a[0] === 'network' && a[1] === 'rm')
+    (a) => (a[0] === 'rm' && a[1] === '-fv') || (a[0] === 'network' && a[1] === 'rm')
   )
   assert.deepEqual(order.map((a) => a[a.length - 1]), ['c-p1', 'proxy-p1', 'gurt-s-p1'])
   assert.equal(fs.existsSync(scopeFile('p1')), false, 'the scope is revoked with it')
@@ -674,7 +674,7 @@ test('reconcile corrects records and reaps orphans', async () => {
   assert.equal(sessions.get('k5').container, undefined, 'a session with no container stays that way')
   assert.deepEqual(
     mutations(),
-    [['rm', '-f', 'c-orphan'], ['rm', '-f', 'proxy-gone']],
+    [['rm', '-fv', 'c-orphan'], ['rm', '-fv', 'proxy-gone']],
     'a container whose session is gone is reaped, with its proxy, and nothing else is'
   )
   assert.deepEqual(

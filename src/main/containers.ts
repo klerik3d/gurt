@@ -1106,6 +1106,32 @@ export class ContainerManager {
     await this.teardown(sessionId, 'remove', reason)
   }
 
+  /** True while any session's container start is running. */
+  isStarting(): boolean {
+    return this.ensureInFlight.size > 0
+  }
+
+  /**
+   * Retention sweep: remove the container of every session that is `stopped`
+   * and for which `expired(id)` says it has sat stopped long enough. The session
+   * and its clone stay; the next start builds a fresh container. A session with
+   * a start in flight is skipped — its record may be about to flip.
+   * Returns how many containers were removed.
+   */
+  async gcStopped(expired: (containerId: string) => Promise<boolean>): Promise<number> {
+    let removed = 0
+    for (const info of this.deps.sessions()) {
+      const c = info.container
+      if (c?.status !== 'stopped' || !c.id || this.ensureInFlight.has(info.id)) continue
+      if (!(await expired(c.id))) continue
+      // Re-read: the await above is long enough for a start to have begun.
+      if (this.container(info.id)?.status !== 'stopped' || this.ensureInFlight.has(info.id)) continue
+      await this.release(info.id, 'gc')
+      removed++
+    }
+    return removed
+  }
+
   /** Stop every container of a task — a rename is about to move its directory,
    *  and a running container's bind mount is pinned to the old path. */
   async stopTask(ws: string, task: string): Promise<void> {

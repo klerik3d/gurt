@@ -120,7 +120,7 @@ test('session delete takes its container down', async () => {
   kernel.sessions.deleteSession(info.id)
 
   assert.ok(
-    await waitForCall(/^rm -f container-a$/),
+    await waitForCall(/^rm -fv container-a$/),
     'deleting the session removes its container'
   )
   assert.equal(kernel.sessions.snapshot(info.id), undefined, 'the session itself is gone')
@@ -166,7 +166,7 @@ test("a container teardown that isn't a delete leaves the history directory in p
   await kernel.containers.release(info2.id, 'user')
 
   assert.ok(
-    await waitForCall(/^rm -f container-b$/),
+    await waitForCall(/^rm -fv container-b$/),
     'the rebuild path removes the old container'
   )
   assert.ok(kernel.sessions.snapshot(info2.id), 'the session itself is untouched')

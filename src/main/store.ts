@@ -38,6 +38,7 @@ import {
   validateSkillDoc
 } from '../shared/skills'
 import type { NotificationPrefs } from '../shared/notifications'
+import { normalizeGcSettings, type GcSettings } from '../shared/gc'
 import type { TurnRecord } from '../shared/usage'
 import { NOTIFICATION_DEFAULTS } from '../shared/notifications'
 import type { HotkeyMap } from '../shared/hotkeys'
@@ -601,6 +602,16 @@ export async function getWelcomeMode(): Promise<WelcomeMode> {
 
 export async function setWelcomeMode(mode: WelcomeMode): Promise<void> {
   await writeJson(welcomeFile(), { mode: sanitizeWelcomeMode(mode) })
+}
+
+const gcFile = () => path.join(gurtRoot, 'gc.json')
+
+export async function getGcSettings(): Promise<GcSettings> {
+  return normalizeGcSettings(await readJson<unknown>(gcFile(), {}))
+}
+
+export async function setGcSettings(settings: GcSettings): Promise<void> {
+  await writeJson(gcFile(), settings)
 }
 
 const hotkeysFile = () => path.join(gurtRoot, 'hotkeys.json')

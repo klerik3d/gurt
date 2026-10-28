@@ -83,7 +83,7 @@ export default function App() {
   const [terminalVisible, setTerminalVisible] = usePreference('terminalVisible', false, z.boolean())
   const [workMode, setWorkMode] = usePreference<'sessions' | 'diff'>('workMode', 'sessions', z.enum(['sessions', 'diff']))
   const [diffFile, setDiffFile] = usePreference<DiffFileSelection | null>('diffFile', null, diffFileSchema)
-  const [settingsSection, setSettingsSection] = usePreference<SettingsSection>('settingsSection', 'environments', z.enum(['environments', 'repos', 'clients', 'agentAccess', 'mcp', 'skills', 'credentials', 'notifications', 'hotkeys', 'machine']))
+  const [settingsSection, setSettingsSection] = usePreference<SettingsSection>('settingsSection', 'environments', z.enum(['environments', 'repos', 'clients', 'agentAccess', 'mcp', 'skills', 'credentials', 'notifications', 'hotkeys', 'machine', 'docker']))
   const [snapshots, setSnapshots] = useState<Record<string, SessionSnapshot>>({})
   const [logs, setLogs] = useState<Record<string, string[]>>({})
   /** Per-task git changes snapshot, keyed `ws/task` — read by TaskPane and the sidebar badge. */

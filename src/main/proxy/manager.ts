@@ -327,7 +327,7 @@ export class ProxyManager {
   private async create(session: string, sink: LogSink): Promise<string> {
     // A container whose label we could not read but whose *name* is ours would
     // fail the run below; it is ours either way, so take it out first.
-    await run('docker', ['rm', '-f', proxyContainerName(session)], () => {}, {
+    await run('docker', ['rm', '-fv', proxyContainerName(session)], () => {}, {
       timeoutMs: DOCKER_TIMEOUT_MS
     }).catch(() => {})
     sink(`proxy: starting ${proxyContainerName(session)}`)
@@ -354,6 +354,10 @@ export class ProxyManager {
         '--tmpfs', '/tmp',
         '--cap-drop', 'ALL',
         '--security-opt', 'no-new-privileges',
+        // The proxy logs to stdout (`docker logs -f` is its tail); without a
+        // cap the json-file driver grows without bound.
+        '--log-opt', 'max-size=10m',
+        '--log-opt', 'max-file=3',
         ...userArgs(),
         PROXY_IMAGE,
         'node', PROXY_SCRIPT_TARGET
@@ -442,7 +446,7 @@ export class ProxyManager {
   }
 
   private async removeContainer(containerId: string, sink: LogSink): Promise<void> {
-    await run('docker', ['rm', '-f', containerId], sink, { timeoutMs: DOCKER_TIMEOUT_MS }).catch(
+    await run('docker', ['rm', '-fv', containerId], sink, { timeoutMs: DOCKER_TIMEOUT_MS }).catch(
       () => {}
     )
   }
