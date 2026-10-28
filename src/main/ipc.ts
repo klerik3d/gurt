@@ -418,7 +418,7 @@ export function registerIpc(): void {
       kernel.sessions.enqueue(id)
     },
     sessionCancelQueue: async (id) => kernel.sessions.cancelQueue(id),
-    sessionEditPrompt: async (id, text) => kernel.sessions.editPrompt(id, text),
+    sessionEditPrompt: async (id, text, images) => kernel.sessions.editPrompt(id, text, images),
     renameSession: async (id, title) => kernel.sessions.renameSession(id, title),
     sessionEditDraft: async (id, patch) => kernel.editDraft(id, patch),
     sessionDuplicate: async (id) => kernel.sessions.duplicateSession(id),

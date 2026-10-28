@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { SessionSnapshot, Tree } from '../../../shared/types'
+import type { PromptImage, SessionSnapshot, Tree } from '../../../shared/types'
 import { roleLocksClone, roleNeedsRepo, sessionRole, sessionStatus } from '../../../shared/types'
 import { agentKind, agentName, useAgents } from '../useAgents'
 import { useMcpEntries, useMcpFailures } from '../useMcp'
@@ -10,7 +10,7 @@ import { SESSION_DOT } from '../status'
 import { Dot } from './icons'
 import { AgentMark, EnvRepoMarks, hasNetMark, McpFailBanner, McpMarks, NetMark, RoleMark } from './tags'
 import { TrafficPanel } from './Network'
-import { Chat } from './Chat'
+import { Chat, ImageThumbs, pastedImages, readImages } from './Chat'
 import { ConfigTab } from './ConfigTab'
 import { SessionMenu, deleteSession, duplicateSession } from './SessionActions'
 import { TabBar, useSessionTab, type SessionTab } from './SessionTabs'
@@ -66,6 +66,10 @@ export function SessionPane({
     />
   )
 }
+
+/** Images pasted into a draft, by session — kept outside React state so they
+ *  survive switching to another session and back (main holds a copy for the start). */
+const draftImages = new Map<string, PromptImage[]>()
 
 function Header({
   snapshot,
@@ -143,6 +147,7 @@ function NonStartedPane({
   const { info } = snapshot
   const mcpFailures = useMcpFailures(sessionId)
   const [text, setText] = useState(info.startPrompt)
+  const [images, setImagesState] = useState<PromptImage[]>(draftImages.get(sessionId) ?? [])
   const [activeTab, setActiveTab] = useSessionTab(sessionId)
   // Run/queue both flip `info.state` away from 'draft', which normally swaps
   // this whole body out on its own — but that swap rides the same IPC round
@@ -153,12 +158,23 @@ function NonStartedPane({
   // Keep the editor in sync when the selection switches to another session.
   useEffect(() => {
     setText(info.startPrompt)
+    setImagesState(draftImages.get(sessionId) ?? [])
     setSubmitting(null)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId])
   useEffect(() => {
     setText(info.startPrompt)
   }, [info.startPrompt])
+
+  /** Images follow the draft to main (memory only) so a queued start has them too. */
+  const setImages = (next: PromptImage[]) => {
+    if (next.length) draftImages.set(sessionId, next)
+    else draftImages.delete(sessionId)
+    setImagesState(next)
+    window.gurt.sessionEditPrompt(sessionId, text, next).catch(logErr('sessionEditPrompt'))
+  }
+  // Unknown capabilities (never-run agent) count as yes; only an agent that said no turns it off.
+  const imageOk = !snapshot.promptCapabilities || snapshot.promptCapabilities.image !== false
 
   const del = async () => {
     if (await deleteSession(info)) onDeleted()
@@ -211,11 +227,19 @@ function NonStartedPane({
             rows={10}
             value={text}
             onChange={(e) => setText(e.target.value)}
+            onPaste={(e) => {
+              if (!imageOk) return
+              const files = pastedImages(e)
+              if (!files.length) return
+              e.preventDefault()
+              void readImages(files).then((added) => added.length && setImages([...images, ...added]))
+            }}
             onBlur={() => {
               if (text !== info.startPrompt)
-                window.gurt.sessionEditPrompt(sessionId, text).catch(logErr('sessionEditPrompt'))
+                window.gurt.sessionEditPrompt(sessionId, text, images).catch(logErr('sessionEditPrompt'))
             }}
           />
+          <ImageThumbs images={images} onRemove={(i) => setImages(images.filter((_, j) => j !== i))} />
           <div className="row-buttons">
             <button
               className="btn btn-primary"
@@ -224,8 +248,9 @@ function NonStartedPane({
               onClick={run(async () => {
                 setSubmitting('run')
                 try {
-                  if (text !== info.startPrompt) await window.gurt.sessionEditPrompt(sessionId, text)
+                  await window.gurt.sessionEditPrompt(sessionId, text, images)
                   await window.gurt.sessionRun(sessionId)
+                  draftImages.delete(sessionId)
                 } catch (e) {
                   await alertDialog(String(e))
                   setSubmitting(null)
@@ -241,8 +266,9 @@ function NonStartedPane({
               onClick={run(async () => {
                 setSubmitting('queue')
                 try {
-                  if (text !== info.startPrompt) await window.gurt.sessionEditPrompt(sessionId, text)
+                  await window.gurt.sessionEditPrompt(sessionId, text, images)
                   await window.gurt.sessionEnqueue(sessionId)
+                  // Main keeps them for the queued start; this copy is only the editor's.
                 } catch (e) {
                   await alertDialog(String(e))
                   setSubmitting(null)

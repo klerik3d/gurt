@@ -28,5 +28,5 @@ export const selectionSchema = z.union([
   z.object({ type: z.literal('session'), id: z.string() }),
   z.object({ type: z.literal('task'), ws: z.string(), task: z.string() })
 ]).nullable()
-export const diffFileSchema = z.object({ ws: z.string(), task: z.string(), repo: z.string(), path: z.string() }).nullable()
+export const diffFileSchema = z.object({ ws: z.string(), task: z.string(), repo: z.string(), path: z.string(), target: z.discriminatedUnion('kind', [z.object({ kind: z.literal('uncommitted') }), z.object({ kind: z.literal('commit'), sha: z.string() })]).optional() }).nullable()
 export { z }

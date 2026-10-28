@@ -295,6 +295,8 @@ interface Session {
   flushedSeq: number
   /** A log flush is awaiting its appendLog — don't start a second one. */
   flushInFlight: boolean
+  /** Images attached to the draft's first prompt (memory only; see `editPrompt`). */
+  startImages?: PromptImage[] | undefined
   /** Folded timeline, updated incrementally via `applyLog` on every append. */
   entries: ChatEntry[]
   nextEntryId: number
@@ -858,10 +860,13 @@ export class SessionManager {
     this.schedulePersist(s.ref)
   }
 
-  editPrompt(sessionId: string, text: string): void {
+  editPrompt(sessionId: string, text: string, images?: PromptImage[]): void {
     const s = this.sessions.get(sessionId)
     if (!s || s.info.state !== 'draft') return
     s.info.startPrompt = text
+    // Kept in memory only: a draft's images are not worth bloating the persisted
+    // session file with megabytes of base64.
+    s.startImages = images?.length ? images : undefined
     this.bus.emit('session.changed', { sessionId })
     this.schedulePersist(s.ref)
   }
@@ -1450,7 +1455,9 @@ export class SessionManager {
       this.bus.emit('tree.changed', undefined)
       this.emitState(s, by)
       this.schedulePersist(s.ref)
-      await this.runPrompt(s, s.info.startPrompt)
+      const startImages = s.startImages
+      s.startImages = undefined
+      await this.runPrompt(s, s.info.startPrompt, undefined, startImages)
     } catch (e) {
       // Deleted while the start was in flight (the user saw the misconfigured
       // session go up and pulled it). The delete already took down everything

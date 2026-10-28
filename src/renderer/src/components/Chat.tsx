@@ -325,7 +325,7 @@ export function Chat({
 
   // The wait indicator is one more icon on the tail strip (a strip of its own
   // when the tail is a text) rather than a row that comes and goes.
-  const blocks = feedBlocks(entries)
+  const blocks = feedBlocks(entries.filter((e) => !isCompleteEcho(e)))
   if (liveTail) {
     const standIn: StripEntry = {
       kind: 'thought',
@@ -455,6 +455,11 @@ const stripTime = (es: StripEntry[]): number | undefined => {
   const last = real[real.length - 1]
   return last ? (last.endAt ?? last.at) : undefined
 }
+
+/** The log line the `complete` tool leaves ("complete: no_changes", …): bookkeeping
+ *  the proposal UI already surfaces, and the call itself shows as a tool icon —
+ *  so it stays in the log but not in the feed. */
+const isCompleteEcho = (e: ChatEntry): boolean => e.kind === 'system' && e.text.startsWith('complete: ')
 
 const isStripEntry = (e: ChatEntry): e is StripEntry => e.kind === 'tool' || e.kind === 'thought'
 
@@ -721,8 +726,47 @@ const basename = (p: string): string => {
 const chipIcon = (path: string): 'branch' | 'folder' | 'file' =>
   path.startsWith('git:') ? 'branch' : path.endsWith('/') ? 'folder' : 'file'
 
+/** Preview thumbnails for attached images, each with a remove button. */
+export function ImageThumbs({ images, onRemove }: { images: PromptImage[]; onRemove: (i: number) => void }) {
+  if (!images.length) return null
+  return (
+    <div className="composer-images">
+      {images.map((img, i) => (
+        <div key={`img-${img.name}-${i}`} className="img-thumb" title={img.name}>
+          <img src={`data:${img.mimeType};base64,${img.data}`} alt={img.name} />
+          <button className="img-x" title="Remove image" onClick={() => onRemove(i)}>
+            <Icon name="x" size={10} />
+          </button>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/** Image files out of a paste event, or an empty list. */
+export function pastedImages(e: React.ClipboardEvent): File[] {
+  return Array.from(e.clipboardData?.items ?? [])
+    .filter((it) => it.kind === 'file' && it.type.startsWith('image/'))
+    .map((it) => it.getAsFile())
+    .filter((f): f is File => f != null)
+}
+
+/** Read image files into prompt images, skipping non-images and unreadable files. */
+export async function readImages(files: File[]): Promise<PromptImage[]> {
+  const out: PromptImage[] = []
+  for (const f of files) {
+    if (!f.type.startsWith('image/')) continue
+    try {
+      out.push({ name: f.name || 'pasted image', mimeType: f.type, data: await fileToBase64(f) })
+    } catch (e) {
+      log.warn('image attach failed', { name: f.name, err: e })
+    }
+  }
+  return out
+}
+
 /** Read a File as bare base64 (no `data:...;base64,` prefix), for an ACP image block. */
-function fileToBase64(file: File): Promise<string> {
+export function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const r = new FileReader()
     // readAsDataURL always yields a string; anything else is a reader that did
@@ -967,15 +1011,7 @@ function Composer({
 
   /** Read image files into attachment chips (shared by the picker and paste). */
   const addImageFiles = async (files: File[]) => {
-    const added: PromptImage[] = []
-    for (const f of files) {
-      if (!f.type.startsWith('image/')) continue
-      try {
-        added.push({ name: f.name || 'pasted image', mimeType: f.type, data: await fileToBase64(f) })
-      } catch (e) {
-        log.warn('image attach failed', { name: f.name, err: e })
-      }
-    }
+    const added = await readImages(files)
     if (added.length) setImages((imgs) => [...imgs, ...added])
   }
 
@@ -988,10 +1024,7 @@ function Composer({
   /** Paste an image straight into the composer (gated on the agent accepting images). */
   const onPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     if (!imageOk) return
-    const files = Array.from(e.clipboardData?.items ?? [])
-      .filter((it) => it.kind === 'file' && it.type.startsWith('image/'))
-      .map((it) => it.getAsFile())
-      .filter((f): f is File => f != null)
+    const files = pastedImages(e)
     if (files.length) {
       e.preventDefault()
       void addImageFiles(files)
@@ -1150,18 +1183,7 @@ function Composer({
           }}
         />
 
-        {images.length > 0 && (
-          <div className="composer-images">
-            {images.map((img, i) => (
-              <div key={`img-${img.name}-${i}`} className="img-thumb" title={img.name}>
-                <img src={`data:${img.mimeType};base64,${img.data}`} alt={img.name} />
-                <button className="img-x" title="Remove image" onClick={() => removeImage(i)}>
-                  <Icon name="x" size={10} />
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
+        <ImageThumbs images={images} onRemove={removeImage} />
 
         <div className="composer-top">
           <textarea
