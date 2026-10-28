@@ -34,7 +34,7 @@ import { ToolStrip, type StripEntry } from './ToolStrip'
 import { TabBar, useSessionTab } from './SessionTabs'
 import { VscodeButton } from './VscodeButton'
 import { run } from '../async'
-import { elapsedClock, stamp } from '../time'
+import { stamp } from '../time'
 
 const log = createLogger('chat')
 
@@ -323,6 +323,21 @@ export function Chat({
         ? null
         : 'thinking…'
 
+  // The wait indicator is one more icon on the tail strip (a strip of its own
+  // when the tail is a text) rather than a row that comes and goes.
+  const blocks = feedBlocks(entries)
+  if (liveTail) {
+    const standIn: StripEntry = {
+      kind: 'thought',
+      id: TAIL_ID,
+      text: liveTail,
+      at: tailSince(sessionId, liveTail, lastEntry)
+    }
+    const tail = blocks[blocks.length - 1]
+    if (tail?.kind === 'strip') tail.entries.push(standIn)
+    else blocks.push({ kind: 'strip', entries: [standIn] })
+  }
+
   // `busy` is the live flag, fresher than the copy on `info`.
   const headDot = SESSION_DOT[sessionStatus({ ...info, busy, seen })]
 
@@ -386,27 +401,20 @@ export function Chat({
             )}
             <div className="feed" ref={feedRef} onScroll={onFeedScroll}>
               <div className="feed-inner" ref={innerRef}>
-                {feedBlocks(entries).map((b) =>
+                {blocks.map((b) =>
                   b.kind === 'strip' ? (
                     <div className="msg msg-tool" key={`s${b.entries[0]!.id}`}>
-                      <MsgTime at={b.entries[b.entries.length - 1]!.endAt ?? b.entries[b.entries.length - 1]!.at} />
+                      <MsgTime at={stripTime(b.entries)} />
                       <span className="msg-dot msg-dot-sm" style={{ background: 'var(--border2)' }} />
                       <ToolStrip
                         entries={b.entries}
                         busy={busy}
-                        liveId={busy ? entries[entries.length - 1]?.id : undefined}
+                        liveId={busy ? (liveTail ? TAIL_ID : entries[entries.length - 1]?.id) : undefined}
                       />
                     </div>
                   ) : (
                     <Msg key={b.entry.id} entry={b.entry} sessionId={sessionId} />
                   )
-                )}
-                {liveTail && (
-                  <ThinkingLive
-                    label={liveTail}
-                    sessionId={sessionId}
-                    since={lastEntry ? (lastEntry.endAt ?? lastEntry.at) : undefined}
-                  />
                 )}
               </div>
             </div>
@@ -437,6 +445,16 @@ export function Chat({
 }
 
 type FeedBlock = { kind: 'strip'; entries: StripEntry[] } | { kind: 'entry'; entry: ChatEntry }
+
+/** Id of the stand-in "thinking" icon shown while the agent works with nothing live on screen. */
+const TAIL_ID = -1
+
+/** End time of a strip, ignoring the stand-in icon. */
+const stripTime = (es: StripEntry[]): number | undefined => {
+  const real = es.filter((e) => e.id !== TAIL_ID)
+  const last = real[real.length - 1]
+  return last ? (last.endAt ?? last.at) : undefined
+}
 
 const isStripEntry = (e: ChatEntry): e is StripEntry => e.kind === 'tool' || e.kind === 'thought'
 
@@ -584,38 +602,16 @@ function Msg({
   }
 }
 
-/** Fallback progress readout for a live row: how long it has been up. Agents
- *  that stream no thinking text give nothing to count tokens from, so without
- *  this the row sits there with no sign of movement — the clock answers the
- *  only question it raises, is this still going. Its own component so the 1s
- *  interval exists only while such a row is on screen. Counts from `since` (a
- *  log timestamp) so remounting — switching session or tab — does not restart
- *  it; without one it falls back to the first time this `key` was seen. */
-const elapsedStarts = new Map<string, number>()
-function Elapsed({ since, id }: { since?: number | undefined; id: string }) {
-  if (!elapsedStarts.has(id)) elapsedStarts.set(id, Date.now())
-  const start = since ?? elapsedStarts.get(id)!
-  const [, tick] = useState(0)
-  useEffect(() => {
-    const t = setInterval(() => tick((n) => n + 1), 1000)
-    return () => clearInterval(t)
-  }, [])
-  return <span>· {elapsedClock(Math.round((Date.now() - start) / 1000))}</span>
-}
-
-/** Live placeholder shown at the tail of the log while the agent is working. */
-function ThinkingLive({ label, since, sessionId }: { label: string; since?: number | undefined; sessionId: string }) {
-  // The fallback key lapses with the label, so a new wait starts a new clock.
-  useEffect(() => () => void elapsedStarts.delete(`${sessionId}:${label}`), [sessionId, label])
-  return (
-    <div className="msg">
-      <span className="msg-dot dot-pulse" style={{ background: 'var(--yellow)' }} />
-      <div className="thought-head mono">
-        {label}
-        <Elapsed since={since} id={`${sessionId}:${label}`} />
-      </div>
-    </div>
-  )
+/** When the agent started waiting on its next move: the last log timestamp, or
+ *  — for logs without one — the first time this wait was seen here. Kept outside
+ *  React so remounting (switching session or tab) does not restart the clock. */
+const tailStarts = new Map<string, number>()
+function tailSince(sessionId: string, label: string, last: ChatEntry | undefined): number {
+  const stamped = last ? (last.endAt ?? last.at) : undefined
+  if (stamped != null) return stamped
+  const key = `${sessionId}:${label}`
+  if (!tailStarts.has(key)) tailStarts.set(key, Date.now())
+  return tailStarts.get(key)!
 }
 
 /** End time of an entry, in the gutter left of the rail. */

@@ -42,7 +42,8 @@ export function stamp(ms: number): { time: string; date?: string } {
   return { time, date: d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) }
 }
 
-/** How long something took (or has taken so far): `<1s`, `12s`, `1:05`. */
+/** How long something took (or has taken so far): `1s`, `12s`, `1:05` — never
+ *  0, so a live readout does not flick from "<1s" to "1s". */
 export function durationLabel(ms: number): string {
-  return ms < 1000 ? '<1s' : elapsedClock(ms / 1000)
+  return elapsedClock(Math.max(1, ms / 1000))
 }
