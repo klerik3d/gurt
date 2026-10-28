@@ -177,6 +177,15 @@ function makeMcpServer(ref: EnvRef, repo: string, dir: string, mode: McpMode): M
       async ({ title, body }) => {
         const access = await requireGitAccess(ref, repo)
         if (isToolResult(access)) return access
+        // Refused before the push, so the call does not half-succeed: a local
+        // repo's origin is a bare repo on this machine, with no forge to open
+        // a pull request on (docs/requirements-new-projects.md §4).
+        if (access.mode === 'local')
+          return errorResult(
+            `repo "${repo}" is local to gurt and not published to a forge yet, so there is ` +
+              'nothing to open a pull request on — use git_push to push to its local origin; ' +
+              'the user can publish it from Settings → Repos'
+          )
         const push = await runTool(
           'git',
           ['-C', dir, ...access.gitArgs, 'push', '-u', 'origin', 'HEAD'],

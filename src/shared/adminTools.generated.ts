@@ -100,7 +100,16 @@ export const ADMIN_TOOLS: readonly AdminToolDef[] = [
     description: "GurtApi.addRepo",
     bindWs: true,
     params: ["repo"],
-    input: { "repo": z.strictObject({ "name": z.string(), "url": z.string(), "credentialId": z.string().optional() }) }
+    input: { "repo": z.strictObject({ "name": z.string(), "url": z.string(), "credentialId": z.string().optional(), "local": z.literal(true).optional() }) }
+  },
+  {
+    name: "create_local_repo",
+    method: "createLocalRepo",
+    exposure: "write",
+    description: "Create a repo gurt owns — a bare repo with one empty commit under\n`~/.gurt/<ws>/repos/` — and register it (docs/requirements-new-projects.md §2).",
+    bindWs: true,
+    params: ["name"],
+    input: { "name": z.string() }
   },
   {
     name: "discover_devcontainer",
@@ -145,7 +154,7 @@ export const ADMIN_TOOLS: readonly AdminToolDef[] = [
     description: "GurtApi.updateRepo",
     bindWs: true,
     params: ["repo"],
-    input: { "repo": z.strictObject({ "name": z.string(), "url": z.string(), "credentialId": z.string().optional() }) }
+    input: { "repo": z.strictObject({ "name": z.string(), "url": z.string(), "credentialId": z.string().optional(), "local": z.literal(true).optional() }) }
   },
   {
     name: "remove_repo",

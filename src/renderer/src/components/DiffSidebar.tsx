@@ -259,6 +259,18 @@ function Repository({ ws, task, repo: r, layout, nav, activePath, onRefresh }: {
           >
             <Icon name="send" size={13} /> Push changes
           </button>
+          {r.local && (
+            <button
+              className="menu-item diff-menu-action"
+              disabled={busy || r.integrated || r.behind > 0 || r.commits.length === 0}
+              onClick={run(async () => {
+                setMenu(null)
+                await act(() => window.gurt.changesMergeToMain(ws, task, r.repo))
+              })}
+            >
+              <Icon name="branch" size={13} /> Merge into {r.defaultBranch}
+            </button>
+          )}
         </RowContextMenu>
       )}
       {committing && (

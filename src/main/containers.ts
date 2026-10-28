@@ -13,7 +13,7 @@ import { clientConfigFile } from '../shared/clientConfig'
 import { spawn } from 'node:child_process'
 import { promises as fs, existsSync } from 'node:fs'
 import type { EnvRef, RepoConfig, SessionContainer, SessionInfo } from '../shared/types'
-import { OPERATOR_ENV_NAME, roleIsReadOnly, roleNeedsRepo, sessionRole } from '../shared/types'
+import { roleIsReadOnly, roleNeedsRepo, sessionRole } from '../shared/types'
 import type { ContainerStatusReason } from '../shared/events'
 import type { AgentDef } from '../shared/agents'
 import { agentDef } from '../shared/agents'
@@ -47,7 +47,7 @@ import {
   SKILLS_MOUNT,
   HISTORY_MOUNT
 } from './provision'
-import { bundledOperatorEnv } from './operatorEnv'
+import { bundledEnv } from './operatorEnv'
 import type { Bus } from './bus'
 import { createLogger, errCtx } from './log'
 import { proxies, type ProxyRuntime } from './proxy/manager'
@@ -395,13 +395,12 @@ export class ContainerManager {
       if (!cfg) throw new Error(`repo "${name}" is not registered in "${info.workspace}"`)
       return cfg
     })
-    // The bundled operator default shares the env name space (its name is
-    // reserved against workspace envs), so it resolves by name exactly where a
-    // workspace env would — no role check: an operator pointed at a workspace
-    // env is an ordinary session on an ordinary env (§2.2).
-    const envCfg =
-      ws.envs.find((e) => e.name === info.env) ??
-      (info.env === OPERATOR_ENV_NAME ? await bundledOperatorEnv() : undefined)
+    // The bundled envs (the operator default, the starter) share the env name
+    // space (their names are reserved against workspace envs), so they resolve
+    // by name exactly where a workspace env would — no role check: an operator
+    // pointed at a workspace env is an ordinary session on an ordinary env
+    // (§2.2), and any role may run on the starter.
+    const envCfg = ws.envs.find((e) => e.name === info.env) ?? (await bundledEnv(info.env))
     if (!envCfg) throw new Error(`env "${info.env}" is not registered in "${info.workspace}"`)
 
     // A container this session owns but can no longer use — it was built for a

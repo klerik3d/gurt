@@ -50,7 +50,12 @@ tree is never polluted with gurt files.
 
 - **workspace** — top-level divider, a directory in `~/.gurt/<ws>/`
 - **repo** — registered per workspace: git URL + optional credential link;
-  add/edit/delete via Settings → Repos
+  add/edit/delete via Settings → Repos. A **local** repo is one gurt created
+  itself — a bare repo under `~/.gurt/<ws>/repos/`, made from the draft's repo
+  picker ("new local repository…") or Settings — for a project with no forge
+  yet: tasks deliver into it with **Merge into main**, and **Publish to
+  GitHub…** later moves it to a forge, adopting its devcontainer as an env.
+  See [docs/requirements-new-projects.md](docs/requirements-new-projects.md)
 - **agent** — an instance of a built-in kind (claude code / codex / gemini /
   opencode / pi).
   The registry starts empty; add instances as needed via ⚙ in the sidebar. Each
@@ -62,6 +67,9 @@ tree is never polluted with gurt files.
   entirely in gurt and seeded from the repo's own files (then edited in gurt —
   the repo is never the source of truth at runtime). It is a template, not an
   instance: any number of sessions may run the same env at once.
+  Two envs are bundled rather than defined: `operator` (see the operator role) and
+  `starter` — `node:22-trixie`, image-only, offered to every role for a repo
+  that has no devcontainer yet.
 - **container** — owned by exactly one session, 1:1. Created at that session's
   first start, stopped when it goes idle, destroyed with it; never shared with
   or inherited by another session. Docker is the registry (every container

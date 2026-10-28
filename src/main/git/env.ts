@@ -13,6 +13,10 @@
 //   blocked — implicit resolution, a resolution error, or an unimplemented
 //             kind: credential helpers reset, ambient ssh blocked; local git
 //             still works, network auth fails cleanly.
+//   local   — a gurt-owned local repo (`RepoConfig.local`): origin is a bare
+//             repo on this machine, so there is no auth to resolve at all. The
+//             same reset config as blocked, but remote verbs are *allowed* —
+//             pull and push are file operations (docs/requirements-new-projects.md §4).
 //
 // Config rides in `gitArgs` (`-c` argv entries, before the subcommand), NOT in
 // GIT_CONFIG_* env: host gits can predate 2.31 and silently ignore the env
@@ -34,7 +38,7 @@ import {
 import { ensureHostCredHelper } from './shims'
 import { ensureHostCredBroker } from './hostCredBroker'
 
-export type HostGitMode = 'managed' | 'ambient' | 'blocked'
+export type HostGitMode = 'managed' | 'ambient' | 'blocked' | 'local'
 
 export interface HostGitAccess {
   mode: HostGitMode
@@ -74,6 +78,14 @@ export async function hostGitAccess(
   repo: RepoConfig,
   credentials: CredentialEntry[]
 ): Promise<HostGitAccess> {
+  if (repo.local)
+    return {
+      mode: 'local',
+      env: { ...baseEnv(), GIT_SSH_COMMAND: BLOCKED_SSH_COMMAND },
+      gitArgs: gitConfigArgs(blockedPairs),
+      host: null,
+      resolution: null
+    }
   const host = canonicalRepoId(repo.url)?.host ?? null
   // Unparseable URL: nothing to resolve against — local ops fine, remote blocked.
   if (!host) return blocked(null, null, `repo URL "${repo.url}" has no recognizable git host`)

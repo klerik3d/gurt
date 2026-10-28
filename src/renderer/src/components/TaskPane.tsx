@@ -481,6 +481,25 @@ function ChangesSection({
                     Create PR
                   </button>
                 )}
+                {/* A local repo has no forge to open a pull request on: its
+                    thread lands by fast-forwarding the default branch
+                    (docs/requirements-new-projects.md §4). */}
+                {r.local && (
+                  <button
+                    className="btn btn-sm"
+                    disabled={busyRepos.has(r.repo) || r.behind > 0}
+                    title={
+                      r.behind > 0
+                        ? `behind ${r.defaultBranch} — update from it first`
+                        : `fast-forward ${r.defaultBranch} to ${task}`
+                    }
+                    onClick={run(() =>
+                      act(r.repo, () => window.gurt.changesMergeToMain(ws, task, r.repo))
+                    )}
+                  >
+                    Merge into {r.defaultBranch}
+                  </button>
+                )}
               </div>
             </div>
           )}

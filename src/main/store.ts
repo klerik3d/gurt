@@ -23,7 +23,7 @@ import type {
 } from '../shared/types'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import type { McpRegistryEntry } from '../shared/mcp'
-import { OPERATOR_ENV_NAME } from '../shared/types'
+import { OPERATOR_ENV_NAME, STARTER_ENV_NAME } from '../shared/types'
 import { sanitizeWelcomeMode, type WelcomeMode } from '../shared/doctor'
 import { agentDef } from '../shared/agents'
 import { defaultAgentConfig } from '../shared/agentConfig'
@@ -96,6 +96,13 @@ export const overrideConfigPath = (ws: string, env: string) =>
 export const skillsDir = (ws: string) => path.join(gurtRoot, ws, 'skills')
 export const skillDir = (ws: string, name: string) => path.join(skillsDir(ws), name)
 
+/** Bare storage of the workspace's local repos (`RepoConfig.local`,
+ *  docs/requirements-new-projects.md §2): a sibling of `skills/`, and `repos`
+ *  is a reserved task name for the same reason `skills` is. */
+export const localReposDir = (ws: string) => path.join(gurtRoot, ws, 'repos')
+export const localRepoDir = (ws: string, name: string) =>
+  path.join(localReposDir(ws), `${name}.git`)
+
 /** Per-session scratch: everything gurt stages for one session's container and
  *  nothing else, removed with the session (`deleteSessionScratch`). Holds the
  *  wrapper workspace dir, the merged devcontainer config, and the materialized
@@ -153,16 +160,17 @@ export async function ensureSessionHistory(
  *  Compared case-insensitively (macOS default FS is case-insensitive). */
 const RESERVED_NAMES: Record<string, string[]> = {
   workspace: ['agents.json', 'credentials.json', 'agent-config-cache.json'],
-  task: ['workspace.json', '.devcontainers', 'skills'],
+  task: ['workspace.json', '.devcontainers', 'skills', 'repos'],
   repo: ['task.json', 'sessions.json', 'review.json', 'sessions', '.multirepo'],
-  // Env names become `.devcontainers/<env>.json`, and one name is spoken for:
-  // the bundled operator env shares the env name space, so a workspace env may
-  // not take its name (docs/requirements-session-operator.md §2.2).
-  env: [OPERATOR_ENV_NAME]
+  // Env names become `.devcontainers/<env>.json`, and the bundled envs' names
+  // are spoken for: they share the env name space, so a workspace env may not
+  // take them (docs/requirements-session-operator.md §2.2,
+  // docs/requirements-new-projects.md §3).
+  env: [OPERATOR_ENV_NAME, STARTER_ENV_NAME]
 }
 
 /** Names become path segments on disk, so reject anything that isn't a single, safe segment. */
-function validateName(kind: string, name: string): void {
+export function validateName(kind: string, name: string): void {
   const n = name.trim()
   if (!n) throw new Error(`${kind} name must not be empty`)
   if (n === '.' || n === '..' || /[/\\]/.test(n))
@@ -655,10 +663,11 @@ export async function getWorkspace(ws: string): Promise<WorkspaceFile> {
   const raw = await readJson<Partial<WorkspaceFile> | null>(file, null)
   if (!raw) return { repos: [], envs: [] }
   const legacyRepos = (raw.repos ?? []) as LegacyRepo[]
-  const repos: RepoConfig[] = legacyRepos.map(({ name, url, credentialId }) => ({
+  const repos: RepoConfig[] = legacyRepos.map(({ name, url, credentialId, local }) => ({
     name,
     url,
-    ...(credentialId ? { credentialId } : {})
+    ...(credentialId ? { credentialId } : {}),
+    ...(local === true ? { local } : {})
   }))
   let migrated = !Array.isArray(raw.envs)
   const envs: EnvConfig[] = Array.isArray(raw.envs)
@@ -724,6 +733,11 @@ function editWorkspace<T>(ws: string, fn: () => Promise<T>): Promise<T> {
 export function addRepo(ws: string, repo: RepoConfig): Promise<void> {
   return editWorkspace(ws, async () => {
     validateName('repo', repo.name)
+    // `local` is gurt's own claim on the storage, never a caller's: it is only
+    // accepted for the bare repo `createLocalRepo` has just made at its fixed
+    // path — what `removeRepo` will later delete has to be gurt's to delete.
+    if (repo.local && (repo.url !== localRepoDir(ws, repo.name) || !existsSync(repo.url)))
+      throw new Error(`repo "${repo.name}": only gurt creates local repos — use createLocalRepo`)
     const data = await getWorkspace(ws)
     if (data.repos.some((r) => r.name === repo.name))
       throw new Error(`repo "${repo.name}" already exists in "${ws}"`)
@@ -737,10 +751,38 @@ export function updateRepo(ws: string, repo: RepoConfig): Promise<void> {
   return editWorkspace(ws, async () => {
     const data = await getWorkspace(ws)
     const i = data.repos.findIndex((r) => r.name === repo.name)
-    if (i < 0) throw new Error(`repo "${repo.name}" not found in "${ws}"`)
-    data.repos[i] = repo
+    const prev = data.repos[i]
+    if (!prev) throw new Error(`repo "${repo.name}" not found in "${ws}"`)
+    // A local repo's url is its storage path and the flag is gurt's: an edit
+    // keeps both whatever it sends (the form has no field for either), and no
+    // edit can make an ordinary repo local. Publishing is the one way out of
+    // local, and it does not come through here.
+    const { local: _local, ...rest } = repo
+    data.repos[i] = prev.local ? { ...rest, url: prev.url, local: true } : rest
     await saveWorkspace(ws, data)
     await journal(`repo "${repo.name}": updated`, 'updateRepo', `${ws}/repo/${repo.name}`)
+  })
+}
+
+/**
+ * The one way out of `local` (docs/requirements-new-projects.md §6): the entry
+ * takes its forge url and credential and drops the flag. `updateRepo` refuses
+ * to do this on purpose — only the publish flow, which has just pushed the
+ * whole history there, may say the repo now lives on the forge.
+ */
+export function markRepoPublished(
+  ws: string,
+  name: string,
+  url: string,
+  credentialId: string
+): Promise<void> {
+  return editWorkspace(ws, async () => {
+    const data = await getWorkspace(ws)
+    const i = data.repos.findIndex((r) => r.name === name)
+    if (!data.repos[i]?.local) throw new Error(`repo "${name}" is not a local repo in "${ws}"`)
+    data.repos[i] = { name, url, credentialId }
+    await saveWorkspace(ws, data)
+    await journal(`repo "${name}": published`, 'publishRepo', `${ws}/repo/${name}`)
   })
 }
 
@@ -783,8 +825,12 @@ export function removeRepo(ws: string, repo: string): Promise<void> {
     const used = await tasksUsingRepo(ws, repo)
     if (used.length)
       throw new Error(`repo "${repo}" has a clone in task(s): ${used.join(', ')} — delete those tasks first`)
+    const local = data.repos.find((r) => r.name === repo)?.local
     data.repos = data.repos.filter((r) => r.name !== repo)
     await saveWorkspace(ws, data)
+    // A local repo's bare storage goes with it — it is gurt's, and nothing else
+    // would ever find it again. No clone of it survives (refused above).
+    if (local) await rmTree(localRepoDir(ws, repo))
     await journal(`repo "${repo}": removed`, 'removeRepo', `${ws}/repo/${repo}`)
   })
 }

@@ -10,7 +10,7 @@ import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { EnvConfig } from '../shared/types'
-import { OPERATOR_ENV_NAME } from '../shared/types'
+import { OPERATOR_ENV_NAME, STARTER_ENV_NAME } from '../shared/types'
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url))
 
@@ -41,4 +41,30 @@ export async function bundledOperatorEnv(): Promise<EnvConfig> {
     name: OPERATOR_ENV_NAME,
     devcontainer: await fs.readFile(operatorEnvPath(), 'utf8')
   }
+}
+
+/** Host path of the bundled starter env (docs/requirements-new-projects.md
+ *  §3) — the same resolution as `operatorEnvPath()`, with its own test seam. */
+export function starterEnvPath(): string {
+  const override = process.env['GURT_STARTER_ENV']
+  if (override) return override
+  return path
+    .join(moduleDir, '..', '..', 'resources', 'env', 'starter.devcontainer.json')
+    .replace(`${path.sep}app.asar${path.sep}`, `${path.sep}app.asar.unpacked${path.sep}`)
+}
+
+/** The bundled starter env as an `EnvConfig` — image-only, read fresh. */
+export async function bundledStarterEnv(): Promise<EnvConfig> {
+  return {
+    name: STARTER_ENV_NAME,
+    devcontainer: await fs.readFile(starterEnvPath(), 'utf8')
+  }
+}
+
+/** The bundled env of this name, or undefined when the name is not one. Every
+ *  place a session's env is resolved asks this after the workspace registry. */
+export async function bundledEnv(name: string): Promise<EnvConfig | undefined> {
+  if (name === OPERATOR_ENV_NAME) return bundledOperatorEnv()
+  if (name === STARTER_ENV_NAME) return bundledStarterEnv()
+  return undefined
 }
