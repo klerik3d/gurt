@@ -325,7 +325,7 @@ export function Chat({
 
   // The wait indicator is one more icon on the tail strip (a strip of its own
   // when the tail is a text) rather than a row that comes and goes.
-  const blocks = feedBlocks(entries)
+  const blocks = feedBlocks(entries.filter((e) => !isCompleteEcho(e)))
   if (liveTail) {
     const standIn: StripEntry = {
       kind: 'thought',
@@ -455,6 +455,11 @@ const stripTime = (es: StripEntry[]): number | undefined => {
   const last = real[real.length - 1]
   return last ? (last.endAt ?? last.at) : undefined
 }
+
+/** The log line the `complete` tool leaves ("complete: no_changes", …): bookkeeping
+ *  the proposal UI already surfaces, and the call itself shows as a tool icon —
+ *  so it stays in the log but not in the feed. */
+const isCompleteEcho = (e: ChatEntry): boolean => e.kind === 'system' && e.text.startsWith('complete: ')
 
 const isStripEntry = (e: ChatEntry): e is StripEntry => e.kind === 'tool' || e.kind === 'thought'
 
