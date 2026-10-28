@@ -48,6 +48,9 @@ export type IconName =
   | 'list'
   | 'tree'
   | 'check'
+  | 'edit'
+  | 'think'
+  | 'move'
 
 const PATHS: Record<IconName, JSX.Element> = {
   list: (
@@ -333,7 +336,26 @@ const PATHS: Record<IconName, JSX.Element> = {
       <line x1="12" y1="7.6" x2="12.01" y2="7.6" />
     </>
   ),
-  check: <polyline points="4 12 10 18 20 6" />
+  check: <polyline points="4 12 10 18 20 6" />,
+  edit: (
+    <>
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+    </>
+  ),
+  think: (
+    <>
+      <path d="M9 18h6" />
+      <path d="M10 21h4" />
+      <path d="M12 3a6 6 0 0 0-4 10.5c.7.7 1 1.5 1 2.5h6c0-1 .3-1.8 1-2.5A6 6 0 0 0 12 3Z" />
+    </>
+  ),
+  move: (
+    <>
+      <line x1="4" y1="12" x2="20" y2="12" />
+      <polyline points="14 6 20 12 14 18" />
+    </>
+  )
 }
 
 /** Icons drawn as a solid mark (currentColor fill) rather than a stroke outline. */

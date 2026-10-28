@@ -4,7 +4,6 @@ import remarkGfm from 'remark-gfm'
 import type {
   ChatEntry,
   ChatPermission,
-  ChatToolCall,
   CommandInfo,
   PendingPromptInfo,
   PlanEntry,
@@ -31,10 +30,11 @@ import { AgentMark, EnvRepoMarks, hasNetMark, McpFailBanner, McpMarks, NetMark, 
 import { NetButton } from './Network'
 import { ConfigTab } from './ConfigTab'
 import { SessionMenu } from './SessionActions'
+import { ToolStrip, type StripEntry } from './ToolStrip'
 import { TabBar, useSessionTab } from './SessionTabs'
 import { VscodeButton } from './VscodeButton'
 import { run } from '../async'
-import { elapsedClock } from '../time'
+import { elapsedClock, stamp } from '../time'
 
 const log = createLogger('chat')
 
@@ -71,6 +71,40 @@ const PIN_BAR_CLEARANCE = 36
  *  doesn't leak an entry per session for the life of the app. */
 const composerDrafts = new Map<string, { text: string; chips: PromptContext[]; images: PromptImage[] }>()
 
+/** Entry times the session log did not carry — a main process that predates
+ *  stamping, or a session recorded before it. Entries that show up after this
+ *  session was first loaded here are timed by when the renderer saw them; the
+ *  ones already in the log stay untimed rather than claim a time they never had. */
+const seenTimes = new Map<string, { at: number; endAt?: number; len: number; status?: string }>()
+const baselines = new Map<string, number>()
+function useEntryTimes(sessionId: string, raw: ChatEntry[] | undefined): ChatEntry[] {
+  const entries = raw ?? []
+  if (!raw) return entries
+  if (!baselines.has(sessionId)) baselines.set(sessionId, entries.reduce((m, e) => Math.max(m, e.id), -1))
+  const baseline = baselines.get(sessionId)!
+  const now = Date.now()
+  return entries.map((e) => {
+    if (e.at != null || e.id <= baseline) return e
+    const key = `${sessionId}:${e.id}`
+    const len = 'text' in e ? e.text.length : 0
+    const status = e.kind === 'tool' ? e.status : undefined
+    const seen = seenTimes.get(key)
+    if (!seen) seenTimes.set(key, { at: now, len, ...(status ? { status } : {}) })
+    else {
+      if (len !== seen.len) {
+        seen.len = len
+        seen.endAt = now
+      }
+      if (status !== seen.status) {
+        seen.status = status as string
+        if (status === 'completed' || status === 'failed') seen.endAt = now
+      }
+    }
+    const t = seenTimes.get(key)!
+    return { ...e, at: t.at, ...(t.endAt != null && e.endAt == null ? { endAt: t.endAt } : {}) }
+  })
+}
+
 export function Chat({
   tree,
   snapshot,
@@ -102,8 +136,8 @@ export function Chat({
   const mcpOffered = useMcpEntries(snapshot?.info.workspace)
   const mcpFailures = useMcpFailures(sessionId)
 
-  const entries = snapshot?.entries ?? []
   const hasSnapshot = !!snapshot
+  const entries = useEntryTimes(sessionId, snapshot?.entries)
   // Real usage (ACP `usage_update`) wins when the adapter sends it; otherwise fall
   // back to a rough word-count estimate over the log — not every adapter reports
   // usage yet (e.g. codex-acp).
@@ -352,10 +386,28 @@ export function Chat({
             )}
             <div className="feed" ref={feedRef} onScroll={onFeedScroll}>
               <div className="feed-inner" ref={innerRef}>
-                {entries.map((e, i) => (
-                  <Msg key={e.id} entry={e} sessionId={sessionId} live={busy && i === entries.length - 1} />
-                ))}
-                {liveTail && <ThinkingLive label={liveTail} />}
+                {feedBlocks(entries).map((b) =>
+                  b.kind === 'strip' ? (
+                    <div className="msg msg-tool" key={`s${b.entries[0]!.id}`}>
+                      <MsgTime at={b.entries[b.entries.length - 1]!.endAt ?? b.entries[b.entries.length - 1]!.at} />
+                      <span className="msg-dot msg-dot-sm" style={{ background: 'var(--border2)' }} />
+                      <ToolStrip
+                        entries={b.entries}
+                        busy={busy}
+                        liveId={busy ? entries[entries.length - 1]?.id : undefined}
+                      />
+                    </div>
+                  ) : (
+                    <Msg key={b.entry.id} entry={b.entry} sessionId={sessionId} />
+                  )
+                )}
+                {liveTail && (
+                  <ThinkingLive
+                    label={liveTail}
+                    sessionId={sessionId}
+                    since={lastEntry ? (lastEntry.endAt ?? lastEntry.at) : undefined}
+                  />
+                )}
               </div>
             </div>
           </div>
@@ -382,6 +434,24 @@ export function Chat({
       )}
     </div>
   )
+}
+
+type FeedBlock = { kind: 'strip'; entries: StripEntry[] } | { kind: 'entry'; entry: ChatEntry }
+
+const isStripEntry = (e: ChatEntry): e is StripEntry => e.kind === 'tool' || e.kind === 'thought'
+
+/** Fold each run of consecutive tool calls / thoughts into one strip, so the
+ *  feed reads as texts with a single icon row between them. */
+function feedBlocks(entries: ChatEntry[]): FeedBlock[] {
+  const out: FeedBlock[] = []
+  for (const e of entries) {
+    if (isStripEntry(e)) {
+      const last = out[out.length - 1]
+      if (last?.kind === 'strip') last.entries.push(e)
+      else out.push({ kind: 'strip', entries: [e] })
+    } else out.push({ kind: 'entry', entry: e })
+  }
+  return out
 }
 
 /** Sticky one-line echo of the user's last request. Shown only while the real
@@ -470,17 +540,16 @@ function CodeBlock({ node: _node, ...rest }: React.ComponentPropsWithoutRef<'pre
 
 function Msg({
   entry,
-  sessionId,
-  live
+  sessionId
 }: {
   entry: ChatEntry
   sessionId: string
-  live?: boolean | undefined
 }) {
   switch (entry.kind) {
     case 'user':
       return (
         <div className="msg msg-user" data-eid={entry.id}>
+          <MsgTime at={entry.at} />
           <span className="msg-dot msg-dot-user" />
           <div className="msg-you seclabel">YOU</div>
           <div className="msg-text user">{entry.text}</div>
@@ -489,6 +558,7 @@ function Msg({
     case 'agent':
       return (
         <div className="msg">
+          <MsgTime at={entry.endAt ?? entry.at} />
           <span className="msg-dot" style={{ background: 'var(--accent)' }} />
           <div className="msg-text markdown">
             <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ pre: CodeBlock }}>
@@ -498,14 +568,15 @@ function Msg({
         </div>
       )
     case 'thought':
-      return <ThoughtMsg text={entry.text} live={live} />
     case 'tool':
-      return <ToolMsg entry={entry} />
+      // Grouped into a `ToolStrip` by the feed; never rendered on their own.
+      return null
     case 'permission':
       return <PermissionMsg entry={entry} sessionId={sessionId} />
     case 'system':
       return (
         <div className="msg msg-tool">
+          <MsgTime at={entry.at} />
           <span className="msg-dot msg-dot-sm" style={{ background: 'var(--border2)' }} />
           <div className="msg-sys mono">{entry.text}</div>
         </div>
@@ -517,108 +588,45 @@ function Msg({
  *  that stream no thinking text give nothing to count tokens from, so without
  *  this the row sits there with no sign of movement — the clock answers the
  *  only question it raises, is this still going. Its own component so the 1s
- *  interval exists only while such a row is on screen. */
-function Elapsed() {
-  const startRef = useRef(Date.now())
-  const [secs, setSecs] = useState(0)
+ *  interval exists only while such a row is on screen. Counts from `since` (a
+ *  log timestamp) so remounting — switching session or tab — does not restart
+ *  it; without one it falls back to the first time this `key` was seen. */
+const elapsedStarts = new Map<string, number>()
+function Elapsed({ since, id }: { since?: number | undefined; id: string }) {
+  if (!elapsedStarts.has(id)) elapsedStarts.set(id, Date.now())
+  const start = since ?? elapsedStarts.get(id)!
+  const [, tick] = useState(0)
   useEffect(() => {
-    const id = setInterval(() => setSecs(Math.round((Date.now() - startRef.current) / 1000)), 1000)
-    return () => clearInterval(id)
+    const t = setInterval(() => tick((n) => n + 1), 1000)
+    return () => clearInterval(t)
   }, [])
-  return <span>· {elapsedClock(secs)}</span>
-}
-
-function ThoughtMsg({ text, live }: { text: string; live?: boolean | undefined }) {
-  const [open, setOpen] = useState(false)
-  const tokens = live ? approxTokens(text) : 0
-  return (
-    <div className="msg">
-      <span className="msg-dot" style={{ background: 'var(--yellow)' }} />
-      <div className="thought-head mono" onClick={() => setOpen((o) => !o)}>
-        {open ? '▾' : '▸'} thinking…
-        {live && (tokens > 0 ? ` · ~${tokens} tokens` : <Elapsed />)}
-      </div>
-      {open && <div className="thought-text">{text}</div>}
-    </div>
-  )
+  return <span>· {elapsedClock(Math.round((Date.now() - start) / 1000))}</span>
 }
 
 /** Live placeholder shown at the tail of the log while the agent is working. */
-function ThinkingLive({ label }: { label: string }) {
+function ThinkingLive({ label, since, sessionId }: { label: string; since?: number | undefined; sessionId: string }) {
+  // The fallback key lapses with the label, so a new wait starts a new clock.
+  useEffect(() => () => void elapsedStarts.delete(`${sessionId}:${label}`), [sessionId, label])
   return (
     <div className="msg">
       <span className="msg-dot dot-pulse" style={{ background: 'var(--yellow)' }} />
       <div className="thought-head mono">
         {label}
-        <Elapsed />
+        <Elapsed since={since} id={`${sessionId}:${label}`} />
       </div>
     </div>
   )
 }
 
-/** Uppercase kind label for the tool row; falls back to a generic tag. */
-function toolLabel(entry: ChatToolCall): string {
-  const k = entry.toolKind
-  if (!k) return 'tool'
-  if (k === 'execute') return 'run'
-  return k
-}
-
-function ToolMsg({ entry }: { entry: ChatToolCall }) {
-  const failed = entry.status === 'failed'
-  const running = entry.status === 'in_progress' || entry.status === 'pending'
-  const hasDetail = !!entry.detail
-  // Everything expandable starts collapsed; the FAILED badge and red dot are
-  // the signal to click into a failure.
-  const [open, setOpen] = useState(false)
-
-  const dotColor = failed ? 'var(--red)' : running ? 'var(--yellow)' : 'var(--border2)'
-
-  const head = (
-    <div className={`tool-head ${hasDetail ? 'clickable' : ''}`} onClick={() => hasDetail && setOpen((o) => !o)}>
-      <span className="tool-kind mono">{toolLabel(entry)}</span>
-      <span className="tool-title mono">{entry.title}</span>
-      {failed && <span className="tool-exit mono">FAILED</span>}
-      <span className="spacer" />
-      {running && <span className="tool-meta mono" style={{ color: 'var(--yellow)' }}>running…</span>}
-      {hasDetail && <span className="tool-meta mono">{open ? 'collapse ▾' : 'expand ▸'}</span>}
-    </div>
-  )
-
+/** End time of an entry, in the gutter left of the rail. */
+export function MsgTime({ at }: { at?: number | undefined }) {
+  if (at == null) return null
+  const t = stamp(at)
   return (
-    <div className="msg msg-tool">
-      <span
-        className={`msg-dot msg-dot-sm ${running ? 'dot-pulse' : ''}`}
-        style={{ background: dotColor }}
-      />
-      {hasDetail && open ? (
-        <div className="tool-card">
-          {head}
-          <ToolDetail detail={entry.detail!} kind={entry.toolKind} />
-        </div>
-      ) : (
-        <div className="tool-row">{head}</div>
-      )}
-    </div>
-  )
-}
-
-/** Expanded tool output. Diff-looking lines get the +/− tinted treatment. */
-function ToolDetail({ detail, kind }: { detail: string; kind?: string | undefined }) {
-  const lines = detail.replace(/\n+$/, '').split('\n')
-  const isDiff = kind === 'edit' || lines.some((l) => /^[+-](?![+-])/.test(l))
-  if (!isDiff) return <pre className="tool-out mono">{detail}</pre>
-  return (
-    <div className="tool-diff mono">
-      {lines.map((line, i) => {
-        const cls = line.startsWith('+') ? 'add' : line.startsWith('-') ? 'del' : ''
-        return (
-          <div key={i} className={`diffline ${cls}`}>
-            {line || ' '}
-          </div>
-        )
-      })}
-    </div>
+    <span className="msg-time mono" title={new Date(at).toLocaleString()}>
+      {t.time}
+      {t.date && <span className="msg-date">{t.date}</span>}
+    </span>
   )
 }
 
@@ -626,12 +634,13 @@ function PermissionMsg({
   entry,
   sessionId
 }: {
-  entry: ChatPermission & { id: number }
+  entry: ChatPermission & { id: number; at?: number | undefined }
   sessionId: string
 }) {
   const pending = !entry.chosen
   return (
     <div className="msg">
+      <MsgTime at={entry.at} />
       <span
         className={`msg-dot ${pending ? 'dot-pulse' : ''}`}
         style={{ background: pending ? 'var(--yellow)' : 'var(--border2)' }}
@@ -956,6 +965,10 @@ function Composer({
     window.gurt.sessionPrompt(sessionId, t, context, imgs).catch(logErr('sessionPrompt'))
   }
 
+  /** Unknown capabilities (draft, stopped agent) count as yes: only an agent that
+   *  said it takes no images turns the affordance off. */
+  const imageOk = !promptCaps || promptCaps.image !== false
+
   /** Read image files into attachment chips (shared by the picker and paste). */
   const addImageFiles = async (files: File[]) => {
     const added: PromptImage[] = []
@@ -978,7 +991,7 @@ function Composer({
 
   /** Paste an image straight into the composer (gated on the agent accepting images). */
   const onPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    if (!promptCaps?.image) return
+    if (!imageOk) return
     const files = Array.from(e.clipboardData?.items ?? [])
       .filter((it) => it.kind === 'file' && it.type.startsWith('image/'))
       .map((it) => it.getAsFile())
@@ -1141,6 +1154,19 @@ function Composer({
           }}
         />
 
+        {images.length > 0 && (
+          <div className="composer-images">
+            {images.map((img, i) => (
+              <div key={`img-${img.name}-${i}`} className="img-thumb" title={img.name}>
+                <img src={`data:${img.mimeType};base64,${img.data}`} alt={img.name} />
+                <button className="img-x" title="Remove image" onClick={() => removeImage(i)}>
+                  <Icon name="x" size={10} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
         <div className="composer-top">
           <textarea
             ref={taRef}
@@ -1219,7 +1245,7 @@ function Composer({
                       <Icon name="branch" size={14} className="code" />
                       <span>Git diff</span>
                     </div>
-                    {promptCaps?.image && (
+                    {imageOk && (
                       <div
                         className="menu-item"
                         onMouseDown={(e) => {
@@ -1319,16 +1345,6 @@ function Composer({
               onClick={() => removeChip(i)}
             >
               <Icon name={chipIcon(c.path)} size={13} />
-            </button>
-          ))}
-          {images.map((img, i) => (
-            <button
-              key={`img-${img.name}-${i}`}
-              className="icon-sq att"
-              title={`${img.name} — click to remove`}
-              onClick={() => removeImage(i)}
-            >
-              <Icon name="image" size={13} />
             </button>
           ))}
           <span className="spacer" />

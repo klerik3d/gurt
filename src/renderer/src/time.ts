@@ -32,3 +32,17 @@ export function elapsedClock(seconds: number): string {
   if (m < 60) return `${m}:${pad(s % 60)}`
   return `${Math.floor(m / 60)}:${pad(m % 60)}:${pad(s % 60)}`
 }
+
+/** A message's end time for the gutter beside the rail: `14:32`, plus the date
+ *  (`Aug 20`) when it was not today. */
+export function stamp(ms: number): { time: string; date?: string } {
+  const d = new Date(ms)
+  const time = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+  if (new Date().toDateString() === d.toDateString()) return { time }
+  return { time, date: d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) }
+}
+
+/** How long something took (or has taken so far): `<1s`, `12s`, `1:05`. */
+export function durationLabel(ms: number): string {
+  return ms < 1000 ? '<1s' : elapsedClock(ms / 1000)
+}
