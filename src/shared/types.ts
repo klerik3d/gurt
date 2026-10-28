@@ -609,7 +609,13 @@ export interface ChatPermission {
   chosen?: string
 }
 
-export type ChatEntryBase = ChatText | ChatToolCall | ChatSystem | ChatPermission
+export type ChatEntryBase = (ChatText | ChatToolCall | ChatSystem | ChatPermission) & {
+  /** When the entry was created (epoch ms). Absent on logs from before it existed. */
+  at?: number
+  /** When it finished: the last streamed chunk of a text/thought, the terminal
+   *  status of a tool call. Absent while still going. */
+  endAt?: number
+}
 export type ChatEntry = ChatEntryBase & { id: number }
 
 // Append-only session log. The chat timeline is a fold over these records;
@@ -619,13 +625,13 @@ export type SessionLogRecord =
   /** New timeline entry; `entry.id` is unique and ascending per session. */
   | { seq: number; type: 'entry'; entry: ChatEntry }
   /** Streaming text delta appended to a ChatText entry. */
-  | { seq: number; type: 'append'; id: number; text: string }
+  | { seq: number; type: 'append'; id: number; text: string; at?: number }
   /** In-place update of a tool call / permission entry. */
   | {
       seq: number
       type: 'patch'
       id: number
-      patch: { status?: string; title?: string; detail?: string; chosen?: string }
+      patch: { status?: string; title?: string; detail?: string; chosen?: string; endAt?: number }
     }
 
 /**
@@ -651,7 +657,8 @@ export function applyLog(entries: ChatEntry[], records: SessionLogRecord[]): Cha
       const i = index.get(r.id)
       if (i == null) continue
       const e = out[i]
-      if (e && 'text' in e) out[i] = { ...e, text: e.text + r.text }
+      if (e && 'text' in e)
+        out[i] = { ...e, text: e.text + r.text, ...(r.at != null ? { endAt: r.at } : {}) }
     } else if (r.type === 'patch') {
       const i = index.get(r.id)
       const target = i == null ? undefined : out[i]
@@ -745,6 +752,9 @@ export interface AgentConfig {
   commands: CommandInfo[]
   /** Permission/interaction modes, when reported. */
   modes?: SessionModes
+  /** What prompts the agent accepts (images, …) — kept so a draft or stopped
+   *  session still knows without a live connection. */
+  promptCapabilities?: PromptCapabilities
   /** ISO timestamp of the last refresh from a live session; absent for a seed. */
   updatedAt?: string
 }

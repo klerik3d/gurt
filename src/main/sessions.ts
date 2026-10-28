@@ -450,6 +450,10 @@ export interface RestoredSession {
   log: SessionLogRecord[]
 }
 
+/** A tool call that will not change status again. */
+const isTerminalToolStatus = (status: string | null | undefined): boolean =>
+  status === 'completed' || status === 'failed'
+
 /** A log record before `append()` stamps its seq (distributive over the union). */
 type NewLogRecord = SessionLogRecord extends infer R
   ? R extends SessionLogRecord
@@ -627,10 +631,12 @@ export class SessionManager {
     if (!agentId) return
     const prev = this.agentConfigs.get(agentId)
     const modes = s.modes ?? prev?.modes
+    const promptCapabilities = this.connections.get(s.info.id)?.promptCapabilities ?? prev?.promptCapabilities
     const cfg: AgentConfig = {
       configOptions: s.configOptions ?? prev?.configOptions ?? [],
       commands: s.commands ?? prev?.commands ?? [],
       ...(modes ? { modes } : {}),
+      ...(promptCapabilities ? { promptCapabilities } : {}),
       updatedAt: new Date().toISOString()
     }
     this.agentConfigs.set(agentId, cfg)
@@ -705,7 +711,7 @@ export class SessionManager {
       commands: s.commands ?? cached?.commands,
       configOptions:
         s.configOptions ?? cached?.configOptions ?? (kind ? defaultAgentConfig(kind).configOptions : undefined),
-      promptCapabilities: this.connections.get(sessionId)?.promptCapabilities,
+      promptCapabilities: this.connections.get(sessionId)?.promptCapabilities ?? cached?.promptCapabilities,
       startError: s.startError,
       queuePosition: this.queuePosition(sessionId),
       pending: s.pending.length ? s.pending.map(pendingInfo) : undefined,
@@ -1819,6 +1825,7 @@ export class SessionManager {
       throw new Error('session no longer exists')
     }
     this.connections.set(key, conn)
+    this.cacheAgentConfig(s)
     return conn
   }
 
@@ -2473,7 +2480,7 @@ export class SessionManager {
   }
 
   private push(s: Session, entry: ChatEntryBase): ChatEntry {
-    const full = { ...entry, id: s.nextEntryId++ }
+    const full = { ...entry, id: s.nextEntryId++, at: Date.now() }
     this.append(s, { type: 'entry', entry: full })
     return full
   }
@@ -2648,7 +2655,7 @@ export class SessionManager {
         if (!text) return
         const last = s.entries[s.entries.length - 1]
         if (last && last.kind === kind) {
-          this.append(s, { type: 'append', id: last.id, text })
+          this.append(s, { type: 'append', id: last.id, text, at: Date.now() })
         } else {
           this.push(s, { kind, text })
         }
@@ -2664,7 +2671,8 @@ export class SessionManager {
           title: u.title ?? u.kind ?? 'tool call',
           status: u.status ?? 'pending',
           ...(u.kind ? { toolKind: u.kind } : {}),
-          ...(detail ? { detail } : {})
+          ...(detail ? { detail } : {}),
+          ...(isTerminalToolStatus(u.status) ? { endAt: Date.now() } : {})
         })
         break
       }
@@ -2680,7 +2688,8 @@ export class SessionManager {
             patch: {
               ...(u.status ? { status: u.status } : {}),
               ...(u.title ? { title: u.title } : {}),
-              ...(detail ? { detail } : {})
+              ...(detail ? { detail } : {}),
+              ...(isTerminalToolStatus(u.status) && entry.endAt == null ? { endAt: Date.now() } : {})
             }
           })
         }

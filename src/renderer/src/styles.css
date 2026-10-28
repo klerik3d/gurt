@@ -4685,3 +4685,233 @@ button { user-select: none; }
 .cred-filters .input { flex: 1 1 220px; min-width: 0; width: 100%; height: 28px; padding: 0 8px; margin: 0; font-size: 11px; }
 .cred-usage { display: flex; flex-wrap: wrap; gap: 4px; flex: 1; min-width: 0; }
 .cred-usage .tag { white-space: normal; overflow-wrap: anywhere; }
+
+/* Composer image previews. */
+.composer-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 14px 0;
+}
+.img-thumb {
+  position: relative;
+  width: 56px;
+  height: 56px;
+  border: 1px solid var(--border2);
+  border-radius: 5.333px;
+  background: var(--hover);
+}
+.img-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: inherit;
+  display: block;
+}
+.img-x {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 16px;
+  height: 16px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--border2);
+  background: var(--panel);
+  color: var(--dim);
+  cursor: pointer;
+}
+.img-x:hover {
+  color: var(--red);
+}
+
+/* Tool strip: one icon row per run of tool calls, details on hover. */
+.ts {
+  position: relative;
+  min-width: 0;
+}
+.ts-row {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+}
+.ts-item {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 5.333px;
+  color: var(--dim);
+  cursor: pointer;
+}
+.ts-item:hover,
+.ts-item.on {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.ts-item.ts-running {
+  color: var(--yellow);
+  animation: ts-pulse 1.2s ease-in-out infinite;
+}
+.ts-item.ts-failed {
+  color: var(--red);
+  border-color: var(--red);
+}
+.ts-more {
+  font-size: 11px;
+}
+@keyframes ts-pulse {
+  50% {
+    opacity: 0.5;
+  }
+}
+/* Padding on the strip side bridges the gap to the row so the pointer can travel into the
+   panel without the strip's mouseleave firing. */
+.ts-panel {
+  position: fixed;
+  z-index: 20;
+  box-sizing: border-box;
+  overflow-y: auto;
+}
+.ts-panel > * {
+  background: var(--panel);
+  border: 1px solid var(--border2);
+  border-radius: 5.333px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+}
+.ts-panel > .ts-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  padding: 0 12px;
+  border-bottom: none;
+  border-radius: 5.333px 5.333px 0 0;
+  box-shadow: none;
+  color: var(--faint);
+}
+.ts-panel > .ts-panel-body {
+  border-top: none;
+  border-radius: 0 0 5.333px 5.333px;
+  padding-bottom: 8px;
+}
+.ts-sec {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 13px 0;
+}
+.tool-in {
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--text);
+  padding: 4px 13px 6px;
+  max-height: 120px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.ts-panel .thought-text {
+  padding: 4px 13px;
+  max-height: 260px;
+  overflow: auto;
+}
+.ts-more-list {
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  max-height: 260px;
+  overflow: auto;
+}
+.ts-more-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  color: var(--dim);
+  min-width: 0;
+}
+.ts-more-row:hover {
+  background: var(--hover);
+}
+
+/* Per-message end time, in the gutter left of the rail. */
+.msg-time {
+  position: absolute;
+  right: calc(100% + 24px);
+  top: 3px;
+  text-align: right;
+  font-size: 10px;
+  line-height: 1.3;
+  color: var(--faint);
+  white-space: nowrap;
+}
+.msg-date {
+  display: block;
+}
+
+/* MCP tool: server abbreviation over the method name. */
+.ts-item.ts-mcp {
+  width: 56px;
+}
+.ts-mcp-face {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  line-height: 1.05;
+  max-width: 100%;
+  min-width: 0;
+}
+.ts-mcp-srv {
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+}
+.ts-mcp-fn {
+  font-size: 8.5px;
+  max-width: 50px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Run time as a badge on the icon's bottom-right corner. The row no longer
+   clips (capacity is computed, not overflowed), so the badge can hang over the
+   edge; the bottom padding keeps it clear of what follows. */
+.ts-row {
+  overflow: visible;
+  padding-bottom: 5px;
+}
+.ts-cell {
+  position: relative;
+  flex: none;
+}
+.ts-dur {
+  position: absolute;
+  right: -3px;
+  bottom: -5px;
+  height: 12px;
+  padding: 0 3px;
+  border: 1px solid var(--border2);
+  border-radius: 6px;
+  background: var(--panel);
+  font-size: 8.5px;
+  line-height: 10px;
+  color: var(--dim);
+  white-space: nowrap;
+  pointer-events: none;
+}
+.ts-dur.live {
+  color: var(--yellow);
+  border-color: var(--yellow);
+}
