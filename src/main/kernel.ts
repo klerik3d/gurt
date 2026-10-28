@@ -2,6 +2,7 @@
 // SessionManager over the domain bus and exposes the operations that span
 // both. Importable without an Electron app (headless runs, orchestrator,
 // tests).
+import { startGc } from './gc'
 import type { DiffTarget, ReviewState, Tree } from '../shared/types'
 import { OPERATOR_ENV_NAME, isSessionRole, targetKey } from '../shared/types'
 import type { BootProgress, SessionDraftPatch } from '../shared/api'
@@ -429,6 +430,8 @@ export function createKernel(): Kernel {
     // Done fires whatever happened — a failed restore is logged and the app is
     // usable; a footer stuck at 60% would read as a hang.
     .finally(() => progress(100, 'ready', true))
+  // Reclaim Docker disk on a schedule (the first pass a minute after boot).
+  startGc(containers)
 
   const kernel: Kernel = {
     bus,

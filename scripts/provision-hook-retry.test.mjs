@@ -118,7 +118,7 @@ test('a failed create-time hook is retried in a fresh container, never adopted',
   assert.equal(once.err, undefined, `a hook that fails once must not fail the start: ${once.err?.message}`)
   assert.equal(once.attempts, 2, 'the CLI is invoked again after a create-time hook failure')
   assert.equal(once.ok.containerId, 'container-2', 'the start returns the retry container, not the failed one')
-  assert.deepEqual(once.removed, ['rm -f container-1'], 'the half-provisioned container is removed before the retry')
+  assert.deepEqual(once.removed, ['rm -fv container-1'], 'the half-provisioned container is removed before the retry')
 })
 
 // 2. The persistent case — one retry, then a message that names the hook and
@@ -129,7 +129,7 @@ test('a hook that keeps failing names the hook and quotes its output', async () 
   assert.equal(always.attempts, 2, 'a create-time hook is retried exactly once')
   assert.deepEqual(
     always.removed,
-    ['rm -f container-1', 'rm -f container-2'],
+    ['rm -fv container-1', 'rm -fv container-2'],
     'no half-provisioned container survives, not even the last one'
   )
   const msg = always.err.message

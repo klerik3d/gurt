@@ -29,6 +29,7 @@ export type ContainerStatusReason =
   | 'session-deleted'
   | 'error'
   | 'reconcile'
+  | 'gc'
 
 /** Why a session reached its new state. `user` covers both a user action and
  *  the scheduler acting on one; `start-failed` rides with `err`. */

@@ -635,9 +635,58 @@ export function dockerImageExists(tag: string): Promise<boolean> {
   })
 }
 
+/** Labels stamped on every env image: they mark it as ours and say which
+ *  (repo, env) it was built for, so superseded builds can be found again. */
+const envImageLabels = (repo: RepoConfig, envCfg: EnvConfig): string[] => [
+  'gurt.managed=1',
+  'gurt.kind=env-image',
+  `gurt.repo=${repo.url}`,
+  `gurt.env=${envCfg.name}`
+]
+
+/**
+ * Remove the older images of this (repo, env) — each new commit or Dockerfile
+ * edit mints a new content tag, and nothing else ever deletes the previous one.
+ * Keeps only `keepTag`. No `-f`: an image a container still uses is refused by
+ * Docker and simply stays until that container is gone. Best-effort.
+ */
+async function removeStaleEnvImages(
+  repo: RepoConfig,
+  envCfg: EnvConfig,
+  keepTag: string,
+  log: LogSink
+): Promise<void> {
+  try {
+    const out = await run(
+      'docker',
+      [
+        'image', 'ls',
+        '--filter', 'label=gurt.kind=env-image',
+        '--filter', `label=gurt.repo=${repo.url}`,
+        '--filter', `label=gurt.env=${envCfg.name}`,
+        '--format', '{{.Repository}}:{{.Tag}}'
+      ],
+      () => {},
+      { timeoutMs: PROBE_TIMEOUT_MS }
+    )
+    for (const old of out.split('\n').map((l) => l.trim()).filter(Boolean)) {
+      if (old === keepTag || old.endsWith(':<none>')) continue
+      await run('docker', ['rmi', old], () => {}, { timeoutMs: PROBE_TIMEOUT_MS })
+        .then(() => log(`removed superseded image ${old}`))
+        .catch(() => {})
+    }
+  } catch {
+    /* cleanup only — never fail a build over it */
+  }
+}
+
 /** Builds in flight, keyed by tag — dedupes concurrent callers building the
  *  same content (e.g. two tasks starting on the same env at once). */
 const buildsInFlight = new Map<string, Promise<string>>()
+
+/** True while an env image is being built — between the build and the `up` that
+ *  uses it the image has no container, so a sweep must not take it. */
+export const envBuildInFlight = (): boolean => buildsInFlight.size > 0
 
 /**
  * Ensure the image for (repo, commit, envCfg) exists and return its tag.
@@ -684,11 +733,13 @@ export async function buildEnvImage(
     // default). `build.options` / `cacheFrom` are ignored (non-goals).
     const context = build.context ? path.resolve(devcontainerDir, subst(build.context)) : contextDir
     const args = ['build', '-f', dockerfilePath, '-t', tag]
+    for (const l of envImageLabels(repo, envCfg)) args.push('--label', l)
     for (const [k, v] of Object.entries(build.args ?? {})) args.push('--build-arg', `${k}=${v}`)
     if (build.target) args.push('--target', build.target)
     args.push(context)
     log(`building ${tag} ...`)
     await run('docker', args, log)
+    await removeStaleEnvImages(repo, envCfg, tag, log)
     return tag
   })()
   buildsInFlight.set(tag, p)
@@ -1672,7 +1723,9 @@ export async function dockerStop(containerId: string, log: LogSink): Promise<voi
 }
 
 export async function dockerRemove(containerId: string, log: LogSink): Promise<void> {
-  await run('docker', ['rm', '-f', containerId], log, { timeoutMs: PROBE_TIMEOUT_MS }).catch(() => {})
+  // -v: also drop the container's anonymous volumes (image `VOLUME` entries),
+  // which `rm -f` alone leaves behind forever.
+  await run('docker', ['rm', '-fv', containerId], log, { timeoutMs: PROBE_TIMEOUT_MS }).catch(() => {})
 }
 
 /**

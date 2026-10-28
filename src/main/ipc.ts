@@ -28,6 +28,8 @@ import {
 import { traffic } from './proxy/traffic'
 import * as store from './store'
 import * as changes from './changes'
+import { normalizeGcSettings } from '../shared/gc'
+import { runGc } from './gc'
 import { normalizeNotificationPrefs } from '../shared/notifications'
 import { sanitizeHotkeys } from '../shared/hotkeys'
 import { initAppMenu } from './menu'
@@ -492,6 +494,10 @@ export function registerIpc(): void {
       await machinePrepare((line) => kernel.bus.emit('provision.log', { key, line }))
     },
     machineStartDocker: async () => startDockerApp(),
+    getGcSettings: () => store.getGcSettings(),
+    setGcSettings: async (settings) =>
+      store.setGcSettings(normalizeGcSettings(settings, await store.getGcSettings())),
+    gcRunNow: async () => runGc(kernel.containers, await store.getGcSettings()),
     getWelcomeMode: () => store.getWelcomeMode(),
     setWelcomeMode: (mode) => store.setWelcomeMode(sanitizeWelcomeMode(mode)),
     firstRunStart: (kind, token) => firstRunStart(kernel, kind, token),

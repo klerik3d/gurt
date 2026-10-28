@@ -68,6 +68,8 @@ import { AGENT_DEFS, agentDef } from '../../../shared/agents'
 import { PREPARE_LOG_KEY, WELCOME_MODES } from '../../../shared/doctor'
 import { logErr } from '../log'
 import type { WelcomeMode } from '../../../shared/doctor'
+import type { GcResult, GcSettings } from '../../../shared/gc'
+import { GC_DISK_MAX, GC_DISK_MIN, GC_HOURS_MAX, GC_HOURS_MIN } from '../../../shared/gc'
 import { MachineChecklist } from './Welcome'
 import { refreshAgents, useAgents } from '../useAgents'
 import { refreshHotkeys, useHotkeys } from '../useHotkeys'
@@ -90,11 +92,13 @@ export type SettingsSection =
   | 'notifications'
   | 'hotkeys'
   | 'machine'
+  | 'docker'
 
 /** Nav labels for sections whose id does not simply capitalize. */
 const SECTION_LABEL: Partial<Record<SettingsSection, string>> = {
   mcp: 'MCP servers',
-  agentAccess: 'Agent access'
+  agentAccess: 'Agent access',
+  docker: 'Docker cleanup'
 }
 
 /** One icon per nav item, so the list reads at a glance instead of as a wall
@@ -109,7 +113,8 @@ const SECTION_ICON: Record<SettingsSection, IconName> = {
   credentials: 'key',
   notifications: 'bell',
   hotkeys: 'grid',
-  machine: 'info'
+  machine: 'info',
+  docker: 'trash'
 }
 
 /** Registry group — the sections that define *what the workspace has*: the
@@ -136,6 +141,7 @@ const REGISTRY_SECTIONS = [
 // is not in the configuration at all (docs/requirements-first-run.md §2.2).
 const GENERAL_SECTIONS = [
   'machine',
+  'docker',
   'notifications',
   'hotkeys'
 ] as const satisfies readonly SettingsSection[]
@@ -278,6 +284,160 @@ function MachineSection(): JSX.Element {
   )
 }
 
+/** Retention policy for the Docker resources gurt creates, and the "clean now"
+ *  button. The same pass runs on its own at startup and every few hours. */
+function DockerCleanupSection(): JSX.Element {
+  const [settings, setSettings] = useState<GcSettings | null>(null)
+  const [result, setResult] = useState<GcResult | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  useEffect(() => {
+    window.gurt.getGcSettings().then(setSettings).catch((e: unknown) => setError(String(e)))
+  }, [])
+
+  const save = async (patch: Partial<GcSettings>) => {
+    if (!settings) return
+    const prior = settings
+    const next = { ...settings, ...patch }
+    setSettings(next)
+    setError('')
+    try {
+      await window.gurt.setGcSettings(next)
+    } catch (e) {
+      setSettings(prior)
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+  const cleanNow = async () => {
+    setBusy(true)
+    setError('')
+    try {
+      setResult(await window.gurt.gcRunNow())
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+  const hoursField = (label: string, hint: string, key: 'stoppedContainerHours' | 'buildCacheHours') => (
+    <div className="set-row">
+      <span className="set-row-label">
+        {label}
+        <div className="fld-hint">{hint}</div>
+      </span>
+      <span className="spacer" />
+      <input
+        className="input"
+        type="number"
+        style={{ width: 80 }}
+        min={GC_HOURS_MIN}
+        max={GC_HOURS_MAX}
+        disabled={!settings}
+        value={settings?.[key] ?? ''}
+        onChange={(e) => {
+          const n = Number(e.target.value)
+          if (Number.isFinite(n) && n >= GC_HOURS_MIN) void save({ [key]: n })
+        }}
+      />
+      <span className="faint">hours</span>
+    </div>
+  )
+  return (
+    <>
+      <div className="set-head">
+        <div className="set-title-wrap">
+          <span className="set-title">Docker cleanup</span>
+          <span className="set-count mono">frees disk used by stopped sessions, old env images and build cache</span>
+        </div>
+      </div>
+      <div className="set-list">
+        <div className="set-row">
+          <span className="set-row-label">
+            Automatic cleanup
+            <div className="fld-hint">runs a minute after launch and every 6 hours</div>
+          </span>
+          <span className="spacer" />
+          <button
+            className={`chip-btn ${settings?.enabled ? 'on' : ''}`}
+            disabled={!settings}
+            onClick={run(() => save({ enabled: !settings?.enabled }))}
+          >
+            {settings?.enabled ? 'on' : 'off'}
+          </button>
+        </div>
+        {hoursField(
+          'Remove stopped containers after',
+          'the session and its clone stay; the next start creates a fresh container',
+          'stoppedContainerHours'
+        )}
+        <div className="set-row">
+          <span className="set-row-label">
+            Prune build cache
+            <div className="fld-hint">
+              daemon-wide — Docker cannot tell whose cache is whose, so on a shared Docker this
+              also clears other projects’ build cache
+            </div>
+          </span>
+          <span className="spacer" />
+          <button
+            className={`chip-btn ${settings?.pruneBuildCache ? 'on' : ''}`}
+            disabled={!settings}
+            onClick={run(() => save({ pruneBuildCache: !settings?.pruneBuildCache }))}
+          >
+            {settings?.pruneBuildCache ? 'on' : 'off'}
+          </button>
+        </div>
+        {settings?.pruneBuildCache &&
+          hoursField('Build cache older than', 'only cache unused for this long is pruned', 'buildCacheHours')}
+        <div className="set-row">
+          <span className="set-row-label">
+            Disk-full threshold
+            <div className="fld-hint">
+              above this, a pass ignores the time limits: every stopped container goes and all
+              unused build cache is pruned
+            </div>
+          </span>
+          <span className="spacer" />
+          <input
+            className="input"
+            type="number"
+            style={{ width: 80 }}
+            min={GC_DISK_MIN}
+            max={GC_DISK_MAX}
+            disabled={!settings}
+            value={settings?.diskThresholdPercent ?? ''}
+            onChange={(e) => {
+              const n = Number(e.target.value)
+              if (Number.isFinite(n) && n >= GC_DISK_MIN && n <= GC_DISK_MAX) void save({ diskThresholdPercent: n })
+            }}
+          />
+          <span className="faint">% used</span>
+        </div>
+        <div className="set-note">
+          Also removed on every pass: env images no container uses (only the newest build per
+          environment is kept).
+        </div>
+        <div className="set-row">
+          <button className="btn" disabled={busy} onClick={run(cleanNow)}>
+            {busy ? 'Cleaning…' : 'Clean now'}
+          </button>
+          {result && (
+            <span className="fld-hint">
+              {result.skipped
+                ? `skipped: ${result.skipped}`
+                : `removed ${result.containers} container(s), ${result.images} image(s)` +
+                  (result.buildCacheReclaimed ? `; build cache ${result.buildCacheReclaimed}` : '') +
+                  (result.emergency ? ` · disk ${result.diskPercent}% full — time limits ignored` : '') +
+                  ` · ${(result.ms / 1000).toFixed(1)}s`}
+            </span>
+          )}
+        </div>
+      </div>
+      {error && <div className="error">{error}</div>}
+    </>
+  )
+}
+
 const WELCOME_MODE_HINT: Record<WelcomeMode, string> = {
   auto: 'shown until this machine has its first session',
   always: 'shown on every launch',
@@ -340,6 +500,7 @@ export function SettingsPage({
         {section === 'notifications' && <NotificationsSection />}
         {section === 'hotkeys' && <HotkeysSection />}
         {section === 'machine' && <MachineSection />}
+        {section === 'docker' && <DockerCleanupSection />}
       </div>
     </div>
   )

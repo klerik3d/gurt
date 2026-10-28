@@ -35,6 +35,7 @@ import type { TurnRecord } from './usage'
 import type { PlanUsage } from './planUsage'
 import type { NotificationPrefs, NotificationRecord } from './notifications'
 import type { HotkeyMap } from './hotkeys'
+import type { GcResult, GcSettings } from './gc'
 import type { DoctorReport, DoctorRow, FirstRunResult, WelcomeMode } from './doctor'
 
 import type { TerminalInfo, TerminalSnapshot } from './terminal'
@@ -444,6 +445,11 @@ export interface GurtApi {
    *  this is the same cancel, addressed by "the one the welcome screen
    *  started". A no-op when nothing is pending. */
   firstRunCancelSignIn(): Promise<void>
+  /** Docker cleanup (Settings → Docker cleanup). */
+  getGcSettings(): Promise<GcSettings>
+  setGcSettings(settings: GcSettings): Promise<void>
+  /** Run one collection pass now, whatever `enabled` says. */
+  gcRunNow(): Promise<GcResult>
   /** When the welcome screen shows itself (docs/requirements-first-run.md
    *  §2.1): `auto` while the store has never produced a session, `always` on
    *  every launch, `never` only through the command palette. `GURT_WELCOME`
@@ -601,6 +607,9 @@ const METHODS = {
   firstRunStart: 'none',
   firstRunSignIn: 'none', //    the same, plus a host browser window
   firstRunCancelSignIn: 'none', // controls that flow
+  getGcSettings: 'none', //   host resource policy, not an operator's
+  setGcSettings: 'none', //     host resource policy: a user gesture
+  gcRunNow: 'none', //          removes containers and images on the host
   getWelcomeMode: 'read', //    a UI preference, like the hotkeys below
   setWelcomeMode: 'write', //   same
   machineStartDocker: 'none' // host GUI, like `openLogsFolder`
