@@ -39,6 +39,14 @@ async function docker(args: string[], timeoutMs = DOCKER_TIMEOUT_MS): Promise<st
   return run('docker', args, noop, { timeoutMs })
 }
 
+/** The slice of `docker image inspect` output read here. */
+interface InspectedImage {
+  Id?: string
+  Created?: string
+  RepoTags?: string[]
+  Config?: { Labels?: Record<string, string> | null }
+}
+
 /** gurt-env images with the labels `buildEnvImage` stamps (undefined on the
  *  unlabeled ones built before labels existed). */
 async function envImages(): Promise<ImageInfo[]> {
@@ -50,16 +58,15 @@ async function envImages(): Promise<ImageInfo[]> {
   const raw: unknown = JSON.parse(await docker(['image', 'inspect', ...tags]))
   if (!Array.isArray(raw)) return []
   const out: ImageInfo[] = []
-  for (const r of raw as Array<Record<string, any>>) {
-    const labels = (r['Config']?.['Labels'] ?? {}) as Record<string, string>
-    const tag = (r['RepoTags'] as string[] | undefined)?.find((t) => t.startsWith('gurt-env:'))
-    if (!tag || typeof r['Id'] !== 'string') continue
+  for (const r of raw as InspectedImage[]) {
+    const tag = r.RepoTags?.find((t) => t.startsWith('gurt-env:'))
+    if (!tag || typeof r.Id !== 'string') continue
     out.push({
-      id: r['Id'],
+      id: r.Id,
       tag,
-      created: Date.parse(String(r['Created'])) || 0,
-      repo: labels['gurt.repo'],
-      env: labels['gurt.env']
+      created: Date.parse(String(r.Created)) || 0,
+      repo: r.Config?.Labels?.['gurt.repo'],
+      env: r.Config?.Labels?.['gurt.env']
     })
   }
   return out
