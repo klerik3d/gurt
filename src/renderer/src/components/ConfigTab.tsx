@@ -731,6 +731,11 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
                     title="a repository kept by gurt on this machine — no forge needed; publish it later from Settings → Repos"
                     onMouseDown={(e) => {
                       e.preventDefault()
+                      // This row is replaced by the input before the event
+                      // reaches `useOutsideClose`'s document listener, which
+                      // would then see a detached target, read it as a click
+                      // outside, and close the menu the click just opened.
+                      e.stopPropagation()
                       setNewRepo('')
                     }}
                   >
