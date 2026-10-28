@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react'
-import type { RepoChanges, SessionActivity, Tree } from '../../../shared/types'
+import type { ChangedFile, DiffTarget, RepoChanges, SessionActivity, Tree } from '../../../shared/types'
 import { isActionable, isDelivered, sessionStatus } from '../../../shared/types'
 import type { Selection } from '../App'
 import { bindingLabel } from '../../../shared/hotkeys'
@@ -19,6 +19,7 @@ import { RowContextMenu } from './RowContextMenu'
 import {
   TaskRepositories,
   diffRowKey,
+  groupKey,
   diffRows,
   type DiffFileSelection,
   type DiffFolding,
@@ -41,7 +42,7 @@ const navKey = (r: NavRow) => (r.kind === 'diff' ? `d:${r.ws}/${r.task}/${diffRo
 
 /** Nesting level — Left walks to the nearest row above with a smaller one. */
 const navDepth = (r: NavRow) =>
-  r.kind === 'task' ? 0 : r.kind === 'session' || r.row.kind === 'repo' ? 1 : 2 + r.row.depth
+  r.kind === 'task' ? 0 : r.kind === 'session' || r.row.kind === 'repo' ? 1 : r.row.kind === 'group' ? 2 : 3 + r.row.depth
 
 /** Returns the same set when nothing changes, so a no-op fold doesn't re-render. */
 const toggled = (prev: Set<string>, key: string, on: boolean) => {
@@ -203,6 +204,20 @@ export function Sidebar({
   const treeRef = useRef<HTMLDivElement>(null)
   /** Diff-mode folding lives here, not in the rows, so arrow keys see it too. */
   const [openRepos, setOpenRepos] = useState<Set<string>>(() => new Set())
+  const [openGroups, setOpenGroups] = useState<Set<string>>(() => new Set())
+  const [groupFiles, setGroupFiles] = useState<Record<string, { files?: ChangedFile[]; error?: string }>>({})
+  const loadingGroups = useRef(new Set<string>())
+  useEffect(() => {
+    for (const key of openGroups) {
+      const [workspace, task, repo, target] = JSON.parse(key) as [string, string, string, DiffTarget]
+      if (target.kind !== 'commit' || groupFiles[key] || loadingGroups.current.has(key)) continue
+      loadingGroups.current.add(key)
+      window.gurt.getDiffFiles(workspace, task, repo, target).then(
+        (files) => setGroupFiles((prev) => ({ ...prev, [key]: { files } })),
+        (error: unknown) => setGroupFiles((prev) => ({ ...prev, [key]: { error: String(error) } }))
+      ).finally(() => loadingGroups.current.delete(key))
+    }
+  }, [openGroups, groupFiles])
   const [closedFolders, setClosedFolders] = useState<Set<string>>(() => new Set())
   /** Where the diff-mode cursor sits within the selected task: `key` null is the
    *  task row itself. Repos and folders aren't selections App knows about, so
@@ -440,7 +455,9 @@ export function Sidebar({
 
   const folding = (task: string): DiffFolding => ({
     repoOpen: (repo) => openRepos.has(`${wsName}/${task}/${repo}`),
-    folderOpen: (repo, path) => !closedFolders.has(`${wsName}/${task}/${repo}/${path}`)
+    groupOpen: (repo, target) => openGroups.has(groupKey(wsName, task, repo, target)),
+    groupFiles: (repo, target) => groupFiles[groupKey(wsName, task, repo, target)],
+    folderOpen: (repo, path, target) => !closedFolders.has(`${groupKey(wsName, task, repo, target)}/${path}`)
   })
 
   // The tree as the user sees it, top to bottom — collapsed tasks contribute
@@ -467,7 +484,7 @@ export function Sidebar({
         diffCursor?.ws === sws && diffCursor.task === stask
           ? diffCursor.key
           : diffFile
-            ? diffRowKey({ kind: 'file', repo: diffFile.repo, path: diffFile.path })
+            ? diffRowKey({ kind: 'file', repo: diffFile.repo, path: diffFile.path, target: diffFile.target })
             : null
       const at = key === null ? -1 : rows.findIndex(
         (r) => r.kind === 'diff' && r.ws === sws && r.task === stask && diffRowKey(r.row) === key
@@ -493,7 +510,7 @@ export function Sidebar({
     if (mode === 'diff') setDiffCursor({ ws: r.ws, task: r.task, key: r.kind === 'diff' ? diffRowKey(r.row) : null })
     if (r.kind === 'task') onSelectTask(r.ws, r.task)
     else if (r.row.kind === 'file')
-      onSelectDiffFile({ ws: r.ws, task: r.task, repo: r.row.repo, path: r.row.path })
+      onSelectDiffFile({ ws: r.ws, task: r.task, repo: r.row.repo, path: r.row.path, target: r.row.target })
     // Re-selecting the task it is already on would drop App's session selection.
     else if (!(selection?.type === 'task' && selection.ws === r.ws && selection.task === r.task))
       onSelectTask(r.ws, r.task)
@@ -504,22 +521,29 @@ export function Sidebar({
     if (r.kind === 'task') return !collapsed.has(`${r.ws}/${r.task}`)
     if (r.kind === 'session' || r.row.kind === 'file') return undefined
     const f = folding(r.task)
-    return r.row.kind === 'repo' ? f.repoOpen(r.row.repo) : f.folderOpen(r.row.repo, r.row.path)
+    return r.row.kind === 'repo' ? f.repoOpen(r.row.repo) : r.row.kind === 'group' ? f.groupOpen(r.row.repo, r.row.target) : f.folderOpen(r.row.repo, r.row.path, r.row.target)
   }
   const setRepoOpen = (task: string, repo: string, on: boolean) =>
     setOpenRepos((prev) => toggled(prev, `${wsName}/${task}/${repo}`, on))
-  const setFolderOpen = (task: string, repo: string, path: string, on: boolean) =>
-    setClosedFolders((prev) => toggled(prev, `${wsName}/${task}/${repo}/${path}`, !on))
+  const setGroupOpen = (task: string, repo: string, target: DiffTarget, on: boolean) => {
+    const key = groupKey(wsName, task, repo, target)
+    if (on && groupFiles[key]?.error) setGroupFiles((prev) => { const next = { ...prev }; delete next[key]; return next })
+    setOpenGroups((prev) => toggled(prev, key, on))
+  }
+  const setFolderOpen = (task: string, repo: string, path: string, target: DiffTarget, on: boolean) =>
+    setClosedFolders((prev) => toggled(prev, `${groupKey(wsName, task, repo, target)}/${path}`, !on))
   const setExpanded = (r: NavRow, on: boolean) => {
     if (r.kind === 'task') setCollapse(r.ws, r.task, !on)
     else if (r.kind === 'diff' && r.row.kind === 'repo') setRepoOpen(r.task, r.row.repo, on)
-    else if (r.kind === 'diff' && r.row.kind === 'folder') setFolderOpen(r.task, r.row.repo, r.row.path, on)
+    else if (r.kind === 'diff' && r.row.kind === 'group') setGroupOpen(r.task, r.row.repo, r.row.target, on)
+    else if (r.kind === 'diff' && r.row.kind === 'folder') setFolderOpen(r.task, r.row.repo, r.row.path, r.row.target, on)
   }
 
   const diffNav = (task: string): DiffNav => ({
     ...folding(task),
     setRepoOpen: (repo, on) => setRepoOpen(task, repo, on),
-    setFolderOpen: (repo, path, on) => setFolderOpen(task, repo, path, on),
+    setGroupOpen: (repo, target, on) => setGroupOpen(task, repo, target, on),
+    setFolderOpen: (repo, path, target, on) => setFolderOpen(task, repo, path, target, on),
     cursor: cursorRow?.kind === 'diff' && cursorRow.task === task ? diffRowKey(cursorRow.row) : null,
     point: (row) => {
       moveTo({ kind: 'diff', ws: wsName, task, row })

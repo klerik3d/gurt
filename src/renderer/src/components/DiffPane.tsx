@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { DiffPair, RepoChanges } from '../../../shared/types'
+import { targetKey, type DiffPair, type RepoChanges } from '../../../shared/types'
 import type { DiffFileSelection } from './DiffSidebar'
 import { Icon } from './icons'
 import { ReadOnlyDiff } from './ReviewModal'
@@ -10,21 +10,22 @@ export function DiffPane({ file, changes, task }: {
   task: string | undefined
 }) {
   const repo = changes?.find((r) => r.repo === file?.repo)
-  const exists = !!repo?.files.some((f) => f.path === file?.path)
+  const target = file?.target ?? { kind: 'uncommitted' as const }
+  const exists = target.kind === 'commit' ? !!repo && !repo.integrated && repo.commits.some((c) => c.sha === target.sha) : !!repo?.files.some((f) => f.path === file?.path)
   return (
     <div className="diff-pane">
       <div className="chat-head">
         <Icon name="branch" size={15} className="faint" />
         <span className="chat-title">{task ?? 'Diff'}</span>
         <span className="spacer" />
-        <span className="diff-scope">Uncommitted changes</span>
+        <span className="diff-scope">{target.kind === 'commit' ? `Commit ${target.sha.slice(0, 7)}` : 'Uncommitted changes'}</span>
       </div>
       {file && exists ? (
-        <FileDiff key={`${file.ws}/${file.task}/${file.repo}/${file.path}`} file={file} revision={repo} />
+        <FileDiff key={`${file.ws}/${file.task}/${file.repo}/${targetKey(target)}/${file.path}`} file={file} revision={repo} />
       ) : (
         <div className="diff-placeholder">
           <Icon name="branch" size={36} />
-          <span>{file ? 'This file has no uncommitted changes' : 'Select a changed file'}</span>
+          <span>{file ? 'This file is no longer in these changes' : 'Select a changed file'}</span>
           <span className="dim">Expand a repository in the sidebar to view its diff.</span>
         </div>
       )}
@@ -39,15 +40,16 @@ function FileDiff({ file, revision }: { file: DiffFileSelection; revision: RepoC
     localStorage.getItem('gurt.diff.view') === 'unified' ? 'unified' : 'split'
   )
   const { ws, task, repo, path } = file
+  const sha = file.target?.kind === 'commit' ? file.target.sha : undefined
   useEffect(() => {
     let live = true
     setPair(null)
     setError('')
-    window.gurt.getDiffPair(ws, task, repo, { kind: 'uncommitted' }, path)
+    window.gurt.getDiffPair(ws, task, repo, sha ? { kind: 'commit', sha } : { kind: 'uncommitted' }, path)
       .then((value) => { if (live) setPair(value) })
       .catch((e: unknown) => { if (live) setError(e instanceof Error ? e.message : String(e)) })
     return () => { live = false }
-  }, [ws, task, repo, path, revision])
+  }, [ws, task, repo, path, sha, revision])
 
   return (
     <div className="review-diff">
@@ -67,7 +69,7 @@ function FileDiff({ file, revision }: { file: DiffFileSelection; revision: RepoC
           ))}
         </div>
       </div>
-      {mode === 'split' && <div className="diff-sides mono"><span>HEAD</span><span>Working tree</span></div>}
+      {mode === 'split' && <div className="diff-sides mono"><span>{sha ? `${sha.slice(0, 7)}^` : 'HEAD'}</span><span>{sha ? sha.slice(0, 7) : 'Working tree'}</span></div>}
       {error && <div className="error review-error">{error}</div>}
       {!pair && !error && <div className="tp-empty">loading diff…</div>}
       {pair?.binary && <div className="tp-empty">binary file — no text diff</div>}

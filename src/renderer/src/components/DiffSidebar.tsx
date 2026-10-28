@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
-import type { ChangedFile, RepoChanges } from '../../../shared/types'
-import { isActionable, isDelivered } from '../../../shared/types'
+import type { ChangedFile, DiffTarget, RepoChanges } from '../../../shared/types'
+import { targetKey, isActionable, isDelivered } from '../../../shared/types'
 import { run } from '../async'
 import { showToast } from '../toast'
 import { Icon } from './icons'
@@ -14,6 +14,7 @@ export interface DiffFileSelection {
   task: string
   repo: string
   path: string
+  target?: DiffTarget | undefined
 }
 
 interface FileNode {
@@ -48,22 +49,29 @@ function fileTree(files: ChangedFile[]): FileNode[] {
  *  drift apart. */
 export type DiffRow =
   | { kind: 'repo'; repo: string }
-  | { kind: 'folder'; repo: string; path: string; name: string; depth: number }
-  | { kind: 'file'; repo: string; path: string; file: ChangedFile; depth: number; flat: boolean }
+  | { kind: 'group'; repo: string; target: DiffTarget; label: string; pushed?: boolean }
+  | { kind: 'folder'; target: DiffTarget; repo: string; path: string; name: string; depth: number }
+  | { kind: 'file'; target: DiffTarget; repo: string; path: string; file: ChangedFile; depth: number; flat: boolean }
 
-export const diffRowKey = (r: { kind: DiffRow['kind']; repo: string; path?: string }): string =>
-  r.kind === 'repo' ? `repo:${r.repo}` : `${r.kind}:${r.repo}:${r.path}`
+export const diffRowKey = (r: { kind: DiffRow['kind']; repo: string; path?: string; target?: DiffTarget | undefined }): string =>
+  r.kind === 'repo' ? `repo:${r.repo}` : `${r.kind}:${r.repo}:${targetKey(r.target ?? { kind: 'uncommitted' })}:${r.path ?? ''}`
+
+export const groupKey = (ws: string, task: string, repo: string, target: DiffTarget): string =>
+  JSON.stringify([ws, task, repo, target])
 
 /** Folding the sidebar owns — repos start closed, folders open. */
 export interface DiffFolding {
   repoOpen: (repo: string) => boolean
-  folderOpen: (repo: string, path: string) => boolean
+  groupOpen: (repo: string, target: DiffTarget) => boolean
+  groupFiles: (repo: string, target: DiffTarget) => { files?: ChangedFile[]; error?: string } | undefined
+  folderOpen: (repo: string, path: string, target: DiffTarget) => boolean
 }
 
 /** Everything a task's repositories need from the tree they sit in. */
 export interface DiffNav extends DiffFolding {
   setRepoOpen: (repo: string, open: boolean) => void
-  setFolderOpen: (repo: string, path: string, open: boolean) => void
+  setGroupOpen: (repo: string, target: DiffTarget, open: boolean) => void
+  setFolderOpen: (repo: string, path: string, target: DiffTarget, open: boolean) => void
   /** Key of the row the tree's cursor is on, when it is in this task. */
   cursor: string | null
   /** A click landed on this row: move the cursor there, focus back on the tree. */
@@ -75,27 +83,40 @@ export interface DiffNav extends DiffFolding {
 export function diffRows(changes: RepoChanges[], layout: FileLayout, folding: DiffFolding): DiffRow[] {
   return changes.flatMap((r): DiffRow[] => [
     { kind: 'repo', repo: r.repo },
-    ...(folding.repoOpen(r.repo) ? fileRows(r, layout, folding) : [])
+    ...(folding.repoOpen(r.repo) ? groupRows(r, layout, folding) : [])
   ])
 }
 
-function fileRows(r: RepoChanges, layout: FileLayout, folding: DiffFolding): DiffRow[] {
+function groupRows(r: RepoChanges, layout: FileLayout, folding: DiffFolding): DiffRow[] {
+  const groups: Extract<DiffRow, { kind: 'group' }>[] = [
+    { kind: 'group', repo: r.repo, target: { kind: 'uncommitted' }, label: 'Uncommitted' },
+    ...(!r.integrated ? r.commits.map((c) => ({
+      kind: 'group' as const, repo: r.repo, target: { kind: 'commit' as const, sha: c.sha },
+      label: c.subject, pushed: c.pushed
+    })) : [])
+  ]
+  return groups.flatMap((group) => [group, ...(folding.groupOpen(r.repo, group.target)
+    ? fileRows(r.repo, group.target.kind === 'uncommitted' ? r.files : folding.groupFiles(r.repo, group.target)?.files ?? [], group.target, layout, folding)
+    : [])])
+}
+
+function fileRows(repo: string, files: ChangedFile[], target: DiffTarget, layout: FileLayout, folding: DiffFolding): DiffRow[] {
   if (layout === 'list')
-    return [...r.files]
+    return [...files]
       .sort((a, b) => a.path.localeCompare(b.path))
-      .map((file) => ({ kind: 'file', repo: r.repo, path: file.path, file, depth: 0, flat: true }))
+      .map((file) => ({ kind: 'file', repo, target, path: file.path, file, depth: 0, flat: true }))
   const out: DiffRow[] = []
   const walk = (nodes: FileNode[], depth: number) => {
     for (const node of [...nodes].sort((a, b) => Number(!!a.file) - Number(!!b.file) || a.name.localeCompare(b.name))) {
       if (node.file) {
-        out.push({ kind: 'file', repo: r.repo, path: node.path, file: node.file, depth, flat: false })
+        out.push({ kind: 'file', repo, target, path: node.path, file: node.file, depth, flat: false })
         continue
       }
-      out.push({ kind: 'folder', repo: r.repo, path: node.path, name: node.name, depth })
-      if (folding.folderOpen(r.repo, node.path)) walk([...node.children.values()], depth + 1)
+      out.push({ kind: 'folder', repo, target, path: node.path, name: node.name, depth })
+      if (folding.folderOpen(repo, node.path, target)) walk([...node.children.values()], depth + 1)
     }
   }
-  walk(fileTree(r.files), 0)
+  walk(fileTree(files), 0)
   return out
 }
 
@@ -124,6 +145,7 @@ export function TaskRepositories({ ws, task, changes, layout, selection, nav, on
           repo={repo}
           layout={layout}
           nav={nav}
+          activeTarget={selection?.target}
           activePath={selection?.ws === ws && selection.task === task && selection.repo === repo.repo
             ? selection.path : null}
           onRefresh={onRefresh}
@@ -133,12 +155,13 @@ export function TaskRepositories({ ws, task, changes, layout, selection, nav, on
   )
 }
 
-function Repository({ ws, task, repo: r, layout, nav, activePath, onRefresh }: {
+function Repository({ ws, task, repo: r, layout, nav, activePath, activeTarget, onRefresh }: {
   ws: string
   task: string
   repo: RepoChanges
   layout: FileLayout
   nav: DiffNav
+  activeTarget?: DiffTarget | undefined
   activePath: string | null
   onRefresh: () => Promise<void>
 }) {
@@ -209,16 +232,11 @@ function Repository({ ws, task, repo: r, layout, nav, activePath, onRefresh }: {
       </button>
       {open && (
         <div className="diff-files" role="group" aria-label={`Changed files in ${r.repo}`}>
-          {r.files.length === 0 && (
-            <div className="diff-files-empty">
-              {r.commits.some((c) => !c.pushed) && !r.integrated
-                ? 'No uncommitted files · ready to push'
-                : 'No uncommitted files'}
-            </div>
-          )}
-          {fileRows(r, layout, nav).map((row) => row.kind === 'folder'
-            ? <Folder key={row.path} row={row} nav={nav} />
-            : row.kind === 'file' && <FileRow key={row.path} row={row} nav={nav} active={activePath === row.path} />)}
+          {groupRows(r, layout, nav).map((row) => row.kind === 'group'
+            ? <ChangeGroup key={diffRowKey(row)} row={row} nav={nav} files={row.target.kind === 'uncommitted' ? r.files : undefined} />
+            : row.kind === 'folder'
+              ? <Folder key={diffRowKey(row)} row={row} nav={nav} />
+              : row.kind === 'file' && <FileRow key={diffRowKey(row)} row={row} nav={nav} active={activePath === row.path && targetKey(activeTarget ?? { kind: 'uncommitted' }) === targetKey(row.target)} />)}
         </div>
       )}
       {menu && (
@@ -283,18 +301,36 @@ function Repository({ ws, task, repo: r, layout, nav, activePath, onRefresh }: {
   )
 }
 
+function ChangeGroup({ row, nav, files }: { row: Extract<DiffRow, { kind: 'group' }>; nav: DiffNav; files?: ChangedFile[] | undefined }) {
+  const open = nav.groupOpen(row.repo, row.target)
+  const state = files ? { files } : nav.groupFiles(row.repo, row.target)
+  return <>
+    <button className={`diff-file-row diff-change-group${nav.cursor === diffRowKey(row) ? ' cursor' : ''}`}
+      style={{ paddingLeft: 42 }} tabIndex={-1} aria-expanded={open} title={row.label}
+      onMouseDown={keepTreeFocus} onClick={() => { nav.point(row); nav.setGroupOpen(row.repo, row.target, !open) }}>
+      <Icon name="chevron" size={10} style={open ? undefined : { transform: 'rotate(-90deg)' }} />
+      {row.target.kind === 'commit' && <span className="commit-sha mono">{row.target.sha.slice(0, 7)}</span>}
+      <span className="diff-file-name">{row.label}</span>
+      {row.target.kind === 'commit' && <span className={`tag ${row.pushed ? 'tag-green' : ''}`}>{row.pushed ? 'pushed' : 'local'}</span>}
+    </button>
+    {open && (!state?.files || state.files.length === 0) && <div className="diff-files-empty">
+      {state?.error ?? (state?.files ? 'No changed files' : 'loading files…')}
+    </div>}
+  </>
+}
+
 function Folder({ row, nav }: { row: Extract<DiffRow, { kind: 'folder' }>; nav: DiffNav }) {
-  const open = nav.folderOpen(row.repo, row.path)
+  const open = nav.folderOpen(row.repo, row.path, row.target)
   return (
     <button
       className={`diff-file-row diff-folder${nav.cursor === diffRowKey(row) ? ' cursor' : ''}`}
-      style={{ paddingLeft: 42 + row.depth * 14 }}
+      style={{ paddingLeft: 56 + row.depth * 14 }}
       tabIndex={-1}
       aria-expanded={open}
       onMouseDown={keepTreeFocus}
       onClick={() => {
         nav.point(row)
-        nav.setFolderOpen(row.repo, row.path, !open)
+        nav.setFolderOpen(row.repo, row.path, row.target, !open)
       }}
     >
       <Icon name="chevron" size={10} style={open ? undefined : { transform: 'rotate(-90deg)' }} />
@@ -314,7 +350,7 @@ function FileRow({ row, nav, active }: {
   return (
     <button
       className={`diff-file-row${active ? ' selected' : ''}${nav.cursor === diffRowKey(row) ? ' cursor' : ''}`}
-      style={{ paddingLeft: 42 + row.depth * 14 }}
+      style={{ paddingLeft: 56 + row.depth * 14 }}
       tabIndex={-1}
       title={file.path}
       aria-pressed={active}
