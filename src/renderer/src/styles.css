@@ -2257,9 +2257,6 @@ textarea.input {
   font-size: 12px;
   margin-top: 4px;
 }
-.env-error {
-  padding: 10px 7% 0;
-}
 .env-log {
   overflow: auto;
   max-height: 300px;
