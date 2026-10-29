@@ -27,6 +27,7 @@ import * as store from './store'
 import { cloneDir } from './store'
 import {
   adapterPresent,
+  containerTerminalCommand,
   assertDockerCli,
   assertDockerDaemon,
   devcontainerUp,
@@ -48,6 +49,7 @@ import {
   HISTORY_MOUNT
 } from './provision'
 import { bundledEnv } from './operatorEnv'
+import { openCommandInTerminal } from './terminal'
 import type { Bus } from './bus'
 import { createLogger, errCtx } from './log'
 import { proxies, type ProxyRuntime } from './proxy/manager'
@@ -342,6 +344,25 @@ export class ContainerManager {
         resolve()
       })
     })
+  }
+
+  /** Open a human shell in the running container, without starting an agent. */
+  openTerminal(sessionId: string): Promise<void> {
+    const info = this.deps.session(sessionId)
+    const c = info?.container
+    if (!info || c?.status !== 'running' || !c.id || !c.remoteWorkspaceFolder)
+      throw new Error('container is not running')
+    const hostWorkspaceFolder = usesRepoMounts(info)
+      ? store.mountedWorkspaceDir(info.workspace, info.task, sessionId)
+      : cloneDir(info.workspace, info.task, info.repos[0]!)
+    // Use the materialized config from this container's last up, including
+    // merged mounts when present. Opening a shell needs no agent credentials.
+    const merged = sessionConfigPath(store.sessionScratchDir(info.workspace, info.task, sessionId))
+    const configArgs = existsSync(merged)
+      ? ['--override-config', merged]
+      : overrideConfigArgs(this.refOf(info))
+    const { cmd, args } = containerTerminalCommand(c.id, configArgs, hostWorkspaceFolder)
+    return openCommandInTerminal(cmd, args)
   }
 
   /**

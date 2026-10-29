@@ -8,7 +8,7 @@ as-built record of what landed. Read
 (§3.1) and of its routing (§4.3), and it changes neither. Key code:
 `src/shared/mcp.ts` (the entry model, the validator, the snippet
 parser), `src/main/mcp/stdioBridge.ts` (new), `src/main/mcp/manager.ts`
-(the built-in/local split and the refcount), `src/main/mcp/probe.ts`
+(the built-in/local split and per-session process ownership), `src/main/mcp/probe.ts`
 (new — phase 3, §4.6), `src/main/proxy/config.ts`
 (`planProxy`), `src/main/store.ts` (`liftMcpServers`), `src/main/ipc.ts`
 (the save-time checks, `reinstallMcpServer` and `probeMcpServer`), and — phase 2 —
@@ -331,11 +331,10 @@ message at all. That last one is not an edge case: servers that log to
 stdout are common, and dropping those lines silently makes a working
 server look like a broken one, so they are surfaced as noise at DBG.
 
-**Id remapping.** One process serves every session that selected the
-entry (§6), so two clients will both cheerfully send request id `1`.
+**Id remapping.** Each session owns its process (§6), but overlapping
+HTTP requests can still reuse an id, for example during reconnects.
 Every request is renumbered onto a bridge-wide sequence on the way down
-and restored on the way back. Without it, one session reads another's
-reply — the one bug that would be both silent and severe.
+and restored on the way back, so each HTTP caller receives its own reply.
 
 **Responses stream.** A reply is written to the response as it arrives,
 not collected first. For a single request that is the same thing; for a
@@ -354,9 +353,10 @@ listed here so nobody re-discovers them as bugs.
 
 **Crash and restart.** The child is spawned eagerly, so a broken entry
 fails at session start where it can be reported, and respawned lazily if
-it dies, so one crashing server does not permanently break every session
-that selected it. A respawn loses the MCP `initialize` handshake, which
-the client redoes on its next call — the same thing that happens when a
+it dies, so a crashing server does not permanently break its owning
+session or affect another session's process. A respawn loses the MCP
+`initialize` handshake, which the client redoes on its next call — the
+same thing that happens when a
 remote upstream restarts.
 
 ### 4.2 `npm`: gurt installs it, gurt runs it
@@ -536,13 +536,10 @@ answers "did it come up, and what does it offer":
 
 Four properties, and they are the design:
 
-1. **Outside the refcount.** The probe starts its own one-shot bridge.
-   It never enters `localBridges` and never becomes a `LocalMcpHolder`,
-   so a session holding the same entry keeps the process it already has,
-   and the probe's process cannot outlive the call. §6's invariant — the
-   refcount is a function of the live sessions, computed and never
-   stored — is untouched by a probe, which is the point of not routing
-   it through the manager.
+1. **Outside the session lifecycle.** The probe starts its own one-shot
+   bridge. It never enters `localBridges` and never becomes a
+   `LocalMcpHolder`, so a session using the same entry keeps its process,
+   and the probe's process cannot outlive the call.
 2. **Bounded, and it kills what it started.** One budget covers install,
    spawn, handshake and tool list; `stop()` (SIGTERM → grace → SIGKILL,
    idempotent) runs in a `finally` on every path. A server sitting on an
@@ -713,31 +710,29 @@ takes a whole entry rather than an id, and why a lifted-but-unsaved
 secret is put back inline for the probe's environment (there is no
 credential to link to until Save).
 
-## 6. Lifecycle: one process per entry, refcounted from the live sessions
+## 6. Lifecycle: one process per session and registry entry
 
-**One process per registry entry, shared by every session that selected
-it** — not one per session. Three sessions with `kubernetes` selected
-talk to one `kubernetes-mcp-server`.
+**Each session gets its own bridge and process for every selected local
+entry.** Three sessions with `kubernetes` selected run three independent
+`kubernetes-mcp-server` processes. The running key is `(sessionId, mcpId)`;
+the workspace determines which registry entry is launched.
 
-Per session would have been simpler and is wrong here. These processes
-are heavy (a kubeconfig, a cluster connection, a warm cache), they are
-not scoped to a clone the way `github` is — a local server knows nothing
-about the session's repo — and the user's mental model is "I configured
-a server", not "each session gets its own copy of my server". The cost
-of sharing is that request ids collide, which §4.1 handles, and that
-one server's crash affects several sessions, which the lazy respawn
-handles.
+A server author implements ordinary stdio MCP: one process serves one
+context, without custom session headers or tool arguments. Process memory,
+initialization and crashes are isolated between sessions. Package
+installation under `~/.gurt/mcp/<id>/` remains shared.
 
-**The refcount is never stored.** It is recomputed, from the set of live
-sessions and their selections, on every change — `localMcpWants` is a
-pure function of (holders, registries) and is the whole of the lifetime
-decision: a key in its output must have a process, a key absent from it
-must not. This is `requirements-mcp-proxy.md` §7.2 ("reconcile, not
-assume") applied to processes instead of networks, and for the same
-reason: a count on disk is a claim nothing can be checked against, and
-it is wrong after exactly one crash. Recomputing survives a gurt
-restart, a killed session and a hand-edited registry, because there is
-no remembered number to be stale.
+This does not isolate files or external services: entries still run with
+host privileges and their configured cwd/env/args. A server that persists
+session state must arrange independent files or profiles itself. Stopping a
+process discards its in-memory state; starting that session again creates a
+fresh process. Reattaching while its process is live reuses it.
+
+**The desired processes are derived from live sessions and selections.**
+`localMcpWants` is a pure function of (holders, registries): each key in its
+output must have one process, and keys absent from it must not. No reference
+count or process ownership is persisted to disk. Repeated selections and
+reattachment cannot create a second process for the same session and entry.
 
 The reconcile:
 
@@ -749,7 +744,7 @@ apply:    stop  every running key not wanted, or whose process identity changed
 ```
 
 Stops run before starts, so an entry edited in place never holds two
-processes open at once.
+processes open for the same session and entry at once.
 
 **Process identity** (`localMcpSpec`) is every field that would have
 made gurt spawn something else — package, version, command, cwd, args,
@@ -767,7 +762,7 @@ Where it hooks in:
 | event | what happens |
 |---|---|
 | session start / resume | `resolveMcpServers` records the session's holds, reconciles, returns descriptors for the bridges that came up |
-| session detach / delete | `stopMcpServers` drops the session's holds and reconciles — the last release stops the process |
+| session detach / delete | `stopMcpServers` drops the session's holds and reconciles — only that session's processes stop |
 | registry edit | takes effect at the next session start, like every other scope change (proxy doc §5.3) |
 | app quit | `stopLocalMcpServers` from `before-quit`, **synchronously** — that hook cannot await, and a promise scheduled in it is not reliably given a turn before the process exits. An orphaned server holding a `tsh` session is not something a user would think to go looking for |
 
@@ -824,7 +819,7 @@ New slugs, for `docs/logging.md`'s dictionary:
 ## 8. Phases
 
 1. **Model, runtime, routing** (done — this document). The union, the
-   validator, the snippet parser, the bridge, the refcount, the `host`
+   validator, the snippet parser, the bridge, per-session process ownership, the `host`
    upstream. An entry is created by editing `workspace.json` and works
    end to end from there: selected in the composer, spawned on start,
    reached by the agent through the proxy.
@@ -902,7 +897,8 @@ New slugs, for `docs/logging.md`'s dictionary:
    `workspace.json` round-trips without gaining a field); routing in
    `planProxy` (local → `kind: 'host'`, remote → `kind: 'registry'`,
    unknown id → the error it always was, no `hostMcpUrl` fallback for a
-   local entry); the refcount computed from live sessions; the JSON-RPC
+   local entry); independent processes and state for live sessions, reuse on reattach,
+   and teardown without affecting other sessions; the JSON-RPC
    framing, against two fake streams; and the bridge end to end against
    a five-line echo server, which is where the id remapping is proven.
 

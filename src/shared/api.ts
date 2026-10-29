@@ -256,6 +256,8 @@ export interface GurtApi {
   /** Launch VS Code, in its own window, attached to the session's running
    *  container (impl: `ContainerManager.openVscode`). Rejects if it isn't running. */
   sessionOpenVscode(sessionId: string): Promise<void>
+  /** Open a system terminal inside the session's running container. */
+  sessionOpenTerminal(sessionId: string): Promise<void>
   /** Git state of every clone of the task, computed on the host; `fetch` reaches the network. */
   getTaskChanges(ws: string, task: string, opts?: { fetch?: boolean }): Promise<RepoChanges[]>
   /** Read-only unified diff of one file (untracked shown as whole-file added). */
@@ -561,6 +563,7 @@ const METHODS = {
   stopContainer: 'none', //     §2.4: does not drive other sessions
   releaseContainer: 'none', //  §2.4
   sessionOpenVscode: 'none', // host GUI
+  sessionOpenTerminal: 'none', // host GUI
   getTaskChanges: 'read', //    counts and states, not content
   getFileDiff: 'none', //       repo content (§2.4)
   getCommitDiff: 'none', //     repo content (§2.4)

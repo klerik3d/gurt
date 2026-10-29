@@ -299,6 +299,7 @@ export function registerIpc(): void {
     stopContainer: (sessionId) => kernel.containers.stop(sessionId),
     releaseContainer: (sessionId) => kernel.containers.release(sessionId),
     sessionOpenVscode: (sessionId) => kernel.containers.openVscode(sessionId),
+    sessionOpenTerminal: (sessionId) => kernel.containers.openTerminal(sessionId),
     getTaskChanges: (ws, task, opts) => changes.getTaskChanges(ws, task, opts ?? {}),
     getFileDiff: (ws, task, repo, file) => changes.getFileDiff(ws, task, repo, file),
     getCommitDiff: (ws, task, repo, sha) => changes.getCommitDiff(ws, task, repo, sha),

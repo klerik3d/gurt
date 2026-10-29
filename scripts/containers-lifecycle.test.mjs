@@ -721,7 +721,7 @@ test('reconcile skips entirely when docker is unreachable', async () => {
 // ==========================================================================
 // openVscode gates on a running container
 // ==========================================================================
-test('openVscode refuses anything but a fully-up container', () => {
+test('container editor and terminal refuse anything but a fully-up container', () => {
   scenario([])
   session('v1', { status: 'stopped', id: 'c-v', remoteWorkspaceFolder: '/w', repos: ['alpha'] })
   session('v2', { status: 'running', repos: ['alpha'] })
@@ -731,7 +731,9 @@ test('openVscode refuses anything but a fully-up container', () => {
     ['a container with no id', 'v2'],
     ['a container with no workspace folder', 'v3'],
     ['an unknown session', 'v4']
-  ])
+  ]) {
     assert.throws(() => manager.openVscode(id), /container is not running/, `${what} is refused`)
+    assert.throws(() => manager.openTerminal(id), /container is not running/, `${what} is refused`)
+  }
   assert.deepEqual(calls(), [], 'and nothing was spawned')
 })

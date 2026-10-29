@@ -1,6 +1,6 @@
 // Local (stdio) MCP servers — docs/requirements-mcp-stdio.md.
 //
-// Four things, in the order the feature is used:
+// Five things, in the order the feature is used:
 //
 //   1. **Pasting.** `parseMcpSnippet` is how a registry entry is actually
 //      going to be created: the whole ecosystem publishes itself as
@@ -12,15 +12,15 @@
 //   3. **Routing.** A local entry is a `host` upstream and a remote one is a
 //      `registry` upstream — the difference that keeps `gurt-proxy.mjs`
 //      untouched (§4.4).
-//   4. **Lifecycle.** The refcount is computed from the live sessions, never
-//      stored (§6), and the JSON-RPC framing the bridge speaks is exercised
-//      against two fake streams rather than a real child process.
-//   5. **The probe** (§4.6). The one path that really starts a server: it is
+//   4. **Lifecycle.** Processes belong to individual sessions (§6). Real child
+//      processes verify state isolation, reuse, teardown and restart. JSON-RPC
+//      framing is also exercised against two fake streams.
+//   5. **The probe** (§4.6). A separate server started for a check: it is
 //      tested against real child processes — one that answers, one that dies,
 //      one that wedges — and every case ends by checking the process is gone.
 //
 // No docker and no electron. The probe tests spawn a real (tiny) child; the
-// rest of the file spawns nothing.
+// lifecycle tests also spawn tiny local servers.
 //
 //   node scripts/mcp-stdio.test.mjs
 import { test, after } from 'node:test'
@@ -54,7 +54,7 @@ await bundle({
       } from ${S('src/shared/mcp.ts')}
       export { resolveMcpEnvSecret } from ${S('src/shared/credentials.ts')}
       export { planProxy } from ${S('src/main/proxy/config.ts')}
-      export { localMcpWants, localMcpSpec } from ${S('src/main/mcp/manager.ts')}
+      export { localMcpWants, localMcpSpec, resolveMcpServers, stopMcpServers } from ${S('src/main/mcp/manager.ts')}
       export {
         stdioFramer, encodeStdioMessage, isJsonRpcRequest,
         checkMcpCommand, mcpInstallDir, startStdioBridge, clearNpmInstall, installedName
@@ -501,12 +501,12 @@ test('an unknown id is still an error, exactly as it was', () => {
   ])
 })
 
-// --- the refcount (§6) ------------------------------------------------------
+// --- per-session processes (§6) -------------------------------------------
 
 const registries = new Map([['w1', REGISTRY], ['w2', REGISTRY]])
 const holder = (sessionId, workspace, ids) => ({ sessionId, workspace, ids })
 
-test('the refcount is the live sessions, computed not stored', () => {
+test('each live session gets its own local processes', () => {
   const wants = m.localMcpWants(
     [
       holder('s1', 'w1', ['linear', 'k8s']),
@@ -515,17 +515,14 @@ test('the refcount is the live sessions, computed not stored', () => {
     ],
     registries
   )
-  assert.deepEqual([...wants.keys()].sort(), ['w1::git', 'w1::k8s'])
-  // One process for two sessions — that is the whole reason the id remapping in
-  // the bridge exists.
-  assert.deepEqual(wants.get('w1::k8s').sessions, ['s1', 's2'])
-  assert.deepEqual(wants.get('w1::git').sessions, ['s2'])
+  assert.deepEqual([...wants.keys()].sort(), ['s1::k8s', 's2::git', 's2::k8s'])
+  assert.equal(wants.get('s1::k8s').sessionId, 's1')
+  assert.equal(wants.get('s2::k8s').sessionId, 's2')
+  assert.equal(wants.get('s2::git').sessionId, 's2')
   // A remote entry has no process to hold.
-  assert.equal(wants.has('w1::linear'), false)
+  assert.equal(wants.has('s1::linear'), false)
 
-  // The last holder going away is what empties the set: nothing is remembered
-  // between calls, so a crashed gurt converges on the next pass instead of
-  // reading a stale count.
+  // Removing a session drops only its processes; no persisted count is needed.
   assert.equal(m.localMcpWants([holder('s2', 'w1', ['k8s'])], registries).size, 1)
   assert.equal(m.localMcpWants([], registries).size, 0)
 })
@@ -535,11 +532,11 @@ test('the same id in two workspaces is two processes', () => {
     [holder('s1', 'w1', ['k8s']), holder('s2', 'w2', ['k8s'])],
     registries
   )
-  assert.deepEqual([...wants.keys()].sort(), ['w1::k8s', 'w2::k8s'])
+  assert.deepEqual([...wants.keys()].sort(), ['s1::k8s', 's2::k8s'])
 })
 
 test('a hand-edited registry cannot put a process behind a built-in id', () => {
-  // `mcpEntries` already makes the built-in win the lookup; the refcount has to
+  // `mcpEntries` makes the built-in win the lookup; process selection must
   // agree, or a workspace.json could shadow `github` with a spawned process.
   const shadowing = new Map([['w1', [{ kind: 'npm', id: 'github', package: 'not-gurts' }]]])
   assert.equal(m.localMcpWants([holder('s1', 'w1', ['github'])], shadowing).size, 0)
@@ -557,7 +554,8 @@ test('an id that resolves to nothing holds nothing', () => {
     [holder('s1', 'w1', ['k8s']), holder('s1', 'w1', ['k8s'])],
     registries
   )
-  assert.deepEqual(wants.get('w1::k8s').sessions, ['s1'])
+  assert.equal(wants.size, 1)
+  assert.equal(wants.get('s1::k8s').sessionId, 's1')
 })
 
 test('the process spec changes when the process would, and not when it would not', () => {
@@ -787,7 +785,7 @@ test('an npm entry installs under ~/.gurt/mcp, keyed by its id', () => {
 test('reinstall forgets the stamp and keeps the tree (§4.2, §8.2)', async () => {
   // What the editor's Reinstall button does: no stamp means the next start
   // resolves the spec again, which is the whole of "get a newer latest". The
-  // installed tree is left alone — a shared process may still be running out of
+  // installed tree is left alone — session processes may still be running out of
   // it (§6), and `npm install` overwrites it in place anyway.
   const dir = m.mcpInstallDir('stamped')
   fs.mkdirSync(dir, { recursive: true })
@@ -876,6 +874,111 @@ test('the paste path a user actually walks: snippet in, editable fields out', ()
   assert.equal(uvx.command, 'uvx')
 })
 
+// --- manager lifecycle, against real stateful child processes --------------
+
+const STATEFUL_SERVER = `
+  let value = null
+  let rest = ''
+  process.stdin.on('data', (chunk) => {
+    rest += chunk
+    const lines = rest.split('\\n')
+    rest = lines.pop()
+    for (const line of lines) {
+      if (!line.trim()) continue
+      const msg = JSON.parse(line)
+      if (msg.id === undefined) continue
+      if (msg.method === 'set') value = msg.params.value
+      process.stdout.write(JSON.stringify({
+        jsonrpc: '2.0', id: msg.id, result: { pid: process.pid, value }
+      }) + '\\n')
+    }
+  })
+`
+
+for (const kind of ['command', 'npm']) {
+  test(`${kind}: sessions isolate state, reuse their process, and stop independently`, async () => {
+    const workspace = `isolated-${kind}`
+    const id = `state-${kind}`
+    const ref = { workspace, task: 'test', env: 'test' }
+    const selection = [{ id, mode: 'full' }]
+    const sessionA = `${kind}-a`
+    const sessionB = `${kind}-b`
+    const drainSession = `${kind}-drain`
+    fs.mkdirSync(path.join(GURT_ROOT, workspace), { recursive: true })
+    fs.writeFileSync(path.join(GURT_ROOT, workspace, 'workspace.json'), JSON.stringify({ repos: [], envs: [] }))
+    const script = path.join(GURT_ROOT, `${id}.mjs`)
+    fs.writeFileSync(script, STATEFUL_SERVER)
+    if (kind === 'npm') {
+      // A preinstalled fixture exercises the real npm launch path without a
+      // network install. Both sessions must reuse this single installation.
+      const dir = m.mcpInstallDir(id)
+      fs.mkdirSync(dir, { recursive: true })
+      fs.writeFileSync(path.join(dir, 'gurt-install.json'), JSON.stringify({ spec: 'state-fixture@1', script }))
+      await m.addMcpServer(workspace, { kind: 'npm', id, package: 'state-fixture', version: '1' })
+    } else {
+      await m.addMcpServer(workspace, { kind: 'command', id, command: process.execPath, args: [script] })
+    }
+    const resolve = (session, picked = selection) => m.resolveMcpServers(ref, session, undefined, picked)
+    const call = async (descriptor, method = 'get', value = undefined) => {
+      const res = await fetch(descriptor.url.replace('host.docker.internal', '127.0.0.1'), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params: { value } }),
+        signal: AbortSignal.timeout(5000)
+      })
+      assert.equal(res.status, 200)
+      const reply = await res.json()
+      assert.equal(reply.error, undefined)
+      return reply.result
+    }
+    const pids = new Set()
+    try {
+      // Concurrent attachment must still produce distinct bridges and children.
+      const [[a], [b]] = await Promise.all([resolve(sessionA), resolve(sessionB)])
+      assert.ok(a)
+      assert.ok(b)
+      assert.notEqual(a.url, b.url)
+      const [stateA, stateB] = await Promise.all([call(a, 'set', 'A'), call(b, 'set', 'B')])
+      pids.add(stateA.pid)
+      pids.add(stateB.pid)
+      assert.notEqual(stateA.pid, stateB.pid)
+      assert.deepEqual(await call(a), stateA)
+      assert.deepEqual(await call(b), stateB)
+
+      const [reattached] = await resolve(sessionA)
+      assert.equal(reattached.url, a.url)
+      assert.deepEqual(await call(reattached), stateA)
+
+      m.stopMcpServers(sessionA)
+      // Await the serialized reconcile via B's next attach.
+      const [stillB] = await resolve(sessionB)
+      assert.equal(stillB.url, b.url)
+      assert.deepEqual(await call(stillB), stateB)
+      assert.throws(() => process.kill(stateA.pid, 0), { code: 'ESRCH' })
+      await assert.rejects(call(a))
+
+      const [restartedA] = await resolve(sessionA)
+      const fresh = await call(restartedA)
+      pids.add(fresh.pid)
+      assert.notEqual(restartedA.url, a.url)
+      assert.notEqual(fresh.pid, stateA.pid)
+      assert.equal(fresh.value, null, 'a stopped session starts with fresh process memory')
+      assert.deepEqual(await call(b), stateB)
+
+      // Deselecting an entry also stops only the owning session's process.
+      assert.deepEqual(await resolve(sessionA, []), [])
+      assert.throws(() => process.kill(fresh.pid, 0), { code: 'ESRCH' })
+      assert.deepEqual(await call(b), stateB)
+    } finally {
+      m.stopMcpServers(sessionA)
+      m.stopMcpServers(sessionB)
+      await resolve(drainSession, [])
+      m.stopMcpServers(drainSession)
+    }
+    for (const pid of pids) assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' })
+  })
+}
+
 // --- the bridge end to end, against a real (tiny) stdio server --------------
 //
 // Not docker and not an MCP server: a five-line node script speaking the same
@@ -931,7 +1034,7 @@ test('a POST reaches the child and its reply comes back', async () => {
 
     // Two callers, both using id 1, both slow, overlapping on purpose: the
     // bridge renumbers onto its own sequence, so neither reads the other's
-    // reply. This is the whole reason one process can be shared by sessions.
+    // reply, even when a reconnect reuses an earlier request id.
     const [first, second] = await Promise.all([
       call({ jsonrpc: '2.0', id: 1, method: 'ping', params: { mark: 'first', delay: 60 } }),
       call({ jsonrpc: '2.0', id: 1, method: 'ping', params: { mark: 'second', delay: 10 } })

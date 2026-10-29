@@ -150,6 +150,7 @@ const SAFE_ARGS = new Set([
   'stopContainer',
   'releaseContainer',
   'sessionOpenVscode',
+  'sessionOpenTerminal',
   'sessionRun',
   'sessionEnqueue',
   'sessionCancelQueue',

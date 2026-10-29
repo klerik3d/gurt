@@ -143,9 +143,9 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   log.info('app.quit')
-  // Local MCP servers are host processes gurt spawned, shared across sessions
-  // and so not tied to any one session's teardown
-  // (docs/requirements-mcp-stdio.md §6). Signalled here rather than left to
+  // Local MCP servers are host processes owned by individual sessions
+  // (docs/requirements-mcp-stdio.md §6). Stop all remaining processes on quit
+  // without waiting for each session's teardown. Signalled here rather than left to
   // die with the parent: an orphaned `kubernetes-mcp-server` holding a `tsh`
   // session is exactly the thing a user would not think to go looking for.
   stopLocalMcpServers()

@@ -15,11 +15,10 @@
 //      `stdioFramer` is the whole of it, and is pure — it takes bytes and emits
 //      messages, so it is testable against two fake streams
 //      (`scripts/mcp-stdio.test.mjs`) without spawning anything.
-//   2. **Id remapping.** One process is shared by every session that selected
-//      the entry (§6), so two clients will happily both send request id `1`.
-//      Every request is renumbered onto a bridge-wide sequence on the way down
-//      and restored on the way back, which is what keeps one session from
-//      reading another's reply.
+//   2. **Id remapping.** Overlapping HTTP calls can reuse a request id, e.g.
+//      during client reconnects. Every request is renumbered onto a bridge-wide
+//      sequence on the way down and restored on the way back, so replies reach
+//      the right caller within this session.
 //   3. **Spawning.** An `npm` entry is installed once under `~/.gurt/mcp/<id>/`
 //      and run with gurt's own node; a `command` entry is resolved against an
 //      explicitly augmented PATH. Both of those exist because a GUI app on
@@ -360,9 +359,9 @@ export async function ensureNpmPackage(entry: McpNpmEntry, trace?: StdioTrace): 
  *
  * The stamp goes, the directory stays: `npm install` will overwrite the tree in
  * place, and removing `node_modules` out from under a server that is still
- * running (§6 — one process, several sessions) would break it for the sessions
- * holding it. Which is also why this only takes effect at the next start: gurt
- * does not restart a local server under its holders (§10).
+ * running would break that session. Multiple session processes may use the
+ * same installed package. This only takes effect at the next start: gurt does
+ * not restart a local server under its owning session (§10).
  */
 export async function clearNpmInstall(id: string): Promise<void> {
   await fs.rm(stampPath(id), { force: true })
@@ -437,9 +436,9 @@ interface Child {
 }
 
 /**
- * One local MCP server, bridged. Created per *registry entry* and shared by
- * every session that selected it (§6) — the sharing is why ids are remapped and
- * why nothing here is keyed by session.
+ * One local MCP server, bridged. The manager creates one bridge per
+ * (session, registry entry); probes create their own temporary bridge.
+ * Session ownership lives in the manager, not in the stdio protocol.
  */
 export interface StdioBridge {
   id: string
@@ -463,7 +462,7 @@ export interface StdioBridge {
  *
  * The child is spawned eagerly (so a broken entry fails at session start, where
  * it can be reported) and respawned lazily if it dies (so one crashing server
- * does not permanently break every session that selected it). A respawn loses
+ * does not permanently break its owning session). A respawn loses
  * the MCP `initialize` handshake, which the client redoes on its next call —
  * the same thing that happens when a remote upstream restarts.
  */

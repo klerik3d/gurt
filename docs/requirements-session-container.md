@@ -40,6 +40,15 @@ address a physical resource.
 
 ## 2. Decisions
 
+- **Session header shortcuts target the session's running container.** VS Code
+  and Terminal buttons sit together in both session headers and are disabled
+  while the container is not running. Terminal opens a separate system terminal
+  window (macOS Terminal or an available Linux emulator) with an interactive
+  shell through `devcontainer exec`. It uses the exact container id, the host
+  workspace and the materialized override config, preserving the configured
+  remote user and working directory. Opening it does not start an agent or
+  restart a stopped container. The existing scope terminal remains a host shell.
+
 - **A container belongs to exactly one session, 1:1.** It is created at that
   session's first start, stopped when the session goes idle, and destroyed with
   the session. It is never shared with, inherited by, or handed over to another
