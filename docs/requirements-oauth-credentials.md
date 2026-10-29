@@ -7,7 +7,7 @@ This document is a work order for an implementing agent. Read
 `requirements-git-access.md` §3 first — this adds one kind to its
 credential store and changes nothing about how entries link, seal, mask
 or block deletion. Key code: `src/shared/credentials.ts`
-(`CREDENTIAL_KINDS`, `resolveAgentSecret`, `resolveMcpCredential`),
+(`CREDENTIAL_KINDS`, `resolveAgentSecret`, `resolveMcpSecret`),
 `src/main/credentials.ts` (sealing, masks, `feedRedactor`, the save
 chain), `src/main/containers.ts` (`resolveLaunch` — the `secretEnv`
 injection), `src/main/proxy/config.ts` + `src/main/proxy/manager.ts`
@@ -80,7 +80,7 @@ entry's `credentialId` may point at an `oauth` entry exactly as they
 point at an `agent-token` / `mcp-token` today. The link pools the
 editors offer (`agentCredentials`, `mcpCredentials`) grow to include the
 kind, the wrong-kind errors in `resolveAgentSecret` /
-`resolveMcpCredential` accept it, and `credentialUsedBy` needs no change
+`resolveMcpSecret` accept it, and `credentialUsedBy` needs no change
 at all — it never looked at `kind`. Delete-while-linked still blocks.
 
 **What a consumer gets is still "a secret string now" — but for this

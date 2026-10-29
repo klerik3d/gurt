@@ -8,8 +8,8 @@ import type {
   McpRegistryEntry,
   SessionMcpFailures
 } from '../../shared/mcp'
-import { RESERVED_MCP_IDS, isLocalMcpEntry, mcpDef } from '../../shared/mcp'
-import { resolveMcpEnvSecret } from '../../shared/credentials'
+import { RESERVED_MCP_IDS, isLocalMcpEntry, mcpCredentialIds, mcpDef } from '../../shared/mcp'
+import { resolveMcpSecretEnv } from '../../shared/credentials'
 import { freshenOAuthCredentials } from '../oauth'
 import { mcpServerKey } from '../../shared/keys'
 import { cloneDir, getMcpServers } from '../store'
@@ -162,7 +162,9 @@ export function localMcpWants(
  * not.
  */
 export function localMcpSpec(entry: McpLocalEntry): string {
-  const common = { args: entry.args ?? [], env: entry.env ?? {}, cred: entry.credentialEnvVar ?? '' }
+  // `env` carries its credential links as links — which variable a secret lands
+  // in is identity; the secret itself is compared separately (`secret` below).
+  const common = { args: entry.args ?? [], env: entry.env ?? {} }
   return JSON.stringify(
     entry.kind === 'npm'
       ? { kind: 'npm', package: entry.package, version: entry.version ?? '', ...common }
@@ -173,8 +175,9 @@ export function localMcpSpec(entry: McpLocalEntry): string {
 interface RunningLocal {
   bridge: StdioBridge
   spec: string
-  /** Whatever secret this process was started with — a credential rotated in
-   *  the store has to reach the child, and the child only reads its env once. */
+  /** Whatever secrets this process was started with, as one comparable string
+   *  — a credential rotated in the store has to reach the child, and the child
+   *  only reads its env once. */
   secret: string
 }
 
@@ -212,29 +215,31 @@ function publishFailures(f: SessionMcpFailures): void {
  *  overlapping passes would each see the other's half-finished work. */
 let reconciling: Promise<void> = Promise.resolve()
 
-/** The environment a local entry's credential link contributes (§3.4).
+/** The environment a local entry's credential links contribute (§3.4).
  *
  *  Exported for the probe (`mcp/probe.ts`, §4.6), which starts an entry the way
- *  a session would and so has to resolve its credential the way a session does
+ *  a session would and so has to resolve its credentials the way a session does
  *  — including the "block rather than start unauthenticated" rule below. It is
  *  the resolution that is shared, not the lifecycle: the probe's own bridge is
- *  outside the session lifecycle this module manages. */
+ *  outside the session lifecycle this module manages.
+ *
+ *  `secret` is the resolved values in one comparable string, for the restart
+ *  check — never logged, never carried past this module. */
 export async function credentialEnv(entry: McpLocalEntry): Promise<{ env: Record<string, string>; secret: string }> {
-  if (!entry.credentialId || !entry.credentialEnvVar) return { env: {}, secret: '' }
+  const ids = mcpCredentialIds(entry)
+  if (!ids.length) return { env: {}, secret: '' }
   // The async half of the oauth seam (docs/requirements-oauth-credentials.md
   // §2): an oauth link's access token is refreshed before the pure resolver
   // reads it — a stale token in a server's environment is a 401 nobody can
   // explain.
-  const { credentials, errors } = await freshenOAuthCredentials(await listCredentials(), [
-    entry.credentialId
-  ])
-  const freshenError = errors[entry.credentialId]
-  if (freshenError) throw new Error(`MCP server "${entry.id}": ${freshenError}`)
-  const { secret, error } = resolveMcpEnvSecret(credentials, entry.credentialId)
+  const { credentials, errors } = await freshenOAuthCredentials(await listCredentials(), ids)
+  for (const id of ids)
+    if (errors[id]) throw new Error(`MCP server "${entry.id}": ${errors[id]}`)
+  const { env, error } = resolveMcpSecretEnv(credentials, entry)
   // Blocks rather than starting unauthenticated — the same rule the proxy
-  // applies to a remote entry's header (requirements-mcp-proxy.md §3.2).
-  if (error) throw new Error(`MCP server "${entry.id}": ${error}`)
-  return { env: { [entry.credentialEnvVar]: secret ?? '' }, secret: secret ?? '' }
+  // applies to a remote entry's headers (requirements-mcp-proxy.md §3.2).
+  if (error || !env) throw new Error(`MCP server "${entry.id}": ${error}`)
+  return { env, secret: JSON.stringify(env) }
 }
 
 /**

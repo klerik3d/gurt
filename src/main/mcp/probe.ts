@@ -4,8 +4,8 @@
 // `checkMcpEntryCredential` and `checkMcpCommand` already move two failures from
 // "an hour later, in a log" to the moment an entry is saved. Everything else a
 // local entry can get wrong — an `npm install` that fails, a package with no
-// bin, a process that dies for want of authorization, a `credentialEnvVar` the
-// server does not read, argv mangled out of a pasted snippet — is only found by
+// bin, a process that dies for want of authorization, a credential linked to a
+// variable the server does not read, argv mangled out of a pasted snippet — is only found by
 // running it. This module runs it.
 //
 // Three properties it has to have, and they are why it is a module rather than
@@ -38,8 +38,14 @@ import type {
   McpProbedTool,
   McpRegistryEntry
 } from '../../shared/mcp'
-import { isLocalMcpEntry, mcpEntryKind, normalizeMcpEntry, validateMcpEntry } from '../../shared/mcp'
-import { resolveMcpCredential } from '../../shared/credentials'
+import {
+  isLocalMcpEntry,
+  mcpCredentialIds,
+  mcpEntryKind,
+  normalizeMcpEntry,
+  validateMcpEntry
+} from '../../shared/mcp'
+import { resolveMcpHeaders } from '../../shared/credentials'
 import { listCredentials } from '../credentials'
 import { freshenOAuthCredentials } from '../oauth'
 import { credentialEnv } from './manager'
@@ -406,27 +412,19 @@ async function probeHttp(
   return server ? { server } : {}
 }
 
-/** The headers a remote entry's request carries — its static ones plus its
- *  resolved credential, composed exactly as `planProxy` composes them (the
- *  credential wins over a static header of the same name). */
+/** The headers a remote entry's request carries, every credential link
+ *  resolved — composed by the same `resolveMcpHeaders` `planProxy` uses. */
 async function httpHeaders(entry: McpHttpEntry): Promise<Record<string, string>> {
-  const out: Record<string, string> = {}
-  for (const h of entry.headers ?? []) out[h.name] = h.value
   // Same async freshen a session's proxy plan does (docs/requirements-oauth-
   // credentials.md §2): a probe of an oauth-linked entry tests the header the
   // session would actually send, not a stale one.
-  const { credentials, errors } = await freshenOAuthCredentials(await listCredentials(), [
-    entry.credentialId
-  ])
-  const freshenError = entry.credentialId && errors[entry.credentialId]
-  if (freshenError) throw new Error(freshenError)
-  const { header, error } = resolveMcpCredential(credentials, entry.credentialId)
-  if (error) throw new Error(error)
-  if (header) {
-    for (const name of Object.keys(out))
-      if (name.toLowerCase() === header.name.toLowerCase()) delete out[name]
-    out[header.name] = header.value
-  }
+  const ids = mcpCredentialIds(entry)
+  const { credentials, errors } = await freshenOAuthCredentials(await listCredentials(), ids)
+  for (const id of ids) if (errors[id]) throw new Error(errors[id])
+  const { headers, error } = resolveMcpHeaders(credentials, entry)
+  if (error || !headers) throw new Error(error)
+  const out: Record<string, string> = {}
+  for (const h of headers) out[h.name] = h.value
   return out
 }
 

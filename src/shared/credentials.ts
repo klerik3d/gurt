@@ -6,7 +6,8 @@
 
 import type { RepoConfig } from './types'
 import { canonicalRepoId } from './repoId'
-import { headerValueProblem, isHeaderName } from './mcp'
+import type { McpHeader, McpHttpEntry, McpLocalEntry } from './mcp'
+import { headerValueProblem, isHeaderName, isMcpCredentialRef } from './mcp'
 
 export type CredentialKind =
   | 'git-token'
@@ -37,13 +38,13 @@ export interface CredentialsFile {
 /** Default HTTP-basic username for token credentials (GitHub App / PAT convention). */
 export const DEFAULT_TOKEN_USER = 'x-access-token'
 
-/** Header an `mcp-token` is sent in, and the scheme prefixing it, unless the
- *  entry overrides them (§3.2). */
+/** The header a legacy http link (`McpHttpEntry.credentialId`) is sent in, and
+ *  the scheme prefixing it, unless the `mcp-token` overrode them (§3.2). */
 export const DEFAULT_MCP_HEADER = 'Authorization'
 export const DEFAULT_MCP_SCHEME = 'Bearer'
 
-/** The header an `mcp-token` credential resolves to, ready to send upstream. */
-export interface McpAuthHeader {
+/** A header with its credential resolved, ready to send upstream. */
+export interface McpResolvedHeader {
   name: string
   value: string
 }
@@ -183,12 +184,13 @@ export const CREDENTIAL_KINDS: CredentialKindDef[] = [
     kind: 'mcp-token',
     label: 'mcp token',
     hint:
-      'Auth for an MCP server in ⚙ MCP servers. Sent as "<header>: <scheme> <secret>". ' +
-      'Leave scheme unset for Bearer; clear it to send the bare secret (X-Api-Key style).',
+      'A secret for an MCP server in ⚙ MCP servers. Which header or environment variable ' +
+      'it goes into, and with what prefix, is set on the server, not here.',
+    // `header` and `scheme` are no longer edited here: where a secret goes is
+    // the server's business. An entry saved with them keeps them in `data`,
+    // where `legacyMcpHeader` still reads them.
     fields: [
-      { key: 'secret', label: 'token / api key', secret: true, placeholder: 'sk-… / api key' },
-      { key: 'header', label: 'header (optional)', placeholder: DEFAULT_MCP_HEADER },
-      { key: 'scheme', label: 'scheme (optional)', placeholder: DEFAULT_MCP_SCHEME }
+      { key: 'secret', label: 'token / api key', secret: true, placeholder: 'sk-… / api key' }
     ],
     implemented: true
   }
@@ -237,68 +239,116 @@ export const mcpCredentials = (credentials: CredentialEntry[]): CredentialEntry[
   credentials.filter((c) => c.kind === 'mcp-token' || c.kind === 'oauth')
 
 /**
- * Resolve the auth header an MCP registry entry's credential link injects
- * (docs/requirements-mcp-proxy.md §3.2), in the style of `resolveCredential`:
- * no link ⇒ nothing (an unauthenticated upstream is legal), a dangling or
- * wrong-kind link ⇒ a configuration error the caller surfaces.
+ * The bare secret behind one MCP credential link (docs/requirements-mcp-proxy.md
+ * §3.2), in the style of `resolveCredential`: a dangling or wrong-kind link is a
+ * configuration error the caller surfaces, never a silent unauthenticated call.
  *
- * `scheme` unset ⇒ the `Bearer` default; explicitly empty ⇒ the bare secret.
- *
- * Whether the secret *works* is not checked here — an upstream's auth failure
- * surfaces on first use as a 401, and the renderer only ever holds a mask. What
- * is checked is whether it can be sent at all: a secret carrying a newline (the
- * ordinary paste artifact) makes a header value node refuses to construct, and
- * it would do so inside the proxy's request listener. `checkMcpSecret` rejects
- * that on save, but a credential stored before that check existed has never
- * been through it, so this is the layer that has to hold — a resolution error,
- * surfaced like a dangling link, rather than a poisoned header handed onward.
+ * An `mcp-token` contributes its pasted secret, an `oauth` entry its access
+ * token — which this pure half reads as it is; the main-side callers refresh it
+ * first (§2 of docs/requirements-oauth-credentials.md). Whether the secret can
+ * be *carried* depends on where it goes, so that is the caller's check
+ * ({@link resolveMcpHeaders}, {@link resolveMcpSecretEnv}). `label` is for those
+ * callers' error messages.
  */
-export function resolveMcpCredential(
+export function resolveMcpSecret(
   credentials: readonly CredentialEntry[],
-  credentialId: string | undefined
-): { header?: McpAuthHeader; error?: string } {
-  if (!credentialId) return {}
+  credentialId: string
+): { secret?: string; label?: string; error?: string } {
   const entry = credentials.find((c) => c.id === credentialId)
   if (!entry) return { error: 'linked credential no longer exists' }
   const label = entry.label || entry.id
   if (entry.kind === 'oauth') {
-    // The access token composes exactly as an `mcp-token`'s secret does, with
-    // the default header and scheme — an oauth entry has no overrides. This
-    // pure half reads whatever `data.access` holds; the main-side caller
-    // (resolveProxyPlan, the probe) refreshes it first (§2 of
-    // docs/requirements-oauth-credentials.md).
     if (oauthSignedOut(entry)) return { error: signedOutError(entry) }
-    const value = `${DEFAULT_MCP_SCHEME} ${(entry.data['access'] ?? '').trim()}`
-    const problem = headerValueProblem(value)
-    if (problem) return { error: `linked credential "${label}" ${problem}` }
-    return { header: { name: DEFAULT_MCP_HEADER, value } }
+    return { secret: (entry.data['access'] ?? '').trim(), label }
   }
-  if (entry.kind !== 'mcp-token')
-    return { error: `linked credential "${label}" is not an MCP token` }
-  const name = entry.data['header']?.trim() || DEFAULT_MCP_HEADER
-  if (!isHeaderName(name))
-    return { error: `linked credential "${label}" has "${name}" as its header name, which is not a valid header name` }
-  const raw = entry.data['scheme']
-  const scheme = (raw === undefined ? DEFAULT_MCP_SCHEME : raw).trim()
-  const secret = (entry.data['secret'] ?? '').trim()
-  // The composed value, not the secret alone: a scheme is user-typed too.
-  const value = scheme ? `${scheme} ${secret}` : secret
-  const bad = headerValueProblem(value)
-  if (bad) return { error: `linked credential "${label}" ${bad} — re-enter it as a single line` }
-  return { header: { name, value } }
+  if (entry.kind !== 'mcp-token') return { error: `linked credential "${label}" is not an MCP token` }
+  return { secret: (entry.data['secret'] ?? '').trim(), label }
 }
 
 /**
- * Resolve the same `mcp-token` link for a **local** MCP server, which has no
- * request headers to carry it (docs/requirements-mcp-stdio.md §3.4). The value
- * is the bare secret — no header name, no `Bearer` scheme — because it is going
- * into an environment variable the server names itself, exactly the way an
- * agent's `secretEnv` works.
+ * The header row a legacy http link (`McpHttpEntry.credentialId`) stands for.
+ * Before any header could link a credential, the header name and scheme lived
+ * on the `mcp-token` (`data.header`, `data.scheme`); an `oauth` entry had no
+ * overrides. `scheme` unset ⇒ `Bearer`, explicitly empty ⇒ the bare secret.
  *
- * Same contract as {@link resolveMcpCredential} otherwise: no link ⇒ nothing (a
- * server that authenticates some other way is legal), a dangling or wrong-kind
- * link ⇒ a configuration error the caller surfaces rather than a silent
- * unauthenticated start.
+ * A link that no longer resolves still lifts — to the default header — so the
+ * error it produces is the resolver's "no longer exists", not a lost link.
+ */
+export function legacyMcpHeader(
+  credentials: readonly CredentialEntry[],
+  credentialId: string
+): McpHeader {
+  const entry = credentials.find((c) => c.id === credentialId)
+  const token = entry?.kind === 'mcp-token' ? entry : undefined
+  const name = token?.data['header']?.trim() || DEFAULT_MCP_HEADER
+  const raw = token?.data['scheme']
+  const scheme = (raw === undefined ? DEFAULT_MCP_SCHEME : raw).trim()
+  return { name, value: { credentialId, ...(scheme ? { prefix: `${scheme} ` } : {}) } }
+}
+
+/**
+ * An http entry with its legacy link turned into the header row it means — the
+ * shape the editor saves, and the one every resolver reads. The lifted header
+ * replaces a static one of the same name, whatever its spelling: that is what
+ * the legacy link always did.
+ */
+export function liftLegacyMcpCredential(
+  credentials: readonly CredentialEntry[],
+  entry: McpHttpEntry
+): McpHttpEntry {
+  if (!entry.credentialId) return entry
+  const { credentialId, ...rest } = entry
+  const header = legacyMcpHeader(credentials, credentialId)
+  const key = header.name.toLowerCase()
+  return {
+    ...rest,
+    headers: [...(entry.headers ?? []).filter((h) => h.name.toLowerCase() !== key), header]
+  }
+}
+
+/**
+ * The headers an http entry sends upstream, every credential link resolved
+ * (docs/requirements-mcp-proxy.md §3.2). One error and nothing else when any
+ * link fails: a request missing one of its headers is a request the upstream
+ * would refuse in a way nobody could explain.
+ *
+ * Whether a secret *works* is not checked — an upstream's auth failure surfaces
+ * on first use as a 401. What is checked is whether it can be sent at all: a
+ * value carrying a newline (the ordinary paste artifact) makes a header node
+ * refuses to construct, and it would do so inside the proxy's request listener.
+ * `checkMcpSecret` rejects that on save, but a credential stored before that
+ * check existed has never been through it, so this is the layer that has to
+ * hold.
+ */
+export function resolveMcpHeaders(
+  credentials: readonly CredentialEntry[],
+  entry: McpHttpEntry
+): { headers?: McpResolvedHeader[]; error?: string } {
+  const headers: McpResolvedHeader[] = []
+  for (const h of liftLegacyMcpCredential(credentials, entry).headers ?? []) {
+    if (!isMcpCredentialRef(h.value)) {
+      headers.push({ name: h.name, value: h.value })
+      continue
+    }
+    const { secret, label, error } = resolveMcpSecret(credentials, h.value.credentialId)
+    if (error) return { error }
+    if (!isHeaderName(h.name))
+      return { error: `linked credential "${label}" is sent as "${h.name}", which is not a valid header name` }
+    // The composed value, not the secret alone: the prefix is user-typed too.
+    const value = `${h.value.prefix ?? ''}${secret ?? ''}`
+    const bad = headerValueProblem(value)
+    if (bad) return { error: `linked credential "${label}" ${bad} — re-enter it as a single line` }
+    headers.push({ name: h.name, value })
+  }
+  return { headers }
+}
+
+/**
+ * The environment variables a local entry's credential links resolve to
+ * (docs/requirements-mcp-stdio.md §3.4) — the linked half only; the typed-in
+ * half is `mcpLiteralEnv`. Same contract as {@link resolveMcpHeaders}: one
+ * error and nothing else when any link fails, rather than a process started
+ * with half its secrets.
  *
  * The one check that survives the change of transport is the NUL byte: `execve`
  * cannot carry one, and a secret containing it would truncate the whole
@@ -306,33 +356,29 @@ export function resolveMcpCredential(
  * environment value and are left alone — the header rule they exist for does
  * not apply here.
  */
-export function resolveMcpEnvSecret(
+export function resolveMcpSecretEnv(
   credentials: readonly CredentialEntry[],
-  credentialId: string | undefined
-): { secret?: string; error?: string } {
-  if (!credentialId) return {}
-  const entry = credentials.find((c) => c.id === credentialId)
-  if (!entry) return { error: 'linked credential no longer exists' }
-  if (entry.kind === 'oauth' && oauthSignedOut(entry)) return { error: signedOutError(entry) }
-  if (entry.kind !== 'mcp-token' && entry.kind !== 'oauth')
-    return { error: `linked credential "${entry.label || entry.id}" is not an MCP token` }
-  // An oauth entry contributes its (main-side refreshed, §2) access token the
-  // way an mcp-token contributes its pasted secret: the bare value, into the
-  // env var the server names.
-  const secret = (entry.data[entry.kind === 'oauth' ? 'access' : 'secret'] ?? '').trim()
-  if (secret.includes('\0'))
-    return {
-      error: `linked credential "${entry.label || entry.id}" contains a NUL byte — re-enter it`
-    }
-  return { secret }
+  entry: McpLocalEntry
+): { env?: Record<string, string>; error?: string } {
+  const env: Record<string, string> = {}
+  for (const [name, value] of Object.entries(entry.env ?? {})) {
+    if (!isMcpCredentialRef(value)) continue
+    const { secret, label, error } = resolveMcpSecret(credentials, value.credentialId)
+    if (error) return { error }
+    const composed = `${value.prefix ?? ''}${secret ?? ''}`
+    if (composed.includes('\0'))
+      return { error: `linked credential "${label}" contains a NUL byte — re-enter it` }
+    env[name] = composed
+  }
+  return { env }
 }
 
 /**
  * Throws when an `mcp-token` entry could not be sent as a header — the save-time
- * half of the same rule `resolveMcpCredential` enforces at use time (§3.2).
+ * half of the same rule `resolveMcpHeaders` enforces at use time (§3.2).
  *
  * Leading and trailing whitespace is stripped rather than refused: it is a
- * paste artifact with no meaning in a token, and `resolveMcpCredential` trims
+ * paste artifact with no meaning in a token, and `resolveMcpSecret` trims
  * too, so storing it trimmed is what makes the stored entry match the header it
  * will produce. A newline is not strippable in the same way — it may sit in the
  * middle, and a "token" that spans lines is not a token — so it is an error the
@@ -345,13 +391,6 @@ export function checkMcpSecret(entry: CredentialEntry): string {
     throw new Error(
       `credential "${entry.label || entry.id}": the token ${bad} — paste it as a single line`
     )
-  const header = entry.data['header']?.trim() || DEFAULT_MCP_HEADER
-  if (!isHeaderName(header))
-    throw new Error(`credential "${entry.label || entry.id}": "${header}" is not a valid header name`)
-  const scheme = (entry.data['scheme'] ?? DEFAULT_MCP_SCHEME).trim()
-  const schemeBad = headerValueProblem(scheme)
-  if (schemeBad)
-    throw new Error(`credential "${entry.label || entry.id}": the scheme ${schemeBad}`)
   return secret
 }
 

@@ -26,9 +26,9 @@ import {
   isGitKind,
   mcpCredentials,
   oauthSignedOut,
+  liftLegacyMcpCredential,
   resolveForRepo,
-  resolveMcpCredential,
-  resolveMcpEnvSecret,
+  resolveMcpSecret,
   signedOutError
 } from '../../../shared/credentials'
 import type {
@@ -36,17 +36,18 @@ import type {
   McpEntryDraft,
   McpEntryKind,
   McpEnvRow,
-  McpHeader,
   McpProbeResult,
   McpRegistryEntry,
-  McpSnippetResult
+  McpSnippetResult,
+  McpValue
 } from '../../../shared/mcp'
 import {
   LOCAL_MCP_NOTICE,
   isEnvName,
   isHttpMcpEntry,
   isLocalMcpEntry,
-  looksLikeSecretEnv,
+  isMcpCredentialRef,
+  mcpCredentialIds,
   mcpEntryDetail,
   mcpEntryKind,
   mcpEnvRecord,
@@ -54,6 +55,7 @@ import {
   mcpLabel,
   normalizeMcpEntry,
   parseMcpSnippet,
+  pastedSecret,
   validateMcpEntry
 } from '../../../shared/mcp'
 import type { SkillEntry } from '../../../shared/skills'
@@ -1820,7 +1822,7 @@ function McpServersSection({ ws }: { ws: string | null }) {
           <div key={m.id} className="set-row">
             <span className="set-row-label">{mcpLabel(m)}</span>
             <span className="set-row-url mono">{mcpEntryDetail(m)}</span>
-            {m.credentialId && (
+            {mcpCredentialIds(m).length > 0 && (
               <Icon name="key" size={11} style={{ color: 'var(--yellow)', flex: 'none' }} />
             )}
             {/* Said here, in the editor and in the composer's picker — every
@@ -2158,18 +2160,168 @@ function SkillModal({
   )
 }
 
-/** A secret lifted out of a pasted `env` and held here until Save (§5): it goes
- *  into the credential store, never into `workspace.json`. */
+/** A secret lifted out of a pasted value and held here until Save (§5): it goes
+ *  into the credential store, never into `workspace.json`. Until then its row
+ *  links it under a {@link PENDING_PREFIX} id, so the draft the user sees
+ *  validated is the draft that will be written. */
 interface PendingSecret {
-  /** The environment variable the server reads it from — its name in the snippet. */
+  /** The header or variable it was found in — the credential's label on Save. */
   name: string
   value: string
 }
 
-/** Stands in for the credential Save is going to create, so the draft the user
- *  sees validated is the draft that will be written (a `credentialId` with no
- *  `credentialEnvVar` is a rejected save — §3.4). It never leaves this modal. */
-const PENDING_CREDENTIAL_ID = '__pending__'
+/** Stands in for a credential Save is going to create. It never leaves this
+ *  modal: Save swaps it for the real id, the probe for the value itself. */
+const PENDING_PREFIX = '__pending__:'
+const isPending = (credentialId: string): boolean => credentialId.startsWith(PENDING_PREFIX)
+
+/** What a newly linked value is prefixed with: `Bearer ` for an
+ *  `Authorization` header, which is nearly always what it wants, and nothing
+ *  for anything else. Editable on the row either way. */
+const defaultPrefix = (kind: 'header' | 'env', name: string): string =>
+  kind === 'header' && /^authorization$/i.test(name.trim()) ? 'Bearer ' : ''
+
+/** One header or environment row. Same shape for both — `McpHeader` and
+ *  `McpEnvRow` differ only in where the value goes. */
+type McpRow = McpEnvRow
+
+/**
+ * One header or environment variable: a name, and a value that is either typed
+ * in — stored in workspace.json, sent verbatim — or linked to a credential,
+ * resolved on this machine when it is used and never written to the workspace.
+ */
+function McpValueRowEditor({
+  kind,
+  row,
+  credentials,
+  pending,
+  onChange,
+  onLift,
+  onUnlink,
+  onRemove
+}: {
+  kind: 'header' | 'env'
+  row: McpRow
+  credentials: CredentialEntry[]
+  pending: Record<string, PendingSecret>
+  onChange: (patch: Partial<McpRow>) => void
+  onLift: () => void
+  onUnlink: () => void
+  onRemove: () => void
+}): JSX.Element {
+  const [menu, setMenu] = useState(false)
+  const menuRef = useRef<HTMLDivElement>(null)
+  useOutsideClose(menu, menuRef, () => setMenu(false))
+  const { name, value } = row
+  const linked = isMcpCredentialRef(value) ? value : null
+  const pend = linked && isPending(linked.credentialId) ? pending[linked.credentialId] : undefined
+  const cred = linked ? credentials.find((c) => c.id === linked.credentialId) : undefined
+  const lift = typeof value === 'string' ? pastedSecret(kind, name, value) : null
+  const badName = kind === 'env' && !!name.trim() && !isEnvName(name.trim())
+  const options = mcpCredentials(credentials)
+
+  const link = (credentialId: string) => {
+    const prefix = linked ? (linked.prefix ?? '') : defaultPrefix(kind, name)
+    onChange({ value: { credentialId, ...(prefix ? { prefix } : {}) } })
+    setMenu(false)
+  }
+
+  return (
+    <div>
+      <div className="mcp-hdr">
+        <input
+          className="input mono"
+          placeholder={kind === 'env' ? 'KUBECONFIG' : 'X-Workspace'}
+          value={name}
+          onChange={(e) => onChange({ name: e.target.value })}
+        />
+        {linked ? (
+          <div className="mcp-ref">
+            <input
+              className="input mono mcp-prefix"
+              placeholder="prefix"
+              title="sent in front of the secret, verbatim — “Bearer ” for most Authorization headers"
+              value={linked.prefix ?? ''}
+              onChange={(e) =>
+                onChange({
+                  value: {
+                    credentialId: linked.credentialId,
+                    ...(e.target.value ? { prefix: e.target.value } : {})
+                  }
+                })
+              }
+            />
+            <span className="chip-tag mcp-ref-chip">
+              <Icon name="key" size={11} style={{ color: 'var(--yellow)', flex: 'none' }} />
+              <span className="menu-item-name">
+                {pend ? `new credential · ${pend.name}` : (cred?.label ?? 'missing credential')}
+              </span>
+              <span
+                className="chip-x"
+                title={pend ? 'keep it inline instead' : 'unlink'}
+                onClick={onUnlink}
+              >
+                ×
+              </span>
+            </span>
+          </div>
+        ) : (
+          <input
+            className="input mono"
+            placeholder="value"
+            value={value as string}
+            onChange={(e) => onChange({ value: e.target.value })}
+          />
+        )}
+        <div className="pick-wrap" ref={menuRef}>
+          <button
+            className="btn-link"
+            title="take the value from a credential"
+            onClick={() => setMenu((o) => !o)}
+          >
+            <Icon name="key" size={11} />
+          </button>
+          {menu && (
+            <div className="menu pick-menu right">
+              {options.map((c) => (
+                <div
+                  key={c.id}
+                  className="menu-item"
+                  onMouseDown={(e) => {
+                    e.preventDefault()
+                    link(c.id)
+                  }}
+                >
+                  <Icon name="key" size={11} className="faint" />
+                  {c.label} · {credentialKindLabel(c.kind)}
+                </div>
+              ))}
+              {options.length === 0 && (
+                <div className="menu-item faint">no mcp token — add one in Credentials</div>
+              )}
+            </div>
+          )}
+        </div>
+        <button
+          className="btn-link"
+          title={kind === 'env' ? 'remove variable' : 'remove header'}
+          onClick={onRemove}
+        >
+          ×
+        </button>
+      </div>
+      {badName && <span className="error">{name.trim()} is not an environment variable name</span>}
+      {lift && (
+        <span className="mcp-local-note">
+          that value looks like a secret — workspace.json is a plain file{' '}
+          <button className="btn-link" onClick={onLift}>
+            store it as a credential
+          </button>
+        </span>
+      )}
+    </div>
+  )
+}
 
 function McpServerModal({
   ws,
@@ -2196,105 +2348,145 @@ function McpServerModal({
   const [id, setId] = useState(initial?.id ?? '')
   const [label, setLabel] = useState(initial?.label ?? '')
   const [url, setUrl] = useState(http?.url ?? '')
-  const [headers, setHeaders] = useState<McpHeader[]>(http?.headers?.map((h) => ({ ...h })) ?? [])
+  const [headers, setHeaders] = useState<McpRow[]>(http?.headers?.map((h) => ({ ...h })) ?? [])
   const [pkg, setPkg] = useState(local?.kind === 'npm' ? local.package : '')
   const [version, setVersion] = useState((local?.kind === 'npm' && local.version) || '')
   const [command, setCommand] = useState(local?.kind === 'command' ? local.command : '')
   const [cwd, setCwd] = useState((local?.kind === 'command' && local.cwd) || '')
   const [argsText, setArgsText] = useState(argsToText(local?.args))
-  const [envRows, setEnvRows] = useState<McpEnvRow[]>(mcpEnvRows(local?.env))
-  const [credentialId, setCredentialId] = useState(initial?.credentialId ?? '')
-  const [credentialEnvVar, setCredentialEnvVar] = useState(local?.credentialEnvVar ?? '')
-  const [pendingSecret, setPendingSecret] = useState<PendingSecret | null>(null)
+  const [envRows, setEnvRows] = useState<McpRow[]>(mcpEnvRows(local?.env))
+  /** An http entry's legacy single link, until the credentials arrive to lift
+   *  it into the header row it means — kept in the draft until then, so a save
+   *  in that instant does not drop it. */
+  const [legacy, setLegacy] = useState(http?.credentialId ? http : undefined)
+  const [pending, setPending] = useState<Record<string, PendingSecret>>({})
   const [snippet, setSnippet] = useState('')
   const [snippetError, setSnippetError] = useState('')
   const [credentials, setCredentials] = useState<CredentialEntry[]>([])
-  const [credMenu, setCredMenu] = useState(false)
   const [probing, setProbing] = useState(false)
   /** The last probe, keyed by the entry it was run against — an edit made after
    *  it invalidates it, and a stale green tick is worse than none. */
   const [probed, setProbed] = useState<{ key: string; result: McpProbeResult } | null>(null)
   const [note, setNote] = useState('')
   const [error, setError] = useState('')
-  const credRef = useRef<HTMLDivElement>(null)
-  useOutsideClose(credMenu, credRef, () => setCredMenu(false))
 
   useEffect(() => {
-    window.gurt.getCredentials().then((f) => setCredentials(f.credentials)).catch(() => {})
-  }, [])
+    window.gurt
+      .getCredentials()
+      .then((f) => {
+        setCredentials(f.credentials)
+        if (!legacy) return
+        // The form only ever saves the lifted shape: the header name and scheme
+        // that used to live on the token become this entry's header row.
+        setHeaders(
+          (prev) => liftLegacyMcpCredential(f.credentials, { ...legacy, headers: prev }).headers ?? []
+        )
+        setLegacy(undefined)
+      })
+      .catch(() => {})
+  }, [legacy])
 
   const isLocal = kind !== 'http'
 
   /**
    * The entry the form currently describes.
    *
-   * `inlineSecret` is the probe's version of it (§4.6): a lifted-but-unsaved
-   * secret goes back into `env`, under the variable it will be injected as,
-   * because there is no credential to link to until Save — and a probe that
-   * always failed on "linked credential no longer exists" would be useless in
-   * exactly the flow it exists for.
+   * `inline` is the probe's version of it (§4.6): a lifted-but-unsaved secret
+   * goes back into its row as text, because there is no credential to link to
+   * until Save — and a probe that always failed on "linked credential no
+   * longer exists" would be useless in exactly the flow it exists for.
+   * `relink` is Save's: pending ids swapped for the credentials just created.
    */
-  const buildDraft = (inlineSecret: PendingSecret | null): McpEntryDraft => {
-    const linkedId = inlineSecret ? '' : credentialId || (pendingSecret ? PENDING_CREDENTIAL_ID : '')
-    const tail = {
-      id: id.trim(),
-      label,
-      ...(linkedId ? { credentialId: linkedId } : {})
+  const buildDraft = ({
+    inline = false,
+    relink = {}
+  }: { inline?: boolean; relink?: Record<string, string> } = {}): McpEntryDraft => {
+    const resolve = (value: McpValue): McpValue => {
+      if (!isMcpCredentialRef(value)) return value
+      const secret = pending[value.credentialId]
+      if (inline && secret) return `${value.prefix ?? ''}${secret.value}`
+      const real = relink[value.credentialId]
+      return real ? { ...value, credentialId: real } : value
     }
-    const envVar = credentialEnvVar.trim() || inlineSecret?.name || ''
-    const localTail = {
-      args: textToArgs(argsText),
-      env: {
-        ...mcpEnvRecord(envRows),
-        ...(inlineSecret && envVar ? { [envVar]: inlineSecret.value } : {})
-      },
-      ...(!inlineSecret && credentialEnvVar ? { credentialEnvVar } : {})
-    }
+    const rows = (list: McpRow[]): McpRow[] => list.map((r) => ({ name: r.name, value: resolve(r.value) }))
+    const tail = { id: id.trim(), label }
+    const localTail = { args: textToArgs(argsText), env: mcpEnvRecord(rows(envRows)) }
     return kind === 'http'
-      ? { ...tail, url, headers }
+      ? {
+          ...tail,
+          url,
+          headers: rows(headers),
+          ...(legacy?.credentialId ? { credentialId: legacy.credentialId } : {})
+        }
       : kind === 'npm'
         ? { kind: 'npm', ...tail, ...localTail, package: pkg, version }
         : { kind: 'command', ...tail, ...localTail, command, cwd }
   }
 
-  const draft = buildDraft(null)
-  const entry = normalizeMcpEntry(draft)
-  const probeEntry = normalizeMcpEntry(buildDraft(pendingSecret))
+  const entry = normalizeMcpEntry(buildDraft())
+  const probeEntry = normalizeMcpEntry(buildDraft({ inline: true }))
   const probeKey = JSON.stringify(probeEntry)
   // The same validator the store runs — the modal only previews its verdict.
   const invalid = validateMcpEntry(entry, { takenIds: taken })
-  const linked = credentials.find((c) => c.id === credentialId)
   // A pending secret has no stored credential to resolve yet; it is checked by
-  // being created, at save time.
-  const credError = pendingSecret
-    ? undefined
-    : isLocal
-      ? resolveMcpEnvSecret(credentials, credentialId || undefined).error
-      : resolveMcpCredential(credentials, credentialId || undefined).error
+  // being created, at save time. The renderer holds masks only, so whether a
+  // secret can be *carried* is main's check, on save.
+  const credError = mcpCredentialIds(entry)
+    .filter((cid) => !isPending(cid))
+    .map((cid) => resolveMcpSecret(credentials, cid).error)
+    .find(Boolean)
 
-  const setHeader = (i: number, patch: Partial<McpHeader>) =>
-    setHeaders((prev) => prev.map((h, j) => (j === i ? { ...h, ...patch } : h)))
-  const setEnvRow = (i: number, patch: Partial<McpEnvRow>) =>
-    setEnvRows((prev) => prev.map((r, j) => (j === i ? { ...r, ...patch } : r)))
+  const setRows = (k: 'header' | 'env') => (k === 'header' ? setHeaders : setEnvRows)
+  const patchRow = (k: 'header' | 'env', i: number, patch: Partial<McpRow>) =>
+    setRows(k)((prev) => prev.map((r, j) => (j === i ? { ...r, ...patch } : r)))
 
-  /** Move one `env` value out of the entry and into the credential link. The
-   *  value is held in component state until Save — nothing is written to the
-   *  credential store by looking at a form. */
-  const liftSecret = (row: McpEnvRow, at: number) => {
-    setEnvRows((prev) => prev.filter((_, j) => j !== at))
-    setCredentialEnvVar(row.name.trim())
-    setPendingSecret({ name: row.name.trim(), value: row.value })
-    setCredentialId('')
+  /** Rows with every value that looks like a secret moved into a pending
+   *  credential — nothing is written to the credential store by looking at a
+   *  form; Save does that. */
+  const liftRows = (k: 'header' | 'env', list: McpRow[]): McpRow[] => {
+    const fresh: Record<string, PendingSecret> = {}
+    const out = list.map((r) => {
+      const found = typeof r.value === 'string' ? pastedSecret(k, r.name, r.value) : null
+      if (!found) return r
+      const pid = `${PENDING_PREFIX}${crypto.randomUUID()}`
+      fresh[pid] = { name: r.name.trim(), value: found.secret }
+      return { name: r.name, value: { credentialId: pid, ...(found.prefix ? { prefix: found.prefix } : {}) } }
+    })
+    setPending((prev) => ({ ...prev, ...fresh }))
+    return out
   }
 
-  /** Put a lifted secret back where the snippet had it — the user's call, and
-   *  the only way back to an inline value. */
-  const dropPending = () => {
-    if (!pendingSecret) return
-    setEnvRows((prev) => [...prev, { name: pendingSecret.name, value: pendingSecret.value }])
-    setPendingSecret(null)
-    setCredentialEnvVar('')
+  const liftRow = (k: 'header' | 'env', i: number) => {
+    const list = k === 'header' ? headers : envRows
+    const row = list[i]
+    if (!row) return
+    const [lifted] = liftRows(k, [row])
+    patchRow(k, i, { value: lifted!.value })
   }
+
+  /** Unlink a row. A pending secret goes back where the paste had it — the
+   *  user's call, and the only way back to an inline value; a stored credential
+   *  just leaves an empty value to type into. */
+  const unlinkRow = (k: 'header' | 'env', i: number) => {
+    const row = (k === 'header' ? headers : envRows)[i]
+    if (!row || !isMcpCredentialRef(row.value)) return
+    const secret = pending[row.value.credentialId]
+    patchRow(k, i, { value: secret ? `${row.value.prefix ?? ''}${secret.value}` : '' })
+  }
+
+  const rowEditor = (k: 'header' | 'env', row: McpRow, i: number) => (
+    <McpValueRowEditor
+      key={i}
+      kind={k}
+      row={row}
+      credentials={credentials}
+      pending={pending}
+      onChange={(patch) => patchRow(k, i, patch)}
+      onLift={() => liftRow(k, i)}
+      onUnlink={() => unlinkRow(k, i)}
+      onRemove={() => setRows(k)((prev) => prev.filter((_, j) => j !== i))}
+    />
+  )
 
   /**
    * A published snippet, straight into the form (§5). `parseMcpSnippet` does all
@@ -2318,9 +2510,13 @@ function McpServerModal({
     // the one its sessions already name.
     if (!editing) setId(parsed.id)
     if (parsed.label) setLabel(parsed.label)
+    // A snippet's `env` and `headers` are where READMEs put a real token, and
+    // `workspace.json` is a plain file meant to be shared and committed. So a
+    // value that looks like a secret is lifted out here, by default, rather
+    // than being saved inline and warned about afterwards (§5).
     if (isHttpMcpEntry(parsed)) {
       setUrl(parsed.url)
-      setHeaders(parsed.headers?.map((h) => ({ ...h })) ?? [])
+      setHeaders(liftRows('header', parsed.headers?.map((h) => ({ ...h })) ?? []))
       return
     }
     setPkg(parsed.kind === 'npm' ? parsed.package : '')
@@ -2328,49 +2524,44 @@ function McpServerModal({
     setCommand(parsed.kind === 'command' ? parsed.command : '')
     setCwd((parsed.kind === 'command' && parsed.cwd) || '')
     setArgsText(argsToText(parsed.args))
-    // A snippet's `env` is where READMEs put a real token, and `workspace.json`
-    // is a plain file meant to be shared and committed. So a value that looks
-    // like a secret is lifted out here, by default, rather than being saved
-    // inline and warned about afterwards (§5).
-    const rows = mcpEnvRows(parsed.env)
-    const at = rows.findIndex((r) => looksLikeSecretEnv(r.name, r.value))
-    if (at < 0 || credentialId) {
-      setEnvRows(rows)
-      setPendingSecret(null)
-      return
-    }
-    const row = rows[at]!
-    setEnvRows(rows.filter((_, j) => j !== at))
-    setCredentialEnvVar(row.name)
-    setPendingSecret({ name: row.name, value: row.value })
+    setEnvRows(liftRows('env', mcpEnvRows(parsed.env)))
   }
 
-  /** Store a lifted secret as an `mcp-token` credential and return its id.
-   *  Written before the entry, so a failure here leaves no entry pointing at a
-   *  credential that does not exist. */
-  const createCredential = async (secret: PendingSecret): Promise<string> => {
-    const fresh: CredentialEntry = {
+  /** Store every pending secret the entry still links as an `mcp-token`, in one
+   *  write, and return pending id → real id. Written before the entry, so a
+   *  failure here leaves no entry pointing at a credential that does not
+   *  exist; and swapped into the rows at once, so a retry after the entry's
+   *  own save fails does not store them twice. */
+  const createCredentials = async (): Promise<Record<string, string>> => {
+    const used = mcpCredentialIds(entry).filter((cid) => isPending(cid) && pending[cid])
+    if (!used.length) return {}
+    const fresh: CredentialEntry[] = used.map((pid) => ({
       id: crypto.randomUUID(),
-      label: `${id.trim() || 'mcp'} ${secret.name}`,
+      label: `${id.trim() || 'mcp'} ${pending[pid]!.name}`,
       kind: 'mcp-token',
       hosts: [],
-      data: { secret: secret.value }
-    }
+      data: { secret: pending[pid]!.value }
+    }))
     const file = await window.gurt.getCredentials()
-    await window.gurt.setCredentials({ credentials: [...file.credentials, fresh] })
-    return fresh.id
+    await window.gurt.setCredentials({ credentials: [...file.credentials, ...fresh] })
+    const relink = Object.fromEntries(used.map((pid, k) => [pid, fresh[k]!.id]))
+    const swap = (list: McpRow[]): McpRow[] =>
+      list.map((r) =>
+        isMcpCredentialRef(r.value) && relink[r.value.credentialId]
+          ? { ...r, value: { ...r.value, credentialId: relink[r.value.credentialId]! } }
+          : r
+      )
+    setHeaders(swap)
+    setEnvRows(swap)
+    setCredentials((await window.gurt.getCredentials()).credentials)
+    return relink
   }
 
   const save = async () => {
     setError('')
     try {
-      let saved = entry
-      if (pendingSecret) {
-        const cid = await createCredential(pendingSecret)
-        saved = normalizeMcpEntry({ ...draft, credentialId: cid })
-        setCredentialId(cid)
-        setPendingSecret(null)
-      }
+      const relink = await createCredentials()
+      const saved = normalizeMcpEntry(buildDraft({ relink }))
       await (editing
         ? window.gurt.updateMcpServer(ws, saved)
         : window.gurt.addMcpServer(ws, saved))
@@ -2636,32 +2827,11 @@ function McpServerModal({
                 + header
               </button>
             </div>
-            {headers.map((h, i) => (
-              <div key={i} className="mcp-hdr">
-                <input
-                  className="input mono"
-                  placeholder="X-Workspace"
-                  value={h.name}
-                  onChange={(e) => setHeader(i, { name: e.target.value })}
-                />
-                <input
-                  className="input mono"
-                  placeholder="value"
-                  value={h.value}
-                  onChange={(e) => setHeader(i, { value: e.target.value })}
-                />
-                <button
-                  className="btn-link"
-                  title="remove header"
-                  onClick={() => setHeaders((prev) => prev.filter((_, j) => j !== i))}
-                >
-                  ×
-                </button>
-              </div>
-            ))}
+            {headers.map((h, i) => rowEditor('header', h, i))}
             <span className="fld-hint">
-              Sent upstream verbatim and stored in workspace.json — never put a secret here; link a
-              credential below.
+              A typed value is stored in workspace.json and sent verbatim. A secret is taken from a
+              credential (<Icon name="key" size={10} />) — the proxy adds it upstream; it is never
+              written here and the container never sees it.
             </span>
           </div>
         )}
@@ -2678,133 +2848,21 @@ function McpServerModal({
                 + variable
               </button>
             </div>
-            {envRows.map((row, i) => {
-              const secret = looksLikeSecretEnv(row.name, row.value)
-              const badName = !!row.name.trim() && !isEnvName(row.name.trim())
-              return (
-                <div key={i}>
-                  <div className="mcp-hdr">
-                    <input
-                      className="input mono"
-                      placeholder="KUBECONFIG"
-                      value={row.name}
-                      onChange={(e) => setEnvRow(i, { name: e.target.value })}
-                    />
-                    <input
-                      className="input mono"
-                      placeholder="value"
-                      value={row.value}
-                      onChange={(e) => setEnvRow(i, { value: e.target.value })}
-                    />
-                    <button
-                      className="btn-link"
-                      title="remove variable"
-                      onClick={() => setEnvRows((prev) => prev.filter((_, j) => j !== i))}
-                    >
-                      ×
-                    </button>
-                  </div>
-                  {badName && (
-                    <span className="error">
-                      {row.name.trim()} is not an environment variable name
-                    </span>
-                  )}
-                  {secret && !pendingSecret && (
-                    <span className="mcp-local-note">
-                      that value looks like a secret — workspace.json is a plain file{' '}
-                      <button className="btn-link" onClick={() => liftSecret(row, i)}>
-                        store it as a credential
-                      </button>
-                    </span>
-                  )}
-                </div>
-              )
-            })}
+            {envRows.map((row, i) => rowEditor('env', row, i))}
             <span className="fld-hint">
-              Stored in workspace.json and given to the process verbatim — a secret belongs in the
-              credential link below, which resolves on this machine and is never written here.
+              A typed value is stored in workspace.json and given to the process verbatim. A secret
+              is taken from a credential (<Icon name="key" size={10} />) — resolved on this machine
+              when the process starts, never written here.
             </span>
           </div>
         )}
 
-        <div className="env-access">
-          <span className="seclabel">AUTH</span>
-          <div className="env-access-chips" ref={credRef}>
-            {pendingSecret ? (
-              <span className="chip-tag">
-                <Icon name="key" size={11} style={{ color: 'var(--yellow)' }} />
-                new credential · {pendingSecret.name}
-                <span className="chip-x" title="keep it inline instead" onClick={dropPending}>
-                  ×
-                </span>
-              </span>
-            ) : linked ? (
-              <span className="chip-tag">
-                <Icon name="key" size={11} style={{ color: 'var(--yellow)' }} />
-                {linked.label}
-                <span className="chip-x" title="unlink" onClick={() => setCredentialId('')}>
-                  ×
-                </span>
-              </span>
-            ) : (
-              <span className="chip-dashed clickable" onClick={() => setCredMenu((o) => !o)}>
-                + credential
-              </span>
-            )}
-            {credMenu && (
-              <div className="menu pick-menu">
-                <div
-                  className="menu-item"
-                  onMouseDown={(e) => {
-                    e.preventDefault()
-                    setCredentialId('')
-                    setCredMenu(false)
-                  }}
-                >
-                  none (unauthenticated)
-                </div>
-                {mcpCredentials(credentials).map((c) => (
-                  <div
-                    key={c.id}
-                    className="menu-item"
-                    onMouseDown={(e) => {
-                      e.preventDefault()
-                      setCredentialId(c.id)
-                      setCredMenu(false)
-                    }}
-                  >
-                    <Icon name="key" size={11} className="faint" />
-                    {c.label} · {credentialKindLabel(c.kind)}
-                  </div>
-                ))}
-                {mcpCredentials(credentials).length === 0 && (
-                  <div className="menu-item faint">no mcp token — add one in Credentials</div>
-                )}
-              </div>
-            )}
-            {/* A header has a sensible default; an environment variable does
-                not, and only the server's own docs know its name (§3.4). */}
-            {isLocal && (linked || pendingSecret) && (
-              <input
-                className="input mono cred-env-var"
-                placeholder="GITHUB_TOKEN"
-                value={credentialEnvVar}
-                onChange={(e) => setCredentialEnvVar(e.target.value)}
-              />
-            )}
-            <span className="env-access-note mono">
-              {credError
-                ? `⚠ ${credError}`
-                : pendingSecret
-                  ? `saved to the credential store on Save, not to workspace.json`
-                  : linked
-                    ? isLocal
-                      ? 'resolved here and put in the process environment; the container never sees it'
-                      : 'injected as a header upstream; the container never sees it'
-                    : 'no credential — the server is started with nothing of yours'}
-            </span>
+        {Object.keys(pending).some((pid) => mcpCredentialIds(entry).includes(pid)) && (
+          <div className="fld-hint">
+            New credentials are saved to the credential store on Save, not to workspace.json.
           </div>
-        </div>
+        )}
+        {credError && <div className="error">⚠ {credError}</div>}
 
         {/* Idle shows nothing: the probe has a button, and a form that
             volunteered a verdict it did not earn would read as one. */}

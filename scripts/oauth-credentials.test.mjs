@@ -41,7 +41,7 @@ export {
   getCredentials, setCredentials, listCredentials, patchCredentialData, upsertCredentialEntry
 } from ${S('src/main/credentials.ts')}
 export {
-  resolveAgentSecret, resolveMcpCredential, resolveMcpEnvSecret,
+  resolveAgentSecret, resolveMcpHeaders, resolveMcpSecretEnv,
   agentCredentials, mcpCredentials, signedOutError
 } from ${S('src/shared/credentials.ts')}
 export { planProxy } from ${S('src/main/proxy/config.ts')}
@@ -251,12 +251,24 @@ test('pure resolvers hand an oauth entry onward like a pasted secret', async () 
   assert.equal(agent.error, undefined)
   assert.equal(m.resolveAgentSecret(creds, 'out').error, m.signedOutError(signedOut))
 
-  const header = m.resolveMcpCredential(creds, 'in')
-  assert.deepEqual(header.header, { name: 'Authorization', value: 'Bearer LIVE' })
-  assert.equal(m.resolveMcpCredential(creds, 'out').error, m.signedOutError(signedOut))
+  const http = (id) => ({
+    id: 'srv',
+    url: 'https://mcp.example.com/mcp',
+    headers: [{ name: 'Authorization', value: { credentialId: id, prefix: 'Bearer ' } }]
+  })
+  assert.deepEqual(m.resolveMcpHeaders(creds, http('in')).headers, [
+    { name: 'Authorization', value: 'Bearer LIVE' }
+  ])
+  assert.equal(m.resolveMcpHeaders(creds, http('out')).error, m.signedOutError(signedOut))
+  // The legacy single link: an oauth entry never had overrides, so Bearer.
+  assert.deepEqual(
+    m.resolveMcpHeaders(creds, { id: 'srv', url: 'https://mcp.example.com/mcp', credentialId: 'in' }).headers,
+    [{ name: 'Authorization', value: 'Bearer LIVE' }]
+  )
 
-  assert.equal(m.resolveMcpEnvSecret(creds, 'in').secret, 'LIVE')
-  assert.equal(m.resolveMcpEnvSecret(creds, 'out').error, m.signedOutError(signedOut))
+  const local = (id) => ({ kind: 'command', id: 'srv', command: 'x', env: { TOKEN: { credentialId: id } } })
+  assert.deepEqual(m.resolveMcpSecretEnv(creds, local('in')).env, { TOKEN: 'LIVE' })
+  assert.equal(m.resolveMcpSecretEnv(creds, local('out')).error, m.signedOutError(signedOut))
 
   // The link pools grow to include the kind.
   assert.deepEqual(m.agentCredentials(creds).map((c) => c.id), ['in', 'out'])

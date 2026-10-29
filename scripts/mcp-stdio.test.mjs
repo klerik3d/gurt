@@ -50,9 +50,9 @@ await bundle({
         parseMcpSnippet, validateMcpEntry, normalizeMcpEntry, mcpEntries, mcpEntry,
         mcpEntryDetail, mcpEntryKind, mcpHasModes, mcpIdFromName, isLocalMcpEntry,
         isHttpMcpEntry, npmPackageSpec, splitPackageSpec, isPlainPackageName, LOCAL_MCP_NOTICE,
-        mcpEnvRows, mcpEnvRecord, looksLikeSecretEnv
+        mcpEnvRows, mcpEnvRecord, looksLikeSecretEnv, pastedSecret, mcpCredentialIds
       } from ${S('src/shared/mcp.ts')}
-      export { resolveMcpEnvSecret } from ${S('src/shared/credentials.ts')}
+      export { resolveMcpSecretEnv } from ${S('src/shared/credentials.ts')}
       export { planProxy } from ${S('src/main/proxy/config.ts')}
       export { localMcpWants, localMcpSpec, resolveMcpServers, stopMcpServers } from ${S('src/main/mcp/manager.ts')}
       export {
@@ -285,24 +285,46 @@ test('validator: a command entry needs a command', () => {
   assert.match(m.validateMcpEntry({ kind: 'command', id: 'git', command: '  ' }), /command must not be empty/)
 })
 
-test('validator: env names, and the credential a local entry has nowhere to put', () => {
+test('validator: env names, and values that link a credential', () => {
   const ok = { kind: 'npm', id: 'k8s', package: 'p' }
   assert.equal(m.validateMcpEntry({ ...ok, env: { KUBECONFIG: '/home/u/.kube/config' } }), null)
   assert.equal(m.validateMcpEntry({ ...ok, env: { _A1: 'v' } }), null)
   assert.match(m.validateMcpEntry({ ...ok, env: { '1BAD': 'v' } }), /not a valid environment variable name/)
   assert.match(m.validateMcpEntry({ ...ok, env: { 'A-B': 'v' } }), /not a valid environment variable name/)
   assert.match(m.validateMcpEntry({ ...ok, env: ['A=B'] }), /env must be an object/)
-  // The whole point of the local credential rule: a header has a default name,
-  // an environment variable does not, so linking without naming one is refused.
-  assert.match(
-    m.validateMcpEntry({ ...ok, credentialId: 'c-1' }),
-    /needs credentialEnvVar/
+  // A secret is a link in the value: the variable it lands in is its own name,
+  // so there is no second field to forget.
+  assert.equal(
+    m.validateMcpEntry({
+      ...ok,
+      env: {
+        PAYMENT_SERVICE_API_KEY_DEV: { credentialId: 'c-dev' },
+        PAYMENT_SERVICE_API_KEY_PROD: { credentialId: 'c-prod' },
+        REGION: 'eu'
+      }
+    }),
+    null
   )
-  assert.equal(m.validateMcpEntry({ ...ok, credentialId: 'c-1', credentialEnvVar: 'API_KEY' }), null)
-  assert.match(
-    m.validateMcpEntry({ ...ok, credentialId: 'c-1', credentialEnvVar: 'api key' }),
-    /not a valid environment variable name/
+  assert.match(m.validateMcpEntry({ ...ok, env: { K: { credentialId: '' } } }), /links no credential/)
+  assert.match(m.validateMcpEntry({ ...ok, env: { K: { credentialId: 'c', prefix: 'a\0' } } }), /prefix contains a NUL/)
+  assert.match(m.validateMcpEntry({ ...ok, env: { K: 1 } }), /must be a string or a credential link/)
+})
+
+test('the legacy single link folds into env, as the row it always meant', () => {
+  const ok = { kind: 'npm', id: 'k8s', package: 'p' }
+  assert.deepEqual(
+    m.normalizeMcpEntry({ ...ok, env: { A: 'x' }, credentialId: 'c-1', credentialEnvVar: ' API_KEY ' }),
+    { ...ok, env: { A: 'x', API_KEY: { credentialId: 'c-1' } } }
   )
+  // It won over a typed value of the same name when the environment was built,
+  // and still does.
+  assert.deepEqual(
+    m.normalizeMcpEntry({ ...ok, env: { API_KEY: 'typed' }, credentialId: 'c-1', credentialEnvVar: 'API_KEY' }).env,
+    { API_KEY: { credentialId: 'c-1' } }
+  )
+  // A link with no variable named never reached the process; it is dropped.
+  assert.deepEqual(m.normalizeMcpEntry({ ...ok, credentialId: 'c-1' }), ok)
+  assert.deepEqual(m.mcpCredentialIds(m.normalizeMcpEntry({ ...ok, credentialId: 'c-1', credentialEnvVar: 'K' })), ['c-1'])
 })
 
 test('validator: ids and unknown kinds', () => {
@@ -470,6 +492,43 @@ test('a local entry is a host upstream and a remote one is a registry upstream',
   )
 })
 
+test('a remote entry may link a credential in any header, as many as it needs', () => {
+  const creds = [
+    { id: 'c-dev', kind: 'mcp-token', label: 'dev', hosts: [], data: { secret: 'k-dev' } },
+    { id: 'c-prod', kind: 'mcp-token', label: 'prod', hosts: [], data: { secret: 'k-prod' } }
+  ]
+  const payments = {
+    id: 'payments',
+    url: 'https://payments.example/mcp',
+    headers: [
+      { name: 'X-Api-Key-Dev', value: { credentialId: 'c-dev' } },
+      { name: 'X-Api-Key-Prod', value: { credentialId: 'c-prod', prefix: 'Key ' } },
+      { name: 'X-Team', value: 'core' }
+    ]
+  }
+  const run = (credentials) =>
+    m.planProxy({
+      sessionId: 's1',
+      token: 'tok',
+      selection: [{ id: 'payments', mode: 'full' }],
+      registry: [payments],
+      credentials,
+      hostMcpUrls: { gurt: 'http://host.docker.internal:1/mcp/g' }
+    })
+  const ok = run(creds)
+  assert.deepEqual(ok.errors, [])
+  assert.deepEqual(ok.config.mcp['payments'].headers, [
+    { name: 'X-Api-Key-Dev', value: 'k-dev' },
+    { name: 'X-Api-Key-Prod', value: 'Key k-prod' },
+    { name: 'X-Team', value: 'core' }
+  ])
+  // One link gone is the whole route gone, reported — never a request sent
+  // with half its secrets.
+  const broken = run(creds.slice(0, 1))
+  assert.equal(broken.config.mcp['payments'], undefined)
+  assert.match(broken.errors.join('\n'), /MCP server "payments": linked credential no longer exists/)
+})
+
 test('a local entry whose process is not running is reported, not routed', () => {
   const { config, mcpServers, errors } = plan(['k8s'], {})
   assert.equal(config.mcp['k8s'], undefined)
@@ -565,31 +624,44 @@ test('the process spec changes when the process would, and not when it would not
   assert.notEqual(m.localMcpSpec({ ...base, version: '2' }), spec)
   assert.notEqual(m.localMcpSpec({ ...base, args: [] }), spec)
   assert.notEqual(m.localMcpSpec({ ...base, env: { A: 'b' } }), spec)
-  assert.notEqual(m.localMcpSpec({ ...base, credentialEnvVar: 'K' }), spec)
+  assert.notEqual(m.localMcpSpec({ ...base, env: { K: { credentialId: 'c' } } }), spec)
+  assert.notEqual(
+    m.localMcpSpec({ ...base, env: { K: { credentialId: 'c' } } }),
+    m.localMcpSpec({ ...base, env: { OTHER: { credentialId: 'c' } } }),
+    'which variable a secret lands in is part of the process'
+  )
   assert.notEqual(m.localMcpSpec({ kind: 'command', id: 'k8s', command: 'p', args: ['--ro'] }), spec)
 })
 
 // --- the credential, as an environment variable (§3.4) ----------------------
 
-test('a local entry resolves its credential to a bare secret, not a header', () => {
+test('a local entry resolves its credentials to bare secrets, not headers', () => {
   const creds = [
     { id: 'c-mcp', kind: 'mcp-token', label: 'k8s', data: { secret: '  s3cret  ' } },
-    { id: 'c-agent', kind: 'agent-token', label: 'claude', data: { secret: 'x' } }
+    { id: 'c-two', kind: 'mcp-token', label: 'two', data: { secret: 'other' } },
+    { id: 'c-agent', kind: 'agent-token', label: 'claude', data: { secret: 'x' } },
+    { id: 'c-nl', kind: 'mcp-token', label: 'l', data: { secret: 'a\nb' } },
+    { id: 'c-nul', kind: 'mcp-token', label: 'l', data: { secret: 'a\0b' } }
   ]
-  // No scheme, no header name: it is going into `execve`'s environment.
-  assert.deepEqual(m.resolveMcpEnvSecret(creds, 'c-mcp'), { secret: 's3cret' })
-  assert.deepEqual(m.resolveMcpEnvSecret(creds, undefined), {})
-  assert.match(m.resolveMcpEnvSecret(creds, 'gone').error, /no longer exists/)
-  assert.match(m.resolveMcpEnvSecret(creds, 'c-agent').error, /is not an MCP token/)
+  const local = (env) => ({ kind: 'npm', id: 'k8s', package: 'p', env })
+  // No scheme, no header name: it is going into `execve`'s environment. Only
+  // the linked half comes back — the typed half is handed over as it is.
+  assert.deepEqual(
+    m.resolveMcpSecretEnv(
+      creds,
+      local({ KEY_DEV: { credentialId: 'c-mcp' }, KEY_PROD: { credentialId: 'c-two' }, REGION: 'eu' })
+    ),
+    { env: { KEY_DEV: 's3cret', KEY_PROD: 'other' } }
+  )
+  assert.deepEqual(m.resolveMcpSecretEnv(creds, local(undefined)), { env: {} })
+  assert.match(m.resolveMcpSecretEnv(creds, local({ K: { credentialId: 'gone' } })).error, /no longer exists/)
+  assert.match(m.resolveMcpSecretEnv(creds, local({ K: { credentialId: 'c-agent' } })).error, /is not an MCP token/)
   // A newline is fine in an environment value and fatal in a header — the two
   // resolvers differ exactly here.
-  assert.deepEqual(m.resolveMcpEnvSecret([{ id: 'c', kind: 'mcp-token', label: 'l', data: { secret: 'a\nb' } }], 'c'), {
-    secret: 'a\nb'
+  assert.deepEqual(m.resolveMcpSecretEnv(creds, local({ K: { credentialId: 'c-nl' } })), {
+    env: { K: 'a\nb' }
   })
-  assert.match(
-    m.resolveMcpEnvSecret([{ id: 'c', kind: 'mcp-token', label: 'l', data: { secret: 'a\0b' } }], 'c').error,
-    /NUL byte/
-  )
+  assert.match(m.resolveMcpSecretEnv(creds, local({ K: { credentialId: 'c-nul' } })).error, /NUL byte/)
 })
 
 // --- JSON-RPC framing, on two fake streams (§4.1) ---------------------------
@@ -842,6 +914,24 @@ test('a pasted env value that is a secret is recognised, and a placeholder is no
   // A name that says nothing about secrecy is left alone, however long its value.
   assert.equal(m.looksLikeSecretEnv('KUBECONFIG', '/Users/me/.kube/config'), false)
   assert.equal(m.looksLikeSecretEnv('LOG_LEVEL', 'debugdebugdebug'), false)
+})
+
+test('a pasted secret is split from its scheme, so only the secret is stored', () => {
+  assert.deepEqual(m.pastedSecret('header', 'Authorization', 'Bearer sk-ABCDEFGH0123'), {
+    prefix: 'Bearer ',
+    secret: 'sk-ABCDEFGH0123'
+  })
+  assert.deepEqual(m.pastedSecret('header', 'X-Api-Key', 'k-ABCDEFGH0123'), {
+    prefix: '',
+    secret: 'k-ABCDEFGH0123'
+  })
+  assert.deepEqual(m.pastedSecret('env', 'PAYMENT_SERVICE_API_KEY_DEV', ' pk_dev_0123456789 '), {
+    prefix: '',
+    secret: 'pk_dev_0123456789'
+  })
+  assert.equal(m.pastedSecret('header', 'Authorization', 'Bearer <your token>'), null)
+  assert.equal(m.pastedSecret('header', 'X-Workspace', 'engineering-core'), null)
+  assert.equal(m.pastedSecret('env', 'LOG_LEVEL', 'debugdebugdebug'), null)
 })
 
 test('the paste path a user actually walks: snippet in, editable fields out', () => {
