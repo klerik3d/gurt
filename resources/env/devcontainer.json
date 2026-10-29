@@ -10,9 +10,9 @@
   // else, because everything it would otherwise need is on the host side of
   // an MCP call.
   //
-  // Digest = node:22-bookworm-slim as of 2026-09-01; bump deliberately with
-  // gurt releases (`docker manifest inspect node:22-bookworm-slim`). Debian
+  // Digest = node:26-bookworm-slim (current LTS) as of 2026-10-29; bump deliberately with
+  // gurt releases (`docker manifest inspect node:26-bookworm-slim`). Debian
   // rather than alpine so that, should the node feature ever be wanted here,
   // it installs via bash/apt and does not hit musl.
-  "image": "node:22-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5"
+  "image": "node:26-bookworm-slim@sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9"
 }

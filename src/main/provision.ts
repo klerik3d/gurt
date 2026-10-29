@@ -1049,7 +1049,7 @@ export async function devcontainerUp(
    *  dir. Defaults to the wrapper workspace folder's parent, which is the same
    *  directory for every session that has a wrapper. */
   scratchDir = path.dirname(workspaceFolder),
-  /** The env is the bundled operator one, whose image is `node:22-bookworm-slim`
+  /** The env is the bundled operator one, whose image is `node:26-bookworm-slim`
    *  and so already carries node and npm: the node feature is not injected.
    *  Left to run it installs a second, newer Node via nvm that needs
    *  `libatomic.so.1`, which that slim image lacks — the build fails (exit
