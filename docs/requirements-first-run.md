@@ -1290,7 +1290,10 @@ Where the plan met the code and bent.
    user who already has an agent instance? Cheap, and it overlaps the
    Config-tab role picker that §16 recorded as built. Leaning yes,
    deferred to phase 2 with the rest of the re-entry work.
-5. **Can the operator env skip the node feature entirely?** Its base
+5. **Can the operator env skip the node feature entirely?** *Done:*
+   `devcontainerUp` no longer injects it for the bundled `operator` env.
+   Still unchecked against a real daemon: `PATH` and the adapter install
+   without it. Original question: its base
    image is `node:22-bookworm-slim`, which already carries node 22, and
    gurt injects `BASE_FEATURES`' node feature into it anyway
    (provision.ts:98, :1019). If the feature is redundant *for this env*,

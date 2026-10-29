@@ -147,8 +147,11 @@ Decisions:
   the two share one name space.
 - **It is image-only and pinned by digest**, for §2.1's structural reason
   and for the proxy container's: `node:22-alpine@sha256:…`-style pinning,
-  no build, no features beyond the base node feature the container model
-  already injects, no repo. Minimal on purpose — it holds an agent CLI and
+  no build, no features, no repo. The base node feature the container model
+  injects into every other env is **not** injected for this one
+  (`devcontainerUp`, keyed on the env name): the image already carries node
+  and npm, and the feature would install a second, newer Node that needs
+  `libatomic.so.1`, which the slim image lacks. Minimal on purpose — it holds an agent CLI and
   nothing else, because everything it would otherwise need is on the host
   side of an MCP call.
 - **The user can re-point it.** `workspace.json` gains
@@ -1068,8 +1071,8 @@ tests are `scripts/operator-role.test.mjs`, `scripts/admin-surface.test.mjs`,
   writer via `main/redact.ts`, lifted out of `log.ts` as §8 asks.
 - **The bundled env is `node:22-bookworm-slim`, pinned by digest** —
   Debian rather than the `node:22-alpine` §2.2 used as its example, because
-  the pinned devcontainer node feature installs via bash/apt and does not
-  support musl images. It resolves by name (`operator`) anywhere a
+  the devcontainer node feature installs via bash/apt and does not support
+  musl images (no longer injected here, but any other env still gets it). It resolves by name (`operator`) anywhere a
   workspace env would — the shared name space, with the name reserved in
   the store validator — and `GURT_OPERATOR_ENV` overrides its path for
   headless tests, the `GURT_PROXY_SCRIPT` precedent.
