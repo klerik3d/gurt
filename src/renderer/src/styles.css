@@ -1502,6 +1502,22 @@ textarea.input {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Host-rendered detail of a gurt confirmation (an operator's apply_held):
+   the exact values being released, so it wraps instead of truncating. */
+.perm-head:has(+ .perm-detail) .perm-title {
+  white-space: normal;
+}
+.perm-detail {
+  margin: 0;
+  padding: 10px 13px;
+  border-top: 1px solid var(--border);
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 320px;
+  overflow: auto;
+}
 .perm-foot {
   display: flex;
   align-items: center;

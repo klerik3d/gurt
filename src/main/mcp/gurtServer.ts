@@ -76,9 +76,10 @@ const REVIEWER_INSTRUCTIONS =
 
 /**
  * The operator's subject is gurt itself (docs/requirements-session-operator.md
- * §1): it holds no repository and reads the workspace configuration and the
- * other sessions' diagnostics through the admin tools below. Phase 1 is
- * read-only — the write half of the surface lands with its own guardrails.
+ * §1): it holds no repository, reads the workspace configuration and the other
+ * sessions' diagnostics through the admin tools below, and changes the
+ * configuration through their write half — under revisions, held fields and
+ * credential refusals (§3.5, §4, §5).
  */
 const OPERATOR_INSTRUCTIONS =
   'You are the OPERATOR session: your subject is gurt itself — this\n' +
@@ -89,10 +90,18 @@ const OPERATOR_INSTRUCTIONS =
   'Read the configuration and the diagnostics through the admin tools\n' +
   '(`get_tree`, `get_mcp_servers`, `session_snapshot`, `session_traffic`,\n' +
   '`get_provisioning_log`, …) and explain what is wrong and how to fix it.\n' +
-  'In this phase the surface is READ-ONLY: you cannot change any\n' +
-  'configuration — name the exact Settings change the user should make\n' +
-  'instead. Credential VALUES are never available, to you or through you;\n' +
-  'you can see which credentials exist and what links to them, nothing more.'
+  'You may also CHANGE the configuration with the write tools (`update_env`,\n' +
+  '`add_mcp_server`, `add_repo`, …). Every write carries `rev`, the\n' +
+  "entity's current revision from `get_revisions` (\"absent\" to create);\n" +
+  'a mismatch means it changed since you read it — re-read, reconsider,\n' +
+  'retry. Fields that run code on, or reach into, the user\'s machine\n' +
+  '(`initializeCommand`, `mounts`, `runArgs`, a local MCP server\'s command,\n' +
+  '…) do not land: they come back in `held`, and only the user can release\n' +
+  'them — call `apply_held`, which asks them. Credential links, and the url\n' +
+  'of anything that carries one, cannot be changed by you at all; name the\n' +
+  'Settings change instead. Credential VALUES are never available, to you\n' +
+  'or through you; you can see which credentials exist and what links to\n' +
+  'them, nothing more. Tell the user what you changed.'
 
 /** Server `instructions` for a session of this role, delivered via MCP init. */
 export function instructionsFor(role: SessionRole): string {
@@ -227,8 +236,12 @@ export interface AgentSessionDraft {
 export interface AdminHooks {
   /** Execute one admin API call; `args` are the tool's named arguments. */
   call(method: string, args: Record<string, unknown>): Promise<unknown>
-  /** §3.2's one extra tool — the provisioning log has no `GurtApi` twin. */
+  /** §3.2's extra tool — the provisioning log has no `GurtApi` twin. */
   provisioningLog(key: string, tail: number | undefined): Promise<string>
+  /** `get_revisions`: entity → current revision (§3.5). */
+  revisions(entities: string[] | undefined): Promise<Record<string, string>>
+  /** `apply_held`: release held fields after the user confirms (§4.3). */
+  applyHeld(entity: string, fields: string[], rev: string): Promise<unknown>
 }
 
 /** What the host does with a tool call; re-resolved on every re-attach so the
@@ -267,18 +280,67 @@ const PROVISIONING_LOG_INPUT = {
  *  (an unknown session's snapshot, say) reads `null`, never as success prose. */
 const resultText = (result: unknown): string => JSON.stringify(result ?? null, null, 2)
 
+/** What every write tool takes on top of its derived schema (§3.5). */
+const REV_INPUT = {
+  rev: z
+    .string()
+    .min(1)
+    .describe(
+      "the entity's current revision, from get_revisions — \"absent\" when creating it. " +
+        'A mismatch fails the write: re-read and retry.'
+    )
+}
+
+/** Appended to every write tool's lifted JSDoc: the contract the method's own
+ *  doc cannot know about. */
+const WRITE_NOTE =
+  '\n\nOperator write: pass `rev` (see get_revisions). Returns `{ rev, held?, result? }` — ' +
+  '`rev` is the new revision; `held` lists fields that did not land because they run code ' +
+  'on, or reach into, the user’s machine (release them with apply_held, which asks the ' +
+  'user). Linking a credential, or re-pointing anything that carries one, is refused.'
+
+const GET_REVISIONS_INPUT = {
+  entities: z
+    .array(z.string().min(1))
+    .optional()
+    .describe(
+      'entities to read, e.g. ["env:node20", "mcp:linear", "defaults"]; omit for all of ' +
+        'them. Kinds: repo:<name>, env:<name>, mcp:<id>, skill:<name>, task:<name>, ' +
+        'defaults (default agent / denied agents / default skills / operator env), agents, ' +
+        'notification-prefs, hotkeys, welcome-mode.'
+    )
+}
+
+const APPLY_HELD_INPUT = {
+  entity: z.string().min(1).describe('the entity the held fields belong to, e.g. "env:node20"'),
+  fields: z
+    .array(z.string().min(1))
+    .min(1)
+    .describe('names of held fields to release, as the write reported them in `held`'),
+  rev: z.string().min(1).describe('the `rev` that write returned')
+}
+
+const errorResult = (e: unknown) => ({
+  isError: true,
+  content: [{ type: 'text' as const, text: e instanceof Error ? e.message : String(e) }]
+})
+
 /**
  * The derived admin tools (docs/requirements-session-operator.md §3): one per
- * `read`-annotated `GurtApi` method, plus `get_provisioning_log`. Phase 1 of
- * that document treats every other annotation as `none` — the write tools are
- * not registered at all, so no tool name reaches them.
+ * `read`/`write`-annotated `GurtApi` method, plus the three with no `GurtApi`
+ * twin — `get_provisioning_log` (§3.2), `get_revisions` (§3.5: a revision is
+ * derived host-side, so reading one is the host's to offer) and `apply_held`
+ * (§4.3). A write tool's schema is the derived one plus `rev`.
  */
 function registerAdminTools(server: McpServer, admin: AdminHooks): void {
   for (const def of ADMIN_TOOLS) {
-    if (def.exposure !== 'read') continue
+    const write = def.exposure === 'write'
     server.registerTool(
       def.name,
-      { description: def.description, inputSchema: def.input },
+      {
+        description: write ? def.description + WRITE_NOTE : def.description,
+        inputSchema: write ? { ...def.input, ...REV_INPUT } : def.input
+      },
       async (raw) => {
         try {
           const result = await admin.call(def.method, raw)
@@ -288,14 +350,47 @@ function registerAdminTools(server: McpServer, admin: AdminHooks): void {
           // the probe-by-kind narrowing) come back at the tool layer, the
           // `create_session` precedent — the agent self-corrects instead of
           // the user finding out later.
-          return {
-            isError: true,
-            content: [{ type: 'text' as const, text: e instanceof Error ? e.message : String(e) }]
-          }
+          return errorResult(e)
         }
       }
     )
   }
+  server.registerTool(
+    'get_revisions',
+    {
+      description:
+        'Current revisions of configuration entities — what every write tool must carry as ' +
+        '`rev`. An entity that does not exist reads "absent".',
+      inputSchema: GET_REVISIONS_INPUT
+    },
+    async ({ entities }) => {
+      try {
+        return { content: [{ type: 'text' as const, text: resultText(await admin.revisions(entities)) }] }
+      } catch (e) {
+        return errorResult(e)
+      }
+    }
+  )
+  server.registerTool(
+    'apply_held',
+    {
+      description:
+        'Ask the user to release fields a write held back (`held` in its result). gurt shows ' +
+        'them the exact values that write carried — you name fields, you do not resend values — ' +
+        'and this call blocks until they answer. "Keep held" drops the named fields; a held ' +
+        'field is also dropped as soon as its entity changes again.',
+      inputSchema: APPLY_HELD_INPUT
+    },
+    async ({ entity, fields, rev }) => {
+      try {
+        return {
+          content: [{ type: 'text' as const, text: resultText(await admin.applyHeld(entity, fields, rev)) }]
+        }
+      } catch (e) {
+        return errorResult(e)
+      }
+    }
+  )
   server.registerTool(
     'get_provisioning_log',
     {
@@ -504,7 +599,9 @@ export async function ensureGurtServer(
       ? {
           admin: {
             call: (method, args) => rec.hooks.admin!.call(method, args),
-            provisioningLog: (key, tail) => rec.hooks.admin!.provisioningLog(key, tail)
+            provisioningLog: (key, tail) => rec.hooks.admin!.provisioningLog(key, tail),
+            revisions: (entities) => rec.hooks.admin!.revisions(entities),
+            applyHeld: (entity, fields, rev) => rec.hooks.admin!.applyHeld(entity, fields, rev)
           } satisfies AdminHooks
         }
       : {})

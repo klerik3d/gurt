@@ -4,8 +4,10 @@
 // annotated, the generated tool list is exactly the read+write set,
 // regenerating produces no diff, `ws` is absent from every schema and a call
 // cannot reach another workspace, credentials come back valueless, snapshots
-// come back chat-less, and every `none` method — and, in phase 1, every
-// `write` method — is unreachable by any tool name.
+// come back chat-less, and every `none` method is unreachable by any tool
+// name. The write half's own guarantees (held fields, credential refusals,
+// revisions) are scripts/held-fields.test.mjs and
+// scripts/credential-boundary.test.mjs.
 //
 //   node scripts/admin-surface.test.mjs
 import { test, after } from 'node:test'
@@ -93,10 +95,7 @@ const server = m.buildGurtHttpServer(TOKEN, {
   role: 'operator',
   onComplete: () => {},
   onCreateSession: async () => ({ sessionId: 'x', title: 'x' }),
-  admin: {
-    call: (method, args) => admin.call('w', method, args),
-    provisioningLog: (key, tail) => admin.provisioningLog('w', key, tail)
-  }
+  admin: admin.bind('w', 'op-session')
 })
 await new Promise((r) => server.listen(0, '127.0.0.1', r))
 const url = `http://127.0.0.1:${server.address().port}/mcp/${TOKEN}`
@@ -181,20 +180,29 @@ test('`ws` is absent from every schema', () => {
   }
 })
 
-// --- the offered tool set (phase 1: reads only) -----------------------------
+// --- the offered tool set ----------------------------------------------------
 
-test('tools/list offers exactly the read tools + get_provisioning_log', async () => {
+test('tools/list offers exactly the read+write tools + the three host-only tools', async () => {
   const names = await listTools()
-  const readTools = m.ADMIN_TOOLS.filter((d) => d.exposure === 'read').map((d) => d.name)
+  const tools = m.ADMIN_TOOLS.map((d) => d.name)
   assert.deepEqual(
     names.sort(),
-    [...readTools, 'get_provisioning_log'].sort(),
-    'read set + the one extra tool; no complete, no create_session, no writes'
+    [...tools, 'get_provisioning_log', 'get_revisions', 'apply_held'].sort(),
+    'derived set + the documented extras; no complete, no create_session'
   )
 })
 
-test('every none — and, in phase 1, every write — method is unreachable by any tool name', async () => {
-  const unreachable = m.API_METHODS.filter((x) => m.METHOD_EXPOSURE[x] !== 'read').map(snake)
+test('every write tool requires a rev', async () => {
+  const { body } = await post({ jsonrpc: '2.0', id: ++id, method: 'tools/list', params: {} })
+  for (const t of body.result.tools) {
+    const def = m.ADMIN_TOOLS.find((d) => d.name === t.name)
+    if (def?.exposure !== 'write') continue
+    assert.ok(t.inputSchema.required?.includes('rev'), `${t.name} requires rev`)
+  }
+})
+
+test('every none method is unreachable by any tool name', async () => {
+  const unreachable = m.API_METHODS.filter((x) => m.METHOD_EXPOSURE[x] === 'none').map(snake)
   for (const name of unreachable) {
     const r = await call(name, {})
     assert.ok(r.isError, `${name} is not callable`)

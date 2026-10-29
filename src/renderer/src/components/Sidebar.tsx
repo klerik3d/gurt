@@ -12,7 +12,7 @@ import { SESSION_DOT } from '../status'
 import { markUnread } from '../reviewed'
 import { Icon, Dot } from './icons'
 import { AgentMark } from './tags'
-import { deleteSession, duplicateSession } from './SessionActions'
+import { deleteSession, duplicateSession, recreateSession } from './SessionActions'
 import { Modal } from './Modal'
 import { fire, run } from '../async'
 import { RowContextMenu } from './RowContextMenu'
@@ -332,6 +332,11 @@ export function Sidebar({
           (s) => s.id === row.id && sessionStatus({ ...s, ...activity[s.id] }) === 'idle-read'
         )
       )
+    // Recreate only means something for a session that has left draft.
+    const launched =
+      row.kind === 'session'
+        ? tasks.flatMap((t) => t.sessions).find((s) => s.id === row.id && s.state !== 'draft')
+        : undefined
     return (
       <RowContextMenu x={menu.x} y={menu.y} onClose={close}>
         {row.kind === 'task' ? (
@@ -407,6 +412,19 @@ export function Sidebar({
               <Icon name="copy" size={13} className="faint" />
               <span>Duplicate as draft</span>
             </div>
+            {launched && (
+              <div
+                className="menu-item"
+                onMouseDown={(e) => {
+                  e.preventDefault()
+                  close()
+                  void recreateSession(launched, (draft) => onSelectSession(draft.id))
+                }}
+              >
+                <Icon name="history" size={13} className="faint" />
+                <span>Recreate as draft…</span>
+              </div>
+            )}
             {readSession && (
               <div
                 className="menu-item"

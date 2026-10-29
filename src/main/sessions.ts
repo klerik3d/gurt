@@ -46,6 +46,7 @@ import { sanitizeSkillSelection } from '../shared/skills'
 import { limitResetAt, turnOutcome, usageFields } from '../shared/usage'
 import { parseClaudeRateLimit } from './planUsage'
 import type { Bus } from './bus'
+import type { AdminHooks } from './mcp/gurtServer'
 import type { ContainerStatusReason, SessionStateReason } from '../shared/events'
 import type { LaunchContext } from './containers'
 import { lineBuffer, spawnAcpAdapter } from './provision'
@@ -383,18 +384,14 @@ export interface SessionEvents {
       onCreateSession: (req: AgentSessionRequest) => Promise<{ sessionId: string; title: string }>
       /** Present only for an operator session — routes its admin tools into
        *  the ws-bound admin surface (docs/requirements-session-operator.md §3). */
-      admin?: {
-        call(method: string, args: Record<string, unknown>): Promise<unknown>
-        provisioningLog(key: string, tail: number | undefined): Promise<string>
-      }
+      admin?: AdminHooks
     }
   ) => Promise<AcpHttpMcpServer>
-  /** Execute one admin API call for an operator session of `ws` — the
-   *  workspace binding of docs/requirements-session-operator.md §3.2: the
-   *  session manager passes its own workspace, never anything the agent said. */
-  adminCall: (ws: string, method: string, args: Record<string, unknown>) => Promise<unknown>
-  /** The provisioning-log read behind `get_provisioning_log`, same binding. */
-  adminProvisioningLog: (ws: string, key: string, tail: number | undefined) => Promise<string>
+  /** The admin surface for one operator session — the workspace binding of
+   *  docs/requirements-session-operator.md §3.2: the session manager passes
+   *  its own workspace and id, never anything the agent said. The id is the
+   *  journal's author and where an `apply_held` confirmation is raised. */
+  adminFor: (ws: string, sessionId: string) => AdminHooks
   /** Tear down one session's `gurt` server (session deleted). */
   stopGurtServer: (sessionId: string) => void
   /** Reject repos/env that are not registered in the workspace, or an agent the
@@ -986,7 +983,62 @@ export class SessionManager {
   duplicateSession(sessionId: string): SessionInfo {
     const source = this.sessions.get(sessionId)?.info
     if (!source) throw new Error('unknown session')
-    const info = this.createSession(
+    const info = this.draftFrom(source)
+    // The copy is recognisable as one instead of taking the next free
+    // role-index name — the source is usually still in the tree right above it.
+    this.renameSession(info.id, `${source.title} (copy)`)
+    log.info('session.duplicated', { s: info.id, from: sessionId })
+    return info
+  }
+
+  /**
+   * Turn a session that has left draft back into one — "I launched it, then
+   * saw it was set up wrong". The run is discarded whole (container, adapter,
+   * host servers, queued prompts, chat log, mount scratch, agent history): this
+   * is {@link duplicateSession} followed by {@link deleteSession}, with the
+   * draft keeping the original's title and its place in the task.
+   *
+   * A new id rather than a reset of the old record, on purpose: everything the
+   * run owned is keyed by the session id, and much of it is torn down
+   * asynchronously — the container release (and the scratch/history directory
+   * removed only once it is down), an in-flight log append, a start still
+   * awaiting its container. Reusing the id would let any of those land on the
+   * fresh draft (old chat records appended to its new log, its first start
+   * mounting a scratch dir about to be deleted). A new id makes the result
+   * exactly a freshly created draft with that configuration, and lets the
+   * delete path — the one already trusted with a session in any state,
+   * busy or starting included — do all of the teardown.
+   *
+   * Refused for a draft: there is no run to discard, and the "fresh" draft
+   * would only lose the draft's in-memory start images.
+   */
+  recreateSession(sessionId: string): SessionInfo {
+    const s = this.sessions.get(sessionId)
+    if (!s) throw new Error('unknown session')
+    if (s.info.state === 'draft') throw new Error('session is already a draft')
+    const source = s.info
+    const at = [...this.sessions.keys()].indexOf(sessionId)
+    const info = this.draftFrom(source)
+    this.renameSession(info.id, source.title)
+    this.deleteSession(sessionId)
+    // Back into the original's slot (the tree lists a task's sessions in this
+    // map's order), so the row does not jump to the bottom of its task. Before
+    // the debounced persist fires, so sessions.json keeps that order too.
+    const fresh = this.sessions.get(info.id)
+    if (fresh) {
+      const rest = [...this.sessions].filter(([id]) => id !== info.id)
+      rest.splice(at, 0, [info.id, fresh])
+      this.sessions = new Map(rest)
+      this.bus.emit('tree.changed', undefined)
+    }
+    log.info('session.recreated', { s: info.id, from: sessionId })
+    return info
+  }
+
+  /** A fresh draft of the same task carrying everything the user configured on
+   *  `source`, and nothing runtime-derived (see {@link duplicateSession}). */
+  private draftFrom(source: SessionInfo): SessionInfo {
+    return this.createSession(
       { workspace: source.workspace, task: source.task, env: source.env },
       [...source.repos],
       source.agent ?? '',
@@ -1004,11 +1056,6 @@ export class SessionManager {
       // must not share a policy's domain array.
       sanitizeSessionNetwork(source.network)
     )
-    // The copy is recognisable as one instead of taking the next free
-    // role-index name — the source is usually still in the tree right above it.
-    this.renameSession(info.id, `${source.title} (copy)`)
-    log.info('session.duplicated', { s: info.id, from: sessionId })
-    return info
   }
 
   /**
@@ -2133,10 +2180,7 @@ export class SessionManager {
     role: SessionRole
     onComplete: (p: ChangeProposal) => void
     onCreateSession: (req: AgentSessionRequest) => Promise<{ sessionId: string; title: string }>
-    admin?: {
-      call(method: string, args: Record<string, unknown>): Promise<unknown>
-      provisioningLog(key: string, tail: number | undefined): Promise<string>
-    }
+    admin?: AdminHooks
   } {
     const role = sessionRole(s.info)
     return {
@@ -2146,16 +2190,7 @@ export class SessionManager {
       // The workspace is bound here, from the session's own record — the one
       // parameter the agent can never express (§3.2 of
       // docs/requirements-session-operator.md).
-      ...(role === 'operator'
-        ? {
-            admin: {
-              call: (method: string, args: Record<string, unknown>) =>
-                this.events.adminCall(s.ref.workspace, method, args),
-              provisioningLog: (key: string, tail: number | undefined) =>
-                this.events.adminProvisioningLog(s.ref.workspace, key, tail)
-            }
-          }
-        : {})
+      ...(role === 'operator' ? { admin: this.events.adminFor(s.ref.workspace, s.info.id) } : {})
     }
   }
 
@@ -2452,6 +2487,38 @@ export class SessionManager {
     else if (/default|manual|ask|confirm/.test(k)) s.info.autoAllow = false
     this.bus.emit('session.changed', { sessionId })
     this.schedulePersist(s.ref)
+  }
+
+  /**
+   * gurt's own confirmation for an operator's `apply_held`
+   * (docs/requirements-session-operator.md §4.3) — the one prompt auto-allow
+   * cannot reach. It is raised here, not through ACP, so neither the
+   * `mcp__gurt__` blanket allow in `onPermission` nor a bypass mode ever sees
+   * it; it rides the timeline as a permission entry so the decision is on the
+   * record afterwards. No timeout and no default: a cancelled turn, a dead
+   * adapter or a deleted session resolves it as "no", and an app restart
+   * leaves nothing to resume — every exit fails closed.
+   */
+  confirmHeld(sessionId: string, title: string, detail: string): Promise<{ ok: boolean; entryId: number }> {
+    const s = this.sessions.get(sessionId)
+    if (!s) return Promise.resolve({ ok: false, entryId: -1 })
+    const entry = this.push(s, {
+      kind: 'permission',
+      title,
+      detail,
+      options: [
+        { optionId: 'apply', name: 'Apply', kind: 'allow_once' },
+        { optionId: 'reject', name: 'Keep held', kind: 'reject_once' }
+      ]
+    })
+    return new Promise((resolve) => {
+      s.pendingPermissions.set(entry.id, (outcome) => {
+        const o = (outcome as { outcome?: { outcome?: string; optionId?: string } }).outcome
+        resolve({ ok: o?.outcome === 'selected' && o.optionId === 'apply', entryId: entry.id })
+      })
+      if (s.pendingPermissions.size === 1)
+        this.bus.emit('session.awaiting', { sessionId: s.info.id, ref: s.ref, awaiting: true })
+    })
   }
 
   respondPermission(sessionId: string, entryId: number, optionId: string): void {

@@ -1,6 +1,6 @@
 # Requirements: the operator session and the admin MCP surface
 
-Status: phase 1 implemented (as-built notes in §16) · phases 2–4 pending ·
+Status: phases 1–2 implemented (as-built notes in §16, §17) · phases 3–4 pending ·
 Target: gurt Electron MVP (this repo)
 
 This document is a work order for an implementing agent. Read
@@ -1109,3 +1109,106 @@ tests are `scripts/operator-role.test.mjs`, `scripts/admin-surface.test.mjs`,
   candidate. Picking it clears the repos, disables the repository picker
   and points the draft's env at `operatorEnv ?? bundled`; the sidebar/
   Settings entry points stay open questions.
+
+## 17. As built (phase 2)
+
+Writes, with everything §11 lists for them. Tests:
+`scripts/held-fields.test.mjs` (§4.4 (a), (b), (c) in that order, plus the
+§3.5 revision check, with the journal replay as (c)'s oracle) and
+`scripts/credential-boundary.test.mjs` (§5.2). `scripts/admin-surface.test.mjs`
+now asserts the offered set is read + write + the three host-only tools, and
+that every write tool requires `rev`.
+
+- **One chokepoint, `main/adminWrites.ts`.** Every `write`-annotated method
+  reaches the store through `write()`: revision check → credential refusals →
+  held split → the method, attributed to the operator in the journal. Its
+  binding is `Pick<GurtApi, WriteMethod>` and its entity map is
+  `Record<WriteMethod, …>`, so a method annotated `write` without a binding or
+  an entity is a compile error — §16's rule for reads, applied to writes. The
+  binding repeats ipc.ts's side effects (`tree.changed`, the agent-kind
+  reload, the prefs normalizers) for the reason §16 gives for reads; the one
+  Electron-bound effect, the app-menu rebuild after a hotkey change, rides a
+  new `hotkeys.changed` bus event that ipc.ts answers.
+- **Entities and revisions.** `repo:<name>`, `env:<name>`, `mcp:<id>`,
+  `skill:<name>` (the `SKILL.md` text), `task:<name>` (its writable part,
+  `maxConcurrentSessions`), `defaults` (default agent, denied agents, default
+  skills, operator env — the four workspace-level setters share it),
+  `agents` (the whole file — `setAgents` is a wholesale replace),
+  `notification-prefs`, `hotkeys`, `welcome-mode`. A revision is the first 12
+  hex of sha256 over `canonicalJson` (now exported from `envConfig.ts`); a
+  missing entity reads `"absent"`, which is what a create carries.
+  `envBuildImage` and `reinstallMcpServer` change no config but check the
+  revision anyway — §6's reason: a verdict about a version the agent no
+  longer holds is a verdict about the wrong thing. Admin writes are
+  serialized per workspace, so the check and the write it guards cannot
+  interleave with a sibling's.
+- **Two tools with no `GurtApi` twin, recorded here as §3.2 asks.**
+  `get_revisions(entities?)` — a derived revision is the host's to compute,
+  and reading it has no renderer analogue — and `apply_held(entity, fields,
+  rev)`. Every write tool's schema is the derived one plus a required `rev`,
+  and its description is the JSDoc plus a fixed note on `rev`/`held`.
+  Results are `{ rev, held?, result? }`, scrubbed like any read.
+- **The env deny list grew past §4.1's five, by §4.1's own rule.** Reading
+  `provision.ts` against "a field through which a write runs code on the host
+  or opens the host to a container" found five more: `build.dockerfile` is a
+  host path gurt *writes* the Dockerfile content to (`"/home/u/.bashrc"`
+  would be host execution on the next login), `build.context` is a host
+  directory sent into `docker build` (`"../../.."` ships the user's home into
+  an image the container can read), `workspaceMount` is a bind like `mounts`,
+  `securityOpt` relaxes isolation the way `privileged` drops it, and
+  `dockerComposeFile` names a file that can declare all of them. Dotted names
+  are paths. A field is held only when the agent's value *differs* from the
+  saved one — keeping a user's existing `mounts` while editing `image` holds
+  nothing — and a held member is put back to its saved value with
+  `jsonc-parser`'s `modify`, so the user's comments survive the write.
+- **Recorded gap, not closed: image and feature metadata.** The devcontainer
+  CLI merges `privileged`, `mounts`, `capAdd` and `securityOpt` from an
+  image's `devcontainer.metadata` label and from a feature's own metadata, so
+  an `image` or `features` change can reach the host without naming any held
+  field. Holding every image and feature change would hold nearly every env
+  edit the operator exists to make — and would be a confirmation answered by
+  reflex, which §4.3 says is no guardrail. The enforcement belongs at
+  provision time: read the merged configuration and refuse a start whose
+  merged host-reaching members exceed the env's own. Until then, this is open.
+- **Local MCP held fields: `command`, `package`, `args`, `cwd`, `env`.** §4.1
+  names the first three; `cwd` decides what a relative path runs and `env`
+  carries `NODE_OPTIONS`/`LD_PRELOAD`. The npm `version` pin stays out, per
+  §13's `reinstallMcpServer` row. A *new* local entry, or one changing kind,
+  is not an entry without its command, so nothing lands: the whole entry is
+  held (`rev` stays `"absent"`) and is released whole — `apply_held` naming a
+  subset is refused with the full list.
+- **§5.2's refusals, plus two that follow from it.** As specified: no create
+  with a link, no link set or changed (`setAgents` included, per agent), no
+  `url` change on a credentialed repo or http entry. Also refused: changing a
+  credentialed entry's `kind`, and changing the held fields of a
+  *credentialed local* entry — its credential is handed to whatever process
+  those fields name, so changing them is re-pointing, and §5.2's reason for
+  refusing rather than holding (a diff does not convey "this program now gets
+  your token") applies unchanged. A local repo's `url` is its storage path
+  and the store keeps it whatever an edit sends, so it is not compared.
+- **The confirmation is a timeline permission entry, raised by
+  `SessionManager.confirmHeld`, not by ACP.** It reuses the permission card
+  (with a new host-rendered `detail`: entity, then per field the reason and a
+  `-`/`+` pair of the saved and stored values) and the `pendingPermissions`
+  resolver map, so every existing fail-closed path — turn cancel, adapter
+  death, session delete — answers it "no". Nothing in `onPermission`'s
+  `mcp__gurt__` allow or a bypass mode sees it. The prompt is raised outside
+  the per-workspace write lock (it has no timeout), and the apply re-checks
+  the revision and the fragment under the lock afterwards: anything that
+  changed while the card was open wins, and nothing is applied over it.
+  "Keep held" drops the named fields; unnamed ones stay held at the new
+  revision after a partial apply.
+- **Held fragments are dropped on any change to their entity, by anyone.**
+  `store.onConfigMutation` is a synchronous hook beside `journal()` with the
+  journal's own `<ws>/<kind>/<name>` entity; the chokepoint subscribes. A
+  hand edit to `workspace.json` fires nothing, and is caught by the revision
+  instead. Fragments live in memory, so a restart drops them (§4.3).
+- **The journal records the confirmation.** An applied held field commits
+  with a `Confirmed: <session>#<timeline entry>` trailer
+  (`JournalActor.confirmation`), which is what the (c) oracle replays: no
+  operator commit may introduce a deny-listed value without one.
+- **The admin hooks are bound per session.** `SessionEvents.adminFor(ws,
+  sessionId)` replaced the two per-call closures: the session id is the
+  journal's author and the session the confirmation is raised in, and like
+  the workspace it comes from the session's own record, never from the agent.
+

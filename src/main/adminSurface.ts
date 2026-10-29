@@ -1,6 +1,8 @@
 // The operator's admin surface (docs/requirements-session-operator.md §3):
 // executes the `read`-annotated GurtApi methods on behalf of an operator
-// session, bound to that session's workspace. Like preload and ipc.ts, this is
+// session, bound to that session's workspace, and hands the `write`-annotated
+// ones to their one chokepoint in adminWrites.ts (revisions, held fields,
+// credential refusals — §3.5, §4, §5). Like preload and ipc.ts, this is
 // a *binding* of the one annotated list in shared/api.ts, not a parallel
 // surface: `reads()` is compile-checked against `Pick<GurtApi, ReadMethod>`,
 // so annotating a method `read` without binding it here — or binding one that
@@ -14,7 +16,7 @@
 //   3. the scrub — every result passes `scrub()` before it crosses the tool
 //      boundary.
 import { promises as fs } from 'node:fs'
-import type { GurtApi, ReadMethod } from '../shared/api'
+import type { GurtApi, ReadMethod, WriteMethod } from '../shared/api'
 import type { SessionSnapshot, Tree } from '../shared/types'
 import type { CredentialsFile } from '../shared/credentials'
 import { CREDENTIAL_KINDS } from '../shared/credentials'
@@ -31,6 +33,8 @@ import { sessionLogFilePath } from './log'
 import { REDACTED } from './redact'
 import { scrub } from './scrub'
 import type { Kernel } from './kernel'
+import type { AdminHooks } from './mcp/gurtServer'
+import { createAdminWrites, type AdminCtx, type AdminWrites, type WriteResult } from './adminWrites'
 
 /** Tail default and cap for `get_provisioning_log` — enough to diagnose a
  *  failed provision, bounded so a runaway log cannot flood the model. */
@@ -40,10 +44,19 @@ const LOG_TAIL_MAX = 2000
 /** What the `gurt` MCP server needs from this module (per operator session,
  *  ws-bound by the session manager — see `SessionEvents.adminCall`). */
 export interface AdminSurface {
-  /** Execute one admin call; `args` are the tool's named arguments. */
-  call(ws: string, method: string, args: Record<string, unknown>): Promise<unknown>
-  /** §3.2's one extra tool: the tail of a provisioning log file, scrubbed. */
+  /** Execute one admin call; `args` are the tool's named arguments (plus
+   *  `rev` for a write). */
+  call(ctx: AdminCtx, method: string, args: Record<string, unknown>): Promise<unknown>
+  /** §3.2's extra tool: the tail of a provisioning log file, scrubbed. */
   provisioningLog(ws: string, key: string, tail: number | undefined): Promise<string>
+  /** `get_revisions` — what a write must carry (§3.5). */
+  revisions(ws: string, entities: string[] | undefined): Promise<Record<string, string>>
+  /** `apply_held` — release held fields after the user confirms (§4.3). */
+  applyHeld(ctx: AdminCtx, entity: string, fields: string[], rev: string): Promise<WriteResult>
+  /** All of the above, bound to one operator session. */
+  bind(ws: string, sessionId: string): AdminHooks
+  /** The write chokepoint, for tests that inspect what is held. */
+  writes: AdminWrites
 }
 
 /** §5.1: ids, labels, kinds, link targets — never values. The renderer's mask
@@ -158,19 +171,18 @@ export function createAdminSurface(kernel: Kernel): AdminSurface {
     getWelcomeMode: () => store.getWelcomeMode()
   })
 
-  return {
-    async call(ws, method, args) {
+  const writes = createAdminWrites(kernel)
+
+  const surface: AdminSurface = {
+    writes,
+    async call(ctx, method, args) {
+      const { ws } = ctx
       const def = ADMIN_TOOLS.find((d) => d.method === method)
       if (!def) throw new Error(`unknown admin method "${method}"`)
-      // Phase 1 of docs/requirements-session-operator.md §11: every annotation
-      // that is not `read` is treated as `none` — the operator sees everything
-      // and changes nothing. Registration already filters (gurtServer.ts);
-      // this is the chokepoint saying it again.
-      if (def.exposure !== 'read')
-        throw new Error(
-          `"${def.name}" is not available: the admin surface is read-only in this phase — ` +
-            'tell the user what to change in Settings instead'
-        )
+      // Every write goes through the one filter (§4.4(c)); its result is
+      // scrubbed like any read, since it echoes the method's own return.
+      if (def.exposure === 'write')
+        return scrub(await writes.write(ctx, def.method as WriteMethod, args))
       const bound = reads(ws)
       const fn = bound[def.method as ReadMethod] as (...a: unknown[]) => Promise<unknown>
       const positional = def.params.map((p) => args[p])
@@ -202,6 +214,23 @@ export function createAdminSurface(kernel: Kernel): AdminSurface {
       // on the way out, because §8's rule is on the read path, not a hope
       // about the write path.
       return scrub(lines.slice(-n).join('\n')) as string
+    },
+
+    revisions: (ws, entities) => writes.revisions(ws, entities),
+
+    async applyHeld(ctx, entity, fields, rev) {
+      return scrub(await writes.applyHeld(ctx, entity, fields, rev)) as WriteResult
+    },
+
+    bind(ws, sessionId) {
+      const ctx = { ws, sessionId }
+      return {
+        call: (method, args) => surface.call(ctx, method, args),
+        provisioningLog: (key, tail) => surface.provisioningLog(ws, key, tail),
+        revisions: (entities) => surface.revisions(ws, entities),
+        applyHeld: (entity, fields, rev) => surface.applyHeld(ctx, entity, fields, rev)
+      }
     }
   }
+  return surface
 }

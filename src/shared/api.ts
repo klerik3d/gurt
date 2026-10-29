@@ -358,6 +358,11 @@ export interface GurtApi {
    *  The answer to "this one was configured wrong" — correct the copy, drop the
    *  original. Works whatever state the source is in. */
   sessionDuplicate(id: string): Promise<SessionInfo>
+  /** Turn a session that has left draft back into a draft with the same
+   *  configuration and title, discarding the run (container, chat, queued
+   *  prompts). Answers the new draft — it has a new id; the old one is
+   *  deleted. Rejects for a session that is already a draft. */
+  sessionRecreate(id: string): Promise<SessionInfo>
   /** Delete a session: its container is destroyed with it, its chat log removed.
    *  The clone (and any uncommitted work in it) stays. */
   sessionDelete(id: string): Promise<void>
@@ -587,6 +592,7 @@ const METHODS = {
   renameSession: 'none', //     §2.4
   sessionEditDraft: 'none', //  §2.4
   sessionDuplicate: 'none', //  §2.4
+  sessionRecreate: 'none', //   §2.4
   sessionDelete: 'none', //     §2.4
   sessionSnapshot: 'read', //   narrowed: state and diagnostics, no chat (§3.2)
   sessionTraffic: 'read', //    blocked hosts — the diagnostic the operator exists for

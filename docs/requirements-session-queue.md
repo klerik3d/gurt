@@ -65,6 +65,22 @@ draft ──(run now / enqueue)──▶ queued ──(scheduler)──▶ start
   shown in its pane (chat history keeps a system entry). It does NOT retry
   automatically and does NOT block the queue.
 
+**Recreate as draft** (session context menu and pane header menu, any
+non-draft state — queued, starting, started, busy) is the way back for a
+session noticed to be set up wrong only after it was launched. After a
+confirmation (the conversation is lost) it discards the run whole — any
+turn in flight, queued prompts, pending permissions, container, adapter,
+host MCP/`gurt` servers, chat log, mount scratch and agent history — and
+leaves in its place a draft carrying the same configuration (role, env,
+repos, agent, MCP, skills, network, auto-allow, config values, start
+prompt) and the same title, in the same slot of its task. It is
+`duplicateSession` + `deleteSession` (`recreateSession`, `sessions.ts`):
+the draft has a **new id**, because everything the run owned is keyed by
+the id and torn down asynchronously (the container release, the scratch
+removed once it is down, an in-flight log append), so a reused id could
+see the old run land on the new draft. The clone, uncommitted work in it
+and any review lock on it are untouched, as with delete.
+
 Creation dialog offers three actions: **Run now**, **Add to queue**,
 **Save draft**. A draft's pane offers the same actions plus prompt editing;
 a queued session's pane shows the prompt read-only, its queue position, and
