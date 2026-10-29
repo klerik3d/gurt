@@ -906,6 +906,30 @@ function execArgs(session: string, configArgs: string[], workspaceFolder: string
   ]
 }
 
+/** A terminal uses the same devcontainer config/user as the agent, but targets
+ * the exact live container so a delayed window cannot attach to a replacement. */
+export function containerTerminalCommand(
+  containerId: string,
+  configArgs: string[],
+  workspaceFolder: string
+): { cmd: string; args: string[] } {
+  return {
+    cmd: '/usr/bin/env',
+    args: [
+      'ELECTRON_RUN_AS_NODE=1',
+      `PATH=${hostPath()}`,
+      process.execPath,
+      devcontainerCliPath(),
+      'exec',
+      '--container-id', containerId,
+      '--workspace-folder', workspaceFolder,
+      MOUNT_WORKSPACE_GIT_ROOT_OFF,
+      ...configArgs,
+      '/bin/sh', '-c', 'exec "${SHELL:-/bin/sh}" -l'
+    ]
+  }
+}
+
 export interface UpResult {
   containerId: string
   remoteWorkspaceFolder: string

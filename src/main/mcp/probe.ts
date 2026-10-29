@@ -11,11 +11,11 @@
 // Three properties it has to have, and they are why it is a module rather than
 // a few lines in `ipc.ts`:
 //
-//   1. **Outside the manager's refcount.** The probe starts its *own*
+//   1. **Outside the manager's session lifecycle.** The probe starts its *own*
 //      `StdioBridge` and stops it. It never enters `localBridges`, so a session
 //      holding the same entry keeps its process, and the probe's process cannot
-//      outlive the call — the refcount stays a function of the live sessions
-//      (§6), which is the invariant the whole lifecycle rests on.
+//      outlive the call. Probing never changes the session-owned processes
+//      managed by the lifecycle in §6.
 //   2. **Bounded, and it kills what it started.** A server waiting on an
 //      interactive `tsh`/`gcloud` login never answers, and a dialog that waits
 //      for it forever is worse than no button. One budget covers the whole
