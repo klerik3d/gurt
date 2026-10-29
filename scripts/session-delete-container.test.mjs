@@ -56,17 +56,27 @@ await bundle({
 
 const { createKernel } = await import(pathToFileURL(outfile).href)
 
-/** Wait for a recorded docker invocation matching `re`. */
-async function waitForCall(re) {
+/** Wait for an observable completion, bounded so a regression fails the test. */
+async function until(predicate) {
   for (let i = 0; i < 200; i++) {
-    const calls = fs.existsSync(CALLS) ? fs.readFileSync(CALLS, 'utf8') : ''
-    if (calls.split('\n').some((line) => re.test(line.trim()))) return true
+    if (predicate()) return true
     await new Promise((r) => setTimeout(r, 25))
   }
   return false
 }
 
+/** Wait for a recorded docker invocation matching `re`. */
+function waitForCall(re) {
+  return until(() => {
+    const calls = fs.existsSync(CALLS) ? fs.readFileSync(CALLS, 'utf8') : ''
+    return calls.split('\n').some((line) => re.test(line.trim()))
+  })
+}
+
 after(() => {
+  // Deletions below have finished; cancel the remaining debounced persist
+  // before removing the workspace so it cannot recreate files after cleanup.
+  kernel.sessions.dropTaskSessions(ws, task)
   fs.rmSync(outfile, { force: true })
   fs.rmSync(BIN, { recursive: true, force: true })
   fs.rmSync(GURT_ROOT, { recursive: true, force: true })
@@ -86,6 +96,7 @@ fs.writeFileSync(path.join(GURT_ROOT, ws, task, 'task.json'), JSON.stringify({})
 fs.writeFileSync(path.join(GURT_ROOT, ws, 'agents.json'), JSON.stringify({}))
 
 const kernel = createKernel()
+await kernel.ready
 const ref = { workspace: ws, task, env: 'dev' }
 const info = kernel.sessions.createSession(ref, ['alpha'], 'a1', 'hi', 'none')
 
@@ -132,9 +143,7 @@ test('session delete removes its mount scratch', async () => {
   // removal is an async recursive `fs.rm`, which unlinks the child first and
   // yields to the event loop before unlinking the parent. Polling the child
   // leaves that window, and a loaded box widens it until the assert lands in it.
-  for (let i = 0; i < 200 && fs.existsSync(scratchRoot); i++)
-    await new Promise((r) => setTimeout(r, 25))
-  assert.ok(!fs.existsSync(scratchRoot), 'the mount scratch dir goes with the session')
+  assert.ok(await until(() => !fs.existsSync(scratchRoot)), 'the mount scratch dir goes with the session')
   // The history directory is a child of the scratch root removed above — no
   // code of its own reaches it, which is the whole point
   // (docs/requirements-agent-history.md §5, §9 item 3). By the time the
@@ -174,4 +183,12 @@ test("a container teardown that isn't a delete leaves the history directory in p
   assert.ok(fs.existsSync(scratchRoot2), 'so does the rest of the scratch dir')
 
   kernel.sessions.deleteSession(info2.id)
+  // deleteSession returns before its asynchronous teardown. Even with the
+  // recorded container already released, it still runs Docker label/network
+  // sweeps. Scratch removal follows those sweeps: wait for the parent directory
+  // to disappear before the after hook removes the shim and its calls.log.
+  assert.ok(
+    await until(() => !fs.existsSync(scratchRoot2)),
+    'deleting the rebuilt session finishes teardown and removes its scratch'
+  )
 })
