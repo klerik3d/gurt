@@ -368,6 +368,10 @@ input reaches that path, so there is nothing to collide with.
 fresh draft and takes "nothing runtime-derived" (`sessions.ts`); a
 transcript is the most runtime-derived thing a session has. The copy starts
 empty, which is also what its absent `acpSessionId` already implies.
+**Recreating a session drops its history.** `recreateSession` is a
+duplicate followed by a delete, so the new draft starts empty under a new
+id and the old `.multirepo/<sessionId>/` goes with the deleted session
+(docs/requirements-session-queue.md §2.2).
 
 ## 6. Security
 

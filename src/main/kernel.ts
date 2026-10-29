@@ -190,8 +190,7 @@ export function createKernel(): Kernel {
       // The admin surface is built over the finished kernel (below) — these
       // closures read `admin` at call time, long after both exist, the same
       // knot-untying as the `sessions` references above.
-      adminCall: (ws, method, args) => admin.call(ws, method, args),
-      adminProvisioningLog: (ws, key, tail) => admin.provisioningLog(ws, key, tail),
+      adminFor: (ws, sessionId) => admin.bind(ws, sessionId),
       checkDraftTarget: assertDraftTarget,
       defaultEnvsForRepo,
       defaultAgentForWorkspace: async (ws) => (await store.getWorkspace(ws)).defaultAgent,
@@ -601,10 +600,10 @@ export function createKernel(): Kernel {
     }
   }
 
-  // The operator's ws-bound read surface (docs/requirements-session-operator.md
+  // The operator's ws-bound admin surface (docs/requirements-session-operator.md
   // §3), built over the finished kernel so its bindings read the same tree,
   // sessions and diagnostics everything else does. The session manager's
-  // adminCall closures above resolve it lazily.
+  // adminFor closure above resolves it lazily.
   const admin: AdminSurface = createAdminSurface(kernel)
 
   return kernel

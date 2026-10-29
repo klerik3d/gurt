@@ -651,6 +651,7 @@ function PermissionMsg({
           <Icon name="lock" size={14} style={{ color: 'var(--yellow)', flex: 'none' }} />
           <span className="perm-title">{entry.title}</span>
         </div>
+        {entry.detail && <pre className="perm-detail mono">{entry.detail}</pre>}
         <div className="perm-foot">
           {entry.chosen ? (
             <span className="perm-chosen mono">

@@ -106,6 +106,7 @@ export function registerIpc(): void {
   kernel.bus.on('terminal.output', (event) => broadcast('terminal-output', event))
 
   kernel.bus.on('tree.changed', () => broadcast('tree-changed'))
+  kernel.bus.on('hotkeys.changed', (map) => initAppMenu(map))
   kernel.bus.on('session.changed', ({ sessionId }) => {
     const snap = kernel.sessions.snapshot(sessionId)
     // The per-change broadcast never carries history — timeline deltas ride
@@ -422,6 +423,7 @@ export function registerIpc(): void {
     renameSession: async (id, title) => kernel.sessions.renameSession(id, title),
     sessionEditDraft: async (id, patch) => kernel.editDraft(id, patch),
     sessionDuplicate: async (id) => kernel.sessions.duplicateSession(id),
+    sessionRecreate: async (id) => kernel.sessions.recreateSession(id),
     sessionDelete: async (id) => kernel.sessions.deleteSession(id),
     sessionSnapshot: async (id) => {
       // Opening a session (sidebar click, palette jump, a notification row)

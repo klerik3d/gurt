@@ -118,12 +118,12 @@ test('the scrub itself: every string at every depth, plus the key deny-list', ()
 })
 
 test('config reads: the workspace.json header value never crosses the boundary', async () => {
-  const servers = JSON.stringify(await admin.call(ws, 'getMcpServers', {}))
+  const servers = JSON.stringify(await admin.call({ ws, sessionId: 'op' }, 'getMcpServers', {}))
   assertClean(servers, 'get_mcp_servers')
   assert.match(servers, /\[redacted\]/, 'the slot shows it was scrubbed, not dropped')
   assert.match(servers, /Authorization/, 'the header *name* survives — it is not the secret')
 
-  const tree = JSON.stringify(await admin.call(ws, 'getTree', {}))
+  const tree = JSON.stringify(await admin.call({ ws, sessionId: 'op' }, 'getTree', {}))
   assertClean(tree, 'get_tree (env devcontainer content)')
 })
 

@@ -154,6 +154,7 @@ const SAFE_ARGS = new Set([
   'sessionEnqueue',
   'sessionCancelQueue',
   'sessionDuplicate',
+  'sessionRecreate',
   'sessionDelete',
   'sessionCancel',
   // Session id and a queued-prompt id. The prompt text these *return* is

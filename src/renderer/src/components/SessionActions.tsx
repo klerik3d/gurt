@@ -11,7 +11,7 @@ import { Icon } from './icons'
 
 /** What either action needs to know about its target — a tree row carries this
  *  much, so the sidebar doesn't have to hold a snapshot to offer them. */
-export type SessionTarget = Pick<SessionInfo, 'id' | 'title' | 'container'>
+export type SessionTarget = Pick<SessionInfo, 'id' | 'title' | 'container' | 'state'>
 
 /**
  * Confirm, then delete. Resolves true once the delete has been sent — callers
@@ -48,6 +48,34 @@ export async function duplicateSession(
     onCreated?.(copy)
   } catch (e) {
     await alertDialog(e instanceof Error ? e.message : String(e))
+  }
+}
+
+/**
+ * Confirm, then turn a launched session back into a draft with the same
+ * configuration (`sessionRecreate`). Hands the new draft to `onCreated` — it
+ * has a new id, and it exists to be corrected, so it should be on screen.
+ * Resolves true once the draft exists (a cancelled dialog changes nothing).
+ */
+export async function recreateSession(
+  s: SessionTarget,
+  onCreated?: (info: SessionInfo) => void
+): Promise<boolean> {
+  if (
+    !(await confirmDialog(
+      `Recreate session "${s.title}" as a draft? Its conversation is discarded and any running turn is stopped` +
+        (s.container ? ', and its container goes down' : '') +
+        '. The configuration and first prompt stay, ready to edit and launch again; the clone and any uncommitted changes stay too.',
+      { title: 'Recreate session', confirmText: 'Recreate', danger: true }
+    ))
+  )
+    return false
+  try {
+    onCreated?.(await window.gurt.sessionRecreate(s.id))
+    return true
+  } catch (e) {
+    await alertDialog(e instanceof Error ? e.message : String(e))
+    return false
   }
 }
 
@@ -92,6 +120,19 @@ export function SessionMenu({
             <Icon name="copy" size={13} className="faint" />
             <span>Duplicate as draft</span>
           </div>
+          {info.state !== 'draft' && (
+            <div
+              className="menu-item"
+              onMouseDown={(e) => {
+                e.preventDefault()
+                setOpen(false)
+                void recreateSession(info, (draft) => onSelect(draft.id))
+              }}
+            >
+              <Icon name="history" size={13} className="faint" />
+              <span>Recreate as draft…</span>
+            </div>
+          )}
           <div className="menu-sep" />
           <div
             className="menu-item danger"

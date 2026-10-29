@@ -651,6 +651,10 @@ export interface ChatPermission {
   options: PermissionOption[]
   /** optionId picked by the user (or 'auto'/'cancelled'). */
   chosen?: string
+  /** What exactly is being confirmed, rendered by the host — set on gurt's own
+   *  confirmations (an operator's `apply_held`, docs/requirements-session-
+   *  operator.md §4.3), never on an agent's ACP permission request. */
+  detail?: string
 }
 
 export type ChatEntryBase = (ChatText | ChatToolCall | ChatSystem | ChatPermission) & {

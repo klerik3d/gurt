@@ -14,6 +14,7 @@ import type { SessionMcpFailures } from './mcp'
 import type { TurnRecord } from './usage'
 import type { PlanWindow } from './planUsage'
 import type { NotificationRecord } from './notifications'
+import type { HotkeyMap } from './hotkeys'
 
 /** Why a container reached its new status — the "who asked for this" a status
  *  alone cannot answer. `user` covers both a user action and the scheduler
@@ -51,6 +52,9 @@ export interface DomainEvents {
   'boot.progress': { percent: number; label: string; done: boolean }
   /** Tree-shape change: ws/task/repo CRUD, container status, session list/state. */
   'tree.changed': void
+  /** The stored hotkeys changed outside the renderer's own call (an operator
+   *  write) — main rebuilds the app menu's accelerators from it. */
+  'hotkeys.changed': HotkeyMap
   /** The session's own container changed state. */
   'container.status': {
     sessionId: string

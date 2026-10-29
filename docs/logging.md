@@ -133,6 +133,7 @@ escaped, and `\n` written as `\\n`, so one record stays one line.
 | `session.adapterExited`   | INF   | `s`                                                        |
 | `session.proposal`        | INF   | `s`, `repos`                                               |
 | `session.drafted`         | INF   | `s` (the new draft), `by` (the session whose agent asked), `role` |
+| `session.recreated`       | INF   | `s` (the new draft), `from` (the deleted session it replaces) |
 | `external.stub`           | INF   | `type`, `s`                                                |
 | `session.end`             | INF   | `s`, `turns`, `ms`, `stopReason`, `exitCode`               |
 | `agent.spawn`             | INF   | `s`, `cmd`, `pid`, `c`, `env` (injected variable *names*)   |

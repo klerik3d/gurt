@@ -474,6 +474,21 @@ export interface JournalActor {
   kind: 'ui' | 'operator'
   /** Operator session id — rides in the author's address. */
   id?: string
+  /** Set only by an operator's `apply_held` after the user confirmed it: the
+   *  timeline entry that recorded the answer, written as a `Confirmed:`
+   *  trailer — the paired record §4.4(c)'s journal replay looks for. */
+  confirmation?: string
+}
+
+/** Synchronous observers of config mutations, called with the same op and
+ *  entity the journal records — before the commit, and whether or not the
+ *  commit lands. The operator's held fragments listen here: §4.3 drops one
+ *  the moment its entity changes again, whoever changed it. */
+const mutationListeners = new Set<(op: string, entity: string) => void>()
+
+export function onConfigMutation(fn: (op: string, entity: string) => void): () => void {
+  mutationListeners.add(fn)
+  return () => mutationListeners.delete(fn)
 }
 
 const journalActor = new AsyncLocalStorage<JournalActor>()
@@ -515,7 +530,14 @@ async function ensureJournalRepo(): Promise<void> {
  * save) commits nothing.
  */
 export function journal(subject: string, op: string, entity: string): Promise<void> {
-  const actor = journalActor.getStore() ?? { kind: 'ui' }
+  const actor: JournalActor = journalActor.getStore() ?? { kind: 'ui' }
+  for (const fn of mutationListeners) {
+    try {
+      fn(op, entity)
+    } catch (e) {
+      log.warn('journal.fail', { op, entity, err: e })
+    }
+  }
   return chained('journal', async () => {
     try {
       await ensureJournalRepo()
@@ -533,7 +555,9 @@ export function journal(subject: string, op: string, entity: string): Promise<vo
         'commit', '-q', '--no-verify',
         '--author', author,
         '-m', subject,
-        '-m', `Op: ${op}\nEntity: ${entity}`
+        '-m',
+        `Op: ${op}\nEntity: ${entity}` +
+          (actor.confirmation ? `\nConfirmed: ${actor.confirmation}` : '')
       ])
     } catch (e) {
       // The journal is a record, not a gate: the write already stands.
