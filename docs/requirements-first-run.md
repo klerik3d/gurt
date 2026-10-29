@@ -503,7 +503,7 @@ Exactly two refs, both already pinned by digest in the codebase:
 
 1. **The bundled operator env's image** —
    `parseEnvDevcontainer((await bundledOperatorEnv()).devcontainer).config?.image`,
-   today `node:22-bookworm-slim@sha256:83f4…` (resources/env/devcontainer.json).
+   today `node:26-bookworm-slim@sha256:bc0a…` (resources/env/devcontainer.json).
    Read, never hardcoded a second time: a packaged update bumps that pin
    and Prepare must follow it.
 2. **`PROXY_IMAGE`** — `node:22-alpine@sha256:c610…`
@@ -1290,8 +1290,11 @@ Where the plan met the code and bent.
    user who already has an agent instance? Cheap, and it overlaps the
    Config-tab role picker that §16 recorded as built. Leaning yes,
    deferred to phase 2 with the rest of the re-entry work.
-5. **Can the operator env skip the node feature entirely?** Its base
-   image is `node:22-bookworm-slim`, which already carries node 22, and
+5. **Can the operator env skip the node feature entirely?** *Done:*
+   `devcontainerUp` no longer injects it for the bundled `operator` env.
+   Still unchecked against a real daemon: `PATH` and the adapter install
+   without it. Original question: its base
+   image is `node:26-bookworm-slim`, which already carries node 26, and
    gurt injects `BASE_FEATURES`' node feature into it anyway
    (provision.ts:98, :1019). If the feature is redundant *for this env*,
    dropping it there removes the first of §5.2's two network steps and

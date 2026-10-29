@@ -205,9 +205,8 @@ function NonStartedPane({
         onSelect={onSelect}
         onDeleted={onDeleted}
       />
-      {snapshot.startError && (
-        <div className="error env-error">start failed: {snapshot.startError}</div>
-      )}
+      {/* A failed start is announced as an `error` notification (main's
+          notifications.ts), not as a banner here. */}
       {/* A local MCP server that would not start does not fail the session
           (§6), so this is the only place its reason shows up. */}
       <McpFailBanner failures={mcpFailures} />

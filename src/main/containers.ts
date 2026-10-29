@@ -13,7 +13,7 @@ import { clientConfigFile } from '../shared/clientConfig'
 import { spawn } from 'node:child_process'
 import { promises as fs, existsSync } from 'node:fs'
 import type { EnvRef, RepoConfig, SessionContainer, SessionInfo } from '../shared/types'
-import { roleIsReadOnly, roleNeedsRepo, sessionRole } from '../shared/types'
+import { OPERATOR_ENV_NAME, roleIsReadOnly, roleNeedsRepo, sessionRole } from '../shared/types'
 import type { ContainerStatusReason } from '../shared/events'
 import type { AgentDef } from '../shared/agents'
 import { agentDef } from '../shared/agents'
@@ -606,7 +606,8 @@ export class ContainerManager {
           ),
         extraMounts,
         hostMounts,
-        store.sessionScratchDir(info.workspace, info.task, sessionId)
+        store.sessionScratchDir(info.workspace, info.task, sessionId),
+        info.env === OPERATOR_ENV_NAME
       )
       // Owed after `up`, before anything reports the container usable: the
       // agent resolves its skills and its history at startup. The history

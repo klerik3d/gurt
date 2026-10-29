@@ -1048,13 +1048,20 @@ export async function devcontainerUp(
   /** Where the merged config goes when one is needed — the session's scratch
    *  dir. Defaults to the wrapper workspace folder's parent, which is the same
    *  directory for every session that has a wrapper. */
-  scratchDir = path.dirname(workspaceFolder)
+  scratchDir = path.dirname(workspaceFolder),
+  /** The env is the bundled operator one, whose image is `node:26-bookworm-slim`
+   *  and so already carries node and npm: the node feature is not injected.
+   *  Left to run it installs a second, newer Node via nvm that needs
+   *  `libatomic.so.1`, which that slim image lacks — the build fails (exit
+   *  127). Any other env, a re-pointed operator included, still gets it. */
+  bundledOperatorImage = false
 ): Promise<UpResult> {
-  // The container is agent-agnostic: only the node feature is injected. No
+  // The container is agent-agnostic: only the node feature is injected (not
+  // for the bundled operator env, which has node already). No
   // forge CLI — the container authenticates to nothing, so a `gh` in it would
   // have no credential to use (docs/requirements-mcp-proxy.md §10.2). Agent
   // adapters are installed lazily via `exec` on connect.
-  const features = BASE_FEATURES
+  const features = bundledOperatorImage ? {} : BASE_FEATURES
   const remoteRoot = '/workspaces/' + repoName
   // The CLI's `--mount` argument is validated by a strict regex
   // (`type=,source=,target=[,external=]`) with no `readonly` key, while strings
