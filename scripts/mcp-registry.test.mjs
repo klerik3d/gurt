@@ -31,13 +31,13 @@ await bundle({
         MCP_DEFS, RESERVED_MCP_IDS, mcpDef, mcpEntry, mcpEntries, mcpHasModes,
         mcpLabel, normalizeMcpEntry, validateMcpEntry
       } from ${S('src/shared/mcp.ts')}
-      export { resolveMcpCredential, mcpCredentials, isGitKind } from ${S('src/shared/credentials.ts')}
+      export { resolveMcpHeaders, mcpCredentials, isGitKind } from ${S('src/shared/credentials.ts')}
       export {
         getWorkspace, createWorkspace, getMcpServers, addMcpServer, updateMcpServer,
         removeMcpServer, tasksUsingMcp, createTask
       } from ${S('src/main/store.ts')}
       export {
-        setCredentials, listCredentials, credentialUsedBy, checkMcpCredential
+        setCredentials, listCredentials, credentialUsedBy, checkMcpEntryCredential
       } from ${S('src/main/credentials.ts')}
     `,
     resolveDir: ROOT,
@@ -163,20 +163,63 @@ const creds = [
   { id: 'c-agent', label: 'claude', kind: 'agent-token', hosts: [], data: { secret: 'sk-a' } }
 ]
 
-test('resolveMcpCredential', () => {
-  assert.deepEqual(m.resolveMcpCredential(creds, undefined), {}, 'no link ⇒ unauthenticated, no error')
-  assert.deepEqual(m.resolveMcpCredential(creds, 'c-mcp'), {
-    header: { name: 'Authorization', value: 'Bearer sk-1' }
-  })
-  // Explicitly empty scheme ⇒ the bare secret (X-Api-Key style).
-  assert.deepEqual(m.resolveMcpCredential(creds, 'c-hdr'), {
-    header: { name: 'X-Api-Key', value: 'k-2' }
-  })
-  assert.match(m.resolveMcpCredential(creds, 'gone').error, /no longer exists/)
-  assert.match(m.resolveMcpCredential(creds, 'c-agent').error, /is not an MCP token/)
+const linkTo = (credentialId, prefix) => ({ credentialId, ...(prefix ? { prefix } : {}) })
+
+test('resolveMcpHeaders: typed headers, linked ones, several at once', () => {
+  assert.deepEqual(
+    m.resolveMcpHeaders(creds, entry({ headers: [{ name: 'X-Team', value: 'core' }] })),
+    { headers: [{ name: 'X-Team', value: 'core' }] },
+    'no link ⇒ the typed headers, unauthenticated, no error'
+  )
+  assert.deepEqual(
+    m.resolveMcpHeaders(
+      creds,
+      entry({
+        headers: [
+          { name: 'Authorization', value: linkTo('c-mcp', 'Bearer ') },
+          { name: 'X-Team', value: 'core' },
+          { name: 'X-Api-Key', value: linkTo('c-hdr') }
+        ]
+      })
+    ),
+    {
+      headers: [
+        { name: 'Authorization', value: 'Bearer sk-1' },
+        { name: 'X-Team', value: 'core' },
+        // No prefix ⇒ the bare secret. Where it goes is the entry's business:
+        // the token's own legacy `header`/`scheme` say nothing here.
+        { name: 'X-Api-Key', value: 'k-2' }
+      ]
+    }
+  )
+  const linked = (id) => entry({ headers: [{ name: 'Authorization', value: linkTo(id) }] })
+  assert.match(m.resolveMcpHeaders(creds, linked('gone')).error, /no longer exists/)
+  assert.match(m.resolveMcpHeaders(creds, linked('c-agent')).error, /is not an MCP token/)
   assert.deepEqual(m.mcpCredentials(creds).map((c) => c.id), ['c-mcp', 'c-hdr'])
   // An mcp-token is not a git transport and must never host-match.
   assert.equal(m.isGitKind('mcp-token'), false)
+})
+
+test('the legacy single link still resolves, as the header it always meant', () => {
+  // Before any header could link a credential, an http entry had one
+  // `credentialId`, and the header name and scheme lived on the token.
+  assert.deepEqual(m.resolveMcpHeaders(creds, entry({ credentialId: 'c-mcp' })), {
+    headers: [{ name: 'Authorization', value: 'Bearer sk-1' }]
+  })
+  // Explicitly empty scheme ⇒ the bare secret (X-Api-Key style).
+  assert.deepEqual(m.resolveMcpHeaders(creds, entry({ credentialId: 'c-hdr' })), {
+    headers: [{ name: 'X-Api-Key', value: 'k-2' }]
+  })
+  // The credential wins over a static header of the same name, whatever its
+  // spelling — one Authorization goes upstream, and it is the resolved one.
+  assert.deepEqual(
+    m.resolveMcpHeaders(
+      creds,
+      entry({ credentialId: 'c-mcp', headers: [{ name: 'authorization', value: 'static' }] })
+    ),
+    { headers: [{ name: 'Authorization', value: 'Bearer sk-1' }] }
+  )
+  assert.match(m.resolveMcpHeaders(creds, entry({ credentialId: 'gone' })).error, /no longer exists/)
 })
 
 test('a secret that cannot be a header value fails to resolve, and never becomes one', () => {
@@ -200,16 +243,36 @@ test('a secret that cannot be a header value fails to resolve, and never becomes
     'c-name': /not a valid header name/
   }
   for (const id of Object.keys(expected)) {
-    const got = m.resolveMcpCredential(legacy, id)
+    const got = m.resolveMcpHeaders(legacy, entry({ credentialId: id }))
     assert.match(got.error, expected[id], id)
-    assert.equal(got.header, undefined, `${id} must resolve to no header at all`)
+    assert.equal(got.headers, undefined, `${id} must resolve to no headers at all`)
   }
+  // A linked header composes its prefix with the secret, and the composition is
+  // what has to be sendable.
+  const viaRow = m.resolveMcpHeaders(
+    legacy,
+    entry({ headers: [{ name: 'Authorization', value: linkTo('c-nl', 'Bearer ') }] })
+  )
+  assert.match(viaRow.error, /newline/)
   // Whitespace around a token is a paste artifact with no meaning — including
   // the line break a terminal copy carries. Trimmed, not refused; a break
   // *inside* a token is the unfixable case, and that is what errors above.
-  assert.deepEqual(m.resolveMcpCredential(legacy, 'c-pad'), {
-    header: { name: 'Authorization', value: 'Bearer sk-1' }
+  assert.deepEqual(m.resolveMcpHeaders(legacy, entry({ credentialId: 'c-pad' })), {
+    headers: [{ name: 'Authorization', value: 'Bearer sk-1' }]
   })
+})
+
+test('validator: a linked header value', () => {
+  const linked = (value) => entry({ headers: [{ name: 'Authorization', value }] })
+  assert.equal(m.validateMcpEntry(linked(linkTo('c-mcp', 'Bearer '))), null)
+  assert.equal(m.validateMcpEntry(linked(linkTo('c-mcp'))), null)
+  assert.match(m.validateMcpEntry(linked({ credentialId: ' ' })), /links no credential/)
+  assert.match(m.validateMcpEntry(linked(linkTo('c-mcp', 'Bearer\n'))), /prefix contains a newline/)
+  assert.match(m.validateMcpEntry(linked({ secret: 'x' })), /must be a string or a credential link/)
+  // The stored spelling: an empty prefix is no prefix.
+  assert.deepEqual(m.normalizeMcpEntry(linked({ credentialId: ' c-mcp ', prefix: '' })).headers, [
+    { name: 'Authorization', value: { credentialId: 'c-mcp' } }
+  ])
 })
 
 // --- the store (§3.1) -------------------------------------------------------
@@ -320,14 +383,29 @@ test('remove is refused while a session selects the server', async () => {
 
 test('a credential link must resolve to an mcp-token', async () => {
   await m.setCredentials({ credentials: creds })
-  await m.checkMcpCredential(undefined)
-  await m.checkMcpCredential('c-mcp')
-  await assert.rejects(m.checkMcpCredential('gone'), /no longer exists/)
-  await assert.rejects(m.checkMcpCredential('c-agent'), /is not an MCP token/)
+  const linked = (id) => entry({ headers: [{ name: 'Authorization', value: linkTo(id) }] })
+  await m.checkMcpEntryCredential(entry())
+  await m.checkMcpEntryCredential(linked('c-mcp'))
+  await m.checkMcpEntryCredential(entry({ credentialId: 'c-mcp' }))
+  await assert.rejects(m.checkMcpEntryCredential(linked('gone')), /no longer exists/)
+  await assert.rejects(m.checkMcpEntryCredential(linked('c-agent')), /is not an MCP token/)
 
-  // A linked entry blocks deleting the credential, exactly as a repo link does.
-  await m.addMcpServer(ws, entry({ label: 'Linear', credentialId: 'c-mcp' }))
+  // A linked entry blocks deleting the credential, exactly as a repo link does
+  // — whichever header links it, and however many do.
+  await m.addMcpServer(
+    ws,
+    entry({
+      label: 'Linear',
+      headers: [
+        { name: 'Authorization', value: linkTo('c-mcp', 'Bearer ') },
+        { name: 'X-Api-Key', value: linkTo('c-hdr') }
+      ]
+    })
+  )
   assert.deepEqual(await m.credentialUsedBy('c-mcp'), [`mcp "Linear" (${ws})`])
+  assert.deepEqual(await m.credentialUsedBy('c-hdr'), [`mcp "Linear" (${ws})`])
+  await m.updateMcpServer(ws, entry({ label: 'Linear', credentialId: 'c-mcp' }))
+  assert.deepEqual(await m.credentialUsedBy('c-mcp'), [`mcp "Linear" (${ws})`], 'the legacy link too')
   assert.deepEqual(await m.credentialUsedBy('c-hdr'), [])
   await assert.rejects(
     m.setCredentials({ credentials: creds.filter((c) => c.id !== 'c-mcp') }),
@@ -350,11 +428,6 @@ test('an mcp-token secret is checked before it is stored', async () => {
   await assert.rejects(m.setCredentials(withBad({ secret: 'sk\r-1' })), /newline/)
   await assert.rejects(m.setCredentials(withBad({ secret: 'sk\u0000-1' })), /NUL/)
   await assert.rejects(m.setCredentials(withBad({ secret: 'sk\u0001-1' })), /control character/)
-  await assert.rejects(
-    m.setCredentials(withBad({ secret: 'sk-1', header: 'X Api Key' })),
-    /not a valid header name/
-  )
-  await assert.rejects(m.setCredentials(withBad({ secret: 'sk-1', scheme: 'Bear\ner' })), /scheme/)
   assert.deepEqual(await ids(), before, 'a refused save leaves the store exactly as it was')
 
   // Padding — the trailing newline of a terminal copy included — is stripped on
@@ -363,8 +436,8 @@ test('an mcp-token secret is checked before it is stored', async () => {
   await m.setCredentials(withBad({ secret: ' \tsk-good\r\n' }))
   const saved = await m.listCredentials()
   assert.equal(saved.find((c) => c.id === 'c-bad').data.secret, 'sk-good')
-  assert.deepEqual(m.resolveMcpCredential(saved, 'c-bad'), {
-    header: { name: 'Authorization', value: 'Bearer sk-good' }
+  assert.deepEqual(m.resolveMcpHeaders(saved, entry({ credentialId: 'c-bad' })), {
+    headers: [{ name: 'Authorization', value: 'Bearer sk-good' }]
   })
 
   // Other kinds are none of this check's business: an agent token is not a

@@ -126,12 +126,17 @@ export interface McpRegistryEntry {
   id: string
   /** Absolute http(s) URL of the upstream MCP endpoint. */
   url: string
-  /** Static headers sent upstream, verbatim. Never a secret — the store
-   *  is a plain file the user edits and shares. */
-  headers?: { name: string; value: string }[]
-  /** Link into credentials.json (`CredentialEntry.id`), never a secret.
-   *  Resolved and injected at the proxy (§4.3). */
+  /** Headers sent upstream. A string value is sent verbatim and stored
+   *  here, so it is never a secret; a secret is a link into
+   *  credentials.json, resolved and injected at the proxy (§3.2, §4.3). */
+  headers?: { name: string; value: string | McpCredentialRef }[]
+  /** Legacy single link — see §3.2. Read, never written. */
   credentialId?: string
+}
+
+interface McpCredentialRef {
+  credentialId: string   // a CredentialEntry.id, never a secret
+  prefix?: string        // sent before the secret verbatim, e.g. "Bearer "
 }
 ```
 
@@ -181,7 +186,33 @@ A new credential kind, alongside `agent-token`:
 
 | kind | data | notes |
 |---|---|---|
-| `mcp-token` | `secret`, optional `header` (default `Authorization`), optional `scheme` (default `Bearer`) | Injected by the proxy as `<header>: <scheme> <secret>`, or as the bare secret when `scheme` is empty (`X-Api-Key` style). |
+| `mcp-token` | `secret` | Just the secret. Where it goes is the registry entry's business, not the token's. |
+
+**Any header may link a credential.** A header's value is either text or
+a `McpCredentialRef` — `{ credentialId, prefix? }` — and the proxy sends
+`<name>: <prefix><secret>`. An entry may link as many as it needs (a
+server wanting `X-Api-Key-Dev` and `X-Api-Key-Prod` links two), and one
+credential may be linked from several entries, each sending it its own
+way. `resolveMcpHeaders` composes the lot; a link that does not resolve
+drops the whole route with the reason, never sends a request missing one
+of its headers. The local kinds get the same thing in `env`
+(`requirements-mcp-stdio.md` §3.4).
+
+*Why the value, not the token.* The header name and scheme first lived on
+the `mcp-token` (`data.header`, `data.scheme`), one link per entry. That
+put a property of the *server* on the *secret*: one token could not be
+sent two ways, and an entry could not carry two secrets at all.
+
+*The legacy link.* An http entry saved under that model has a top-level
+`credentialId` and no linked header. It is still read and still works:
+`liftLegacyMcpCredential` turns it into the header row it always meant —
+the token's `data.header` (default `Authorization`) with its
+`data.scheme` (default `Bearer`, empty ⇒ none) as the prefix — and every
+resolver reads the lifted shape. Lifting needs the credential, which
+`workspace.json`'s reader does not hold, so it happens at use time rather
+than at read time; the settings editor saves the lifted form, after which
+the field is gone. A link that no longer resolves lifts to the default
+header and fails as "no longer exists", like any other.
 
 No save-time verification (§3.2 of the git-access doc) applies: there is
 no forge to ask, and an MCP server's auth failure surfaces on first use
@@ -194,7 +225,8 @@ node refuses to build a request with a newline in a header value, and it
 refuses synchronously, inside the proxy's request listener. Padding is
 stripped (a terminal copy carries a trailing newline); a break inside the
 token is an error. `checkMcpSecret` rejects it on save,
-`resolveMcpCredential` rejects it at scope-build time — covering entries
+`resolveMcpHeaders` rejects it — the composed `prefix + secret` — at
+scope-build time — covering entries
 stored before that check existed, which drop out of the scope with a
 reported error rather than poisoning a header — and the proxy answers
 502 for that one id instead of dying, since one bad credential may not

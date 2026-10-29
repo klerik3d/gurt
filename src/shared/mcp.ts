@@ -70,11 +70,37 @@ export const RESERVED_MCP_IDS: readonly string[] = [...MCP_DEFS.map((d) => d.id)
  */
 export const LOCAL_MCP_NOTICE = 'Runs on your machine, unsandboxed, with your privileges.'
 
-/** A static header sent upstream verbatim. Never a secret — `workspace.json` is
- *  a plain file the user edits and shares; secrets link via `credentialId`. */
+/**
+ * A value pulled from the credential store when it is used, instead of being
+ * written into `workspace.json` — which is a plain file the user edits, shares
+ * and commits. The link is all that is stored; the secret is resolved on the
+ * host (into a header at the proxy, into the child's environment for a local
+ * entry) and never reaches the session container.
+ */
+export interface McpCredentialRef {
+  /** A `CredentialEntry.id` (`mcp-token` or `oauth`), never a secret. */
+  credentialId: string
+  /** Text put in front of the secret, verbatim — `Bearer ` for an
+   *  `Authorization` header. Not trimmed: the trailing space is the point. */
+  prefix?: string
+}
+
+/** A header or environment value: typed in, or linked to a credential. */
+export type McpValue = string | McpCredentialRef
+
+/** Whether a header/env value links a credential rather than holding text. */
+export const isMcpCredentialRef = (value: unknown): value is McpCredentialRef =>
+  typeof value === 'object' &&
+  value !== null &&
+  !Array.isArray(value) &&
+  typeof (value as { credentialId?: unknown }).credentialId === 'string'
+
+/** One header sent upstream. A plain-string value is sent verbatim and stored
+ *  in `workspace.json`, so it is never a secret — a secret is a
+ *  {@link McpCredentialRef}. */
 export interface McpHeader {
   name: string
-  value: string
+  value: McpValue
 }
 
 /** The transport a registry entry uses. Absent on disk ⇒ `http` (§3.1). */
@@ -93,8 +119,13 @@ export interface McpHttpEntry {
   /** Absolute http(s) URL of the upstream MCP endpoint. */
   url: string
   headers?: McpHeader[]
-  /** Link into credentials.json (a `CredentialEntry.id`), never a secret.
-   *  Resolved into a header at the proxy — see `resolveMcpCredential`. */
+  /**
+   * **Legacy.** The one credential link an http entry had before any header
+   * could carry one: a header whose name and scheme lived on the `mcp-token`
+   * itself. Still read and still resolved (`liftLegacyMcpCredential` turns it
+   * into the header row it means, at use time, with the credential in hand),
+   * and never written by the editor, which saves the lifted form instead.
+   */
   credentialId?: string
 }
 
@@ -106,18 +137,10 @@ interface McpLocalBase {
    *  read-only mode, if it has one, is a flag in here — gurt does not know an
    *  upstream's tool semantics and never claims to enforce one (§3.3). */
   args?: string[]
-  /** Environment for the child process, merged over gurt's own. Plain
-   *  `workspace.json` data, so never a secret — those link via
-   *  `credentialId`. */
-  env?: Record<string, string>
-  /** Link into credentials.json. Unlike an http entry, a local one resolves it
-   *  into an **environment variable** named by {@link credentialEnvVar} —
-   *  a stdio server has no request headers to put it in. */
-  credentialId?: string
-  /** Which env var the linked credential is injected as (`LINEAR_API_KEY`,
-   *  `GITHUB_TOKEN`, …). Required whenever `credentialId` is set: only the
-   *  user knows what the server reads, and guessing would silently not work. */
-  credentialEnvVar?: string
+  /** Environment for the child process, merged over gurt's own. A string is
+   *  stored in `workspace.json` and passed verbatim; a secret is a
+   *  {@link McpCredentialRef}, resolved on the host when the process starts. */
+  env?: Record<string, McpValue>
 }
 
 /** An npm package gurt installs and runs itself (§4.2). */
@@ -193,6 +216,44 @@ export function mcpEntryDetail(entry: McpRegistryEntry): string {
   if (isHttpMcpEntry(entry)) return entry.url
   const head = entry.kind === 'npm' ? npmPackageSpec(entry) : entry.command
   return [head, ...(entry.args ?? [])].join(' ')
+}
+
+/** One credential link inside an entry, and where it lands — `header
+ *  Authorization`, `env STRIPE_KEY`, or `credentialId` for an http entry's
+ *  legacy link. */
+export interface McpCredentialUse {
+  where: string
+  ref: McpCredentialRef
+}
+
+/** Every credential link an entry carries, in a stable order. What "this entry
+ *  carries a credential" means to every caller: deleting a credential, the
+ *  operator's link rules, the oauth refresh before a session starts. */
+export function mcpCredentialUses(entry: McpRegistryEntry): McpCredentialUse[] {
+  const out: McpCredentialUse[] = []
+  if (isHttpMcpEntry(entry)) {
+    for (const h of entry.headers ?? [])
+      if (isMcpCredentialRef(h.value)) out.push({ where: `header ${h.name}`, ref: h.value })
+    if (entry.credentialId) out.push({ where: 'credentialId', ref: { credentialId: entry.credentialId } })
+    return out
+  }
+  for (const [name, value] of Object.entries(entry.env ?? {}))
+    if (isMcpCredentialRef(value)) out.push({ where: `env ${name}`, ref: value })
+  return out
+}
+
+/** The distinct credential ids an entry links. */
+export const mcpCredentialIds = (entry: McpRegistryEntry): string[] => [
+  ...new Set(mcpCredentialUses(entry).map((u) => u.ref.credentialId))
+]
+
+/** The typed-in half of a local entry's `env` — what can be handed to the child
+ *  as it is; the linked half is resolved separately, on the host. */
+export function mcpLiteralEnv(entry: McpLocalEntry): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const [name, value] of Object.entries(entry.env ?? {}))
+    if (typeof value === 'string') out[name] = value
+  return out
 }
 
 /** Built-in def by id — the host-server path (`mcp/manager.ts`) resolves these
@@ -439,12 +500,30 @@ function httpProblem(entry: McpHttpEntryDraft): string | null {
     const key = name.toLowerCase()
     if (seen.has(key)) return `duplicate header "${name}"`
     seen.add(key)
-    // A newline in either half would inject a second header at the proxy.
-    const bad = headerValueProblem(header.value ?? '')
+    // A newline in either half would inject a second header at the proxy. A
+    // linked value's secret is checked when it resolves; its prefix is the
+    // user's text and is checked here.
+    const bad = valueProblem(header.value ?? '', headerValueProblem)
     if (bad) return `header "${name}" ${bad}`
   }
   return null
 }
+
+/** A header or env value: text the transport can carry, or a well-formed
+ *  credential link whose prefix the transport can carry. */
+function valueProblem(value: unknown, check: (text: string) => string | null): string | null {
+  if (typeof value === 'string') return check(value)
+  if (!isMcpCredentialRef(value)) return 'must be a string or a credential link'
+  if (!value.credentialId.trim()) return 'links no credential'
+  const prefix: unknown = value.prefix
+  if (prefix === undefined) return null
+  if (typeof prefix !== 'string') return 'has a prefix that is not a string'
+  const bad = check(prefix)
+  return bad ? `prefix ${bad}` : null
+}
+
+const nulProblem = (text: string): string | null =>
+  text.includes('\0') ? 'contains a NUL byte' : null
 
 /** argv is `execve`'s, so the one thing it cannot carry is a NUL. Typed as
  *  `unknown` because a hand-edited workspace.json and an IPC caller both reach
@@ -465,14 +544,13 @@ function envProblem(env: unknown): string | null {
     return 'env must be an object of NAME to value'
   for (const [name, value] of Object.entries(env as Record<string, unknown>)) {
     if (!isEnvName(name)) return `"${name}" is not a valid environment variable name`
-    if (typeof value !== 'string') return `env "${name}" must be a string`
-    if (value.includes('\0')) return `env "${name}" contains a NUL byte`
+    const bad = valueProblem(value, nulProblem)
+    if (bad) return `env "${name}" ${bad}`
   }
   return null
 }
 
-/** The local half: what the two process-spawning kinds need, and the credential
- *  link's extra obligation (an env var name, since there is no header). */
+/** The local half: what the two process-spawning kinds need. */
 function localProblem(entry: McpLocalEntryDraft, kind: 'npm' | 'command'): string | null {
   if (kind === 'npm') {
     const pkg = (entry as McpNpmEntryDraft).package?.trim() ?? ''
@@ -500,27 +578,16 @@ function localProblem(entry: McpLocalEntryDraft, kind: 'npm' | 'command'): strin
   }
   const args = argsProblem(entry.args)
   if (args) return args
-  const env = envProblem(entry.env)
-  if (env) return env
-
-  const envVar = entry.credentialEnvVar?.trim() ?? ''
-  if (envVar && !isEnvName(envVar))
-    return `"${envVar}" is not a valid environment variable name`
-  // A stdio server reads its token from the environment, and only the server's
-  // own docs say which variable. Linking a credential without naming one would
-  // resolve the secret and then drop it.
-  if (entry.credentialId && !envVar)
-    return 'a linked credential needs credentialEnvVar — the environment variable the server reads it from'
-  return null
+  return envProblem(entry.env)
 }
 
 /**
  * null = ok. Everything checkable without the credential store: id shape,
  * reserved and taken ids, and then whatever the entry's `kind` requires — an
  * http(s) URL and well-formed headers, or a package/command with argv and
- * environment gurt can actually spawn. The credential link is checked
- * separately (`resolveMcpCredential` / `resolveMcpEnvSecret`) because only main
- * holds the secrets store, and a `command` entry's *resolvability* is checked
+ * environment gurt can actually spawn. Whether a credential link resolves is
+ * checked separately (`resolveMcpHeaders` / `resolveMcpSecretEnv`) because only
+ * main holds the secrets store, and a `command` entry's *resolvability* is checked
  * in main too (only main knows the host PATH).
  *
  * `takenIds` are the *other* entries' ids — an update passes the registry minus
@@ -542,12 +609,14 @@ export function validateMcpEntry(
 /** What a caller may hand `normalizeMcpEntry`: a parsed on-disk record or a
  *  half-filled editor draft, where an optional field may be explicitly
  *  `undefined` rather than absent. */
+export type McpValueDraft = string | { credentialId: string; prefix?: string | undefined }
+
 export interface McpHttpEntryDraft {
   kind?: 'http' | undefined
   id: string
   label?: string | undefined
   url: string
-  headers?: readonly McpHeader[] | undefined
+  headers?: readonly { name: string; value: McpValueDraft }[] | undefined
   credentialId?: string | undefined
 }
 
@@ -555,7 +624,11 @@ interface McpLocalDraftBase {
   id: string
   label?: string | undefined
   args?: readonly string[] | undefined
-  env?: Readonly<Record<string, string>> | undefined
+  env?: Readonly<Record<string, McpValueDraft>> | undefined
+  /** **Legacy, read-only.** A local entry's one credential link, before any env
+   *  value could carry one. `normalizeMcpEntry` folds the pair into `env` as
+   *  `{ [credentialEnvVar]: { credentialId } }` and never writes either field;
+   *  a link with no variable named resolved to nothing, and is dropped. */
   credentialId?: string | undefined
   credentialEnvVar?: string | undefined
 }
@@ -575,15 +648,27 @@ export interface McpCommandEntryDraft extends McpLocalDraftBase {
 export type McpLocalEntryDraft = McpNpmEntryDraft | McpCommandEntryDraft
 export type McpEntryDraft = McpHttpEntryDraft | McpLocalEntryDraft
 
-/** Trimmed names, non-string values dropped, absent when nothing survives. */
+/** A value in its one stored spelling: text as typed, a link as just its id
+ *  and a non-empty prefix. Anything else is not a value and comes back
+ *  undefined, for the caller to drop. */
+function normalizeValue(value: unknown): McpValue | undefined {
+  if (typeof value === 'string') return value
+  if (!isMcpCredentialRef(value)) return undefined
+  const credentialId = value.credentialId.trim()
+  const prefix = typeof value.prefix === 'string' ? value.prefix : ''
+  return { credentialId, ...(prefix ? { prefix } : {}) }
+}
+
+/** Trimmed names, unreadable values dropped, absent when nothing survives. */
 function normalizeEnv(
-  env: Readonly<Record<string, string>> | undefined
-): Record<string, string> | undefined {
+  env: Readonly<Record<string, McpValueDraft>> | undefined
+): Record<string, McpValue> | undefined {
   if (!env) return undefined
-  const out: Record<string, string> = {}
-  for (const [name, value] of Object.entries(env)) {
+  const out: Record<string, McpValue> = {}
+  for (const [name, raw] of Object.entries(env)) {
     const key = name.trim()
-    if (!key || typeof value !== 'string') continue
+    const value = normalizeValue(raw)
+    if (!key || value === undefined) continue
     out[key] = value
   }
   return Object.keys(out).length ? out : undefined
@@ -600,7 +685,7 @@ export function normalizeMcpEntry(entry: McpEntryDraft): McpRegistryEntry {
   if (kind === 'http') {
     const http = entry as McpHttpEntryDraft
     const headers = (http.headers ?? [])
-      .map((h) => ({ name: h.name.trim(), value: h.value ?? '' }))
+      .map((h) => ({ name: h.name.trim(), value: normalizeValue(h.value ?? '') ?? '' }))
       .filter((h) => h.name)
     return {
       ...base,
@@ -612,13 +697,17 @@ export function normalizeMcpEntry(entry: McpEntryDraft): McpRegistryEntry {
 
   const local = entry as McpLocalEntryDraft
   const args = (local.args ?? []).filter((a) => typeof a === 'string')
-  const env = normalizeEnv(local.env)
-  const credentialEnvVar = local.credentialEnvVar?.trim() ?? ''
+  // The legacy link becomes the env row it always meant. It wins over a typed
+  // value of the same name, as it did when the child's environment was built.
+  const legacyVar = local.credentialEnvVar?.trim() ?? ''
+  const env = normalizeEnv(
+    local.credentialId && legacyVar
+      ? { ...local.env, [legacyVar]: { credentialId: local.credentialId } }
+      : local.env
+  )
   const tail = {
     ...(args.length ? { args: [...args] } : {}),
-    ...(env ? { env } : {}),
-    ...(local.credentialId ? { credentialId: local.credentialId } : {}),
-    ...(credentialEnvVar ? { credentialEnvVar } : {})
+    ...(env ? { env } : {})
   }
 
   if (local.kind === 'npm') {
@@ -861,9 +950,9 @@ function finish(entry: McpRegistryEntry): McpSnippetResult {
  * Everything else (`uvx`, `docker`, `node`, a script) becomes `command`, which
  * runs the same way it would have anywhere else.
  *
- * `env` rides through verbatim: it is the snippet's, and workspace.json is a
- * plain file. A snippet whose `env` carries a real token should have it moved
- * to a credential link afterwards — the UI's job, not this function's.
+ * `env` and `headers` ride through verbatim: they are the snippet's, and
+ * workspace.json is a plain file. A value that is a real token should become a
+ * credential link before it is saved — the UI's job, not this function's.
  *
  * A string input is JSON-parsed; anything else is taken as already parsed.
  * Multiple servers in one snippet is an error rather than a silent first-wins:
@@ -942,19 +1031,19 @@ export interface SessionMcpFailures {
  *  property. */
 export interface McpEnvRow {
   name: string
-  value: string
+  value: McpValue
 }
 
 /** A local entry's `env` as rows to edit, in insertion order — which is the
  *  order a pasted snippet listed them in. */
-export const mcpEnvRows = (env: Readonly<Record<string, string>> | undefined): McpEnvRow[] =>
+export const mcpEnvRows = (env: Readonly<Record<string, McpValue>> | undefined): McpEnvRow[] =>
   Object.entries(env ?? {}).map(([name, value]) => ({ name, value }))
 
 /** Rows back to a record: names trimmed, blank rows dropped, the last of a
  *  repeated name winning — the same collapse `normalizeMcpEntry` would do,
  *  done early so what the editor validates is what it saves. */
-export function mcpEnvRecord(rows: readonly McpEnvRow[]): Record<string, string> {
-  const out: Record<string, string> = {}
+export function mcpEnvRecord(rows: readonly McpEnvRow[]): Record<string, McpValue> {
+  const out: Record<string, McpValue> = {}
   for (const row of rows) {
     const name = row.name.trim()
     if (name) out[name] = row.value
@@ -986,4 +1075,30 @@ export function looksLikeSecretEnv(name: string, value: string): boolean {
   if (v.length < 8) return false
   if (PLACEHOLDER_VALUE_RE.test(v)) return false
   return SECRET_ENV_NAME_RE.test(name)
+}
+
+/** Header names whose value is a credential whatever it looks like. */
+const SECRET_HEADER_NAME_RE = /^(proxy-)?authorization$|^cookie$|token|secret|api-?key|password/i
+
+/**
+ * The secret a pasted header or env value carries, split from the scheme in
+ * front of it — `Authorization: Bearer sk-…` is a `Bearer ` prefix and a
+ * secret, and only the secret belongs in the credential store; the prefix stays
+ * on the link. null when the value does not look like a secret (§5), by the
+ * same rules {@link looksLikeSecretEnv} applies.
+ */
+export function pastedSecret(
+  kind: 'header' | 'env',
+  name: string,
+  value: string
+): { prefix: string; secret: string } | null {
+  const v = value.trim()
+  if (kind === 'env') return looksLikeSecretEnv(name, v) ? { prefix: '', secret: v } : null
+  if (!SECRET_HEADER_NAME_RE.test(name.trim())) return null
+  // Only an authorization header has a scheme; an X-Api-Key value is all secret.
+  const scheme = /authorization$/i.test(name.trim()) ? /^([A-Za-z][\w-]*\s+)(.+)$/.exec(v) : null
+  const prefix = scheme ? `${scheme[1]!.trim()} ` : ''
+  const secret = scheme?.[2] ?? v
+  if (secret.length < 8 || PLACEHOLDER_VALUE_RE.test(secret)) return null
+  return { prefix, secret }
 }

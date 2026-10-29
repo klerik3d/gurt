@@ -523,7 +523,11 @@ JSON file that gurt is designed to honour.
 
 Therefore, in phase 1 and enforced at the write filter, not the schema:
 
-- **No write op may set or change `credentialId`** on any entity.
+- **No write op may set or change `credentialId`** on any entity. For an
+  MCP entry that means every credential link it carries — a header or
+  `env` value linking one, its name and its prefix included
+  (`mcpCredentialUses`): moving a secret to another header or variable is
+  a re-point too.
 - **No write op may change the `url`** of an entity that carries a
   `credentialId` — repo or MCP entry.
 - **No write op may create an entity carrying a `credentialId`**, which
@@ -544,7 +548,7 @@ This subsection is explicitly a *recorded and deferred* attack surface,
 not a solved one. Re-linking and re-pointing are genuinely useful and
 will be asked for. Exposing them later requires **credential→host
 binding first**: a credential entry carries the set of hosts it may be
-sent to, the resolvers (`resolveMcpCredential`, `hostGitAccess`) refuse
+sent to, the resolvers (`resolveMcpHeaders`, `hostGitAccess`) refuse
 to inject it toward anything else, and re-pointing becomes safe by
 construction — a re-pointed URL simply loses its credential instead of
 carrying it somewhere new. Until that exists, the surface stays closed,

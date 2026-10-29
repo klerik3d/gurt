@@ -150,8 +150,8 @@ interface McpHttpEntry {
   id: string
   label?: string
   url: string
-  headers?: { name: string; value: string }[]
-  credentialId?: string  // → a request header, unchanged
+  headers?: { name: string; value: McpValue }[]  // a link → a request header
+  credentialId?: string  // legacy single link (proxy doc §3.2)
 }
 
 interface McpNpmEntry {
@@ -161,9 +161,7 @@ interface McpNpmEntry {
   package: string        // bare name, scope included, never name@version
   version?: string       // a version or a dist-tag
   args?: string[]
-  env?: Record<string, string>
-  credentialId?: string  // → an environment variable (§3.4)
-  credentialEnvVar?: string
+  env?: Record<string, McpValue>  // a link → an environment variable (§3.4)
 }
 
 interface McpCommandEntry {
@@ -172,11 +170,12 @@ interface McpCommandEntry {
   label?: string
   command: string        // a PATH name or an absolute path
   args?: string[]
-  env?: Record<string, string>
+  env?: Record<string, McpValue>
   cwd?: string
-  credentialId?: string
-  credentialEnvVar?: string
 }
+
+// Text, or a link into credentials.json (proxy doc §3.2).
+type McpValue = string | { credentialId: string; prefix?: string }
 ```
 
 `npm` and `command` are the **local** kinds. Everything downstream
@@ -224,7 +223,7 @@ then branches:
 | kind | required | also checked |
 |---|---|---|
 | `http` | `url` is an absolute http(s) URL with a host | header names (RFC 9110 token), header values (no newline/NUL/control), no duplicate names |
-| `npm` | non-empty `package`, no whitespace, no `@version` in it | `version` has no whitespace; `args` is an array of NUL-free strings; `env` names match `[A-Za-z_][A-Za-z0-9_]*` and values are NUL-free strings |
+| `npm` | non-empty `package`, no whitespace, no `@version` in it | `version` has no whitespace; `args` is an array of NUL-free strings; `env` names match `[A-Za-z_][A-Za-z0-9_]*` and values are NUL-free strings or credential links (non-empty id, NUL-free prefix) |
 | `command` | non-empty `command` | `cwd` is a string; `args` and `env` as above |
 
 Three of those are worth their reasons:
@@ -276,21 +275,30 @@ what the server will expose tomorrow. Shown, not enforced.
 
 ### 3.4 The credential is an environment variable
 
-An http entry's `credentialId` resolves to a request header, injected by
-the proxy (`resolveMcpCredential`, proxy doc §3.2). A local entry has no
-requests to put a header on — it is a process reading its own
-environment — so its link resolves through `resolveMcpEnvSecret` to the
-bare secret, and `credentialEnvVar` says which variable it lands in.
-That is the same shape an agent's token already has (`secretEnv` in
-`src/shared/agents.ts`), and it is the shape every stdio MCP server
-documents itself in.
+An http entry links a credential in a header value, resolved by the proxy
+(`resolveMcpHeaders`, proxy doc §3.2). A local entry has no requests to
+put a header on — it is a process reading its own environment — so it
+links one in an **`env` value** instead: `{ "STRIPE_KEY": { "credentialId":
+"…" } }`, resolved by `resolveMcpSecretEnv` to the bare secret (plus the
+link's `prefix`, if it has one). The variable it lands in is the row's own
+name. That is the shape every stdio MCP server documents itself in, and it
+takes as many secrets as the server reads:
 
-`credentialEnvVar` is **required whenever `credentialId` is set**. A
-header has a sensible default (`Authorization: Bearer …`); an
-environment variable does not, and the server's own docs are the only
-place the name exists. Resolving a secret and then having nowhere to put
-it would be a silent auth failure at first tool call, which is exactly
-the failure this rule converts into a rejected save.
+```json
+"env": {
+  "PAYMENT_SERVICE_API_KEY_DEV":  { "credentialId": "…dev…" },
+  "PAYMENT_SERVICE_API_KEY_PROD": { "credentialId": "…prod…" },
+  "REGION": "eu"
+}
+```
+
+*The legacy link.* A local entry used to carry one `credentialId` plus a
+`credentialEnvVar` naming its variable. Unlike the http legacy link this
+needs nothing from the credential store to read, so `normalizeMcpEntry`
+folds it into `env` on read — `{ [credentialEnvVar]: { credentialId } }`,
+winning over a typed value of the same name as it did when the
+environment was built — and never writes either field again. A link with
+no variable named never reached the process and is dropped.
 
 Two rules differ from the header path, and both are consequences of the
 transport:
@@ -301,14 +309,17 @@ transport:
 - A **NUL is fatal**, and is the only content check. It truncates the
   environment entry rather than failing, so it has to be caught.
 
-The credential is resolved on the host, at reconcile time, and put into
-the child's environment. It is never logged (§7) and never written to
-`workspace.json`, which holds the link only — the same split as
+Credentials are resolved on the host, at reconcile time, and put into the
+child's environment over its typed-in `env`. A link that does not resolve
+blocks the start with the reason, rather than starting the process with
+half its secrets. They are never logged (§7) and never written to
+`workspace.json`, which holds the links only — the same split as
 everywhere else in gurt.
 
-The resolved secret is also part of the *process* identity (§6): a
+The resolved secrets are also part of the *process* identity (§6): a
 credential rotated in the store has to reach a server that already read
-its environment, and the only way to do that is a restart.
+its environment, and the only way to do that is a restart. Which variable
+a link lands in is identity too, and is compared as part of `env`.
 
 ## 4. The runtime
 
@@ -513,8 +524,8 @@ that a `command` exists on this machine (`checkMcpCommand`) — and every
 other way a local entry can be wrong is learned an hour later, from a
 banner in a session pane: an `npm install` that fails, a package with no
 bin, a process that dies for want of an authorization it never had, a
-`credentialEnvVar` the server does not read, argv mangled out of a
-pasted snippet.
+credential linked to a variable the server does not read, argv mangled
+out of a pasted snippet.
 
 The comment §4.3 already states the principle — *"the failure it
 produces at session start, an hour later, in a log, is exactly the one
@@ -687,14 +698,16 @@ naming more than one server is an error rather than a silent first-wins
 — they have separate ids, separate credentials and separate trust
 decisions, and batching that into one paste hides all three.
 
-`env` rides through verbatim. That is the right call for a parser and
-the wrong resting place for a secret: a snippet's `env` is where
-READMEs put `"GITHUB_TOKEN": "<your token>"`, and `workspace.json` is a
-plain file meant to be shared and committed. Moving such a value to a
-credential link is the *editor's* job (§8), not something this function
-should do silently: `looksLikeSecretEnv` marks the pair, the editor lifts
-it out of the entry and the save turns it into an `mcp-token` credential
-linked by `credentialId` + `credentialEnvVar`. A placeholder
+`env` (and an http snippet's `headers`) rides through verbatim. That is
+the right call for a parser and the wrong resting place for a secret: a
+snippet's `env` is where READMEs put `"GITHUB_TOKEN": "<your token>"`,
+and `workspace.json` is a plain file meant to be shared and committed.
+Moving such a value to a credential link is the *editor's* job (§8), not
+something this function should do silently: `pastedSecret` marks every
+such row (`looksLikeSecretEnv` for a variable; a secret-named header,
+with an `Authorization` scheme split off into the link's `prefix`), the
+editor lifts each into a pending credential in place, and the save turns
+each into an `mcp-token` linked from that same row. A placeholder
 (`<your token>`, `YOUR_API_KEY_HERE`) is explicitly not a secret — there
 is nothing to store, and storing it would be worse than leaving it.
 

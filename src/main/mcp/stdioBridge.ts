@@ -37,7 +37,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import type { McpLocalEntry, McpNpmEntry } from '../../shared/mcp'
-import { npmPackageSpec } from '../../shared/mcp'
+import { mcpLiteralEnv, npmPackageSpec } from '../../shared/mcp'
 import { hostPath, resolveHostCommand } from '../hostPath'
 import { gurtRoot } from '../store'
 import { lineBuffer } from '../provision'
@@ -405,7 +405,7 @@ async function planLaunch(entry: McpLocalEntry, trace?: StdioTrace): Promise<Lau
 
 /**
  * The child's environment: gurt's own, with the PATH problem fixed, plus the
- * entry's `env` and its resolved credential on top.
+ * entry's typed-in `env` and its resolved credential links on top.
  *
  * `ELECTRON_RUN_AS_NODE` is set for an npm entry and *deleted* for a command
  * one — gurt's own process may be running with it set, and inheriting it would
@@ -418,7 +418,7 @@ function childEnv(entry: McpLocalEntry, extra: Record<string, string>, runAsNode
   delete env['ELECTRON_RUN_AS_NODE']
   delete env['NODE_OPTIONS']
   if (runAsNode) env['ELECTRON_RUN_AS_NODE'] = '1'
-  return { ...env, ...(entry.env ?? {}), ...extra }
+  return { ...env, ...mcpLiteralEnv(entry), ...extra }
 }
 
 interface Pending {
@@ -507,7 +507,7 @@ export function startStdioBridge(
     // of every surface.
     trace?.('gurt', `spawning ${[plan.file, ...plan.args].join(' ')}`)
     trace?.('gurt', `working directory ${plan.cwd}`)
-    const added = [...Object.keys(entry.env ?? {}), ...Object.keys(extraEnv)]
+    const added = [...new Set([...Object.keys(entry.env ?? {}), ...Object.keys(extraEnv)])]
     if (added.length)
       trace?.('gurt', `environment gurt added: ${added.join(', ')} (names only — never values)`)
     const proc = spawn(plan.file, plan.args, {

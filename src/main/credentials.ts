@@ -22,12 +22,12 @@ import {
   checkMcpSecret,
   credentialIdentity,
   resolveForRepo,
-  resolveMcpCredential,
-  resolveMcpEnvSecret
+  resolveMcpHeaders,
+  resolveMcpSecretEnv
 } from '../shared/credentials'
 import { canonicalRepoId } from '../shared/repoId'
 import type { McpRegistryEntry } from '../shared/mcp'
-import { isLocalMcpEntry, mcpLabel } from '../shared/mcp'
+import { isLocalMcpEntry, mcpCredentialIds, mcpLabel } from '../shared/mcp'
 import {
   gurtRoot,
   getWorkspace,
@@ -359,7 +359,8 @@ export async function credentialUsedBy(credentialId: string): Promise<string[]> 
       else if (!repo.credentialId && resolveForRepo(credentials, repo)?.entry?.id === credentialId)
         used.push(`${ws}/${repo.name} (auto)`)
     for (const server of data.mcpServers ?? [])
-      if (server.credentialId === credentialId) used.push(`mcp "${mcpLabel(server)}" (${ws})`)
+      if (mcpCredentialIds(server).includes(credentialId))
+        used.push(`mcp "${mcpLabel(server)}" (${ws})`)
   }
   for (const a of Object.values(await getAgents()))
     if (a.credentialId === credentialId) used.push(`agent "${a.label}"`)
@@ -549,31 +550,21 @@ export function upsertCredentialEntry(entry: CredentialEntry): Promise<void> {
 }
 
 /**
- * Reject an MCP registry entry whose credential link does not resolve to an
- * `mcp-token` (docs/requirements-mcp-proxy.md §3.2). Lives here rather than in
- * store.ts's validator because the credential store is what holds the answer,
- * and it is this module that reads workspace.json — not the other way round.
- */
-export async function checkMcpCredential(credentialId: string | undefined): Promise<void> {
-  if (!credentialId) return
-  const { error } = resolveMcpCredential(await listCredentials(), credentialId)
-  if (error) throw new Error(error)
-}
-
-/**
- * The same check for a whole registry entry, which is what the IPC boundary
- * actually holds — and what decides *how* the link resolves: an http entry's
- * credential becomes a request header, a local entry's becomes an environment
- * variable (docs/requirements-mcp-stdio.md §3.4). The two have different
- * legality rules (a newline is fatal in a header and ordinary in an env value),
- * so asking the wrong one would reject a valid entry or accept a broken one.
+ * Reject an MCP registry entry whose credential links do not resolve to
+ * `mcp-token`/`oauth` entries, or resolve to something its transport cannot
+ * carry (docs/requirements-mcp-proxy.md §3.2, requirements-mcp-stdio.md §3.4).
+ * Lives here rather than in store.ts's validator because the credential store
+ * is what holds the answer, and it is this module that reads workspace.json —
+ * not the other way round. A header and an environment variable have different
+ * legality rules (a newline is fatal in one and ordinary in the other), which is
+ * why each kind goes through its own resolver.
  */
 export async function checkMcpEntryCredential(entry: McpRegistryEntry): Promise<void> {
-  if (!entry.credentialId) return
+  if (!mcpCredentialIds(entry).length) return
   const credentials = await listCredentials()
   const { error } = isLocalMcpEntry(entry)
-    ? resolveMcpEnvSecret(credentials, entry.credentialId)
-    : resolveMcpCredential(credentials, entry.credentialId)
+    ? resolveMcpSecretEnv(credentials, entry)
+    : resolveMcpHeaders(credentials, entry)
   if (error) throw new Error(error)
 }
 

@@ -24,9 +24,9 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import type { AcpHttpMcpServer, EnvRef, McpSelection } from '../../shared/types'
 import type { CredentialEntry } from '../../shared/credentials'
-import { resolveMcpCredential } from '../../shared/credentials'
+import { resolveMcpHeaders } from '../../shared/credentials'
 import type { McpHttpEntry, McpRegistryEntry } from '../../shared/mcp'
-import { isLocalMcpEntry, mcpEntries, resolveMcpSelection } from '../../shared/mcp'
+import { isLocalMcpEntry, mcpCredentialIds, mcpEntries, resolveMcpSelection } from '../../shared/mcp'
 import {
   PROXY_CONFIG_VERSION,
   sanitizeDomainPolicy,
@@ -209,23 +209,19 @@ export function planProxy(input: ProxyPlanInput): ProxyPlan {
   }
 
   const registryUpstream = (entry: McpHttpEntry): McpUpstream | null => {
-    const headers = [...(entry.headers ?? []).map((h) => ({ name: h.name, value: h.value }))]
-    const freshenError = entry.credentialId && input.credentialErrors?.[entry.credentialId]
-    if (freshenError) {
-      errors.push(`MCP server "${entry.id}": ${freshenError}`)
-      return null
+    for (const id of mcpCredentialIds(entry)) {
+      const freshenError = input.credentialErrors?.[id]
+      if (freshenError) {
+        errors.push(`MCP server "${entry.id}": ${freshenError}`)
+        return null
+      }
     }
-    const { header, error } = resolveMcpCredential(credentials, entry.credentialId)
-    if (error) {
+    // Every header, typed or linked, resolved here — the one place a secret
+    // enters the scope file, and the container never reads that.
+    const { headers, error } = resolveMcpHeaders(credentials, entry)
+    if (error || !headers) {
       errors.push(`MCP server "${entry.id}": ${error}`)
       return null
-    }
-    if (header) {
-      // The credential wins over a static header of the same name, whatever its
-      // spelling — one `Authorization` goes upstream, and it is the resolved one.
-      const at = headers.findIndex((h) => h.name.toLowerCase() === header.name.toLowerCase())
-      if (at >= 0) headers.splice(at, 1)
-      headers.push(header)
     }
     return { kind: 'registry', url: entry.url, ...(headers.length ? { headers } : {}) }
   }
@@ -301,7 +297,7 @@ export async function resolveProxyPlan(
   const selected = new Set((selection ?? []).map((s) => s.id))
   const oauthIds = registry
     .filter((e) => selected.has(e.id) && !isLocalMcpEntry(e))
-    .map((e) => e.credentialId)
+    .flatMap(mcpCredentialIds)
   const { credentials: freshened, errors: credentialErrors } = await freshenOAuthCredentials(
     credentials,
     oauthIds

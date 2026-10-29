@@ -23,7 +23,7 @@ import { applyEdits, modify } from 'jsonc-parser'
 import type { GurtApi, WriteMethod } from '../shared/api'
 import type { EnvConfig, RepoConfig } from '../shared/types'
 import type { McpRegistryEntry } from '../shared/mcp'
-import { isLocalMcpEntry, mcpEntryKind } from '../shared/mcp'
+import { isLocalMcpEntry, mcpCredentialUses, mcpEntryKind, normalizeMcpEntry } from '../shared/mcp'
 import { canonicalJson, parseEnvDevcontainer } from '../shared/envConfig'
 import { sanitizeSkillSelection } from '../shared/skills'
 import { normalizeNotificationPrefs } from '../shared/notifications'
@@ -194,19 +194,28 @@ function checkRepoLinks(next: RepoConfig, prev: RepoConfig | undefined): void {
     refuse(`repo "${next.name}" carries a credential, so its url may not be changed`)
 }
 
+/** An entry's credential links, where each lands and with what prefix, in one
+ *  comparable string — moving a secret to another header or variable is as
+ *  much a re-point as linking a different one. Normalized first, so a spelling
+ *  the store would not keep (an empty prefix, a padded id) is not a change. */
+const mcpLinks = (entry: McpRegistryEntry): string =>
+  canonicalJson(
+    mcpCredentialUses(normalizeMcpEntry(entry)).sort((a, b) => a.where.localeCompare(b.where))
+  )
+
 function checkMcpLinks(
   next: McpRegistryEntry,
   prev: McpRegistryEntry | undefined,
   heldFields: string[]
 ): void {
+  const linked = mcpCredentialUses(next).length > 0
   if (!prev) {
-    if (next.credentialId)
-      refuse(`MCP server "${next.id}" may not be created with a credential link`)
+    if (linked) refuse(`MCP server "${next.id}" may not be created with a credential link`)
     return
   }
-  if (!sameLink(next.credentialId, prev.credentialId))
-    refuse(`the credential link of MCP server "${next.id}" may not be changed`)
-  if (!prev.credentialId) return
+  if (mcpLinks(next) !== mcpLinks(prev))
+    refuse(`the credential links of MCP server "${next.id}" may not be changed`)
+  if (!mcpCredentialUses(prev).length) return
   if (mcpEntryKind(next) !== mcpEntryKind(prev))
     refuse(`MCP server "${next.id}" carries a credential, so its kind may not be changed`)
   if (!isLocalMcpEntry(prev) && !isLocalMcpEntry(next) && next.url !== prev.url)

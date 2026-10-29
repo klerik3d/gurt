@@ -137,7 +137,7 @@ schema git-only.
 | `git-app` | `provider` (`github-app`), `appId`, `installationId`, `privateKeyPath` | broker mints short-lived installation tokens per request. Providers are plugins behind the broker; adding GitLab OAuth etc. must not touch the contract. Phase 3. |
 | `git-host` | — | explicit opt-in to host ambient credentials — the only way ambient is ever used. |
 | `agent-token` | `secret` | OAuth token / API key for a coding agent; linked from an agent (no host matching, no forge verification). |
-| `mcp-token` | `secret`, optional `header`, optional `scheme` | Auth for a registry MCP server; injected by the session proxy (`requirements-mcp-proxy.md` §3.2). Never a git transport. |
+| `mcp-token` | `secret` (legacy entries may also hold `header`, `scheme`) | A secret for a registry MCP server, linked from a header or `env` value and injected on the host (`requirements-mcp-proxy.md` §3.2). Never a git transport. |
 
 **Retired kind.** `git-ssh-key` was removed with ssh support
 (`requirements-mcp-proxy.md` §10.1). An entry stored under it survives a

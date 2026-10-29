@@ -308,23 +308,30 @@ const STORED_MCP_COMMON = {
   credentialId: z.string().optional().catch(undefined)
 }
 
+/** A header or env value: text, or a credential link (`McpCredentialRef`). */
+const STORED_MCP_VALUE = z.union([
+  z.string(),
+  z.object({ credentialId: z.string(), prefix: z.string().optional() })
+])
+
 const STORED_MCP_HTTP = z.looseObject({
   ...STORED_MCP_COMMON,
   kind: z.literal('http').optional().catch(undefined),
   url: z.string(),
   headers: z
-    .array(z.object({ name: z.string(), value: z.string() }))
+    .array(z.object({ name: z.string(), value: STORED_MCP_VALUE }))
     .optional()
     .catch(undefined)
 })
 
 /** The fields the two local kinds share. `env` degrades as a whole: a single
- *  non-string value makes the map unreadable, and half an environment is worse
- *  than none. */
+ *  unreadable value makes the map unreadable, and half an environment is worse
+ *  than none. `credentialId` + `credentialEnvVar` are the legacy single link,
+ *  read so that `normalizeMcpEntry` can fold it into `env`. */
 const STORED_MCP_LOCAL = {
   ...STORED_MCP_COMMON,
   args: z.array(z.string()).optional().catch(undefined),
-  env: z.record(z.string(), z.string()).optional().catch(undefined),
+  env: z.record(z.string(), STORED_MCP_VALUE).optional().catch(undefined),
   credentialEnvVar: z.string().optional().catch(undefined)
 }
 
@@ -987,7 +994,7 @@ export async function tasksUsingMcp(ws: string, id: string): Promise<string[]> {
 
 /** Reject an entry the registry cannot hold: bad id/url/headers, a reserved
  *  built-in id, or an id another entry already has (§3.3). The credential link
- *  is checked by the caller — see `checkMcpCredential` in main/credentials.ts. */
+ *  is checked by the caller — see `checkMcpEntryCredential` in main/credentials.ts. */
 function assertValidMcp(entry: McpRegistryEntry, others: McpRegistryEntry[]): void {
   const invalid = validateMcpEntry(entry, { takenIds: others.map((e) => e.id) })
   if (invalid) throw new Error(`mcp server "${entry.id}": ${invalid}`)

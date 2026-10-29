@@ -3216,10 +3216,6 @@ textarea.input {
   resize: vertical;
   line-height: 1.5;
 }
-.cred-env-var {
-  width: 190px;
-  flex: none;
-}
 /*
  * "Runs on your machine, unsandboxed, with your privileges." — the same line on
  * the settings row, in the editor and in the composer's picker
@@ -3332,6 +3328,22 @@ textarea.input {
   flex: none;
 }
 .mcp-hdr .input:nth-child(2) {
+  flex: 1;
+  min-width: 0;
+}
+/* A value taken from a credential: its prefix, then which credential. */
+.mcp-hdr .mcp-ref {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.mcp-hdr .mcp-ref .input.mcp-prefix {
+  width: 80px;
+  flex: none;
+}
+.mcp-ref .mcp-ref-chip {
   flex: 1;
   min-width: 0;
 }
