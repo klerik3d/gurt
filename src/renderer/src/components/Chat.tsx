@@ -21,6 +21,7 @@ import { sessionRole, sessionStatus } from '../../../shared/types'
 import { agentOptionView, withPickedValues } from '../../../shared/agentConfig'
 import { agentKind, agentName, useAgents } from '../useAgents'
 import { useMcpEntries, useMcpFailures } from '../useMcp'
+import { usePiiEntries, usePiiPlan, usePiiView, type PiiView } from '../usePii'
 import { resolveMcpSelection } from '../../../shared/mcp'
 import { alertDialog } from '../dialog'
 import { createLogger, logErr } from '../log'
@@ -138,7 +139,11 @@ export function Chat({
   const mcpFailures = useMcpFailures(sessionId)
 
   const hasSnapshot = !!snapshot
-  const entries = useEntryTimes(sessionId, snapshot?.entries)
+  // The timeline holds tokens; what the user sees is the view's call (open =
+  // reals from the session's table, closed = what the agent sees).
+  const pii = usePiiView(sessionId)
+  const entries = usePiiEntries(useEntryTimes(sessionId, snapshot?.entries), pii)
+  const plan = usePiiPlan(snapshot?.plan, pii)
   // Real usage (ACP `usage_update`) wins when the adapter sends it; otherwise fall
   // back to a rough word-count estimate over the log — not every adapter reports
   // usage yet (e.g. codex-acp).
@@ -302,7 +307,7 @@ export function Chat({
 
   if (!snapshot) return <div className="placeholder">loading session…</div>
 
-  const { info, modes, plan, commands, configOptions, promptCapabilities } = snapshot
+  const { info, modes, commands, configOptions, promptCapabilities } = snapshot
   const mcp = resolveMcpSelection(info.mcp, mcpOffered)
 
   const hasPlan = !!plan && plan.length > 0
@@ -439,6 +444,7 @@ export function Chat({
             configOptions={configOptions ?? []}
             configValues={info.configValues}
             promptCaps={promptCapabilities}
+            pii={info.piiMask || pii.hasTokens ? pii : undefined}
           />
         </>
       )}
@@ -796,7 +802,8 @@ function Composer({
   commands,
   configOptions,
   configValues,
-  promptCaps
+  promptCaps,
+  pii
 }: {
   sessionId: string
   /** The session agent's kind (`AgentDef.id`) — scopes agent-specific UI fixups. */
@@ -820,6 +827,9 @@ function Composer({
    *  highlights when the agent does not echo a choice back. */
   configValues?: Record<string, string | boolean> | undefined
   promptCaps?: PromptCapabilities | undefined
+  /** The masking view switch — present only for a session that masks or has
+   *  tokens to show. Display only: it never changes what the agent receives. */
+  pii?: PiiView | undefined
 }) {
   const draft = composerDrafts.get(sessionId)
   const [text, setText] = useState(draft?.text ?? '')
@@ -1369,6 +1379,20 @@ function Composer({
             </button>
           ))}
           <span className="spacer" />
+          {pii && (
+            <button
+              className={`icon-sq ${pii.open ? '' : 'active'}`}
+              title={
+                pii.open
+                  ? 'Showing real values — click to show what the agent sees ([type:N] tokens)'
+                  : 'Showing what the agent sees ([type:N] tokens) — click to show real values'
+              }
+              aria-pressed={!pii.open}
+              onClick={() => pii.setOpen(!pii.open)}
+            >
+              <Icon name={pii.open ? 'eye' : 'eye-lock'} size={14} />
+            </button>
+          )}
           {/* What the session can reach, on the bar rather than above it: the
               icon is the mode, the click is the whole traffic ledger (§8). */}
           <span className="pop-anchor" ref={netAnchorRef}>

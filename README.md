@@ -392,17 +392,20 @@ replace it with a token.
 
 Optional per-session (`pii mask` chip in the composer; default on once a
 detector backend is configured, disabled outright while none is). It sits on the
-**ACP seam** and nowhere else: the prompt text going out to the agent is scanned
-and every entity found is replaced with a `<TYPE:ciphertext>` token, and
-everything coming back — message and thought chunks, tool titles and details —
-is decoded before it enters the timeline. So the agent's context only ever holds
-tokens while your chat view only ever holds the real values. See
-[docs/requirements-pii-mask.md](docs/requirements-pii-mask.md).
+**ACP seam**: the prompt text going out to the agent is scanned and every entity
+found is replaced with a `[type:N]` token (`[email:1]`, `[us_ssn:2]`) — the type
+the agent needs, an ordinal per type, nothing else. What each token stands for
+lives in a per-session table on the host. The timeline holds the tokenized text,
+and the chat view substitutes the real values from the table when it renders;
+an eye toggle in the composer bar switches between real values and what the
+agent sees. See [docs/requirements-pii-mask.md](docs/requirements-pii-mask.md).
 
-- **Key policy**: gurt generates the AES-256-GCM key itself, per session, on the
-  host, and never accepts one from anywhere else. It lives in memory only — a
-  token from a finished session stops being decodable once the app exits, which
-  is the intended auto-expiry, not a bug.
+- **No cryptography.** The table is `~/.gurt/pii-tables/<session>.json`
+  (`{"v":1,"tokens":{"email":{"1":"…"}}}`, owner-only, outside every container
+  mount), written before the prompt that uses a new token is sent. It lives as
+  long as the session and is deleted with it; tokens survive an app restart
+  because the table does. Ordinals are never reused, and the same value is the
+  same token for the whole session.
 - **Detection** is pluggable behind one `detect(text) -> spans` interface.
   Settings → Masking picks the backend: `built-in` (regex + checksum, in
   process) or `presidio` (a local docker sidecar gurt runs, or a remote analyzer
@@ -413,10 +416,10 @@ tokens while your chat view only ever holds the real values. See
   a small per-source parser, and cached under `~/.gurt/pii-patterns/`. The
   network is only touched on first selection or an explicit "check for updates".
 
-Out of scope in this pass: the agent ↔ MCP tool seam (tool calls still carry
-whatever the agent wrote, tokens included), free-text NER in the built-in
-detector, and PII in repository files the agent reads with its own in-container
-tools.
+Out of scope so far: the agent ↔ MCP tool seam and the `fs/*`/`terminal/*` ACP
+client methods (both planned next — see the requirements doc §9), free-text NER
+in the built-in detector, and anything the agent does inside its container
+without going through gurt.
 
 ## Run
 

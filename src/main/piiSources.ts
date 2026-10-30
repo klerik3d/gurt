@@ -11,6 +11,8 @@
 // Everything an adapter cannot use is *counted*, never guessed at: an upstream
 // regex in a dialect V8 does not speak is dropped and shows up as `skipped` in
 // Settings, so a source that yields half of what it should says so.
+// Pattern types stay upper-case here (the checksum table keys on them); the token
+// grammar lower-cases them at encode time.
 import { piiType, type PiiPattern } from '../shared/pii'
 
 export interface AdaptedSource {
@@ -223,7 +225,7 @@ function adaptPresidio(files: Record<string, string>): AdaptedSource {
       skipped++
       continue
     }
-    const type = piiType(entity)
+    const type = piiType(entity).toUpperCase()
     for (const m of text.matchAll(/\bPattern\(/g)) {
       const open = m.index + m[0].length - 1
       const call = text.slice(open + 1, endOfCall(text, open) - 1)
@@ -266,7 +268,7 @@ function adaptGitleaks(text: string): AdaptedSource {
       if (inRule && id) skipped++
     } else {
       const js = toJsRegex(source)
-      if (js) patterns.push({ type: piiType(id), regex: js.regex, flags: js.flags, name: id })
+      if (js) patterns.push({ type: piiType(id).toUpperCase(), regex: js.regex, flags: js.flags, name: id })
       else skipped++
     }
     id = ''

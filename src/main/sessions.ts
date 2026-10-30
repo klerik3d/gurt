@@ -38,7 +38,6 @@ import {
   sessionRole,
   spawnableRoles
 } from '../shared/types'
-import { splitPendingToken } from '../shared/pii'
 import { defaultAgentConfig, withFable } from '../shared/agentConfig'
 import type { AgentDef } from '../shared/agents'
 import type { CreateAction } from '../shared/api'
@@ -338,10 +337,6 @@ interface Session {
   turns: number
   /** `stopReason` of the last finished turn, for the same record. */
   lastStopReason?: string | undefined
-  /** Tail of the current agent/thought stream held back because it may be the
-   *  first half of a masking token (see `flushMask`). Only ever set for a
-   *  session that asked for masking. */
-  maskPending?: { kind: 'agent' | 'thought'; text: string } | undefined
   /** entry id -> resolver of a pending permission request. */
   pendingPermissions: Map<number, (outcome: unknown) => void>
 }
@@ -569,8 +564,8 @@ export class SessionManager {
     private events: SessionEvents,
     private bus: Bus,
     /** The ACP seam's masking layer (docs/requirements-pii-mask.md). Encodes the
-     *  outbound prompt, decodes everything arriving over `session/update` —
-     *  nothing else in this file touches real values differently. */
+     *  outbound prompt; the timeline keeps tokens and the chat view reveals them
+     *  from the session's table. */
     private mask: PiiMask
   ) {}
 
@@ -1100,7 +1095,7 @@ export class SessionManager {
       // directory, so removing it any earlier races the daemon.
       .then(() => this.events.deleteScratch(workspace, task, sessionId))
     this.sessions.delete(sessionId)
-    // Its masking key goes with it — nothing else can decode what it produced.
+    // Its correspondence table goes with it — the tokens it produced end here.
     this.mask.drop(sessionId)
     this.events.deleteLog(s.ref.workspace, s.ref.task, sessionId)
     this.events.stopGurtServer(sessionId)
@@ -2001,32 +1996,16 @@ export class SessionManager {
   /**
    * Whether this session's prompts are masked right now: the session asked for
    * it *and* a detector backend resolves (§5.1's "nothing is masked while no
-   * backend is selected"). Decoding is deliberately not gated on this — see
-   * `PiiMask.decode`.
+   * backend is selected").
    *
-   * Scope note (§7): this covers the ACP seam only. Tool calls the agent makes
-   * through its MCP servers — including gurt's own `complete`/`create_session`
-   * — still carry whatever the agent wrote, tokens included; masking that seam
-   * is a separate task.
+   * The timeline itself holds the *tokenized* text — what the agent saw and
+   * wrote — and the chat view substitutes reals from the session's table when
+   * it renders (so its open/closed toggle is a pure view setting, and nothing
+   * on disk but the table ever holds a real value). Tool calls the agent makes
+   * through MCP servers are a separate seam (§7).
    */
   private maskEnabled(s: Session): boolean {
     return !!s.info.piiMask && this.mask.ready()
-  }
-
-  /**
-   * Emit whatever the stream decoder is holding back. Called when the stream
-   * ends (turn over) or is interrupted by anything that is not a chunk of the
-   * same kind — the held fragment has to land in its own entry, in order,
-   * rather than reappear after a tool call.
-   */
-  private flushMask(s: Session): void {
-    const pending = s.maskPending
-    if (!pending) return
-    s.maskPending = undefined
-    const text = this.mask.decode(s.info.id, pending.text)
-    const last = s.entries[s.entries.length - 1]
-    if (last && last.kind === pending.kind) this.append(s, { type: 'append', id: last.id, text })
-    else this.push(s, { kind: pending.kind, text })
   }
 
   /** Build the ACP prompt content blocks: the message text, a `resource_link` for
@@ -2066,7 +2045,21 @@ export class SessionManager {
     images?: PromptImage[]
   ): Promise<{ stopReason?: string | undefined; threw: boolean }> {
     this.bus.emit('session.activity', { sessionId: s.info.id })
-    this.push(s, { kind: entryKind, text })
+    // The one outbound seam (§2.1): from here on the agent only ever sees
+    // tokens, and the timeline records the same tokenized text — the chat view
+    // reveals it from the table. A detector that is down must end the turn with
+    // a visible error, never silently send the cleartext; the error is held
+    // until the `try` below so it is reported like any other turn failure.
+    let outbound = text
+    let maskError: Error | undefined
+    if (this.maskEnabled(s)) {
+      try {
+        outbound = await this.mask.encode(s.info.id, text)
+      } catch (e) {
+        maskError = e instanceof Error ? e : new Error(String(e))
+      }
+    }
+    this.push(s, { kind: entryKind, text: outbound })
     // Prompt start: the turn is incomplete until `complete` fires; clear any
     // prior violation overlay.
     s.turnComplete = false
@@ -2084,11 +2077,8 @@ export class SessionManager {
     // detector needs to tell "the plan said no" from "the code broke".
     let detail: string | undefined
     try {
+      if (maskError) throw maskError
       const conn = await this.attach(s)
-      // The one outbound seam (§2.1): from here on the agent only ever sees
-      // tokens. Inside the try on purpose — a detector that is down must end
-      // the turn with a visible error, never silently send the cleartext.
-      const outbound = this.maskEnabled(s) ? await this.mask.encode(s.info.id, text) : text
       const result = await conn.peer.request(
         'session/prompt',
         {
@@ -2113,8 +2103,6 @@ export class SessionManager {
       outcome = { threw: true }
       return outcome
     } finally {
-      // The stream is over: nothing more is coming to complete a half-token.
-      this.flushMask(s)
       s.busy = false
       this.bus.emit('session.changed', { sessionId: s.info.id })
       this.schedulePersist(s.ref)
@@ -2757,9 +2745,9 @@ export class SessionManager {
     }
   }
 
-  /** Flatten ACP tool-call content blocks into a plain-text preview — decoded,
-   *  like every other inbound field, before it reaches the timeline (§6). */
-  private toolDetail(s: Session, content: AcpToolContent | undefined): string | undefined {
+  /** Flatten ACP tool-call content blocks into a plain-text preview. Tokens stay
+   *  tokens here, like every other inbound field — the chat view reveals them. */
+  private toolDetail(content: AcpToolContent | undefined): string | undefined {
     if (!content?.length) return undefined
     const parts: string[] = []
     for (const c of content) {
@@ -2769,7 +2757,7 @@ export class SessionManager {
         parts.push((c.content.text ?? '').slice(0, 2000))
       }
     }
-    return parts.length ? this.mask.decode(s.info.id, parts.join('\n')) : undefined
+    return parts.length ? parts.join('\n') : undefined
   }
 
   /**
@@ -2784,14 +2772,6 @@ export class SessionManager {
     const s = this.bySessionId(p.sessionId)
     if (!s || s.loading) return
     const raw = p.update
-    // Anything that is not more of the same stream ends it — flush first so a
-    // held fragment cannot jump ahead of a tool call.
-    if (
-      s.maskPending &&
-      raw.sessionUpdate !== 'agent_message_chunk' &&
-      raw.sessionUpdate !== 'agent_thought_chunk'
-    )
-      this.flushMask(s)
     switch (raw.sessionUpdate) {
       case 'agent_message_chunk':
       case 'agent_thought_chunk': {
@@ -2799,19 +2779,10 @@ export class SessionManager {
         const kind = raw.sessionUpdate === 'agent_message_chunk' ? 'agent' : 'thought'
         const received = u?.content?.type === 'text' ? (u.content.text ?? '') : ''
         if (!received) return
-        if (s.maskPending && s.maskPending.kind !== kind) this.flushMask(s)
-        let chunk: string = received
-        // Only a masked session buffers: for every other one this branch is
-        // skipped entirely and chunks reach the timeline byte for byte.
-        if (s.info.piiMask) {
-          const [ready, pending] = splitPendingToken((s.maskPending?.text ?? '') + received)
-          s.maskPending = pending ? { kind, text: pending } : undefined
-          if (!ready) return
-          chunk = ready
-        }
-        // Inbound seam (§2.1): the timeline — and therefore the chat view, the
-        // JSONL log and every notification built off it — only ever holds reals.
-        const text = this.mask.decode(s.info.id, chunk)
+        // Inbound text goes onto the timeline exactly as the agent wrote it,
+        // tokens included: a token split across two chunks is whole again in the
+        // accumulated entry, and the chat view reveals it at render time.
+        const text = received
         const last = s.entries[s.entries.length - 1]
         if (last && last.kind === kind) {
           this.append(s, { type: 'append', id: last.id, text, at: Date.now() })
@@ -2823,11 +2794,11 @@ export class SessionManager {
       case 'tool_call': {
         const u = parseOrDrop(TOOL_CALL, raw, 'tool_call')
         if (!u) return
-        const detail = this.toolDetail(s, u.content)
+        const detail = this.toolDetail(u.content)
         this.push(s, {
           kind: 'tool',
           toolCallId: u.toolCallId,
-          title: this.mask.decode(s.info.id, u.title ?? u.kind ?? 'tool call'),
+          title: u.title ?? u.kind ?? 'tool call',
           status: u.status ?? 'pending',
           ...(u.kind ? { toolKind: u.kind } : {}),
           ...(detail ? { detail } : {}),
@@ -2840,13 +2811,13 @@ export class SessionManager {
         if (!u) return
         const entry = s.entries.find((e) => e.kind === 'tool' && e.toolCallId === u.toolCallId)
         if (entry && entry.kind === 'tool') {
-          const detail = this.toolDetail(s, u.content)
+          const detail = this.toolDetail(u.content)
           this.append(s, {
             type: 'patch',
             id: entry.id,
             patch: {
               ...(u.status ? { status: u.status } : {}),
-              ...(u.title ? { title: this.mask.decode(s.info.id, u.title) } : {}),
+              ...(u.title ? { title: u.title } : {}),
               ...(detail ? { detail } : {}),
               ...(isTerminalToolStatus(u.status) && entry.endAt == null ? { endAt: Date.now() } : {})
             }

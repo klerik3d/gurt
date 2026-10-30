@@ -1,17 +1,16 @@
 // PII/secret masking — pure data and pure functions, shared by main and renderer
 // (docs/requirements-pii-mask.md).
 //
-// The contract in one line: the agent's context only ever holds *tokens*, the
-// user's chat view only ever holds *reals*. `encode` runs on the outbound
-// `session/prompt` text, `decode` on everything coming back over
-// `session/update` — one seam, in src/main/sessions.ts, and nowhere else.
+// The contract in one line: the agent's context only ever holds *tokens*
+// (`[email:1]`), and a per-session table on the host says what each one stands
+// for. `encode` runs on outbound text; whoever may see reals — the chat view —
+// substitutes them back from the table when it renders.
 //
 // Everything here is Electron-free and node-free: the registries (which
 // detector backends exist, which public pattern collections a built-in
 // detector may be fed from), the token grammar, and the regex detector built
-// out of an adapted pattern set. The crypto, the fetch/cache and the external
-// backend live in src/main/pii.ts — the renderer only ever sees settings and
-// status.
+// out of an adapted pattern set. The table store, the fetch/cache and the
+// external backend live in src/main/pii.ts.
 
 /** One entity a detector found, as a half-open span of the text it scanned. */
 export interface PiiSpan {
@@ -250,46 +249,59 @@ export function piiConfigError(
 // --- token grammar (§3) ------------------------------------------------------
 
 /**
- * `<TYPE:ciphertext>`; ciphertext is base64url so it never contains `<`, `>`
- * or `:` and a token can therefore be found again by this exact regex in text
- * the agent has copied, quoted or reflowed.
+ * `[type:N]` — a lower-case entity type and the ordinal of the value within its
+ * type for this session. Short (a handful of model tokens), carries the type
+ * the agent needs, and cannot be mistaken for markdown: a link or footnote has
+ * no `type:digits` inside its brackets. What a token stands for lives only in
+ * the session's table (`PiiTable`); the text carries no ciphertext at all.
  */
-export const PII_TOKEN_RE = /<([A-Z][A-Z0-9_]*):([A-Za-z0-9_-]{16,})>/g
+export const PII_TOKEN_RE = /\[([a-z][a-z0-9_]*):(\d+)\]/g
 
-/** Normalize an upstream entity name into the `TYPE` half of the grammar. */
+/** The same token after an agent URL-encoded it into a link or a query string. */
+const PII_TOKEN_URL_RE = /%5B([a-z][a-z0-9_]*)%3A(\d+)%5D/gi
+
+/** Normalize an upstream entity name into the `type` half of the grammar. */
 export function piiType(raw: string): string {
   const t = raw
-    .toUpperCase()
-    .replace(/[^A-Z0-9]+/g, '_')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '')
-  return /^[A-Z]/.test(t) ? t : `X_${t || 'PII'}`
+  return /^[a-z]/.test(t) ? t : `x_${t || 'pii'}`
 }
 
-/** Format one token. `payload` must already be base64url. */
-export const piiToken = (type: string, payload: string): string => `<${type}:${payload}>`
-
-/** A token that has begun but not closed: `<`, `<EMA`, `<EMAIL`, `<EMAIL:abc`.
- *  The bare `<` counts — a chunk can end on exactly that one character. */
-const PARTIAL_TOKEN_RE = /^<(?:[A-Z][A-Z0-9_]*(?::[A-Za-z0-9_-]*)?)?$/
-
-/** Longest fragment held back as a possible partial token. Payloads are far
- *  shorter than this; the bound only stops a stray `<` from swallowing an
- *  answer if an agent writes one and then never closes it. */
-const MAX_PENDING = 512
+/** Format one token. */
+export const piiToken = (type: string, n: number | string): string => `[${type}:${n}]`
 
 /**
- * Split a streamed chunk into the part that is safe to decode now and a
- * trailing fragment that might still become a token once more arrives. ACP
- * chops an answer into chunks with no regard for our grammar, so a token can
- * straddle two of them — decoding each chunk on its own would leave both halves
- * showing in the chat, which is exactly what §2.1 promises never happens.
+ * One session's correspondence table, exactly as it sits in the session's
+ * `pii.json`: type → ordinal (a string key, so it is plain JSON) → real value.
+ * Ordinals are handed out in order and never reused, so a token means one
+ * value for as long as the session exists.
  */
-export function splitPendingToken(text: string): [ready: string, pending: string] {
-  const lt = text.lastIndexOf('<')
-  if (lt < 0 || text.indexOf('>', lt) >= 0) return [text, '']
-  const tail = text.slice(lt)
-  if (tail.length > MAX_PENDING || !PARTIAL_TOKEN_RE.test(tail)) return [text, '']
-  return [text.slice(0, lt), tail]
+export interface PiiTable {
+  v: 1
+  tokens: Record<string, Record<string, string>>
+}
+
+export const emptyPiiTable = (): PiiTable => ({ v: 1, tokens: {} })
+
+/**
+ * token → real, against a table. A token the table does not know (the agent
+ * invented `[email:99]`, or it is plain prose that happens to match) is left
+ * verbatim rather than blanked: the text stays truthful about what it says.
+ * Pure and shared: main uses it for what it must show as text, the renderer
+ * for the whole chat view.
+ */
+export function revealTokens(text: string, table: PiiTable | undefined): string {
+  if (!table || !text || (!text.includes('[') && !text.includes('%5B') && !text.includes('%5b')))
+    return text
+  const lookup = (type: string, n: string): string | undefined => table.tokens[type]?.[n]
+  return text
+    .replace(PII_TOKEN_RE, (whole, type: string, n: string) => lookup(type, n) ?? whole)
+    .replace(PII_TOKEN_URL_RE, (whole, type: string, n: string) => {
+      const real = lookup(type.toLowerCase(), n)
+      return real === undefined ? whole : encodeURIComponent(real)
+    })
 }
 
 /** Spans of `text` that are already tokens — never re-encoded, never re-detected. */

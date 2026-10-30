@@ -196,7 +196,8 @@ const SAFE_ARGS = new Set([
   'setGcSettings',
   // No args, and a pattern-source id from a fixed registry.
   'getPiiStatus',
-  'refreshPiiSource'
+  'refreshPiiSource',
+  'getPiiTable'
 ])
 
 /**

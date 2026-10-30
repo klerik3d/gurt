@@ -1,8 +1,8 @@
 // PII/secret masking (docs/requirements-pii-mask.md), without a network, a
 // docker daemon or an agent: what the per-source adapters pull out of each
 // upstream format, and what the masker guarantees at the ACP seam — encode →
-// decode is identity, the token grammar is stable, and one session's tokens are
-// undecodable by another.
+// reveal is identity, the `[type:N]` grammar is stable, the table is durable and
+// private to its session, and it ends with the session.
 //
 // The pattern cache is seeded on disk instead of fetched: `~/.gurt/pii-patterns`
 // is exactly the file `refreshSource` would have written, so the masker runs the
@@ -30,7 +30,7 @@ await build({
     contents:
       `export { createPiiMask } from ${S('src/main/pii.ts')}\n` +
       `export { adaptSource, toJsRegex } from ${S('src/main/piiSources.ts')}\n` +
-      `export { PII_TOKEN_RE, builtinDetector, ibanValid, luhnValid, piiConfigError, resolveSpans, splitPendingToken } from ${S('src/shared/pii.ts')}`,
+      `export { PII_TOKEN_RE, builtinDetector, emptyPiiTable, ibanValid, luhnValid, piiConfigError, piiType, resolveSpans, revealTokens } from ${S('src/shared/pii.ts')}`,
     resolveDir: ROOT,
     loader: 'ts',
     sourcefile: 'entry.ts'
@@ -218,81 +218,124 @@ const SAMPLES = {
   AWS_ACCESS_KEY: 'AKIAIOSFODNN7EXAMPLE'
 }
 
+const tableFile = (id) => path.join(GURT_ROOT, 'pii-tables', `${id}.json`)
+
 for (const [type, value] of Object.entries(SAMPLES)) {
   const real = `please look at ${value} and report back`
   const encoded = await mask.encode('s1', real)
   assert.ok(!encoded.includes(value), `${type}: the real value never reaches the agent`)
-  assert.match(encoded, new RegExp(`<${type}:[A-Za-z0-9_-]+>`), `${type}: token carries its type`)
+  assert.match(encoded, new RegExp(`\\[${type.toLowerCase()}:\\d+\\]`), `${type}: token carries its type`)
   assert.equal(mask.decode('s1', encoded), real, `${type}: round trip is identity`)
 }
 
-// Token grammar (§3): `<TYPE:base64url>`, and stable — the same value always
-// encodes to the same token within a session, so the agent can tell that two
-// mentions are the same person.
+// Token grammar (§3): `[type:N]`, ordinals per type in order of first sight, and
+// stable — the same value always encodes to the same token within a session, so
+// the agent can tell that two mentions are the same person.
 {
-  const encoded = await mask.encode('s1', `${SAMPLES.EMAIL} and again ${SAMPLES.EMAIL}`)
-  const tokens = [...encoded.matchAll(new RegExp(m.PII_TOKEN_RE.source, 'g'))].map((x) => x[0])
-  assert.equal(tokens.length, 2)
-  assert.equal(tokens[0], tokens[1], 'one value, one token')
-  assert.equal(await mask.encode('s1', SAMPLES.EMAIL), tokens[0], 'stable across calls too')
-  assert.match(tokens[0], /^<EMAIL:[A-Za-z0-9_-]+>$/, 'base64url only — never < > or :')
+  const first = await mask.encode('g1', `${SAMPLES.EMAIL} and again ${SAMPLES.EMAIL}`)
+  assert.equal(first, '[email:1] and again [email:1]', 'one value, one token')
+  assert.equal(await mask.encode('g1', SAMPLES.EMAIL), '[email:1]', 'stable across calls too')
+  assert.equal(await mask.encode('g1', 'bob@example.com'), '[email:2]', 'next value, next ordinal')
+  assert.equal(await mask.encode('g1', 'JANE.DOE@EXAMPLE.COM'), '[email:1]', 'mail addresses ignore case')
+  assert.equal(await mask.encode('g1', SAMPLES.US_SSN), '[us_ssn:1]', 'ordinals count per type')
+  assert.deepEqual(
+    [...first.matchAll(new RegExp(m.PII_TOKEN_RE.source, 'g'))].map((x) => [x[1], x[2]]),
+    [['email', '1'], ['email', '1']],
+    'the shared regex finds both'
+  )
+  assert.equal(m.piiType('AWS Access-Key'), 'aws_access_key')
+  assert.equal(m.piiType('9lives'), 'x_9lives')
 }
 
-// Text that already carries a token is left alone: re-encoding would bury the
-// real value one layer deeper on every round trip.
+// The table is the whole mechanism, so it has to be right on disk: the §-3
+// file shape, readable by nobody but the owner, holding the reals the text no
+// longer does.
+{
+  const file = tableFile('g1')
+  const onDisk = JSON.parse(fs.readFileSync(file, 'utf8'))
+  assert.deepEqual(onDisk, {
+    v: 1,
+    tokens: {
+      email: { 1: SAMPLES.EMAIL, 2: 'bob@example.com' },
+      us_ssn: { 1: SAMPLES.US_SSN }
+    }
+  })
+  if (process.platform !== 'win32')
+    assert.equal(fs.statSync(file).mode & 0o777, 0o600, 'owner-only: it holds the reals')
+}
+
+// Text that already carries a token is left alone: it already means something,
+// and a detector firing inside one must not invent a second row for it.
 {
   const once = await mask.encode('s1', `ping ${SAMPLES.IP_ADDRESS}`)
   assert.equal(await mask.encode('s1', once), once, 'tokens are not re-encoded')
   assert.equal(mask.decode('s1', once), `ping ${SAMPLES.IP_ADDRESS}`)
 }
 
-// §8.2: session-key isolation — two sessions never decode each other's tokens.
+// Reveal: unknown tokens stay verbatim, and a token the agent URL-encoded into a
+// link still resolves (to the encoded real value).
 {
-  const a = await mask.encode('s1', SAMPLES.US_SSN)
-  const b = await mask.encode('s2', SAMPLES.US_SSN)
-  assert.notEqual(a, b, 'same value, different session keys, different tokens')
-  assert.equal(mask.decode('s2', a), a, "s2 cannot read s1's token — it is left verbatim")
-  assert.equal(mask.decode('s1', b), b, 'and the other way round')
-  assert.equal(mask.decode('s1', a), SAMPLES.US_SSN)
-  assert.equal(mask.decode('s2', b), SAMPLES.US_SSN)
-
-  // A token cannot be re-labelled and still decode: the type is bound into the
-  // ciphertext as additional data.
-  const relabelled = a.replace('<US_SSN:', '<EMAIL:')
-  assert.equal(mask.decode('s1', relabelled), relabelled)
-
-  // §3's consequence, made explicit: the key is in-memory only, so dropping the
-  // session makes its tokens permanently opaque.
-  mask.drop('s1')
-  assert.equal(mask.decode('s1', a), a)
+  const table = { v: 1, tokens: { email: { 1: 'a+b@example.com' } } }
+  assert.equal(m.revealTokens('mail [email:1] or [email:9]', table), 'mail a+b@example.com or [email:9]')
+  assert.equal(m.revealTokens('x [note:2] y', table), 'x [note:2] y', 'prose that merely looks like a token')
+  assert.equal(
+    m.revealTokens('https://x.test/?to=%5Bemail%3A1%5D', table),
+    `https://x.test/?to=${encodeURIComponent('a+b@example.com')}`
+  )
+  assert.equal(m.revealTokens('[email:1]', undefined), '[email:1]', 'no table, no change')
+  assert.equal(m.revealTokens('[email:1]', m.emptyPiiTable()), '[email:1]')
 }
 
-// §2.1 across a streamed answer: ACP chops the agent's reply into chunks with
-// no regard for our grammar, so a token can straddle two. The tail of a chunk
-// that might still become a token is held back until it can be decoded whole —
-// the halves must never show up in the chat.
+// §8.2: isolation — two sessions never share a table. Each starts counting at 1,
+// and one session's ordinal means nothing in the other.
 {
-  const token = await mask.encode('s5', SAMPLES.EMAIL)
-  const answer = `mail ${token} today`
-  for (let cut = 1; cut < answer.length; cut++) {
-    const [readyA, pendingA] = m.splitPendingToken(answer.slice(0, cut))
-    const [readyB, pendingB] = m.splitPendingToken(pendingA + answer.slice(cut))
-    assert.equal(pendingB, '', 'a completed stream holds nothing back')
-    assert.equal(
-      mask.decode('s5', readyA) + mask.decode('s5', readyB),
-      `mail ${SAMPLES.EMAIL} today`,
-      `split at ${cut}: the two chunks decode to the whole answer`
-    )
-  }
-  // Ordinary prose that merely starts with `<` is not held hostage.
-  assert.deepEqual(m.splitPendingToken('see <div> below'), ['see <div> below', ''])
-  assert.deepEqual(m.splitPendingToken('a < b'), ['a < b', ''])
-  assert.deepEqual(m.splitPendingToken('done <EMAIL'), ['done ', '<EMAIL'])
-  assert.deepEqual(m.splitPendingToken(`<X:${'a'.repeat(600)}`)[1], '', 'the hold-back is bounded')
+  const a = await mask.encode('i1', `${SAMPLES.US_SSN} and 999-88-7777`)
+  const b = await mask.encode('i2', '111-22-3333')
+  assert.equal(a, '[us_ssn:1] and [us_ssn:2]')
+  assert.equal(b, '[us_ssn:1]', 'same ordinal, different session, different value')
+  assert.equal(mask.decode('i1', '[us_ssn:1]'), SAMPLES.US_SSN)
+  assert.equal(mask.decode('i2', '[us_ssn:1]'), '111-22-3333')
+  assert.equal(mask.decode('i2', '[us_ssn:2]'), '[us_ssn:2]', "i2 has no row 2 — it is left verbatim")
+  assert.equal(mask.table('i1').tokens.us_ssn['2'], '999-88-7777')
+}
+
+// Durability — the point of a file over a key in memory: a fresh process (a
+// second manager over the same disk) still reveals what the first one wrote.
+{
+  const again = m.createPiiMask(noCredentials)
+  await again.load()
+  assert.equal(again.decode('g1', '[email:2] / [us_ssn:1]'), `bob@example.com / ${SAMPLES.US_SSN}`)
+  // And it keeps counting where the first left off, never reusing an ordinal.
+  assert.equal(await again.encode('g1', 'carol@example.com'), '[email:3]')
+}
+
+// The change hook fires once per encode that added rows, with the whole table —
+// and not at all for text that only repeats what the table already holds.
+{
+  const seen = []
+  const watched = m.createPiiMask(noCredentials)
+  await watched.load()
+  watched.onTable((id, table) => seen.push([id, structuredClone(table)]))
+  await watched.encode('w1', 'no pii here')
+  assert.equal(seen.length, 0, 'nothing found, nothing to announce')
+  await watched.encode('w1', SAMPLES.EMAIL)
+  assert.equal(seen.length, 1)
+  assert.deepEqual(seen[0], ['w1', { v: 1, tokens: { email: { 1: SAMPLES.EMAIL } } }])
+  await watched.encode('w1', `again ${SAMPLES.EMAIL}`)
+  assert.equal(seen.length, 1, 'a repeat adds no row')
+}
+
+// §3: the table lives and dies with the session.
+{
+  assert.ok(fs.existsSync(tableFile('i1')))
+  mask.drop('i1')
+  await new Promise((r) => setTimeout(r, 50))
+  assert.ok(!fs.existsSync(tableFile('i1')), 'dropping the session removes its table')
+  assert.equal(mask.decode('i1', '[us_ssn:1]'), '[us_ssn:1]', 'and its tokens stop meaning anything')
 }
 
 // Decoding does not depend on the current settings — a session that was masked
-// keeps its key, so turning masking off never leaves raw tokens in the chat.
+// keeps its table, so turning masking off never leaves raw tokens behind.
 {
   const token = await mask.encode('s3', SAMPLES.EMAIL)
   await mask.setSettings({})

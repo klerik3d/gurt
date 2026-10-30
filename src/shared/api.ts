@@ -32,7 +32,7 @@ import type { CredentialEntry, CredentialsFile } from './credentials'
 import type { SessionTraffic } from './proxy'
 import type { DomainEvents } from './events'
 import type { McpDef, McpProbeResult, McpRegistryEntry } from './mcp'
-import type { PiiSettings, PiiStatus } from './pii'
+import type { PiiSettings, PiiStatus, PiiTable } from './pii'
 import type { SkillEntry } from './skills'
 import type { TurnRecord } from './usage'
 import type { PlanUsage } from './planUsage'
@@ -495,6 +495,10 @@ export interface GurtApi {
   /** Re-fetch one pattern source at its pinned ref and re-adapt it (§4.1) —
    *  the "check for updates" action. Rejects when the fetch fails. */
   refreshPiiSource(sourceId: string): Promise<PiiStatus>
+  /** One session's masking table — the real value behind each `[type:N]` token.
+   *  The chat view substitutes from it when its toggle is open; later rows
+   *  arrive on `pii-table`. Empty for a session that never masked anything. */
+  getPiiTable(sessionId: string): Promise<PiiTable>
 }
 
 /**
@@ -656,7 +660,8 @@ const METHODS = {
   // unmask its own seam, and a refresh reaches the network.
   getPiiStatus: 'none',
   setPiiSettings: 'none',
-  refreshPiiSource: 'none'
+  refreshPiiSource: 'none',
+  getPiiTable: 'none' //        reals; the user's own view, never an operator's
 } as const satisfies Record<keyof GurtApi, Exposure>
 
 /** Runtime method list; `api:<method>` is the IPC channel per entry. */
@@ -705,6 +710,8 @@ export interface GurtEvents {
   /** One session's observed traffic changed — coalesced in main, so this is a
    *  few per second at worst even under an `npm install`. */
   'proxy-traffic': DomainEvents['proxy.traffic']
+  /** A session's masking table gained rows — the whole table. */
+  'pii-table': DomainEvents['session.pii']
   /** The local MCP servers a session selected and did not get, with the reason
    *  — the whole set per session, an empty one clearing it. */
   'mcp-fail': DomainEvents['mcp.fail']

@@ -121,6 +121,7 @@ export function registerIpc(): void {
   kernel.bus.on('provision.log', (e) => broadcast('provision-log', e))
   kernel.bus.on('doctor.row', (e) => broadcast('doctor-row', e))
   kernel.bus.on('proxy.traffic', (t) => broadcast('proxy-traffic', t))
+  kernel.bus.on('session.pii', (e) => broadcast('pii-table', e))
   kernel.bus.on('mcp.fail', (f) => broadcast('mcp-fail', f))
   kernel.bus.on('notification.created', (record) => broadcast('notification', record))
   kernel.bus.on('notification.read', (e) => broadcast('notification-read', e))
@@ -525,7 +526,8 @@ export function registerIpc(): void {
     firstRunCancelSignIn: async () => cancelFirstRunSignIn(),
     getPiiStatus: async () => kernel.pii.status(),
     setPiiSettings: (settings) => kernel.pii.setSettings(settings),
-    refreshPiiSource: (sourceId) => kernel.pii.refreshSource(sourceId)
+    refreshPiiSource: (sourceId) => kernel.pii.refreshSource(sourceId),
+    getPiiTable: async (sessionId) => kernel.pii.table(sessionId)
   }
 
   // Renderer records: validated, rate-limited and truncated inside `logRenderer`

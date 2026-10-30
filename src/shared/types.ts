@@ -521,9 +521,10 @@ export interface SessionInfo {
   /**
    * Mask PII and secrets across this session's ACP seam
    * (docs/requirements-pii-mask.md): the prompt text reaching the agent carries
-   * `<TYPE:ciphertext>` tokens instead of the real values, and everything the
-   * agent says back is decoded before it enters the timeline. The user's chat
-   * view therefore always shows reals; the agent's context never does.
+   * `[type:N]` tokens instead of the real values; a per-session table on the
+   * host records what each stands for. The timeline keeps the tokenized text
+   * and the chat view reveals the reals from the table (or shows the tokens,
+   * per the composer's toggle); the agent's context never holds a real value.
    *
    * Only effective while a detector backend is configured in Settings →
    * Masking — the two are resolved together (`PiiMask.ready`).

@@ -156,9 +156,10 @@ export function createKernel(): Kernel {
   onMcpFailures((f) => bus.emit('mcp.fail', f))
 
   // Masking sits under the session manager and is otherwise standalone: it owns
-  // its own settings file, its own pattern cache and the per-session keys, and
+  // its own settings file, its own pattern cache and the per-session tables, and
   // nothing else in the kernel reads them.
   const pii = createPiiMask({ credentials: () => listCredentials() })
+  pii.onTable((sessionId, table) => bus.emit('session.pii', { sessionId, table }))
 
   // Review state is standalone (no dependency back into sessions — the kernel
   // itself joins the two where they meet, at lock acquisition).

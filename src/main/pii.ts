@@ -1,34 +1,35 @@
 // PII/secret masking, host side (docs/requirements-pii-mask.md).
 //
 // Owns the three things the pure module in shared/pii.ts deliberately does not:
-// the per-session encryption keys, the pattern fetch/cache, and the external
-// detector backend. The seam it is wired into is src/main/sessions.ts and only
-// that — encode on the outbound `session/prompt` text, decode on everything
-// arriving over `session/update`.
-//
-// Key policy (§3): gurt generates the key, on the host, always. An external
-// backend is a *detector* — it is told what text to look at and answers with
-// offsets; the encryption of the values it found happens here, under a key that
-// never leaves this process. Nothing outside gurt ever produces key material we
-// then trust.
-import { createCipheriv, createDecipheriv, createHmac, randomBytes } from 'node:crypto'
+// the per-session correspondence tables, the pattern fetch/cache, and the
+// external detector backend. `encode` swaps a real value for `[type:N]`; the
+// table that says what N is lives in one JSON file per session and is dropped
+// with the session. There is no cryptography in the scheme: the table is what
+// keeps reals out of the agent's context, and a table nobody ships to the agent
+// is as private as any other file under ~/.gurt.
+import fs from 'node:fs'
+import fsp from 'node:fs/promises'
+import path from 'node:path'
 import {
   PII_DEFAULT_PORT,
-  PII_TOKEN_RE,
   builtinDetector,
+  emptyPiiTable,
   piiConfigError,
   piiSourceDef,
   piiSourceUrl,
   piiToken,
+  piiType,
   presidioUrl,
   replaceSpans,
   resolveSpans,
+  revealTokens,
   tokenSpans,
   type Detector,
   type PiiPatternCache,
   type PiiSettings,
   type PiiSpan,
-  type PiiStatus
+  type PiiStatus,
+  type PiiTable
 } from '../shared/pii'
 import type { CredentialEntry } from '../shared/credentials'
 import { adaptSource } from './piiSources'
@@ -38,17 +39,23 @@ import { createLogger } from './log'
 
 const log = createLogger('pii')
 
-/** The seam sessions.ts talks to. Deliberately narrow: four calls, no settings. */
+/** The seam sessions.ts talks to. Deliberately narrow: no settings. */
 export interface PiiMask {
   /** Masking can run right now — a backend is selected *and* usable (§5.1). */
   ready(): boolean
-  /** real → token, for one session's outbound prompt text. Rejects rather than
-   *  falling back to the cleartext: failing open would defeat the whole point. */
+  /** real → token, for one session's outbound text. Rejects rather than falling
+   *  back to the cleartext: failing open would defeat the whole point. The new
+   *  table entries are on disk before this resolves, so a token never reaches
+   *  the agent without a row behind it. */
   encode(sessionId: string, text: string): Promise<string>
-  /** token → real, for everything coming back to that session. Always safe to
-   *  call: text with no tokens, or a session with no key, comes back unchanged. */
+  /** token → real, for text main itself has to show. Always safe to call: text
+   *  with no tokens, or a session with no table, comes back unchanged. */
   decode(sessionId: string, text: string): string
-  /** The session is gone — drop its key, and with it its tokens forever (§3). */
+  /** The session's table as it stands — what the chat view substitutes from. */
+  table(sessionId: string): PiiTable
+  /** A session's table gained a row. Fires after the file is written. */
+  onTable(listener: (sessionId: string, table: PiiTable) => void): void
+  /** The session is gone — its table goes with it, so its tokens end (§3). */
   drop(sessionId: string): void
 }
 
@@ -149,8 +156,11 @@ export function createPiiMask(deps: PiiDeps): PiiManager {
   let credentialKey: string | undefined
   let detector: Detector | null = null
   let error: string | undefined = 'masking settings have not been read yet'
-  /** Per session id, its own 32-byte key. In-memory only — §3's auto-expiry. */
-  const keys = new Map<string, Buffer>()
+  /** Per session id, its table plus the value → ordinal index encode needs. */
+  const sessions = new Map<string, Held>()
+  const listeners: Array<(sessionId: string, table: PiiTable) => void> = []
+  /** Per-session write chain, so two encodes never interleave a file write. */
+  const writes = new Map<string, Promise<void>>()
 
   /** Rebuild the active detector from the current settings. Never throws: an
    *  unusable configuration becomes `error`, which is what the chip explains. */
@@ -189,48 +199,52 @@ export function createPiiMask(deps: PiiDeps): PiiManager {
     credentialKey = entry.data['apiKey'] || undefined
   }
 
-  function key(sessionId: string): Buffer {
-    let k = keys.get(sessionId)
-    if (!k) {
-      // Generated here, by us, at the session's first masked byte — §3's key
-      // policy in one line. It is never written anywhere, so the tokens of a
-      // finished session stop being decodable when the app exits.
-      k = randomBytes(32)
-      keys.set(sessionId, k)
-    }
-    return k
-  }
-
-  /**
-   * `AES-GCM(sessionKey, realValue)`, with the IV derived from the value
-   * instead of drawn at random: the same value must produce the same token
-   * every time it appears in a session, or the agent could not tell that two
-   * mentions are the same person. The key is what keeps that from being a leak
-   * — without it the mapping is unguessable — and the type is bound in as
-   * additional data, so a token cannot be re-labelled and still decode.
-   */
-  function seal(k: Buffer, type: string, value: string): string {
-    const iv = createHmac('sha256', k).update(`${type}\0${value}`).digest().subarray(0, 12)
-    const cipher = createCipheriv('aes-256-gcm', k, iv)
-    cipher.setAAD(Buffer.from(type, 'utf8'))
-    const ct = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()])
-    return Buffer.concat([iv, cipher.getAuthTag(), ct]).toString('base64url')
-  }
-
-  /** The inverse; null for a token this key did not produce (another session's,
-   *  or one from a previous run whose key is gone). The caller leaves those
-   *  alone rather than showing an error where a value used to be. */
-  function open(k: Buffer, type: string, payload: string): string | null {
-    const buf = Buffer.from(payload, 'base64url')
-    if (buf.length <= 28) return null
+  /** The session's table, read off disk on first touch. Sync on purpose: it is
+   *  a small file, and `decode` is a pure-looking call sites rely on. */
+  function held(sessionId: string): Held {
+    let h = sessions.get(sessionId)
+    if (h) return h
+    let table = emptyPiiTable()
     try {
-      const decipher = createDecipheriv('aes-256-gcm', k, buf.subarray(0, 12))
-      decipher.setAAD(Buffer.from(type, 'utf8'))
-      decipher.setAuthTag(buf.subarray(12, 28))
-      return Buffer.concat([decipher.update(buf.subarray(28)), decipher.final()]).toString('utf8')
+      const raw = JSON.parse(fs.readFileSync(tableFile(sessionId), 'utf8')) as PiiTable
+      if (raw && raw.v === 1 && raw.tokens && typeof raw.tokens === 'object') table = raw
     } catch {
-      return null
+      // No file yet (a fresh session) or one we cannot read: start empty. An
+      // unreadable table only ever costs the tokens it held, never an error.
     }
+    const index = new Map<string, string>()
+    for (const [type, rows] of Object.entries(table.tokens))
+      for (const [n, value] of Object.entries(rows)) index.set(indexKey(type, value), n)
+    h = { table, index }
+    sessions.set(sessionId, h)
+    return h
+  }
+
+  /** Atomic, owner-only, and serialized per session. */
+  function persist(sessionId: string, table: PiiTable): Promise<void> {
+    const next = (writes.get(sessionId) ?? Promise.resolve()).then(async () => {
+      const file = tableFile(sessionId)
+      await fsp.mkdir(path.dirname(file), { recursive: true, mode: 0o700 })
+      const tmp = `${file}.tmp`
+      await fsp.writeFile(tmp, JSON.stringify(table), { mode: 0o600 })
+      await fsp.rename(tmp, file)
+    })
+    writes.set(sessionId, next.catch(() => {}))
+    return next
+  }
+
+  /** The ordinal for one value, allocating the next free one on first sight. */
+  function ordinal(h: Held, type: string, value: string): { n: string; added: boolean } {
+    const k = indexKey(type, value)
+    const known = h.index.get(k)
+    if (known) return { n: known, added: false }
+    const rows = (h.table.tokens[type] ??= {})
+    // max + 1, never a count: ordinals are not reused, so a token cannot
+    // silently come to mean a different value later in the session.
+    const n = String(Math.max(0, ...Object.keys(rows).map(Number)) + 1)
+    rows[n] = value
+    h.index.set(k, n)
+    return { n, added: true }
   }
 
   const manager: PiiManager = {
@@ -319,32 +333,70 @@ export function createPiiMask(deps: PiiDeps): PiiManager {
       if (!active || !text) return text
       const found = await active.detect(text)
       // Text can already carry tokens — the composer quotes an earlier answer,
-      // the user pastes one back. Those spans are off limits: re-encoding a
-      // token would bury the real value one layer deeper on every round trip.
+      // the user pastes one back. Those spans are off limits: they already mean
+      // something, and re-detecting inside one would only invent a new row.
       const guards = tokenSpans(text)
       const spans = resolveSpans(
         found.filter((s) => !guards.some((g) => s.start < g.end && g.start < s.end))
       )
       if (!spans.length) return text
-      const k = key(sessionId)
-      return replaceSpans(text, spans, (value, type) => piiToken(type, seal(k, type, value)))
+      const h = held(sessionId)
+      // Ordinals are handed out left to right — `replaceSpans` works back to
+      // front, so allocating inside its callback would number a text's values in
+      // reverse order of appearance.
+      let added = false
+      const tokens = new Map<string, string>()
+      for (const sp of spans) {
+        const type = piiType(sp.type)
+        const value = text.slice(sp.start, sp.end)
+        const r = ordinal(h, type, value)
+        added ||= r.added
+        tokens.set(indexKey(type, value), piiToken(type, r.n))
+      }
+      const out = replaceSpans(
+        text,
+        spans,
+        (value, rawType) => tokens.get(indexKey(piiType(rawType), value))!
+      )
+      if (added) {
+        // Write-ahead: the row is durable before the token can leave.
+        await persist(sessionId, h.table)
+        for (const l of listeners) l(sessionId, h.table)
+      }
+      return out
     },
 
-    decode(sessionId: string, text: string): string {
-      const k = keys.get(sessionId)
-      // Decoding does not depend on the *current* settings: a session that was
-      // masked keeps its own key for its whole life, so turning masking off
-      // mid-session never leaves the user staring at raw tokens.
-      if (!k || !text || !text.includes('<')) return text
-      return text.replace(PII_TOKEN_RE, (whole, type: string, payload: string) => {
-        const real = open(k, type, payload)
-        return real === null ? whole : real
-      })
+    decode: (sessionId: string, text: string): string => revealTokens(text, held(sessionId).table),
+
+    table: (sessionId: string): PiiTable => held(sessionId).table,
+
+    onTable(listener): void {
+      listeners.push(listener)
     },
 
     drop(sessionId: string): void {
-      keys.delete(sessionId)
+      sessions.delete(sessionId)
+      const pending = writes.get(sessionId) ?? Promise.resolve()
+      writes.delete(sessionId)
+      // After any in-flight write, or the file would be recreated behind us.
+      void pending.then(() => fsp.rm(tableFile(sessionId), { force: true })).catch(() => {})
     }
   }
   return manager
 }
+
+/** One session's table in memory, with the reverse index `encode` dedupes by. */
+interface Held {
+  table: PiiTable
+  index: Map<string, string>
+}
+
+/** Outside every session mount: this directory is read by the host and by
+ *  nothing that runs in a container. */
+const tableFile = (sessionId: string): string =>
+  path.join(store.gurtRoot, 'pii-tables', `${sessionId}.json`)
+
+/** Same value, same token. Mail addresses are case-insensitive, so two spellings
+ *  of one address are one row; everything else is compared as typed. */
+const indexKey = (type: string, value: string): string =>
+  `${type}\0${type === 'email' ? value.toLowerCase() : value}`

@@ -227,6 +227,7 @@ test('preload exposes nothing beyond API_METHODS + the known event hooks', () =>
     'onBootProgress',
     'onUpdateReady',
     'onProxyTraffic',
+    'onPiiTable',
     'onMcpFail',
     'onHotkeyCycleWorkspace'
   ])
