@@ -50,7 +50,8 @@ import type { AdminHooks } from './mcp/gurtServer'
 import type { ContainerStatusReason, SessionStateReason } from '../shared/events'
 import type { LaunchContext } from './containers'
 import type { PiiMask } from './pii'
-import { lineBuffer, spawnAcpAdapter } from './provision'
+import { lineBuffer, spawnAcpAdapter, spawnInContainer } from './provision'
+import { createAcpClient, type AcpClient } from './acpClient'
 import { resolveProxyPlan } from './proxy/config'
 import type { ProxyConfig } from '../shared/proxy'
 import { JsonRpcPeer } from './jsonrpc'
@@ -259,6 +260,9 @@ interface Connection {
    *  none at all. */
   promptCapabilities?: PromptCapabilities | undefined
   kill: () => void
+  /** The `fs/*` + `terminal/*` handlers, for a session that masks. Their
+   *  processes die with the connection. */
+  client?: AcpClient | undefined
   /** Set by `detach()` right before it kills *this* adapter process — the
    *  resulting 'close' is expected, not a crash. Lives on the connection
    *  (not the session) so a session that has since reconnected to a
@@ -1816,6 +1820,7 @@ export class SessionManager {
       // Only clear the slot if it still holds *this* process — a replaced
       // container's adapter must not evict its successor on its way out.
       if (this.connections.get(key)?.peer === peer) this.connections.delete(key)
+      conn.client?.dispose()
       const expected = conn.expectedExit === true
       const dead = this.sessions.get(key)
       // Captured before anything below resets it — "was this session doing
@@ -1859,6 +1864,25 @@ export class SessionManager {
     peer.onNotification('session/update', (params) => this.onSessionUpdate(params))
     peer.onRequest('session/request_permission', (params) => this.onPermission(params))
 
+    // The client methods — only for a session that masks. Advertising them is
+    // what makes an agent route its file access and commands through gurt, where
+    // the PII barrier can reach them (docs/requirements-pii-mask.md §9); a
+    // session that does not mask keeps its agent doing both for itself, exactly
+    // as before.
+    const barrier = this.maskEnabled(s)
+    if (barrier) {
+      conn.client = createAcpClient({
+        session: key,
+        agent: ctx.agent.id,
+        cwd: s.remoteCwd ?? ctx.remoteWorkspaceFolder,
+        exec: (argv, env) => spawnInContainer(ctx, argv, env),
+        encode: (text) => this.mask.encode(key, text),
+        reveal: (text) => this.mask.decode(key, text)
+      })
+      for (const [method, handler] of Object.entries(conn.client.handlers))
+        peer.onRequest(method, handler)
+    }
+
     let init
     try {
       init = await peer.request(
@@ -1866,8 +1890,8 @@ export class SessionManager {
         {
           protocolVersion: 1,
           clientCapabilities: {
-            fs: { readTextFile: false, writeTextFile: false },
-            terminal: false,
+            fs: { readTextFile: barrier, writeTextFile: barrier },
+            terminal: barrier,
             // Opt in to boolean config options so agents may expose native toggles
             // (e.g. Claude's "Fast mode") instead of degrading them to a select.
             session: { configOptions: { boolean: {} } }

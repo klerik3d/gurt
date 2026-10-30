@@ -193,7 +193,8 @@ which main emits before the timeline entry that uses a new token.
 ## 8. Acceptance
 
 1. `npm run typecheck` clean (all projects).
-2. `scripts/pii-mask.test.mjs`: encode→reveal identity per entity type,
+2. `scripts/pii-mask.test.mjs` and `scripts/acp-client.test.mjs` (the latter
+   runs the fs/terminal handlers over real files and processes): encode→reveal identity per entity type,
    `[type:N]` grammar and ordinals, table file shape/mode, durability across a
    fresh manager, isolation between sessions, deletion with the session,
    reveal edge cases (unknown token, URL-encoded token).
@@ -203,19 +204,38 @@ which main emits before the timeline entry that uses a new token.
 4. Rest of `scripts/*.test.mjs` passes unmodified (apart from the new API
    method/hook listed in the IPC contract tests).
 
-## 9. Next stages (agreed, not yet built)
+## 9. ACP client methods (built) and MCP traffic (next)
 
-1. **ACP client methods.** Today gurt advertises `fs: {readTextFile: false,
-   writeTextFile: false}` and `terminal: false` (`sessions.ts` `initialize`), so
-   agents read, write and run things themselves. Enable them and register
-   handlers: `fs/read_text_file` encodes what it returns, `fs/write_text_file`
-   decodes what it writes, `terminal/*` decodes the command and encodes the
-   output (gurt executes it in the session container). First as logging
-   pass-throughs to see which adapters actually use them (a static look found
-   `fs/*` calls only in gemini-cli), then with the barrier on.
-2. **MCP traffic.** Host MCP servers (`github`, `gurt`) decode outbound
-   arguments and encode inbound results. Proxy-routed MCP does the same through
-   a call from the MCP proxy container to the host, which stays the single owner
-   of the table and the detectors. Rewrites operate on parsed JSON string
-   values, not raw bytes. Arbitrary HTTPS from the container (a CONNECT tunnel)
-   is not rewritten — a token reaching an external host is harmless.
+### 9.1 `fs/*` and `terminal/*` — `src/main/acpClient.ts`
+
+For a session that masks, `initialize` advertises `fs: {readTextFile,
+writeTextFile: true}` and `terminal: true`, and gurt answers those methods
+itself, in the session's container (`provision.spawnInContainer` — the same
+`devcontainer exec` user/environment the agent has). A session that does not
+mask still advertises `false` and its agent does both for itself, as before.
+
+| method | toward the agent | from the agent |
+|---|---|---|
+| `fs/read_text_file` | content is **encoded**; `line`/`limit` select a window; a missing file is `-32002`; an encode failure rejects (fail closed) | — |
+| `fs/write_text_file` | — | content is **revealed** before it is written; parent dirs are created |
+| `terminal/create` | — | command, args, env values and cwd are **revealed**; a bare command line with spaces runs through `sh -c` |
+| `terminal/output` | output is **encoded**; only whole lines while the process runs (a half-written value cannot be detected, so it is held back); `outputByteLimit` keeps the tail | — |
+| `terminal/wait_for_exit`, `kill`, `release` | exit status / stop / free | — |
+
+Each call logs `acp.client.call` with the method, agent kind and a byte count
+(never a path or content) — that log is how to see which adapters actually use
+the methods. A static look at the pinned adapters found `fs/*` calls only in
+gemini-cli; advertising the capability is what changes that for the rest, if
+they honor it. Limitations: a `kill` stops the host-side exec, which may not
+reach every descendant inside the container; bash and file tools an adapter
+runs itself (claude-code, codex today) stay outside the barrier until the
+adapter routes them here.
+
+### 9.2 MCP traffic (not yet built)
+
+Host MCP servers (`github`, `gurt`) reveal outbound arguments and encode
+inbound results. Proxy-routed MCP does the same through a call from the MCP
+proxy container to the host, which stays the single owner of the table and the
+detectors. Rewrites operate on parsed JSON string values, not raw bytes.
+Arbitrary HTTPS from the container (a CONNECT tunnel) is not rewritten — a
+token reaching an external host is harmless.

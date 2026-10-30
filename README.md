@@ -416,9 +416,14 @@ agent sees. See [docs/requirements-pii-mask.md](docs/requirements-pii-mask.md).
   a small per-source parser, and cached under `~/.gurt/pii-patterns/`. The
   network is only touched on first selection or an explicit "check for updates".
 
-Out of scope so far: the agent ↔ MCP tool seam and the `fs/*`/`terminal/*` ACP
-client methods (both planned next — see the requirements doc §9), free-text NER
-in the built-in detector, and anything the agent does inside its container
+For a masking session gurt also advertises the ACP `fs/*` and `terminal/*`
+client methods and answers them itself in the container, encoding what it hands
+the agent and revealing what the agent sends (requirements doc §9.1) — whether
+an adapter routes its file access and commands through them is up to the
+adapter; `acp.client.call` in the log shows which do.
+
+Out of scope so far: the agent ↔ MCP tool seam (planned next, §9.2), free-text
+NER in the built-in detector, and anything an agent does inside its container
 without going through gurt.
 
 ## Run

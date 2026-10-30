@@ -101,6 +101,19 @@ const log = createLogger('rpc')
  *  envelope only — method, id, direction, size. Never params, at any level. */
 const trace = enabled('debug')
 
+/** An error a request handler throws to answer with a specific JSON-RPC code
+ *  instead of the generic -32603. */
+export class RpcError extends Error {
+  constructor(
+    readonly code: number,
+    message: string
+  ) {
+    super(message)
+  }
+}
+
+const rpcCode = (e: unknown): number => (e instanceof RpcError ? e.code : -32603)
+
 export class JsonRpcPeer {
   private nextId = 1
   private pending = new Map<
@@ -306,7 +319,9 @@ export class JsonRpcPeer {
         this.send({
           jsonrpc: '2.0',
           id: msg.id,
-          error: { code: -32603, message: e instanceof Error ? e.message : String(e) }
+          // A handler that wants the peer to see a specific JSON-RPC code (ACP's
+          // "resource not found" is -32002) throws an Error carrying one.
+          error: { code: rpcCode(e), message: e instanceof Error ? e.message : String(e) }
         })
       }
     } else if (msg.method) {
