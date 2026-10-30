@@ -14,7 +14,10 @@
 //      headers and its resolved credential live in this process's config; the
 //      session container knows only the opaque token. Bodies and responses are
 //      **piped, never buffered**: streamable HTTP answers a POST with an SSE
-//      stream, and a buffering proxy turns a working server into a hang.
+//      stream, and a buffering proxy turns a working server into a hang. The
+//      one exception is a session that masks PII (`config.pii`): its JSON-RPC
+//      messages are rewritten on the way through — request bodies buffered whole,
+//      SSE responses rewritten event by event, never held past an event.
 //   2. `CONNECT host:port`     — HTTPS egress, tunnelled byte for byte. TLS is
 //      never terminated and no certificate is ever generated, so the policy
 //      below is domain-granular and cannot be anything finer.
@@ -86,6 +89,7 @@ import dns from 'node:dns'
 import fs from 'node:fs'
 import os from 'node:os'
 import { timingSafeEqual } from 'node:crypto'
+import { StringDecoder } from 'node:string_decoder'
 import { pathToFileURL } from 'node:url'
 
 /** Config file version this build understands (`ProxyConfig.version`). */
@@ -505,12 +509,26 @@ export function parseConfig(raw) {
   if (bad !== undefined)
     return { error: `allow entry ${JSON.stringify(bad)} is not a host or host:port` }
 
+  let pii
+  if (raw.pii !== undefined) {
+    let piiUrl
+    try {
+      piiUrl = new URL(raw.pii?.url)
+    } catch {
+      return { error: 'pii.url is not a valid url' }
+    }
+    if (piiUrl.protocol !== 'http:' && piiUrl.protocol !== 'https:')
+      return { error: 'pii.url must be http(s)' }
+    pii = { url: String(raw.pii.url).replace(/\/+$/, '') }
+  }
+
   return {
     config: {
       version: raw.version,
       session: raw.session,
       token: raw.token,
       mcp,
+      ...(pii ? { pii } : {}),
       network: { internal: raw.network?.internal === true, policy: { allow: [...allow] } },
       selfNames: Array.isArray(raw.selfNames) ? raw.selfNames.map(normalizeHost) : []
     }
@@ -574,6 +592,93 @@ function setHeader(headers, name, value) {
   const lower = name.toLowerCase()
   for (const key of Object.keys(headers)) if (key.toLowerCase() === lower) delete headers[key]
   headers[name] = value
+}
+
+// ---------------------------------------------------------------------------
+// Rewriting a masking session's MCP messages (docs/requirements-pii-mask.md §9.2)
+// ---------------------------------------------------------------------------
+//
+// This process holds neither the correspondence table nor a detector; it finds
+// the strings in a JSON-RPC message, hands them to the host
+// (`<pii.url>/reveal` toward the server, `<pii.url>/encode` toward the agent)
+// and writes the answers back. Only string *values* are rewritten, so the JSON
+// stays valid whatever a real value contains.
+
+/** Largest request or non-streaming response body this process will buffer to
+ *  rewrite. Past it the call is refused: forwarding it unrewritten would be the
+ *  one way around the seam. */
+const MAX_REWRITE_BODY = 16 * 1024 * 1024
+const MAX_DEPTH = 64
+
+/** Every string leaf under `parent[key]`, as `{ parent, key }` references so the
+ *  answers can be written back in place. */
+function collectRefs(parent, key, out, depth = 0) {
+  const v = parent[key]
+  if (typeof v === 'string') out.push({ parent, key })
+  else if (v && typeof v === 'object') {
+    if (depth > MAX_DEPTH) throw new Error('message nested too deeply')
+    for (const k of Object.keys(v)) collectRefs(v, k, out, depth + 1)
+  }
+}
+
+/** Toward the server: every string in the message. A token the table does not
+ *  know comes back unchanged, so nothing here needs to be picky. */
+export function revealRoots(msg) {
+  return [[{ m: msg }, 'm']]
+}
+
+/**
+ * Toward the agent: the parts of a message that carry *content* — a tool's
+ * result, a resource, a prompt, an error's text, and the params of a message the
+ * server initiates (a log line, a sampling request). The protocol's own strings
+ * (method names, tool schemas, URIs of a listing, `serverInfo`) are left alone:
+ * a detector firing in one would only break the contract.
+ */
+export function encodeRoots(msg) {
+  const roots = []
+  if (!msg || typeof msg !== 'object' || Array.isArray(msg)) return roots
+  if (typeof msg.method === 'string' && msg.params && typeof msg.params === 'object')
+    roots.push([msg, 'params'])
+  if (msg.result && typeof msg.result === 'object')
+    for (const k of ['content', 'structuredContent', 'contents', 'messages'])
+      if (k in msg.result) roots.push([msg.result, k])
+  if (msg.error && typeof msg.error === 'object')
+    for (const k of ['message', 'data']) if (k in msg.error) roots.push([msg.error, k])
+  return roots
+}
+
+/** Rewrite one message or a batch of them through `call(strings) -> strings`. */
+export async function rewriteMessages(value, rootsOf, call) {
+  const refs = []
+  for (const msg of Array.isArray(value) ? value : [value])
+    for (const [parent, key] of rootsOf(msg)) collectRefs(parent, key, refs)
+  if (!refs.length) return value
+  const out = await call(refs.map((r) => r.parent[r.key]))
+  if (!Array.isArray(out) || out.length !== refs.length) throw new Error('rewrite answered the wrong shape')
+  refs.forEach((r, i) => {
+    if (typeof out[i] !== 'string') throw new Error('rewrite answered a non-string')
+    r.parent[r.key] = out[i]
+  })
+  return value
+}
+
+/** Read a request body whole, refusing one past `max`. */
+function readBody(req, max) {
+  return new Promise((resolve, reject) => {
+    const chunks = []
+    let size = 0
+    req.on('data', (d) => {
+      size += d.length
+      if (size > max) {
+        reject(new Error('body too large'))
+        req.destroy()
+        return
+      }
+      chunks.push(d)
+    })
+    req.on('end', () => resolve(Buffer.concat(chunks)))
+    req.on('error', reject)
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -757,56 +862,249 @@ export function createProxy(opts = {}) {
       decision: 'allow'
     }
 
-    // Building the request is where a bad header lands: node validates names and
-    // values synchronously and throws (ERR_INVALID_CHAR / ERR_INVALID_HTTP_TOKEN)
-    // right here, inside a request listener. The header came from the scope
-    // file, so it is one MCP id's problem — answer 502 for that id and say so in
-    // the log, rather than letting the throw end the process and take every
-    // other route and all egress with it.
-    let up
-    try {
-      // No policy and no address vetting on this path, deliberately (§6.4): an
-      // upstream is in the scope file because a human put it in the registry,
-      // and `host.docker.internal:<published port>` is where a user's own MCP
-      // server usually lives. A registry entry *is* an explicit allow.
-      up = dial({
-        protocol: target.protocol,
-        hostname: target.hostname,
-        port,
-        method: req.method,
-        path: `${target.pathname}${target.search}`,
-        headers,
-        lookup
+    // A masking session's messages are rewritten at this hop. A snapshot, so a
+    // scope change mid-flight cannot switch it off under a request.
+    const pii = config.pii
+    // Rewriting needs the bytes, so the upstream is asked not to compress them.
+    if (pii) setHeader(headers, 'accept-encoding', 'identity')
+
+    /** Fail closed: a message the seam could not rewrite is not forwarded. */
+    const refuse = (reason, e) => {
+      log({ ...record, decision: 'error', reason, error: errCode(e), status: 502, ms: Date.now() - started })
+      if (!res.headersSent) deny(res, 502, `the PII seam could not rewrite this MCP message (${reason})`)
+      else res.destroy()
+    }
+
+    const call = (op) => (strings) => hostRewrite(pii, op, strings)
+
+    /** One upstream request. `body` is a buffer when this hop rewrote the
+     *  request, null when the client's own stream is piped through. */
+    const forward = (body) => {
+      if (body) {
+        setHeader(headers, 'content-length', String(body.length))
+      }
+      // Building the request is where a bad header lands: node validates names and
+      // values synchronously and throws (ERR_INVALID_CHAR / ERR_INVALID_HTTP_TOKEN)
+      // right here, inside a request listener. The header came from the scope
+      // file, so it is one MCP id's problem — answer 502 for that id and say so in
+      // the log, rather than letting the throw end the process and take every
+      // other route and all egress with it.
+      let up
+      try {
+        // No policy and no address vetting on this path, deliberately (§6.4): an
+        // upstream is in the scope file because a human put it in the registry,
+        // and `host.docker.internal:<published port>` is where a user's own MCP
+        // server usually lives. A registry entry *is* an explicit allow.
+        up = dial({
+          protocol: target.protocol,
+          hostname: target.hostname,
+          port,
+          method: req.method,
+          path: `${target.pathname}${target.search}`,
+          headers,
+          lookup
+        })
+      } catch (e) {
+        log({ ...record, decision: 'error', reason: 'bad-header', error: errCode(e), status: 502, ms: Date.now() - started })
+        deny(res, 502, `the configured headers for MCP server "${route.id}" cannot be sent — check its credential`)
+        return
+      }
+
+      // Interactive, chunk-at-a-time traffic in both directions: Nagle would hold
+      // an SSE event back waiting for a bigger write that never comes.
+      up.on('socket', (socket) => socket.setNoDelay(true))
+      up.on('response', (upRes) => {
+        log({ ...record, status: upRes.statusCode ?? 0, ms: Date.now() - started })
+        if (!pii) {
+          // No rewriting of any kind, and no buffering: `pipe` hands each chunk on
+          // as it lands, which is what keeps an SSE response an SSE response.
+          res.writeHead(upRes.statusCode ?? 502, forwardable(upRes.headers))
+          res.socket?.setNoDelay(true)
+          upRes.pipe(res)
+          return
+        }
+        answerRewritten(upRes, res, call('encode'), refuse)
       })
-    } catch (e) {
-      log({ ...record, decision: 'error', reason: 'bad-header', error: errCode(e), status: 502, ms: Date.now() - started })
-      deny(res, 502, `the configured headers for MCP server "${route.id}" cannot be sent — check its credential`)
+      up.on('error', (e) => {
+        log({ ...record, decision: 'error', error: errCode(e), ms: Date.now() - started })
+        if (!res.headersSent) deny(res, 502, `upstream MCP server for "${route.id}" is unreachable`)
+        else res.destroy()
+      })
+      // An agent that walks away mid-stream must take the upstream stream with it,
+      // or an abandoned SSE connection outlives every turn that opened one. A
+      // reset client raises 'error' on both halves; unhandled, that is a crash.
+      res.on('close', () => up.destroy())
+      req.on('error', () => up.destroy())
+      res.on('error', () => up.destroy())
+      if (body) up.end(body)
+      else req.pipe(up)
+    }
+
+    if (!pii || req.method !== 'POST') {
+      forward(null)
+      return
+    }
+    readBody(req, MAX_REWRITE_BODY)
+      .then(async (raw) => {
+        if (!/json/i.test(String(req.headers['content-type'] ?? ''))) return raw
+        let msg
+        try {
+          msg = JSON.parse(raw.toString('utf8'))
+        } catch {
+          return raw // not JSON-RPC at all; nothing here to reveal
+        }
+        await rewriteMessages(msg, revealRoots, call('reveal'))
+        return Buffer.from(JSON.stringify(msg), 'utf8')
+      })
+      .then(forward, (e) => refuse('request', e))
+  }
+
+  /** The host's rewrite endpoint: `{strings} → {strings}`. */
+  function hostRewrite(pii, op, strings) {
+    return new Promise((resolve, reject) => {
+      const target = new URL(`${pii.url}/${op}`)
+      const body = Buffer.from(JSON.stringify({ strings }), 'utf8')
+      const dial = target.protocol === 'https:' ? httpsRequest : httpRequest
+      const r = dial(
+        {
+          protocol: target.protocol,
+          hostname: target.hostname,
+          port: target.port || (target.protocol === 'https:' ? 443 : 80),
+          method: 'POST',
+          path: `${target.pathname}${target.search}`,
+          headers: { 'content-type': 'application/json', 'content-length': body.length },
+          timeout: 60_000,
+          lookup
+        },
+        (rr) => {
+          const chunks = []
+          rr.on('data', (d) => chunks.push(d))
+          rr.on('end', () => {
+            if (rr.statusCode !== 200) return reject(new Error(`rewrite answered ${rr.statusCode}`))
+            try {
+              resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')).strings)
+            } catch (e) {
+              reject(e)
+            }
+          })
+          rr.on('error', reject)
+        }
+      )
+      r.on('timeout', () => r.destroy(new Error('rewrite timed out')))
+      r.on('error', reject)
+      r.end(body)
+    })
+  }
+
+  /**
+   * Send an upstream response to the agent with its content encoded. JSON and
+   * text are buffered (bounded) and answered whole; an SSE stream is rewritten
+   * one event at a time, in order, and never held past the event it is in.
+   */
+  function answerRewritten(upRes, res, encode, refuse) {
+    const status = upRes.statusCode ?? 502
+    const type = String(upRes.headers['content-type'] ?? '')
+    const encoding = String(upRes.headers['content-encoding'] ?? 'identity').toLowerCase()
+    if (encoding !== 'identity') {
+      upRes.destroy()
+      refuse('compressed', new Error('content-encoding'))
       return
     }
 
-    // Interactive, chunk-at-a-time traffic in both directions: Nagle would hold
-    // an SSE event back waiting for a bigger write that never comes.
-    up.on('socket', (socket) => socket.setNoDelay(true))
-    up.on('response', (upRes) => {
-      // No rewriting of any kind, and no buffering: `pipe` hands each chunk on
-      // as it lands, which is what keeps an SSE response an SSE response.
-      res.writeHead(upRes.statusCode ?? 502, forwardable(upRes.headers))
+    if (/text\/event-stream/i.test(type)) {
+      res.writeHead(status, forwardable(upRes.headers))
       res.socket?.setNoDelay(true)
-      log({ ...record, status: upRes.statusCode ?? 0, ms: Date.now() - started })
+      const decoder = new StringDecoder('utf8')
+      let buf = ''
+      let chain = Promise.resolve()
+      const block = async (text) => {
+        const lines = text.split(/\r?\n/)
+        const data = lines.map((l, i) => (l.startsWith('data:') ? i : -1)).filter((i) => i >= 0)
+        if (!data.length) return `${text}\n\n`
+        let msg
+        try {
+          msg = JSON.parse(data.map((i) => lines[i].slice(5).replace(/^ /, '')).join('\n'))
+        } catch {
+          return `${text}\n\n` // an event that is not JSON-RPC is not ours to rewrite
+        }
+        await rewriteMessages(msg, encodeRoots, encode)
+        const out = lines.filter((_, i) => !data.includes(i) || i === data[0])
+        out[out.indexOf(lines[data[0]])] = `data: ${JSON.stringify(msg)}`
+        return `${out.join('\n')}\n\n`
+      }
+      const drain = async (final) => {
+        for (let m = /\r?\n\r?\n/.exec(buf); m; m = /\r?\n\r?\n/.exec(buf)) {
+          const text = buf.slice(0, m.index)
+          buf = buf.slice(m.index + m[0].length)
+          if (text) res.write(await block(text))
+        }
+        if (final && buf.trim()) res.write(await block(buf))
+        if (final) res.end()
+      }
+      upRes.on('data', (d) => {
+        chain = chain.then(() => {
+          buf += decoder.write(d)
+          return drain(false)
+        })
+        chain.catch((e) => refuse('response', e))
+      })
+      upRes.on('end', () => {
+        chain = chain.then(() => {
+          buf += decoder.end()
+          return drain(true)
+        })
+        chain.catch((e) => refuse('response', e))
+      })
+      upRes.on('error', () => res.destroy())
+      return
+    }
+
+    const isJson = /json/i.test(type)
+    const isText = /^text\//i.test(type)
+    if (!isJson && !isText) {
+      // Not something that carries content (a 202 with no body, say).
+      res.writeHead(status, forwardable(upRes.headers))
       upRes.pipe(res)
+      return
+    }
+    const chunks = []
+    let size = 0
+    upRes.on('data', (d) => {
+      size += d.length
+      if (size > MAX_REWRITE_BODY) {
+        upRes.destroy()
+        refuse('response-size', new Error('too large'))
+        return
+      }
+      chunks.push(d)
     })
-    up.on('error', (e) => {
-      log({ ...record, decision: 'error', error: errCode(e), ms: Date.now() - started })
-      if (!res.headersSent) deny(res, 502, `upstream MCP server for "${route.id}" is unreachable`)
-      else res.destroy()
+    upRes.on('error', () => res.destroy())
+    upRes.on('end', async () => {
+      if (size > MAX_REWRITE_BODY) return
+      try {
+        const text = Buffer.concat(chunks).toString('utf8')
+        let out = text
+        if (isJson && text.trim()) {
+          let msg
+          try {
+            msg = JSON.parse(text)
+          } catch {
+            msg = undefined
+          }
+          if (msg !== undefined) {
+            await rewriteMessages(msg, encodeRoots, encode)
+            out = JSON.stringify(msg)
+          } else out = (await encode([text]))[0]
+        } else if (isText && text) out = (await encode([text]))[0]
+        const body = Buffer.from(out, 'utf8')
+        const headers = forwardable(upRes.headers, ['content-length'])
+        headers['content-length'] = String(body.length)
+        res.writeHead(status, headers)
+        res.end(body)
+      } catch (e) {
+        refuse('response', e)
+      }
     })
-    // An agent that walks away mid-stream must take the upstream stream with it,
-    // or an abandoned SSE connection outlives every turn that opened one. A
-    // reset client raises 'error' on both halves; unhandled, that is a crash.
-    res.on('close', () => up.destroy())
-    req.on('error', () => up.destroy())
-    res.on('error', () => up.destroy())
-    req.pipe(up)
   }
 
   // -- plain-HTTP egress ---------------------------------------------------

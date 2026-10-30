@@ -198,10 +198,12 @@ which main emits before the timeline entry that uses a new token.
    `[type:N]` grammar and ordinals, table file shape/mode, durability across a
    fresh manager, isolation between sessions, deletion with the session,
    reveal edge cases (unknown token, URL-encoded token).
-3. Smoke: New Session chip disabled with no backend, enabled once `built-in`
+3. `scripts/proxy-pii.test.mjs` and `scripts/pii-rewrite.test.mjs` cover the proxy
+   rewrite (request/JSON/SSE/text, fail closed) and the host endpoint.
+4. Smoke: New Session chip disabled with no backend, enabled once `built-in`
    is selected; a masked session shows reals with the eye open and tokens with
    it closed.
-4. Rest of `scripts/*.test.mjs` passes unmodified (apart from the new API
+5. Rest of `scripts/*.test.mjs` passes unmodified (apart from the new API
    method/hook listed in the IPC contract tests).
 
 ## 9. ACP client methods (built) and MCP traffic (next)
@@ -231,11 +233,35 @@ reach every descendant inside the container; bash and file tools an adapter
 runs itself (claude-code, codex today) stay outside the barrier until the
 adapter routes them here.
 
-### 9.2 MCP traffic (not yet built)
+### 9.2 MCP traffic — `resources/proxy/gurt-proxy.mjs` + `src/main/piiRewrite.ts`
 
-Host MCP servers (`github`, `gurt`) reveal outbound arguments and encode
-inbound results. Proxy-routed MCP does the same through a call from the MCP
-proxy container to the host, which stays the single owner of the table and the
-detectors. Rewrites operate on parsed JSON string values, not raw bytes.
-Arbitrary HTTPS from the container (a CONNECT tunnel) is not rewritten — a
-token reaching an external host is harmless.
+Every MCP descriptor the agent holds is a URL on the session's proxy (gurt's own
+`github` and `gurt` servers, local stdio bridges and remote registry entries all
+resolve to one), so the proxy is the single place MCP traffic is rewritten. It
+is a stock-alpine container with no table and no detector, so it asks the host:
+
+- the scope file gains `pii: { url }` for a masking session (`ProxyConfig.pii`,
+  written by `planProxy`); absent = forwarded as before;
+- the host serves `POST <url>/reveal` and `<url>/encode`, each `{strings} →
+  {strings}`, from one listener (`piiRewrite.ts`). The url's token exists only in
+  the proxy's scope file — `reveal` is an oracle for what a token stands for, so
+  without the token every path is a 404;
+- **toward the server** (a POST body): every string in the JSON-RPC message is
+  revealed. A `create_session` prompt, a `complete` commit message, a tool
+  argument all reach their target with real values; a session that is drafted
+  encodes its own prompt later, into its own table;
+- **toward the agent**: only *content* is encoded — `result.content`,
+  `structuredContent`, `contents`, `messages`, an error's `message`/`data`, and
+  the `params` of a server-initiated message. Protocol strings (method names,
+  tool listings, `serverInfo`) are left alone;
+- only string values are rewritten, so the JSON stays valid whatever a value
+  contains. JSON and text responses are buffered (bounded) and answered whole;
+  an SSE stream is rewritten event by event, in order, never held past its
+  event (an event that is not JSON is passed on);
+- **fail closed**: a host that is unreachable or errors, a body past the bound,
+  or a compressed response (the upstream is asked for `identity`) is a 502 — a
+  message that could not be rewritten is never forwarded.
+
+Not covered: arbitrary HTTPS the agent opens itself (a CONNECT tunnel is
+opaque) — a token reaching an external host is harmless, and what the agent
+reads from there it reads in the clear.

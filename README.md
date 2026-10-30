@@ -422,9 +422,13 @@ the agent and revealing what the agent sends (requirements doc §9.1) — whethe
 an adapter routes its file access and commands through them is up to the
 adapter; `acp.client.call` in the log shows which do.
 
-Out of scope so far: the agent ↔ MCP tool seam (planned next, §9.2), free-text
-NER in the built-in detector, and anything an agent does inside its container
-without going through gurt.
+MCP traffic is rewritten at the session proxy, which asks the host to reveal
+what goes to a server and encode what comes back (§9.2); a message that cannot
+be rewritten is refused, never forwarded.
+
+Out of scope: free-text NER in the built-in detector, arbitrary HTTPS the agent
+opens itself, and anything an agent does inside its container without going
+through gurt.
 
 ## Run
 

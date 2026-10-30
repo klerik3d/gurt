@@ -52,6 +52,7 @@ import type { LaunchContext } from './containers'
 import type { PiiMask } from './pii'
 import { lineBuffer, spawnAcpAdapter, spawnInContainer } from './provision'
 import { createAcpClient, type AcpClient } from './acpClient'
+import { servePiiRewrite, stopPiiRewrite } from './piiRewrite'
 import { resolveProxyPlan } from './proxy/config'
 import type { ProxyConfig } from '../shared/proxy'
 import { JsonRpcPeer } from './jsonrpc'
@@ -1101,6 +1102,7 @@ export class SessionManager {
     this.sessions.delete(sessionId)
     // Its correspondence table goes with it — the tokens it produced end here.
     this.mask.drop(sessionId)
+    stopPiiRewrite(sessionId)
     this.events.deleteLog(s.ref.workspace, s.ref.task, sessionId)
     this.events.stopGurtServer(sessionId)
     this.bus.emit('session.deleted', { sessionId })
@@ -1415,7 +1417,13 @@ export class SessionManager {
       ...(await this.events.resolveMcpServers(s.ref, s.info.id, s.info.repos[0], s.info.mcp)),
       await this.events.resolveGurtServer(s.ref, s.info.id, this.gurtHooks(s))
     ]
+    // A masking session's MCP traffic is rewritten at the proxy (§9.2) through
+    // the host's endpoint; any other session's is forwarded as it always was.
+    let piiUrl: string | undefined
+    if (this.maskEnabled(s)) piiUrl = await servePiiRewrite(s.info.id, this.mask)
+    else stopPiiRewrite(s.info.id)
     const plan = await resolveProxyPlan(s.ref, s.info.id, ctx.proxy.token, s.info.mcp, {
+      piiUrl,
       // One URL per built-in, because gurt still runs one listener per (session,
       // mcp id); §10.4 collapses these into a single `hostMcpUrl`.
       hostMcpUrls: Object.fromEntries(hosted.map((m) => [m.name, m.url])),
@@ -1604,6 +1612,7 @@ export class SessionManager {
       this.detach(id)
       this.events.stopGurtServer(id)
       this.mask.drop(id)
+      stopPiiRewrite(id)
       this.sessions.delete(id)
       this.bus.emit('session.deleted', { sessionId: id })
     }
@@ -1624,6 +1633,7 @@ export class SessionManager {
       this.detach(id)
       this.events.stopGurtServer(id)
       this.mask.drop(id)
+      stopPiiRewrite(id)
       this.sessions.delete(id)
       this.bus.emit('session.deleted', { sessionId: id })
     }
