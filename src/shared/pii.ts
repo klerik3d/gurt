@@ -18,6 +18,8 @@ export interface PiiSpan {
   end: number
   /** Entity type, already normalized to the token grammar (see `piiType`). */
   type: string
+  /** The detector's confidence, 0–1, when it reports one (presidio does, regex does not). */
+  score?: number | undefined
 }
 
 /**
@@ -114,9 +116,10 @@ export const PII_SOURCES: PiiSourceDef[] = [
   },
   {
     id: 'presidio-recognizers',
-    label: 'Presidio recognizers',
+    label: 'Presidio patterns',
     description:
-      "Presidio's own predefined pattern recognizers (generic + US), without the Python runtime.",
+      "The regexes from Presidio's predefined recognizers (generic + US). Regex only: no " +
+      'names or addresses — for those, pick the presidio engine above.',
     license: 'MIT',
     repo: 'https://github.com/microsoft/presidio',
     ref: '2.2.364',
@@ -172,6 +175,104 @@ export interface PiiSettings {
   presidioPort?: number | undefined
   /** Linked `pii-detector` credential (url + apiKey) for a remote analyzer (§5.3). */
   credentialId?: string | undefined
+  /** `presidio`: languages every text is analyzed in (`PRESIDIO_LANGUAGES`); absent = `en`. */
+  presidioLanguages?: string[] | undefined
+  /** `presidio` + local: the spaCy pipeline size the sidecar image carries; absent = `lg`. */
+  presidioModel?: PresidioModelSize | undefined
+  /** `presidio`: findings scored below this are not masked; absent = 0, presidio's own default. */
+  presidioThreshold?: number | undefined
+  /** `presidio`: entity types to mask; absent or empty = every type the analyzer knows. */
+  presidioEntities?: string[] | undefined
+}
+
+// --- presidio analyzer options (§5.1) ------------------------------------------
+
+export interface PresidioLanguageDef {
+  id: string
+  label: string
+  /** The script a name or place in this language is written in — see `nerScriptMismatch`. */
+  script: 'Latin' | 'Cyrillic'
+}
+
+/** Languages that have a spaCy pipeline at both sizes in `PRESIDIO_MODELS`. */
+export const PRESIDIO_LANGUAGES: PresidioLanguageDef[] = [
+  { id: 'en', label: 'en', script: 'Latin' },
+  { id: 'ru', label: 'ru', script: 'Cyrillic' },
+  { id: 'uk', label: 'uk', script: 'Cyrillic' },
+  { id: 'de', label: 'de', script: 'Latin' },
+  { id: 'fr', label: 'fr', script: 'Latin' },
+  { id: 'es', label: 'es', script: 'Latin' },
+  { id: 'it', label: 'it', script: 'Latin' },
+  { id: 'pt', label: 'pt', script: 'Latin' },
+  { id: 'nl', label: 'nl', script: 'Latin' },
+  { id: 'pl', label: 'pl', script: 'Latin' }
+]
+
+export type PresidioModelSize = 'sm' | 'lg'
+
+export const PRESIDIO_MODELS: Array<{ id: PresidioModelSize; label: string }> = [
+  { id: 'lg', label: 'spaCy large' },
+  { id: 'sm', label: 'spaCy small' }
+]
+
+/** The spaCy pipeline name for one language at one size (`en_core_web_lg`, `ru_core_news_sm`). */
+export const spacyModel = (lang: string, size: PresidioModelSize): string =>
+  `${lang}_core_${lang === 'en' ? 'web' : 'news'}_${size}`
+
+export const presidioLanguages = (settings: PiiSettings): string[] =>
+  settings.presidioLanguages?.length ? settings.presidioLanguages : ['en']
+
+export const presidioModelSize = (settings: PiiSettings): PresidioModelSize =>
+  settings.presidioModel ?? 'lg'
+
+/** The entity types presidio gets from its NER model rather than from a pattern. */
+const PRESIDIO_NER_TYPES = new Set(['PERSON', 'LOCATION', 'NRP', 'ORGANIZATION', 'DATE_TIME'])
+
+/**
+ * A NER finding whose letters are all in another script than its language's
+ * cannot be a name *in that language*: it is a model reading text it was never
+ * trained on (an English pipeline over Russian prose tags ordinary words as
+ * PERSON). Pattern findings — an email, a phone — are script-free and never
+ * dropped here.
+ */
+export function nerScriptMismatch(type: string, value: string, language: string): boolean {
+  if (!PRESIDIO_NER_TYPES.has(type)) return false
+  const def = PRESIDIO_LANGUAGES.find((l) => l.id === language)
+  if (!def) return false
+  const letters = value.match(/\p{L}/gu)
+  if (!letters) return false
+  const script = def.script === 'Latin' ? /\p{Script=Latin}/u : /\p{Script=Cyrillic}/u
+  return !letters.some((ch) => script.test(ch))
+}
+
+export type PiiAnalyzerState =
+  | 'pulling'
+  | 'building'
+  | 'starting'
+  | 'running'
+  | 'stopped'
+  | 'missing'
+  | 'unreachable'
+  | 'error'
+
+/** The presidio analyzer as it stands — Settings → Masking's status row. */
+export interface PiiAnalyzerStatus {
+  mode: 'local' | 'remote'
+  url: string
+  /** `local`: the image the sidecar runs (stock, or one gurt built for the chosen languages/model). */
+  image?: string | undefined
+  state: PiiAnalyzerState
+  /** The failure, for `error`/`unreachable`. */
+  detail?: string | undefined
+  /** Entity types the analyzer supports across the selected languages; empty unless running. */
+  entities: string[]
+}
+
+/** One dry run of the active detector over a sample (Settings → Masking → TEST). */
+export interface PiiTestResult {
+  /** The sample as the agent would see it, numbered from 1 — no session table is touched. */
+  masked: string
+  findings: Array<{ type: string; value: string; score?: number | undefined }>
 }
 
 /** What a fetched-and-adapted source looks like once cached. */

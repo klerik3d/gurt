@@ -30,7 +30,8 @@ await build({
     contents:
       `export { createPiiMask } from ${S('src/main/pii.ts')}\n` +
       `export { adaptSource, toJsRegex } from ${S('src/main/piiSources.ts')}\n` +
-      `export { PII_TOKEN_RE, builtinDetector, emptyPiiTable, ibanValid, luhnValid, piiConfigError, piiType, resolveSpans, revealTokens } from ${S('src/shared/pii.ts')}`,
+      `export { PII_TOKEN_RE, builtinDetector, emptyPiiTable, ibanValid, luhnValid, nerScriptMismatch, piiConfigError, piiType, resolveSpans, revealTokens, spacyModel } from ${S('src/shared/pii.ts')}\n` +
+      `export { PRESIDIO_IMAGE, analyzerPlan } from ${S('src/main/piiAnalyzer.ts')}`,
     resolveDir: ROOT,
     loader: 'ts',
     sourcefile: 'entry.ts'
@@ -361,6 +362,117 @@ assert.equal(
   undefined,
   'a remote analyzer resolves through the linked credential url'
 )
+
+// --- presidio (§5.1): languages, threshold, entity types, script filter --------
+// A fake analyzer answers per language the way presidio does — one language per
+// call — so what the masker asks for and what it keeps is visible end to end.
+{
+  const http = await import('node:http')
+  const TEXT = 'Ivan said: Привет, John Smith, mail john@example.com'
+  const at = (s) => [TEXT.indexOf(s), TEXT.indexOf(s) + s.length]
+  const ANSWERS = {
+    // An English pipeline over Russian prose: a Cyrillic word tagged PERSON.
+    en: [
+      { entity_type: 'PERSON', score: 0.85, start: at('John Smith')[0], end: at('John Smith')[1] },
+      { entity_type: 'PERSON', score: 0.6, start: at('Привет')[0], end: at('Привет')[1] },
+      { entity_type: 'EMAIL_ADDRESS', score: 1, start: at('john@example.com')[0], end: at('john@example.com')[1] },
+      { entity_type: 'PERSON', score: 0.2, start: at('Ivan')[0], end: at('Ivan')[1] }
+    ],
+    ru: [
+      { entity_type: 'PERSON', score: 0.9, start: at('Привет')[0], end: at('Привет')[1] },
+      // A Latin name from the Russian pipeline: wrong script for ru, dropped.
+      { entity_type: 'PERSON', score: 0.7, start: at('John Smith')[0], end: at('John Smith')[1] },
+      { entity_type: 'EMAIL_ADDRESS', score: 1, start: at('john@example.com')[0], end: at('john@example.com')[1] }
+    ]
+  }
+  const requests = []
+  const server = http.createServer((req, res) => {
+    let body = ''
+    req.on('data', (c) => (body += c))
+    req.on('end', () => {
+      const r = JSON.parse(body)
+      requests.push(r)
+      res.setHeader('content-type', 'application/json')
+      res.end(JSON.stringify(ANSWERS[r.language] ?? []))
+    })
+  })
+  const port = await new Promise((r) =>
+    server.listen(0, '127.0.0.1', () => r(/** @type {import('node:net').AddressInfo} */ (server.address()).port))
+  )
+  const url = `http://127.0.0.1:${port}`
+
+  writeSettings({})
+  const pm = m.createPiiMask(noCredentials)
+  await pm.load()
+  const st = await pm.setSettings({
+    backend: 'presidio',
+    presidioMode: 'remote',
+    presidioUrl: url,
+    presidioLanguages: ['en', 'ru'],
+    presidioThreshold: 0.5,
+    presidioEntities: ['PERSON', 'EMAIL_ADDRESS']
+  })
+  assert.equal(st.ready, true)
+
+  const out = await pm.encode('p1', TEXT)
+  assert.deepEqual(requests.map((r) => r.language).sort(), ['en', 'ru'], 'one analyze call per language')
+  for (const r of requests) {
+    assert.equal(r.score_threshold, 0.5, 'the threshold is sent')
+    assert.deepEqual(r.entities, ['PERSON', 'EMAIL_ADDRESS'], 'the entity filter is sent')
+  }
+  assert.equal(
+    out,
+    'Ivan said: [person:1], [person:2], mail [email_address:1]',
+    'below-threshold dropped, wrong-script NER dropped, both languages pooled'
+  )
+
+  // TEST: the same masking, numbered from 1, and no session table written.
+  const tablesBefore = fs.readdirSync(path.join(GURT_ROOT, 'pii-tables'))
+  const t = await pm.test('mail john@example.com and john@example.com, Привет')
+  assert.ok(t.masked.includes('[email_address:1]'))
+  assert.ok(t.findings.every((f) => typeof f.type === 'string' && typeof f.value === 'string'))
+  assert.deepEqual(fs.readdirSync(path.join(GURT_ROOT, 'pii-tables')), tablesBefore, 'test touches no table')
+
+  // Normalization: a zero threshold and empty lists mean "the default".
+  const n = await pm.setSettings({ backend: 'presidio', presidioMode: 'remote', presidioUrl: url, presidioThreshold: 0, presidioLanguages: [], presidioEntities: [] })
+  assert.equal(n.settings.presidioThreshold, undefined)
+  assert.equal(n.settings.presidioLanguages, undefined)
+  assert.equal(n.settings.presidioEntities, undefined)
+  requests.length = 0
+  await pm.encode('p2', 'John Smith')
+  assert.deepEqual(requests.map((r) => r.language), ['en'], 'no language selected = en')
+  assert.equal(requests[0].entities, undefined, 'no entity filter = every type')
+
+  // A local sidecar still coming up: encode fails closed, naming the phase.
+  const fakeSidecar = {
+    ensure: async () => {},
+    pending: () => 'building',
+    status: async () => ({ state: 'building' })
+  }
+  const lm = m.createPiiMask({ ...noCredentials, analyzer: fakeSidecar })
+  await lm.load()
+  await lm.setSettings({ backend: 'presidio', presidioMode: 'local', presidioPort: port })
+  await assert.rejects(lm.encode('p3', 'John Smith'), /not up yet \(building\)/)
+  assert.equal((await lm.analyzer()).state, 'building')
+
+  server.close()
+}
+
+assert.equal(m.nerScriptMismatch('PERSON', 'Привет', 'en'), true)
+assert.equal(m.nerScriptMismatch('PERSON', 'John', 'en'), false)
+assert.equal(m.nerScriptMismatch('EMAIL_ADDRESS', 'привет@пример.рф', 'en'), false, 'patterns are never script-filtered')
+assert.equal(m.nerScriptMismatch('DATE_TIME', '2026', 'ru'), false, 'no letters, nothing to judge')
+
+// The image plan: the stock image for its own pipeline, a content-hashed build otherwise.
+assert.deepEqual(m.analyzerPlan(['en'], 'lg'), { image: m.PRESIDIO_IMAGE })
+{
+  const a = m.analyzerPlan(['en', 'ru'], 'lg')
+  assert.match(a.image, /^gurt-presidio-analyzer:[0-9a-f]{12}$/)
+  assert.deepEqual(a.build.models, { en: 'en_core_web_lg', ru: 'ru_core_news_lg' })
+  assert.equal(m.analyzerPlan(['en', 'ru'], 'lg').image, a.image, 'same plan, same tag')
+  assert.notEqual(m.analyzerPlan(['en', 'ru'], 'sm').image, a.image, 'another size is another image')
+  assert.equal(m.spacyModel('uk', 'sm'), 'uk_core_news_sm')
+}
 
 fs.rmSync(GURT_ROOT, { recursive: true, force: true })
 fs.rmSync(outfile, { force: true })

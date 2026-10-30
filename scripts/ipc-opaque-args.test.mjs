@@ -197,7 +197,9 @@ const SAFE_ARGS = new Set([
   // No args, and a pattern-source id from a fixed registry.
   'getPiiStatus',
   'refreshPiiSource',
-  'getPiiTable'
+  'getPiiTable',
+  'getPiiAnalyzer',
+  'restartPiiAnalyzer'
 ])
 
 /**

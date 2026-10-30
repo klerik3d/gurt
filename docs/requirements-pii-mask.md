@@ -130,7 +130,7 @@ New section in `SettingsPage.tsx` (pattern: Repos / Environments /
 Credentials), picks the active detector backend:
 
 - `built-in` — requires picking a **pattern source** (§4.1) from the same
-  kind of list: CommonRegex / Presidio recognizers / gitleaks rules / …
+  kind of list: CommonRegex / Presidio patterns / gitleaks rules / …
   Selecting one triggers the fetch → adapt → cache flow; re-selecting the
   same source with a newer pinned ref re-fetches. Nothing is masked until a
   source has been fetched at least once.
@@ -141,6 +141,41 @@ Credentials), picks the active detector backend:
 
 Nothing is masked while no backend is selected — this *is* "off".
 
+The section shows facts and controls only — no prose explaining them.
+
+#### 5.1.1 Presidio options (`src/main/piiAnalyzer.ts`, `presidioDetector` in `src/main/pii.ts`)
+
+High-level only; nothing here tunes a model.
+
+| setting | applies to | effect |
+|---|---|---|
+| **languages** (`presidioLanguages`, default `en`) | local + remote | `/analyze` takes one language per call, so a text is analyzed once per language and the findings pooled. A NER finding (`PERSON`, `LOCATION`, `NRP`, `ORGANIZATION`, `DATE_TIME`) whose letters are all in another script than its language's is dropped: an English pipeline over Russian prose tags ordinary words as names. Pattern findings are never script-filtered. |
+| **model** (`presidioModel`: spaCy `lg` / `sm`, default `lg`) | local | the spaCy pipeline per language (`en_core_web_*`, `<lang>_core_news_*`). |
+| **min score** (`presidioThreshold`, default 0) | local + remote | sent as `score_threshold`, and applied again to what comes back. |
+| **entities** (`presidioEntities`, default all) | local + remote | sent as `entities`; the choices are the analyzer's own `/supportedentities` for the selected languages. |
+
+**The local image.** `en` + `lg` is the stock pinned image. Anything else is a
+derived image gurt builds: `FROM` the stock image, the spaCy pipelines
+installed with presidio's own `install_nlp_models.py`, and presidio's three
+config files (`default.yaml` models, `supported_languages` in
+`default_analyzer.yaml` and `default_recognizers.yaml`) rewritten in place —
+the files its Dockerfile already points `NLP_CONF_FILE`,
+`ANALYZER_CONF_FILE` and `RECOGNIZER_REGISTRY_CONF_FILE` at. The tag is
+`gurt-presidio-analyzer:<hash of the plan>`; the sidecar carries
+`gurt.pii.key=<image>@<port>` and is recreated when that changes. Pull, build
+and start run in the background after a save (and at boot); until `/health`
+answers, `encode` fails closed naming the phase (`not up yet (building)`).
+
+**Status** shows the image (or the remote URL) and its state — `pulling`,
+`building`, `starting`, `running`, `stopped`, `missing`, `unreachable`,
+`error` — polled while it is changing; `restart` recreates a local sidecar.
+
+#### 5.1.2 Test
+
+With a usable engine, a TEST field runs the active detector over a sample
+(`testPii`) and shows the masked text, numbered as a fresh session would be,
+plus each finding's type, value and score. No session's table is touched.
+
 ### 5.2 Masking is global, not per session
 
 There is no per-session masking flag. Every session masks while §5.1 resolves
@@ -150,7 +185,7 @@ surface is the view switch (§5.4), which is display only.
 **Engine vs. rules.** *Engine* is what finds entities: `off` (nothing is
 masked), `built-in` (regex + checksum, in-process) or `presidio` (an external
 analyzer that adds NER). *Rules* exist only for `built-in`: which public
-collection its regexes come from (CommonRegex, Presidio recognizers, gitleaks).
+collection its regexes come from (CommonRegex, Presidio patterns, gitleaks).
 Picking the engine does not pick the rules — `built-in` with no rules fetched is
 not usable.
 

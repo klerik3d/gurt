@@ -93,7 +93,9 @@ const OPAQUE_ARGS = new Set<keyof GurtApi>([
   'probeMcpServer',
   // Masking settings name a remote analyzer's url and the credential behind
   // it — a config payload, opaque for the same reason as an MCP entry.
-  'setPiiSettings'
+  'setPiiSettings',
+  // A sample typed to see what gets masked — PII by intent.
+  'testPii'
 ])
 
 /** Args for the DBG trace: a count for the opaque methods, the (redacted,
@@ -525,7 +527,10 @@ export function registerIpc(): void {
     getPiiStatus: async () => kernel.pii.status(),
     setPiiSettings: (settings) => kernel.pii.setSettings(settings),
     refreshPiiSource: (sourceId) => kernel.pii.refreshSource(sourceId),
-    getPiiTable: async (sessionId) => kernel.pii.table(sessionId)
+    getPiiTable: async (sessionId) => kernel.pii.table(sessionId),
+    getPiiAnalyzer: () => kernel.pii.analyzer(),
+    restartPiiAnalyzer: () => kernel.pii.restartAnalyzer(),
+    testPii: (text) => kernel.pii.test(text)
   }
 
   // Renderer records: validated, rate-limited and truncated inside `logRenderer`

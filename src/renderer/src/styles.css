@@ -4966,3 +4966,33 @@ button { user-select: none; }
   color: var(--yellow);
   border-color: var(--yellow);
 }
+/* Masking → status row and TEST output. */
+.mask-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.mask-status .fld-hint {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.mask-test-out {
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 5.333px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+.mask-finding {
+  display: grid;
+  grid-template-columns: 140px minmax(0, 1fr) 48px;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--dim);
+}
+.mask-finding span:last-child {
+  text-align: right;
+}

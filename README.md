@@ -410,8 +410,11 @@ agent sees. See [docs/requirements-pii-mask.md](docs/requirements-pii-mask.md).
   Settings → Masking picks the backend: `built-in` (regex + checksum, in
   process) or `presidio` (a local docker sidecar gurt runs, or a remote analyzer
   linked to a `pii-detector` credential). No backend selected *is* off.
+  For presidio you pick the languages, the spaCy model size, a minimum score and
+  the entity types; any language/model other than English-large is a derived
+  image gurt builds once. A TEST field masks a sample with the active engine.
 - **Patterns are not vendored.** The built-in detector runs whichever public
-  collection you pick — CommonRegex, Presidio's own recognizers, gitleaks' rules
+  collection you pick — CommonRegex, Presidio's own patterns, gitleaks' rules
   — fetched at runtime from a **pinned commit/tag** (never a branch), adapted by
   a small per-source parser, and cached under `~/.gurt/pii-patterns/`. The
   network is only touched on first selection or an explicit "check for updates".

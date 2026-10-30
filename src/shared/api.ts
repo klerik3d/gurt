@@ -32,7 +32,7 @@ import type { CredentialEntry, CredentialsFile } from './credentials'
 import type { SessionTraffic } from './proxy'
 import type { DomainEvents } from './events'
 import type { McpDef, McpProbeResult, McpRegistryEntry } from './mcp'
-import type { PiiSettings, PiiStatus, PiiTable } from './pii'
+import type { PiiAnalyzerStatus, PiiSettings, PiiStatus, PiiTable, PiiTestResult } from './pii'
 import type { SkillEntry } from './skills'
 import type { TurnRecord } from './usage'
 import type { PlanUsage } from './planUsage'
@@ -494,6 +494,14 @@ export interface GurtApi {
    *  The chat view substitutes from it when its toggle is open; later rows
    *  arrive on `pii-table`. Empty for a session that never masked anything. */
   getPiiTable(sessionId: string): Promise<PiiTable>
+  /** The presidio analyzer's live state (docker + /health); null unless presidio
+   *  is the engine. The section polls it while an image pulls, builds or starts. */
+  getPiiAnalyzer(): Promise<PiiAnalyzerStatus | null>
+  /** Recreate the local analyzer sidecar; resolves once it is up or has failed. */
+  restartPiiAnalyzer(): Promise<void>
+  /** Mask a sample with the active detector, numbered as a fresh session would
+   *  be; no session's table is touched. Rejects while masking is off. */
+  testPii(text: string): Promise<PiiTestResult>
 }
 
 /**
@@ -656,7 +664,10 @@ const METHODS = {
   getPiiStatus: 'none',
   setPiiSettings: 'none',
   refreshPiiSource: 'none',
-  getPiiTable: 'none' //        reals; the user's own view, never an operator's
+  getPiiTable: 'none', //       reals; the user's own view, never an operator's
+  getPiiAnalyzer: 'none',
+  restartPiiAnalyzer: 'none', // runs docker on the host
+  testPii: 'none' //            echoes reals back, and is how the policy is tuned
 } as const satisfies Record<keyof GurtApi, Exposure>
 
 /** Runtime method list; `api:<method>` is the IPC channel per entry. */
