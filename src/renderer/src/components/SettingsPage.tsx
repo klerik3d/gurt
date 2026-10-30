@@ -3592,7 +3592,7 @@ function MaskingSection() {
         <div className="set-title-wrap">
           <span className="set-title">Masking</span>
           <span className="set-count mono">
-            {status ? (status.ready ? 'active' : 'off') : '…'} · applies across every workspace
+            {status ? (status.ready ? 'on' : 'off') : '…'} · every session, every workspace
           </span>
         </div>
       </div>
@@ -3600,20 +3600,13 @@ function MaskingSection() {
         <div className="set-card">
           <div className="set-card-body">
             <div className="fld">
-              <div className="fld-head">
-                <span className="seclabel">DETECTOR BACKEND</span>
-                <span className="fld-hint">
-                  — what a session marked <span className="mono">pii mask</span> runs its prompt
-                  through before the agent sees it
-                </span>
-              </div>
+              <span className="seclabel">ENGINE</span>
               <div className="chip-row">
                 <button
                   type="button"
                   className={`chip-btn ${settings.backend ? '' : 'on'}`}
                   disabled={!status || !!busy}
                   onClick={run(() => pickBackend(undefined))}
-                  title="nothing is masked anywhere"
                 >
                   off
                 </button>
@@ -3624,43 +3617,40 @@ function MaskingSection() {
                     className={`chip-btn ${settings.backend === b.id ? 'on' : ''}`}
                     disabled={!status || !!busy}
                     onClick={run(() => pickBackend(b.id))}
-                    title={b.description}
                   >
                     {b.label}
                   </button>
                 ))}
               </div>
-              {settings.backend && (
-                <div className="hc-note">
-                  {PII_BACKENDS.find((b) => b.id === settings.backend)?.description}
-                </div>
-              )}
+              <div className="hc-note">
+                {settings.backend === 'built-in'
+                  ? 'Regex rules run inside gurt. Pick the rules below.'
+                  : settings.backend === 'presidio'
+                    ? 'Microsoft Presidio analyzer: rules plus recognition of names and places.'
+                    : 'Nothing is masked.'}
+              </div>
             </div>
 
             {settings.backend === 'built-in' && (
               <div className="fld">
-                <div className="fld-head">
-                  <span className="seclabel">PATTERN SOURCE</span>
-                  <span className="fld-hint">
-                    — fetched once from the pinned ref and cached; nothing ships in gurt
-                  </span>
-                </div>
+                <span className="seclabel">RULES</span>
                 {PII_SOURCES.map((src) => {
                   const cached = status?.sources[src.id]
                   const active = settings.source === src.id
                   const stale = cached && cached.ref !== src.ref
                   return (
-                    <div key={src.id} className="notif-prefs-row">
-                      <span className="set-row-label">
-                        {src.label} <span className="tag">{src.license}</span>
+                    <div key={src.id} className="mask-src">
+                      <div className="mask-src-main">
+                        <div className="mask-src-name">
+                          {src.label} <span className="tag">{src.license}</span>
+                        </div>
                         <div className="fld-hint">{src.description}</div>
                         <div className="fld-hint mono">
                           {cached
-                            ? `${cached.patterns} patterns · ${cached.skipped} skipped · ${cached.ref} · fetched ${fetchedLabel(cached.fetchedAt)}`
-                            : `not fetched · pinned to ${src.ref}`}
-                          {stale ? ` · update available (${src.ref})` : ''}
+                            ? `${cached.patterns} patterns${cached.skipped ? ` · ${cached.skipped} skipped` : ''} · fetched ${fetchedLabel(cached.fetchedAt)}${stale ? ' · update available' : ''}`
+                            : 'not fetched yet'}
                         </div>
-                      </span>
+                      </div>
                       <button
                         type="button"
                         className={`chip-btn ${active ? 'on' : ''}`}
@@ -3676,7 +3666,7 @@ function MaskingSection() {
                         onClick={() => void refresh(src.id)}
                         title={`GET ${src.repo} at ${src.ref}`}
                       >
-                        {busy === src.id ? 'fetching…' : cached ? 'check for updates' : 'fetch'}
+                        {busy === src.id ? 'fetching…' : cached ? 'update' : 'fetch'}
                       </button>
                     </div>
                   )
@@ -3764,13 +3754,11 @@ function MaskingSection() {
               </>
             )}
 
-            {status && !status.ready && status.reason && (
-              <div className="fld-hint">not masking yet — {status.reason}</div>
-            )}
-            {status?.ready && (
+            {status && (
               <div className="fld-hint">
-                ready — sessions created with the <span className="mono">pii mask</span> chip on
-                send tokens instead of real values. The chat you see always shows the real ones.
+                {status.ready
+                  ? 'Masking every session: the agent sees [type:N] tokens, your chat shows the real values (eye button in the composer).'
+                  : `Masking is off — ${status.reason ?? ''}`}
               </div>
             )}
             {error && <div className="error">{error}</div>}

@@ -746,8 +746,7 @@ export class SessionManager {
      *  seeding keys on; `[]` = chosen to be none, which it must not overwrite
      *  (docs/requirements-skills.md §4.3). */
     skills: SkillSelection[] | undefined = undefined,
-    network?: SessionNetwork,
-    piiMask = false
+    network?: SessionNetwork
   ): SessionInfo {
     const clean = sanitizeSessionNetwork(network)
     // Gate 1 of four (docs/requirements-session-operator.md §2.1): a session
@@ -785,10 +784,6 @@ export class SessionManager {
       // session created before this existed and one created with the default
       // read the same way everywhere downstream.
       ...(clean ? { network: clean } : {}),
-      // Stored as asked for, not as currently resolvable: configuring a
-      // detector backend later must switch masking on for the sessions that
-      // already asked for it, exactly the way `PiiMask.ready` gates it at use.
-      piiMask,
       startPrompt,
       ...(Object.keys(configValues).length ? { configValues } : {})
     }
@@ -898,7 +893,6 @@ export class SessionManager {
       role?: SessionRole
       repos?: string[]
       autoAllow?: boolean
-      piiMask?: boolean
       mcp?: McpSelection[]
       skills?: SkillSelection[]
       network?: SessionNetwork
@@ -933,7 +927,6 @@ export class SessionManager {
       // chip it was just given and come back up in the old mode.
       s.info.modeId = undefined
     }
-    if (patch.piiMask !== undefined) s.info.piiMask = patch.piiMask
     if (patch.mcp !== undefined) s.info.mcp = patch.mcp
     // Takes effect at the next start: the network flag decides how the session's
     // own network is created, and a live one cannot be edited in place (§7.2).
@@ -1071,8 +1064,7 @@ export class SessionManager {
       source.skills?.map((k) => ({ ...k })),
       // Through the sanitizer, which is also the deep copy: the two sessions
       // must not share a policy's domain array.
-      sanitizeSessionNetwork(source.network),
-      source.piiMask ?? false
+      sanitizeSessionNetwork(source.network)
     )
   }
 
@@ -1420,7 +1412,7 @@ export class SessionManager {
     // A masking session's MCP traffic is rewritten at the proxy (§9.2) through
     // the host's endpoint; any other session's is forwarded as it always was.
     let piiUrl: string | undefined
-    if (this.maskEnabled(s)) piiUrl = await servePiiRewrite(s.info.id, this.mask)
+    if (this.maskEnabled()) piiUrl = await servePiiRewrite(s.info.id, this.mask)
     else stopPiiRewrite(s.info.id)
     const plan = await resolveProxyPlan(s.ref, s.info.id, ctx.proxy.token, s.info.mcp, {
       piiUrl,
@@ -1879,7 +1871,7 @@ export class SessionManager {
     // the PII barrier can reach them (docs/requirements-pii-mask.md §9); a
     // session that does not mask keeps its agent doing both for itself, exactly
     // as before.
-    const barrier = this.maskEnabled(s)
+    const barrier = this.maskEnabled()
     if (barrier) {
       conn.client = createAcpClient({
         session: key,
@@ -2028,9 +2020,10 @@ export class SessionManager {
   }
 
   /**
-   * Whether this session's prompts are masked right now: the session asked for
-   * it *and* a detector backend resolves (§5.1's "nothing is masked while no
-   * backend is selected").
+   * Whether this session's prompts are masked right now. Masking is global
+   * (Settings → Masking): every session masks while a detector backend resolves
+   * and none does while it does not (§5.1's "nothing is masked while no backend
+   * is selected").
    *
    * The timeline itself holds the *tokenized* text — what the agent saw and
    * wrote — and the chat view substitutes reals from the session's table when
@@ -2038,8 +2031,8 @@ export class SessionManager {
    * on disk but the table ever holds a real value). Tool calls the agent makes
    * through MCP servers are a separate seam (§7).
    */
-  private maskEnabled(s: Session): boolean {
-    return !!s.info.piiMask && this.mask.ready()
+  private maskEnabled(): boolean {
+    return this.mask.ready()
   }
 
   /** Build the ACP prompt content blocks: the message text, a `resource_link` for
@@ -2086,7 +2079,7 @@ export class SessionManager {
     // until the `try` below so it is reported like any other turn failure.
     let outbound = text
     let maskError: Error | undefined
-    if (this.maskEnabled(s)) {
+    if (this.maskEnabled()) {
       try {
         outbound = await this.mask.encode(s.info.id, text)
       } catch (e) {
@@ -2347,11 +2340,7 @@ export class SessionManager {
       // Inherited, never chosen: a session running internal cannot draft one
       // with open egress (§6.2), and `AgentSessionRequest` has no field to ask
       // with — a rule the agent cannot express is one it cannot argue about.
-      sanitizeSessionNetwork(spawner.info.network),
-      // A masked session may not draft an unmasked one: the prompt it is
-      // handing over is its own text, and letting it opt the draft out would
-      // be a way around the seam that masked the spawner in the first place.
-      spawner.info.piiMask || (req.piiMask ?? false)
+      sanitizeSessionNetwork(spawner.info.network)
     )
     // `renameSession` mutates the same info object createSession stored.
     if (req.title?.trim()) this.renameSession(info.id, req.title)

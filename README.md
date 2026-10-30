@@ -390,8 +390,8 @@ replace it with a token.
 
 ## PII / secret masking
 
-Optional per-session (`pii mask` chip in the composer; default on once a
-detector backend is configured, disabled outright while none is). It sits on the
+A global setting (Settings → Masking; no engine selected is off), not a
+per-session one: every session masks while an engine is configured. It sits on the
 **ACP seam**: the prompt text going out to the agent is scanned and every entity
 found is replaced with a `[type:N]` token (`[email:1]`, `[us_ssn:2]`) — the type
 the agent needs, an ordinal per type, nothing else. What each token stands for
