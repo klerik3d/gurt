@@ -365,8 +365,7 @@ export function registerIpc(): void {
       configValues,
       role,
       skills,
-      network,
-      piiMask
+      network
     ) => {
       // Anything that can bring a container up waits out the boot restore: the
       // reconcile rewrites container records from a pre-start snapshot, and a
@@ -412,8 +411,7 @@ export function registerIpc(): void {
         // Not validated here: `SessionManager.createSession` sanitizes it, and
         // it has to — the agent-drafted and duplicate paths never pass this
         // boundary at all.
-        network,
-        !!piiMask
+        network
       )
     },
     // Same boot gate as createSession — see the comment there.

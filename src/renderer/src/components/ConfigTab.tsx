@@ -23,7 +23,6 @@ import {
 } from '../../../shared/types'
 import type { SessionDraftPatch } from '../../../shared/api'
 import type { McpEntry } from '../../../shared/mcp'
-import type { PiiStatus } from '../../../shared/pii'
 import { LOCAL_MCP_NOTICE, isLocalMcpEntry, mcpHasModes, resolveMcpSelection } from '../../../shared/mcp'
 import type { SkillEntry } from '../../../shared/skills'
 import { resolveSkillSelection } from '../../../shared/skills'
@@ -263,7 +262,6 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
   const [agentConfig, setAgentConfig] = useState<AgentConfig | null>(null)
   /** Global masking config; null until it loads. `ready` is what makes the
    *  chip usable at all (docs/requirements-pii-mask.md §5.2). */
-  const [piiStatus, setPiiStatus] = useState<PiiStatus | null>(null)
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [picker, setPicker] = useState<'env' | 'repo' | 'client' | 'role' | null>(null)
   const [repoFilter, setRepoFilter] = useState('')
@@ -295,28 +293,6 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
       live = false
     }
   }, [info.agent])
-
-  useEffect(() => {
-    let live = true
-    window.gurt
-      .getPiiStatus()
-      .then((st) => live && setPiiStatus(st))
-      .catch(() => {})
-    return () => {
-      live = false
-    }
-  }, [])
-
-  // The chip is offered on every draft — masking is about the ACP seam, which
-  // every role has — but is *disabled* (not merely unchecked) until a detector
-  // backend is configured, with the reason shown inline (§5.2).
-  const piiMaskApplies = !!piiStatus?.ready
-  const piiMask = !!info.piiMask && piiMaskApplies
-  const piiNote = piiMaskApplies
-    ? piiMask
-      ? 'the agent sees <TYPE:…> tokens; your chat always shows the real values'
-      : 'the agent sees everything you type, as you typed it'
-    : (piiStatus?.reason ?? 'reading masking settings…')
 
   const patch = (p: SessionDraftPatch): void => {
     window.gurt
@@ -880,31 +856,6 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
           "PERMISSIONS" duplicated the block labels' style for no information.) */}
       <div className="ns-section">
         <NetworkPicker network={network} onChange={(next) => patch({ network: next })} />
-        <div className="hc-block">
-          <div className="seclabel-row">
-            <span className="seclabel">PII MASK</span>
-            <InfoDot text="replace detected PII/secrets with tokens before the agent sees them; configured in Settings → Masking." />
-          </div>
-          <div className="chip-row">
-            <button
-              className={`chip-btn ${piiMask ? 'on' : ''}`}
-              disabled={!piiMaskApplies}
-              onClick={() => patch({ piiMask: true })}
-              title="replace detected PII/secrets with tokens before the agent sees them"
-            >
-              on
-            </button>
-            <button
-              className={`chip-btn ${!piiMask ? 'on' : ''}`}
-              disabled={!piiMaskApplies}
-              onClick={() => patch({ piiMask: false })}
-              title="send what you type, unchanged"
-            >
-              off
-            </button>
-          </div>
-          <div className="hc-note">{piiNote}</div>
-        </div>
       </div>
 
       {/* advanced — everything left: rare agent-reported options, MCP
@@ -1036,11 +987,6 @@ function LiveConfig({ snapshot }: { snapshot: SessionSnapshot }) {
           <span className="tag">no agent</span>
         )}
         <span className="tag">{info.autoAllow === false ? 'manual' : 'auto'}</span>
-        {info.piiMask && (
-          <span className="tag" title="PII/secrets are masked on the way to the agent">
-            masked
-          </span>
-        )}
         {mcp.map((r) => (
           <McpTag key={r.selection.id} {...r} />
         ))}

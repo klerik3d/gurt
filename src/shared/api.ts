@@ -78,8 +78,6 @@ export interface SessionDraftPatch {
    *  to leave them unchanged. */
   repos?: string[]
   autoAllow?: boolean
-  /** Mask this draft's ACP seam (docs/requirements-pii-mask.md). */
-  piiMask?: boolean
   mcp?: McpSelection[]
   /** Skills to mount when the session starts. Absent leaves them unchanged;
    *  `[]` clears the selection. A change releases the draft's container — the
@@ -346,10 +344,7 @@ export interface GurtApi {
     skills: SkillSelection[],
     /** Egress settings (`internal` + the allow list). Omitted = the defaults:
      *  a normal bridge, everything allowed and logged. */
-    network?: SessionNetwork,
-    /** Mask PII/secrets on this session's ACP seam; only effective while a
-     *  detector backend is configured (see `getPiiStatus`). */
-    piiMask?: boolean
+    network?: SessionNetwork
   ): Promise<SessionInfo>
   sessionRun(id: string): Promise<void>
   sessionEnqueue(id: string): Promise<void>

@@ -119,7 +119,7 @@ the same list later) and gurt fetches it at runtime.
   a handful of fields, not a full-fidelity parser — no TOML/Python-AST
   library needed for it either.
 - **Offline / first run**: with nothing cached yet and no network, the
-  built-in detector has no patterns to run and `piiMask` cannot turn on —
+  built-in detector has no patterns to run and masking cannot turn on —
   surfaced as a plain configuration state in §5.1, not solved further here.
 
 ## 5. Settings: two-tier toggle
@@ -141,15 +141,18 @@ Credentials), picks the active detector backend:
 
 Nothing is masked while no backend is selected — this *is* "off".
 
-### 5.2 Per-session toggle
+### 5.2 Masking is global, not per session
 
-- New `piiMask?: boolean` next to `gitAccess` on
-  `AgentSessionRequest`/`SessionInfo` (`shared/types.ts`).
-- New Session modal chip, same pattern as the `git access` chip in
-  `Sidebar.tsx` (~line 736/1287) — **disabled** (not just unchecked) when
-  §5.1 has no backend selected, with the reason shown inline.
-- Default mirrors `gitAccess`'s "on when it resolves" precedent: on whenever
-  a backend is configured, off otherwise.
+There is no per-session masking flag. Every session masks while §5.1 resolves
+to a usable engine, and none does while it does not. The only per-session
+surface is the view switch (§5.4), which is display only.
+
+**Engine vs. rules.** *Engine* is what finds entities: `off` (nothing is
+masked), `built-in` (regex + checksum, in-process) or `presidio` (an external
+analyzer that adds NER). *Rules* exist only for `built-in`: which public
+collection its regexes come from (CommonRegex, Presidio recognizers, gitleaks).
+Picking the engine does not pick the rules — `built-in` with no rules fetched is
+not usable.
 
 ### 5.3 Credential store
 
@@ -162,8 +165,8 @@ Nothing is masked while no backend is selected — this *is* "off".
 
 ### 5.4 The view toggle
 
-An eye button on the composer bar (shown for a session that masks or already has
-a table). **Open** (default): the chat shows real values, revealed from the
+An eye button on the composer bar (always there; dimmed with the reason while
+masking is off and there are no tokens to show). **Open** (default): the chat shows real values, revealed from the
 table. **Closed**: the chat shows the tokens the agent sees. Per session, kept
 as a UI preference; display only — neither state changes what is sent or stored.
 The renderer pulls the table (`getPiiTable`) and follows `pii-table` events,
@@ -173,7 +176,7 @@ which main emits before the timeline entry that uses a new token.
 
 - Encode: `sendTurn` in `src/main/sessions.ts` encodes the prompt text *first*,
   then pushes the user entry and sends `session/prompt` with the tokenized text
-  — only when the session's `piiMask` resolves on. An encode failure ends the
+  — whenever masking is usable (§5.1). An encode failure ends the
   turn with a visible error; the cleartext is never sent.
 - Inbound: `onSessionUpdate` stores text, tool titles and details as received.
 - Reveal: `src/renderer/src/usePii.ts` maps the timeline (text, tool
@@ -200,8 +203,8 @@ which main emits before the timeline entry that uses a new token.
    reveal edge cases (unknown token, URL-encoded token).
 3. `scripts/proxy-pii.test.mjs` and `scripts/pii-rewrite.test.mjs` cover the proxy
    rewrite (request/JSON/SSE/text, fail closed) and the host endpoint.
-4. Smoke: New Session chip disabled with no backend, enabled once `built-in`
-   is selected; a masked session shows reals with the eye open and tokens with
+4. Smoke: with `built-in` and a fetched rule set selected in Settings →
+   Masking, every session masks; a masked session shows reals with the eye open and tokens with
    it closed.
 5. Rest of `scripts/*.test.mjs` passes unmodified (apart from the new API
    method/hook listed in the IPC contract tests).

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { ChatEntry, PlanEntry } from '../../shared/types'
-import { emptyPiiTable, revealTokens, type PiiTable } from '../../shared/pii'
+import { emptyPiiTable, revealTokens, type PiiStatus, type PiiTable } from '../../shared/pii'
 import { logErr } from './log'
 import { readPreference, z } from './persisted'
 
@@ -17,6 +17,23 @@ const openSchema = z.boolean()
 
 /** Whether this session's view starts open (reals). A preference, per session. */
 const readOpen = (sessionId: string): boolean => readPreference(key(sessionId), true, openSchema)
+
+/** Whether masking can run right now, and if not why — for the composer switch,
+ *  which says so instead of silently not being there. */
+export function usePiiStatus(sessionId: string): PiiStatus | null {
+  const [status, setStatus] = useState<PiiStatus | null>(null)
+  useEffect(() => {
+    let live = true
+    window.gurt
+      .getPiiStatus()
+      .then((s) => live && setStatus(s))
+      .catch(logErr('getPiiStatus'))
+    return () => {
+      live = false
+    }
+  }, [sessionId])
+  return status
+}
 
 export interface PiiView {
   /** The session's table — empty until the first pull lands, never undefined. */

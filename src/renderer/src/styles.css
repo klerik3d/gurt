@@ -3848,6 +3848,32 @@ textarea.input {
 .notif-prefs-row:last-child {
   border-bottom: none;
 }
+/* Masking → rules: label column takes what is left, buttons never wrap. */
+.mask-src {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 4px;
+  border-bottom: 1px solid var(--border);
+}
+.mask-src:last-child {
+  border-bottom: none;
+}
+.mask-src-main {
+  min-width: 0;
+}
+.mask-src-name {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.mask-src .chip-btn {
+  white-space: nowrap;
+}
 .notif-prefs-head {
   padding-bottom: 8px;
 }
