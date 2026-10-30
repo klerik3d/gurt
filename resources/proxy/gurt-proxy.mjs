@@ -103,6 +103,17 @@ const DEFAULT_CONFIG = '/etc/gurt/proxy.json'
  *  is free, and a second of latency on a policy edit is not felt. */
 const DEFAULT_WATCH_MS = 1000
 
+/** Identity of the config file's current content, or 'missing'. A rename-over
+ *  write changes the inode; an in-place one the mtime or the size. */
+function configStamp(configPath) {
+  try {
+    const st = fs.statSync(configPath)
+    return `${st.ino}:${st.mtimeMs}:${st.size}`
+  } catch {
+    return 'missing'
+  }
+}
+
 /** Names the proxy answers for *itself*, so a client that ignores NO_PROXY and
  *  sends `GET http://gurt-proxy:8100/mcp/...` absolute-form is still routed. */
 const SELF_NAMES = new Set(['gurt-proxy', 'localhost', '127.0.0.1', '::1', os.hostname()])
@@ -753,7 +764,12 @@ export function createProxy(opts = {}) {
    *  close() has to know about them or a stopped proxy keeps a session alive. */
   const tunnels = new Set()
 
+  /** What the file looked like when `reload` last read it — the watch's only reference. */
+  let lastStamp = ''
   const reload = (reason) => {
+    // Stamped before the read: a write landing in between shows as a change on
+    // the next poll and is read again, never missed.
+    lastStamp = configStamp(configPath)
     const result = readConfigFile(configPath)
     if (result.missing) {
       if (config) log({ kind: 'config', decision: 'revoked', reason })
@@ -1404,11 +1420,18 @@ export function createProxy(opts = {}) {
     else deny(res, 404, 'not found')
   }
 
-  let watcher = false
+  /** @type {ReturnType<typeof setInterval> | null} */
+  let watcher = null
+  // A stat poll compared against what `reload` last read. Not fs.watchFile:
+  // its baseline is its own first stat, taken asynchronously — a file written
+  // between `reload('start')` and that stat is part of the baseline, so no
+  // change ever fires and the proxy stays without a scope.
   const startWatch = () => {
     if (watcher || opts.watch === false) return
-    fs.watchFile(configPath, { interval: watchMs }, () => reload('watch'))
-    watcher = true
+    watcher = setInterval(() => {
+      if (configStamp(configPath) !== lastStamp) reload('watch')
+    }, watchMs)
+    watcher.unref?.()
   }
 
   return {
@@ -1439,8 +1462,8 @@ export function createProxy(opts = {}) {
       })
     },
     close() {
-      if (watcher) fs.unwatchFile(configPath)
-      watcher = false
+      if (watcher) clearInterval(watcher)
+      watcher = null
       for (const socket of tunnels) socket.destroy()
       tunnels.clear()
       /** @type {Promise<void>} */
