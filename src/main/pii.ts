@@ -14,26 +14,31 @@ import {
   PII_DEFAULT_PORT,
   builtinDetector,
   emptyPiiTable,
+  nerScriptMismatch,
   piiConfigError,
   piiSourceDef,
   piiSourceUrl,
   piiToken,
   piiType,
+  presidioLanguages,
+  presidioModelSize,
   presidioUrl,
   replaceSpans,
   resolveSpans,
   revealTokens,
   tokenSpans,
   type Detector,
+  type PiiAnalyzerStatus,
   type PiiPatternCache,
   type PiiSettings,
   type PiiSpan,
   type PiiStatus,
-  type PiiTable
+  type PiiTable,
+  type PiiTestResult
 } from '../shared/pii'
 import type { CredentialEntry } from '../shared/credentials'
 import { adaptSource } from './piiSources'
-import { run } from './provision'
+import { analyzerPlan, createAnalyzer, healthy, supportedEntities, type Analyzer } from './piiAnalyzer'
 import * as store from './store'
 import { createLogger } from './log'
 
@@ -67,78 +72,72 @@ export interface PiiManager extends PiiMask {
   setSettings(settings: PiiSettings): Promise<PiiStatus>
   /** Fetch → adapt → cache one source at its pinned ref (§4.1). */
   refreshSource(sourceId: string): Promise<PiiStatus>
+  /** The presidio analyzer's live state; null while presidio is not the engine. */
+  analyzer(): Promise<PiiAnalyzerStatus | null>
+  /** Recreate the local sidecar from the current settings. Resolves once it is up or has failed. */
+  restartAnalyzer(): Promise<void>
+  /** Run the active detector over a sample without touching any session's table. */
+  test(text: string): Promise<PiiTestResult>
 }
 
 // --- external backend: the Presidio analyzer HTTP API ------------------------
 
-/**
- * Pinned, like every other image gurt runs. One minor behind the recognizer
- * source's own pin (§4.1) simply because that is the newest published image —
- * both are release-tagged, neither is `latest`.
- */
-const PRESIDIO_IMAGE = 'mcr.microsoft.com/presidio-analyzer:2.2.362'
-/** Docker is the registry here too — the name *is* the lookup (see containers.ts). */
-const PRESIDIO_CONTAINER = 'gurt-presidio-analyzer'
+interface PresidioOptions {
+  apiKey?: string | undefined
+  languages: string[]
+  threshold: number
+  entities?: string[] | undefined
+  /** An operation on the local sidecar that has not finished — fail fast with it. */
+  pending: () => string | undefined
+}
 
 /**
  * `POST /analyze` — Presidio's own shape. We ask it for spans only and never
  * for its `anonymize` service: the replacement is ours to make, under our key.
+ * The endpoint takes one language per call, so a text is analyzed once per
+ * selected language and the findings are pooled; a NER finding in the wrong
+ * script for its language is dropped (`nerScriptMismatch`).
  */
-function presidioDetector(url: string, apiKey?: string): Detector {
+function presidioDetector(url: string, opts: PresidioOptions): Detector {
+  async function analyze(text: string, language: string): Promise<PiiSpan[]> {
+    const res = await fetch(`${url}/analyze`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(opts.apiKey ? { authorization: `Bearer ${opts.apiKey}` } : {})
+      },
+      body: JSON.stringify({
+        text,
+        language,
+        score_threshold: opts.threshold,
+        ...(opts.entities?.length ? { entities: opts.entities } : {})
+      }),
+      signal: AbortSignal.timeout(20_000)
+    })
+    if (!res.ok) throw new Error(`presidio analyzer answered ${res.status} for language "${language}"`)
+    const raw: unknown = await res.json()
+    if (!Array.isArray(raw)) throw new Error('presidio analyzer returned an unexpected body')
+    const spans: PiiSpan[] = []
+    for (const r of raw as Record<string, unknown>[]) {
+      const start = Number(r['start'])
+      const end = Number(r['end'])
+      const type = typeof r['entity_type'] === 'string' ? r['entity_type'] : ''
+      const score = typeof r['score'] === 'number' ? r['score'] : undefined
+      if (!Number.isInteger(start) || !Number.isInteger(end) || end <= start || !type) continue
+      // Applied here too: a remote analyzer is not ours to trust with the threshold.
+      if (score !== undefined && score < opts.threshold) continue
+      if (nerScriptMismatch(type, text.slice(start, end), language)) continue
+      spans.push({ start, end, type, score })
+    }
+    return spans
+  }
   return {
     async detect(text: string): Promise<PiiSpan[]> {
-      const res = await fetch(`${url}/analyze`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {})
-        },
-        body: JSON.stringify({ text, language: 'en' }),
-        signal: AbortSignal.timeout(20_000)
-      })
-      if (!res.ok) throw new Error(`presidio analyzer answered ${res.status}`)
-      const raw: unknown = await res.json()
-      if (!Array.isArray(raw)) throw new Error('presidio analyzer returned an unexpected body')
-      const spans: PiiSpan[] = []
-      for (const r of raw as Record<string, unknown>[]) {
-        const start = Number(r['start'])
-        const end = Number(r['end'])
-        const type = typeof r['entity_type'] === 'string' ? r['entity_type'] : ''
-        if (Number.isInteger(start) && Number.isInteger(end) && end > start && type)
-          spans.push({ start, end, type })
-      }
-      return spans
+      const busy = opts.pending()
+      if (busy) throw new Error(`presidio analyzer is not up yet (${busy})`)
+      return (await Promise.all(opts.languages.map((l) => analyze(text, l)))).flat()
     }
   }
-}
-
-/**
- * Bring up the local analyzer sidecar. The env-image path builds from a
- * devcontainer; there is nothing to build here, so the analogue of
- * `docker build`/`up` is a `docker run` of the pinned published image, named so
- * the daemon itself answers "is it already there?". Best-effort by design: a
- * failure is logged and surfaces as the first `analyze` call failing, which is
- * where the user can actually see it.
- */
-async function ensureLocalAnalyzer(port: number): Promise<void> {
-  const sink = (line: string): void => log.debug('presidio.docker', { line })
-  const existing = (await run('docker', ['ps', '-aq', '--filter', `name=^${PRESIDIO_CONTAINER}$`], sink).catch(() => '')).trim()
-  if (existing) {
-    await run('docker', ['start', PRESIDIO_CONTAINER], sink)
-    return
-  }
-  await run(
-    'docker',
-    [
-      'run', '-d',
-      '--name', PRESIDIO_CONTAINER,
-      '--label', 'gurt.pii=analyzer',
-      '--restart', 'unless-stopped',
-      '-p', `127.0.0.1:${port}:3000`,
-      PRESIDIO_IMAGE
-    ],
-    sink
-  )
 }
 
 // --- the manager -------------------------------------------------------------
@@ -146,6 +145,8 @@ async function ensureLocalAnalyzer(port: number): Promise<void> {
 export interface PiiDeps {
   /** The credential store, for the `pii-detector` entry a remote analyzer links (§5.3). */
   credentials: () => Promise<CredentialEntry[]>
+  /** The local sidecar; a test passes its own so no docker is ever touched. */
+  analyzer?: Analyzer | undefined
 }
 
 export function createPiiMask(deps: PiiDeps): PiiManager {
@@ -161,6 +162,22 @@ export function createPiiMask(deps: PiiDeps): PiiManager {
   const listeners: Array<(sessionId: string, table: PiiTable) => void> = []
   /** Per-session write chain, so two encodes never interleave a file write. */
   const writes = new Map<string, Promise<void>>()
+  const sidecar = deps.analyzer ?? createAnalyzer()
+
+  const isLocalPresidio = (): boolean =>
+    settings.backend === 'presidio' && settings.presidioMode === 'local'
+  const localPort = (): number => settings.presidioPort ?? PII_DEFAULT_PORT
+  const localPlan = () => analyzerPlan(presidioLanguages(settings), presidioModelSize(settings))
+
+  /** Whatever was found in `text`, minus what is already a token, made non-overlapping. */
+  async function spansIn(active: Detector, text: string): Promise<PiiSpan[]> {
+    const found = await active.detect(text)
+    // Text can already carry tokens — the composer quotes an earlier answer,
+    // the user pastes one back. Those spans are off limits: they already mean
+    // something, and re-detecting inside one would only invent a new row.
+    const guards = tokenSpans(text)
+    return resolveSpans(found.filter((s) => !guards.some((g) => s.start < g.end && g.start < s.end)))
+  }
 
   /** Rebuild the active detector from the current settings. Never throws: an
    *  unusable configuration becomes `error`, which is what the chip explains. */
@@ -176,7 +193,14 @@ export function createPiiMask(deps: PiiDeps): PiiManager {
       detector = builtinDetector(caches[settings.source!]?.patterns ?? [])
       return
     }
-    detector = presidioDetector(presidioUrl(settings, credentialUrl), credentialKey)
+    const local = isLocalPresidio()
+    detector = presidioDetector(presidioUrl(settings, credentialUrl), {
+      apiKey: credentialKey,
+      languages: presidioLanguages(settings),
+      threshold: settings.presidioThreshold ?? 0,
+      entities: settings.presidioEntities,
+      pending: () => (local ? sidecar.pending() : undefined)
+    })
   }
 
   function sourceStates(): PiiStatus['sources'] {
@@ -253,6 +277,10 @@ export function createPiiMask(deps: PiiDeps): PiiManager {
       caches = await store.readPiiPatterns()
       await resolveCredential()
       rebuild()
+      // The sidecar restarts with docker, but a plan changed while gurt was down
+      // (or a removed container) is only noticed here. Not awaited: a build can
+      // take minutes, and until it is up `encode` fails closed with the reason.
+      if (isLocalPresidio()) void sidecar.ensure(localPlan(), localPort())
       log.info('pii.loaded', {
         backend: settings.backend,
         source: settings.source,
@@ -277,7 +305,14 @@ export function createPiiMask(deps: PiiDeps): PiiManager {
         presidioMode: next.presidioMode,
         presidioUrl: next.presidioUrl?.trim() || undefined,
         presidioPort: next.presidioPort,
-        credentialId: next.credentialId || undefined
+        credentialId: next.credentialId || undefined,
+        presidioLanguages: next.presidioLanguages?.length ? [...next.presidioLanguages] : undefined,
+        presidioModel: next.presidioModel,
+        presidioThreshold:
+          typeof next.presidioThreshold === 'number' && next.presidioThreshold > 0
+            ? Math.min(1, next.presidioThreshold)
+            : undefined,
+        presidioEntities: next.presidioEntities?.length ? [...next.presidioEntities] : undefined
       }
       await store.setPiiSettings(settings)
       await resolveCredential()
@@ -289,11 +324,11 @@ export function createPiiMask(deps: PiiDeps): PiiManager {
         await manager.refreshSource(settings.source).catch((e: unknown) =>
           log.warn('pii.fetch-failed', { source: settings.source, err: e })
         )
-      if (settings.backend === 'presidio' && settings.presidioMode === 'local')
-        await ensureLocalAnalyzer(settings.presidioPort ?? PII_DEFAULT_PORT).catch((e: unknown) =>
-          log.warn('pii.sidecar-failed', { err: e })
-        )
       rebuild()
+      // In the background: pulling or building an image takes minutes. The
+      // section polls `analyzer()` for progress, and `encode` fails closed
+      // with the phase until the sidecar answers.
+      if (isLocalPresidio()) void sidecar.ensure(localPlan(), localPort())
       return manager.status()
     },
 
@@ -331,14 +366,7 @@ export function createPiiMask(deps: PiiDeps): PiiManager {
     async encode(sessionId: string, text: string): Promise<string> {
       const active = detector
       if (!active || !text) return text
-      const found = await active.detect(text)
-      // Text can already carry tokens — the composer quotes an earlier answer,
-      // the user pastes one back. Those spans are off limits: they already mean
-      // something, and re-detecting inside one would only invent a new row.
-      const guards = tokenSpans(text)
-      const spans = resolveSpans(
-        found.filter((s) => !guards.some((g) => s.start < g.end && g.start < s.end))
-      )
+      const spans = await spansIn(active, text)
       if (!spans.length) return text
       const h = held(sessionId)
       // Ordinals are handed out left to right — `replaceSpans` works back to
@@ -364,6 +392,64 @@ export function createPiiMask(deps: PiiDeps): PiiManager {
         for (const l of listeners) l(sessionId, h.table)
       }
       return out
+    },
+
+    async analyzer(): Promise<PiiAnalyzerStatus | null> {
+      if (settings.backend !== 'presidio') return null
+      const url = presidioUrl(settings, credentialUrl)
+      const languages = presidioLanguages(settings)
+      if (!isLocalPresidio()) {
+        const up = !!url && (await healthy(url, credentialKey))
+        return {
+          mode: 'remote',
+          url,
+          state: up ? 'running' : 'unreachable',
+          detail: up ? undefined : url ? `no answer from ${url}/health` : 'no analyzer url',
+          entities: up ? await supportedEntities(url, languages, credentialKey) : []
+        }
+      }
+      const plan = localPlan()
+      const phase = await sidecar
+        .status(plan, localPort())
+        .catch((e: unknown) => ({ state: 'error' as const, detail: e instanceof Error ? e.message : String(e) }))
+      return {
+        mode: 'local',
+        url,
+        image: plan.image,
+        state: phase.state,
+        detail: phase.detail,
+        entities: phase.state === 'running' ? await supportedEntities(url, languages) : []
+      }
+    },
+
+    async restartAnalyzer(): Promise<void> {
+      if (!isLocalPresidio()) throw new Error('the analyzer is not a local sidecar')
+      await sidecar.ensure(localPlan(), localPort(), { recreate: true })
+    },
+
+    async test(text: string): Promise<PiiTestResult> {
+      const active = detector
+      if (!active) throw new Error(error ?? 'masking is off')
+      const spans = await spansIn(active, text)
+      // Ordinals as a fresh session would hand them out, left to right.
+      const seen = new Map<string, string>()
+      const counts = new Map<string, number>()
+      for (const sp of spans) {
+        const type = piiType(sp.type)
+        const k = indexKey(type, text.slice(sp.start, sp.end))
+        if (seen.has(k)) continue
+        const n = (counts.get(type) ?? 0) + 1
+        counts.set(type, n)
+        seen.set(k, piiToken(type, n))
+      }
+      return {
+        masked: replaceSpans(text, spans, (value, rawType) => seen.get(indexKey(piiType(rawType), value))!),
+        findings: spans.map((sp) => ({
+          type: piiType(sp.type),
+          value: text.slice(sp.start, sp.end),
+          score: sp.score
+        }))
+      }
     },
 
     decode: (sessionId: string, text: string): string => revealTokens(text, held(sessionId).table),
