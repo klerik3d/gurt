@@ -1574,6 +1574,30 @@ export function spawnAcpAdapter(
 }
 
 /**
+ * Run one command in a session's container, as the same user and environment
+ * the agent has — the host's half of the ACP client methods (`fs/*`,
+ * `terminal/*`): the agent asks gurt to touch a file or run a command, and gurt
+ * does it here. `argv` is the command exactly (no shell is added); `env` rides
+ * as `--remote-env`. The caller owns the process and its pipes.
+ */
+export function spawnInContainer(
+  target: { session: string; configArgs: string[]; hostWorkspaceFolder: string },
+  argv: string[],
+  env?: Record<string, string>
+) {
+  const args = [
+    devcontainerCliPath(),
+    ...execArgs(target.session, target.configArgs, target.hostWorkspaceFolder)
+  ]
+  for (const [k, v] of Object.entries(env ?? {})) args.push('--remote-env', `${k}=${v}`)
+  args.push(...argv)
+  return spawn(process.execPath, args, {
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+    stdio: ['pipe', 'pipe', 'pipe']
+  })
+}
+
+/**
  * Every gurt-created container the daemon currently knows, as session id →
  * container id, running or not. Containers are stamped `gurt.session=<id>` at
  * `up`, so Docker itself is the registry: this is what the persisted records

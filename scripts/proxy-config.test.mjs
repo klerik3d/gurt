@@ -113,6 +113,16 @@ test('a built-in is routed to gurt’s host listener, on the URL that carries th
   })
 })
 
+test('a masking session’s scope names the host’s rewrite endpoint, and the proxy’s own parser accepts it', () => {
+  const url = 'http://host.docker.internal:5555/pii/abc_DEF-123'
+  const masked = plan([sel('github')], { piiUrl: url })
+  assert.deepEqual(masked.config.pii, { url })
+  assert.equal(proxy.parseConfig(JSON.parse(JSON.stringify(masked.config))).config.pii.url, url)
+  // And a session that does not mask has no such field at all — absent means
+  // "forward as is", so it must not be written as an empty value.
+  assert.equal('pii' in plan([sel('github')]).config, false)
+  assert.ok(proxy.parseConfig({ ...masked.config, pii: { url: 'nope' } }).error, 'a bad url is a refused scope')
+})
 test('the turn-contract server is always in scope, selected or not', () => {
   const empty = plan(undefined)
   assert.deepEqual(Object.keys(empty.config.mcp), ['gurt'])

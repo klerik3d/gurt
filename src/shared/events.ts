@@ -9,6 +9,7 @@ import type {
 } from './types'
 import type { TerminalInfo, TerminalOutput } from './terminal'
 import type { DoctorRow } from './doctor'
+import type { PiiTable } from './pii'
 import type { SessionTraffic } from './proxy'
 import type { SessionMcpFailures } from './mcp'
 import type { TurnRecord } from './usage'
@@ -125,6 +126,10 @@ export interface DomainEvents {
    *  (docs/requirements-mcp-proxy.md §8). Refusals are the point: they are the
    *  only explanation a user ever gets for a tool that could not connect. */
   'proxy.traffic': SessionTraffic
+  /** A session's masking table gained rows (docs/requirements-pii-mask.md) — the
+   *  whole table, not a delta. Sent before the timeline entry that uses the new
+   *  tokens, so the chat view never renders a token it cannot yet reveal. */
+  'session.pii': { sessionId: string; table: PiiTable }
   /** The local (stdio) MCP servers this session selected and did not get, with
    *  the reason each one failed — the whole set per session, not a delta, so an
    *  empty `failures` is how a session that has recovered clears the last one

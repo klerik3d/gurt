@@ -418,6 +418,9 @@ export interface AgentSessionRequest {
   /** Agent-instance id; defaults to the spawner's. */
   agent?: string
   autoAllow?: boolean
+  /** Mask PII/secrets on this draft's own ACP seam. A masked spawner's drafts
+   *  are always masked whatever this says — see `createAgentDraft`. */
+  piiMask?: boolean
   configValues?: Record<string, string | boolean>
   /** Skill names for the draft. Omitted, the spawner's own set is inherited —
    *  a drafted session runs with the procedures the drafting one was given
@@ -515,6 +518,18 @@ export interface SessionInfo {
   /** Egress settings for this session's network (absent = the defaults:
    *  a normal bridge, everything allowed and logged). */
   network?: SessionNetwork
+  /**
+   * Mask PII and secrets across this session's ACP seam
+   * (docs/requirements-pii-mask.md): the prompt text reaching the agent carries
+   * `[type:N]` tokens instead of the real values; a per-session table on the
+   * host records what each stands for. The timeline keeps the tokenized text
+   * and the chat view reveals the reals from the table (or shows the tokens,
+   * per the composer's toggle); the agent's context never holds a real value.
+   *
+   * Only effective while a detector backend is configured in Settings →
+   * Masking — the two are resolved together (`PiiMask.ready`).
+   */
+  piiMask?: boolean
   /** First prompt, sent automatically when the session starts. */
   startPrompt: string
   /**

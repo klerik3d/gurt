@@ -28,6 +28,7 @@ declare global {
       onUpdateReady(cb: (event: GurtEvents['update-ready']) => void): () => void
       /** One session's observed proxy traffic changed (blocked/allowed hosts). */
       onProxyTraffic(cb: (event: GurtEvents['proxy-traffic']) => void): () => void
+      onPiiTable(cb: (event: GurtEvents['pii-table']) => void): () => void
       /** A session's local (stdio) MCP servers that did not start, and why. */
       onMcpFail(cb: (event: GurtEvents['mcp-fail']) => void): () => void
       /** macOS's reserved ⌘`/⌘⇧` window-cycle, reclaimed by main and forwarded

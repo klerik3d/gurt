@@ -137,6 +137,8 @@ export interface ProxyPlanInput {
    * per-session listener (§10.4).
    */
   hostMcpUrls?: Readonly<Record<string, string>> | undefined
+  /** The host's rewrite endpoint for a masking session — see `ProxyConfig.pii`. */
+  piiUrl?: string | undefined
   /** Session network settings; defaults to open + an empty allow list. */
   network?: { internal?: boolean; policy?: DomainPolicy } | undefined
   /** Base URL the container reaches the proxy on. Overridden only by tests and
@@ -266,7 +268,8 @@ export function planProxy(input: ProxyPlanInput): ProxyPlan {
         // session stored under the old three-mode policy is migrated, and a
         // copy, so the returned config is a caller's to hold on to.
         policy: sanitizeDomainPolicy(input.network?.policy)
-      }
+      },
+      ...(input.piiUrl ? { pii: { url: input.piiUrl } } : {})
     },
     mcpServers,
     errors

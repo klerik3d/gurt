@@ -32,6 +32,7 @@ import type { CredentialEntry, CredentialsFile } from './credentials'
 import type { SessionTraffic } from './proxy'
 import type { DomainEvents } from './events'
 import type { McpDef, McpProbeResult, McpRegistryEntry } from './mcp'
+import type { PiiSettings, PiiStatus, PiiTable } from './pii'
 import type { SkillEntry } from './skills'
 import type { TurnRecord } from './usage'
 import type { PlanUsage } from './planUsage'
@@ -77,6 +78,8 @@ export interface SessionDraftPatch {
    *  to leave them unchanged. */
   repos?: string[]
   autoAllow?: boolean
+  /** Mask this draft's ACP seam (docs/requirements-pii-mask.md). */
+  piiMask?: boolean
   mcp?: McpSelection[]
   /** Skills to mount when the session starts. Absent leaves them unchanged;
    *  `[]` clears the selection. A change releases the draft's container — the
@@ -343,7 +346,10 @@ export interface GurtApi {
     skills: SkillSelection[],
     /** Egress settings (`internal` + the allow list). Omitted = the defaults:
      *  a normal bridge, everything allowed and logged. */
-    network?: SessionNetwork
+    network?: SessionNetwork,
+    /** Mask PII/secrets on this session's ACP seam; only effective while a
+     *  detector backend is configured (see `getPiiStatus`). */
+    piiMask?: boolean
   ): Promise<SessionInfo>
   sessionRun(id: string): Promise<void>
   sessionEnqueue(id: string): Promise<void>
@@ -480,6 +486,19 @@ export interface GurtApi {
    *  where the daemon is a system service and gurt does not run `sudo`.
    *  Fire-and-forget: the row's own re-check reports the result. */
   machineStartDocker(): Promise<void>
+  /** Masking settings + whether masking can actually run (Settings → Masking,
+   *  and the New Session chip's enabled/disabled state). Never polls. */
+  getPiiStatus(): Promise<PiiStatus>
+  /** Save the masking settings; fetches a newly-picked pattern source and, for
+   *  a local presidio backend, brings its sidecar up. Returns the new status. */
+  setPiiSettings(settings: PiiSettings): Promise<PiiStatus>
+  /** Re-fetch one pattern source at its pinned ref and re-adapt it (§4.1) —
+   *  the "check for updates" action. Rejects when the fetch fails. */
+  refreshPiiSource(sourceId: string): Promise<PiiStatus>
+  /** One session's masking table — the real value behind each `[type:N]` token.
+   *  The chat view substitutes from it when its toggle is open; later rows
+   *  arrive on `pii-table`. Empty for a session that never masked anything. */
+  getPiiTable(sessionId: string): Promise<PiiTable>
 }
 
 /**
@@ -636,7 +655,13 @@ const METHODS = {
   gcRunNow: 'none', //          removes containers and images on the host
   getWelcomeMode: 'read', //    a UI preference, like the hotkeys below
   setWelcomeMode: 'write', //   same
-  machineStartDocker: 'none' // host GUI, like `openLogsFolder`
+  machineStartDocker: 'none', // host GUI, like `openLogsFolder`
+  // Masking is host policy: an operator that could read or lower it could
+  // unmask its own seam, and a refresh reaches the network.
+  getPiiStatus: 'none',
+  setPiiSettings: 'none',
+  refreshPiiSource: 'none',
+  getPiiTable: 'none' //        reals; the user's own view, never an operator's
 } as const satisfies Record<keyof GurtApi, Exposure>
 
 /** Runtime method list; `api:<method>` is the IPC channel per entry. */
@@ -685,6 +710,8 @@ export interface GurtEvents {
   /** One session's observed traffic changed — coalesced in main, so this is a
    *  few per second at worst even under an `npm install`. */
   'proxy-traffic': DomainEvents['proxy.traffic']
+  /** A session's masking table gained rows — the whole table. */
+  'pii-table': DomainEvents['session.pii']
   /** The local MCP servers a session selected and did not get, with the reason
    *  — the whole set per session, an empty one clearing it. */
   'mcp-fail': DomainEvents['mcp.fail']

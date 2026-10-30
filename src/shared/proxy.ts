@@ -99,6 +99,13 @@ export interface ProxyConfig {
   /** Extra names the proxy should recognise as itself, so an absolute-form
    *  request that ignored `NO_PROXY` is still routed rather than forwarded. */
   selfNames?: string[]
+  /**
+   * Where the proxy asks the host to rewrite MCP traffic for a masking session
+   * (docs/requirements-pii-mask.md §9.2): `<url>/reveal` and `<url>/encode`,
+   * each `{strings} → {strings}`. The URL carries a token only the proxy holds.
+   * Absent = the session does not mask, and MCP traffic is forwarded as is.
+   */
+  pii?: { url: string }
 }
 
 /** Base URL the session container reaches the proxy on. */

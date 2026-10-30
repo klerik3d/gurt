@@ -42,6 +42,7 @@ const api: Record<string, unknown> = {
   onBootProgress: subscribe('boot-progress'),
   onUpdateReady: subscribe('update-ready'),
   onProxyTraffic: subscribe('proxy-traffic'),
+  onPiiTable: subscribe('pii-table'),
   onMcpFail: subscribe('mcp-fail'),
   onHotkeyCycleWorkspace: subscribe('hotkey-cycle-workspace')
 }

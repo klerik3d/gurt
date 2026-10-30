@@ -388,6 +388,48 @@ the editor but is not wired to the runtime. SSH is not a supported credential
 kind — an entry left over from when it was resolves as an error telling you to
 replace it with a token.
 
+## PII / secret masking
+
+Optional per-session (`pii mask` chip in the composer; default on once a
+detector backend is configured, disabled outright while none is). It sits on the
+**ACP seam**: the prompt text going out to the agent is scanned and every entity
+found is replaced with a `[type:N]` token (`[email:1]`, `[us_ssn:2]`) — the type
+the agent needs, an ordinal per type, nothing else. What each token stands for
+lives in a per-session table on the host. The timeline holds the tokenized text,
+and the chat view substitutes the real values from the table when it renders;
+an eye toggle in the composer bar switches between real values and what the
+agent sees. See [docs/requirements-pii-mask.md](docs/requirements-pii-mask.md).
+
+- **No cryptography.** The table is `~/.gurt/pii-tables/<session>.json`
+  (`{"v":1,"tokens":{"email":{"1":"…"}}}`, owner-only, outside every container
+  mount), written before the prompt that uses a new token is sent. It lives as
+  long as the session and is deleted with it; tokens survive an app restart
+  because the table does. Ordinals are never reused, and the same value is the
+  same token for the whole session.
+- **Detection** is pluggable behind one `detect(text) -> spans` interface.
+  Settings → Masking picks the backend: `built-in` (regex + checksum, in
+  process) or `presidio` (a local docker sidecar gurt runs, or a remote analyzer
+  linked to a `pii-detector` credential). No backend selected *is* off.
+- **Patterns are not vendored.** The built-in detector runs whichever public
+  collection you pick — CommonRegex, Presidio's own recognizers, gitleaks' rules
+  — fetched at runtime from a **pinned commit/tag** (never a branch), adapted by
+  a small per-source parser, and cached under `~/.gurt/pii-patterns/`. The
+  network is only touched on first selection or an explicit "check for updates".
+
+For a masking session gurt also advertises the ACP `fs/*` and `terminal/*`
+client methods and answers them itself in the container, encoding what it hands
+the agent and revealing what the agent sends (requirements doc §9.1) — whether
+an adapter routes its file access and commands through them is up to the
+adapter; `acp.client.call` in the log shows which do.
+
+MCP traffic is rewritten at the session proxy, which asks the host to reveal
+what goes to a server and encode what comes back (§9.2); a message that cannot
+be rewritten is refused, never forwarded.
+
+Out of scope: free-text NER in the built-in detector, arbitrary HTTPS the agent
+opens itself, and anything an agent does inside its container without going
+through gurt.
+
 ## Run
 
 ```bash

@@ -193,3 +193,32 @@ export const PERMISSION_REQUEST = z.looseObject({
 
 /** Re-exported so callers name the type they normalize into in one place. */
 export type NormalizedConfigOption = SessionConfigOption
+
+// ---------------------------------------------------------------------------
+// Client methods the agent calls on gurt (fs/*, terminal/*)
+// ---------------------------------------------------------------------------
+
+export const FS_READ_REQUEST = z.looseObject({
+  path: z.string().min(1),
+  line: z.number().int().positive().nullish().catch(undefined),
+  limit: z.number().int().positive().nullish().catch(undefined)
+})
+
+export const FS_WRITE_REQUEST = z.looseObject({
+  path: z.string().min(1),
+  content: z.string()
+})
+
+export const TERMINAL_CREATE_REQUEST = z.looseObject({
+  command: z.string().min(1),
+  args: z.array(z.string()).nullish().catch(undefined),
+  env: z
+    .array(z.looseObject({ name: z.string().min(1), value: z.string() }))
+    .nullish()
+    .catch(undefined),
+  cwd: z.string().nullish().catch(undefined),
+  outputByteLimit: z.number().int().positive().nullish().catch(undefined)
+})
+
+/** `terminal/output`, `wait_for_exit`, `kill` and `release` all name a terminal. */
+export const TERMINAL_REF_REQUEST = z.looseObject({ terminalId: z.string().min(1) })

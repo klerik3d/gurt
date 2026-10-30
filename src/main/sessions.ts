@@ -49,7 +49,10 @@ import type { Bus } from './bus'
 import type { AdminHooks } from './mcp/gurtServer'
 import type { ContainerStatusReason, SessionStateReason } from '../shared/events'
 import type { LaunchContext } from './containers'
-import { lineBuffer, spawnAcpAdapter } from './provision'
+import type { PiiMask } from './pii'
+import { lineBuffer, spawnAcpAdapter, spawnInContainer } from './provision'
+import { createAcpClient, type AcpClient } from './acpClient'
+import { servePiiRewrite, stopPiiRewrite } from './piiRewrite'
 import { resolveProxyPlan } from './proxy/config'
 import type { ProxyConfig } from '../shared/proxy'
 import { JsonRpcPeer } from './jsonrpc'
@@ -258,6 +261,9 @@ interface Connection {
    *  none at all. */
   promptCapabilities?: PromptCapabilities | undefined
   kill: () => void
+  /** The `fs/*` + `terminal/*` handlers, for a session that masks. Their
+   *  processes die with the connection. */
+  client?: AcpClient | undefined
   /** Set by `detach()` right before it kills *this* adapter process — the
    *  resulting 'close' is expected, not a crash. Lives on the connection
    *  (not the session) so a session that has since reconnected to a
@@ -561,7 +567,11 @@ export class SessionManager {
 
   constructor(
     private events: SessionEvents,
-    private bus: Bus
+    private bus: Bus,
+    /** The ACP seam's masking layer (docs/requirements-pii-mask.md). Encodes the
+     *  outbound prompt; the timeline keeps tokens and the chat view reveals them
+     *  from the session's table. */
+    private mask: PiiMask
   ) {}
 
   private emitState(s: Session, reason?: SessionStateReason, err?: unknown): void {
@@ -736,7 +746,8 @@ export class SessionManager {
      *  seeding keys on; `[]` = chosen to be none, which it must not overwrite
      *  (docs/requirements-skills.md §4.3). */
     skills: SkillSelection[] | undefined = undefined,
-    network?: SessionNetwork
+    network?: SessionNetwork,
+    piiMask = false
   ): SessionInfo {
     const clean = sanitizeSessionNetwork(network)
     // Gate 1 of four (docs/requirements-session-operator.md §2.1): a session
@@ -774,6 +785,10 @@ export class SessionManager {
       // session created before this existed and one created with the default
       // read the same way everywhere downstream.
       ...(clean ? { network: clean } : {}),
+      // Stored as asked for, not as currently resolvable: configuring a
+      // detector backend later must switch masking on for the sessions that
+      // already asked for it, exactly the way `PiiMask.ready` gates it at use.
+      piiMask,
       startPrompt,
       ...(Object.keys(configValues).length ? { configValues } : {})
     }
@@ -883,6 +898,7 @@ export class SessionManager {
       role?: SessionRole
       repos?: string[]
       autoAllow?: boolean
+      piiMask?: boolean
       mcp?: McpSelection[]
       skills?: SkillSelection[]
       network?: SessionNetwork
@@ -917,6 +933,7 @@ export class SessionManager {
       // chip it was just given and come back up in the old mode.
       s.info.modeId = undefined
     }
+    if (patch.piiMask !== undefined) s.info.piiMask = patch.piiMask
     if (patch.mcp !== undefined) s.info.mcp = patch.mcp
     // Takes effect at the next start: the network flag decides how the session's
     // own network is created, and a live one cannot be edited in place (§7.2).
@@ -1054,7 +1071,8 @@ export class SessionManager {
       source.skills?.map((k) => ({ ...k })),
       // Through the sanitizer, which is also the deep copy: the two sessions
       // must not share a policy's domain array.
-      sanitizeSessionNetwork(source.network)
+      sanitizeSessionNetwork(source.network),
+      source.piiMask ?? false
     )
   }
 
@@ -1082,6 +1100,9 @@ export class SessionManager {
       // directory, so removing it any earlier races the daemon.
       .then(() => this.events.deleteScratch(workspace, task, sessionId))
     this.sessions.delete(sessionId)
+    // Its correspondence table goes with it — the tokens it produced end here.
+    this.mask.drop(sessionId)
+    stopPiiRewrite(sessionId)
     this.events.deleteLog(s.ref.workspace, s.ref.task, sessionId)
     this.events.stopGurtServer(sessionId)
     this.bus.emit('session.deleted', { sessionId })
@@ -1396,7 +1417,13 @@ export class SessionManager {
       ...(await this.events.resolveMcpServers(s.ref, s.info.id, s.info.repos[0], s.info.mcp)),
       await this.events.resolveGurtServer(s.ref, s.info.id, this.gurtHooks(s))
     ]
+    // A masking session's MCP traffic is rewritten at the proxy (§9.2) through
+    // the host's endpoint; any other session's is forwarded as it always was.
+    let piiUrl: string | undefined
+    if (this.maskEnabled(s)) piiUrl = await servePiiRewrite(s.info.id, this.mask)
+    else stopPiiRewrite(s.info.id)
     const plan = await resolveProxyPlan(s.ref, s.info.id, ctx.proxy.token, s.info.mcp, {
+      piiUrl,
       // One URL per built-in, because gurt still runs one listener per (session,
       // mcp id); §10.4 collapses these into a single `hostMcpUrl`.
       hostMcpUrls: Object.fromEntries(hosted.map((m) => [m.name, m.url])),
@@ -1584,6 +1611,8 @@ export class SessionManager {
       if (s.ref.workspace !== ws || s.ref.task !== task) continue
       this.detach(id)
       this.events.stopGurtServer(id)
+      this.mask.drop(id)
+      stopPiiRewrite(id)
       this.sessions.delete(id)
       this.bus.emit('session.deleted', { sessionId: id })
     }
@@ -1603,6 +1632,8 @@ export class SessionManager {
       if (s.ref.workspace !== ws) continue
       this.detach(id)
       this.events.stopGurtServer(id)
+      this.mask.drop(id)
+      stopPiiRewrite(id)
       this.sessions.delete(id)
       this.bus.emit('session.deleted', { sessionId: id })
     }
@@ -1799,6 +1830,7 @@ export class SessionManager {
       // Only clear the slot if it still holds *this* process — a replaced
       // container's adapter must not evict its successor on its way out.
       if (this.connections.get(key)?.peer === peer) this.connections.delete(key)
+      conn.client?.dispose()
       const expected = conn.expectedExit === true
       const dead = this.sessions.get(key)
       // Captured before anything below resets it — "was this session doing
@@ -1842,6 +1874,25 @@ export class SessionManager {
     peer.onNotification('session/update', (params) => this.onSessionUpdate(params))
     peer.onRequest('session/request_permission', (params) => this.onPermission(params))
 
+    // The client methods — only for a session that masks. Advertising them is
+    // what makes an agent route its file access and commands through gurt, where
+    // the PII barrier can reach them (docs/requirements-pii-mask.md §9); a
+    // session that does not mask keeps its agent doing both for itself, exactly
+    // as before.
+    const barrier = this.maskEnabled(s)
+    if (barrier) {
+      conn.client = createAcpClient({
+        session: key,
+        agent: ctx.agent.id,
+        cwd: s.remoteCwd ?? ctx.remoteWorkspaceFolder,
+        exec: (argv, env) => spawnInContainer(ctx, argv, env),
+        encode: (text) => this.mask.encode(key, text),
+        reveal: (text) => this.mask.decode(key, text)
+      })
+      for (const [method, handler] of Object.entries(conn.client.handlers))
+        peer.onRequest(method, handler)
+    }
+
     let init
     try {
       init = await peer.request(
@@ -1849,8 +1900,8 @@ export class SessionManager {
         {
           protocolVersion: 1,
           clientCapabilities: {
-            fs: { readTextFile: false, writeTextFile: false },
-            terminal: false,
+            fs: { readTextFile: barrier, writeTextFile: barrier },
+            terminal: barrier,
             // Opt in to boolean config options so agents may expose native toggles
             // (e.g. Claude's "Fast mode") instead of degrading them to a select.
             session: { configOptions: { boolean: {} } }
@@ -1976,6 +2027,21 @@ export class SessionManager {
     }
   }
 
+  /**
+   * Whether this session's prompts are masked right now: the session asked for
+   * it *and* a detector backend resolves (§5.1's "nothing is masked while no
+   * backend is selected").
+   *
+   * The timeline itself holds the *tokenized* text — what the agent saw and
+   * wrote — and the chat view substitutes reals from the session's table when
+   * it renders (so its open/closed toggle is a pure view setting, and nothing
+   * on disk but the table ever holds a real value). Tool calls the agent makes
+   * through MCP servers are a separate seam (§7).
+   */
+  private maskEnabled(s: Session): boolean {
+    return !!s.info.piiMask && this.mask.ready()
+  }
+
   /** Build the ACP prompt content blocks: the message text, a `resource_link` for
    *  every attached context item, and an `image` block per attached image (only sent
    *  when the agent advertised `promptCapabilities.image`). Context paths are resolved
@@ -2013,7 +2079,21 @@ export class SessionManager {
     images?: PromptImage[]
   ): Promise<{ stopReason?: string | undefined; threw: boolean }> {
     this.bus.emit('session.activity', { sessionId: s.info.id })
-    this.push(s, { kind: entryKind, text })
+    // The one outbound seam (§2.1): from here on the agent only ever sees
+    // tokens, and the timeline records the same tokenized text — the chat view
+    // reveals it from the table. A detector that is down must end the turn with
+    // a visible error, never silently send the cleartext; the error is held
+    // until the `try` below so it is reported like any other turn failure.
+    let outbound = text
+    let maskError: Error | undefined
+    if (this.maskEnabled(s)) {
+      try {
+        outbound = await this.mask.encode(s.info.id, text)
+      } catch (e) {
+        maskError = e instanceof Error ? e : new Error(String(e))
+      }
+    }
+    this.push(s, { kind: entryKind, text: outbound })
     // Prompt start: the turn is incomplete until `complete` fires; clear any
     // prior violation overlay.
     s.turnComplete = false
@@ -2031,12 +2111,13 @@ export class SessionManager {
     // detector needs to tell "the plan said no" from "the code broke".
     let detail: string | undefined
     try {
+      if (maskError) throw maskError
       const conn = await this.attach(s)
       const result = await conn.peer.request(
         'session/prompt',
         {
           sessionId: s.acpSessionId,
-          prompt: this.promptBlocks(s, text, context, images)
+          prompt: this.promptBlocks(s, outbound, context, images)
         },
         PROMPT_RESULT
       )
@@ -2266,7 +2347,11 @@ export class SessionManager {
       // Inherited, never chosen: a session running internal cannot draft one
       // with open egress (§6.2), and `AgentSessionRequest` has no field to ask
       // with — a rule the agent cannot express is one it cannot argue about.
-      sanitizeSessionNetwork(spawner.info.network)
+      sanitizeSessionNetwork(spawner.info.network),
+      // A masked session may not draft an unmasked one: the prompt it is
+      // handing over is its own text, and letting it opt the draft out would
+      // be a way around the seam that masked the spawner in the first place.
+      spawner.info.piiMask || (req.piiMask ?? false)
     )
     // `renameSession` mutates the same info object createSession stored.
     if (req.title?.trim()) this.renameSession(info.id, req.title)
@@ -2694,7 +2779,8 @@ export class SessionManager {
     }
   }
 
-  /** Flatten ACP tool-call content blocks into a plain-text preview. */
+  /** Flatten ACP tool-call content blocks into a plain-text preview. Tokens stay
+   *  tokens here, like every other inbound field — the chat view reveals them. */
   private toolDetail(content: AcpToolContent | undefined): string | undefined {
     if (!content?.length) return undefined
     const parts: string[] = []
@@ -2725,8 +2811,12 @@ export class SessionManager {
       case 'agent_thought_chunk': {
         const u = parseOrDrop(TEXT_CHUNK, raw, raw.sessionUpdate)
         const kind = raw.sessionUpdate === 'agent_message_chunk' ? 'agent' : 'thought'
-        const text = u?.content?.type === 'text' ? (u.content.text ?? '') : ''
-        if (!text) return
+        const received = u?.content?.type === 'text' ? (u.content.text ?? '') : ''
+        if (!received) return
+        // Inbound text goes onto the timeline exactly as the agent wrote it,
+        // tokens included: a token split across two chunks is whole again in the
+        // accumulated entry, and the chat view reveals it at render time.
+        const text = received
         const last = s.entries[s.entries.length - 1]
         if (last && last.kind === kind) {
           this.append(s, { type: 'append', id: last.id, text, at: Date.now() })

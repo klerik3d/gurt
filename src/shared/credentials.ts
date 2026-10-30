@@ -16,6 +16,7 @@ export type CredentialKind =
   | 'agent-token'
   | 'mcp-token'
   | 'oauth'
+  | 'pii-detector'
 
 export interface CredentialEntry {
   /** uuid, stable — configs link by this. */
@@ -148,6 +149,18 @@ export const CREDENTIAL_KINDS: CredentialKindDef[] = [
     implemented: false
   },
   {
+    kind: 'pii-detector',
+    label: 'pii detector',
+    hint:
+      'URL + api key of an external PII detector (a Presidio analyzer you run). ' +
+      'Linked from ⚙ Masking; not a git host, so it needs no hosts.',
+    fields: [
+      { key: 'url', label: 'analyzer url', placeholder: 'https://presidio.internal:3000' },
+      { key: 'apiKey', label: 'api key (optional)', secret: true, placeholder: '' }
+    ],
+    implemented: true
+  },
+  {
     kind: 'agent-token',
     label: 'agent token',
     // Presented as a peer of `oauth sign-in` below, the hint saying which path
@@ -197,8 +210,8 @@ export const CREDENTIAL_KINDS: CredentialKindDef[] = [
 ]
 
 /** Kinds that are not a git transport: they link explicitly (from an agent, from
- *  an MCP registry entry) and never auto-match a host. */
-const NON_GIT_KINDS: readonly CredentialKind[] = ['agent-token', 'mcp-token', 'oauth']
+ *  an MCP registry entry, from Settings → Masking) and never auto-match a host. */
+const NON_GIT_KINDS: readonly CredentialKind[] = ['agent-token', 'mcp-token', 'oauth', 'pii-detector']
 
 /** Whether a kind matches a git host (auto-match, forge verification, hosts field). */
 export const isGitKind = (kind: CredentialKind): boolean => !NON_GIT_KINDS.includes(kind)
@@ -229,6 +242,10 @@ export const signedOutError = (entry: CredentialEntry): string =>
  */
 export const oauthSignedOut = (entry: CredentialEntry): boolean =>
   entry.kind === 'oauth' && (!!entry.data['signedOut'] || !entry.data['refresh'])
+
+/** pii-detector entries — the pool Settings → Masking links against (§5.3). */
+export const piiCredentials = (credentials: CredentialEntry[]): CredentialEntry[] =>
+  credentials.filter((c) => c.kind === 'pii-detector')
 
 /** Agent-token and oauth entries — the pool the Agents editor links against. */
 export const agentCredentials = (credentials: CredentialEntry[]): CredentialEntry[] =>

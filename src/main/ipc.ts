@@ -90,7 +90,10 @@ const OPAQUE_ARGS = new Set<keyof GurtApi>([
   // The same payload, and one more reason: a probe of a not-yet-saved entry
   // carries the pasted secret inline, because there is no credential to link
   // to yet (§4.6).
-  'probeMcpServer'
+  'probeMcpServer',
+  // Masking settings name a remote analyzer's url and the credential behind
+  // it — a config payload, opaque for the same reason as an MCP entry.
+  'setPiiSettings'
 ])
 
 /** Args for the DBG trace: a count for the opaque methods, the (redacted,
@@ -118,6 +121,7 @@ export function registerIpc(): void {
   kernel.bus.on('provision.log', (e) => broadcast('provision-log', e))
   kernel.bus.on('doctor.row', (e) => broadcast('doctor-row', e))
   kernel.bus.on('proxy.traffic', (t) => broadcast('proxy-traffic', t))
+  kernel.bus.on('session.pii', (e) => broadcast('pii-table', e))
   kernel.bus.on('mcp.fail', (f) => broadcast('mcp-fail', f))
   kernel.bus.on('notification.created', (record) => broadcast('notification', record))
   kernel.bus.on('notification.read', (e) => broadcast('notification-read', e))
@@ -361,7 +365,8 @@ export function registerIpc(): void {
       configValues,
       role,
       skills,
-      network
+      network,
+      piiMask
     ) => {
       // Anything that can bring a container up waits out the boot restore: the
       // reconcile rewrites container records from a pre-start snapshot, and a
@@ -407,7 +412,8 @@ export function registerIpc(): void {
         // Not validated here: `SessionManager.createSession` sanitizes it, and
         // it has to — the agent-drafted and duplicate paths never pass this
         // boundary at all.
-        network
+        network,
+        !!piiMask
       )
     },
     // Same boot gate as createSession — see the comment there.
@@ -517,7 +523,11 @@ export function registerIpc(): void {
     setWelcomeMode: (mode) => store.setWelcomeMode(sanitizeWelcomeMode(mode)),
     firstRunStart: (kind, token) => firstRunStart(kernel, kind, token),
     firstRunSignIn: (kind) => firstRunSignIn(kernel, kind),
-    firstRunCancelSignIn: async () => cancelFirstRunSignIn()
+    firstRunCancelSignIn: async () => cancelFirstRunSignIn(),
+    getPiiStatus: async () => kernel.pii.status(),
+    setPiiSettings: (settings) => kernel.pii.setSettings(settings),
+    refreshPiiSource: (sourceId) => kernel.pii.refreshSource(sourceId),
+    getPiiTable: async (sessionId) => kernel.pii.table(sessionId)
   }
 
   // Renderer records: validated, rate-limited and truncated inside `logRenderer`
