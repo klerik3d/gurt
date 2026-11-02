@@ -1,4 +1,4 @@
-# Contributing to gurt
+# Contributing to Gurt
 
 Thanks for your interest in contributing! This is a short, factual guide to
 getting the project running and getting a change merged.
@@ -8,15 +8,16 @@ getting the project running and getting a change merged.
 - **Node.js >= 22** and **npm >= 9** (enforced via `engine-strict` in
   `.npmrc` — install fails fast on an older toolchain). The pinned package
   manager is npm (see `packageManager` in `package.json`).
-- **Docker** — required at runtime: gurt provisions devcontainer environments
+- **Docker** — required at runtime: Gurt provisions devcontainer environments
   and runs agent sessions in them. UI-only work and most unit tests run
   without it.
 - Platforms: **macOS and Linux are the primary platforms; Windows is a
   candidate (untested)**.
 
-You can also develop gurt itself inside its devcontainer (`.devcontainer/`),
+You can also develop Gurt itself inside its devcontainer (`.devcontainer/`),
 which ships Node 22, Docker-in-Docker and a headless display for Electron —
-see the "Dev container" section of the [README](README.md).
+see the [Dev container](docs/development.md#dev-container) section of
+docs/development.md.
 
 ## Setup
 
@@ -41,8 +42,8 @@ npm run dev
 
 This starts electron-vite: the Electron app with the renderer served by Vite
 (hot reload). Starting environments from the app requires a running Docker
-daemon. See the [README](README.md) for `GURT_ROOT`, logging and other
-runtime details.
+daemon. See [docs/development.md](docs/development.md#run) for `GURT_ROOT`,
+logging and other runtime details.
 
 ## Building
 
@@ -53,8 +54,9 @@ npm run dist     # build + electron-builder package → release/
 
 `npm run dist` packages macOS (unsigned dmg + zip) and `npm run
 dist:linux` packages Linux (AppImage + deb); the release workflow runs
-both, one job per runner. See `electron-builder.yml` and the "Packaging"
-section of the README.
+both, one job per runner. See `electron-builder.yml` and the
+[Packaging](docs/development.md#packaging-alpha-builds) section of
+docs/development.md.
 
 ## Type-checking and lint
 
@@ -78,7 +80,8 @@ the same command CI uses. To run one file: `node --test scripts/<name>.test.mjs`
 Smoke tests (`scripts/smoke*.mjs`) drive the built app end-to-end with
 Playwright. `npm run smoke` runs the docker-free subset (CI runs it as its own
 job); the rest need Docker and agent secrets, and are run by hand after
-`npm run build`. The README's "Smoke tests" section lists each script.
+`npm run build`. The [Smoke tests](docs/development.md#smoke-tests) section
+of docs/development.md lists each script.
 
 ### Coverage
 
@@ -154,7 +157,7 @@ The dividing line is instead **does it need the built app and a display** —
 that is the smoke tier — and everything else is one flat pile of `*.test.mjs`,
 whether it checks a pure function or drives a real HTTP server.
 
-No test framework, because gurt is supply-chain-sensitive (see `SECURITY.md`:
+No test framework, because Gurt is supply-chain-sensitive (see `SECURITY.md`:
 it installs packages into containers holding your repos and agent secrets).
 The repo blocks npm lifecycle scripts, pins Actions by SHA and devcontainer
 features by digest, and keeps a deliberately small dependency tree. A test

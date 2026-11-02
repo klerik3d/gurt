@@ -57,8 +57,8 @@ function updatable(): boolean {
  *
  * `GURT_UPDATE_URL`, when set, overrides the feed baked into the build (the
  * GitHub Releases provider electron-builder infers from the repo) with a
- * `generic` provider pointing at that URL — see README's "Testing
- * auto-update locally" for the local static-server loop this exists for.
+ * `generic` provider pointing at that URL — see the "Auto-update" section of
+ * docs/development.md for the local static-server loop this exists for.
  */
 export function initAutoUpdater(): void {
   if (initialized) return
