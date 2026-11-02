@@ -1,620 +1,227 @@
-# gurt
+<div align="center">
+
+<img src="resources/icon.png" width="112" alt="Gurt logo">
+
+# Gurt
+
+**Run coding agents in isolated containers on your own machine,<br>with a queue, a review step and control over what each agent can reach.**
 
 [![CI](https://github.com/klerik3d/gurt/actions/workflows/ci.yml/badge.svg)](https://github.com/klerik3d/gurt/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/klerik3d/gurt)](https://github.com/klerik3d/gurt/releases/latest)
 [![Renovate enabled](https://img.shields.io/badge/renovate-enabled-brightgreen.svg)](https://renovatebot.com)
 
-A local-first manager for dev environments and coding agents, built as an
-Electron app. The name "gurt" is a transcription of the Ukrainian word «гурт»
-("group").
+[Install](#install) · [Quick start](#quick-start) · [Concepts](#concepts) · [Security model](#security-model) · [Docs](#documentation)
 
-Platforms: **macOS and Linux are the primary platforms; Windows is a candidate
-(untested)**. Development happens in the devcontainer (see below).
+<img src="docs/media/hero.png" alt="Gurt: three scopes, four sessions on Claude Code, Codex and Gemini CLI; a Codex reviewer's verdict on an executor's changes" width="100%">
 
-## Project layout
+</div>
 
-Where to look in the code (the domain model itself is described below):
+Gurt is a local-first desktop app (Electron). Each agent session gets its own dev container, its own Docker network and its own proxy. Your repositories and git credentials stay on your machine. The name is a transcription of the Ukrainian «гурт» ("group").
 
-- `src/main/` — the Electron main process, the app's core (Node side):
-  provisioning, ACP, git credentials, the MCP servers, persistence.
-- `src/preload/` — the preload bridge: derives `window.gurt` from the shared
-  API definition and exposes it to the renderer.
-- `src/renderer/` — the React UI (renderer process).
-- `src/shared/` — types shared by main and renderer, including the IPC
-  contract.
-- `resources/proxy/gurt-proxy.mjs` — the per-session egress/MCP proxy. Plain
-  dependency-free Node, bind-mounted into a stock `node:alpine` container and
-  run as-is, so it is not built with the app; its host-side contract (the
-  config file it reads) is `src/main/proxy/config.ts`.
+It is for developers who already use a coding agent daily and worry about what it can touch, and for people running several agents at once who are tired of them trampling one working tree. It is not for teams that want a hosted service or central administration: Gurt is a single-user app with no server.
 
-```
-renderer (React)  ⇄  preload (window.gurt)  ⇄  main (kernel)
-        src/renderer/       src/preload/         src/main/
-                    └── src/shared/api.ts ──┘
-```
+## Why Gurt
 
-Entry point and main flow: `package.json` `"main": "out/main/index.js"` is the
-build of `src/main/index.ts`, which calls `registerIpc()` (`src/main/ipc.ts`);
-that in turn builds the app core via `createKernel()` (`src/main/kernel.ts`).
-`src/shared/api.ts` is the single source of truth for IPC — adding a method
-there is the whole wiring, main and preload both derive from it.
-`src/main/sessions.ts` is the heart of the session lifecycle
-(start/stop/queue/persistence).
+- **One container per session.** Every session runs in its own dev container, created on first start and destroyed with the session. Containers are never shared or reused between sessions.
+- **Git credentials stay on the host.** Pull, push and pull requests run on the host. The container gets plain local git and never sees a git token. Gurt uses your own SSH keys or `gh` login only for a repo you explicitly link to a "host credentials" entry, never as a fallback.
+- **No two agents on one working tree.** A writing session holds its clone while it runs. Another session for that clone waits in the queue: **Run now** refuses and tells you to queue it. Writers on one repo therefore run one after another.
+- **Several repositories at once.** A scope can hold clones of several repositories. Executors on different repos of one scope run side by side. A researcher reads several repos in one session and can draft the follow-up work, one session per repo.
+- **Any agent through one UI.** Claude Code, Codex, Gemini CLI, opencode and Pi all use the same chat, permissions, queue and review flow.
 
-Historical specs and design notes live in [docs/](docs/README.md).
+## How it fits together
 
-## Model
+```mermaid
+%%{init: {"flowchart": {"wrappingWidth": 320, "nodeSpacing": 30, "rankSpacing": 45}}}%%
+flowchart TB
+  subgraph machine["your machine"]
+    direction TB
+    subgraph gurt["Gurt"]
+      direction LR
+      reg["<b>registry</b> · picked per session<br/>agents · envs · MCP servers · skills · credentials"]
+      hgit["<b>host-side git</b><br/>pull · push · pull request"]
+    end
 
-All gurt metadata lives outside the repositories, under `~/.gurt/` — a working
-tree is never polluted with gurt files.
+    subgraph scope["scope · checkout-crash"]
+      direction TB
+      subgraph clones["clones · one per scope, shared by all its sessions"]
+        direction LR
+        sf[("storefront<br/>branch checkout-crash")]
+        pay[("payments-api<br/>branch checkout-crash")]
+      end
+      subgraph s1["session · executor"]
+        direction TB
+        a1["dev container<br/>agent: Claude Code<br/>skills: money-math"] --> x1["proxy<br/>MCP: Jira"]
+      end
+      subgraph s3["session · researcher"]
+        direction TB
+        a3["dev container<br/>agent: Gemini CLI"] --> x3["proxy<br/>MCP: Sentry"]
+      end
+      subgraph s2["session · executor"]
+        direction TB
+        a2["dev container<br/>agent: Codex"] --> x2["proxy<br/>MCP: Docs search"]
+      end
+    end
+  end
 
-- **workspace** — top-level divider, a directory in `~/.gurt/<ws>/`
-- **repo** — registered per workspace: git URL + optional credential link;
-  add/edit/delete via Settings → Repos. A **local** repo is one gurt created
-  itself — a bare repo under `~/.gurt/<ws>/repos/`, made from the draft's repo
-  picker ("new local repository…") or Settings — for a project with no forge
-  yet: tasks deliver into it with **Merge into main**, and **Publish to
-  GitHub…** later moves it to a forge, adopting its devcontainer as an env.
-  See [docs/requirements-new-projects.md](docs/requirements-new-projects.md)
-- **agent** — an instance of a built-in kind (claude code / codex / gemini /
-  opencode / pi).
-  The registry starts empty; add instances as needed via ⚙ in the sidebar. Each
-  maps to its secret by linking an `agent-token` credential (never storing it
-  inline, like a repo's credential link); env var name + extra env are per-agent
-- **task** — unit of work, `~/.gurt/<ws>/<task>/`, holds repo clones; deletable
-- **env** — a workspace entity and purely a *definition*: a mandatory
-  devcontainer.json (+ companion Dockerfile when it has `build`), stored
-  entirely in gurt and seeded from the repo's own files (then edited in gurt —
-  the repo is never the source of truth at runtime). It is a template, not an
-  instance: any number of sessions may run the same env at once.
-  Two envs are bundled rather than defined: `operator` (see the operator role) and
-  `starter` — `node:22-trixie`, image-only, offered to every role for a repo
-  that has no devcontainer yet.
-- **container** — owned by exactly one session, 1:1. Created at that session's
-  first start, stopped when it goes idle, destroyed with it; never shared with
-  or inherited by another session. Docker is the registry (every container
-  carries the id-label `gurt.session=<id>`), and the record on the session is a
-  cache reconciled against the daemon at boot. Managed from the task pane
-  (stop / delete).
-- **clone** — `~/.gurt/<ws>/<task>/<repo>/` on branch `gurt/<task>`, shared by
-  every session of the task that picked that repo, and outliving all of them
-  (it holds their uncommitted work). Because it is one working tree, a repo is
-  **exclusive**: only one session of the task may hold it at a time — where
-  "hold" means mid-start or owning a live container, and only for the roles
-  that take the lock (an executor and a reviewer; a researcher mounts the repo
-  read-only and holds nothing). An idle session whose
-  container has stopped releases it for the next one — and while something is
-  queued for that repo, the stop happens the moment the holder's turn ends
-  instead of after the idle grace period.
-- **session** — the primary entity: (workspace, task, env, role, repo, agent,
-  startPrompt, state) + its container + chat history + optional ACP session id.
-  States: `draft → queued → starting → started`.
-- **role** — what a session is *for*, chosen at creation (editable while it is
-  still a draft) and driving its mounts, its clone lock and its tool set
-  instead of being inferred from repo count. See
-  [docs/requirements-session-roles.md](docs/requirements-session-roles.md):
-  - **executor** — today's worker: one repo, read-write, holds the clone
-    exclusively, ends every turn with `complete` (the turn contract below).
-  - **researcher** — read-only, locks nothing (so it never blocks and is never
-    blocked), no deliverable and no turn contract; the only role that may hold
-    several repos at once. Answers in chat.
-  - **reviewer** — judges one clone's *uncommitted* changes: read-only, but
-    holding the clone lock so nothing can move under it. Its verdict is plain
-    chat text and gates nothing.
+  forge[("git forge")]
+  out(("internet · model API<br/>remote MCP servers"))
 
-  Read-only means Docker `readonly` bind mounts, not a convention. A researcher
-  and a reviewer are also offered `create_session` instead of `complete`: it
-  **drafts** another session in the same task (a fixer executor, a reviewer),
-  fully configured. A draft never runs by itself — the user reviewing and
-  launching it is the approval step — and nothing flows back to the spawner.
-
-Sidebar: workspace → task → session. A task click opens the **task pane** (the
-containers of its sessions + this task's queued sessions). A session click opens
-its pane: chat when `started`, otherwise the start prompt + actions.
-
-### Scope terminals
-
-The narrow right activity bar is available in Scope and Git modes. Its terminal
-button (default **⌘/Ctrl+4**, configurable in Settings → Hotkeys) toggles a
-resizable terminal panel. Opening it creates the first shell for the selected
-scope if needed; **+** adds another terminal and each tab's **×** closes it.
-Tabs sit in the panel header, start as **Terminal 1**, **Terminal 2**, and can be
-renamed with a double-click or **F2**. **Enter** saves and **Escape** cancels.
-Shells start on the host in `~/.gurt/<workspace>/<scope>/`.
-
-Switching scopes, workspaces, agent environments or views, and hiding the panel,
-keeps each shell running with its screen, scrollback and unfinished input intact.
-Terminals live only for the current application run: quitting closes them, and
-no terminal session or screen is restored at startup. Deleting a scope or
-workspace closes its terminals and discards their in-memory state. This uses
-xterm.js in the renderer and node-pty in the main process; terminal input and
-output are excluded from application logs and from the agent tool surface.
-
-Both sidebars toggle on a repeated activity-bar click or shortcut. **⌘/Ctrl+2**
-and **⌘/Ctrl+3** show/hide the left Scope and Git sidebar respectively; selecting
-a different mode opens its sidebar. The central view stays open when its sidebar
-is hidden.
-
-### Duplicate / delete
-
-A session set up wrong is usually noticed once it is already running, so both
-ways out are offered in every state — from the sidebar row (hover), from the
-draft/queued/starting pane, and from the ⋯ menu in the pane header (the only one
-a chat has):
-
-- **duplicate** copies the session into a new **draft** of the same task, named
-  `<title> (copy)`: role, env, repos, agent, MCP/skills/git/auto-allow, config
-  picks and the first prompt all come along, nothing runtime-derived does. Fix the
-  setting that was wrong, then run it.
-- **delete** removes the session in any state — running or mid-start included —
-  and everything it owns: its container, its adapter, its host servers, its chat
-  log. The clone and its uncommitted work stay, since a clone outlives every
-  session of its task.
-
-### Sessions, queue, serialization
-
-Concurrent access to one working tree is serialized through a **global FIFO
-queue** (no git worktrees). Creating a session offers **Run now** / **Add to
-queue** / **Save draft**:
-
-- **draft** never runs until you run/enqueue it.
-- **queued** waits in the queue; the scheduler starts an item when its target
-  (task, repo) is free — i.e. no session is starting or holding a live container
-  on that clone. A repo frees when its holder's container comes down, and with
-  something queued behind it that is immediate: the holder's turn ends, its
-  container is stopped (`reason: queue`), and the next item starts. Two queued
-  sessions for one repo therefore run strictly one after another, back to back.
-  A holder that is mid-turn or mid-start is never cut off — the queue waits for
-  it — and with an empty queue containers stay up for the usual idle grace
-  period, ready for a follow-up prompt.
-- **Run now** bypasses the queue and starts immediately; if another session is
-  already working on that repo it confirms first (two agents, one working tree).
-
-The queue survives restart (derived from `state: "queued"` + `queuedAt`); the
-scheduler runs once after sessions are restored. A failed start drops the
-session back to draft with the error shown, and does not block the queue.
-
-## How a session starts
-
-Provisioning wraps the official `@devcontainers/cli` rather than driving Docker
-itself: features are injected via `--additional-features`, the stored env config
-via `--override-config`, identity labels via `--id-label`, secrets via
-`--remote-env`. Only container discovery and stop go through the docker CLI —
-with the Docker labels as the source of truth (hence the reconcile at boot).
-
-1. clone repo into `~/.gurt/<ws>/<task>/<repo>/` (if missing), branch `gurt/<task>`
-2. when the env's devcontainer has a `build` section, the image is built first:
-   a temporary snapshot of the clone at HEAD (`git archive` — the working clone
-   is never touched) gets the env's devcontainer.json + Dockerfile written into
-   its `.devcontainer/`, then `docker build` runs with the config's
-   args/target. Images are tagged by content (repo url + commit + Dockerfile +
-   build config), so an unchanged env is reused, including one pre-built from
-   Settings → Environments (the `build` button there, with an exists/missing
-   badge per env).
-3. `devcontainer up` (bundled `@devcontainers/cli`, spawned via Electron's own
-   binary in Node mode) injecting **only** the `node` feature + gurt id-labels.
-   The container belongs to the starting session (`gurt.session=<id>`); its own
-   stopped container is restarted in place, another session's is never taken.
-4. on the first connection into a container, the session's ACP adapter is
-   npm-installed globally via `devcontainer exec` (claude:
-   `@agentclientprotocol/claude-agent-acp`, codex: `@agentclientprotocol/codex-acp`,
-   gemini: `@google/gemini-cli` (run as `gemini --experimental-acp`),
-   opencode: `opencode-ai`, pi: `pi-acp` + `@earendil-works/pi-coding-agent`,
-   the CLI the adapter spawns) — cached per **container id**, so a container that is
-   stopped and restarted keeps its install and a replaced one reinstalls.
-5. the session's own Docker network (`gurt-s-<id>`, labelled
-   `gurt.session=<id>`) and its **proxy container** are ensured, and the
-   container is switched onto that network with no restart (`docker network
-   connect`/`disconnect` — a converge against what the daemon reports, so a
-   reused or half-attached container lands in the same place). The proxy is a
-   stock `node:22-alpine` running one bind-mounted script (`gurt.proxy=<id>`),
-   sitting on the session network *and* on a shared `gurt-egress` bridge, and it
-   is where every MCP call and — in `internal` sessions — every byte of egress
-   goes. Everything above runs on the open network, because the image build,
-   the features, `postCreate` and the adapter install all need it
-   (docs/requirements-mcp-proxy.md §7.3); the provisioning log records the
-   switch.
-6. ACP `session/new`, then the session's `startPrompt` is sent as the first
-   prompt. ACP (JSON-RPC over stdio) runs through `devcontainer exec`; the agent
-   secret is passed via `--remote-env <secretEnv>=<secret>`. One adapter process
-   per session, held under the session id and tagged with the container it was
-   spawned into — a connection cannot outlive that container.
-
-The materialized env config (the stored devcontainer.json, with `build`
-replaced by the built `image` tag when present) is ALWAYS passed via
-`--override-config` — to `up` and to every `exec` (exec re-resolves the
-config and fails without it).
-
-Sessions are persisted to `<ws>/<task>/sessions.json` (info incl. state /
-startPrompt / queuedAt / its container record, ACP session id, chat history) and
-restored on app start; `task.json` is now only the marker that makes a directory
-a task. At boot the restored container records are reconciled against
-`docker ps --filter label=gurt.session`: one describing a container the daemon no
-longer has is dropped, and a container whose session is gone is removed. Proxies
-(`docker ps --filter label=gurt.proxy`) and session networks (`docker network ls
---filter label=gurt.session`) are swept by the same rule, from the same registry. A restored `started` session reattaches lazily: the first prompt runs ACP
-`session/load` with the stored id (claude `--resume` under the hood). The agent's
-own session state lives inside the container, so resume survives an app restart
-but not a container recreation.
-
-## ACP coverage in the chat
-
-- streaming agent/thought text, tool calls with kind/status and expandable
-  output (text + diffs)
-- permission requests as inline buttons (allow/reject options from the
-  agent); per-session **auto-allow** toggle
-- **Stop** button → `session/cancel`; stop reasons surfaced
-- session modes (plan/edit/auto etc.) → selector in the chat header
-- agent plan rendered as a checklist panel
-- available slash commands rendered as chips under the input
-
-Not implemented (declared unsupported in the ACP handshake): client fs
-read/write and client-side terminals — agents fall back to their own tools
-inside the container.
-
-## MCP servers
-
-Two sources, one picker. **Built-ins** are gurt's own host servers (`github`
-today; `gurt`, the turn contract, is always attached and never selectable).
-**Registry entries** are the workspace's own remote HTTP MCP endpoints, kept in
-`workspace.json` and edited in Settings → MCP servers — see
-[docs/requirements-mcp-proxy.md](docs/requirements-mcp-proxy.md).
-
-The composer's harness panel lists both, and what is picked there is the
-session's scope: `SessionInfo.mcp`, persisted with the session, carried by a
-duplicate, and shown as chips on the draft and as a mark in the chat header.
-
-- A built-in is **off / read-only / full**: gurt knows statically which of *its*
-  tools write, and hands the agent the smaller set in read-only.
-- A registry entry is **off / on** (recorded as `full`): gurt knows nothing about
-  an upstream's tools, so it does not offer a read-only it cannot enforce.
-- A selected id the workspace no longer offers (a registry entry deleted behind
-  the session) stays listed, marked unavailable, until the user drops it. The
-  scope builders report it and route the rest; nothing narrows silently.
-
-Two things build a scope out of that selection, and both re-read it on every
-start and resume: `mcp/manager.ts` starts, restarts and stops the *host* servers
-per (session, mcp id), and `proxy/config.ts` (`planProxy`) turns the same
-selection into the per-session proxy's routes, where registry entries get their
-credentials injected.
-
-## Skills
-
-A **skill** is a Claude Code skill directory — `SKILL.md` (YAML frontmatter over
-a markdown body) plus whatever supporting files it references. gurt keeps a
-registry of them per workspace under `~/.gurt/<ws>/skills/<name>/`, edited in
-Settings → Skills — see
-[docs/requirements-skills.md](docs/requirements-skills.md).
-
-The draft's config tab lists them off / on, and what is picked there is
-`SessionInfo.skills`: persisted with the session, carried by a duplicate, and
-frozen once the session leaves draft — by then the files are mounted. A
-workspace can switch some on for every new draft (`defaultSkills`, the row's
-"enable by default").
-
-Delivery is files, not configuration. At start the selected skills are copied
-into the session's own scratch dir and bind-mounted **read-only** into its
-container, linked at the agent kind's own skills directory (`AgentDef.skillsDir`
-— `~/.claude/skills` for claude code, `~/.config/opencode/skills` for opencode,
-`~/.pi/agent/skills` for pi).
-A kind whose pinned CLI reads no such directory gets neither mount nor link, and
-the config tab says "does not support skills" instead of offering the pickers.
-A skill that was not picked is physically absent, and nothing gurt writes ever
-lands in a clone. It works for every role: the mount is made before any
-devcontainer lifecycle hook runs, and read-only roles have those hooks stripped.
-
-A repository's own `.claude/skills` is the repository's — gurt does not list,
-merge or disable it.
-
-## Session network & observed traffic
-
-The same harness panel carries a **network** control, and the pick is the
-session's record (`SessionInfo.network`, persisted next to the MCP selection,
-carried by a duplicate, inherited by a session an agent drafts):
-
-- **open** (default) — a normal bridge. The container keeps its own route out;
-  `HTTP_PROXY`/`HTTPS_PROXY` point at the session proxy, so MCP and anything
-  that honours them is routed and logged. This is **visibility, not
-  enforcement**: a process that ignores those variables goes straight past it.
-- **internal** — `gurt-s-<id>` is created `--internal`, so the daemon installs
-  no route out and the proxy is the session's only egress, filtered by a
-  **domain policy**: `allow` (everything permitted, everything recorded — the
-  place to start), `denylist` or `allowlist`. A rule covers the host and its
-  subdomains, IP literals match exactly, ports are recorded but not matched.
-
-Under **every** mode, `allow` included and in both network modes, the proxy
-refuses agent egress to this machine: loopback, link-local (169.254.x, where the
-cloud metadata service lives), `host.docker.internal` and the private ranges.
-The mode is a statement about the internet, not about the host. The check is on
-the address a name *resolves* to — resolved once and then dialled directly, so a
-name cannot answer differently between the check and the connection — and the
-one way through it is the picker's **always allow** list, where `host` or
-`host:port` opens exactly that target (docs/requirements-mcp-proxy.md §6.4).
-Refusals show in the traffic panel under their own reason, since "edit your
-allowlist" would be the wrong fix. MCP routing is outside it: an upstream in the
-registry is one a human put there, and it is usually on the docker host.
-
-Two caveats the UI states where the choice is made: **setup runs open** — the
-image build, the devcontainer features, `postCreate` and the adapter install all
-need the network and all happen before the switch (docs/requirements-mcp-proxy.md
-§7.3; the provisioning log records the boundary) — and **SSH git is
-unsupported**; authenticated git is the host-side github MCP.
-
-The proxy writes one JSON line per connection to stdout. The host tails
-`docker logs -f` for the session's lifetime, folds the lines into a bounded
-per-session ledger (`main/proxy/traffic.ts`) and pushes it to the renderer, which
-shows **blocked attempts first** — the host, the rule that refused it, a count
-and a last-seen time — with the observed domains collapsed under them. That
-panel is how "why can't it reach X?" is answered without reading a log. The
-ledger outlives the proxy (an idle session keeps its explanation) and dies with
-the session. Hostnames and ports are all there is: no path, header, body or
-token is ever recorded.
-
-## Git credentials & authenticated git
-
-Authenticated git happens **only on the host**, through the github MCP tools
-(`git_pull`, `git_push`, `create_pull_request`). The session container never
-holds or brokers a credential: it gets unauthenticated local git (status, diff,
-add, commit, branch, log) plus the commit identity of the repo's credential, so
-the commits it does make are attributed. See
-[docs/requirements-git-access.md](docs/requirements-git-access.md) for the full
-design and [docs/requirements-mcp-proxy.md](docs/requirements-mcp-proxy.md) §10
-for why the container-side path was removed.
-
-- **Credentials** (🔑 in the sidebar) live in `~/.gurt/credentials.json`, generic
-  `kind` + opaque `data`, secret fields sealed with the OS keystore where one is
-  available. `git-token` (PAT / fine-grained / GitLab / Gitea) and `git-host`
-  (explicit opt-in to ambient host auth) are implemented. A repo links one by id
-  (or auto-matches by host); the link is never a secret. The same store holds
-  `agent-token` (an agent's API key) and `mcp-token` (a registry MCP server's).
-- Ambient host auth is **never a fallback**. When nothing resolves, remote
-  operations are blocked with a clear error rather than quietly reaching the
-  machine's ssh keys or `gh` login — and ambient ssh is shut off with a failing
-  `GIT_SSH_COMMAND` on every managed or blocked call.
-- The contract is **git's own extension points**, never a forge API: a host
-  credential helper forwards fills to a loopback-only **broker** that answers
-  from the store, and `url.<base>.insteadOf` rewrites make the transport follow
-  the *credential* (a token repo pushes over https even if it was cloned over
-  ssh). Delivered as `-c key=value` argv on the one git call — nothing is
-  written into the clone or any global config, and the secret never leaves the
-  broker's per-request response.
-- A `git-token` is verified against its forge at save time; the owner's
-  name/email is stamped on the entry and is what authors managed commits.
-  Forge-specific behavior (the host `gh`, GitHub App minting later) lives behind
-  interchangeable **forge providers**.
-
-GitHub App tokens (`git-app`) reuse the same provider seam; the kind appears in
-the editor but is not wired to the runtime. SSH is not a supported credential
-kind — an entry left over from when it was resolves as an error telling you to
-replace it with a token.
-
-## PII / secret masking
-
-A global setting (Settings → Masking; no engine selected is off), not a
-per-session one: every session masks while an engine is configured. It sits on the
-**ACP seam**: the prompt text going out to the agent is scanned and every entity
-found is replaced with a `[type:N]` token (`[email:1]`, `[us_ssn:2]`) — the type
-the agent needs, an ordinal per type, nothing else. What each token stands for
-lives in a per-session table on the host. The timeline holds the tokenized text,
-and the chat view substitutes the real values from the table when it renders;
-an eye toggle in the composer bar switches between real values and what the
-agent sees. See [docs/requirements-pii-mask.md](docs/requirements-pii-mask.md).
-
-- **No cryptography.** The table is `~/.gurt/pii-tables/<session>.json`
-  (`{"v":1,"tokens":{"email":{"1":"…"}}}`, owner-only, outside every container
-  mount), written before the prompt that uses a new token is sent. It lives as
-  long as the session and is deleted with it; tokens survive an app restart
-  because the table does. Ordinals are never reused, and the same value is the
-  same token for the whole session.
-- **Detection** is pluggable behind one `detect(text) -> spans` interface.
-  Settings → Masking picks the backend: `built-in` (regex + checksum, in
-  process) or `presidio` (a local docker sidecar gurt runs, or a remote analyzer
-  linked to a `pii-detector` credential). No backend selected *is* off.
-  For presidio you pick the languages, the spaCy model size, a minimum score and
-  the entity types; any language/model other than English-large is a derived
-  image gurt builds once. A TEST field masks a sample with the active engine.
-- **Patterns are not vendored.** The built-in detector runs whichever public
-  collection you pick — CommonRegex, Presidio's own patterns, gitleaks' rules
-  — fetched at runtime from a **pinned commit/tag** (never a branch), adapted by
-  a small per-source parser, and cached under `~/.gurt/pii-patterns/`. The
-  network is only touched on first selection or an explicit "check for updates".
-
-For a masking session gurt also advertises the ACP `fs/*` and `terminal/*`
-client methods and answers them itself in the container, encoding what it hands
-the agent and revealing what the agent sends (requirements doc §9.1) — whether
-an adapter routes its file access and commands through them is up to the
-adapter; `acp.client.call` in the log shows which do.
-
-MCP traffic is rewritten at the session proxy, which asks the host to reveal
-what goes to a server and encode what comes back (§9.2); a message that cannot
-be rewritten is refused, never forwarded.
-
-Out of scope: free-text NER in the built-in detector, arbitrary HTTPS the agent
-opens itself, and anything an agent does inside its container without going
-through gurt.
-
-## Run
-
-```bash
-npm run setup      # npm ci + allow-scripts + unpack the Electron binary
-npm run dev        # requires docker daemon for env start
+  reg -.-> s1 & s3 & s2
+  hgit <--> clones
+  hgit --> forge
+  sf -- "read-write" --> a1
+  sf -. "read-only" .-> a3
+  pay -. "read-only" .-> a3
+  pay -- "read-write" --> a2
+  x1 & x3 & x2 --> out
 ```
 
-`GURT_ROOT` env var overrides `~/.gurt` (used by tests).
-`GURT_WELCOME=auto|always|never` overrides the stored welcome-screen mode
-(`~/.gurt/welcome.json`, Settings → Machine) for one run — `always` is what a
-demo machine wants and how the smoke reaches the screen on a store that already
-has sessions; `never` is what the welcome popup's "don't show this again" writes,
-and what the other smokes launch with so its backdrop stays out of their way. `GURT_LOG=debug|info|warn|error`
-sets the log level — the app writes `~/.gurt/logs/gurt.log` (⌘K → "Open logs
-folder"); see [docs/logging.md](docs/logging.md).
+- A **scope** owns its clones: each repository it uses is cloned once for the scope, on a branch named after the scope, under `~/.gurt/` on the host. Every session of the scope works on these same clones.
+- A **session** is a dev container. It mounts the subset of the scope's clones that its role allows: an executor gets one clone read-write, and a researcher gets any number read-only. It runs the agent you picked from Gurt's registry, with the skills you picked mounted read-only.
+- Every session has its own **proxy**. The agent reaches its chosen MCP servers only through that proxy. The proxy also carries the session's network traffic, and in `internal` mode (the default for new sessions) it is the only way out. Built-in and local stdio MCP servers run on the host; remote ones are reached over HTTP with their token added at the proxy.
+- Pull, push and pull requests run **on the host**, from the clones. No git credential is ever passed into a container.
 
-## Packaging (alpha builds)
+Details: [docs/architecture.md](docs/architecture.md).
 
-```bash
-npm run dist         # macOS → release/gurt-<version>-arm64.dmg + release/mac-arm64/gurt.app
-npm run dist:linux   # Linux → release/gurt-<version>.AppImage + .deb
-```
+## What it looks like
 
-Release artifacts (built by `.github/workflows/release.yml` on `v*` version
-tags) are the dmg/zip plus the AppImage/deb. The workflow stamps the tag's
-version into `package.json` before building, so the tag is the single source
-of truth — no need to bump `package.json` before tagging.
+<table>
+  <tr>
+    <td width="50%"><img src="docs/media/session-config.png" alt="A draft executor session with MCP servers and skills chosen"></td>
+    <td width="50%"><img src="docs/media/queue.png" alt="A scope pane: uncommitted changes, the running container and a queued reviewer"></td>
+  </tr>
+  <tr>
+    <td><b>Per-session setup.</b> Role, agent, env, repo, model, network, MCP servers and skills.</td>
+    <td><b>The queue.</b> A Codex reviewer waits until the executor releases <code>storefront</code>.</td>
+  </tr>
+  <tr>
+    <td><img src="docs/media/multi-repo-research.png" alt="A Gemini CLI researcher reading two repositories and proposing one session per repo"></td>
+    <td><img src="docs/media/multi-repo-pushed.png" alt="The Diff view: one scope with two repositories, each with a pushed commit"></td>
+  </tr>
+  <tr>
+    <td><b>One researcher, two repos.</b> It reads <code>storefront</code> and <code>payments-api</code> and proposes a session for each.</td>
+    <td><b>One scope, two repos.</b> Two executors worked side by side, and both branches are pushed.</td>
+  </tr>
+  <tr>
+    <td><img src="docs/media/review-diff.png" alt="Split diff of an agent's uncommitted changes"></td>
+    <td><img src="docs/media/hero.png" alt="A reviewer's verdict with a ready-to-review notification"></td>
+  </tr>
+  <tr>
+    <td><b>Review.</b> A split diff of the agent's uncommitted changes before you commit and push.</td>
+    <td><b>Second opinion.</b> A reviewer on another agent judges the changes, and a notification says they are ready.</td>
+  </tr>
+</table>
 
-Config lives in `electron-builder.yml`. macOS signing + notarization are
-driven entirely by the environment (see the comment in the `mac:` section):
-CI takes them from repo secrets (`CSC_LINK`, `CSC_KEY_PASSWORD`, `APPLE_ID`,
-`APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`); a local `npm run dist`
-without them produces an unsigned build with a warning. An unsigned dmg
-downloaded onto another Mac won't open until the quarantine flag is cleared:
+<sub>Screenshots show the real app, driven by a scripted demo agent working on a made-up company's repos.</sub>
 
-```bash
-xattr -dr com.apple.quarantine /Applications/gurt.app
-```
+## Features
 
-The devcontainer CLI is kept outside `app.asar` (`asarUnpack`) because gurt
-spawns it as a child process — only Electron's own fs can read from an asar.
+**Agents**
+- Claude Code, Codex, Gemini CLI, opencode and Pi. You can add several instances of one kind, each linked to its own credential.
+- Sign in through the provider's browser flow (Claude Code, Codex, Gemini CLI), or paste an API key (required for opencode and Pi).
+- Roles: **executor** writes code and proposes a commit, **researcher** reads any number of repos and answers in chat, **reviewer** judges a clone's uncommitted changes, **operator** reads and edits Gurt's own configuration (risky changes wait for your confirmation).
 
-## Auto-update
+**Per session**
+- MCP servers picked per session: the built-in GitHub server (off, read-only or full), remote HTTP servers and local stdio servers.
+- Skills (`SKILL.md` directories) picked per session and mounted read-only into the container.
+- Environments are devcontainer definitions stored in Gurt and seeded from the repo. Repos without one can use the bundled `starter` env.
 
-Packaged builds carry [electron-updater](https://www.electron.build/auto-update),
-wired in `src/main/update.ts`. A background poll checks the feed every minute
-and downloads a found update silently; once it's ready an **update** button
-appears in the sidebar head (right of the workspace picker) — clicking it
-restarts into the new version. A manual check also exists (⌘K → "Check for
-updates") and is the only path that answers with dialogs (up to date / error).
-`electron-builder.yml`'s `publish` block points the default feed at this
-repo's GitHub Releases, matching `.github/workflows/release.yml` (which
-uploads the `latest*.yml` manifests alongside the installers — without those,
-electron-updater has nothing to compare versions against).
+**Workflow**
+- Queue: a new session is a draft until you press **Run now** or **Add to queue**. The lock is per clone, so sessions on different repos run in parallel. You can cap concurrent sessions per scope, and a clone locked for manual review blocks writers. The queue survives a restart.
+- Review: split diff, inline comments and "Launch fix". Then commit, push and open a pull request. Local repos with no forge yet use "Merge into main".
+- Terminals on the host, opened per scope.
 
-Auto-update only works for the **AppImage** target on Linux (the deb ships too,
-but upgrades through apt/dpkg, not this — both the poll and `checkForUpdates()`
-short-circuit if it isn't running as the AppImage, so it never falls back to
-shelling out to `sudo dpkg -i`, which electron-updater will otherwise attempt
-and which just hangs or fails outside a desktop with a polkit agent). macOS
-auto-update needs the `zip` target (also configured) and a **signed** build:
-Squirrel.Mac refuses to apply an update to an unsigned install, so mac
-auto-update only works end-to-end once the signing secrets are in place.
+**Network and data**
+- A proxy per session, with a network mode (`internal` by default, or `open`), an allow list of hosts, and a traffic panel that lists blocked hosts first.
+- Git credentials (tokens) are stored by Gurt and sealed with the OS keystore where one is available.
+- PII and secret masking before text reaches the agent: a built-in pattern detector or Presidio.
 
-**Testing the whole loop locally, before pushing a tag:**
+**Overview**
+- In-app notifications when a session needs input, has changes to review, fails or finishes a turn. Each type can be switched on or off.
+- Dashboard: agent plan-limit windows, a board of sessions across workspaces, and a turn ledger.
 
-```bash
-# 1. Build and set aside the "old" version an installed user would be running.
-npm run dist:linux
-cp release/gurt-<old-version>-arm64.AppImage /tmp/gurt-old.AppImage
+## Install
 
-# 2. Bump the version in package.json, rebuild — release/ now has the "new"
-#    installer plus an updated release/latest-linux*.yml pointing at it.
-npm run dist:linux
+Download a build from [Releases](https://github.com/klerik3d/gurt/releases/latest). All builds are **alpha**.
 
-# 3. Serve release/ as the update feed.
-npx http-server release -p 8384    # or: python3 -m http.server 8384 -d release
+- **macOS**: `.dmg`. If macOS refuses to open an unsigned build, run `xattr -dr com.apple.quarantine /Applications/gurt.app`.
+- **Linux**: `.AppImage` or `.deb`. Only the AppImage updates itself. The deb upgrades through apt/dpkg.
+- **Windows**: no build is published, and it is untested.
 
-# 4. Run the old build with the feed overridden to your local server (this is
-#    the one thing that only exists for this loop — GURT_UPDATE_URL isn't read
-#    anywhere else) and trigger a check from the running app (⌘K → "Check for
-#    updates"). It downloads the new AppImage, verifies its sha512 against the
-#    manifest, and replaces /tmp/gurt-old.AppImage in place.
-GURT_UPDATE_URL=http://127.0.0.1:8384 /tmp/gurt-old.AppImage
-```
+**Prerequisite: Docker.** You need the Docker CLI and a running daemon, and Gurt checks for both on first launch. To build from source, see [docs/development.md](docs/development.md).
 
-`GURT_UPDATE_URL` swaps the baked-in GitHub provider for a `generic` one at
-runtime (`autoUpdater.setFeedURL`) — nothing about the build config changes, so
-this is safe to leave set only for the one test run. Running the *unpacked*
-`release/linux-arm64-unpacked/gurt` binary instead of the real `.AppImage` also
-works for exercising the check-and-download path, but electron-updater then has
-no `APPIMAGE` env var to tell it how it was installed and falls back to the
-deb/sudo path above — always test through the actual `.AppImage` file.
+## Quick start
 
-## Dev container
+1. Start Docker and launch Gurt. The welcome screen checks the Docker CLI, the daemon and the images. **Prepare** pulls any missing images.
+2. Pick an agent kind. Then either **Sign in with …** or paste an API key ("or paste an API key instead"). The key is stored in this machine's credential store.
+3. Gurt creates a workspace, a scope and an **operator** session, and starts it. The operator holds no repository. It reads your configuration, tells you what to fix, and can make the change itself; changes that would run code on the host wait for your confirmation.
+4. In Settings → Repos, add a repository. For pushing, add a GitHub token in Settings → Credentials. A repo with no devcontainer of its own can run in the bundled `starter` env.
+5. Create a new session (command palette → "New session…"). It starts as a draft. On its Config tab choose role **executor**, the env, the repo and an agent, write the first prompt, and press **Run now**.
+6. When the agent finishes with changes, open the **Diff** view in the activity bar. Review the diff, then **Commit changes…** and **Push changes**.
 
-`.devcontainer/` provides a Node 22 environment for working on gurt itself.
-Because gurt provisions *child* dev containers at runtime, the container ships
-**Docker-in-Docker** (the inner daemon shares its filesystem, so clones under
-`GURT_ROOT` bind-mount into the children). Electron runs headless on an Xvfb
-display (`:99`), started automatically — `xvfb-run` is not needed. Reopen the
-folder in the container, then `npm run dev` or the smoke scripts work as above.
-The full docker-provisioning smokes are heavy nested-in-nested; the UI-only
-`smoke.mjs` is the light check.
+## Concepts
 
-## Smoke tests
+- **workspace**: the top-level divider. It has its own repos, envs, MCP servers and skills.
+- **scope**: one unit of work in a workspace. It can span several repos; each is cloned once for the scope, on a branch named after the scope, and all sessions of the scope share those clones.
+- **repo**: a registered git repository (URL plus a credential link), or a local repo that Gurt keeps until you publish it.
+- **env**: a devcontainer definition stored in Gurt. It is a template, so any number of sessions can run the same env.
+- **agent**: an instance of a built-in kind, linked to its credential. Settings lists agents under **Clients**.
+- **session**: one agent with one role, in one container, with one chat. A session goes `draft → queued → starting → started`.
+- **role**: what a session is for: executor, researcher, reviewer or operator. The role sets mounts, the clone lock and tools.
 
-Smoke scripts drive the built app with Playwright through the real UI and
-screenshot into `$SCRATCH/shots`; run `npm run build` first. Without agent
-secrets the chat shows an auth error — that still proves the ACP pipe. The
-scripts strip `ELECTRON_RUN_AS_NODE` (shells spawned from a VSCode extension
-host inherit it and it makes Electron start as plain Node). The list below is
-the full set (`ls scripts/smoke*.mjs`).
+Terminology: the UI says *scope*, while the code, the on-disk layout (`~/.gurt/<workspace>/<task>/`) and the older design documents say *task*. One Settings hint for local repos still says "tasks". The activity bar names the two work views **Agents** and **Diff**. The old README and some notes call them Scope and Git modes.
 
-```bash
-npm run build
-SCRATCH=/tmp/gurt-smoke node scripts/smoke.mjs    # UI only, no docker
-SCRATCH=/tmp/gurt-smoke node scripts/smoke-provisioning.mjs   # provisioning + ACP session
-SCRATCH=/tmp/gurt-smoke node scripts/smoke-persistence.mjs    # session persistence across restart
-SCRATCH=/tmp/gurt-smoke node scripts/smoke-crud.mjs           # CRUD + stop/delete + codex handshake
-SCRATCH=/tmp/gurt-smoke node scripts/smoke-codex.mjs          # codex-in-gurt handshake
-SCRATCH=/tmp/gurt-smoke node scripts/smoke-queue.mjs          # session queue: draft/serialization/restart
-SCRATCH=/tmp/gurt-smoke node scripts/smoke-changes.mjs        # Changes panel delivery thread, no docker (local bare repos)
-SCRATCH=/tmp/gurt-smoke node scripts/smoke-review.mjs         # manual review: split diff, comments, lock toggle, Launch fix, no docker (local bare repos)
-SCRATCH=/tmp/gurt-smoke node scripts/smoke-git-credentials.mjs # credentials CRUD + repo resolution note, no docker
-# turn contract end-to-end (docker + a working claude secret; SKIPs without one):
-SCRATCH=/tmp/gurt-smoke GURT_SMOKE_CLAUDE_TOKEN=… node scripts/smoke-turn-contract.mjs
-node scripts/smoke-delete-row.mjs                 # sidebar Del/⌫: confirm, delete, move the selection, no docker
-node scripts/smoke-session-copy.mjs               # duplicate/delete from the row actions and the pane menu, no docker
-node scripts/smoke-roles.mjs                      # session roles: the picker, the repo select it drives, persistence, no docker
-node scripts/smoke-first-run.mjs                  # first run: the welcome screen, the machine checklist, Settings → Machine, no docker
-node scripts/smoke-newtask.mjs                    # header "+" creates a task inline — no modal, no stray session, no docker
-node scripts/smoke-deleted-task.mjs               # a deleted task stays deleted: selection cleared, no dir resurrected by a late persist, no docker
-node scripts/smoke-logging.mjs                    # app log: startup banner, IPC wrapper, renderer transport, no docker (an unreachable daemon is logged as "unavailable")
-node scripts/smoke.linux.mjs                      # linux variant of smoke.mjs: client registry + agent-token credential linkage over a plaintext store, no docker
-```
+## Security model
 
-Unit tests are pure node — no Electron, no Playwright, no docker; the TS under
-test is bundled on the fly with esbuild. `npm test` runs every
-`scripts/*.test.mjs` (currently 56) and is the canonical way to run them; a single
-file can also be run directly. A few, to show what they cover:
+What Gurt enforces:
 
-```bash
-npm test                               # all of scripts/*.test.mjs
-node scripts/git-logic.test.mjs        # git contract: repo identity, credential resolution, rewrites, forge
-node scripts/session-log.test.mjs      # append-only session log + legacy migration
-node scripts/gurt-mcp.test.mjs         # the `gurt` MCP server: `complete` validation + the per-role tool set
-node scripts/session-roles.test.mjs    # session roles: locks, (role, repos) rules, create_session gating, migration
-node scripts/doctor.test.mjs           # machine checklist: what each row probes, what gates, what "could not ask" reports
-node scripts/agent-providers.test.mjs  # agent token probes: ok / rejected / unreachable per kind (a 429 is never "ok")
-node scripts/first-run.test.mjs        # one-click first run: the five entities, reuse, where the token lands, a failed start
-node scripts/turn-contract.test.mjs    # turn contract: the post-turn nudge/incomplete decision matrix
-node scripts/proposal-store.test.mjs   # turn contract: proposal restore, latestProposal, Kernel.prUrl params
-node scripts/env-config.test.mjs       # env normal form: JSONC parse/validation, envImageTag identity, migration
-node scripts/mcp-registry.test.mjs     # workspace MCP registry: validation, built-in/registry lookup, store CRUD, mcp-token links
-node scripts/mcp-selection.test.mjs    # per-session MCP selection: persistence over both sources, scope resolution, a deleted entry
-node scripts/skills-selection.test.mjs # per-session skills: the on-disk registry, selection/inheritance/defaults, what gets materialized
-node scripts/proxy-policy.test.mjs     # session proxy: the domain matcher, the policy modes, route/config parsing
-node scripts/proxy-server.test.mjs     # session proxy, live: MCP routing + credential injection, CONNECT, config reload
-node scripts/proxy-config.test.mjs     # host side of the proxy contract: scope + ACP descriptors, and what never reaches the container
-node scripts/proxy-traffic.test.mjs    # observed traffic: the proxy's JSON lines → the blocked/allowed lists the session pane shows
-node scripts/session-network.test.mjs  # per-session network mode: persistence, restore, sanitization, what a copy or a drafted session inherits
-node scripts/session-delete-container.test.mjs  # deleting a session takes its container down with it
-node scripts/session-duplicate.test.mjs # duplicating a session: what a copy carries, and what it never does
-node scripts/log.test.mjs              # app log: writer, rotation, sanitization, redaction, drop accounting
-```
+- Each session has its own container, Docker network and proxy. Sessions of one scope do share its clones, and each session mounts only the clones its role allows.
+- A researcher's repos are mounted with Docker `readonly` bind mounts. This is enforced, not a convention.
+- Git credentials never enter a session container, and authenticated git runs on the host. For remote MCP servers the container gets a URL and an opaque per-session token, and the real token is added at the proxy.
+- New sessions start in **`internal`** network mode: the session network has no route out, and the proxy is the only way out. The proxy filters by one allow list. An empty list (the default) allows everything except this machine. A non-empty list allows only the hosts it names (`host` or `host:port`).
+- While the allow list is empty, the proxy refuses traffic to this machine: loopback, link-local, `host.docker.internal` and private ranges. It checks the resolved address and dials that same address.
+- If the masking detector is unavailable, the turn ends with an error instead of sending text unmasked.
 
+What it does not enforce:
 
-## Docker Desktop gotchas (macOS)
+- **`open`** network mode (opt-in per session, for example for SSH git) is visibility, not enforcement. A process that ignores `HTTP_PROXY`/`HTTPS_PROXY` bypasses the proxy entirely.
+- A host you name in the allow list is dialled by name, without the address check. Naming any host also turns off the built-in refusal of this machine.
+- Setup always runs on the open network: the image build, devcontainer features, `postCreate` and the adapter install.
+- The agent's own API key or token is passed into its container as an environment variable.
+- A reviewer's clone is currently writable, so it can install dependencies and run tests. Only the researcher's mounts are read-only.
+- Local stdio MCP servers run on the host, unsandboxed.
+- Masking covers prompt text, MCP traffic, and the file and terminal calls an adapter routes through Gurt. It does not cover HTTPS requests the agent makes itself, or what it does inside its container without going through Gurt. The model provider still sees everything that is sent after masking.
 
-- Bind mounts require Docker-shared paths; `~/.gurt` (under `/Users`) is fine,
-  `/tmp` is not.
-- Deleting a directory and recreating it at the same path can leave a stale
-  virtiofs cache in the Docker VM — mounts then fail with "bind source path
-  does not exist" even though the path exists. Smoke tests use a unique root
-  per run for this reason; if it bites the real `~/.gurt` after env
-  delete/re-add, restart Docker Desktop.
+Details: [docs/architecture.md](docs/architecture.md). Supply-chain surface and vulnerability reporting: [SECURITY.md](SECURITY.md).
+
+## Limits
+
+- Alpha software (version 0.1.0).
+- macOS and Linux are the primary platforms. Windows is untested and has no published build.
+- Docker is required, and no session can start without a running daemon.
+- Single user, single machine. All state lives under `~/.gurt/`, with no server, accounts or shared admin.
+- Containers have no authenticated git and no SSH. Remote git runs on the host, with a token or, if you opt in per repo, the host's own SSH keys or `gh` login.
+- Git tokens are verified against GitHub only (github.com and GitHub Enterprise hosts). GitHub is the only forge provider today.
+- MCP servers do not reach Pi sessions yet: its ACP adapter ignores them.
+- Notifications are in-app only. External delivery (Slack, email, webhook, OS push) is a stub.
+
+## Documentation
+
+- [Architecture](docs/architecture.md): the model, how a session starts, ACP, MCP, skills, network, git credentials, masking, the queue.
+- [Development](docs/development.md): running from source, the dev container, tests, packaging, auto-update.
+- [Client settings](docs/client-config.md): Claude Code attribution and opencode/OpenRouter.
+- [Logging](docs/logging.md): the local app log under `~/.gurt/logs`.
+- [Design notes and specs](docs/README.md): the documents Gurt was built from.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Contributions require signing the [CLA](CLA.md).
+
+## Security
+
+Report vulnerabilities privately. See [SECURITY.md](SECURITY.md).
 
 ## License
 
 Licensed under the [Apache License 2.0](LICENSE). The project name and logo
-are not covered by this license. Contributions require signing the
-[CLA](CLA.md) — see [CONTRIBUTING.md](CONTRIBUTING.md).
-
-Client-specific JSON settings: [Claude Code attribution and OpenCode/OpenRouter](docs/client-config.md).
+are not covered by this license.

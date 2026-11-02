@@ -1,21 +1,33 @@
 # docs/ — index
 
-These are the historical specs and design notes (work orders) gurt was built
-from; the current documentation lives in the root [README.md](../README.md).
-Many files are partly superseded by later ones (look for the "Superseded in
-part by…" notes inside) — the latest "main" document of the container/session
-model is
+The current documentation:
+
+- [architecture.md](architecture.md) — the domain model, how a session starts,
+  ACP, MCP servers, skills, the session network, git credentials, masking,
+  terminals and the queue.
+- [development.md](development.md) — running from source, the dev container,
+  smoke and unit tests, packaging, auto-update, Docker Desktop gotchas.
+- [client-config.md](client-config.md) — client-specific JSON settings.
+- [logging.md](logging.md) — the local app log.
+
+Everything else here is the historical specs and design notes (work orders)
+Gurt was built from. When one of them says "read `README.md` first", it means
+the domain model and start sequence that now live in
+[architecture.md](architecture.md); the work orders also say *task* where the
+UI now says *scope*. Many files are partly superseded by later ones (look for
+the "Superseded in part by…" notes inside) — the latest "main" document of the
+container/session model is
 [requirements-session-container.md](requirements-session-container.md).
 
 | Document | What it covers | Status |
 | --- | --- | --- |
 | [design-orchestration.md](design-orchestration.md) | Orchestration notes: pipelines on top of sessions, typed artifacts. Marked "UNDER DISCUSSION — DO NOT IMPLEMENT"; the simpler roles path was taken instead (requirements-session-roles.md). Of what it describes, only the turn contract was built. | planned |
 | [logging.md](logging.md) | Local logging: `~/.gurt/logs`, levels, secret redaction, the slug dictionary. An as-built description; the "Send Report" button is a stub. | implemented |
-| [requirements-agent-history.md](requirements-agent-history.md) | The agent's *own* conversation state (what its native `session/load` reads) moved out of the container's writable layer onto a per-session read-write bind under the session scratch dir, so it survives the container recreation the 1:1 model does freely. `AgentDef.historyPaths` per pinned kind (`[]` until verified), the skills-style link into `$HOME` after `up`, and deletion inherited from `deleteSessionScratch`. Does not change gurt's own chat log (requirements-session-log.md), which stays the UI's source of truth. Phase 1 (mechanism + claude-code) implemented. | partial |
+| [requirements-agent-history.md](requirements-agent-history.md) | The agent's *own* conversation state (what its native `session/load` reads) moved out of the container's writable layer onto a per-session read-write bind under the session scratch dir, so it survives the container recreation the 1:1 model does freely. `AgentDef.historyPaths` per pinned kind (`[]` until verified), the skills-style link into `$HOME` after `up`, and deletion inherited from `deleteSessionScratch`. Does not change Gurt's own chat log (requirements-session-log.md), which stays the UI's source of truth. Phase 1 (mechanism + claude-code) implemented. | partial |
 | [requirements-changes-panel.md](requirements-changes-panel.md) | The first version of the Changes panel in the task pane (dirty/ahead, Commit/Push/PR). Its model and layout (§2, §3.1–3.2) are replaced by requirements-changes-thread.md; the rest still holds. | partial |
 | [requirements-changes-thread.md](requirements-changes-thread.md) | The Changes panel as a "delivery thread" for the `gurt/<task>` branch: Uncommitted / On gurt/<task>, the pushed/local/integrated states. | implemented |
 | [requirements-dashboard.md](requirements-dashboard.md) | The dashboard: agent cards with plan limits, the session board, the turn ledger. | implemented |
-| [requirements-env-devcontainer.md](requirements-env-devcontainer.md) | Env normal form: a mandatory devcontainer.json in gurt, image builds by content tag, pre-build from Settings. | implemented |
+| [requirements-env-devcontainer.md](requirements-env-devcontainer.md) | Env normal form: a mandatory devcontainer.json in Gurt, image builds by content tag, pre-build from Settings. | implemented |
 | [requirements-env-repo-split.md](requirements-env-repo-split.md) | Splitting Env and Repo at the workspace level. The split landed, but the container model and the start gate are replaced by requirements-session-container.md. | historical (superseded) |
 | [requirements-event-bus.md](requirements-event-bus.md) | The domain event bus in main (`src/main/bus.ts`) plus the map in `src/shared/events.ts`. The bus works, but a later document renamed the env events to session-scoped ones. | historical (superseded) |
 | [requirements-first-run.md](requirements-first-run.md) | The first-run experience: a live machine checklist (docker CLI / daemon / images) with a permanent home in Settings, and a one-click "Start operator" that signs in through the kind's OAuth provider (or, behind one click, takes a pasted API key), then creates the workspace, task, agent instance, `agent-token` credential and operator session and starts it. Adds a `docker info` daemon preflight beside `assertDockerCli` and a per-agent-kind token probe seam. The screen is a popup: Esc, its backdrop, its × and "Skip for now" all put it aside for the run, and a footer toggle stores the decision. Its mode (`auto`/`always`/`never`) is a setting with a `GURT_WELCOME` override. Onboarding continues as the operator chat. Phase 1 is implemented — see its §11a; the footer indicator, the reachability/keystore rows and the disk-space row are pending. | partial |
@@ -25,12 +37,12 @@ model is
 | [requirements-mcp-proxy.md](requirements-mcp-proxy.md) | The MCP server registry in workspace.json and a per-session proxy container: MCP routing with credential injection, CONNECT egress with a domain policy, a network per session, and dropping ssh and the container-side git broker. The scope reaches the proxy as a bind-mounted file, not a control-plane push (§5.4). | implemented |
 | [requirements-mcp-stdio.md](requirements-mcp-stdio.md) | Local (stdio) MCP servers: `McpRegistryEntry` as a union on `kind` (`http`/`npm`/`command`), a stdio↔HTTP bridge in main, npm package installation into `~/.gurt/mcp`, pasted-snippet parsing, one process per registry entry with a refcount from the live sessions. Threat model: third-party code runs on the host, unsandboxed. | implemented |
 | [requirements-multirepo-sessions.md](requirements-multirepo-sessions.md) | Several repositories in one session (now the researcher role); mounting clones as siblings. | implemented |
-| [requirements-new-projects.md](requirements-new-projects.md) | Starting a project that has no forge yet: local repos (a bare repo gurt keeps under `~/.gurt/<ws>/repos/`, seeded with one empty commit, created from the draft's repo picker or Settings), the bundled image-only `starter` env, "Merge into main" as a local repo's delivery, and publishing to GitHub with the repo's devcontainer adopted as an env in the same step. | implemented |
+| [requirements-new-projects.md](requirements-new-projects.md) | Starting a project that has no forge yet: local repos (a bare repo Gurt keeps under `~/.gurt/<ws>/repos/`, seeded with one empty commit, created from the draft's repo picker or Settings), the bundled image-only `starter` env, "Merge into main" as a local repo's delivery, and publishing to GitHub with the repo's devcontainer adopted as an env in the same step. | implemented |
 | [requirements-notifications.md](requirements-notifications.md) | Notifications: the bus subscriber, the bell, the settings matrix. External delivery (Slack/email/push) is a declared stub. | implemented |
 | [requirements-oauth-credentials.md](requirements-oauth-credentials.md) | The `oauth` credential kind: sign in via the system browser (authorization code + PKCE, loopback redirect) instead of pasting a key; anthropic/openai/google providers plus a generic MCP provider (RFC 8414 + RFC 7591); host-only refresh tokens, single-flight refresh, access token through the existing `secretEnv` / proxy-header paths. Complements `agent-token`, never replaces it. Phases 1–2 (the kind, the refresh path, the sign-in UI) are implemented; the generic MCP provider (its §8 phase 3) is pending. | partial |
 | [requirements-session-container.md](requirements-session-container.md) | The "one container = one session" 1:1 model, with reconcile at startup. The latest document of the model — it supersedes parts of env-repo-split, kernel, event-bus, session-queue and stable-keys. | implemented |
 | [requirements-session-log.md](requirements-session-log.md) | The append-only session log: seq records of entry/append/patch, JSONL, deltas instead of a full snapshot. | implemented |
-| [requirements-session-operator.md](requirements-session-operator.md) | The `operator` role: a repo-less session in a bundled env that configures gurt and works out its errors. The admin MCP surface is derived from `src/shared/api.ts` (an exposure annotation per method); writes are CRUD with optimistic locking; devcontainer fields that execute on the host are held back and applied only through a confirmation exempt from auto-allow; credential values never cross the boundary; the config journal is git in `~/.gurt`. Phase 1 (the role, the read-only surface, the scrub, the journal) is implemented — see its §16; writes, held fields and composite verbs are pending. | partial |
+| [requirements-session-operator.md](requirements-session-operator.md) | The `operator` role: a repo-less session in a bundled env that configures Gurt and works out its errors. The admin MCP surface is derived from `src/shared/api.ts` (an exposure annotation per method); writes are CRUD with optimistic locking; devcontainer fields that execute on the host are held back and applied only through a confirmation exempt from auto-allow; credential values never cross the boundary; the config journal is git in `~/.gurt`. Phases 1–2 (the role, the read-only surface, the scrub, the journal; writes with revisions and held fields) are implemented — see its §16, §17; phases 3–4 are pending. | partial |
 | [requirements-session-queue.md](requirements-session-queue.md) | The session as the primary entity, the draft→started states, the FIFO queue. The queue lives on, but the start conditions and the ACP connection model were rewritten by requirements-session-container.md. | historical (superseded) |
 | [requirements-session-roles.md](requirements-session-roles.md) | Session roles (executor / researcher / reviewer): mounts, the clone lock, the MCP tool set as a function of the role. | implemented |
 | [requirements-skills.md](requirements-skills.md) | Claude Code skills: a workspace-level registry (`~/.gurt/<ws>/skills/<name>/`), per-session selection in the draft, `defaultSkills` in workspace.json, delivery by copying into the session's scratch and a read-only bind mount into the container. Skills from the repository itself (`.claude/skills`) are an explicit non-goal. | implemented |

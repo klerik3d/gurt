@@ -8,7 +8,7 @@
 //     `xvfb-run`. On a headless box without either, Electron cannot start.
 //
 // Every script gets its own SCRATCH directory. Smoke roots must be unique per
-// run (see the Docker Desktop gotchas in the README: a recreated path can keep
+// run (see the Docker Desktop gotchas in docs/development.md: a recreated path can keep
 // a stale virtiofs cache), and a shared root would also let concurrent or
 // repeated runs stomp on each other's GURT_ROOT and screenshots.
 //

@@ -166,7 +166,7 @@ operator write tools.
   npm run typecheck && npm run lint
   npm test             # all scripts/*.test.mjs — pure node, no docker
   npm run build        # before any smoke
-  SCRATCH=/tmp/gurt-smoke node scripts/smoke-queue.mjs   # Playwright smokes, see README
+  SCRATCH=/tmp/gurt-smoke node scripts/smoke-queue.mjs   # Playwright smokes, see development.md
   ```
   New behaviour gets a `scripts/<name>.test.mjs`; UI flows get a smoke.
 - Style: match surrounding code — dense "why" comments referencing doc
@@ -182,7 +182,7 @@ operator write tools.
 
 ## 8. Reading order
 
-1. [README.md](../README.md) — model, start sequence, MCP, network, git.
+1. [architecture.md](architecture.md) — model, start sequence, MCP, network, git.
 2. [design-orchestration.md](design-orchestration.md) — the intended direction.
 3. [requirements-session-roles.md](requirements-session-roles.md)
 4. [requirements-turn-contract.md](requirements-turn-contract.md)

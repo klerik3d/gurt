@@ -60,13 +60,13 @@ linux:
   target:
     - AppImage
     # electron-updater only supports auto-update for AppImage on Linux — deb
-    # is still built (see README) but upgrades through apt/dpkg, not this.
+    # is still built (see docs/development.md) but upgrades through apt/dpkg, not this.
     - deb
 
 # Auto-update feed (electron-updater reads this from the packaged app's
 # app-update.yml). Matches the release.yml workflow, which publishes tagged
 # builds to this repo's GitHub Releases. `GURT_UPDATE_URL` overrides this at
-# runtime with a `generic` feed for local testing — see README.
+# runtime with a `generic` feed for local testing — see docs/development.md.
 publish:
   provider: github
   owner: klerik3d

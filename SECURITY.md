@@ -9,12 +9,12 @@ days.
 
 ## Supply-chain surface
 
-gurt is a supply-chain-sensitive application: at runtime it provisions dev
+Gurt is a supply-chain-sensitive application: at runtime it provisions dev
 containers and installs software into them.
 
 - The app installs **ACP adapter packages from npm** (see
   `src/shared/agents.ts`) into the child containers it provisions. These are
-  pinned to exact versions; they are updated only through gurt releases, never
+  pinned to exact versions; they are updated only through Gurt releases, never
   resolved to `latest` at install time.
 - Child containers hold **clones of the user's repositories and agent
   secrets** (API keys / OAuth tokens injected via env vars), so anything
