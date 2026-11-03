@@ -531,6 +531,10 @@ export interface SessionInfo {
   container?: SessionContainer
   /** ISO timestamp, present while queued — defines global FIFO order. */
   queuedAt?: string | undefined
+  /** ISO instant a provider limit that cut this session's last turn off is
+   *  expected to lift. Present while the session waits to send "continue" on
+   *  its own; persisted, so a restart keeps waiting rather than resending. */
+  limitedUntil?: string | undefined
   /** Runtime overlay (never persisted): the agent is processing a prompt right now. */
   busy?: boolean | undefined
   /** Runtime overlay (never persisted): a permission request awaits the user's decision. */
@@ -853,6 +857,9 @@ export interface PendingPromptInfo {
    *  are base64, and this rides every `session-changed` broadcast. Taking the
    *  prompt back out of the queue therefore drops them — the row says so. */
   images?: number
+  /** Queued by the app, not typed: the "continue" a session cut off by a
+   *  limit sends once the limit resets. Cancelling it cancels the resume. */
+  auto?: true
 }
 
 /** Context-window usage, from ACP's `usage_update` session/update variant.
@@ -892,10 +899,13 @@ export interface SessionSnapshot {
   startError?: string | undefined
   /** 1-based position in the global queue, present while queued. */
   queuePosition?: number | undefined
+  /** What a queued session is waiting for, when it is more than its turn or
+   *  its clone — its account is at its plan limit. */
+  waiting?: string | undefined
   /** Prompts accepted but not yet run, oldest first — see {@link PendingPromptInfo}. */
   pending?: PendingPromptInfo[] | undefined
   /** Why the queue is not moving although no turn is running: the session's
-   *  clone is somebody else's right now. Absent while a turn is in flight —
+   *  clone is somebody else's right now, or its account is at its limit. Absent while a turn is in flight —
    *  then the reason is simply `busy`. */
   pendingBlocked?: string | undefined
   /** Latest change proposal from a `complete` call (outcome=changes), if any. */

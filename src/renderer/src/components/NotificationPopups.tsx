@@ -8,13 +8,17 @@ function NotificationPopup({ notification, onDismiss, onOpen }: {
   onDismiss: (id: string) => void
   onOpen: (notification: NotificationRecord) => void
 }) {
+  // An error is the one kind that waits for the user: it is closed by hand
+  // (or by opening its session), never by a timer.
+  const sticky = notification.type === 'error'
   useEffect(() => {
+    if (sticky) return
     const timer = window.setTimeout(() => onDismiss(notification.id), 8000)
     return () => window.clearTimeout(timer)
-  }, [notification.id, onDismiss])
+  }, [notification.id, onDismiss, sticky])
 
   return (
-    <div className="notification-popup">
+    <div className={sticky ? 'notification-popup toast-popup' : 'notification-popup'}>
       <button className="notification-popup-open" onClick={() => onOpen(notification)}>
         <span className="notif-loc mono">{notification.ref.workspace} / {notification.title}</span>
         <span className="notif-detail">{notification.detail}</span>

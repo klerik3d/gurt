@@ -69,12 +69,28 @@ const LIMIT_PATTERNS = [
 export const isLimitMessage = (text?: string): boolean =>
   !!text && LIMIT_PATTERNS.some((re) => re.test(text))
 
+/**
+ * Is this agent reply, as a whole, a limit notice? Claude Code answers a
+ * refused turn with the notice as plain text — "You've hit your session limit
+ * · resets 3pm", or the older "Claude AI usage limit reached|1760000000" — and
+ * a clean `end_turn`. Much stricter than {@link isLimitMessage}: this reads
+ * the agent's own words, which may well *discuss* rate limiting, so only a
+ * short reply in the notice's own wording counts.
+ */
+export function isLimitReply(text?: string): boolean {
+  const t = text?.trim()
+  if (!t || t.length > 300) return false
+  return /hit your .{0,24}limit/i.test(t) || /usage limit reached/i.test(t) || /\blimit reached\b.{0,40}\breset/i.test(t)
+}
+
 /** The reset instant a refusal named, when it named one as a machine-readable
  *  value (ISO or a unix stamp). Prose forms ("resets at 3pm") are left alone —
  *  parsing those needs the provider's timezone, which the message doesn't carry. */
 export function limitResetAt(text?: string): string | undefined {
-  const raw = /reset\w*(?:\s+at)?[\s:="']*(\d{4}-\d{2}-\d{2}T[\d:.]+Z?|\d{10}(?:\d{3})?)\b/i.exec(
-    text ?? ''
+  const raw = (
+    /reset\w*(?:\s+at)?[\s:="']*(\d{4}-\d{2}-\d{2}T[\d:.]+Z?|\d{10}(?:\d{3})?)\b/i.exec(text ?? '') ??
+    // "Claude AI usage limit reached|1760000000" — the stamp after the pipe.
+    /limit reached\|(\d{10}(?:\d{3})?)\b/i.exec(text ?? '')
   )?.[1]
   if (!raw) return undefined
   const at = /^\d+$/.test(raw) ? new Date(Number(raw) * (raw.length === 10 ? 1000 : 1)) : new Date(raw)

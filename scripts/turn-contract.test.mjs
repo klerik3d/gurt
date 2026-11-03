@@ -95,6 +95,14 @@ test('post-turn decision', () => {
 })
 
 // --- adapter exit code -----------------------------------------------------
+test('a turn that ended on a provider limit is never nudged', () => {
+  // The nudge would only be refused too; the session resumes on its own after
+  // the reset instead (sessions.ts, `onLimited`).
+  assert.equal(decide({ limited: true }), 'none')
+  assert.equal(decide({ limited: true, isNudge: true }), 'none')
+  assert.equal(decide({ limited: false }), 'nudge')
+})
+
 test('adapter exit code', () => {
   // kill -9 mid-turn → 137, the exact case docs/logging.md's acceptance #2 relies on
   assert.equal(adapterExitCode(null, 'SIGKILL'), 137, 'SIGKILL → 128 + 9')

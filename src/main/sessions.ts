@@ -43,8 +43,9 @@ import type { AgentDef } from '../shared/agents'
 import type { CreateAction } from '../shared/api'
 import { taskKey } from '../shared/keys'
 import { sanitizeSkillSelection } from '../shared/skills'
-import { limitResetAt, turnOutcome, usageFields } from '../shared/usage'
-import { parseClaudeRateLimit } from './planUsage'
+import { isLimitReply, limitResetAt, turnOutcome, usageFields } from '../shared/usage'
+import { formatResetAt, type PlanHold } from '../shared/planUsage'
+import { parseClaudeRateLimitState } from './planUsage'
 import type { Bus } from './bus'
 import type { AdminHooks } from './mcp/gurtServer'
 import type { ContainerStatusReason, SessionStateReason } from '../shared/events'
@@ -279,6 +280,22 @@ interface PendingPrompt {
   text: string
   context?: PromptContext[] | undefined
   images?: PromptImage[] | undefined
+  /** Put here by the app, not typed: the "continue" a limit-interrupted turn
+   *  sends once its account's hold lifts (see `onLimited`). */
+  auto?: boolean | undefined
+}
+
+/** What an interrupted session sends once its limit resets. */
+export const LIMIT_CONTINUE_PROMPT = 'continue'
+
+/**
+ * How long to wait when a limit hit named no reset and no window explains it:
+ * 15 minutes, doubling with each consecutive hit, capped at the 5-hour window
+ * itself — so a hold that keeps being wrong never turns into a tight loop of
+ * refused "continue"s.
+ */
+export function limitBackoffMs(strikes: number): number {
+  return Math.min(5 * 60 * 60_000, 15 * 60_000 * 2 ** Math.max(0, strikes - 1))
 }
 
 /**
@@ -342,6 +359,11 @@ interface Session {
   turns: number
   /** `stopReason` of the last finished turn, for the same record. */
   lastStopReason?: string | undefined
+  /** A live rate-limit event during the current turn said `rejected` — one of
+   *  the limit detector's signals. Reset at each prompt start. */
+  turnRejected: boolean
+  /** Consecutive turns that ended on a limit — what `limitBackoffMs` doubles on. */
+  limitStrikes: number
   /** entry id -> resolver of a pending permission request. */
   pendingPermissions: Map<number, (outcome: unknown) => void>
 }
@@ -352,7 +374,8 @@ const pendingInfo = (p: PendingPrompt): PendingPromptInfo => ({
   id: p.id,
   text: p.text,
   ...(p.context?.length ? { context: p.context } : {}),
-  ...(p.images?.length ? { images: p.images.length } : {})
+  ...(p.images?.length ? { images: p.images.length } : {}),
+  ...(p.auto ? { auto: true } : {})
 })
 
 /** Capabilities the session manager needs from the container/mcp/store layers.
@@ -415,6 +438,10 @@ export interface SessionEvents {
   /** Is this clone held by a manual review? Synchronous by contract: the
    *  scheduler asks on every pass and cannot await a disk read (see review.ts). */
   isRepoLockedForReview: (ws: string, task: string, repo: string) => boolean
+  /** Is the plan these agent instances share at its limit (`planHold` over
+   *  their cached usage, at the configured threshold)? Synchronous for the
+   *  same reason as the review lock: the scheduler asks on every pass. */
+  planHold: (agents: readonly string[]) => PlanHold | undefined
   /** Make sure the task exists (create it if missing) — a draft may not land in
    *  a task directory without its `task.json` marker, so a cross-task
    *  `create_session` materializes its target first. */
@@ -503,6 +530,15 @@ export function isDefaultSessionTitle(title: string, role: SessionRole): boolean
 
 export type PostTurnAction = 'none' | 'nudge' | 'incomplete'
 
+/** How one `session/prompt` round-trip ended, as `sendTurn` reports it. */
+interface TurnResult {
+  stopReason?: string | undefined
+  threw: boolean
+  /** Set when the limit detector claimed the turn (`withLimit`), with the
+   *  reset the refusal named, if it named one. */
+  limit?: { resetAt?: string | undefined } | undefined
+}
+
 /**
  * Decide what to do once a turn ends, from whether `complete` was seen. Pure and
  * unit-tested (scripts/turn-contract.test.mjs): only a clean `end_turn` that
@@ -520,8 +556,12 @@ export function postTurnDecision(o: {
   threw: boolean
   isNudge: boolean
   hasContract: boolean
+  /** The turn ended on a provider limit: a nudge would only be refused too,
+   *  and the session continues on its own once the limit resets. */
+  limited?: boolean | undefined
 }): PostTurnAction {
   if (!o.hasContract) return 'none'
+  if (o.limited) return 'none'
   if (o.threw) return 'none'
   if (o.stopReason !== 'end_turn') return 'none'
   if (o.turnComplete) return 'none'
@@ -564,6 +604,11 @@ export class SessionManager {
    *  a hardcoded default/the `fable` force-merge can resolve without a live
    *  container's launch context (see `loadAgentKinds`). */
   private agentKinds = new Map<string, string>()
+  /** Per agent-instance id, the credential it runs on — the account a plan
+   *  limit is pooled over. Kept beside `agentKinds`, from the same file. */
+  private agentAccounts = new Map<string, string>()
+  /** The one re-check armed for the earliest limit hold to lift. */
+  private limitTimer: NodeJS.Timeout | undefined
 
   constructor(
     private events: SessionEvents,
@@ -608,8 +653,15 @@ export class SessionManager {
         turns: 0,
         attached: false,
         loading: false,
-        pendingPermissions: new Map()
+        pendingPermissions: new Map(),
+        turnRejected: false,
+        limitStrikes: 0
       })
+      // Cut off by a limit before the restart: the "continue" it was waiting
+      // to send is memory-only, like every queued prompt — put it back.
+      const restored = this.sessions.get(r.info.id)!
+      if (r.info.state === 'started' && r.info.limitedUntil)
+        restored.pending.push({ id: `p${++this.pendingSeq}`, text: LIMIT_CONTINUE_PROMPT, auto: true })
     }
   }
 
@@ -623,9 +675,63 @@ export class SessionManager {
 
   /** Refresh the agent-instance→kind lookup — called once at boot and again
    *  whenever agents.json is saved, so it never goes stale. */
-  loadAgentKinds(agents: Record<string, { kind: string }>): void {
+  loadAgentKinds(agents: Record<string, { kind: string; credentialId?: string | undefined }>): void {
     this.agentKinds.clear()
-    for (const [id, a] of Object.entries(agents)) this.agentKinds.set(id, a.kind)
+    this.agentAccounts.clear()
+    for (const [id, a] of Object.entries(agents)) {
+      this.agentKinds.set(id, a.kind)
+      if (a.credentialId) this.agentAccounts.set(id, a.credentialId)
+    }
+    // A re-pointed credential can move a session onto (or off) a held account.
+    this.schedule()
+  }
+
+  /**
+   * Why this session may not send anything to its agent right now, if it may
+   * not: its own limit hit (`limitedUntil`, which survives a restart) or its
+   * account's — every agent instance on the same credential draws from the
+   * same plan, so a hold read through one of them holds them all.
+   */
+  private limitHold(s: Session): PlanHold | undefined {
+    const now = Date.now()
+    const own = s.info.limitedUntil && Date.parse(s.info.limitedUntil) > now
+      ? { until: s.info.limitedUntil, reason: 'limit reached' }
+      : undefined
+    const agent = s.info.agent
+    if (!agent) return own
+    const account = this.agentAccounts.get(agent)
+    const peers = account
+      ? [...this.agentAccounts].filter(([, c]) => c === account).map(([id]) => id)
+      : [agent]
+    const shared = this.events.planHold(peers)
+    if (!own || !shared) return own ?? shared
+    // Both hold: the later end is the real one.
+    if (!shared.until) return shared
+    return Date.parse(shared.until) > Date.parse(own.until) ? shared : own
+  }
+
+  /** "plan limit: Current session 97% — waits for the reset at 15:00" — one
+   *  wording for every place a session says it is waiting on a limit. */
+  private holdText(h: PlanHold): string {
+    return h.until
+      ? `plan limit: ${h.reason} — waits for the reset at ${formatResetAt(h.until, Date.now())}`
+      : `plan limit: ${h.reason} — waits for the next usage read below the threshold`
+  }
+
+  /**
+   * Re-run the scheduler when the earliest hold is due to lift. Holds also lift
+   * on fresh usage data (`usage.changed` re-runs it from the kernel); this is
+   * the clock for the case nothing new arrives — a reset passing in silence.
+   * A hold with no end is re-checked every minute.
+   */
+  private armLimitTimer(holds: PlanHold[]): void {
+    clearTimeout(this.limitTimer)
+    this.limitTimer = undefined
+    if (!holds.length) return
+    const now = Date.now()
+    const due = Math.min(...holds.map((h) => (h.until ? Date.parse(h.until) - now : 60_000)))
+    this.limitTimer = setTimeout(() => this.schedule(), Math.min(5 * 60_000, Math.max(1_000, due + 1_000)))
+    this.limitTimer.unref?.()
   }
 
   /** Cached config for an agent instance, or its kind's hardcoded default. */
@@ -694,9 +800,18 @@ export class SessionManager {
    *  "waiting" without a who is the thing that reads as a hang. */
   private pendingBlocked(s: Session): string | undefined {
     if (!s.pending.length || s.busy) return undefined
+    const hold = s.info.state === 'started' ? this.limitHold(s) : undefined
+    if (hold) return this.holdText(hold)
     const holder = this.repoHolder(s)
     if (!holder) return undefined
     return `session "${holder.info.title}" has "${s.info.repos[0]}" — this sends as soon as it lets go`
+  }
+
+  /** What a queued session is waiting for, when the answer is not the generic
+   *  "its turn / its clone": an account at its limit. */
+  private queuedWaiting(s: Session): string | undefined {
+    const hold = this.limitHold(s)
+    return hold ? this.holdText(hold) : undefined
   }
 
   snapshot(sessionId: string): SessionSnapshot | undefined {
@@ -723,6 +838,7 @@ export class SessionManager {
       promptCapabilities: this.connections.get(sessionId)?.promptCapabilities ?? cached?.promptCapabilities,
       startError: s.startError,
       queuePosition: this.queuePosition(sessionId),
+      waiting: s.info.state === 'queued' ? this.queuedWaiting(s) : undefined,
       pending: s.pending.length ? s.pending.map(pendingInfo) : undefined,
       pendingBlocked: this.pendingBlocked(s),
       proposal: s.proposal,
@@ -803,7 +919,9 @@ export class SessionManager {
       turns: 0,
       attached: false,
       loading: false,
-      pendingPermissions: new Map()
+      pendingPermissions: new Map(),
+      turnRejected: false,
+      limitStrikes: 0
     })
     this.bus.emit('tree.changed', undefined)
     this.emitState(this.sessions.get(info.id)!, 'created')
@@ -824,6 +942,12 @@ export class SessionManager {
     if (!s) return
     const cap = this.taskCaps.get(taskKey(s.ref.workspace, s.ref.task))
     if (cap !== undefined && this.activeSessionCount(s.ref.workspace, s.ref.task) >= cap) {
+      this.enqueue(sessionId)
+      return
+    }
+    // Same for an account at its limit: the start would only be refused, so it
+    // waits in the queue for the reset like everything else on that account.
+    if (this.limitHold(s)) {
       this.enqueue(sessionId)
       return
     }
@@ -1127,7 +1251,17 @@ export class SessionManager {
     // than only against `activeSessionCount`'s (pre-pass) snapshot.
     const startedThisPass = new Map<string, number>()
     const still = new Set<string>()
+    const holds: PlanHold[] = []
     for (const s of queued) {
+      // Before the task cap and the clone: a held item claims neither, so the
+      // items behind it on other accounts move on, and it keeps its place.
+      const hold = this.limitHold(s)
+      if (hold) {
+        still.add(s.info.id)
+        holds.push(hold)
+        this.noteQueued(s, 'agent-limited', hold.until)
+        continue
+      }
       const tkey = taskKey(s.ref.workspace, s.ref.task)
       const cap = this.taskCaps.get(tkey)
       if (cap !== undefined) {
@@ -1185,12 +1319,23 @@ export class SessionManager {
     }
     // Forget the reason of anything no longer waiting, so a session that queues
     // again later reports why from scratch.
-    for (const id of [...this.queuedReasons.keys()]) if (!still.has(id)) this.queuedReasons.delete(id)
+    for (const id of [...this.queuedReasons.keys()]) {
+      if (still.has(id)) continue
+      this.queuedReasons.delete(id)
+      // The pane may be showing a limit wait that just ended.
+      this.bus.emit('session.changed', { sessionId: id })
+    }
     // Prompts waiting on a clone (`drainPending`) are the other thing a freed
     // repo releases, and this pass is where a repo gets freed. Deliberately
     // last: a queued draft that has been waiting its turn is never overtaken by
     // a follow-up to a session that has already had one.
-    for (const s of this.sessions.values()) if (s.pending.length) void this.drainPending(s)
+    for (const s of this.sessions.values()) {
+      if (!s.pending.length) continue
+      const hold = s.info.state === 'started' ? this.limitHold(s) : undefined
+      if (hold) holds.push(hold)
+      void this.drainPending(s)
+    }
+    this.armLimitTimer(holds)
   }
 
   /**
@@ -1203,6 +1348,8 @@ export class SessionManager {
     if (this.queuedReasons.get(s.info.id) === key) return
     this.queuedReasons.set(s.info.id, key)
     log.info('session.queued', { s: s.info.id, reason, by })
+    // The pane spells some of these out (`waiting`) — it has to hear of a change.
+    this.bus.emit('session.changed', { sessionId: s.info.id })
   }
 
   /** The clone a session exclusively holds — `(task, repo)`, shared by every
@@ -2070,7 +2217,7 @@ export class SessionManager {
     isNudge: boolean,
     context?: PromptContext[],
     images?: PromptImage[]
-  ): Promise<{ stopReason?: string | undefined; threw: boolean }> {
+  ): Promise<TurnResult> {
     this.bus.emit('session.activity', { sessionId: s.info.id })
     // The one outbound seam (§2.1): from here on the agent only ever sees
     // tokens, and the timeline records the same tokenized text — the chat view
@@ -2090,15 +2237,19 @@ export class SessionManager {
     // Prompt start: the turn is incomplete until `complete` fires; clear any
     // prior violation overlay.
     s.turnComplete = false
+    s.turnRejected = false
     s.info.incomplete = undefined
     s.busy = true
     s.turns++
+    // Where this turn's own entries start — the limit detector reads the
+    // agent's reply from here on.
+    const firstEntry = s.nextEntryId
     this.bus.emit('session.changed', { sessionId: s.info.id })
     this.bus.emit('session.turn', { sessionId: s.info.id, ref: s.ref, phase: 'started' })
     const startedAt = Date.now()
     // Defaults to "threw" (→ final=true) so an unexpected throw between here and
     // the assignments below never reports a user-visible turn end as non-final.
-    let outcome: { stopReason?: string | undefined; threw: boolean } = { threw: true }
+    let outcome: TurnResult = { threw: true }
     // What the accounting record reports as the turn's ending — a non-`end_turn`
     // stop or the thrown error's message, i.e. exactly the text the limit
     // detector needs to tell "the plan said no" from "the code broke".
@@ -2120,14 +2271,14 @@ export class SessionManager {
         this.push(s, { kind: 'system', text: `stopped: ${reason}` })
         detail = reason
       }
-      outcome = { stopReason: reason, threw: false }
+      outcome = this.withLimit(s, { stopReason: reason, threw: false }, detail, firstEntry)
       return outcome
     } catch (e) {
       s.lastStopReason = 'error'
       log.warn('turn failed', { s: s.info.id, err: e })
       detail = e instanceof Error ? e.message : String(e)
       this.push(s, { kind: 'system', text: `error: ${detail}` })
-      outcome = { threw: true }
+      outcome = this.withLimit(s, { threw: true }, detail, firstEntry)
       return outcome
     } finally {
       s.busy = false
@@ -2152,11 +2303,11 @@ export class SessionManager {
   private reportTurn(
     s: Session,
     startedAt: number,
-    outcome: { stopReason?: string | undefined; threw: boolean },
+    outcome: TurnResult,
     detail?: string
   ): void {
     const agent = s.info.agent ?? ''
-    const resetAt = limitResetAt(detail)
+    const resetAt = outcome.limit?.resetAt
     this.bus.emit('agent.turn', {
       ts: new Date().toISOString(),
       agent,
@@ -2165,7 +2316,7 @@ export class SessionManager {
       workspace: s.ref.workspace,
       task: s.ref.task,
       ms: Date.now() - startedAt,
-      outcome: turnOutcome({ ...outcome, detail }),
+      outcome: outcome.limit ? 'limited' : turnOutcome({ ...outcome, detail }),
       ...usageFields(s.usage),
       ...(detail ? { detail } : {}),
       ...(resetAt ? { resetAt } : {})
@@ -2175,17 +2326,83 @@ export class SessionManager {
   /** Post-turn decision for this session: `postTurnDecision` with the role's
    *  contract folded in — a researcher/reviewer is never offered `complete`, so
    *  it is never nudged for skipping it. */
-  private decideTurn(
-    s: Session,
-    outcome: { stopReason?: string | undefined; threw: boolean },
-    isNudge: boolean
-  ): PostTurnAction {
+  private decideTurn(s: Session, outcome: TurnResult, isNudge: boolean): PostTurnAction {
     return postTurnDecision({
       ...outcome,
+      limited: !!outcome.limit,
       turnComplete: s.turnComplete,
       isNudge,
       hasContract: roleHasTurnContract(sessionRole(s.info))
     })
+  }
+
+  /**
+   * The limit detector: did the provider, not the code, end this turn? Three
+   * signals, any one of which is enough —
+   *
+   *   - a live rate-limit event during the turn said `rejected`;
+   *   - the thrown error / non-`end_turn` stop reads like a limit
+   *     (`turnOutcome`'s patterns, unchanged);
+   *   - the agent's whole reply is a short limit notice — Claude Code answers
+   *     a refused turn with "You've hit your limit · resets 3pm" as ordinary
+   *     text and a clean `end_turn`, which neither of the above would see.
+   *
+   * Logged with the signal that fired, so a miss or a false hit can be traced
+   * back to what the adapter actually sent.
+   */
+  private withLimit(s: Session, outcome: TurnResult, detail: string | undefined, firstEntry: number): TurnResult {
+    const reply = s.entries
+      .flatMap((e) => (e.id >= firstEntry && e.kind === 'agent' ? [e.text] : []))
+      .join('\n')
+    const signal = s.turnRejected
+      ? 'rate-limit-event'
+      : turnOutcome({ ...outcome, detail }) === 'limited'
+        ? 'error-text'
+        : isLimitReply(reply)
+          ? 'agent-reply'
+          : undefined
+    if (!signal) return outcome
+    const resetAt = limitResetAt(detail) ?? limitResetAt(reply)
+    log.info('turn.limited', { s: s.info.id, agent: s.info.agent, signal, resetAt })
+    return { ...outcome, limit: { ...(resetAt ? { resetAt } : {}) } }
+  }
+
+  /**
+   * A turn ended on a limit. Settle when it is expected to lift — the reset
+   * the refusal named, else the account's own hold, else a growing backoff —
+   * record that on the session (persisted, so a restart still waits) and on
+   * the account (so nothing else on it starts into the same refusal), and
+   * queue the "continue" that resumes the work once it lifts. A message the
+   * user already queued behind this turn goes instead: it *is* the
+   * continuation, and sending both would answer one turn twice.
+   */
+  private onLimited(s: Session, limit: { resetAt?: string | undefined }): void {
+    s.limitStrikes++
+    const now = Date.now()
+    const named = limit.resetAt && Date.parse(limit.resetAt) > now ? limit.resetAt : undefined
+    const until =
+      named ??
+      this.limitHold(s)?.until ??
+      new Date(now + limitBackoffMs(s.limitStrikes)).toISOString()
+    s.info.limitedUntil = until
+    if (s.info.agent) this.bus.emit('agent.limited', { agent: s.info.agent, until })
+    if (!s.pending.length)
+      s.pending.push({ id: `p${++this.pendingSeq}`, text: LIMIT_CONTINUE_PROMPT, auto: true })
+    this.push(s, {
+      kind: 'system',
+      text: `limit reached — continues on its own after the reset (${formatResetAt(until, now)})`
+    })
+    this.schedulePersist(s.ref)
+    // Arms the clock for the reset.
+    this.schedule()
+  }
+
+  /** A turn the provider accepted: whatever limit was on record is over. */
+  private clearLimited(s: Session): void {
+    s.limitStrikes = 0
+    if (!s.info.limitedUntil) return
+    s.info.limitedUntil = undefined
+    this.schedulePersist(s.ref)
   }
 
   /**
@@ -2204,8 +2421,11 @@ export class SessionManager {
   ): Promise<void> {
     try {
       const first = await this.sendTurn(s, text, 'user', false, context, images)
+      if (first.limit) return this.onLimited(s, first.limit)
+      if (!first.threw) this.clearLimited(s)
       if (this.decideTurn(s, first, false) !== 'nudge') return
       const second = await this.sendTurn(s, NUDGE_PROMPT, 'system', true)
+      if (second.limit) return this.onLimited(s, second.limit)
       if (this.decideTurn(s, second, true) === 'incomplete') {
         this.push(s, { kind: 'system', text: 'turn ended without complete' })
         s.info.incomplete = true
@@ -2455,6 +2675,9 @@ export class SessionManager {
     // message cleared now. What happened to it afterwards is the timeline's to
     // tell, and a failed turn writes itself there.
     const id = `p${++this.pendingSeq}`
+    // What the user types now is the continuation an interrupted session was
+    // going to send on its own — it replaces the automatic "continue".
+    s.pending = s.pending.filter((p) => !p.auto)
     s.pending.push({
       id,
       text,
@@ -2493,7 +2716,15 @@ export class SessionManager {
       // `busy` covers the one turn this loop does not own: the start prompt,
       // which `startSession` runs directly. `repoHolder` is case two — the
       // clone is elsewhere, and attaching would only fail with it.
-      while (s.pending.length && !s.busy && s.info.state === 'started' && !this.repoHolder(s)) {
+      // Case three: the account is at its limit — what is waiting would only be
+      // refused, so it stays put until the hold lifts (`schedule()` again).
+      while (
+        s.pending.length &&
+        !s.busy &&
+        s.info.state === 'started' &&
+        !this.repoHolder(s) &&
+        !this.limitHold(s)
+      ) {
         const next = s.pending.shift()!
         await this.runPrompt(s, next.text, next.context, next.images)
       }
@@ -2513,8 +2744,11 @@ export class SessionManager {
   clearPending(sessionId: string): PendingPromptInfo[] {
     const s = this.sessions.get(sessionId)
     if (!s?.pending.length) return []
-    const out = s.pending.map(pendingInfo)
+    // Stopping the session stops its automatic continuation too; the "continue"
+    // itself was never typed, so it does not go back to the composer.
+    const out = s.pending.filter((p) => !p.auto).map(pendingInfo)
     s.pending = []
+    this.dropAutoContinue(s)
     this.bus.emit('session.changed', { sessionId })
     return out
   }
@@ -2527,8 +2761,17 @@ export class SessionManager {
     const i = s.pending.findIndex((p) => p.id === promptId)
     if (i < 0) return undefined
     const [gone] = s.pending.splice(i, 1)
+    // Cancelling the automatic "continue" is "do not resume this one by
+    // yourself": the session-level hold goes with it (the account's stays).
+    if (gone?.auto) this.dropAutoContinue(s)
     this.bus.emit('session.changed', { sessionId })
-    return gone ? pendingInfo(gone) : undefined
+    return gone && !gone.auto ? pendingInfo(gone) : undefined
+  }
+
+  private dropAutoContinue(s: Session): void {
+    if (!s.info.limitedUntil) return
+    s.info.limitedUntil = undefined
+    this.schedulePersist(s.ref)
   }
 
   cancel(sessionId: string): void {
@@ -2894,8 +3137,10 @@ export class SessionManager {
         if (!u) return
         const agent = s.info.agent
         if (agent && this.agentKinds.get(agent) === 'claude-code') {
-          const windows = parseClaudeRateLimit(u._meta?.['_claude/rateLimit'])
-          if (windows.length) this.bus.emit('agent.planUsage', { agent, windows })
+          const state = parseClaudeRateLimitState(u._meta?.['_claude/rateLimit'])
+          if (state.rejected && s.busy) s.turnRejected = true
+          if (state.windows.length || state.overage !== undefined || state.rejected !== undefined)
+            this.bus.emit('agent.planUsage', { agent, ...state })
         }
         s.usage = { used: u.used, size: u.size, ...(u.cost ? { cost: u.cost } : {}) }
         this.bus.emit('session.changed', { sessionId: s.info.id })

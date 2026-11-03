@@ -167,6 +167,49 @@ export function parseClaudeRateLimit(body: unknown): PlanWindow[] {
   return out
 }
 
+/** What a live Claude rate-limit event says beyond the windows: whether the
+ *  request was refused, and whether overage (extra usage) can absorb an
+ *  exhausted window. `status` and `overageStatus` read `allowed`,
+ *  `allowed_warning` or `rejected` (see LIVE_LIMIT in the tests). */
+export function parseClaudeRateLimitState(body: unknown): {
+  windows: PlanWindow[]
+  overage?: boolean
+  rejected?: boolean
+  rejectedUntil?: string
+} {
+  const windows = parseClaudeRateLimit(body)
+  if (!isRecord(body)) return { windows }
+  const status = body['status']
+  const overageStatus = body['overageStatus']
+  const reset = USAGE_NODE.safeParse(body)
+  const resetsAt = reset.success ? resetOf(reset.data) : undefined
+  return {
+    windows,
+    ...(typeof overageStatus === 'string' ? { overage: overageStatus.startsWith('allowed') } : {}),
+    ...(typeof status === 'string' ? { rejected: status === 'rejected' } : {}),
+    ...(status === 'rejected' && resetsAt ? { rejectedUntil: resetsAt } : {})
+  }
+}
+
+/**
+ * Can this account spend past an exhausted window, per a usage poll?
+ * Anthropic: `extra_usage: { is_enabled, utilization }` — on, and not itself
+ * spent. Codex: `credits: { has_credits, unlimited }` (codex-rs
+ * `CreditsSnapshot`). Anything absent or unreadable is "no": the hold is the
+ * safe side of a guess.
+ */
+export function parseOverage(body: unknown, codex: boolean): boolean {
+  if (!isRecord(body)) return false
+  if (codex) {
+    const c = body['credits']
+    return isRecord(c) && (c['unlimited'] === true || c['has_credits'] === true)
+  }
+  const x = body['extra_usage']
+  if (!isRecord(x) || x['is_enabled'] !== true) return false
+  const util = x['utilization']
+  return typeof util !== 'number' || util < 100
+}
+
 /** Codex CLI's /backend-api/wham/usage response (backend-client, v0.160.1).
  * Only the main quota is shown; code-review and model-specific pools are separate.
  * Percentages and duration seconds are explicit, never inferred from magnitudes. */
@@ -224,6 +267,9 @@ export interface PlanUsageStore {
    * `fetchedAt` to say how fresh the answer is.
    */
   get(): Promise<Record<string, PlanUsage>>
+  /** The cached snapshots of these agent instances, without polling —
+   *  synchronous, for the scheduler's launch gate (`planHold`). */
+  peek(agents: readonly string[]): PlanUsage[]
 }
 
 export interface PlanUsageDeps {
@@ -292,9 +338,25 @@ export function createPlanUsage(bus: Bus, deps: PlanUsageDeps): PlanUsageStore {
     cache.set(agent, { ...prev, ...next })
   }
 
-  bus.on('agent.planUsage', ({ agent, windows }) => {
-    if (!windows.length) return
-    patch(agent, { windows, fetchedAt: new Date(now()).toISOString(), error: undefined })
+  bus.on('agent.planUsage', ({ agent, windows, overage, rejected, rejectedUntil }) => {
+    const prev = cache.get(agent)
+    const next: Partial<PlanUsage> = {}
+    if (windows.length) Object.assign(next, { windows, fetchedAt: new Date(now()).toISOString(), error: undefined })
+    if (overage !== undefined && overage !== prev?.overage) next.overage = overage
+    // An allowed response is the provider accepting again — whatever refusal
+    // was on record is over.
+    const refusal = rejected ? rejectedUntil : undefined
+    if (rejected !== undefined && refusal !== prev?.rejectedUntil) next.rejectedUntil = refusal
+    // Every response carries one of these; one that changes nothing is not news.
+    if (!Object.keys(next).length) return
+    patch(agent, next)
+    bus.emit('usage.changed', undefined)
+  })
+
+  // A turn the limit detector claimed: the account refused, whatever the
+  // windows last said. The session manager has already settled on `until`.
+  bus.on('agent.limited', ({ agent, until }) => {
+    patch(agent, { rejectedUntil: until })
     bus.emit('usage.changed', undefined)
   })
 
@@ -312,6 +374,7 @@ export function createPlanUsage(bus: Bus, deps: PlanUsageDeps): PlanUsageStore {
       }
       const body = await fetchUsage(secret, doFetch, codex)
       const windows = codex ? parseCodexPlanWindows(body) : parsePlanWindows(body)
+      const overage = parseOverage(body, !!codex)
       // A live response received during this request is the newer snapshot.
       if (cache.get(agent) !== previous) return
       if (!windows.length) {
@@ -321,7 +384,7 @@ export function createPlanUsage(bus: Bus, deps: PlanUsageDeps): PlanUsageStore {
         log.warn('plan usage: unreadable body', { agent })
         return
       }
-      patch(agent, { windows, fetchedAt: new Date(started).toISOString(), error: undefined })
+      patch(agent, { windows, overage, fetchedAt: new Date(started).toISOString(), error: undefined })
     } catch (e) {
       if (cache.get(agent) !== previous) return
       const error = e instanceof Error ? e.message : String(e)
@@ -376,5 +439,8 @@ export function createPlanUsage(bus: Bus, deps: PlanUsageDeps): PlanUsageStore {
     return Object.fromEntries(cache)
   }
 
-  return { get: refreshAll }
+  return {
+    get: refreshAll,
+    peek: (agents) => agents.flatMap((a) => cache.get(a) ?? [])
+  }
 }

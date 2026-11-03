@@ -27,7 +27,7 @@ await bundle({
   outfile
 })
 
-const { HOUR, formatDuration, isLimitMessage, limitResetAt, turnOutcome } = await import(
+const { HOUR, formatDuration, isLimitMessage, isLimitReply, limitResetAt, turnOutcome } = await import(
   pathToFileURL(outfile).href
 )
 
@@ -62,6 +62,26 @@ test('limit detection', () => {
   assert.equal(limitResetAt('resetsAt: 1755612000'), new Date(1755612000_000).toISOString())
   assert.equal(limitResetAt('your limit will reset at 3pm'), undefined, 'prose has no timezone — left alone')
   assert.equal(limitResetAt(undefined), undefined)
+})
+
+test('limit reply: only a short notice in the notice’s own words', () => {
+  for (const text of [
+    "You've hit your session limit · resets 3pm (Europe/London)",
+    "  You've hit your weekly limit  ",
+    'Claude AI usage limit reached|1792673400',
+    '5-hour limit reached ∙ resets 3pm'
+  ])
+    assert.ok(isLimitReply(text), `should read as a limit notice: ${text}`)
+  for (const text of [
+    undefined,
+    '',
+    // An agent's ordinary reply about rate limiting — loose patterns would claim these.
+    'Added a rate limiter that returns 429 when the quota is exceeded.',
+    'The limit resets nightly via cron.',
+    `${"You've hit your session limit".padEnd(400, '.')}`
+  ])
+    assert.ok(!isLimitReply(text), `should NOT read as a limit notice: ${text}`)
+  assert.equal(limitResetAt('Claude AI usage limit reached|1792673400'), new Date(1792673400_000).toISOString())
 })
 
 // --- turn outcome ----------------------------------------------------------
