@@ -223,11 +223,7 @@ export function createKernel(): Kernel {
       ensureTask: async (ws, task) => {
         if (!store.taskExists(ws, task)) await store.createTask(ws, task)
       },
-      persist: (ws, task, records) => {
-        store
-          .writeSessions(ws, task, records)
-          .catch((e: unknown) => log.error('internal.fail', { site: 'session-persist', ws, task, err: e }))
-      },
+      persist: (ws, task, records) => store.writeSessions(ws, task, records),
       saveAgentConfig: (agentId, cfg) => {
         store
           .setAgentConfig(agentId, cfg)
@@ -441,7 +437,7 @@ export function createKernel(): Kernel {
           log = r.entries.map((entry, i) => ({ seq: i + 1, type: 'entry' as const, entry }))
           await store.appendSessionLog(ws, task, r.info.id, log)
         }
-        restored.push({ info: r.info, acpSessionId: r.acpSessionId, proposal: r.proposal, log })
+        restored.push({ ...r, log })
       }
       sessions.restore(restored)
     }

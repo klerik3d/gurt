@@ -844,8 +844,7 @@ export interface PromptContext {
  * not errors, so the composer accepts the message and this is where it stands
  * until the session is free.
  *
- * In-memory on main, deliberately: a queue that survived a restart would have
- * the app wake a container and run a prompt nobody is watching.
+ * Persisted on main. Restored queues wait for the user to resume the session.
  */
 export interface PendingPromptInfo {
   id: string
@@ -919,7 +918,17 @@ export interface SessionSnapshot {
  * once the session has started; `starting` is never persisted (restores as draft).
  * The timeline lives in the per-session JSONL log, not here.
  */
+export interface PersistedPrompt {
+  id: string
+  text: string
+  context?: PromptContext[] | undefined
+  images?: PromptImage[] | undefined
+  auto?: boolean | undefined
+}
+
 export interface PersistedSession {
+  interrupted?: boolean | undefined
+  pending?: PersistedPrompt[] | undefined
   info: SessionInfo
   acpSessionId?: string | undefined
   /** Latest change proposal (outcome=changes) submitted via `complete`; last one wins. */

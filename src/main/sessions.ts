@@ -328,9 +328,13 @@ interface Session {
    *  Used to turn repo-relative context paths into absolute `file://` resource links. */
   remoteCwd?: string | undefined
   busy: boolean
+  interrupted?: boolean | undefined
+  recovering?: boolean | undefined
+  recoveryStarting?: boolean | undefined
+  promptRunning?: boolean | undefined
   /** Prompts accepted while the session could not run them, oldest first — a
    *  turn was in flight, or its clone was somebody else's. Drained by
-   *  {@link SessionManager.drainPending}. In memory only, on purpose: see
+   *  {@link SessionManager.drainPending}. Persisted across restarts; see
    *  {@link PendingPromptInfo}. */
   pending: PendingPrompt[]
   /** The drain loop owns this session's turns right now — a second one would
@@ -451,7 +455,7 @@ export interface SessionEvents {
    *  the container is actually gone: the delete path waits for that before
    *  removing the directories it was mounted on. Never rejects. */
   releaseContainer: (sessionId: string, reason: ContainerStatusReason) => Promise<void>
-  persist: (ws: string, task: string, records: PersistedSession[]) => void
+  persist: (ws: string, task: string, records: PersistedSession[]) => void | Promise<void>
   /** Persist the refreshed config surface for an agent instance (cache). */
   saveAgentConfig: (agentId: string, cfg: AgentConfig) => void
   /** Append records to the session's JSONL log (append-only, ordered).
@@ -475,10 +479,7 @@ export interface SessionEvents {
 }
 
 /** A persisted session plus its read (or just-migrated) JSONL log. */
-export interface RestoredSession {
-  info: SessionInfo
-  acpSessionId?: string | undefined
-  proposal?: StoredProposal | undefined
+export interface RestoredSession extends PersistedSession {
   log: SessionLogRecord[]
 }
 
@@ -647,7 +648,9 @@ export class SessionManager {
         entries,
         nextEntryId: Math.max(0, ...entries.map((e) => e.id)) + 1,
         busy: false,
-        pending: [],
+        pending: (r.pending ?? []).map((p) => ({ ...p, id: `p${++this.pendingSeq}` })),
+        interrupted: r.interrupted,
+        recovering: !!r.interrupted || !!r.pending?.length,
         draining: false,
         turnComplete: false,
         turns: 0,
@@ -657,11 +660,12 @@ export class SessionManager {
         turnRejected: false,
         limitStrikes: 0
       })
-      // Cut off by a limit before the restart: the "continue" it was waiting
-      // to send is memory-only, like every queued prompt — put it back.
+      // Legacy records did not persist queued automatic continuations.
       const restored = this.sessions.get(r.info.id)!
-      if (r.info.state === 'started' && r.info.limitedUntil)
+      if (r.info.state === 'started' && r.info.limitedUntil && !restored.pending.some((p) => p.auto)) {
         restored.pending.push({ id: `p${++this.pendingSeq}`, text: LIMIT_CONTINUE_PROMPT, auto: true })
+        restored.recovering = true
+      }
     }
   }
 
@@ -1790,7 +1794,13 @@ export class SessionManager {
       }
       // `incomplete` is a runtime overlay — never persisted.
       delete info.incomplete
-      return { info, acpSessionId: s.acpSessionId, proposal: s.proposal }
+      return {
+        info,
+        acpSessionId: s.acpSessionId,
+        proposal: s.proposal,
+        interrupted: s.interrupted,
+        pending: structuredClone(s.pending)
+      }
     })
   }
 
@@ -1799,13 +1809,67 @@ export class SessionManager {
     return [...this.sessions.values()].filter((s) => taskKey(s.ref.workspace, s.ref.task) === key)
   }
 
+  private async persistNow(s: Session): Promise<void> {
+    await this.events.persist(s.ref.workspace, s.ref.task, this.recordsFor(s.ref.workspace, s.ref.task))
+  }
+
+  /** Wait for buffered state and history before an intentional update restart. */
+  async flushForRestart(): Promise<void> {
+    for (const s of this.sessions.values()) {
+      await this.persistNow(s)
+      while (s.flushInFlight) await new Promise((resolve) => setTimeout(resolve, 10))
+      this.flushLog(s)
+      while (s.flushInFlight) await new Promise((resolve) => setTimeout(resolve, 10))
+      if (s.flushedSeq < s.lastSeq) throw new Error('Could not save session history before restart')
+    }
+  }
+
+  interruptedSessions(): { id: string; title: string }[] {
+    return [...this.sessions.values()].filter((s) => s.recovering && s.info.state === 'started')
+      .map((s) => ({ id: s.info.id, title: s.info.title }))
+  }
+
+  hasUnfinishedWork(): boolean {
+    return [...this.sessions.values()].some((s) => s.busy || s.draining || s.loading || s.promptRunning ||
+      s.pendingPermissions.size > 0 || s.pending.length > 0 || s.recovering ||
+      s.info.state === 'starting' || s.info.state === 'queued' || !!s.info.limitedUntil)
+  }
+
+  async resumeInterrupted(id: string): Promise<void> {
+    const s = this.sessions.get(id)
+    if (!s?.recovering || s.recoveryStarting || s.info.state !== 'started') return
+    s.recoveryStarting = true
+    const previous = [...s.pending]
+    const wasInterrupted = s.interrupted
+    try {
+      if (s.interrupted) {
+        s.pending.unshift({
+          id: `p${++this.pendingSeq}`,
+          auto: true,
+          text: 'The application restarted during your previous turn. Resume the unfinished task using the existing conversation. First inspect the current state: actions may already have completed. Do not repeat completed actions. Request any necessary permissions again.'
+        })
+      }
+      s.interrupted = false
+      await this.persistNow(s)
+      s.recovering = false
+      void this.drainPending(s)
+    } catch (err) {
+      s.pending = previous
+      s.interrupted = wasInterrupted
+      throw err
+    } finally {
+      s.recoveryStarting = false
+    }
+  }
+
   private schedulePersist(ref: EnvRef): void {
     const key = taskKey(ref.workspace, ref.task)
     clearTimeout(this.persistTimers.get(key))
     this.persistTimers.set(
       key,
       setTimeout(() => {
-        this.events.persist(ref.workspace, ref.task, this.recordsFor(ref.workspace, ref.task))
+        void Promise.resolve(this.events.persist(ref.workspace, ref.task, this.recordsFor(ref.workspace, ref.task)))
+          .catch((err: unknown) => log.error('session.persist.fail', { err }))
         // Flush each session's unflushed log tail (the JSONL is append-only).
         for (const s of this.sessionsFor(ref.workspace, ref.task)) this.flushLog(s)
       }, 300)
@@ -1833,7 +1897,8 @@ export class SessionManager {
       s.info.task = newTask
       s.attached = false
     }
-    this.events.persist(ws, newTask, this.recordsFor(ws, newTask))
+    void Promise.resolve(this.events.persist(ws, newTask, this.recordsFor(ws, newTask)))
+      .catch((err: unknown) => log.error('session.persist.fail', { err }))
     this.bus.emit('tree.changed', undefined)
   }
 
@@ -2254,6 +2319,14 @@ export class SessionManager {
     // stop or the thrown error's message, i.e. exactly the text the limit
     // detector needs to tell "the plan said no" from "the code broke".
     let detail: string | undefined
+    s.interrupted = true
+    try {
+      await this.persistNow(s)
+    } catch (err) {
+      s.busy = false
+      s.recovering = true
+      throw err
+    }
     try {
       if (maskError) throw maskError
       const conn = await this.attach(s)
@@ -2282,6 +2355,8 @@ export class SessionManager {
       return outcome
     } finally {
       s.busy = false
+      s.interrupted = false
+      await this.persistNow(s)
       this.bus.emit('session.changed', { sessionId: s.info.id })
       this.schedulePersist(s.ref)
       this.reportTurn(s, startedAt, outcome, detail)
@@ -2419,6 +2494,7 @@ export class SessionManager {
     context?: PromptContext[],
     images?: PromptImage[]
   ): Promise<void> {
+    s.promptRunning = true
     try {
       const first = await this.sendTurn(s, text, 'user', false, context, images)
       if (first.limit) return this.onLimited(s, first.limit)
@@ -2433,6 +2509,7 @@ export class SessionManager {
         this.schedulePersist(s.ref)
       }
     } finally {
+      s.promptRunning = false
       // Whatever was typed while this turn ran goes next. A no-op when the drain
       // loop is what called this (it owns `draining` and continues on its own) —
       // this is here for the one turn it does not drive, the start prompt.
@@ -2684,6 +2761,8 @@ export class SessionManager {
       ...(context?.length ? { context } : {}),
       ...(images?.length ? { images } : {})
     })
+    await this.persistNow(s)
+    s.recovering = false
     void this.drainPending(s)
     // Still queued after the drain had its synchronous chance at it: nothing
     // else is going to announce it. A drain already in flight returns at its
@@ -2710,7 +2789,7 @@ export class SessionManager {
    * crash the user could not connect to anything they did.
    */
   private async drainPending(s: Session): Promise<void> {
-    if (s.draining) return
+    if (s.draining || s.recovering) return
     s.draining = true
     try {
       // `busy` covers the one turn this loop does not own: the start prompt,
@@ -2726,6 +2805,7 @@ export class SessionManager {
         !this.limitHold(s)
       ) {
         const next = s.pending.shift()!
+        s.interrupted = true
         await this.runPrompt(s, next.text, next.context, next.images)
       }
     } catch (e) {
@@ -2748,6 +2828,7 @@ export class SessionManager {
     // itself was never typed, so it does not go back to the composer.
     const out = s.pending.filter((p) => !p.auto).map(pendingInfo)
     s.pending = []
+    this.schedulePersist(s.ref)
     this.dropAutoContinue(s)
     this.bus.emit('session.changed', { sessionId })
     return out
@@ -2761,6 +2842,7 @@ export class SessionManager {
     const i = s.pending.findIndex((p) => p.id === promptId)
     if (i < 0) return undefined
     const [gone] = s.pending.splice(i, 1)
+    this.schedulePersist(s.ref)
     // Cancelling the automatic "continue" is "do not resume this one by
     // yourself": the session-level hold goes with it (the account's stays).
     if (gone?.auto) this.dropAutoContinue(s)

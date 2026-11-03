@@ -36,7 +36,7 @@ import { NotificationPopups } from './components/NotificationPopups'
 import { useOutsideClose } from './hooks'
 import { isReviewed, lastTurnEnds, markSeen, useSeen, useUsage } from './reviewed'
 import { useAgents } from './useAgents'
-import { DialogHost, alertDialog } from './dialog'
+import { DialogHost, alertDialog, confirmDialog } from './dialog'
 import { ToastHost } from './toast'
 import { logErr } from './log'
 import { run } from './async'
@@ -195,13 +195,31 @@ export default function App() {
   /** Version of a downloaded-and-ready app update — shows the titlebar's
    *  "update" button (see main/update.ts). Null in dev and while up to date. */
   const [updateVersion, setUpdateVersion] = useState<string | null>(null)
+  const [updateDeferred, setUpdateDeferred] = useState(false)
+  const [updateMenu, setUpdateMenu] = useState(false)
+  const updateRef = useRef<HTMLDivElement>(null)
+  useOutsideClose(updateMenu, updateRef, () => setUpdateMenu(false))
+  const [interrupted, setInterrupted] = useState<{ id: string; title: string }[]>([])
+  const [recoveryOpen, setRecoveryOpen] = useState(false)
+  const [recoverySelected, setRecoverySelected] = useState<string[]>([])
+  const [recoveryBusy, setRecoveryBusy] = useState(false)
   useEffect(() => {
-    const off = window.gurt.onUpdateReady((u) => setUpdateVersion(u.version))
+    let disposed = false
+    void window.gurt.getInterruptedSessions().then((items) => {
+      if (disposed) return
+      setInterrupted(items)
+      setRecoverySelected(items.map((s) => s.id))
+      setRecoveryOpen(items.length > 0)
+    }).catch(logErr('getInterruptedSessions'))
+    return () => { disposed = true }
+  }, [])
+  useEffect(() => {
+    const off = window.gurt.onUpdateReady((u) => { setUpdateVersion(u.version); setUpdateDeferred(!!u.deferred) })
     // Pull the current value too — this window may have opened after the push.
     window.gurt
       .getUpdateStatus()
       .then((u) => {
-        if (u) setUpdateVersion(u.version)
+        if (u) { setUpdateVersion(u.version); setUpdateDeferred(u.deferred) }
       })
       .catch(logErr('getUpdateStatus'))
     return off
@@ -898,15 +916,6 @@ export default function App() {
                 </div>
               )}
             </div>
-            {updateVersion && (
-              <button
-                className="tb-update-btn"
-                title={`Restart to update gurt to ${updateVersion}`}
-                onClick={() => void window.gurt.installUpdate().catch(logErr('installUpdate'))}
-              >
-                update
-              </button>
-            )}
             {crumbRest && (
               <>
                 <span className="tb-crumb-sep">/</span>
@@ -923,6 +932,24 @@ export default function App() {
           </div>
         </div>
         <div className="tb-icons">
+          {interrupted.length > 0 && <button className="tb-update-btn" onClick={() => setRecoveryOpen(true)}>resume ({interrupted.length})</button>}
+          {updateVersion && <div className="notif-wrap" ref={updateRef}>
+            <button className="tb-update-btn" title={`Update to ${updateVersion}`} onClick={() => setUpdateMenu((v) => !v)}>
+              {updateDeferred ? 'update pending' : 'update'}
+            </button>
+            {updateMenu && <div className="menu" style={{ position: 'absolute', right: 0, top: '100%', minWidth: 230 }}>
+              <button className="menu-item" onClick={() => {
+                setUpdateMenu(false)
+                void confirmDialog('Restart now? Running sessions will be interrupted and can be resumed after restart.', { title: `Update to ${updateVersion}`, confirmText: 'Update now' })
+                  .then(async (ok) => { if (ok) await window.gurt.installUpdate() }).catch(logErr('installUpdate'))
+              }}>Update now…</button>
+              <button className="menu-item" onClick={() => {
+                setUpdateMenu(false)
+                void window.gurt.deferUpdate(!updateDeferred).catch(logErr('deferUpdate'))
+              }}>{updateDeferred ? 'Cancel scheduled update' : 'Update when sessions finish'}</button>
+              <button className="menu-item" onClick={() => setUpdateMenu(false)}>Later</button>
+            </div>}
+          </div>}
           <button
             className="icon-sq tb-btn"
             title={`Search · ${bindingLabel(hotkeys.palette)}`}
@@ -1272,6 +1299,30 @@ export default function App() {
         />
         <ToastHost />
       </div>
+      {recoveryOpen && <div className="modal-backdrop">
+        <div className="dialog" role="dialog" aria-modal="true" aria-label="Resume interrupted sessions">
+          <div className="dialog-title">Resume interrupted sessions?</div>
+          <div className="dialog-message">The application closed before this work finished.</div>
+          {interrupted.map((s) => <label key={s.id} style={{ display: 'block', margin: '8px 0' }}>
+            <input type="checkbox" checked={recoverySelected.includes(s.id)} disabled={recoveryBusy}
+              onChange={(e) => setRecoverySelected((ids) => e.target.checked ? [...ids, s.id] : ids.filter((id) => id !== s.id))} /> {s.title}
+          </label>)}
+          <div className="dialog-buttons">
+            <button className="dialog-cancel" disabled={recoveryBusy} onClick={() => setRecoveryOpen(false)}>Later</button>
+            <button className="dialog-ok" disabled={recoveryBusy || !recoverySelected.length} onClick={() => {
+              setRecoveryBusy(true)
+              void (async () => {
+                for (const id of recoverySelected) {
+                  await window.gurt.resumeInterruptedSession(id)
+                  setInterrupted((items) => items.filter((s) => s.id !== id))
+                }
+                setRecoveryOpen(false)
+              })().catch((e: unknown) => { setRecoveryOpen(false); void alertDialog(String(e)) })
+                .finally(() => setRecoveryBusy(false))
+            }}>{recoveryBusy ? 'Resuming…' : 'Resume selected'}</button>
+          </div>
+        </div>
+      </div>}
       <DialogHost />
     </div>
   )
