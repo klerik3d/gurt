@@ -4,6 +4,7 @@
 // wiring — no per-method glue in main/preload.
 import type {
   AgentConfig,
+  InterruptedSession,
   AgentsFile,
   ChangedFile,
   DiffPair,
@@ -48,6 +49,17 @@ import type { ProactiveConfig } from './proactive'
 export type CreateAction = 'run' | 'queue' | 'draft'
 
 export type UpdateStrategy = 'merge' | 'rebase'
+
+export interface GitCommitOptions {
+  signoff?: boolean
+  noVerify?: boolean
+}
+
+export interface GitPushOptions {
+  forceWithLease?: boolean
+  followTags?: boolean
+  noVerify?: boolean
+}
 
 /** Where the boot restore currently is — what the footer's startup bar shows.
  *  `done` flips once the kernel is ready (or its restore failed; the app is
@@ -313,8 +325,8 @@ export interface GurtApi {
     target: DiffTarget,
     prompt: string
   ): Promise<{ sessionId: string }>
-  changesCommit(ws: string, task: string, repo: string, message: string): Promise<void>
-  changesPush(ws: string, task: string, repo: string): Promise<void>
+  changesCommit(ws: string, task: string, repo: string, message: string, options?: GitCommitOptions): Promise<void>
+  changesPush(ws: string, task: string, repo: string, options?: GitPushOptions): Promise<void>
   /** Merge or rebase the fetched default branch into the task branch; conflicts surface as `conflicted`. */
   changesUpdateFromMain(
     ws: string,
@@ -325,7 +337,7 @@ export interface GurtApi {
   /** Local repos only: fast-forward the local origin's default branch to the
    *  task branch — their delivery, in place of a pull request. */
   changesMergeToMain(ws: string, task: string, repo: string): Promise<void>
-  /** Newest change proposal for this env, if any — the Commit modal prefills from it. */
+  /** Newest change proposal for this env, if any — the commit form prefills from it. */
   latestProposal(ws: string, task: string, repo: string): Promise<StoredProposal | undefined>
   /** Open the browser at the forge's compare URL (impl: `prUrl` + `shell.openExternal`). */
   changesOpenPr(ws: string, task: string, repo: string): Promise<void>
@@ -418,7 +430,7 @@ export interface GurtApi {
    *  unless an `update-ready` was announced. */
   installUpdate(): Promise<void>
   deferUpdate(wait: boolean): Promise<void>
-  getInterruptedSessions(): Promise<{ id: string; title: string }[]>
+  getInterruptedSessions(): Promise<InterruptedSession[]>
   resumeInterruptedSession(id: string): Promise<void>
   /** In-memory notification history (oldest first) — empty after a relaunch,
    *  see docs/requirements-notifications.md §6. */

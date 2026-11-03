@@ -359,8 +359,8 @@ export function registerIpc(): void {
     deleteReviewComment: (ws, task, id) => kernel.review.deleteComment(ws, task, id),
     launchReviewFix: (ws, task, repo, target, prompt) =>
       kernel.launchReviewFix(ws, task, repo, target, prompt),
-    changesCommit: (ws, task, repo, message) => changes.commit(ws, task, repo, message),
-    changesPush: (ws, task, repo) => changes.push(ws, task, repo),
+    changesCommit: (ws, task, repo, message, options) => changes.commit(ws, task, repo, message, options),
+    changesPush: (ws, task, repo, options) => changes.push(ws, task, repo, options),
     changesUpdateFromMain: (ws, task, repo, strategy) =>
       changes.updateFromMain(ws, task, repo, strategy),
     changesMergeToMain: (ws, task, repo) => changes.mergeToMain(ws, task, repo),

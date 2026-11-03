@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import type {
   RepoChanges,
+  InterruptedSession,
   SessionActivity,
   SessionInfo,
   SessionSnapshot,
@@ -31,6 +32,7 @@ import { SettingsPage, type SettingsSection } from './components/SettingsPage'
 import { Dashboard } from './components/Dashboard'
 import { CommandPalette } from './components/CommandPalette'
 import { Welcome } from './components/Welcome'
+import { SessionRecoveryModal } from './components/SessionRecoveryModal'
 import { PREPARE_LOG_KEY, WELCOME_MODE_DEFAULT, welcomeShows } from '../../shared/doctor'
 import type { WelcomeMode } from '../../shared/doctor'
 import { NotificationsPanel } from './components/NotificationsPanel'
@@ -111,7 +113,7 @@ export default function App() {
   const [settingsSection, setSettingsSection] = usePreference<SettingsSection>('settingsSection', 'environments', z.enum(['environments', 'repos', 'clients', 'agentAccess', 'mcp', 'skills', 'credentials', 'notifications', 'hotkeys', 'machine', 'docker']))
   const [snapshots, setSnapshots] = useState<Record<string, SessionSnapshot>>({})
   const [logs, setLogs] = useState<Record<string, string[]>>({})
-  /** Per-task git changes snapshot, keyed `ws/task` — read by TaskPane and the sidebar badge. */
+  /** Per-task git changes snapshot, keyed `ws/task` — read by git mode and the sidebar badge. */
   const [changes, setChanges] = useState<Record<string, RepoChanges[]>>({})
   /** Epoch ms of the turn each busy session is in — the dashboard's "N in this
    *  turn" readout. Only turns that started while this window was open are here;
@@ -207,16 +209,13 @@ export default function App() {
   const [updateMenu, setUpdateMenu] = useState(false)
   const updateRef = useRef<HTMLDivElement>(null)
   useOutsideClose(updateMenu, updateRef, () => setUpdateMenu(false))
-  const [interrupted, setInterrupted] = useState<{ id: string; title: string }[]>([])
+  const [interrupted, setInterrupted] = useState<InterruptedSession[]>([])
   const [recoveryOpen, setRecoveryOpen] = useState(false)
-  const [recoverySelected, setRecoverySelected] = useState<string[]>([])
-  const [recoveryBusy, setRecoveryBusy] = useState(false)
   useEffect(() => {
     let disposed = false
     void window.gurt.getInterruptedSessions().then((items) => {
       if (disposed) return
       setInterrupted(items)
-      setRecoverySelected(items.map((s) => s.id))
       setRecoveryOpen(items.length > 0)
     }).catch(logErr('getInterruptedSessions'))
     return () => { disposed = true }
@@ -276,16 +275,6 @@ export default function App() {
   const refreshChanges = useCallback((ws: string, task: string, fetch = false) => {
     void loadChanges(ws, task, fetch).catch(logErr('getTaskChanges'))
   }, [loadChanges])
-
-  /** The task pane's own refresh trigger, bound to the current selection. Stable
-   *  per selection: the pane refreshes when it opens or switches task, not on
-   *  every render of this component. */
-  const selWs = selection?.type === 'task' ? selection.ws : ''
-  const selTask = selection?.type === 'task' ? selection.task : ''
-  const refreshSelectionChanges = useCallback(
-    () => refreshChanges(selWs, selTask, true),
-    [refreshChanges, selWs, selTask]
-  )
 
   useEffect(() => {
     refreshTree()
@@ -1138,8 +1127,6 @@ export default function App() {
                   task={selection.task}
                   logs={logs}
                   positions={positions}
-                  changes={changes[`${selection.ws}/${selection.task}`]}
-                  onRefreshChanges={refreshSelectionChanges}
                   onSelectSession={selectSession}
                 />
               )}
@@ -1372,30 +1359,9 @@ export default function App() {
         />
         <ToastHost />
       </div>
-      {recoveryOpen && <div className="modal-backdrop">
-        <div className="dialog" role="dialog" aria-modal="true" aria-label="Resume interrupted sessions">
-          <div className="dialog-title">Resume interrupted sessions?</div>
-          <div className="dialog-message">The application closed before this work finished.</div>
-          {interrupted.map((s) => <label key={s.id} style={{ display: 'block', margin: '8px 0' }}>
-            <input type="checkbox" checked={recoverySelected.includes(s.id)} disabled={recoveryBusy}
-              onChange={(e) => setRecoverySelected((ids) => e.target.checked ? [...ids, s.id] : ids.filter((id) => id !== s.id))} /> {s.title}
-          </label>)}
-          <div className="dialog-buttons">
-            <button className="dialog-cancel" disabled={recoveryBusy} onClick={() => setRecoveryOpen(false)}>Later</button>
-            <button className="dialog-ok" disabled={recoveryBusy || !recoverySelected.length} onClick={() => {
-              setRecoveryBusy(true)
-              void (async () => {
-                for (const id of recoverySelected) {
-                  await window.gurt.resumeInterruptedSession(id)
-                  setInterrupted((items) => items.filter((s) => s.id !== id))
-                }
-                setRecoveryOpen(false)
-              })().catch((e: unknown) => { setRecoveryOpen(false); void alertDialog(String(e)) })
-                .finally(() => setRecoveryBusy(false))
-            }}>{recoveryBusy ? 'Resuming…' : 'Resume selected'}</button>
-          </div>
-        </div>
-      </div>}
+      {recoveryOpen && <SessionRecoveryModal sessions={interrupted}
+        onResumed={(id) => setInterrupted((items) => items.filter((s) => s.id !== id))}
+        onClose={() => setRecoveryOpen(false)} />}
       <DialogHost />
     </div>
   )

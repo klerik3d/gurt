@@ -8,6 +8,8 @@ import { agentKind, agentName, useAgents } from '../useAgents'
 import { useHotkeys } from '../useHotkeys'
 import { useOutsideClose } from '../hooks'
 import { alertDialog, confirmDialog } from '../dialog'
+import { showToast } from '../toast'
+import { GitCommitPanel } from './GitActions'
 import { SESSION_DOT } from '../status'
 import { markUnread } from '../reviewed'
 import { Icon, Dot } from './icons'
@@ -154,7 +156,10 @@ export function Sidebar({
    *  task row itself. Repos and folders aren't selections App knows about, so
    *  the cursor has to be kept here; it only counts while its task is selected. */
   const [diffCursor, setDiffCursor] = useState<{ ws: string; task: string; key: string | null } | null>(null)
-  const [repoMenu, setRepoMenu] = useState<{ ws: string; task: string; repo: string; x: number; y: number } | null>(null)
+  const [commitDrafts, setCommitDrafts] = useState<Record<string, string>>({})
+  const [busyRepos, setBusyRepos] = useState<Set<string>>(() => new Set())
+  const inFlightRepos = useRef(new Set<string>())
+  const [repoMenu, setRepoMenu] = useState<{ ws: string; task: string; repo: string; x: number; y: number; target?: DiffTarget } | null>(null)
 
   const wsData = tree?.workspaces.find((w) => w.name === ws)
   /** The one ordering everything below reads — rendering and the arrow-key row
@@ -469,8 +474,38 @@ export function Sidebar({
     else if (r.kind === 'diff' && r.row.kind === 'folder') setFolderOpen(r.task, r.row.repo, r.row.path, r.row.target, on)
   }
 
+  const actOnRepo = async (workspace: string, task: string, repo: string, fn: () => Promise<void>): Promise<boolean> => {
+    const key = JSON.stringify([workspace, task, repo])
+    if (inFlightRepos.current.has(key)) return false
+    inFlightRepos.current.add(key)
+    setBusyRepos((prev) => new Set(prev).add(key))
+    try {
+      await fn()
+      return true
+    } catch (e) {
+      showToast(`${repo}: ${e instanceof Error ? e.message : String(e)}`)
+      return false
+    } finally {
+      try {
+        await onRefreshChanges(workspace, task)
+      } catch (e) {
+        showToast(`${repo}: ${String(e)}`)
+      }
+      inFlightRepos.current.delete(key)
+      setBusyRepos((prev) => { const next = new Set(prev); next.delete(key); return next })
+    }
+  }
+
+  const commitRepo = mode === 'diff' && cursorRow?.kind === 'diff'
+    ? changes[`${cursorRow.ws}/${cursorRow.task}`]?.find((r) => r.repo === cursorRow.row.repo && r.dirty)
+    : undefined
+  const commitScope = commitRepo && cursorRow?.kind === 'diff' ? cursorRow : undefined
+  const commitKey = commitScope ? JSON.stringify([commitScope.ws, commitScope.task, commitScope.row.repo]) : ''
+
   const diffNav = (task: string): DiffNav => ({
     ...folding(task),
+    busy: (repo) => busyRepos.has(JSON.stringify([wsName, task, repo])),
+    act: (repo, fn) => actOnRepo(wsName, task, repo, fn),
     setRepoOpen: (repo, on) => setRepoOpen(task, repo, on),
     setGroupOpen: (repo, target, on) => setGroupOpen(task, repo, target, on),
     setFolderOpen: (repo, path, target, on) => setFolderOpen(task, repo, path, target, on),
@@ -573,11 +608,11 @@ export function Sidebar({
       case 'ContextMenu':
       case 'F10': {
         if (e.key === 'F10' && !e.shiftKey) return
-        if (!cur || (cur.kind === 'diff' && cur.row.kind !== 'repo')) return
+        if (!cur || (cur.kind === 'diff' && cur.row.kind !== 'repo' && cur.row.kind !== 'group')) return
         const rect = treeRef.current?.querySelector('.cursor')?.getBoundingClientRect()
         if (!rect) return
         const pos = { x: rect.left + 20, y: rect.bottom }
-        if (cur.kind === 'diff') setRepoMenu({ ws: cur.ws, task: cur.task, repo: cur.row.repo, ...pos })
+        if (cur.kind === 'diff') setRepoMenu({ ws: cur.ws, task: cur.task, repo: cur.row.repo, ...(cur.row.kind === 'group' ? { target: cur.row.target } : {}), ...pos })
         else setCtxMenu({ row: cur, ...pos })
         break
       }
@@ -791,6 +826,11 @@ export function Sidebar({
           </div>
         )}
       </div>
+      {commitScope && <GitCommitPanel key={commitKey} ws={commitScope.ws} task={commitScope.task} repo={commitScope.row.repo}
+        message={commitDrafts[commitKey]}
+        onMessage={(message) => setCommitDrafts((prev) => ({ ...prev, [commitKey]: message }))}
+        busy={busyRepos.has(commitKey)}
+        act={(fn) => actOnRepo(commitScope.ws, commitScope.task, commitScope.row.repo, fn)} />}
       {ctxMenu && renderCtxMenu(ctxMenu, () => setCtxMenu(null))}
     </aside>
   )

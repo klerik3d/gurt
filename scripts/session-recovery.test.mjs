@@ -18,7 +18,7 @@ test('interrupted turns and queued payloads survive restart and remain paused', 
   const m = manager()
   const image = { mimeType: 'image/png', data: 'payload' }
   m.restore([record({ interrupted: true, pending: [{ id: 'old', text: 'next', images: [image] }] })])
-  assert.deepEqual(m.interruptedSessions(), [{ id: 's', title: 'Work' }])
+  assert.deepEqual(m.interruptedSessions(), [{ id: 's', title: 'Work', workspace: 'w', task: 't' }])
   assert.equal(m.hasUnfinishedWork(), true)
   const s = m.sessions.get('s')
   await m.drainPending(s)
