@@ -45,6 +45,8 @@ import type { TurnRecord } from '../shared/usage'
 import { NOTIFICATION_DEFAULTS } from '../shared/notifications'
 import type { HotkeyMap } from '../shared/hotkeys'
 import { HOTKEY_DEFAULTS, sanitizeHotkeys } from '../shared/hotkeys'
+import type { ProactiveState } from '../shared/proactive'
+import { emptyProactiveState, sanitizeProactiveConfig } from '../shared/proactive'
 import { createLogger } from './log'
 
 const pexecFile = promisify(execFile)
@@ -163,7 +165,7 @@ export async function ensureSessionHistory(
 const RESERVED_NAMES: Record<string, string[]> = {
   workspace: ['agents.json', 'credentials.json', 'agent-config-cache.json'],
   task: ['workspace.json', '.devcontainers', 'skills', 'repos'],
-  repo: ['task.json', 'sessions.json', 'review.json', 'sessions', '.multirepo'],
+  repo: ['task.json', 'sessions.json', 'review.json', 'sessions', '.multirepo', 'proactive-state.json'],
   // Env names become `.devcontainers/<env>.json`, and the bundled envs' names
   // are spoken for: they share the env name space, so a workspace env may not
   // take them (docs/requirements-session-operator.md §2.2,
@@ -1292,11 +1294,19 @@ export function taskExists(ws: string, task: string): boolean {
   return existsSync(path.join(taskDir(ws, task), 'task.json'))
 }
 
-export async function createTask(ws: string, task: string): Promise<void> {
+/** `extra` rides the marker's first write: a proactive agent's config, or the
+ *  origin of a scope one raised — so the scope never exists without it
+ *  (docs/design-proactive-agents.md §5). */
+export async function createTask(
+  ws: string,
+  task: string,
+  extra?: Pick<TaskFile, 'proactive' | 'origin'>
+): Promise<void> {
   validateName('task', task)
   if (taskExists(ws, task)) throw new Error(`task "${task}" already exists in "${ws}"`)
   await writeJson(path.join(taskDir(ws, task), 'task.json'), {
-    createdAt: new Date().toISOString()
+    createdAt: new Date().toISOString(),
+    ...extra
   } satisfies TaskFile)
 }
 
@@ -1358,6 +1368,28 @@ export async function taskClones(ws: string, task: string): Promise<string[]> {
 
 export async function saveTask(ws: string, task: string, data: TaskFile): Promise<void> {
   await writeJson(path.join(taskDir(ws, task), 'task.json'), data)
+}
+
+// --- proactive agents: <ws>/<agent>/proactive-state.json --------------------
+
+const proactiveStateFile = (ws: string, agent: string) =>
+  path.join(taskDir(ws, agent), 'proactive-state.json')
+
+/** What a proactive agent remembers between runs (docs/design-proactive-agents.md
+ *  §6). Missing or partial reads fill in empty lists. */
+export async function readProactiveState(ws: string, agent: string): Promise<ProactiveState> {
+  const raw = await readJson<Partial<ProactiveState>>(proactiveStateFile(ws, agent), {})
+  return {
+    ...emptyProactiveState(),
+    ...raw,
+    runs: Array.isArray(raw.runs) ? raw.runs : [],
+    deferrals: Array.isArray(raw.deferrals) ? raw.deferrals : [],
+    tombstones: Array.isArray(raw.tombstones) ? raw.tombstones : []
+  }
+}
+
+export function writeProactiveState(ws: string, agent: string, state: ProactiveState): Promise<void> {
+  return writeJson(proactiveStateFile(ws, agent), state)
 }
 
 export async function removeTaskDir(ws: string, task: string): Promise<void> {
@@ -1685,14 +1717,28 @@ export async function buildTree(): Promise<Tree> {
     if (!existsSync(path.join(wsDir(ws), 'workspace.json'))) continue
     const wsData = await getWorkspace(ws)
     const tasks: Tree['workspaces'][number]['tasks'] = []
+    const proactive: Tree['workspaces'][number]['proactive'] = []
     for (const task of await listTasks(ws)) {
       const taskFile = await getTask(ws, task)
+      // A proactive agent's scope holds its template and its runs, not work
+      // the user reads as a scope — listed apart (the kernel fills in the
+      // live view; docs/design-proactive-agents.md §7).
+      if (taskFile.proactive) {
+        proactive.push({
+          name: task,
+          config: sanitizeProactiveConfig(taskFile.proactive),
+          state: emptyProactiveState(),
+          sessions: []
+        })
+        continue
+      }
       tasks.push({
         name: task,
         createdAt: taskFile.createdAt ?? (await taskBirthTime(ws, task)),
         repos: await taskClones(ws, task),
         sessions: [],
-        ...(taskFile.maxConcurrentSessions ? { maxConcurrentSessions: taskFile.maxConcurrentSessions } : {})
+        ...(taskFile.maxConcurrentSessions ? { maxConcurrentSessions: taskFile.maxConcurrentSessions } : {}),
+        ...(taskFile.origin ? { origin: taskFile.origin } : {})
       })
     }
     tree.workspaces.push({
@@ -1703,7 +1749,8 @@ export async function buildTree(): Promise<Tree> {
       ...(wsData.deniedAgents?.length ? { deniedAgents: wsData.deniedAgents } : {}),
       ...(wsData.defaultSkills?.length ? { defaultSkills: wsData.defaultSkills } : {}),
       ...(wsData.operatorEnv ? { operatorEnv: wsData.operatorEnv } : {}),
-      tasks
+      tasks,
+      proactive
     })
   }
   return tree

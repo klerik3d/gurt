@@ -76,6 +76,33 @@ export function TaskPane({
       </div>
 
       <div className="tp-body">
+        {taskData.origin && (
+          <>
+            {/* Raised by a proactive agent (docs/design-proactive-agents.md §5):
+                what it found, from which items, and what it noted since. */}
+            <div className="tp-section">
+              <div className="tp-sec-head">
+                <span className="seclabel">RAISED BY {taskData.origin.agent.toUpperCase()}</span>
+                <span className="tp-sec-hint">· {new Date(taskData.origin.createdAt).toLocaleString()}</span>
+              </div>
+              <div className="tp-origin-title">{taskData.origin.title}</div>
+              <div className="tp-origin-summary">{taskData.origin.summary}</div>
+              <div className="tp-origin-refs">
+                {taskData.origin.refs.map((r) => (
+                  <span key={r} className="tag mono">
+                    {r}
+                  </span>
+                ))}
+              </div>
+              {taskData.origin.notes?.map((n, i) => (
+                <div key={i} className="tp-origin-note">
+                  <span className="tp-sec-hint">{new Date(n.at).toLocaleString()} ·</span> {n.text}
+                </div>
+              ))}
+            </div>
+            <div className="tp-sep" />
+          </>
+        )}
         <ChangesSection ws={ws} task={task} changes={changes} onRefresh={onRefreshChanges} />
 
         <div className="tp-sep" />

@@ -152,6 +152,10 @@ const SAFE_ARGS = new Set([
   'createTask',
   'removeTask',
   'renameTask',
+  // Proactive agents: a workspace and an agent name, plus numbers and a flag.
+  'proactiveCreate',
+  'proactiveUpdate',
+  'proactiveRunNow',
   'envBuildImage',
   // Session and container lifecycle: a session id, sometimes an option id.
   'stopContainer',

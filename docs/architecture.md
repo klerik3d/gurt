@@ -119,6 +119,10 @@ tree is never polluted with Gurt files.
     are held until the user confirms. It runs in the workspace's operator env
     (by default the bundled `operator` one); the first-run screen starts one. See
     [requirements-session-operator.md](requirements-session-operator.md).
+  - **proactive** — one run of a proactive agent: zero or more repos,
+    read-only, locks nothing. It does no work itself; its `gurt` tools raise
+    scopes with draft sessions, and it ends every turn with `finish_run`. Never
+    picked for an ordinary session (see Proactive agents below).
 
   Read-only means Docker `readonly` bind mounts, not a convention — and today
   only the researcher gets them. A researcher
@@ -218,6 +222,18 @@ otherwise waits instead of failing:
 The queue survives restart (derived from `state: "queued"` + `queuedAt`); the
 scheduler runs once after sessions are restored. A failed start drops the
 session back to draft with the error shown, and does not block the queue.
+
+### Proactive agents
+
+A proactive agent ([design-proactive-agents.md](design-proactive-agents.md))
+is a scope of its own, listed in the **Proactive agents** mode instead of
+among the scopes: its `task.json` holds the schedule and limits, its template
+draft (role `proactive`) holds everything else, and every run is a copy of
+the template that enqueues itself. A run reads its sources through its MCP
+servers and calls `propose_scope` / `attach` / `defer`; the scopes it raises
+carry `origin.refs` in their `task.json`, and one ref is bound to at most one
+scope in the workspace. What a run raises is always a draft. Runs happen only
+while Gurt is open, never overlap, and are cancelled past their timeout.
 
 ## How a session starts
 

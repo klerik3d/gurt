@@ -8,6 +8,7 @@ import type {
   StoredProposal
 } from './types'
 import type { TerminalInfo, TerminalOutput } from './terminal'
+import type { ProactiveRunOutcome } from './proactive'
 import type { DoctorRow } from './doctor'
 import type { PiiTable } from './pii'
 import type { SessionTraffic } from './proxy'
@@ -103,6 +104,15 @@ export interface DomainEvents {
   /** A `complete` call with outcome=changes stored a proposal — the seam the
    *  committer stage will consume. */
   'session.proposal': { sessionId: string; ref: EnvRef; proposal: StoredProposal }
+  /** A proactive agent's run ended (docs/design-proactive-agents.md §3):
+   *  how, and the scopes it raised. `ref` is the run session's. */
+  'proactive.run': {
+    sessionId: string
+    ref: EnvRef
+    agent: string
+    outcome: ProactiveRunOutcome
+    proposed: string[]
+  }
   /** One `session/prompt` round-trip finished, as accounting: which agent
    *  instance served it, how long it took, what the adapter reported, and how
    *  it ended. Emitted for every turn including the turn-contract nudge — that

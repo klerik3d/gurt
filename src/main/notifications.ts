@@ -120,6 +120,11 @@ export function createNotifications(
     const outcome = turnOutcome.get(sessionId)
     turnOutcome.delete(sessionId)
     if (outcome) return // error or proposal already covered this turn
+    // A proactive run's turn is the run itself, announced as one by
+    // `proactive.run` below — not a turn anybody is waiting to read.
+    // Read off the raw field on purpose: a proactive run always carries its
+    // role, and a pre-roles record (no role) is never one.
+    if (sessionInfo(sessionId)?.role === 'proactive') return
     push('turn-ended', sessionId, ref, 'turn finished, nothing to review')
   })
 
@@ -128,6 +133,21 @@ export function createNotifications(
     if (turnOpen.has(sessionId)) turnOutcome.set(sessionId, 'proposal')
     const subject = proposal.commit?.subject
     push('proposal', sessionId, ref, subject ? `ready to review — ${subject}` : 'ready to review')
+  })
+
+  // A proactive run that raised scopes left drafts for the user — the same
+  // "something to review" a proposal is. A run that timed out or skipped its
+  // `finish_run` is a fault worth seeing; a failed start is already one above.
+  bus.on('proactive.run', ({ sessionId, ref, agent, outcome, proposed }) => {
+    if (proposed.length)
+      push(
+        'proposal',
+        sessionId,
+        ref,
+        `${agent} raised ${proposed.length === 1 ? 'a scope' : `${proposed.length} scopes`}: ${proposed.join(', ')}`
+      )
+    if (outcome === 'timeout' || outcome === 'incomplete')
+      notifyError(sessionId, ref, outcome === 'timeout' ? 'proactive run timed out' : 'proactive run ended without finish_run')
   })
 
   bus.on('session.state', ({ sessionId, ref, reason, err }) => {

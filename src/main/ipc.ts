@@ -98,7 +98,11 @@ const OPAQUE_ARGS = new Set<keyof GurtApi>([
   // it — a config payload, opaque for the same reason as an MCP entry.
   'setPiiSettings',
   // A sample typed to see what gets masked — PII by intent.
-  'testPii'
+  'testPii',
+  // Refs name items of outside sources (a mail's Message-ID, a chat message)
+  // — the agent's data, not gurt's identifiers.
+  'proactiveUndefer',
+  'proactiveForget'
 ])
 
 /** Args for the DBG trace: a count for the opaque methods, the (redacted,
@@ -301,6 +305,11 @@ export function registerIpc(): void {
       kernel.bus.emit('tree.changed', undefined)
     },
     removeTask: (ws, name) => kernel.deleteTask(ws, name),
+    proactiveCreate: (ws, name) => kernel.proactive.create(ws, name),
+    proactiveUpdate: (ws, name, patch) => kernel.proactive.update(ws, name, patch),
+    proactiveRunNow: (ws, name) => kernel.proactive.runNow(ws, name),
+    proactiveUndefer: (ws, name, ref) => kernel.proactive.undefer(ws, name, ref),
+    proactiveForget: (ws, name, ref) => kernel.proactive.forget(ws, name, ref),
     renameTask: (ws, name, newName) => kernel.renameTask(ws, name, newName),
     taskDirtyRepos: (ws, name) => kernel.taskDirtyRepos(ws, name),
     setTaskMaxConcurrentSessions: (ws, name, max) =>

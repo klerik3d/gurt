@@ -31,6 +31,7 @@ import type {
 import {
   applyLog,
   roleAllowsMultiRepo,
+  roleForbidsRepo,
   roleHasTurnContract,
   roleLocksClone,
   roleNeedsRepo,
@@ -47,7 +48,7 @@ import { isLimitReply, limitResetAt, turnOutcome, usageFields } from '../shared/
 import { formatResetAt, type PlanHold } from '../shared/planUsage'
 import { parseClaudeRateLimitState } from './planUsage'
 import type { Bus } from './bus'
-import type { AdminHooks } from './mcp/gurtServer'
+import type { AdminHooks, ProactiveHooks } from './mcp/gurtServer'
 import type { ContainerStatusReason, SessionStateReason } from '../shared/events'
 import type { LaunchContext } from './containers'
 import type { PiiMask } from './pii'
@@ -418,8 +419,14 @@ export interface SessionEvents {
       /** Present only for an operator session — routes its admin tools into
        *  the ws-bound admin surface (docs/requirements-session-operator.md §3). */
       admin?: AdminHooks
+      /** Present only for a proactive run (docs/design-proactive-agents.md §4). */
+      proactive?: ProactiveHooks
     }
   ) => Promise<AcpHttpMcpServer>
+  /** A proactive run's tools, bound by the session manager to the run's own
+   *  workspace, agent (= its scope) and session id — never to anything the
+   *  agent says. */
+  proactiveFor: (ws: string, agent: string, sessionId: string) => ProactiveHooks
   /** The admin surface for one operator session — the workspace binding of
    *  docs/requirements-session-operator.md §3.2: the session manager passes
    *  its own workspace and id, never anything the agent said. The id is the
@@ -502,6 +509,37 @@ export const NUDGE_PROMPT =
   'now with the correct outcome (changes / no_changes / blocked) and do ' +
   'nothing else.'
 
+/** The same follow-up for a proactive run, whose terminal tool is `finish_run`
+ *  (docs/design-proactive-agents.md §4). */
+export const PROACTIVE_NUDGE_PROMPT =
+  'You ended your turn without calling the `finish_run` tool. Call `finish_run` ' +
+  'now with a short summary of this run (and the cursor to resume from, if ' +
+  'any) and do nothing else.'
+
+/** The nudge for a role's turn contract. */
+export const nudgePromptFor = (role: SessionRole): string =>
+  role === 'proactive' ? PROACTIVE_NUDGE_PROMPT : NUDGE_PROMPT
+
+/** What a draft takes from whoever asks for it when the request says nothing
+ *  — the spawning session for `create_session`, the template for a proactive
+ *  agent's `propose_scope`. */
+export interface DraftInheritance {
+  agent?: string | undefined
+  mcp?: McpSelection[] | undefined
+  autoAllow?: boolean | undefined
+  configValues?: Record<string, string | boolean> | undefined
+  skills?: SkillSelection[] | undefined
+  network?: SessionNetwork | undefined
+}
+
+/** A draft request checked against the workspace, ready to create: the agent
+ *  and env it resolved to. */
+export interface PreparedDraft {
+  req: AgentSessionRequest
+  agent: string
+  env: string
+}
+
 /**
  * The structural rules a role puts on the repo list: more than one repo is a
  * researcher-only shape (docs/requirements-session-roles.md §2 — the former
@@ -515,7 +553,7 @@ export function assertRoleFitsRepos(role: SessionRole, repos: string[]): void {
     throw new Error(
       `a ${role} session takes a single repository — only a researcher may hold more than one`
     )
-  if (repos.length > 0 && !roleNeedsRepo(role))
+  if (repos.length > 0 && roleForbidsRepo(role))
     throw new Error(
       `an ${role} session holds no repository at all — its subject is gurt's configuration, not a clone`
     )
@@ -527,6 +565,14 @@ export function assertRoleFitsRepos(role: SessionRole, repos: string[]): void {
  *  title along with it. */
 export function isDefaultSessionTitle(title: string, role: SessionRole): boolean {
   return title === role || new RegExp(`^${role} \\d+$`).test(title)
+}
+
+/** A proactive agent's template never runs itself — every run is a copy of it
+ *  (docs/design-proactive-agents.md §2). Checked at every entrance a start
+ *  can come through. */
+function assertNotTemplate(info: SessionInfo): void {
+  if (info.template)
+    throw new Error("this is a proactive agent's template — it never runs itself; use the agent's Run now")
 }
 
 export type PostTurnAction = 'none' | 'nudge' | 'incomplete'
@@ -634,6 +680,15 @@ export class SessionManager {
   restore(records: RestoredSession[]): void {
     for (const r of records) {
       if (this.sessions.has(r.info.id)) continue
+      // A proactive run from a previous app life is over: its tools are closed
+      // (only the agent's run in progress may use them), so there is nothing to
+      // resume or continue — the agent's next run picks up from its cursor
+      // (docs/design-proactive-agents.md §3.2).
+      if (r.info.role === 'proactive') {
+        r.interrupted = false
+        r.pending = []
+        r.info.limitedUntil = undefined
+      }
       const entries = applyLog([], r.log)
       const lastSeq = r.log[r.log.length - 1]?.seq ?? 0
       this.sessions.set(r.info.id, {
@@ -963,6 +1018,7 @@ export class SessionManager {
   run(sessionId: string): void {
     const s = this.sessions.get(sessionId)
     if (!s || s.info.state === 'starting' || s.info.state === 'started') return
+    assertNotTemplate(s.info)
     // Gate 2 (see createSession's gate 1 for the rule).
     if (roleNeedsRepo(sessionRole(s.info)) && !s.info.repos.length)
       throw new Error('session has no repository')
@@ -972,6 +1028,7 @@ export class SessionManager {
   enqueue(sessionId: string): void {
     const s = this.sessions.get(sessionId)
     if (!s || s.info.state === 'starting' || s.info.state === 'started') return
+    assertNotTemplate(s.info)
     // Gate 3 (see createSession's gate 1 for the rule).
     if (roleNeedsRepo(sessionRole(s.info)) && !s.info.repos.length)
       throw new Error('session has no repository')
@@ -1623,6 +1680,7 @@ export class SessionManager {
       // doesn't need to. An operator legally starts with zero repos.
       if (roleNeedsRepo(sessionRole(s.info)) && !s.info.repos.length)
         throw new Error('session has no repository')
+      assertNotTemplate(s.info)
       const holder = this.repoHolder(s)
       if (holder)
         throw new Error(
@@ -2459,8 +2517,15 @@ export class SessionManager {
       named ??
       this.limitHold(s)?.until ??
       new Date(now + limitBackoffMs(s.limitStrikes)).toISOString()
-    s.info.limitedUntil = until
     if (s.info.agent) this.bus.emit('agent.limited', { agent: s.info.agent, until })
+    // A proactive run is not continued after the reset: its turn has ended, and
+    // with it the run and its tools. The account hold above still applies; the
+    // agent's next scheduled run starts once the queue lets it.
+    if (sessionRole(s.info) === 'proactive') {
+      this.push(s, { kind: 'system', text: `limit reached — this run ends here (resets ${formatResetAt(until, now)})` })
+      return
+    }
+    s.info.limitedUntil = until
     if (!s.pending.length)
       s.pending.push({ id: `p${++this.pendingSeq}`, text: LIMIT_CONTINUE_PROMPT, auto: true })
     this.push(s, {
@@ -2500,10 +2565,11 @@ export class SessionManager {
       if (first.limit) return this.onLimited(s, first.limit)
       if (!first.threw) this.clearLimited(s)
       if (this.decideTurn(s, first, false) !== 'nudge') return
-      const second = await this.sendTurn(s, NUDGE_PROMPT, 'system', true)
+      const second = await this.sendTurn(s, nudgePromptFor(sessionRole(s.info)), 'system', true)
       if (second.limit) return this.onLimited(s, second.limit)
       if (this.decideTurn(s, second, true) === 'incomplete') {
-        this.push(s, { kind: 'system', text: 'turn ended without complete' })
+        const tool = sessionRole(s.info) === 'proactive' ? 'finish_run' : 'complete'
+        this.push(s, { kind: 'system', text: `turn ended without ${tool}` })
         s.info.incomplete = true
         this.bus.emit('session.changed', { sessionId: s.info.id })
         this.schedulePersist(s.ref)
@@ -2552,6 +2618,7 @@ export class SessionManager {
     onComplete: (p: ChangeProposal) => void
     onCreateSession: (req: AgentSessionRequest) => Promise<{ sessionId: string; title: string }>
     admin?: AdminHooks
+    proactive?: ProactiveHooks
   } {
     const role = sessionRole(s.info)
     return {
@@ -2561,8 +2628,53 @@ export class SessionManager {
       // The workspace is bound here, from the session's own record — the one
       // parameter the agent can never express (§3.2 of
       // docs/requirements-session-operator.md).
-      ...(role === 'operator' ? { admin: this.events.adminFor(s.ref.workspace, s.info.id) } : {})
+      ...(role === 'operator' ? { admin: this.events.adminFor(s.ref.workspace, s.info.id) } : {}),
+      // Same binding for a proactive run: the agent is the scope the run lives
+      // in, never a name the run supplies.
+      ...(role === 'proactive' ? { proactive: this.proactiveHooks(s) } : {})
     }
+  }
+
+  /** A proactive run's tools, bound to its own workspace, agent and session.
+   *  `finish_run` is its turn contract: it satisfies the nudge the way
+   *  `complete` does an executor's. */
+  private proactiveHooks(s: Session): ProactiveHooks {
+    const id = s.info.id
+    const inner = this.events.proactiveFor(s.ref.workspace, s.ref.task, id)
+    return {
+      ...inner,
+      finishRun: async (input) => {
+        const result = await inner.finishRun(input)
+        const live = this.sessions.get(id)
+        if (live) {
+          live.turnComplete = true
+          this.push(live, { kind: 'system', text: `finish_run — ${input.summary}` })
+        }
+        return result
+      }
+    }
+  }
+
+  /** Mark a draft as a proactive agent's template (docs/design-proactive-
+   *  agents.md §2): it never runs itself. */
+  markTemplate(sessionId: string): void {
+    const s = this.sessions.get(sessionId)
+    if (!s) throw new Error('unknown session')
+    s.info.template = true
+    this.bus.emit('session.changed', { sessionId })
+    this.schedulePersist(s.ref)
+  }
+
+  /** Start one run of a proactive agent: a copy of its template, in the
+   *  template's own scope, titled `title`, straight into the queue — enabling
+   *  the agent was the approval for its runs (§1). */
+  spawnRun(templateId: string, title: string): SessionInfo {
+    const t = this.sessions.get(templateId)
+    if (!t?.info.template) throw new Error('the proactive agent has no template')
+    const info = this.draftFrom(t.info)
+    this.renameSession(info.id, title)
+    this.enqueue(info.id)
+    return info
   }
 
   /**
@@ -2597,50 +2709,14 @@ export class SessionManager {
       if (from !== 'researcher')
         throw new Error(`a ${from} session may only draft into its own task`)
     }
-    // Explicit request wins; absent that, the workspace's own default (if any)
-    // beats inheriting the spawner's — a workspace that configured a default
-    // has made a choice for everything drafted into it, not just for sessions
-    // that name no agent of their own. Only with neither does the spawner's
-    // agent stand, as before.
-    const agent =
-      req.agent ?? (await this.events.defaultAgentForWorkspace(spawner.ref.workspace)) ?? spawner.info.agent
-    if (!agent) throw new Error('no agent to draft with — this session has none either')
-    // Repo/env/agent names come from an agent, so they are untrusted the same
-    // way the renderer's are; a draft naming a repo that does not exist, or an
-    // agent the workspace denies, would only fail much later, at the user's
-    // launch. Checked *before* the env is resolved, since resolving reads the
-    // repo back out of the registry — an invented repo has to read as "not
-    // registered", not as "has no default env".
-    await this.events.checkDraftTarget(spawner.ref.workspace, req.repos, req.env, agent)
-    const env = await this.resolveDraftEnv(spawner.ref.workspace, req)
+    const inherit = this.inheritanceOf(spawner.info)
+    const prepared = await this.prepareDraft(spawner.ref.workspace, req, inherit)
     // The task name is agent-input too: `ensureTask` validates it and creates
     // the `task.json` marker if missing — the session's first persist would
     // otherwise mkdir its way into a directory that is not a task (invisible
     // in the tree; see the same invariant at the IPC create boundary).
     if (task !== spawner.ref.task) await this.events.ensureTask(spawner.ref.workspace, task)
-    const info = this.createSession(
-      { workspace: spawner.ref.workspace, task, env },
-      req.repos,
-      agent,
-      req.prompt,
-      'draft',
-      spawner.info.mcp ?? [],
-      req.autoAllow ?? spawner.info.autoAllow ?? true,
-      req.configValues ?? spawner.info.configValues ?? {},
-      req.role,
-      // Inherited when the request says nothing, replaced outright when it does
-      // — including with `[]`, which is how an agent asks for none
-      // (docs/requirements-skills.md §6). The names were validated at the tool
-      // boundary; one that does not resolve stays in the draft as an error row,
-      // which is where a user can act on it.
-      req.skills ? sanitizeSkillSelection(req.skills) : spawner.info.skills?.map((k) => ({ ...k })),
-      // Inherited, never chosen: a session running internal cannot draft one
-      // with open egress (§6.2), and `AgentSessionRequest` has no field to ask
-      // with — a rule the agent cannot express is one it cannot argue about.
-      sanitizeSessionNetwork(spawner.info.network)
-    )
-    // `renameSession` mutates the same info object createSession stored.
-    if (req.title?.trim()) this.renameSession(info.id, req.title)
+    const info = this.createPreparedDraft(spawner.ref.workspace, task, prepared, inherit)
     log.info('session.drafted', { s: info.id, by: spawnerId, role: req.role, task })
     // A draft is a to-do for the user, and the spawner's own feed is where they
     // are looking right now — the tree row alone is easy to miss. A cross-task
@@ -2648,6 +2724,73 @@ export class SessionManager {
     const where = task !== spawner.ref.task ? ` in task "${task}"` : ''
     this.push(spawner, { kind: 'system', text: `create_session: drafted ${req.role} "${info.title}"${where}` })
     return { sessionId: info.id, title: info.title }
+  }
+
+  /** What a draft requested by this session inherits (see {@link DraftInheritance}). */
+  inheritanceOf(info: SessionInfo): DraftInheritance {
+    return {
+      agent: info.agent,
+      mcp: info.mcp,
+      autoAllow: info.autoAllow,
+      configValues: info.configValues,
+      skills: info.skills,
+      network: info.network
+    }
+  }
+
+  /**
+   * Check a draft request against the workspace and resolve its agent and env,
+   * creating nothing — so a caller with several requests can refuse all of them
+   * before the first one lands (a proactive agent's `propose_scope`).
+   */
+  async prepareDraft(ws: string, req: AgentSessionRequest, inherit: DraftInheritance): Promise<PreparedDraft> {
+    assertRoleFitsRepos(req.role, req.repos)
+    // Explicit request wins; absent that, the workspace's own default (if any)
+    // beats inheriting the spawner's — a workspace that configured a default
+    // has made a choice for everything drafted into it, not just for sessions
+    // that name no agent of their own. Only with neither does the spawner's
+    // agent stand, as before.
+    const agent = req.agent ?? (await this.events.defaultAgentForWorkspace(ws)) ?? inherit.agent
+    if (!agent) throw new Error('no agent to draft with — this session has none either')
+    // Repo/env/agent names come from an agent, so they are untrusted the same
+    // way the renderer's are; a draft naming a repo that does not exist, or an
+    // agent the workspace denies, would only fail much later, at the user's
+    // launch. Checked *before* the env is resolved, since resolving reads the
+    // repo back out of the registry — an invented repo has to read as "not
+    // registered", not as "has no default env".
+    await this.events.checkDraftTarget(ws, req.repos, req.env, agent)
+    const env = await this.resolveDraftEnv(ws, req)
+    return { req, agent, env }
+  }
+
+  /** Create a draft {@link prepareDraft} has already checked. The task must
+   *  exist. */
+  createPreparedDraft(ws: string, task: string, prepared: PreparedDraft, inherit: DraftInheritance): SessionInfo {
+    const { req, agent, env } = prepared
+    const info = this.createSession(
+      { workspace: ws, task, env },
+      req.repos,
+      agent,
+      req.prompt,
+      'draft',
+      inherit.mcp ? [...inherit.mcp] : [],
+      req.autoAllow ?? inherit.autoAllow ?? true,
+      req.configValues ?? inherit.configValues ?? {},
+      req.role,
+      // Inherited when the request says nothing, replaced outright when it does
+      // — including with `[]`, which is how an agent asks for none
+      // (docs/requirements-skills.md §6). The names were validated at the tool
+      // boundary; one that does not resolve stays in the draft as an error row,
+      // which is where a user can act on it.
+      req.skills ? sanitizeSkillSelection(req.skills) : inherit.skills?.map((k) => ({ ...k })),
+      // Inherited, never chosen: a session running internal cannot draft one
+      // with open egress (§6.2), and `AgentSessionRequest` has no field to ask
+      // with — a rule the agent cannot express is one it cannot argue about.
+      sanitizeSessionNetwork(inherit.network)
+    )
+    // `renameSession` mutates the same info object createSession stored.
+    if (req.title?.trim()) this.renameSession(info.id, req.title)
+    return info
   }
 
   /**

@@ -1,6 +1,7 @@
 // Domain model shared between main and renderer.
 import type { McpRegistryEntry } from './mcp'
 import type { DomainPolicy } from './proxy'
+import type { ProactiveAgentView, ProactiveConfig, ProactiveOrigin } from './proactive'
 import { sanitizeDomainPolicy } from './proxy'
 
 /** How much of an MCP server's toolset the agent may use. */
@@ -292,6 +293,13 @@ export interface TaskFile {
    *  Lets a user who expects to hit an external rate limit serialize a task's
    *  sessions instead of having most of them fail together. */
   maxConcurrentSessions?: number
+  /** Present on the scope that *is* a proactive agent: it holds the agent's
+   *  template draft and its run sessions, and is listed under
+   *  `Tree.workspaces[].proactive` instead of among the scopes. */
+  proactive?: ProactiveConfig
+  /** Present on a scope a proactive agent raised — written in the same write
+   *  that creates the scope, so its refs are bound exactly when it exists. */
+  origin?: ProactiveOrigin
 }
 
 /** Pre-1:1 shape of a `task.json` env record — read once, migrated, discarded. */
@@ -332,15 +340,26 @@ export type SessionState = 'draft' | 'queued' | 'starting' | 'started'
  *              N taken to 0), mounts nothing, locks nothing, and reads the
  *              workspace configuration through the admin tools of its `gurt`
  *              MCP server instead of through a clone.
+ * proactive  — one run of a proactive agent (docs/design-proactive-agents.md):
+ *              zero or more repos, read-only, locks nothing. Does no work of its
+ *              own — it turns what it finds into scopes with draft sessions
+ *              through its `gurt` tools, and ends every turn with `finish_run`.
+ *              Never picked for an ordinary session: it exists only as a
+ *              proactive agent's template and the runs copied from it.
  */
-export type SessionRole = 'executor' | 'researcher' | 'reviewer' | 'operator'
+export type SessionRole = 'executor' | 'researcher' | 'reviewer' | 'operator' | 'proactive'
 
 export const SESSION_ROLES: readonly SessionRole[] = [
   'executor',
   'researcher',
   'reviewer',
-  'operator'
+  'operator',
+  'proactive'
 ]
+
+/** The roles a user picks for an ordinary session — every one but
+ *  `proactive`, which only a proactive agent's template carries. */
+export const USER_SESSION_ROLES: readonly SessionRole[] = SESSION_ROLES.filter((r) => r !== 'proactive')
 
 /** Guard for a role arriving from outside the kernel (the renderer over IPC).
  *  An unknown string must be rejected, not silently treated as some role: every
@@ -366,18 +385,27 @@ export const roleIsReadOnly = (role: SessionRole): boolean => role !== 'executor
 export const roleLocksClone = (role: SessionRole): boolean =>
   role === 'executor' || role === 'reviewer'
 
-/** Needs at least one repository to start. Every role but the operator does;
- *  the operator's zero repos is its definition, not a missing pick — the four
- *  start gates and the container manager's anchor guard all read this instead
- *  of assuming a repo (docs/requirements-session-operator.md §2.1). */
-export const roleNeedsRepo = (role: SessionRole): boolean => role !== 'operator'
+/** Needs at least one repository to start. Every role but the operator and a
+ *  proactive run does; the operator's zero repos is its definition, not a
+ *  missing pick, and a proactive run reads repos only when its author gave it
+ *  some — the four start gates and the container manager's anchor guard all
+ *  read this instead of assuming a repo (docs/requirements-session-operator.md
+ *  §2.1). */
+export const roleNeedsRepo = (role: SessionRole): boolean => role !== 'operator' && role !== 'proactive'
 
-/** Bound by the turn contract — offered `complete`, nudged when a turn ends
- *  without it (docs/requirements-turn-contract.md). */
-export const roleHasTurnContract = (role: SessionRole): boolean => role === 'executor'
+/** Holds no repository at all — zero is the role's definition, not a missing
+ *  pick. Only the operator; a proactive run may hold none, or several. */
+export const roleForbidsRepo = (role: SessionRole): boolean => role === 'operator'
+
+/** Bound by a turn contract — offered a terminal tool and nudged when a turn
+ *  ends without it: `complete` for an executor
+ *  (docs/requirements-turn-contract.md), `finish_run` for a proactive run. */
+export const roleHasTurnContract = (role: SessionRole): boolean =>
+  role === 'executor' || role === 'proactive'
 
 /** May carry more than one repo. */
-export const roleAllowsMultiRepo = (role: SessionRole): boolean => role === 'researcher'
+export const roleAllowsMultiRepo = (role: SessionRole): boolean =>
+  role === 'researcher' || role === 'proactive'
 
 /** Roles this one may draft through `create_session`: a researcher fans out to
  *  workers and reviewers, a reviewer only to the executor that fixes its
@@ -545,6 +573,10 @@ export interface SessionInfo {
   /** Runtime overlay (never persisted): the user has looked at this session since its
    *  last turn ended, which splits `idle` into `idle-read`. */
   seen?: boolean | undefined
+  /** A proactive agent's template (docs/design-proactive-agents.md §2): a draft
+   *  that never runs itself — each run starts a copy of it. Not carried by
+   *  copies. */
+  template?: boolean
 }
 
 /**
@@ -616,7 +648,12 @@ export interface Tree {
       /** Cap on concurrently running sessions of this task (see {@link TaskFile}).
        *  Absent = unlimited. */
       maxConcurrentSessions?: number
+      /** The proactive agent that raised this scope (see {@link TaskFile}). */
+      origin?: ProactiveOrigin
     }[]
+    /** Proactive agents of this workspace. Their scopes (template + runs) are
+     *  not among `tasks`. */
+    proactive: ProactiveAgentView[]
   }[]
 }
 
