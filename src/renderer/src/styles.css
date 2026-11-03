@@ -5029,3 +5029,61 @@ button { user-select: none; }
 .mask-finding span:last-child {
   text-align: right;
 }
+
+/* ---- proactive agents (docs/design-proactive-agents.md §7) ---- */
+
+.pa-row {
+  padding-left: 18px;
+}
+.pa-empty {
+  padding: 8px 18px;
+  white-space: normal;
+  line-height: 1.5;
+}
+.pa-head-status {
+  font-size: 12px;
+  margin-left: 8px;
+}
+.pa-numbers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 18px;
+  margin: 8px 0;
+}
+.pa-number {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.pa-counts {
+  font-size: 11px;
+  flex: none;
+}
+.pa-summary {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12px;
+}
+.tp-origin-title {
+  font-weight: 600;
+  margin-top: 6px;
+}
+.tp-origin-summary {
+  white-space: pre-wrap;
+  color: var(--dim);
+  margin: 4px 0 6px;
+  font-size: 12.5px;
+}
+.tp-origin-refs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.tp-origin-note {
+  font-size: 12px;
+  margin-top: 4px;
+  white-space: pre-wrap;
+}

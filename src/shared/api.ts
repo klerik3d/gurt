@@ -43,6 +43,7 @@ import type { DoctorReport, DoctorRow, FirstRunResult, WelcomeMode } from './doc
 
 import type { TerminalInfo, TerminalSnapshot } from './terminal'
 import type { FileDocument, FileEntry, FileNavigation, FileNavigationResult } from './files'
+import type { ProactiveConfig } from './proactive'
 
 export type CreateAction = 'run' | 'queue' | 'draft'
 
@@ -517,6 +518,20 @@ export interface GurtApi {
   /** Mask a sample with the active detector, numbered as a fresh session would
    *  be; no session's table is touched. Rejects while masking is off. */
   testPii(text: string): Promise<PiiTestResult>
+  /** Create a proactive agent (docs/design-proactive-agents.md): a scope named
+   *  `name` holding a template draft, disabled until switched on. Deleted like
+   *  any scope (`removeTask`). */
+  proactiveCreate(ws: string, name: string): Promise<void>
+  /** Change a proactive agent's schedule and limits; omitted keys stay. */
+  proactiveUpdate(ws: string, name: string, patch: Partial<ProactiveConfig>): Promise<void>
+  /** Start a run now, whatever the schedule says; answers its session id.
+   *  Refused while a run is going. */
+  proactiveRunNow(ws: string, name: string): Promise<string>
+  /** Drop a deferral, so the next run sees the ref as new. */
+  proactiveUndefer(ws: string, name: string, ref: string): Promise<void>
+  /** Drop a tombstone (a ref whose scope the user deleted), so the agent may
+   *  raise it again. */
+  proactiveForget(ws: string, name: string, ref: string): Promise<void>
 }
 
 /**
@@ -694,7 +709,15 @@ const METHODS = {
   getPiiTable: 'none', //       reals; the user's own view, never an operator's
   getPiiAnalyzer: 'none',
   restartPiiAnalyzer: 'none', // runs docker on the host
-  testPii: 'none' //            echoes reals back, and is how the policy is tuned
+  testPii: 'none', //            echoes reals back, and is how the policy is tuned
+  // Proactive agents: not offered to the operator yet — its half of their
+  // configuration is a template draft, which it cannot edit (§2.4 of the
+  // operator doc); docs/design-proactive-agents.md §9 phase 2.
+  proactiveCreate: 'none',
+  proactiveUpdate: 'none',
+  proactiveRunNow: 'none',
+  proactiveUndefer: 'none',
+  proactiveForget: 'none'
 } as const satisfies Record<keyof GurtApi, Exposure>
 
 /** Runtime method list; `api:<method>` is the IPC channel per entry. */

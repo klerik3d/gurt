@@ -21,8 +21,11 @@ const NOTIF_DOT: Record<NotificationType, { tone: Tone; hollow?: boolean }> = {
  *  silently no-op (`selectSession` finds no owner). */
 function liveSessionIds(tree: Tree | null): Set<string> {
   const ids = new Set<string>()
-  for (const ws of tree?.workspaces ?? [])
+  for (const ws of tree?.workspaces ?? []) {
     for (const task of ws.tasks) for (const s of task.sessions) ids.add(s.id)
+    // A proactive agent's runs live outside the scopes, and notify too.
+    for (const agent of ws.proactive) for (const s of agent.sessions) ids.add(s.id)
+  }
   return ids
 }
 

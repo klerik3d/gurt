@@ -14,10 +14,11 @@ import type {
 } from '../../../shared/types'
 import {
   OPERATOR_ENV_NAME,
-  SESSION_ROLES,
   STARTER_ENV_NAME,
+  USER_SESSION_ROLES,
   operatorEnvName,
   roleAllowsMultiRepo,
+  roleForbidsRepo,
   roleNeedsRepo,
   sessionRole
 } from '../../../shared/types'
@@ -328,7 +329,9 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
   // Picking a (different) env re-seeds the session repo from that env's
   // default — except for an operator, which holds no repo to seed.
   const pickEnv = (name: string) => {
-    if (role === 'operator') {
+    // A proactive agent's template keeps its repos whatever env it runs on:
+    // they are context it reads, not the clone an env is built from.
+    if (role === 'operator' || role === 'proactive') {
       patch({ env: name })
       setPicker(null)
       return
@@ -352,7 +355,7 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
   // docs/requirements-session-operator.md §2.2).
   const pickRole = (next: SessionRole) => {
     const p: SessionDraftPatch = { role: next }
-    if (!roleNeedsRepo(next)) {
+    if (roleForbidsRepo(next)) {
       p.repos = []
       p.env = operatorEnvName(wsData ?? {})
     } else if (!roleAllowsMultiRepo(next) && repos.length > 1) {
@@ -519,11 +522,20 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
             <span className="seclabel">ROLE</span>
             <InfoDot text={ROLE_INFO[role].hint} />
           </div>
+          {role === 'proactive' ? (
+            // A proactive agent's template is that role for good: the agent
+            // exists to copy it into runs (docs/design-proactive-agents.md §2).
+            <button type="button" className="pick-row" disabled aria-disabled="true">
+              <Icon name={ROLE_INFO[role].icon} size={14} className="dim" style={{ flex: 'none' }} />
+              <span className="pick-value strong">{ROLE_INFO[role].label}</span>
+              <span className="spacer" />
+            </button>
+          ) : (
           <PickRow
             open={picker === 'role'}
             onToggle={() => setPicker(picker === 'role' ? null : 'role')}
             onClose={() => setPicker(null)}
-            menu={SESSION_ROLES.map((r) => (
+            menu={USER_SESSION_ROLES.map((r) => (
               <div
                 key={r}
                 className={`menu-item ${r === role ? 'active' : ''}`}
@@ -542,6 +554,7 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
             <span className="pick-value strong">{ROLE_INFO[role].label}</span>
             <span className="spacer" />
           </PickRow>
+          )}
         </div>
 
         {/* agent — which client/harness runs the session */}
@@ -602,7 +615,7 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
                 {/* The bundled operator default shares the env name space and
                     is always startable (docs/requirements-session-operator.md
                     §2.2) — offered to the role it exists for. */}
-                {role === 'operator' && (
+                {(role === 'operator' || role === 'proactive') && (
                   <div
                     className={`menu-item ${info.env === OPERATOR_ENV_NAME ? 'active' : ''}`}
                     onMouseDown={(ev) => {
@@ -813,8 +826,11 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
               })}
             </div>
           )}
-          {role !== 'operator' && !repos.length && (
+          {roleNeedsRepo(role) && !repos.length && (
             <div className="hc-note">no repository — Run/Queue disabled until you pick one</div>
+          )}
+          {role === 'proactive' && (
+            <div className="hc-note">optional — repos are read-only context for each run</div>
           )}
           {repos.length > 1 && <div className="hc-note">{repos.length} repos — mounted read-only</div>}
         </div>

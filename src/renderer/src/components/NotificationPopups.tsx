@@ -36,7 +36,13 @@ export function NotificationPopups({ notifications, tree, onDismiss, onOpen }: {
   onDismiss: (id: string) => void
   onOpen: (notification: NotificationRecord) => void
 }) {
-  const live = new Set(tree?.workspaces.flatMap((w) => w.tasks.flatMap((t) => t.sessions.map((s) => s.id))))
+  const live = new Set(
+    tree?.workspaces.flatMap((w) => [
+      ...w.tasks.flatMap((t) => t.sessions.map((s) => s.id)),
+      // A proactive agent's runs live outside the scopes, and notify too.
+      ...w.proactive.flatMap((a) => a.sessions.map((s) => s.id))
+    ])
+  )
   return (
     <div className="notification-popups" aria-label="New notifications" aria-live="polite">
       {notifications.filter((n) => live.has(n.sessionId)).map((n) => (

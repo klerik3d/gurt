@@ -22,6 +22,8 @@ import { TaskPane } from './components/TaskPane'
 import { DiffPane } from './components/DiffPane'
 import { FilesPane } from './components/FilesPane'
 import { FilesSidebar } from './components/FilesSidebar'
+import { ProactiveSidebar } from './components/ProactiveSidebar'
+import { ProactivePane } from './components/ProactivePane'
 import { useFiles } from './useFiles'
 import { useScopeList } from './useScopeList'
 import type { DiffFileSelection } from './components/DiffSidebar'
@@ -49,6 +51,8 @@ export type Selection =
   | null
 
 export type View = 'work' | 'dashboard' | 'settings'
+
+export type WorkMode = 'sessions' | 'diff' | 'files' | 'proactive'
 
 // Draggable sidebar width, persisted across launches.
 const SIDEBAR_MIN = 200
@@ -98,7 +102,11 @@ export default function App() {
   const [view, setView] = usePreference<View>('view', 'work', z.enum(['work', 'dashboard', 'settings']))
   const [leftSidebarVisible, setLeftSidebarVisible] = usePreference('leftSidebar', true, z.boolean())
   const [terminalVisible, setTerminalVisible] = usePreference('terminalVisible', false, z.boolean())
-  const [workMode, setWorkMode] = usePreference<'sessions' | 'diff' | 'files'>('workMode', 'sessions', z.enum(['sessions', 'diff', 'files']))
+  const [workMode, setWorkMode] = usePreference<WorkMode>('workMode', 'sessions', z.enum(['sessions', 'diff', 'files', 'proactive']))
+  /** The proactive agent open in the Proactive mode, by name within the
+   *  current workspace. */
+  const [proactiveAgent, setProactiveAgent] = usePreference<string | null>('proactiveAgent', null, z.string().nullable())
+  const [newProactive, setNewProactive] = useState(false)
   const [diffFile, setDiffFile] = usePreference<DiffFileSelection | null>('diffFile', null, diffFileSchema)
   const [settingsSection, setSettingsSection] = usePreference<SettingsSection>('settingsSection', 'environments', z.enum(['environments', 'repos', 'clients', 'agentAccess', 'mcp', 'skills', 'credentials', 'notifications', 'hotkeys', 'machine', 'docker']))
   const [snapshots, setSnapshots] = useState<Record<string, SessionSnapshot>>({})
@@ -376,7 +384,8 @@ export default function App() {
    *  matching the moment any session exists in any state, a draft included, so
    *  clicking the sidebar's "+" is itself the way out of it. */
   const firstRun =
-    !!tree && tree.workspaces.every((w) => w.tasks.every((t) => t.sessions.length === 0))
+    !!tree &&
+    tree.workspaces.every((w) => w.proactive.length === 0 && w.tasks.every((t) => t.sessions.length === 0))
   // `welcomeShows` is shared with main's own tests, so the rule cannot be
   // stated twice and drift: `always` every launch, `auto` while the store has
   // never produced a session, `never` only through the command palette.
@@ -470,8 +479,11 @@ export default function App() {
     // Keep curWs in step with whatever workspace actually owns this session —
     // otherwise a cross-workspace jump (e.g. via the palette) leaves curWs
     // pointing at the old workspace, and the next ⌘N/⌘⇧N silently targets it.
-    const owner = treeRef.current?.workspaces.find((w) =>
-      w.tasks.some((t) => t.sessions.some((s) => s.id === id))
+    const owner = treeRef.current?.workspaces.find(
+      (w) =>
+        w.tasks.some((t) => t.sessions.some((s) => s.id === id)) ||
+        // A proactive agent's run, opened from its Runs list or a notification.
+        w.proactive.some((a) => a.sessions.some((s) => s.id === id))
     )
     if (owner) setCurWs(owner.name)
     // The IPC call marks this session's pending notifications read server-side
@@ -695,7 +707,7 @@ export default function App() {
   // fires. Harmless no-op on other platforms, which just never emit it.
   useEffect(() => window.gurt.onHotkeyCycleWorkspace(cycleWorkspace), [cycleWorkspace])
 
-  const toggleWorkSidebar = useCallback((mode: 'sessions' | 'diff' | 'files') => {
+  const toggleWorkSidebar = useCallback((mode: WorkMode) => {
     setLeftSidebarVisible((visible) => view === 'work' && workMode === mode ? !visible : true)
     setView('work')
     setWorkMode(mode)
@@ -840,6 +852,8 @@ export default function App() {
   // selectTask already keep curWs in step with whatever's open (see the note
   // in selectSession about cross-workspace jumps), so the button's label is
   // always in sync.
+  const openProactive =
+    proactiveAgent && ws?.proactive.some((a) => a.name === proactiveAgent) ? proactiveAgent : null
   const crumbRest =
     view === 'settings'
       ? 'settings'
@@ -849,6 +863,8 @@ export default function App() {
           ? `${diffTask?.task ? `${diffTask.task} · ` : ''}diff`
           : workMode === 'files'
             ? `${fileScope?.task ? `${fileScope.task} · ` : ''}files`
+          : workMode === 'proactive'
+            ? `${openProactive ? `${openProactive} · ` : ''}proactive`
           : activeInfo
             ? `${activeInfo.task} · ${activeInfo.title}`
             : selection?.type === 'task'
@@ -1020,6 +1036,15 @@ export default function App() {
             <Icon name="folder" size={18} />
             {modHeld && <span className="ab-badge">{bindingRestLabel(hotkeys.gotoFiles)}</span>}
           </button>
+          <button
+            className={`ab-item ${view === 'work' && workMode === 'proactive' && leftSidebarVisible ? 'active' : ''}`}
+            title="Proactive agents"
+            aria-label="Proactive agents"
+            aria-pressed={view === 'work' && workMode === 'proactive' && leftSidebarVisible}
+            onClick={() => toggleWorkSidebar('proactive')}
+          >
+            <Icon name="history" size={18} />
+          </button>
           <span className="spacer" />
           <button
             className={`ab-item ${view === 'settings' ? 'active' : ''}`}
@@ -1034,7 +1059,7 @@ export default function App() {
         {view === 'work' && (
           <>
             <div className="left-sidebar" hidden={!leftSidebarVisible}>
-              <div className="scope-sidebar-content" hidden={workMode === 'files'}>
+              <div className="scope-sidebar-content" hidden={workMode === 'files' || workMode === 'proactive'}>
               <Sidebar
                 collapsed={sidebarCollapsed}
                 setCollapsed={setSidebarCollapsed}
@@ -1045,7 +1070,7 @@ export default function App() {
                 scopeList={scopeList}
                 ws={ws?.name ?? null}
                 selection={workMode === 'diff' && diffTask ? { type: 'task', ...diffTask } : selection}
-                mode={workMode === 'files' ? 'sessions' : workMode}
+                mode={workMode === 'diff' ? 'diff' : 'sessions'}
                 diffFile={activeDiffFile}
                 onSelectDiffFile={(file) => {
                   if (file.ws !== diffTask?.ws || file.task !== diffTask?.task) selectTask(file.ws, file.task)
@@ -1080,6 +1105,16 @@ export default function App() {
                 }}
                 onNewTask={() => { if (ws) setNewTask(ws.name) }}
               />}
+              {workMode === 'proactive' && (
+                <ProactiveSidebar
+                  tree={tree}
+                  ws={ws?.name ?? null}
+                  width={sidebarWidth}
+                  selected={openProactive}
+                  onSelect={setProactiveAgent}
+                  onNew={() => setNewProactive(true)}
+                />
+              )}
               <div className="sidebar-resizer" onMouseDown={startSidebarResize} />
             </div>
             <main className="main">
@@ -1114,6 +1149,28 @@ export default function App() {
                   task={diffTask?.task}
                   changes={diffTask ? changes[`${diffTask.ws}/${diffTask.task}`] : undefined}
                 />
+              )}
+              {workMode === 'proactive' && ws && openProactive && (
+                <ProactivePane
+                  tree={tree}
+                  ws={ws.name}
+                  name={openProactive}
+                  snapshots={snapshots}
+                  onSelectSession={selectSession}
+                  onSelectTask={(w, t) => {
+                    setWorkMode('sessions')
+                    selectTask(w, t)
+                  }}
+                  onDeleted={() => setProactiveAgent(null)}
+                />
+              )}
+              {workMode === 'proactive' && !openProactive && (
+                <div className="placeholder">
+                  <div className="placeholder-text">
+                    a proactive agent runs on a schedule, reads its sources and raises scopes with
+                    draft sessions — pick one on the left, or add one with “+”
+                  </div>
+                </div>
               )}
               {workMode === 'sessions' && !selection && (
                 <div className="placeholder">
@@ -1255,6 +1312,22 @@ export default function App() {
               await window.gurt.createTask(newTask, name)
               setNewTask(null)
               selectTask(newTask, name)
+            } catch (e) {
+              void alertDialog(e instanceof Error ? e.message : String(e))
+            }
+          })}
+        />
+      )}
+      {newProactive && ws && (
+        <NameModal
+          title={`New proactive agent in ${ws.name}`}
+          placeholder="agent name, e.g. sentry-triage"
+          onClose={() => setNewProactive(false)}
+          onSubmit={run(async (name) => {
+            try {
+              await window.gurt.proactiveCreate(ws.name, name)
+              setNewProactive(false)
+              setProactiveAgent(name)
             } catch (e) {
               void alertDialog(e instanceof Error ? e.message : String(e))
             }

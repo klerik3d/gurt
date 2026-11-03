@@ -533,7 +533,9 @@ export class ContainerManager {
       // read-only role (no `complete`, mount still routed through the wrapper
       // below) is unchanged — `roleIsReadOnly` still governs those, just not
       // this flag.
-      const readonly = sessionRole(info) === 'researcher'
+      // A proactive run reads its repos as context and writes nothing, the way
+      // a researcher does (docs/design-proactive-agents.md §2).
+      const readonly = sessionRole(info) === 'researcher' || sessionRole(info) === 'proactive'
       // Read-write single repo (an executor): unchanged — `--workspace-folder`
       // IS the clone, exactly as before. Otherwise `--workspace-folder` is an
       // empty wrapper dir and every repo (anchor included) is mounted into it

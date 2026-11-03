@@ -29,6 +29,7 @@ import { listCredentials } from './credentials'
 import { resolveOAuthAccess } from './oauth'
 import { createPiiMask, type PiiManager } from './pii'
 import { createLogger, dropSessionLog, sessionLogLine } from './log'
+import { createProactive, type ProactiveManager } from './proactive'
 
 const log = createLogger('kernel')
 // Same scope as sessions.ts/containers.ts's own loggers (`sessions`,
@@ -66,6 +67,9 @@ export interface Kernel {
   /** PII/secret masking of the ACP seam, plus the settings that configure it
    *  (docs/requirements-pii-mask.md). */
   pii: PiiManager
+  /** Proactive agents: their schedule, their runs and the tools those runs
+   *  use (docs/design-proactive-agents.md). */
+  proactive: ProactiveManager
   /** store.buildTree + session overlay. */
   tree(): Promise<Tree>
   deleteTask(ws: string, task: string): Promise<void>
@@ -209,6 +213,9 @@ export function createKernel(): Kernel {
       // closures read `admin` at call time, long after both exist, the same
       // knot-untying as the `sessions` references above.
       adminFor: (ws, sessionId) => admin.bind(ws, sessionId),
+      // Same lazy read as `admin`: the proactive manager is built below, over
+      // this session manager.
+      proactiveFor: (ws, agent, sessionId) => proactive.hooksFor(ws, agent, sessionId),
       checkDraftTarget: assertDraftTarget,
       defaultEnvsForRepo,
       defaultAgentForWorkspace: async (ws) => (await store.getWorkspace(ws)).defaultAgent,
@@ -249,6 +256,12 @@ export function createKernel(): Kernel {
     bus,
     pii
   )
+
+  const proactive = createProactive({
+    bus,
+    sessions,
+    stopContainer: (id) => containers.stop(id, 'idle')
+  })
 
   // --- log tap ------------------------------------------------------------
   // The lifecycle *is* the bus, so one subscription per event is the whole
@@ -416,8 +429,11 @@ export function createKernel(): Kernel {
     progress(8, 'reading workspaces')
     const t = await store.buildTree()
     const allTasks: { ws: string; task: string }[] = []
-    for (const ws of t.workspaces)
+    for (const ws of t.workspaces) {
       for (const task of ws.tasks) allTasks.push({ ws: ws.name, task: task.name })
+      // A proactive agent's scope holds sessions too: its template and runs.
+      for (const agent of ws.proactive) allTasks.push({ ws: ws.name, task: agent.name })
+    }
     // Before the scheduler's first pass, same reason as the review lock above.
     sessions.loadTaskCaps(
       t.workspaces.flatMap((ws) =>
@@ -449,9 +465,13 @@ export function createKernel(): Kernel {
     // then free what the rest is waiting on. Without the second call a queue
     // restored behind a still-running container would never move — nothing has
     // armed an idle timer for that container in this process yet.
+    // Before the queue resumes: a run left queued by the previous app life is
+    // no run of this one, and must not start with its tools closed.
+    await proactive.load(t)
     progress(96, 'resuming queue')
     sessions.schedule()
     reapForQueue()
+    proactive.start()
   }
   const ready = restoreSessions()
     .catch((e: unknown) => log.error('internal.fail', { site: 'session-restore', err: e }))
@@ -473,15 +493,21 @@ export function createKernel(): Kernel {
     usage,
     planUsage,
     pii,
+    proactive,
 
     async tree(): Promise<Tree> {
       const t = await store.buildTree()
-      for (const ws of t.workspaces)
+      for (const ws of t.workspaces) {
         for (const task of ws.tasks) task.sessions = sessions.listForTask(ws.name, task.name)
+        ws.proactive = proactive.views(ws.name)
+      }
       return t
     },
 
     async deleteTask(ws: string, task: string): Promise<void> {
+      // First, while its sessions still exist: an agent's run in progress ends
+      // as cancelled, a raised scope leaves its refs behind as tombstones.
+      await proactive.onScopeDeleted(ws, task)
       await terminals.withScopeBlocked(ws, task, async () => {
         await containers.teardownTask(ws, task)
         terminals.dropScope(ws, task)
@@ -498,6 +524,7 @@ export function createKernel(): Kernel {
         terminals.dropScope(ws)
         sessions.dropWorkspaceSessions(ws)
         review.dropWorkspace(ws)
+        proactive.dropWorkspace(ws)
         await store.removeWorkspaceDir(ws)
         bus.emit('tree.changed', undefined)
       })
@@ -505,6 +532,8 @@ export function createKernel(): Kernel {
 
     async renameTask(ws: string, task: string, newName: string): Promise<void> {
       if (newName === task) return
+      // Its name is what every scope it raised records as `origin.agent`.
+      if (proactive.isAgent(ws, task)) throw new Error('a proactive agent cannot be renamed')
       await terminals.withScopeBlocked(ws, task, async () => {
         await containers.stopTask(ws, task)
         await store.renameTask(ws, task, newName)
@@ -512,6 +541,7 @@ export function createKernel(): Kernel {
         await changes.renameTaskBranches(ws, newName, task)
         sessions.renameTask(ws, task, newName)
         review.renameTask(ws, task, newName)
+        proactive.onScopeRenamed(ws, task, newName)
         bus.emit('tree.changed', undefined)
       })
     },
