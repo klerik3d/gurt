@@ -134,7 +134,8 @@ try {
   assert.deepEqual(rec.info.repos, [], 'zero repos on disk — the definition, not a default')
   await page.click('.tab-btn:has-text("Chat")')
   await page.fill('.draft-prompt', 'why does my env not build?')
-  const runBtn = page.locator('button:has-text("Run now")')
+  // The draft pane's one launch button ("Run", which goes through the queue).
+  const runBtn = page.locator('.draft-body .btn-primary')
   // Run must not be disabled for want of a repository (a repo-less start is
   // this role's normal path); actually clicking it would need Docker.
   assert.equal(await runBtn.isDisabled(), false, 'Run is not blocked on a repository')
