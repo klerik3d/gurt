@@ -852,9 +852,10 @@ textarea.input {
 }
 
 .sb-head {
-  height: 32px;
+  min-height: 32px;
   flex: none;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 4px;
   padding: 0 10px 0 8px;
@@ -892,6 +893,14 @@ textarea.input {
   right: 0;
   min-width: 150px;
 }
+.sb-filter-wrap { flex: none; padding: 3px 10px 5px; }
+.sb-filter { display: flex; align-items: center; gap: 6px; min-height: 26px; padding: 0 6px; color: var(--faint); border: 1px solid var(--border); border-radius: 4px; }
+.sb-filter:focus-within { border-color: var(--accent); }
+.sb-filter.invalid { border-color: var(--red); }
+.sb-filter input { flex: 1; min-width: 0; width: 100%; padding: 4px 0; background: transparent; border: 0; color: var(--dim); font: 11px var(--ui); outline: none; }
+.sb-filter input:focus-visible { outline: none; }
+.sb-filter .icon-sq { width: 18px; height: 18px; flex: none; }
+.sb-filter-error { padding: 4px 0 0; color: var(--red); font-size: 11px; }
 
 .sb-tree {
   flex: 1;
@@ -911,6 +920,7 @@ textarea.input {
   gap: 7px;
   padding: 2px 16px;
   min-height: 22px;
+  height: 22px;
   cursor: pointer;
 }
 .sb-task:hover {
@@ -943,9 +953,6 @@ textarea.input {
 /* The focused tree marks its cursor row, so keyboard nav has something to follow. */
 .sb-tree:focus-visible .cursor {
   box-shadow: inset 0 0 0 1px var(--border2);
-}
-.sb-tree:focus-visible .diff-file-row.selected.cursor {
-  box-shadow: inset 2px 0 var(--accent), inset 0 0 0 1px var(--border2);
 }
 .sb-rename {
   flex: 1;
@@ -4455,17 +4462,6 @@ textarea.input {
 }
 
 /* Task diff mode: the task tree stays in place; repositories replace sessions. */
-.sb-head-diff {
-  gap: 3px;
-}
-.sb-head-diff .sb-ws {
-  padding-left: 2px;
-  padding-right: 0;
-}
-.sb-head-diff .icon-sq {
-  width: 20px;
-  height: 24px;
-}
 .diff-layout {
   display: flex;
   flex: none;
@@ -4475,35 +4471,6 @@ textarea.input {
   padding: 4px 10px;
   overflow-wrap: anywhere;
 }
-.diff-repo-row,
-.diff-file-row {
-  display: flex;
-  align-items: center;
-  width: 100%;
-  min-height: 27px;
-  gap: 6px;
-  padding: 4px 10px 4px 27px;
-  font-size: 11px;
-  color: var(--dim);
-  text-align: left;
-}
-.diff-repo-row > svg,
-.diff-file-row > svg {
-  flex: none;
-}
-.diff-repo-row:hover,
-.diff-file-row:hover {
-  background: var(--hover);
-  color: var(--text);
-}
-.diff-file-row.selected {
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
-  color: var(--text);
-  box-shadow: inset 2px 0 var(--accent);
-}
-.diff-repo-row.here .diff-repo-name {
-  color: var(--text);
-}
 .diff-repo-name,
 .diff-file-name,
 .diff-file-dir {
@@ -4511,9 +4478,6 @@ textarea.input {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.diff-repo-name {
-  font-weight: 500;
 }
 .diff-repo-dot {
   flex: none;
@@ -4555,7 +4519,6 @@ textarea.input {
   flex: none;
   font-size: 10px;
 }
-.diff-folder { color: var(--faint); }
 .diff-files-empty {
   padding: 5px 12px 7px 43px;
   font-size: 11px;
@@ -4666,6 +4629,76 @@ textarea.input {
 
 /* Scope terminals stay mounted while their panel or scope is hidden. */
 .left-sidebar { display: contents; }
+.scope-sidebar-content { display: contents; }
+.scope-sidebar-content[hidden], .files-pane[hidden] { display: none; }
+
+/* Scope file explorer and CodeMirror workspace. */
+.file-tree { gap: 0; }
+.file-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 27px;
+  margin-top: 1px;
+  padding: 3px 10px;
+  color: var(--dim);
+  text-align: left;
+  font-size: 12px;
+}
+.file-tree-row:hover { background: var(--hover); color: var(--text); }
+.file-tree-row.selected { background: #4da3ff14; color: var(--text); }
+
+.file-tree:focus-visible { outline: none; }
+.sb-tree:focus-visible .file-tree-row.cursor { background: var(--hover); color: var(--text); box-shadow: inset 0 0 0 1px var(--border2); }
+.file-tree-row:disabled { opacity: .45; cursor: default; }
+.file-tree-row > svg { flex: none; }
+.file-scope-group:not(:first-child) { margin-top: 5px; }
+.file-tree-chevron { display: flex; width: 10px; flex: none; }
+.file-tree-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-tree-note { padding: 7px 12px; color: var(--faint); font-size: 11px; overflow-wrap: anywhere; }
+.file-tree-note.error { color: var(--red); }
+.files-pane { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
+.files-pane .placeholder { display: flex; align-items: center; justify-content: center; padding: 24px; color: var(--faint); font-size: 12px; text-align: center; }
+.file-tabs { display: flex; min-height: 35px; flex: none; overflow-x: auto; border-bottom: 1px solid var(--border); background: var(--surface); }
+.file-tab { display: flex; align-items: center; flex: none; max-width: 260px; border-right: 1px solid var(--border); border-top: 2px solid transparent; color: var(--dim); }
+.file-tab.active { background: var(--hover); color: var(--text); font-weight: 600; }
+.file-tab > button:focus-visible { outline: none; background: var(--hover); color: var(--text); }
+.file-tab > button[role="tab"] { display: flex; align-items: center; gap: 7px; padding: 7px 8px 7px 12px; min-width: 0; font-size: 12px; }
+.file-tab > button[role="tab"] > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-tab-close { flex: none; display: flex; padding: 4px; margin-right: 6px; border-radius: 3px; color: var(--faint); }
+.file-tab-close:hover { background: var(--hover); color: var(--text); }
+.file-dirty { color: var(--accent); font-size: 9px; flex: none; }
+.file-document { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
+.file-toolbar { display: flex; align-items: center; gap: 6px; flex: none; min-height: 34px; padding: 3px 10px; border-bottom: 1px solid var(--border); }
+.file-breadcrumb { color: var(--faint); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 30px; }
+.file-action { padding: 4px 7px; color: var(--dim); font-size: 11px; border-radius: 4px; flex: none; }
+.file-action:hover { background: var(--hover); color: var(--text); }
+.file-action:disabled { opacity: .4; cursor: default; }
+.file-editor { flex: 1; min-height: 0; overflow: hidden; }
+.code-editor .cm-editor.cm-focused { outline: none; }
+.code-editor .cm-search input { background: var(--app); color: var(--text); border: 1px solid var(--border2); padding: 2px 4px; }
+.code-editor .cm-content, .code-editor .cm-deletedChunk { user-select: text; }
+.code-diff { flex: 1; min-height: 0; overflow: hidden; }
+.code-diff .cm-mergeView { height: 100%; overflow: auto; }
+.code-diff .cm-mergeViewEditors { min-height: 100%; }
+.code-diff .cm-mergeViewEditor { min-width: 0; }
+.code-diff .cm-scroller { overflow: auto; }
+.code-diff .cm-merge-a .cm-changedLine, .code-diff .cm-deletedChunk { background: #e5544b0d; }
+.code-diff .cm-merge-b .cm-changedLine { background: #6cc47f0d; }
+.code-diff .cm-merge-a .cm-changedText, .code-diff .cm-deletedText { background: #e5544b26; background-image: none; }
+.code-diff .cm-merge-b .cm-changedText { background: #6cc47f26; background-image: none; }
+.code-diff .cm-deletedLine del { text-decoration: none; }
+.code-diff .cm-collapsedLines { color: var(--faint); background: var(--surface); border-color: var(--border); }
+.file-statusbar { display: flex; flex: none; justify-content: flex-end; gap: 16px; padding: 4px 12px; font-size: 10px; color: var(--faint); border-top: 1px solid var(--border); }
+.file-error { padding: 8px 12px; color: var(--red); background: #e5544b0a; font-size: 12px; overflow-wrap: anywhere; flex: none; }
+.file-navigation { display: flex; flex-direction: column; max-height: 35%; flex: none; border-top: 1px solid var(--border2); background: var(--surface); }
+.file-navigation-head { display: flex; align-items: center; gap: 12px; padding: 5px 12px; font-size: 11px; }
+.file-navigation-list { overflow-y: auto; min-height: 0; }
+.file-location { display: flex; gap: 14px; width: 100%; padding: 5px 12px; text-align: left; font-size: 11px; color: var(--dim); }
+.file-location:hover { background: var(--hover); color: var(--text); }
+.file-location > span { max-width: 48%; flex: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-location code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); }
 .left-sidebar[hidden], .terminal-sidebar[hidden], .terminal-session[hidden] { display: none; }
 .activitybar-right { width: 36px; margin-right: 0; margin-left: 4px; }
 .activitybar-right .ab-item { width: 32px; height: 32px; }

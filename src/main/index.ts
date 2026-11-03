@@ -65,6 +65,15 @@ function createWindow(): void {
     }
   })
 
+  win.webContents.on('will-prevent-unload', (event) => {
+    const response = dialog.showMessageBoxSync(win, {
+      type: 'warning', title: 'Unsaved file changes',
+      message: 'Discard unsaved file changes and leave?',
+      buttons: ['Keep editing', 'Discard changes'], defaultId: 0, cancelId: 0
+    })
+    if (response === 1) event.preventDefault()
+  })
+
   // Any link the renderer wants to open in a new window (target="_blank",
   // window.open) goes to the OS browser instead of a second app window.
   win.webContents.setWindowOpenHandler(({ url }) => {

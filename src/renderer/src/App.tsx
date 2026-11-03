@@ -20,6 +20,10 @@ import { SessionPane } from './components/SessionPane'
 import { TerminalSidebar } from './components/TerminalSidebar'
 import { TaskPane } from './components/TaskPane'
 import { DiffPane } from './components/DiffPane'
+import { FilesPane } from './components/FilesPane'
+import { FilesSidebar } from './components/FilesSidebar'
+import { useFiles } from './useFiles'
+import { useScopeList } from './useScopeList'
 import type { DiffFileSelection } from './components/DiffSidebar'
 import { SettingsPage, type SettingsSection } from './components/SettingsPage'
 import { Dashboard } from './components/Dashboard'
@@ -75,13 +79,14 @@ export function queuePositions(tree: Tree | null): Record<string, number> {
 
 export default function App() {
   const [tree, setTree] = useState<Tree | null>(null)
+  const scopeList = useScopeList()
   const seenMarks = useSeen()
   const { turns: usage, loaded: readStateReady } = useUsage()
   const [selection, setSelection] = usePreference<Selection>('selection', null, selectionSchema)
   const [view, setView] = usePreference<View>('view', 'work', z.enum(['work', 'dashboard', 'settings']))
   const [leftSidebarVisible, setLeftSidebarVisible] = usePreference('leftSidebar', true, z.boolean())
   const [terminalVisible, setTerminalVisible] = usePreference('terminalVisible', false, z.boolean())
-  const [workMode, setWorkMode] = usePreference<'sessions' | 'diff'>('workMode', 'sessions', z.enum(['sessions', 'diff']))
+  const [workMode, setWorkMode] = usePreference<'sessions' | 'diff' | 'files'>('workMode', 'sessions', z.enum(['sessions', 'diff', 'files']))
   const [diffFile, setDiffFile] = usePreference<DiffFileSelection | null>('diffFile', null, diffFileSchema)
   const [settingsSection, setSettingsSection] = usePreference<SettingsSection>('settingsSection', 'environments', z.enum(['environments', 'repos', 'clients', 'agentAccess', 'mcp', 'skills', 'credentials', 'notifications', 'hotkeys', 'machine', 'docker']))
   const [snapshots, setSnapshots] = useState<Record<string, SessionSnapshot>>({})
@@ -465,6 +470,20 @@ export default function App() {
     setCurWs(tws)
   }, [setView, setSelection, setCurWs])
 
+  const setScopeCollapsed = useCallback((workspace: string, task: string, on: boolean) => {
+    sidebarSeeded.current.add(workspace)
+    setSidebarCollapsed((previous) => {
+      const next = new Set(previous)
+      if (on) next.add(`${workspace}/${task}`)
+      else next.delete(`${workspace}/${task}`)
+      return next
+    })
+    // A collapsed scope must not leave its selected session hidden in Agents.
+    if (on && selection?.type === 'session' && treeRef.current?.workspaces
+      .find((w) => w.name === workspace)?.tasks.find((t) => t.name === task)?.sessions.some((s) => s.id === selection.id))
+      selectTask(workspace, task)
+  }, [selection, selectTask])
+
   const markNotificationRead = useCallback((id: string) => {
     setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, read: true } : n)))
     window.gurt.markNotificationRead(id).catch(logErr('markNotificationRead'))
@@ -646,7 +665,7 @@ export default function App() {
   // fires. Harmless no-op on other platforms, which just never emit it.
   useEffect(() => window.gurt.onHotkeyCycleWorkspace(cycleWorkspace), [cycleWorkspace])
 
-  const toggleWorkSidebar = useCallback((mode: 'sessions' | 'diff') => {
+  const toggleWorkSidebar = useCallback((mode: 'sessions' | 'diff' | 'files') => {
     setLeftSidebarVisible((visible) => view === 'work' && workMode === mode ? !visible : true)
     setView('work')
     setWorkMode(mode)
@@ -683,6 +702,9 @@ export default function App() {
       } else if (bindingMatchesEvent(hotkeys.gotoDiff, e)) {
         e.preventDefault()
         if (!e.repeat) toggleWorkSidebar('diff')
+      } else if (bindingMatchesEvent(hotkeys.gotoFiles, e)) {
+        e.preventDefault()
+        if (!e.repeat) toggleWorkSidebar('files')
       } else if (bindingMatchesEvent(hotkeys.toggleTerminal, e)) {
         e.preventDefault()
         if (!e.repeat && view === 'work') setTerminalVisible((visible) => !visible)
@@ -773,6 +795,8 @@ export default function App() {
       : null
   const activeDiffFile = diffTask && diffFile?.ws === diffTask.ws && diffFile.task === diffTask.task
     ? diffFile : null
+  const fileScope = diffTask && diffTask.ws === ws?.name && ws.tasks.some((t) => t.name === diffTask.task) ? diffTask : null
+  const files = useFiles(fileScope, refreshChanges)
   const diffWorkspace = ws?.name
   useEffect(() => {
     if (view !== 'work' || workMode !== 'diff' || !diffWorkspace) return
@@ -793,6 +817,8 @@ export default function App() {
         ? 'dashboard'
         : workMode === 'diff'
           ? `${diffTask?.task ? `${diffTask.task} · ` : ''}diff`
+          : workMode === 'files'
+            ? `${fileScope?.task ? `${fileScope.task} · ` : ''}files`
           : activeInfo
             ? `${activeInfo.task} · ${activeInfo.title}`
             : selection?.type === 'task'
@@ -945,6 +971,16 @@ export default function App() {
             <Icon name="branch" size={18} />
             {modHeld && <span className="ab-badge">{bindingRestLabel(hotkeys.gotoDiff)}</span>}
           </button>
+          <button
+            className={`ab-item ${view === 'work' && workMode === 'files' && leftSidebarVisible ? 'active' : ''}`}
+            title={`Files · ${bindingLabel(hotkeys.gotoFiles)}`}
+            aria-label="Files"
+            aria-pressed={view === 'work' && workMode === 'files' && leftSidebarVisible}
+            onClick={() => toggleWorkSidebar('files')}
+          >
+            <Icon name="folder" size={18} />
+            {modHeld && <span className="ab-badge">{bindingRestLabel(hotkeys.gotoFiles)}</span>}
+          </button>
           <span className="spacer" />
           <button
             className={`ab-item ${view === 'settings' ? 'active' : ''}`}
@@ -959,15 +995,18 @@ export default function App() {
         {view === 'work' && (
           <>
             <div className="left-sidebar" hidden={!leftSidebarVisible}>
+              <div className="scope-sidebar-content" hidden={workMode === 'files'}>
               <Sidebar
                 collapsed={sidebarCollapsed}
                 setCollapsed={setSidebarCollapsed}
+                setCollapse={setScopeCollapsed}
                 seeded={sidebarSeeded}
                 width={sidebarWidth}
                 tree={tree}
+                scopeList={scopeList}
                 ws={ws?.name ?? null}
                 selection={workMode === 'diff' && diffTask ? { type: 'task', ...diffTask } : selection}
-                mode={workMode}
+                mode={workMode === 'files' ? 'sessions' : workMode}
                 diffFile={activeDiffFile}
                 onSelectDiffFile={(file) => {
                   if (file.ws !== diffTask?.ws || file.task !== diffTask?.task) selectTask(file.ws, file.task)
@@ -982,9 +1021,30 @@ export default function App() {
                 onSelectTask={selectTask}
                 onSelectSession={selectSession}
               />
+              </div>
+              {workMode === 'files' && <FilesSidebar controller={files}
+                tree={tree}
+                collapsed={sidebarCollapsed}
+                setCollapse={setScopeCollapsed}
+                changes={changes}
+                scopeList={scopeList}
+                ws={ws?.name ?? null}
+                width={sidebarWidth}
+                focusSignal={focusTasksSignal}
+                selection={files.activeTab?.file ?? null}
+                onSelectTask={(w, task) => {
+                  if (w !== diffTask?.ws || task !== diffTask.task) selectTask(w, task)
+                }}
+                onOpen={(file) => {
+                  if (file.ws !== diffTask?.ws || file.task !== diffTask.task) selectTask(file.ws, file.task)
+                  files.open(file)
+                }}
+                onNewTask={() => { if (ws) setNewTask(ws.name) }}
+              />}
               <div className="sidebar-resizer" onMouseDown={startSidebarResize} />
             </div>
             <main className="main">
+              <FilesPane controller={files} scope={fileScope} visible={workMode === 'files'} />
               {workMode === 'sessions' && selection?.type === 'session' && (
                 <SessionPane
                   tree={tree}
@@ -1055,7 +1115,7 @@ export default function App() {
         )}
         <TerminalSidebar
           visible={view === 'work' && terminalVisible}
-          scope={diffTask && diffTask.ws === ws?.name && ws.tasks.some((t) => t.name === diffTask.task) ? diffTask : null}
+          scope={fileScope}
           onHide={() => setTerminalVisible(false)}
         />
         {view === 'work' && (

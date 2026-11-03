@@ -129,6 +129,7 @@ Details: [docs/architecture.md](docs/architecture.md).
 **Workflow**
 - Queue: a new session is a draft until you press **Run now** or **Add to queue**. The lock is per clone, so sessions on different repos run in parallel. You can cap concurrent sessions per scope, and a clone locked for manual review blocks writers. The queue survives a restart.
 - Review: split diff, inline comments and "Launch fix". Then commit, push and open a pull request. Local repos with no forge yet use "Merge into main".
+- [Files](docs/files.md): browse a scope's repositories and edit files in CodeMirror tabs, with syntax highlighting, explicit saves and JS/TS definition/reference navigation.
 - Terminals on the host, opened per scope.
 
 **Network and data**
@@ -169,7 +170,7 @@ Download a build from [Releases](https://github.com/klerik3d/gurt/releases/lates
 - **session**: one agent with one role, in one container, with one chat. A session goes `draft → queued → starting → started`.
 - **role**: what a session is for: executor, researcher, reviewer or operator. The role sets mounts, the clone lock and tools.
 
-Terminology: the UI says *scope*, while the code, the on-disk layout (`~/.gurt/<workspace>/<task>/`) and the older design documents say *task*. One Settings hint for local repos still says "tasks". The activity bar names the two work views **Agents** and **Diff**. The old README and some notes call them Scope and Git modes.
+Terminology: the UI says *scope*, while the code, the on-disk layout (`~/.gurt/<workspace>/<task>/`) and the older design documents say *task*. One Settings hint for local repos still says "tasks". The activity bar names the three work views **Agents**, **Diff** and **Files**. The old README and some notes call the first two Scope and Git modes.
 
 ## Security model
 

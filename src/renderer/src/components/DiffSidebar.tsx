@@ -7,6 +7,7 @@ import { showToast } from '../toast'
 import { Icon } from './icons'
 import { RowContextMenu } from './RowContextMenu'
 import { CommitModal } from './TaskPane'
+import { FileTreeRow } from './FileTreeRow'
 
 export type FileLayout = 'list' | 'tree'
 export interface DiffFileSelection {
@@ -194,10 +195,9 @@ function Repository({ ws, task, repo: r, layout, nav, activePath, activeTarget, 
 
   return (
     <div className="diff-repo" aria-busy={busy}>
-      <button
-        className={`diff-repo-row${activePath ? ' here' : ''}${nav.cursor === diffRowKey(repoRow) ? ' cursor' : ''}`}
-        tabIndex={-1}
-        aria-expanded={open}
+      <FileTreeRow
+        className="diff-repo-row" labelClassName="diff-repo-name" label={r.repo} depth={1} icon="branch"
+        cursor={nav.cursor === diffRowKey(repoRow)} open={open}
         title={`${r.repo} · ${r.files.length} changed files${busy ? ' · working…' : ''}`}
         onMouseDown={keepTreeFocus}
         onClick={() => {
@@ -211,9 +211,6 @@ function Repository({ ws, task, repo: r, layout, nav, activePath, activeTarget, 
           setMenu({ x: e.clientX, y: e.clientY })
         }}
       >
-        <Icon name="chevron" size={11} className="faint" style={open ? undefined : { transform: 'rotate(-90deg)' }} />
-        <Icon name="branch" size={12} className="faint" />
-        <span className="diff-repo-name">{r.repo}</span>
         <span
           className={`diff-repo-dot${hasChanges ? ' changed' : ''}${isDelivered(r) ? ' delivered' : ''}`}
           title={isActionable(r) ? 'Uncommitted or unpushed changes' : isDelivered(r) ? 'Pushed · awaiting merge' : 'No changes'}
@@ -229,7 +226,7 @@ function Repository({ ws, task, repo: r, layout, nav, activePath, activeTarget, 
         >
           {r.conflicted ? '!' : `↓${r.behind}`}
         </span>
-      </button>
+      </FileTreeRow>
       {open && (
         <div className="diff-files" role="group" aria-label={`Changed files in ${r.repo}`}>
           {groupRows(r, layout, nav).map((row) => row.kind === 'group'
@@ -305,14 +302,13 @@ function ChangeGroup({ row, nav, files }: { row: Extract<DiffRow, { kind: 'group
   const open = nav.groupOpen(row.repo, row.target)
   const state = files ? { files } : nav.groupFiles(row.repo, row.target)
   return <>
-    <button className={`diff-file-row diff-change-group${nav.cursor === diffRowKey(row) ? ' cursor' : ''}`}
-      style={{ paddingLeft: 42 }} tabIndex={-1} aria-expanded={open} title={row.label}
+    <FileTreeRow className="diff-file-row diff-change-group" labelClassName="diff-file-name"
+      label={row.label} depth={2} icon={row.target.kind === 'commit' ? 'branch' : 'folder'}
+      cursor={nav.cursor === diffRowKey(row)} open={open} title={row.label}
+      beforeLabel={row.target.kind === 'commit' ? <span className="commit-sha mono">{row.target.sha.slice(0, 7)}</span> : undefined}
       onMouseDown={keepTreeFocus} onClick={() => { nav.point(row); nav.setGroupOpen(row.repo, row.target, !open) }}>
-      <Icon name="chevron" size={10} style={open ? undefined : { transform: 'rotate(-90deg)' }} />
-      {row.target.kind === 'commit' && <span className="commit-sha mono">{row.target.sha.slice(0, 7)}</span>}
-      <span className="diff-file-name">{row.label}</span>
       {row.target.kind === 'commit' && <span className={`tag ${row.pushed ? 'tag-green' : ''}`}>{row.pushed ? 'pushed' : 'local'}</span>}
-    </button>
+    </FileTreeRow>
     {open && (!state?.files || state.files.length === 0) && <div className="diff-files-empty">
       {state?.error ?? (state?.files ? 'No changed files' : 'loading files…')}
     </div>}
@@ -322,21 +318,16 @@ function ChangeGroup({ row, nav, files }: { row: Extract<DiffRow, { kind: 'group
 function Folder({ row, nav }: { row: Extract<DiffRow, { kind: 'folder' }>; nav: DiffNav }) {
   const open = nav.folderOpen(row.repo, row.path, row.target)
   return (
-    <button
-      className={`diff-file-row diff-folder${nav.cursor === diffRowKey(row) ? ' cursor' : ''}`}
-      style={{ paddingLeft: 56 + row.depth * 14 }}
-      tabIndex={-1}
-      aria-expanded={open}
+    <FileTreeRow
+      className="diff-file-row diff-folder" labelClassName="diff-file-name"
+      label={row.name} depth={3 + row.depth} icon="folder" open={open}
+      cursor={nav.cursor === diffRowKey(row)}
       onMouseDown={keepTreeFocus}
       onClick={() => {
         nav.point(row)
         nav.setFolderOpen(row.repo, row.path, row.target, !open)
       }}
-    >
-      <Icon name="chevron" size={10} style={open ? undefined : { transform: 'rotate(-90deg)' }} />
-      <Icon name="folder" size={12} />
-      <span className="diff-file-name">{row.name}</span>
-    </button>
+    />
   )
 }
 
@@ -348,19 +339,17 @@ function FileRow({ row, nav, active }: {
   const { file, flat } = row
   const slash = file.path.lastIndexOf('/')
   return (
-    <button
-      className={`diff-file-row${active ? ' selected' : ''}${nav.cursor === diffRowKey(row) ? ' cursor' : ''}`}
-      style={{ paddingLeft: 56 + row.depth * 14 }}
-      tabIndex={-1}
+    <FileTreeRow
+      className="diff-file-row" labelClassName="diff-file-name"
+      label={file.path.slice(slash + 1)} depth={3 + row.depth} icon="file"
+      selected={active} cursor={nav.cursor === diffRowKey(row)}
       title={file.path}
       aria-pressed={active}
       onMouseDown={keepTreeFocus}
       onClick={() => nav.point(row)}
     >
-      <Icon name="file" size={12} className="faint" />
-      <span className="diff-file-name">{file.path.slice(slash + 1)}</span>
       {flat && slash >= 0 && <span className="diff-file-dir">{file.path.slice(0, slash)}</span>}
       <span className={`file-status st-${file.status}`}>{file.status}</span>
-    </button>
+    </FileTreeRow>
   )
 }

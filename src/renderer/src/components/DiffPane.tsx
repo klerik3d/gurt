@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { targetKey, type DiffPair, type RepoChanges } from '../../../shared/types'
 import type { DiffFileSelection } from './DiffSidebar'
 import { Icon } from './icons'
-import { ReadOnlyDiff } from './ReviewModal'
+
+const CodeDiff = lazy(() => import('./CodeDiff').then((module) => ({ default: module.CodeDiff })))
 
 export function DiffPane({ file, changes, task }: {
   file: DiffFileSelection | null
@@ -73,7 +74,9 @@ function FileDiff({ file, revision }: { file: DiffFileSelection; revision: RepoC
       {error && <div className="error review-error">{error}</div>}
       {!pair && !error && <div className="tp-empty">loading diff…</div>}
       {pair?.binary && <div className="tp-empty">binary file — no text diff</div>}
-      {pair && !pair.binary && <ReadOnlyDiff before={pair.before} after={pair.after} path={path} mode={mode} />}
+      {pair && !pair.binary && <Suspense fallback={<div className="tp-empty">loading editor…</div>}>
+        <CodeDiff before={pair.before} after={pair.after} path={path} mode={mode} />
+      </Suspense>}
     </div>
   )
 }
