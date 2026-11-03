@@ -90,6 +90,12 @@ const SAFE_ARGS = new Set([
   'credentialUsedBy',
   'oauthCancel', // a credential id — the entry payload itself is oauthSignIn's, which is opaque
   'getTaskChanges',
+  'listTaskFiles',
+  'readTaskFile',
+  // Scope identifiers, file paths and a destination name; no file contents or prose.
+  'taskFilePath',
+  'renameTaskFile',
+  'deleteTaskFile',
   'getFileDiff',
   'getCommitDiff',
   'getDiffFiles',

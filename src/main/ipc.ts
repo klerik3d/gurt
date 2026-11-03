@@ -28,6 +28,7 @@ import {
 import { traffic } from './proxy/traffic'
 import * as store from './store'
 import * as changes from './changes'
+import * as files from './files'
 import { normalizeGcSettings } from '../shared/gc'
 import { runGc } from './gc'
 import { createLocalRepo, publishLocalRepo } from './localRepo'
@@ -58,6 +59,8 @@ function broadcast(channel: string, ...args: unknown[]): void {
  * not at each call site's discretion.
  */
 const OPAQUE_ARGS = new Set<keyof GurtApi>([
+  'writeTaskFile',
+  'navigateTaskFile',
   'terminalWrite',
   'terminalRename',
   'createSession',
@@ -306,6 +309,13 @@ export function registerIpc(): void {
     releaseContainer: (sessionId) => kernel.containers.release(sessionId),
     sessionOpenVscode: (sessionId) => kernel.containers.openVscode(sessionId),
     sessionOpenTerminal: (sessionId) => kernel.containers.openTerminal(sessionId),
+    taskFilePath: files.taskFilePath,
+    renameTaskFile: files.renameTaskFile,
+    deleteTaskFile: files.deleteTaskFile,
+    listTaskFiles: files.listTaskFiles,
+    readTaskFile: files.readTaskFile,
+    writeTaskFile: files.writeTaskFile,
+    navigateTaskFile: files.navigateTaskFile,
     getTaskChanges: (ws, task, opts) => changes.getTaskChanges(ws, task, opts ?? {}),
     getFileDiff: (ws, task, repo, file) => changes.getFileDiff(ws, task, repo, file),
     getCommitDiff: (ws, task, repo, sha) => changes.getCommitDiff(ws, task, repo, sha),

@@ -1,4 +1,4 @@
-// Ordering of the sidebar's task list (src/renderer/src/components/Sidebar.tsx).
+// Shared ordering and filtering of the scope list in all work modes.
 // Pure comparator only — nothing is rendered.
 //
 // Worth pinning for the same reason as the dashboard's: a wrong comparator
@@ -19,7 +19,7 @@ const S = (rel) => JSON.stringify(path.join(ROOT, rel))
 
 await bundle({
   stdin: {
-    contents: `export { sortTasks, SORT_DIR_LABEL, SORT_KEY_LABEL } from ${S('src/renderer/src/components/Sidebar.tsx')}`,
+    contents: `export { sortTasks, scopeFilter, SORT_DIR_LABEL, SORT_KEY_LABEL } from ${S('src/renderer/src/useScopeList.ts')}`,
     resolveDir: ROOT,
     loader: 'tsx',
     sourcefile: 'entry.tsx'
@@ -27,10 +27,21 @@ await bundle({
   outfile
 })
 
-const { sortTasks, SORT_DIR_LABEL, SORT_KEY_LABEL } = await import(pathToFileURL(outfile).href)
+const { sortTasks, scopeFilter, SORT_DIR_LABEL, SORT_KEY_LABEL } = await import(pathToFileURL(outfile).href)
 
 const task = (name, createdAt) => ({ name, createdAt })
 const names = (rows) => rows.map((t) => t.name)
+
+test('scope filtering supports regex, ignores case and accepts an empty filter', () => {
+  const tasks = [task('api-2'), task('API-10'), task('frontend'), task('my-api')]
+  const filter = scopeFilter('^api-\\d+$')
+  assert.equal(filter.error, '')
+  assert.deepEqual(names(tasks.filter((t) => filter.pattern.test(t.name))), ['api-2', 'API-10'])
+  assert.equal(scopeFilter('').pattern, null)
+  assert.equal(scopeFilter('').error, '')
+  assert.ok(scopeFilter('[').error, 'invalid regex produces a visible error without crashing')
+  assert.equal(scopeFilter('[').pattern, null, 'invalid regex keeps scopes visible')
+})
 
 // --- by name -----------------------------------------------------------------
 test('name sorts case-insensitively and numerically, both directions', () => {

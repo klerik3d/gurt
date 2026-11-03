@@ -21,7 +21,8 @@ const git = (dir, ...args) => execFileSync('git', [
 fs.mkdirSync(path.join(seed, 'src'), { recursive: true })
 fs.mkdirSync(taskDir, { recursive: true })
 git(seed, 'init', '-b', 'main')
-fs.writeFileSync(path.join(seed, 'src', 'app.ts'), 'export const mode = "sessions"\n')
+const unchanged = Array.from({ length: 100 }, (_, line) => `export const unchanged${line} = ${line}\n`).join('')
+fs.writeFileSync(path.join(seed, 'src', 'app.ts'), 'export const mode = "sessions"\n' + unchanged)
 fs.writeFileSync(path.join(seed, 'README.md'), '# Demo\n')
 fs.writeFileSync(path.join(seed, 'unchanged.txt'), 'keep\n')
 git(seed, 'add', '-A')
@@ -31,7 +32,7 @@ git(scratch, 'clone', origin, clone)
 git(clone, 'checkout', '-b', 'navigation')
 git(scratch, 'clone', origin, path.join(taskDir, 'backend'))
 git(path.join(taskDir, 'backend'), 'checkout', '-b', 'navigation')
-fs.writeFileSync(path.join(clone, 'src', 'app.ts'), 'export const mode = "diff"\nexport const comments = false\n')
+fs.writeFileSync(path.join(clone, 'src', 'app.ts'), 'export const mode = "diff"\nexport const comments = false\n' + unchanged)
 fs.writeFileSync(path.join(clone, 'src', 'new.ts'), 'export const added = true\n')
 fs.unlinkSync(path.join(clone, 'README.md'))
 fs.writeFileSync(path.join(clone, 'asset.bin'), Buffer.from([0, 1, 2, 0, 3]))
@@ -60,6 +61,43 @@ const env = {
   GIT_COMMITTER_NAME: 'Smoke', GIT_COMMITTER_EMAIL: 'smoke@example.test'
 }
 delete env.ELECTRON_RUN_AS_NODE
+
+// Compare rendered values so mode-specific CSS cannot quietly diverge again.
+const rowAppearance = (locator) => locator.evaluate((el) => {
+  const style = getComputedStyle(el)
+  const label = el.querySelector('.file-tree-name')
+  const labelStyle = getComputedStyle(label)
+  const chevron = el.querySelector('.file-tree-chevron')
+  const icon = el.querySelector(':scope > svg')
+  const glyph = chevron.querySelector('svg')
+  const rect = el.getBoundingClientRect()
+  return {
+    indent: parseFloat(style.paddingLeft),
+    appearance: {
+      height: rect.height, padding: [style.paddingTop, style.paddingRight, style.paddingBottom],
+      gap: style.columnGap, margin: [style.marginTop, style.marginBottom],
+      font: [style.fontFamily, style.fontSize, style.fontWeight, style.lineHeight],
+      labelFont: [labelStyle.fontFamily, labelStyle.fontSize, labelStyle.fontWeight, labelStyle.lineHeight],
+      color: style.color, labelColor: labelStyle.color, background: style.backgroundColor,
+      shadow: style.boxShadow, border: [style.borderLeftWidth, style.borderLeftColor],
+      labelOffset: label.getBoundingClientRect().left - rect.left - parseFloat(style.paddingLeft),
+      icon: [icon.getBoundingClientRect().width, icon.getBoundingClientRect().height, getComputedStyle(icon).color, getComputedStyle(icon).strokeWidth],
+      chevron: [chevron.getBoundingClientRect().width, glyph?.getBoundingClientRect().width ?? null, glyph?.getBoundingClientRect().height ?? null]
+    }
+  }
+})
+const headerAppearance = (page) => page.locator('.sidebar:visible .sb-head').evaluate((el) => {
+  const style = getComputedStyle(el)
+  const label = el.querySelector('.sb-ws')
+  const button = el.querySelector('button[title^="Refresh"]')
+  const icon = button.querySelector('svg')
+  return {
+    gap: style.columnGap, padding: [style.paddingLeft, style.paddingRight],
+    labelPadding: [getComputedStyle(label).paddingLeft, getComputedStyle(label).paddingRight],
+    button: [button.getBoundingClientRect().width, button.getBoundingClientRect().height],
+    icon: [icon.getBoundingClientRect().width, icon.getBoundingClientRect().height]
+  }
+})
 // Keep layout preferences from earlier launches out of this fixture.
 const app = await _electron.launch({
   executablePath: require('electron'),
@@ -90,13 +128,22 @@ try {
   await frontend.locator('.diff-change-group').click()
   assert.equal(await frontend.locator('.diff-file-row:not(.diff-change-group)').count(), 4)
   await frontend.locator('button[title="src/app.ts"]').click()
-  await page.waitForSelector('.diff-pane .split-row.change')
-  assert.match(await page.locator('.diff-pane .split').innerText(), /sessions/)
-  assert.match(await page.locator('.diff-pane .split').innerText(), /comments = false/)
+  await page.waitForSelector('.code-diff-split .cm-changedLine')
+  assert.equal(await page.locator('.code-diff .cm-editor').count(), 2, 'split uses two CodeMirror editors')
+  assert.match(await page.locator('.code-diff').innerText(), /sessions/)
+  assert.match(await page.locator('.code-diff').innerText(), /comments = false/)
   assert.equal(await page.locator('.modal, .split-add, .review-foot').count(), 0, 'inline diff has no review UI')
 
   // The tree keeps the caret and its arrow keys walk repos and files too.
   assert.equal(await page.evaluate(() => document.activeElement?.className), 'sb-tree', 'a row click leaves focus on the tree')
+  await page.locator('.code-diff .cm-collapsedLines').first().click()
+  await page.waitForFunction(() => {
+    const scroller = document.querySelector('.code-diff .cm-mergeView')
+    return scroller && scroller.scrollHeight > scroller.clientHeight
+  })
+  await page.locator('.code-diff .cm-mergeView').evaluate((el) => { el.scrollTop = el.scrollHeight })
+  await page.waitForFunction(() => document.querySelector('.code-diff')?.textContent?.includes('unchanged99'))
+  await frontend.locator('button[title="src/app.ts"]').click()
   await page.keyboard.press('ArrowDown')
   assert.equal(await frontend.locator('button[title="src/new.ts"]').getAttribute('aria-pressed'), 'true', 'ArrowDown selects the next file')
   await page.keyboard.press('ArrowUp')
@@ -122,17 +169,75 @@ try {
   await frontend.locator('.diff-folder').click()
   assert.equal(await frontend.locator('button[title="src/app.ts"]').count(), 0, 'folders collapse')
   await frontend.locator('.diff-folder').click()
+  await frontend.locator('button[title="src/app.ts"]').click()
+  await page.mouse.move(0, 0)
+  const gitRows = {
+    repo: await rowAppearance(frontend.locator('.diff-repo-row')),
+    group: await rowAppearance(frontend.locator('.diff-change-group')),
+    folder: await rowAppearance(frontend.locator('.diff-folder')),
+    file: await rowAppearance(frontend.locator('button[title="src/app.ts"]'))
+  }
+  const gitHeader = await headerAppearance(page)
+  const gitPitch = (await frontend.locator('button[title="src/app.ts"]').boundingBox()).y - (await frontend.locator('.diff-folder').boundingBox()).y
+  await page.locator('.sidebar:visible .sb-tree').evaluate((el) => el.blur())
+  const gitUnfocused = await rowAppearance(frontend.locator('button[title="src/app.ts"]'))
+  await page.getByRole('button', { name: 'Files', exact: true }).click()
+  const filesTree = page.getByRole('tree', { name: 'Scope files' })
+  const fileRow = (title) => filesTree.locator(`button[title="${title}"]`)
+  await fileRow('frontend').click()
+  await fileRow('frontend/src').click()
+  await fileRow('frontend/src/app.ts').click()
+  await page.locator('.files-pane .cm-content').waitFor()
+  await filesTree.focus()
+  await page.mouse.move(0, 0)
+  const fileRows = {
+    repo: await rowAppearance(fileRow('frontend')),
+    folder: await rowAppearance(fileRow('frontend/src')),
+    file: await rowAppearance(fileRow('frontend/src/app.ts'))
+  }
+  for (const kind of ['repo', 'folder', 'file'])
+    assert.deepEqual(gitRows[kind].appearance, fileRows[kind].appearance, `${kind}: Git and Files share fonts, sizes, spacing, colors and focus styling`)
+  assert.deepEqual(gitRows.group.appearance, fileRows.folder.appearance, 'Git change groups use the same container row appearance')
+  assert.deepEqual(gitHeader, await headerAppearance(page), 'headers use the same padding and action sizes')
+  assert.equal(gitRows.repo.indent, fileRows.repo.indent, 'repositories align in both modes')
+  const indentStep = fileRows.folder.indent - fileRows.repo.indent
+  assert.equal(gitRows.group.indent - gitRows.repo.indent, indentStep)
+  assert.equal(gitRows.folder.indent - gitRows.group.indent, indentStep)
+  assert.equal(gitRows.file.indent - gitRows.folder.indent, fileRows.file.indent - fileRows.folder.indent)
+  const filePitch = (await fileRow('frontend/src/app.ts').boundingBox()).y - (await fileRow('frontend/src').boundingBox()).y
+  assert.equal(gitPitch, filePitch, 'vertical spacing matches')
+  await filesTree.evaluate((el) => el.blur())
+  assert.deepEqual(gitUnfocused.appearance, (await rowAppearance(fileRow('frontend/src/app.ts'))).appearance, 'selection also matches when the tree loses focus')
+  await page.getByRole('button', { name: 'Diff', exact: true }).click()
   await page.getByRole('button', { name: 'Unified', exact: true }).click()
-  await page.waitForSelector('.diff-pane .unified')
+  await page.waitForSelector('.code-diff-unified .cm-deletedChunk')
+  assert.equal(await page.locator('.code-diff .cm-editor').count(), 1, 'unified uses one CodeMirror editor')
+  assert.equal(await page.locator('.code-diff .cm-chunkButtons').count(), 0, 'read-only diff has no merge controls')
+  assert.match(await page.locator('.code-diff').innerText(), /sessions/)
+  assert.match(await page.locator('.code-diff').innerText(), /comments = false/)
+  const content = page.locator('.code-diff .cm-content')
+  assert.equal(await content.getAttribute('contenteditable'), 'false')
+  const original = await content.innerText()
+  // The center of the unified content can land on a deleted-line widget.
+  // Focus the read-only editor itself for keyboard editing/search checks.
+  await content.focus()
+  await page.keyboard.type('should not edit')
+  assert.equal(await content.innerText(), original, 'typing cannot modify the comparison')
+  await page.keyboard.press('Control+f')
+  const search = page.locator('.code-diff .cm-search input[name="search"]')
+  await search.fill('comments')
+  await search.press('Enter')
+  await page.waitForSelector('.code-diff .cm-searchMatch')
+  await page.keyboard.press('Escape')
   await page.getByRole('button', { name: 'Split', exact: true }).click()
   await page.screenshot({ path: path.join(scratch, 'diff-tree.png') })
 
   await frontend.locator('button[title="asset.bin"]').click()
   await page.getByText('binary file — no text diff', { exact: true }).waitFor()
   await frontend.locator('button[title="README.md"]').click()
-  await page.waitForSelector('.diff-pane .split-pane.del')
+  await page.waitForSelector('.code-diff .cm-merge-a .cm-changedLine')
   await frontend.locator('button[title="src/new.ts"]').click()
-  await page.waitForSelector('.diff-pane .split-pane.add')
+  await page.waitForSelector('.code-diff .cm-merge-b .cm-changedLine')
 
   // Switching back retains the selected session; switching again retains the layout.
   await page.locator('button[title^="Agents"]').click()
@@ -150,10 +255,10 @@ try {
   assert.equal(git(clone, 'status', '--porcelain'), '')
   await frontend.locator('.diff-change-group[title="Add diff mode"]').click()
   await frontend.locator('button[title="src/app.ts"]').click()
-  await page.waitForSelector('.diff-pane .split-row.change')
+  await page.waitForSelector('.code-diff-split .cm-changedLine')
   assert.match(await page.locator('.diff-pane .diff-scope').innerText(), /Commit /)
-  assert.match(await page.locator('.diff-pane .split').innerText(), /sessions/)
-  assert.match(await page.locator('.diff-pane .split').innerText(), /comments = false/)
+  assert.match(await page.locator('.code-diff').innerText(), /sessions/)
+  assert.match(await page.locator('.code-diff').innerText(), /comments = false/)
   await frontend.locator('.diff-repo-row').click({ button: 'right' })
   await page.getByRole('button', { name: 'Push changes', exact: true }).click()
   await frontend.locator('.diff-repo-dot.delivered').waitFor()

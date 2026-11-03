@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react'
 import type { ChangedFile, DiffTarget, RepoChanges, SessionActivity, Tree } from '../../../shared/types'
-import { isActionable, isDelivered, sessionStatus } from '../../../shared/types'
+import { sessionStatus } from '../../../shared/types'
 import type { Selection } from '../App'
 import { bindingLabel } from '../../../shared/hotkeys'
 import { agentKind, agentName, useAgents } from '../useAgents'
@@ -16,6 +16,9 @@ import { deleteSession, duplicateSession, recreateSession } from './SessionActio
 import { Modal } from './Modal'
 import { fire, run } from '../async'
 import { RowContextMenu } from './RowContextMenu'
+import { sortTasks, type ScopeListController } from '../useScopeList'
+import { ScopeFilter, ScopeSort } from './ScopeControls'
+import { ScopeRow } from './ScopeRow'
 import {
   TaskRepositories,
   diffRowKey,
@@ -53,88 +56,14 @@ const toggled = (prev: Set<string>, key: string, on: boolean) => {
   return next
 }
 
-/** What the task list is ordered by, and which way round. */
-export type TaskSortKey = 'name' | 'created'
-export type TaskSortDir = 'asc' | 'desc'
-export interface TaskSort {
-  key: TaskSortKey
-  dir: TaskSortDir
-}
-
-const TASK_SORT_KEY = 'gurt.sidebar.taskSort'
-const DEFAULT_SORT: TaskSort = { key: 'name', dir: 'asc' }
-
-export const SORT_KEY_LABEL: Record<TaskSortKey, string> = {
-  name: 'Name',
-  created: 'Created'
-}
-
-/** Direction reads as what the order *is*: "Z → A" and "Newest first" are the
- *  same `desc`, but nobody picking one thinks of it as descending. */
-export const SORT_DIR_LABEL: Record<TaskSortKey, Record<TaskSortDir, string>> = {
-  name: { asc: 'A → Z', desc: 'Z → A' },
-  created: { asc: 'Oldest first', desc: 'Newest first' }
-}
-
-/** Case- and digit-aware, then exact — `sensitivity: 'base'` calls "api" and
- *  "API" equal, and a tie left to sort's stability would order them by whatever
- *  `readdir` returned that time. */
-const byName = (a: string, b: string): number =>
-  a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }) ||
-  (a < b ? -1 : a > b ? 1 : 0)
-
-/**
- * Order the sidebar draws tasks in. `desc` reverses the whole comparison,
- * tiebreak included, so flipping direction flips exactly what is on screen —
- * the one thing the user is asking for when they press it.
- */
-export function sortTasks<T extends { name: string; createdAt?: string }>(
-  tasks: readonly T[],
-  sort: TaskSort
-): T[] {
-  const cmp =
-    sort.key === 'name'
-      ? (a: T, b: T) => byName(a.name, b.name)
-      : // Tasks created within the same second are a real case (a script, a
-        // duplicate) — name keeps them from swapping places between renders.
-        (a: T, b: T) =>
-          (a.createdAt ?? '').localeCompare(b.createdAt ?? '') || byName(a.name, b.name)
-  const out = [...tasks].sort(cmp)
-  return sort.dir === 'desc' ? out.reverse() : out
-}
-
-/** Sidebar-local and persisted: an ordering preference is not part of the tree,
- *  and one that resets on every launch is worse than not offering it. */
-function useTaskSort(): [TaskSort, (s: TaskSort) => void] {
-  const [sort, setSort] = useState<TaskSort>(() => {
-    try {
-      const raw = JSON.parse(localStorage.getItem(TASK_SORT_KEY) ?? 'null') as Partial<TaskSort>
-      const key = raw?.key
-      const dir = raw?.dir
-      if ((key === 'name' || key === 'created') && (dir === 'asc' || dir === 'desc'))
-        return { key, dir }
-    } catch {
-      // unreadable preference — the default order is a fine place to land
-    }
-    return DEFAULT_SORT
-  })
-  const update = (next: TaskSort): void => {
-    setSort(next)
-    try {
-      localStorage.setItem(TASK_SORT_KEY, JSON.stringify(next))
-    } catch {
-      // a full/blocked store costs the preference, not the sort
-    }
-  }
-  return [sort, update]
-}
-
 export function Sidebar({
   collapsed,
   setCollapsed,
+  setCollapse,
   seeded,
   width,
   tree,
+  scopeList,
   ws,
   selection,
   changes,
@@ -151,6 +80,7 @@ export function Sidebar({
 }: {
   collapsed: Set<string>
   setCollapsed: React.Dispatch<React.SetStateAction<Set<string>>>
+  setCollapse: (ws: string, task: string, on: boolean) => void
   seeded: React.RefObject<Set<string>>
   /** Current sidebar width in px (user-draggable). */
   width: number
@@ -159,6 +89,7 @@ export function Sidebar({
   onSelectDiffFile: (file: DiffFileSelection) => void
   onRefreshChanges: (ws: string, task: string) => Promise<void>
   tree: Tree | null
+  scopeList: ScopeListController
   /** Name of the workspace currently shown; null while the tree loads. */
   ws: string | null
   selection: Selection
@@ -226,13 +157,10 @@ export function Sidebar({
   const [repoMenu, setRepoMenu] = useState<{ ws: string; task: string; repo: string; x: number; y: number } | null>(null)
 
   const wsData = tree?.workspaces.find((w) => w.name === ws)
-  const [sort, setSort] = useTaskSort()
-  const [sortOpen, setSortOpen] = useState(false)
-  const sortPopRef = useRef<HTMLDivElement>(null)
-  useOutsideClose(sortOpen, sortPopRef, () => setSortOpen(false))
   /** The one ordering everything below reads — rendering and the arrow-key row
    *  list both, or navigation would walk a list the user cannot see. */
-  const tasks = sortTasks(wsData?.tasks ?? [], sort)
+  const allTasks = sortTasks(wsData?.tasks ?? [], scopeList.sort)
+  const tasks = allTasks.filter((task) => !scopeList.pattern || scopeList.pattern.test(task.name))
   /** Owner of every task in `tasks`. Empty only when there is no workspace, and
    *  then `tasks` is empty too, so nothing below ever reads the empty string. */
   const wsName = wsData?.name ?? ''
@@ -245,37 +173,21 @@ export function Sidebar({
   }, [focusSignal])
 
   // Seed each workspace once; navigation must preserve manual folding.
-  const seedKey = tasks.length && readStateReady ? wsName : null
+  const seedKey = allTasks.length && readStateReady ? wsName : null
   useEffect(() => {
     if (mode === 'diff' || !seedKey || seeded.current.has(seedKey)) return
     seeded.current.add(seedKey)
     // The open session's own task stays up — folding it would hide the row for
     // what the pane is showing.
-    const open = tasks.find(
+    const open = allTasks.find(
       (t) => selection?.type === 'session' && t.sessions.some((s) => s.id === selection.id)
     )
     const read = (t: (typeof tasks)[number]) =>
       t !== open &&
       t.sessions.length > 0 &&
       t.sessions.every((s) => sessionStatus({ ...s, ...activity[s.id] }) === 'idle-read')
-    setCollapsed((prev) => new Set([...prev, ...tasks.filter(read).map((t) => `${wsName}/${t.name}`)]))
-  }, [seedKey, tasks, activity, wsName, selection, mode, seeded, setCollapsed])
-
-  const setCollapse = (ws2: string, task: string, on: boolean) => {
-    seeded.current.add(ws2)
-    setCollapsed((prev) => {
-      const next = new Set(prev)
-      if (on) next.add(`${ws2}/${task}`)
-      else next.delete(`${ws2}/${task}`)
-      return next
-    })
-    // Collapsing hides the selected session — move the selection up to the task
-    // so it stays visible and arrow navigation keeps its place.
-    if (on && selection?.type === 'session') {
-      const owner = wsData?.tasks.find((t) => t.sessions.some((s) => s.id === selection.id))
-      if (owner?.name === task) onSelectTask(ws2, task)
-    }
-  }
+    setCollapsed((prev) => new Set([...prev, ...allTasks.filter(read).map((t) => `${wsName}/${t.name}`)]))
+  }, [seedKey, allTasks, activity, wsName, selection, mode, seeded, setCollapsed])
 
   /** Every task's collapse key, for the header's fold-all toggle. */
   const allTaskKeys = tasks.map((t) => `${wsName}/${t.name}`)
@@ -745,50 +657,7 @@ export function Sidebar({
             </button>
           </>
         )}
-        <div className="sb-sort" ref={sortPopRef}>
-          <button
-            className={`icon-sq ${sortOpen ? 'active' : ''}`}
-            title={`Sort scopes · ${SORT_KEY_LABEL[sort.key]}, ${SORT_DIR_LABEL[sort.key][sort.dir]}`}
-            disabled={!allTaskKeys.length}
-            onClick={() => setSortOpen((o) => !o)}
-          >
-            {/* The glyph flips with the direction, so the current order is
-                readable from the closed button and not only from its tooltip. */}
-            <Icon
-              name="sort"
-              size={14}
-              style={sort.dir === 'desc' ? { transform: 'scaleY(-1)' } : undefined}
-            />
-          </button>
-          {sortOpen && (
-            <div className="menu sb-sort-menu">
-              {/* Key and direction stay in one open menu: switching the key
-                  relabels the directions under it ("A → Z" becomes "Oldest
-                  first"), which is how the pair explains itself. */}
-              {(['name', 'created'] as TaskSortKey[]).map((k) => (
-                <div
-                  key={k}
-                  className={`menu-item ${sort.key === k ? 'active' : ''}`}
-                  onClick={() => setSort({ ...sort, key: k })}
-                >
-                  <Dot tone={sort.key === k ? 'accent' : 'faint'} hollow={sort.key !== k} size={6} />
-                  {SORT_KEY_LABEL[k]}
-                </div>
-              ))}
-              <div className="menu-sep" />
-              {(['asc', 'desc'] as TaskSortDir[]).map((d) => (
-                <div
-                  key={d}
-                  className={`menu-item ${sort.dir === d ? 'active' : ''}`}
-                  onClick={() => setSort({ ...sort, dir: d })}
-                >
-                  <Dot tone={sort.dir === d ? 'accent' : 'faint'} hollow={sort.dir !== d} size={6} />
-                  {SORT_DIR_LABEL[sort.key][d]}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+        <ScopeSort controller={scopeList} disabled={!allTasks.length} />
         <button
           className="icon-sq"
           title={allCollapsed ? 'Expand all' : 'Collapse all'}
@@ -822,6 +691,7 @@ export function Sidebar({
         </div>
       </div>
 
+      <ScopeFilter controller={scopeList} onFocusTree={() => treeRef.current?.focus()} />
       {mode === 'diff' && refreshError && <div className="error diff-refresh-error">{refreshError}</div>}
       <div className="sb-tree" ref={treeRef} tabIndex={0} role="tree" onKeyDown={onTreeKey}>
         {tasks.map((task) => {
@@ -832,28 +702,18 @@ export function Sidebar({
           const editing = renaming && rowKey(renaming) === rowKey(row)
           return (
             <div key={task.name} className="sb-group">
-              <div
-                className={`sb-task ${taskSelected ? 'selected' : ''}${cursorKey === rowKey(row) ? ' cursor' : ''}`}
-                role="treeitem"
-                aria-expanded={!isCollapsed}
-                aria-selected={taskSelected}
-                onClick={() => moveTo(row)}
+              <ScopeRow
+                name={task.name}
+                open={!isCollapsed}
+                selected={taskSelected}
+                cursor={cursorKey === rowKey(row)}
+                repos={changes[tkey] ?? []}
+                editing={!!editing}
+                onSelect={() => { moveTo(row); treeRef.current?.focus() }}
+                onToggle={() => setCollapse(wsName, task.name, !isCollapsed)}
                 onDoubleClick={() => startRename(row)}
                 onContextMenu={editing ? undefined : (e) => openContextMenu(e, row)}
               >
-                <span
-                  className="sb-chev"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    setCollapse(wsName, task.name, !isCollapsed)
-                  }}
-                >
-                  <Icon
-                    name="chevron"
-                    size={11}
-                    style={isCollapsed ? { transform: 'rotate(-90deg)' } : undefined}
-                  />
-                </span>
                 {editing ? (
                   <RenameInput
                     value={renameDraft}
@@ -861,14 +721,8 @@ export function Sidebar({
                     onCommit={run(commitRename)}
                     onCancel={cancelRename}
                   />
-                ) : (
-                  <>
-                    <span className="sb-task-name">{task.name}</span>
-                    <TaskBadge repos={changes[tkey] ?? []} />
-                    <span className="spacer" />
-                  </>
-                )}
-              </div>
+                ) : null}
+              </ScopeRow>
               {!isCollapsed && mode === 'diff' && (
                 <TaskRepositories
                   ws={wsName}
@@ -925,6 +779,7 @@ export function Sidebar({
             </div>
           )
         })}
+        {!!allTasks.length && !tasks.length && <div className="sb-empty">No matching scopes</div>}
         {wsData && wsData.tasks.length === 0 && (
           <div className="sb-empty" style={{ paddingLeft: 18 }}>
             no scopes yet — “+” above to add one
@@ -971,15 +826,6 @@ function RenameInput({
       }}
     />
   )
-}
-
-/** Delivery state of the task's clones: work to do, work awaiting merge, or nothing. */
-function TaskBadge({ repos }: { repos: RepoChanges[] }) {
-  if (repos.some(isActionable))
-    return <span className="task-badge" title="uncommitted or unpushed changes" />
-  if (repos.some(isDelivered))
-    return <span className="task-badge badge-delivered" title="delivered — awaiting merge" />
-  return null
 }
 
 export function NameModal({
@@ -1086,4 +932,3 @@ export function DeleteWorkspaceModal({
     </Modal>
   )
 }
-
