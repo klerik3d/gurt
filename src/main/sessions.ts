@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type {
   AcpHttpMcpServer,
   AgentConfig,
+  InterruptedSession,
   AgentConfigCache,
   AgentSessionRequest,
   ChangeProposal,
@@ -1882,9 +1883,9 @@ export class SessionManager {
     }
   }
 
-  interruptedSessions(): { id: string; title: string }[] {
+  interruptedSessions(): InterruptedSession[] {
     return [...this.sessions.values()].filter((s) => s.recovering && s.info.state === 'started')
-      .map((s) => ({ id: s.info.id, title: s.info.title }))
+      .map(({ info }) => ({ id: info.id, title: info.title, workspace: info.workspace, task: info.task }))
   }
 
   hasUnfinishedWork(): boolean {

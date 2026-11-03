@@ -42,3 +42,12 @@ test('folder folding is independent for each revision; integrated commits disapp
   assert.deepEqual(rows.filter((r) => r.kind === 'file').map((r) => r.target.sha), ['abc', 'def'])
   assert.deepEqual(diffRows([{ ...repo, integrated: true }], 'list', folding).map((r) => r.kind), ['repo', 'group'])
 })
+
+
+test('a clean repository has no Uncommitted group in either file layout', () => {
+  for (const layout of ['list', 'tree']) {
+    const clean = { ...repo, files: [] }
+    assert.deepEqual(diffRows([clean], layout, folding).slice(1).map((r) => r.label), ['Latest', 'Earlier'])
+    assert.deepEqual(diffRows([{ ...clean, integrated: true }], layout, folding).map((r) => r.kind), ['repo'])
+  }
+})

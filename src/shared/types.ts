@@ -495,6 +495,9 @@ export function sanitizeSessionNetwork(raw: unknown): SessionNetwork | undefined
   return out
 }
 
+/** Identity and location shown when offering to resume work after restart. */
+export type InterruptedSession = Pick<SessionInfo, 'id' | 'title' | 'workspace' | 'task'>
+
 /**
  * One session's record: persisted (minus the runtime overlays) and broadcast to
  * the renderer. A few members spell out `| undefined` — those are the ones the

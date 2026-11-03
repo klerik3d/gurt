@@ -1,12 +1,12 @@
-import { useRef, useState } from 'react'
+import { useState } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import type { ChangedFile, DiffTarget, RepoChanges } from '../../../shared/types'
 import { targetKey, isActionable, isDelivered } from '../../../shared/types'
 import { run } from '../async'
-import { showToast } from '../toast'
 import { Icon } from './icons'
 import { RowContextMenu } from './RowContextMenu'
-import { CommitModal } from './TaskPane'
+import { commitInputId, GitPushModal } from './GitActions'
+import { ReviewModal } from './ReviewModal'
 import { FileTreeRow } from './FileTreeRow'
 
 export type FileLayout = 'list' | 'tree'
@@ -77,8 +77,10 @@ export interface DiffNav extends DiffFolding {
   cursor: string | null
   /** A click landed on this row: move the cursor there, focus back on the tree. */
   point: (row: DiffRow) => void
-  menu: { repo: string; x: number; y: number } | null
-  setMenu: (menu: { repo: string; x: number; y: number } | null) => void
+  busy: (repo: string) => boolean
+  act: (repo: string, fn: () => Promise<void>) => Promise<boolean>
+  menu: { repo: string; x: number; y: number; target?: DiffTarget } | null
+  setMenu: (menu: { repo: string; x: number; y: number; target?: DiffTarget } | null) => void
 }
 
 export function diffRows(changes: RepoChanges[], layout: FileLayout, folding: DiffFolding): DiffRow[] {
@@ -90,7 +92,7 @@ export function diffRows(changes: RepoChanges[], layout: FileLayout, folding: Di
 
 function groupRows(r: RepoChanges, layout: FileLayout, folding: DiffFolding): DiffRow[] {
   const groups: Extract<DiffRow, { kind: 'group' }>[] = [
-    { kind: 'group', repo: r.repo, target: { kind: 'uncommitted' }, label: 'Uncommitted' },
+    ...(r.files.length ? [{ kind: 'group' as const, repo: r.repo, target: { kind: 'uncommitted' as const }, label: 'Uncommitted' }] : []),
     ...(!r.integrated ? r.commits.map((c) => ({
       kind: 'group' as const, repo: r.repo, target: { kind: 'commit' as const, sha: c.sha },
       label: c.subject, pushed: c.pushed
@@ -170,28 +172,11 @@ function Repository({ ws, task, repo: r, layout, nav, activePath, activeTarget, 
   const menu = nav.menu?.repo === r.repo ? nav.menu : null
   const setMenu = (m: { x: number; y: number } | null) => nav.setMenu(m && { repo: r.repo, ...m })
   const repoRow: DiffRow = { kind: 'repo', repo: r.repo }
-  const [committing, setCommitting] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const inFlight = useRef(false)
+  const [pushing, setPushing] = useState(false)
+  const [review, setReview] = useState<DiffTarget | null>(null)
+  const busy = nav.busy(r.repo)
   const hasChanges = isActionable(r) || isDelivered(r)
-  const act = async (fn: () => Promise<void>) => {
-    if (inFlight.current) return
-    inFlight.current = true
-    setBusy(true)
-    try {
-      await fn()
-    } catch (e) {
-      showToast(`${r.repo}: ${e instanceof Error ? e.message : String(e)}`)
-    } finally {
-      try {
-        await onRefresh()
-      } catch (e) {
-        showToast(`${r.repo}: ${String(e)}`)
-      }
-      inFlight.current = false
-      setBusy(false)
-    }
-  }
+  const act = (fn: () => Promise<void>) => nav.act(r.repo, fn)
 
   return (
     <div className="diff-repo" aria-busy={busy}>
@@ -238,6 +223,18 @@ function Repository({ ws, task, repo: r, layout, nav, activePath, activeTarget, 
       )}
       {menu && (
         <RowContextMenu x={menu.x} y={menu.y} onClose={() => setMenu(null)}>
+          <button className="menu-item diff-menu-action" disabled={busy} onClick={run(async () => {
+            setMenu(null)
+            await act(() => window.gurt.changesOpenVscode(ws, task, r.repo))
+          })} title="Open repository in VS Code"><Icon name="vscode" size={13} /> Open repository</button>
+          <button className="menu-item diff-menu-action" disabled={busy} onClick={run(async () => {
+            setMenu(null)
+            await act(() => window.gurt.changesOpenTerminal(ws, task, r.repo))
+          })}><Icon name="terminal" size={13} /> Open in Terminal</button>
+          <button className="menu-item diff-menu-action" disabled={busy || (menu.target?.kind !== 'commit' && !r.dirty)} onClick={() => {
+            setMenu(null)
+            setReview(menu.target ?? { kind: 'uncommitted' })
+          }}>{menu.target?.kind === 'commit' ? 'Review commit…' : 'Review uncommitted changes…'}</button>
           <button
             className="menu-item diff-menu-action"
             disabled={busy || r.conflicted}
@@ -260,20 +257,21 @@ function Repository({ ws, task, repo: r, layout, nav, activePath, activeTarget, 
           </button>
           <button className="menu-item diff-menu-action" disabled={busy || !r.dirty} onClick={() => {
             setMenu(null)
-            setCommitting(true)
+            document.getElementById(commitInputId(ws, task, r.repo))?.focus()
           }}>
             <Icon name="plus" size={13} /> Commit changes…
           </button>
           <button
             className="menu-item diff-menu-action"
             disabled={busy || r.integrated || !r.commits.some((c) => !c.pushed)}
-            onClick={run(async () => {
-              setMenu(null)
-              await act(() => window.gurt.changesPush(ws, task, r.repo))
-            })}
+            onClick={() => { setMenu(null); setPushing(true) }}
           >
-            <Icon name="send" size={13} /> Push changes
+            <Icon name="send" size={13} /> Push changes…
           </button>
+          {r.prUrl && <button className="menu-item diff-menu-action" disabled={busy} onClick={run(async () => {
+            setMenu(null)
+            await act(() => window.gurt.changesOpenPr(ws, task, r.repo))
+          })}>Create PR</button>}
           {r.local && (
             <button
               className="menu-item diff-menu-action"
@@ -288,12 +286,11 @@ function Repository({ ws, task, repo: r, layout, nav, activePath, activeTarget, 
           )}
         </RowContextMenu>
       )}
-      {committing && (
-        <CommitModal ws={ws} task={task} repo={r.repo} onClose={() => setCommitting(false)} onCommit={(message) => {
-          setCommitting(false)
-          void act(() => window.gurt.changesCommit(ws, task, r.repo, message))
-        }} />
-      )}
+      {pushing && <GitPushModal repo={r.repo} busy={busy} onClose={() => setPushing(false)}
+        onPush={(options) => act(() => window.gurt.changesPush(ws, task, r.repo, options))} />}
+      {review && <ReviewModal ws={ws} task={task} repo={r.repo} target={review} title={r.repo}
+        onClose={() => setReview(null)} onChanged={run(onRefresh)} />}
+
     </div>
   )
 }
@@ -306,7 +303,13 @@ function ChangeGroup({ row, nav, files }: { row: Extract<DiffRow, { kind: 'group
       label={row.label} depth={2} icon={row.target.kind === 'commit' ? 'branch' : 'folder'}
       cursor={nav.cursor === diffRowKey(row)} open={open} title={row.label}
       beforeLabel={row.target.kind === 'commit' ? <span className="commit-sha mono">{row.target.sha.slice(0, 7)}</span> : undefined}
-      onMouseDown={keepTreeFocus} onClick={() => { nav.point(row); nav.setGroupOpen(row.repo, row.target, !open) }}>
+      onMouseDown={keepTreeFocus} onClick={() => { nav.point(row); nav.setGroupOpen(row.repo, row.target, !open) }}
+      onContextMenu={(e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        nav.point(row)
+        nav.setMenu({ repo: row.repo, target: row.target, x: e.clientX, y: e.clientY })
+      }}>
       {row.target.kind === 'commit' && <span className={`tag ${row.pushed ? 'tag-green' : ''}`}>{row.pushed ? 'pushed' : 'local'}</span>}
     </FileTreeRow>
     {open && (!state?.files || state.files.length === 0) && <div className="diff-files-empty">

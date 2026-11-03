@@ -7,7 +7,7 @@ import { promises as fs } from 'node:fs'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
 import type { ChangedFile, DiffPair, DiffTarget, RepoChanges, ThreadCommit } from '../shared/types'
-import type { UpdateStrategy } from '../shared/api'
+import type { GitCommitOptions, GitPushOptions, UpdateStrategy } from '../shared/api'
 import { run } from './provision'
 import { cloneDir, taskDir } from './store'
 import { hostGitAccessForRepo, type HostGitAccess } from './git/env'
@@ -438,22 +438,33 @@ export async function getCommitDiff(
   return git(cloneDir(ws, task, repo), await hostGitAccessForRepo(ws, repo), ['show', sha])
 }
 
-export async function commit(ws: string, task: string, repo: string, message: string): Promise<void> {
+export async function commit(ws: string, task: string, repo: string, message: string, options: GitCommitOptions = {}): Promise<void> {
   const dir = cloneDir(ws, task, repo)
   const access = await hostGitAccessForRepo(ws, repo)
   await serialized(dir, async () => {
     await git(dir, access, ['add', '-A'])
     // The message is user/agent prose — never logged, matching ipc.ts's
     // OPAQUE_ARGS treatment of `changesCommit` at the IPC boundary.
-    await git(dir, access, ['commit', '-m', message], { opaqueArgv: true })
+    await git(dir, access, [
+      'commit',
+      ...(options.signoff === true ? ['--signoff'] : []),
+      ...(options.noVerify === true ? ['--no-verify'] : []),
+      '-m', message
+    ], { opaqueArgv: true })
   })
 }
 
-export async function push(ws: string, task: string, repo: string): Promise<void> {
+export async function push(ws: string, task: string, repo: string, options: GitPushOptions = {}): Promise<void> {
   const dir = cloneDir(ws, task, repo)
   const access = await hostGitAccessForRepo(ws, repo)
   await serialized(dir, () =>
-    git(dir, access, ['push', '-u', 'origin', branchFor(task)], { timeoutMs: PUSH_TIMEOUT_MS })
+    git(dir, access, [
+      'push', '-u',
+      ...(options.forceWithLease === true ? ['--force-with-lease'] : []),
+      ...(options.followTags === true ? ['--follow-tags'] : []),
+      ...(options.noVerify === true ? ['--no-verify'] : []),
+      'origin', branchFor(task)
+    ], { timeoutMs: PUSH_TIMEOUT_MS })
   )
 }
 
