@@ -218,7 +218,9 @@ try {
   const content = page.locator('.code-diff .cm-content')
   assert.equal(await content.getAttribute('contenteditable'), 'false')
   const original = await content.innerText()
-  await content.click()
+  // The center of the unified content can land on a deleted-line widget.
+  // Focus the read-only editor itself for keyboard editing/search checks.
+  await content.focus()
   await page.keyboard.type('should not edit')
   assert.equal(await content.innerText(), original, 'typing cannot modify the comparison')
   await page.keyboard.press('Control+f')

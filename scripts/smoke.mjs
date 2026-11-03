@@ -163,6 +163,11 @@ console.log('draft prompt saved, draft is runnable OK')
 // that the draft above did not silently land under some other task
 await page.click('.sb-task-name:has-text("demo-task")')
 await page.waitForSelector('.task-pane', { timeout: 5000 })
+// Selecting a scope also folds it. Expand it before inspecting its sessions.
+const taskRow = page.locator('.sb-task').filter({ hasText: 'demo-task' })
+assert.equal(await taskRow.getAttribute('aria-expanded'), 'false', 'selecting the open scope folds it')
+await taskRow.locator('.sb-chev').click()
+await page.waitForSelector('.sb-session', { timeout: 5000 })
 assert.equal(await page.locator('.sb-session').count(), 1, 'exactly one session draft exists')
 await page.screenshot({ path: path.join(SHOT_DIR, '04-task-pane.png') })
 console.log('task pane OK')
