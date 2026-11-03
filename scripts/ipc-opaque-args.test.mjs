@@ -92,6 +92,10 @@ const SAFE_ARGS = new Set([
   'getTaskChanges',
   'listTaskFiles',
   'readTaskFile',
+  // Scope identifiers, file paths and a destination name; no file contents or prose.
+  'taskFilePath',
+  'renameTaskFile',
+  'deleteTaskFile',
   'getFileDiff',
   'getCommitDiff',
   'getDiffFiles',
