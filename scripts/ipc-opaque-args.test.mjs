@@ -197,6 +197,9 @@ const SAFE_ARGS = new Set([
   'checkForUpdates',
   'getUpdateStatus',
   'installUpdate',
+  'deferUpdate',
+  'getInterruptedSessions',
+  'resumeInterruptedSession',
   // A map of action id -> key code/booleans; no prose ever passes through it.
   'getHotkeys',
   'setHotkeys',

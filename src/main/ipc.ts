@@ -38,7 +38,7 @@ import { initAppMenu } from './menu'
 import { machineDoctor, machinePrepare, startDockerApp } from './doctor'
 import { cancelFirstRunSignIn, firstRunSignIn, firstRunStart } from './firstRun'
 import { PREPARE_LOG_KEY, sanitizeWelcomeMode } from '../shared/doctor'
-import { checkForUpdates, installUpdate, updateStatus } from './update'
+import { checkForUpdates, deferUpdate, installUpdate, updateStatus } from './update'
 
 const log = createLogger('ipc')
 
@@ -476,7 +476,23 @@ export function registerIpc(): void {
     },
     checkForUpdates: () => checkForUpdates(),
     getUpdateStatus: async () => updateStatus(),
-    installUpdate: async () => installUpdate(),
+    installUpdate: async () => {
+      await kernel.ready
+      await kernel.sessions.flushForRestart()
+      installUpdate()
+    },
+    deferUpdate: async (wait) => {
+      await kernel.ready
+      deferUpdate(wait, () => kernel.sessions.hasUnfinishedWork(), () => kernel.sessions.flushForRestart())
+    },
+    getInterruptedSessions: async () => {
+      await kernel.ready
+      return kernel.sessions.interruptedSessions()
+    },
+    resumeInterruptedSession: async (id) => {
+      await kernel.ready
+      await kernel.sessions.resumeInterrupted(id)
+    },
     getNotifications: async () => kernel.notifications.list(),
     markNotificationRead: async (id) => kernel.notifications.markRead(id),
     markAllRead: async () => kernel.notifications.markAllRead(),

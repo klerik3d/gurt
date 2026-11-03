@@ -3,7 +3,7 @@
 // the user-initiated Command Palette check. Only the manual path answers with
 // dialogs — the poll's terminal events (not-available, error) are nothing the
 // user asked about, so they only reach the log. A downloaded update is
-// surfaced through the `update-ready` push (the sidebar's "update" button),
+// surfaced through the `update-ready` push (the titlebar's "update" button),
 // never a dialog, whichever path fetched it.
 import { app, BrowserWindow, dialog } from 'electron'
 import { autoUpdater } from 'electron-updater'
@@ -26,6 +26,10 @@ function broadcast(channel: string, payload: unknown): void {
     win.webContents.send(channel, payload)
   }
 }
+
+let deferred = false
+let idleTimer: ReturnType<typeof setInterval> | null = null
+let installing = false
 
 let initialized = false
 /** True while a Command Palette check is in flight — gates the dialogs. */
@@ -154,12 +158,34 @@ export async function checkForUpdates(): Promise<void> {
 
 /** Downloaded-and-ready update, if any — the pull behind the sidebar button
  *  for a window that opened after the `update-ready` push fired. */
-export function updateStatus(): { version: string } | null {
-  return readyVersion ? { version: readyVersion } : null
+export function updateStatus(): { version: string; deferred: boolean } | null {
+  return readyVersion ? { version: readyVersion, deferred } : null
 }
 
 /** Restart into the downloaded update (the sidebar button's click). */
 export function installUpdate(): void {
-  if (!readyVersion) return
+  if (!readyVersion || installing) return
+  installing = true
+  if (idleTimer) clearInterval(idleTimer)
   autoUpdater.quitAndInstall()
+}
+
+/** Poll the whole scheduler state so gaps between a turn and its nudge are not idle. */
+export function deferUpdate(wait: boolean, busy: () => boolean, prepare: () => Promise<void>): void {
+  if (idleTimer) clearInterval(idleTimer)
+  idleTimer = null
+  deferred = wait && !!readyVersion
+  if (readyVersion) broadcast('update-ready', { version: readyVersion, deferred })
+  if (!deferred) return
+  let preparing = false
+  idleTimer = setInterval(() => {
+    if (busy() || preparing) return
+    preparing = true
+    void prepare().then(() => {
+      if (deferred && !busy()) installUpdate()
+    }).catch((err: unknown) => {
+      log.error('update.prepare.fail', { err })
+      deferUpdate(false, busy, prepare)
+    }).finally(() => { preparing = false })
+  }, 1000)
 }

@@ -211,23 +211,20 @@ test('a released clone lets the queue move again', async () => {
 // C and D are used here and nowhere else: the assertion is about what queueing
 // a prompt does, and reusing B would make it about whatever B's last turn left
 // behind (with a real docker on the machine, a turn that is still running).
-test('queueing a prompt reaps the idle holder that is blocking it', () => {
+test('queueing a prompt reaps the idle holder that is blocking it', async () => {
   kernel.sessions.patchContainer('sc', {
     status: 'running',
     id: 'container-c',
     remoteWorkspaceFolder: '/app',
     repos: ['beta']
   })
-  // Read synchronously, with no tick in between: the point is that queueing the
-  // prompt *is* the trigger, so the stop is already recorded when `prompt`
-  // returns. A window here would also let an earlier test's turn end land its
-  // own handoff pass in the middle of the assertion.
+  // Acceptance now includes a durable write. The queue must trigger handoff
+  // by the time that acceptance promise resolves, without another scheduler tick.
   const before = stops.length
-  const sent = kernel.sessions.prompt('sd', 'one more thing')
+  await kernel.sessions.prompt('sd', 'one more thing')
   assert.deepEqual(
     stops.slice(before),
     [{ id: 'sc', reason: 'queue' }],
     'the message waiting on beta stops the idle session sitting on it, at once'
   )
-  return sent
 })
