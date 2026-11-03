@@ -44,7 +44,8 @@ function FileDiff({ file, revision }: { file: DiffFileSelection; revision: RepoC
   const sha = file.target?.kind === 'commit' ? file.target.sha : undefined
   useEffect(() => {
     let live = true
-    setPair(null)
+    // FileDiff is keyed by file and target. Keep the current comparison mounted
+    // during background refreshes of the same file so focus and search survive.
     setError('')
     window.gurt.getDiffPair(ws, task, repo, sha ? { kind: 'commit', sha } : { kind: 'uncommitted' }, path)
       .then((value) => { if (live) setPair(value) })

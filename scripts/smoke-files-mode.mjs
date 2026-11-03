@@ -196,7 +196,8 @@ try {
   await page.keyboard.press('F12')
   await page.waitForFunction(() => document.querySelector('.file-tab.active')?.textContent?.includes('lib.ts'))
   assert.match(await editor().innerText(), /export function greet/)
-  await editor().click({ button: 'right' })
+  // Open the tab menu without moving the caret off the resolved symbol.
+  await page.getByRole('tab', { name: 'lib.ts', exact: true }).click({ button: 'right' })
   await page.getByRole('button', { name: 'Find references · Shift+F12', exact: true }).click()
   await page.waitForSelector('.file-location')
   assert.match(await page.locator('.file-navigation').innerText(), /src\/app.ts/)
