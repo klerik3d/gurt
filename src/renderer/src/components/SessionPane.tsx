@@ -151,22 +151,29 @@ function NonStartedPane({
   const [text, setText] = useState(info.startPrompt)
   const [images, setImagesState] = useState<PromptImage[]>(draftImages.get(sessionId) ?? [])
   const [activeTab, setActiveTab] = useSessionTab(sessionId)
-  // Run/queue both flip `info.state` away from 'draft', which normally swaps
-  // this whole body out on its own — but that swap rides the same IPC round
-  // trip the click kicked off, so for a beat the draft view (and its buttons)
-  // just sits there with nothing to show the click landed. This is the beat.
-  const [submitting, setSubmitting] = useState<'run' | 'queue' | null>(null)
+  // Run flips `info.state` away from 'draft', which normally swaps this whole
+  // body out on its own — but that swap rides the same IPC round trip the
+  // click kicked off, so for a beat the draft view (and its button) just sits
+  // there with nothing to show the click landed. This is the beat.
+  const [submitting, setSubmitting] = useState(false)
 
   // Keep the editor in sync when the selection switches to another session.
   useEffect(() => {
     setText(info.startPrompt)
     setImagesState(draftImages.get(sessionId) ?? [])
-    setSubmitting(null)
+    setSubmitting(false)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId])
   useEffect(() => {
     setText(info.startPrompt)
   }, [info.startPrompt])
+  // This pane outlives the draft → starting/queued → draft round trip of a
+  // failed start, so "the click landed" has to end with the state that answered
+  // it — otherwise the returned draft keeps its buttons disabled until the
+  // selection changes.
+  useEffect(() => {
+    setSubmitting(false)
+  }, [info.state])
 
   /** Images follow the draft to main (memory only) so a queued start has them too. */
   const setImages = (next: PromptImage[]) => {
@@ -242,41 +249,28 @@ function NonStartedPane({
           />
           <ImageThumbs images={images} onRemove={(i) => setImages(images.filter((_, j) => j !== i))} />
           <div className="row-buttons">
+            {/* One way to launch: through the queue. It starts at once when
+                nothing stands in the way, and otherwise waits — for the clone,
+                the task's cap, or the account's plan limit — instead of
+                failing, which is all a separate "Run now" could add. */}
             <button
               className="btn btn-primary"
-              disabled={!canRun || submitting !== null}
+              disabled={!canRun || submitting}
               title={missing ? `pick ${missing} first (Config tab)` : undefined}
               onClick={run(async () => {
-                setSubmitting('run')
-                try {
-                  await window.gurt.sessionEditPrompt(sessionId, text, images)
-                  await window.gurt.sessionRun(sessionId)
-                  draftImages.delete(sessionId)
-                } catch (e) {
-                  await alertDialog(String(e))
-                  setSubmitting(null)
-                }
-              })}
-            >
-              {submitting === 'run' ? 'Starting…' : 'Run now'}
-            </button>
-            <button
-              className="btn"
-              disabled={!canRun || submitting !== null}
-              title={missing ? `pick ${missing} first (Config tab)` : undefined}
-              onClick={run(async () => {
-                setSubmitting('queue')
+                setSubmitting(true)
                 try {
                   await window.gurt.sessionEditPrompt(sessionId, text, images)
                   await window.gurt.sessionEnqueue(sessionId)
-                  // Main keeps them for the queued start; this copy is only the editor's.
+                  // Main keeps them for the queued start; this copy is only the
+                  // editor's — kept, so a cancelled wait comes back with them.
                 } catch (e) {
                   await alertDialog(String(e))
-                  setSubmitting(null)
+                  setSubmitting(false)
                 }
               })}
             >
-              {submitting === 'queue' ? 'Adding…' : 'Add to queue'}
+              {submitting ? 'Starting…' : 'Run'}
             </button>
             <span className="spacer" />
             <button className="btn" onClick={run(copy)} title="copy these settings and prompt into a new draft">
@@ -295,9 +289,9 @@ function NonStartedPane({
             <div className="queue-badge">
               queued — position #{queuePosition}
               <div className="dim">
-                {roleLocksClone(sessionRole(info))
+                {snapshot.waiting ?? (roleLocksClone(sessionRole(info))
                   ? 'starts when its repository is free — the session holding it releases it as soon as its turn ends'
-                  : 'starts as soon as the queue reaches it — a researcher mounts its repos read-only and waits for no one'}
+                  : 'starts as soon as the queue reaches it — a researcher mounts its repos read-only and waits for no one')}
               </div>
             </div>
           )}

@@ -1170,6 +1170,11 @@ function Composer({
                   just the next thing to say, so it stays faint. */}
               {busy ? <Icon name="history" size={12} className="faint" /> : <Dot tone="accent" size={7} />}
               <span className="pending-text">{p.text}</span>
+              {p.auto && (
+                <span className="dim" title="sent by gurt once the plan limit resets — cancel it to resume by hand">
+                  auto
+                </span>
+              )}
               {p.images ? (
                 <span className="dim" title="images ride with it and are lost if you take it back">
                   {p.images} img
@@ -1177,7 +1182,7 @@ function Composer({
               ) : null}
               <button
                 className="icon-sq att"
-                title="take it back out of the queue (returns to the composer)"
+                title={p.auto ? 'do not continue automatically' : 'take it back out of the queue (returns to the composer)'}
                 onClick={() => cancelPending(p.id)}
               >
                 <Icon name="x" size={12} />
@@ -1213,7 +1218,7 @@ function Composer({
               busy
                 ? 'agent is working — what you send now goes in the queue'
                 : pendingBlocked
-                  ? 'waiting for the repository — what you send now goes in the queue'
+                  ? 'waiting — what you send now goes in the queue'
                   : 'Ask gurt to change your code…'
             }
             value={text}

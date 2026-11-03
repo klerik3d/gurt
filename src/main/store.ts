@@ -39,6 +39,7 @@ import {
 } from '../shared/skills'
 import type { NotificationPrefs } from '../shared/notifications'
 import { normalizeGcSettings, type GcSettings } from '../shared/gc'
+import { normalizeLimitSettings, type LimitSettings } from '../shared/planUsage'
 import type { PiiPatternCache, PiiSettings } from '../shared/pii'
 import type { TurnRecord } from '../shared/usage'
 import { NOTIFICATION_DEFAULTS } from '../shared/notifications'
@@ -652,6 +653,17 @@ export async function getGcSettings(): Promise<GcSettings> {
 
 export async function setGcSettings(settings: GcSettings): Promise<void> {
   await writeJson(gcFile(), settings)
+}
+
+const limitsFile = () => path.join(gurtRoot, 'limits.json')
+
+/** Plan-limit policy (Settings → Clients); a missing file is the defaults. */
+export async function getLimitSettings(): Promise<LimitSettings> {
+  return normalizeLimitSettings(await readJson<unknown>(limitsFile(), {}))
+}
+
+export async function setLimitSettings(settings: LimitSettings): Promise<void> {
+  await writeJson(limitsFile(), settings)
 }
 
 const hotkeysFile = () => path.join(gurtRoot, 'hotkeys.json')

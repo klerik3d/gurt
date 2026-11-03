@@ -21,12 +21,9 @@ export function showToast(message: string): void {
   enqueue?.({ id: `toast-${++counter}`, message })
 }
 
+/** No timer: an error stays until the user closes it — one that vanishes on
+ *  its own is one nobody may have read. */
 function Toast({ toast, onDismiss }: { toast: ToastRecord; onDismiss: (id: string) => void }) {
-  useEffect(() => {
-    const timer = window.setTimeout(() => onDismiss(toast.id), 8000)
-    return () => window.clearTimeout(timer)
-  }, [toast.id, onDismiss])
-
   return (
     <div className="notification-popup toast-popup">
       <div className="notification-popup-open">

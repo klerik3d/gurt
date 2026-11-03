@@ -6,8 +6,8 @@ import { useEffect, useState } from 'react'
 import type { JSX } from 'react'
 import type { RepoChanges, SessionActivity, SessionInfo, Tree } from '../../../shared/types'
 import { sessionStatus } from '../../../shared/types'
-import type { PlanUsage, PlanWindow } from '../../../shared/planUsage'
-import { STALE_AFTER_MS, windowElapsedPercent } from '../../../shared/planUsage'
+import type { PlanHold, PlanUsage, PlanWindow } from '../../../shared/planUsage'
+import { LIMIT_DEFAULTS, STALE_AFTER_MS, formatResetAt, planHold, windowElapsedPercent } from '../../../shared/planUsage'
 import type { TurnRecord } from '../../../shared/usage'
 import { formatDuration } from '../../../shared/usage'
 import { SESSION_DOT } from '../status'
@@ -53,6 +53,19 @@ function usePlanUsage(): Record<string, PlanUsage> {
     return window.gurt.onUsageChanged(load)
   }, [])
   return plan
+}
+
+/** The configured hold threshold. Read once per mount: it changes in
+ *  Settings, which is a different view, and the dashboard remounts on return. */
+function useLimitThreshold(): number {
+  const [threshold, setThreshold] = useState(LIMIT_DEFAULTS.thresholdPercent)
+  useEffect(() => {
+    window.gurt
+      .getLimitSettings()
+      .then((s) => setThreshold(s.thresholdPercent))
+      .catch(logErr('getLimitSettings'))
+  }, [])
+  return threshold
 }
 
 /** Every session in the tree, with the live overlay folded into its status. */
@@ -237,7 +250,15 @@ export function Dashboard({
   const agents = useAgents()
   const { turns: usage } = useUsage()
   const plan = usePlanUsage()
+  const threshold = useLimitThreshold()
   const now = useNow()
+  /** The same hold the scheduler applies: pooled over every agent instance
+   *  on this one's credential (main/sessions.ts `limitHold`). */
+  const holdOf = (id: string): PlanHold | undefined => {
+    const account = agents[id]?.credentialId
+    const peers = account ? Object.keys(agents).filter((a) => agents[a]?.credentialId === account) : [id]
+    return planHold(peers.flatMap((a) => plan[a] ?? []), threshold, now)
+  }
   const [showAllAgents, setShowAllAgents] = usePreference('allDashboardAgents', false, z.boolean())
   const [meterLayout, setMeterLayout] = usePreference<MeterLayout>('dashboardMeterLayout', 'touching', z.enum(['touching', 'overlay']))
   const { collapsed, toggle: toggleWorkspace } = useCollapsedWorkspaces()
@@ -300,6 +321,7 @@ export function Dashboard({
                 kind={agentKind(agents, id) ?? usage.find((r) => r.agent === id)?.kind ?? ''}
                 known={!!agents[id]}
                 plan={plan[id]}
+                hold={holdOf(id)}
                 meterLayout={meterLayout}
                 live={rows.filter((r) => r.info.agent === id && r.status === 'running').length}
                 now={now}
@@ -352,6 +374,7 @@ function AgentCard({
   kind,
   known,
   plan,
+  hold,
   meterLayout,
   live,
   now
@@ -363,6 +386,8 @@ function AgentCard({
   known: boolean
   /** Provider-reported limits, when this instance has a subscription token. */
   plan: PlanUsage | undefined
+  /** New work on this account is held (plan limit), and until when. */
+  hold: PlanHold | undefined
   meterLayout: MeterLayout
   live: number
   now: number
@@ -377,6 +402,14 @@ function AgentCard({
           <span className="dash-live">
             <Dot tone="green" pulse size={6} />
             {live} running
+          </span>
+        )}
+        {hold && (
+          <span
+            className="tag yellow"
+            title={`plan limit: ${hold.reason} — queued sessions and messages on this account wait`}
+          >
+            held{hold.until ? ` until ${formatResetAt(hold.until, now)}` : ''}
           </span>
         )}
         {!known && (

@@ -179,9 +179,10 @@ a chat has):
 
 Concurrent access to one working tree is serialized through a **global FIFO
 queue** (no git worktrees). A new session is a draft from the start, configured
-on its Config tab (edits save by themselves); its pane offers **Run now** /
-**Add to queue**, enabled once a prompt, env, repo (not for an operator) and
-agent are set:
+on its Config tab (edits save by themselves); its pane offers a single **Run**,
+enabled once a prompt, env, repo (not for an operator) and agent are set. Run
+always goes through the queue: it starts at once when nothing is in the way, and
+otherwise waits instead of failing:
 
 - **draft** never runs until you run/enqueue it. A session that was `starting`
   when the app died restores as a draft.
@@ -195,10 +196,17 @@ agent are set:
   it — and with an empty queue containers stay up for the usual idle grace
   period (10 minutes), ready for a follow-up prompt. Researchers and operators
   claim no clone and start as soon as the queue reaches them.
-- **Run now** starts immediately only if the clone is free. If another session
-  holds it, the start is refused ("queue this one instead"); if the clone is
-  locked for manual review, it is refused outright; if the task is at its
-  `maxConcurrentSessions` cap, the session is queued instead.
+- **`run()` on main** (no longer behind a button; tests and internal callers)
+  starts immediately only if the clone is free. If another session holds it,
+  the start is refused ("queue this one instead"); if the clone is locked for
+  manual review, it is refused outright; if the task is at its
+  `maxConcurrentSessions` cap, or its account is at its plan limit, the session
+  is queued instead.
+- **plan limits** — an account (credential) with a plan window at the usage
+  threshold (Settings → Clients) gets no new work. Its queued drafts and the
+  queued messages of its started sessions wait for the reset, or for a fresh
+  read, extra usage or credits. A session a limit cut off sends "continue" on
+  its own afterwards. See requirements-plan-limits.md.
 - **per-task cap** (`maxConcurrentSessions` in `task.json`, the "max
   concurrent" field on the queue; unset = unlimited) holds queued items until a
   slot frees, and the handoff stops idle containers of a capped task.

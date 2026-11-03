@@ -35,7 +35,7 @@ import type { McpDef, McpProbeResult, McpRegistryEntry } from './mcp'
 import type { PiiAnalyzerStatus, PiiSettings, PiiStatus, PiiTable, PiiTestResult } from './pii'
 import type { SkillEntry } from './skills'
 import type { TurnRecord } from './usage'
-import type { PlanUsage } from './planUsage'
+import type { LimitSettings, PlanUsage } from './planUsage'
 import type { NotificationPrefs, NotificationRecord } from './notifications'
 import type { HotkeyMap } from './hotkeys'
 import type { GcResult, GcSettings } from './gc'
@@ -473,6 +473,10 @@ export interface GurtApi {
    *  this is the same cancel, addressed by "the one the welcome screen
    *  started". A no-op when nothing is pending. */
   firstRunCancelSignIn(): Promise<void>
+  /** Plan-limit policy (Settings → Clients): the usage threshold at which an
+   *  account gets no new work until its window resets. */
+  getLimitSettings(): Promise<LimitSettings>
+  setLimitSettings(settings: LimitSettings): Promise<void>
   /** Docker cleanup (Settings → Docker cleanup). */
   getGcSettings(): Promise<GcSettings>
   setGcSettings(settings: GcSettings): Promise<void>
@@ -668,6 +672,8 @@ const METHODS = {
   firstRunStart: 'none',
   firstRunSignIn: 'none', //    the same, plus a host browser window
   firstRunCancelSignIn: 'none', // controls that flow
+  getLimitSettings: 'none', //  host policy, like the Docker cleanup below
+  setLimitSettings: 'none', //  a user gesture: it decides what gets to run
   getGcSettings: 'none', //   host resource policy, not an operator's
   setGcSettings: 'none', //     host resource policy: a user gesture
   gcRunNow: 'none', //          removes containers and images on the host

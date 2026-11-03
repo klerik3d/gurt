@@ -110,7 +110,19 @@ export interface DomainEvents {
    *  is the only consumer; `session.turn` stays the lifecycle signal. */
   'agent.turn': TurnRecord
   /** Subscription limits received with a normal Claude response. */
-  'agent.planUsage': { agent: string; windows: PlanWindow[] }
+  'agent.planUsage': {
+    agent: string
+    windows: PlanWindow[]
+    /** Overage (extra usage) can absorb an exhausted window — when the event said. */
+    overage?: boolean | undefined
+    /** The request was refused (`true`) or accepted (`false`) — when the event said. */
+    rejected?: boolean | undefined
+    /** The refusal's own reset instant (ISO), when it named one. */
+    rejectedUntil?: string | undefined
+  }
+  /** A turn ended on a provider limit (the session manager's detector): the
+   *  account is refusing work until `until` (ISO). */
+  'agent.limited': { agent: string; until: string }
   /** The usage ledger grew or was pruned — the dashboard refetches. */
   'usage.changed': void
   /** Provisioning output of one session's container; `key` is the session id. */

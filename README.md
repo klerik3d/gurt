@@ -24,7 +24,7 @@ It is for developers who already use a coding agent daily and worry about what i
 
 - **One container per session.** Every session runs in its own dev container, created on first start and destroyed with the session. Containers are never shared or reused between sessions.
 - **Git credentials stay on the host.** Pull, push and pull requests run on the host. The container gets plain local git and never sees a git token. Gurt uses your own SSH keys or `gh` login only for a repo you explicitly link to a "host credentials" entry, never as a fallback.
-- **No two agents on one working tree.** A writing session holds its clone while it runs. Another session for that clone waits in the queue: **Run now** refuses and tells you to queue it. Writers on one repo therefore run one after another.
+- **No two agents on one working tree.** A writing session holds its clone while it runs. Another session for that clone waits in the queue until the clone is free. Writers on one repo therefore run one after another.
 - **Several repositories at once.** A scope can hold clones of several repositories. Executors on different repos of one scope run side by side. A researcher reads several repos in one session and can draft the follow-up work, one session per repo.
 - **Any agent through one UI.** Claude Code, Codex, Gemini CLI, opencode and Pi all use the same chat, permissions, queue and review flow.
 
@@ -127,7 +127,8 @@ Details: [docs/architecture.md](docs/architecture.md).
 - Environments are devcontainer definitions stored in Gurt and seeded from the repo. Repos without one can use the bundled `starter` env.
 
 **Workflow**
-- Queue: a new session is a draft until you press **Run now** or **Add to queue**. The lock is per clone, so sessions on different repos run in parallel. You can cap concurrent sessions per scope, and a clone locked for manual review blocks writers. The queue survives a restart.
+- Queue: a new session is a draft until you press **Run**. Run always goes through the queue: the session starts at once if nothing is in the way, and waits otherwise. The lock is per clone, so sessions on different repos run in parallel. You can cap concurrent sessions per scope, and a clone locked for manual review blocks writers. The queue survives a restart.
+- Plan limits: once an account's subscription window reaches the threshold (Settings → Clients, default 95%), nothing new starts on it. Queued sessions and queued messages wait for the reset, and a session the limit cut off sends "continue" on its own afterwards. Extra usage and credits lift the hold.
 - Review: split diff, inline comments and "Launch fix". Then commit, push and open a pull request. Local repos with no forge yet use "Merge into main".
 - [Files](docs/files.md): browse a scope's repositories and edit files in CodeMirror tabs, with syntax highlighting, explicit saves and JS/TS definition/reference navigation.
 - Terminals on the host, opened per scope.
@@ -157,7 +158,7 @@ Download a build from [Releases](https://github.com/klerik3d/gurt/releases/lates
 2. Pick an agent kind. Then either **Sign in with …** or paste an API key ("or paste an API key instead"). The key is stored in this machine's credential store.
 3. Gurt creates a workspace, a scope and an **operator** session, and starts it. The operator holds no repository. It reads your configuration, tells you what to fix, and can make the change itself; changes that would run code on the host wait for your confirmation.
 4. In Settings → Repos, add a repository. For pushing, add a GitHub token in Settings → Credentials. A repo with no devcontainer of its own can run in the bundled `starter` env.
-5. Create a new session (command palette → "New session…"). It starts as a draft. On its Config tab choose role **executor**, the env, the repo and an agent, write the first prompt, and press **Run now**.
+5. Create a new session (command palette → "New session…"). It starts as a draft. On its Config tab choose role **executor**, the env, the repo and an agent, write the first prompt, and press **Run**.
 6. When the agent finishes with changes, open the **Diff** view in the activity bar. Review the diff, then **Commit changes…** and **Push changes**.
 
 ## Concepts

@@ -97,6 +97,8 @@ import { logErr } from '../log'
 import type { WelcomeMode } from '../../../shared/doctor'
 import type { GcResult, GcSettings } from '../../../shared/gc'
 import { GC_DISK_MAX, GC_DISK_MIN, GC_HOURS_MAX, GC_HOURS_MIN } from '../../../shared/gc'
+import type { LimitSettings } from '../../../shared/planUsage'
+import { LIMIT_THRESHOLD_MAX, LIMIT_THRESHOLD_MIN } from '../../../shared/planUsage'
 import { MachineChecklist } from './Welcome'
 import { refreshAgents, useAgents } from '../useAgents'
 import { refreshHotkeys, useHotkeys } from '../useHotkeys'
@@ -3323,7 +3325,59 @@ function ClientsSection() {
           <div className="tp-dashed">no clients yet — add one and link its token</div>
         )}
       </div>
+      <PlanLimitSettings />
     </>
+  )
+}
+
+/** The plan-limit threshold — one for every client, applied per account. */
+function PlanLimitSettings(): JSX.Element {
+  const [settings, setSettings] = useState<LimitSettings | null>(null)
+  const [error, setError] = useState('')
+  useEffect(() => {
+    window.gurt.getLimitSettings().then(setSettings).catch((e: unknown) => setError(String(e)))
+  }, [])
+  const save = async (next: LimitSettings) => {
+    const prior = settings
+    setSettings(next)
+    setError('')
+    try {
+      await window.gurt.setLimitSettings(next)
+    } catch (e) {
+      setSettings(prior)
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+  return (
+    <div className="set-list">
+      <div className="set-row">
+        <span className="set-row-label">
+          Hold new work at
+          <div className="fld-hint">
+            once any plan window of an account is this full, nothing new starts on it — queued
+            sessions and queued messages wait for the reset, and a session the limit cut off
+            sends “continue” on its own afterwards. Extra usage / credits lift the hold.
+          </div>
+        </span>
+        <span className="spacer" />
+        <input
+          className="input"
+          type="number"
+          style={{ width: 80 }}
+          min={LIMIT_THRESHOLD_MIN}
+          max={LIMIT_THRESHOLD_MAX}
+          disabled={!settings}
+          value={settings?.thresholdPercent ?? ''}
+          onChange={(e) => {
+            const n = Number(e.target.value)
+            if (Number.isFinite(n) && n >= LIMIT_THRESHOLD_MIN && n <= LIMIT_THRESHOLD_MAX)
+              void save({ thresholdPercent: n })
+          }}
+        />
+        <span className="faint">% used</span>
+      </div>
+      {error && <div className="error">{error}</div>}
+    </div>
   )
 }
 

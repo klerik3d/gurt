@@ -525,6 +525,8 @@ export function registerIpc(): void {
       await machinePrepare((line) => kernel.bus.emit('provision.log', { key, line }))
     },
     machineStartDocker: async () => startDockerApp(),
+    getLimitSettings: () => store.getLimitSettings(),
+    setLimitSettings: (settings) => kernel.setLimitSettings(settings),
     getGcSettings: () => store.getGcSettings(),
     setGcSettings: async (settings) =>
       store.setGcSettings(normalizeGcSettings(settings, await store.getGcSettings())),

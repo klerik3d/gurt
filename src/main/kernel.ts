@@ -24,6 +24,7 @@ import { createReview, fixPrompt, type ReviewManager } from './review'
 import { createNotifications, type Notifications } from './notifications'
 import { createUsageLedger, type UsageLedger } from './usage'
 import { createPlanUsage, type PlanUsageStore } from './planUsage'
+import { LIMIT_DEFAULTS, normalizeLimitSettings, planHold, type LimitSettings } from '../shared/planUsage'
 import { listCredentials } from './credentials'
 import { resolveOAuthAccess } from './oauth'
 import { createPiiMask, type PiiManager } from './pii'
@@ -81,6 +82,9 @@ export interface Kernel {
    *  the scheduler's in-memory cache and re-runs it (a raised/cleared cap may
    *  free something the queue was holding back). */
   setTaskMaxConcurrentSessions(ws: string, task: string, max: number | undefined): Promise<void>
+  /** Persist the plan-limit policy and apply it at once: a changed threshold
+   *  can hold or release what is queued, so the scheduler re-runs. */
+  setLimitSettings(settings: LimitSettings): Promise<void>
   /** sessions.editDraft behind a repo check — the UI constrains the choice, IPC must too. */
   editDraft(sessionId: string, patch: SessionDraftPatch): Promise<void>
   /** Forge compare URL for the task branch; when the latest proposal carries a PR,
@@ -181,6 +185,10 @@ export function createKernel(): Kernel {
     detach: (id) => sessions.detach(id)
   })
 
+  /** The plan-limit policy, in memory for the same reason as the task caps:
+   *  the scheduler asks synchronously. Loaded at boot, before its first pass. */
+  let limitSettings: LimitSettings = LIMIT_DEFAULTS
+
   const sessions: SessionManager = new SessionManager(
     {
       resolveLaunch: (sessionId) => containers.resolveLaunch(sessionId),
@@ -205,6 +213,9 @@ export function createKernel(): Kernel {
       defaultEnvsForRepo,
       defaultAgentForWorkspace: async (ws) => (await store.getWorkspace(ws)).defaultAgent,
       isRepoLockedForReview: (ws, task, repo) => review.isLocked(ws, task, repo),
+      // `planUsage` is built further down; this closure reads it at call time,
+      // and the first call is the boot restore's scheduler pass.
+      planHold: (agents) => planHold(planUsage.peek(agents), limitSettings.thresholdPercent, Date.now()),
       // Cross-task `create_session`: the target task materializes (with its
       // `task.json` marker) before the draft's first persist can mkdir into it.
       // `createTask` validates the agent-supplied name; an existing task is
@@ -338,6 +349,9 @@ export function createKernel(): Kernel {
       return { ...entry, data: { ...entry.data, access } }
     }
   })
+  // Fresh plan numbers can lift a hold before its reset time (an early reset,
+  // extra usage switched on) — or impose one; either way the queue re-decides.
+  bus.on('usage.changed', () => sessions.schedule())
 
   // Idle auto-stop policy: a session's container is stopped after it has sat
   // idle for a grace period; any activity cancels the pending stop. `noteIdle`
@@ -399,6 +413,9 @@ export function createKernel(): Kernel {
     // holds, and a queue resumed past it would start exactly what it excludes.
     await review.load()
     sessions.loadAgentConfigs(await store.getAgentConfigs())
+    // Before the scheduler's first pass, like the review lock: the resumed
+    // queue must not start what the limit policy holds.
+    limitSettings = await store.getLimitSettings()
     sessions.loadAgentKinds(await store.getAgents())
     progress(8, 'reading workspaces')
     const t = await store.buildTree()
@@ -541,6 +558,13 @@ export function createKernel(): Kernel {
         .then((f) => f.map((x) => x.path))
         .catch(() => undefined)
       return review.state(ws, task, repo, targetKey(target), files)
+    },
+
+    async setLimitSettings(settings: LimitSettings): Promise<void> {
+      const next = normalizeLimitSettings(settings, limitSettings)
+      await store.setLimitSettings(next)
+      limitSettings = next
+      sessions.schedule()
     },
 
     async setTaskMaxConcurrentSessions(ws: string, task: string, max: number | undefined): Promise<void> {

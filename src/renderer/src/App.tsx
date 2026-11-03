@@ -65,6 +65,18 @@ const clampSidebar = (w: number) => Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, 
 // badges appear — long enough that typing a chord (⌘K, ⌘N, …) never shows them.
 const MOD_HOLD_DELAY_MS = 350
 
+/** At most three popups on screen. An error is closed only by the user, so a
+ *  newer popup pushes out the oldest *transient* one first — an error goes
+ *  only to make room for another error. */
+function capPopups(list: NotificationRecord[]): NotificationRecord[] {
+  const out = [...list]
+  while (out.length > 3) {
+    const i = out.findIndex((n) => n.type !== 'error')
+    out.splice(i < 0 ? 0 : i, 1)
+  }
+  return out
+}
+
 /** Global FIFO positions (1-based) of every queued session, keyed by id. */
 export function queuePositions(tree: Tree | null): Record<string, number> {
   const queued: SessionInfo[] = []
@@ -286,8 +298,8 @@ export default function App() {
       // A push supersedes any resync still in flight — its reply predates this
       // record and would clobber it.
       notifSyncSeq.current++
-      if (record.type !== 'error' && !record.read) {
-        setPopups((prev) => [...prev.filter((n) => n.id !== record.id), record].slice(-3))
+      if (!record.read) {
+        setPopups((prev) => capPopups([...prev.filter((n) => n.id !== record.id), record]))
       }
       // Same cap as main's ring (§6: in-memory, oldest dropped) — otherwise
       // this array outlives it and the two permanently disagree.

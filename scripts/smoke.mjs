@@ -150,7 +150,7 @@ await page.waitForSelector('.ns-body .pick-menu', { state: 'detached', timeout: 
 await page.screenshot({ path: path.join(SHOT_DIR, '03-config-tab.png') })
 console.log('draft configured on the Config tab OK')
 
-// back on Chat: the prompt persists on blur, and Run now unblocks only once
+// back on Chat: the prompt persists on blur, and Run unblocks only once
 // the draft has an environment, a repository and an agent.
 await page.click('.tab-btn:has-text("Chat")')
 await page.waitForSelector('.draft-prompt', { timeout: 5000 })

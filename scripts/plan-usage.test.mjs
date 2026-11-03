@@ -22,7 +22,7 @@ await bundle({
   stdin: {
     contents: [
       `export * from ${S('src/shared/planUsage.ts')}`,
-      `export { createPlanUsage, parsePlanWindows, parseClaudeRateLimit, parseCodexPlanWindows } from ${S('src/main/planUsage.ts')}`,
+      `export { createPlanUsage, parsePlanWindows, parseClaudeRateLimit, parseClaudeRateLimitState, parseOverage, parseCodexPlanWindows } from ${S('src/main/planUsage.ts')}`,
       `export { SessionManager } from ${S('src/main/sessions.ts')}`,
       `export { createBus } from ${S('src/main/bus.ts')}`
     ].join('\n'),
@@ -33,7 +33,7 @@ await bundle({
   outfile
 })
 
-const { parseCodexPlanWindows, windowElapsedPercent, parsePlanWindows, parseClaudeRateLimit, SessionManager, isOauthToken, tightest, createPlanUsage, createBus } = await import(
+const { parseCodexPlanWindows, windowElapsedPercent, parsePlanWindows, parseClaudeRateLimit, parseClaudeRateLimitState, parseOverage, planHold, normalizeLimitSettings, LIMIT_DEFAULTS, SessionManager, isOauthToken, tightest, createPlanUsage, createBus } = await import(
   pathToFileURL(outfile).href
 )
 
@@ -480,4 +480,134 @@ test('Codex signed-out credential preserves the actionable sign-in error', async
     fetchImpl: async () => assert.fail('signed-out credential must not be sent')
   })
   assert.match((await store.get()).cx.error, /sign in again in Credentials/)
+})
+
+// --- the launch gate (planHold) ---------------------------------------------
+
+const NOW = Date.parse('2026-11-03T12:00:00Z')
+const iso = (ms) => new Date(ms).toISOString()
+const usage = (windows, extra = {}) => ({
+  agent: 'a', windows, fetchedAt: iso(NOW - 60_000), ...extra
+})
+const win = (id, utilization, resetIn) => ({
+  id, label: id, utilization, raw: utilization,
+  ...(resetIn === undefined ? {} : { resetsAt: iso(NOW + resetIn) })
+})
+
+test('a window at the threshold holds the account until it resets', () => {
+  const hold = planHold([usage([win('five_hour', 96, 3_600_000), win('seven_day', 40, 86_400_000)])], 95, NOW)
+  assert.deepEqual(hold, { until: iso(NOW + 3_600_000), reason: 'five_hour 96%' })
+  assert.equal(planHold([usage([win('five_hour', 94, 3_600_000)])], 95, NOW), undefined, 'below it, nothing')
+})
+
+test('every full window has to clear: the hold lasts until the latest reset', () => {
+  const hold = planHold([usage([win('five_hour', 100, 3_600_000), win('seven_day', 99, 86_400_000)])], 95, NOW)
+  assert.equal(hold.until, iso(NOW + 86_400_000))
+  assert.equal(hold.reason, 'five_hour 100%', 'named after the fullest one')
+})
+
+test('a reset that has passed lifts the hold before any fresh read', () => {
+  assert.equal(planHold([usage([win('five_hour', 100, -1)])], 95, NOW), undefined)
+})
+
+test('a window with no reset holds only while its read is fresh, and has no known end', () => {
+  assert.deepEqual(planHold([usage([win('codex_primary', 97)])], 95, NOW), { reason: 'codex_primary 97%' })
+  const stale = usage([win('codex_primary', 97)], { fetchedAt: iso(NOW - 2 * 60 * 60_000) })
+  assert.equal(planHold([stale], 95, NOW), undefined)
+})
+
+test('extra usage / credits lift the hold; the extra-usage meter itself never holds', () => {
+  assert.equal(planHold([usage([win('five_hour', 100, 3_600_000)], { overage: true })], 95, NOW), undefined)
+  assert.equal(planHold([usage([win('extra_usage', 100, 3_600_000)])], 95, NOW), undefined)
+})
+
+test('a stated refusal holds whatever the windows say, overage included', () => {
+  const refused = usage([win('five_hour', 10, 3_600_000)], { overage: true, rejectedUntil: iso(NOW + 600_000) })
+  assert.deepEqual(planHold([refused], 95, NOW), { until: iso(NOW + 600_000), reason: 'limit reached' })
+  assert.equal(planHold([{ ...refused, rejectedUntil: iso(NOW - 1) }], 95, NOW), undefined, 'and ends on time')
+})
+
+test('pooled over an account: the freshest read speaks for every instance on it', () => {
+  const old = usage([win('five_hour', 100, 3_600_000)], { agent: 'a1', fetchedAt: iso(NOW - 10 * 60_000) })
+  // OpenAI resets early: the newer poll says the window is empty again.
+  const fresh = usage([win('five_hour', 3, 3_600_000)], { agent: 'a2', fetchedAt: iso(NOW - 60_000) })
+  assert.equal(planHold([old, fresh], 95, NOW), undefined)
+  assert.ok(planHold([old], 95, NOW), 'the old read alone would hold')
+  // A refusal recorded through any instance holds them all.
+  assert.ok(planHold([fresh, { agent: 'a1', windows: [], rejectedUntil: iso(NOW + 1000) }], 95, NOW))
+})
+
+test('limit settings are coerced and clamped', () => {
+  assert.deepEqual(normalizeLimitSettings(null), LIMIT_DEFAULTS)
+  assert.equal(normalizeLimitSettings({ thresholdPercent: 12 }).thresholdPercent, 50)
+  assert.equal(normalizeLimitSettings({ thresholdPercent: 250 }).thresholdPercent, 100)
+  assert.equal(normalizeLimitSettings({ thresholdPercent: '90' }, { thresholdPercent: 80 }).thresholdPercent, 80)
+})
+
+test('a live event says whether it was refused and whether overage absorbs a full window', () => {
+  const allowed = parseClaudeRateLimitState(LIVE_LIMIT)
+  assert.equal(allowed.windows.length, 2)
+  assert.equal(allowed.rejected, false)
+  assert.equal(allowed.overage, false, "overageStatus 'rejected' is no overage")
+  assert.equal(allowed.rejectedUntil, undefined)
+  const refused = parseClaudeRateLimitState({ ...LIVE_LIMIT, status: 'rejected', overageStatus: 'allowed' })
+  assert.equal(refused.rejected, true)
+  assert.equal(refused.overage, true)
+  assert.equal(refused.rejectedUntil, new Date(1792673400 * 1000).toISOString())
+  assert.deepEqual(parseClaudeRateLimitState(null), { windows: [] })
+})
+
+test('overage from a usage poll: Anthropic extra usage, Codex credits', () => {
+  assert.equal(parseOverage({ extra_usage: { is_enabled: true, utilization: 20 } }, false), true)
+  assert.equal(parseOverage({ extra_usage: { is_enabled: true, utilization: null } }, false), true)
+  assert.equal(parseOverage({ extra_usage: { is_enabled: true, utilization: 100 } }, false), false, 'spent')
+  assert.equal(parseOverage({ extra_usage: { is_enabled: false } }, false), false)
+  assert.equal(parseOverage({ five_hour: {} }, false), false)
+  assert.equal(parseOverage({ credits: { has_credits: true } }, true), true)
+  assert.equal(parseOverage({ credits: { has_credits: false, unlimited: false } }, true), false)
+  assert.equal(parseOverage({}, true), false)
+})
+
+test('a live refusal reaches the cache; the next allowed response clears it, and silence changes nothing', async () => {
+  const bus = createBus()
+  let changed = 0
+  bus.on('usage.changed', () => changed++)
+  const store = createPlanUsage(bus, { agents: async () => ({}), credentials: async () => [] })
+  bus.emit('agent.planUsage', { agent: 'w', windows: [], rejected: true, rejectedUntil: iso(NOW) })
+  assert.equal(store.peek(['w'])[0].rejectedUntil, iso(NOW))
+  bus.emit('agent.planUsage', { agent: 'w', windows: [], rejected: false })
+  assert.equal(store.peek(['w'])[0].rejectedUntil, undefined)
+  bus.emit('agent.planUsage', { agent: 'w', windows: [], rejected: false })
+  assert.equal(changed, 2, 'a response that changes nothing is not news')
+  bus.emit('agent.limited', { agent: 'w', until: iso(NOW + 5) })
+  assert.equal(store.peek(['w', 'missing']).length, 1)
+  assert.equal(store.peek(['w'])[0].rejectedUntil, iso(NOW + 5))
+})
+
+// --- the limit detector (SessionManager.withLimit) ---------------------------
+
+/** @param {{ stopReason?: string, threw: boolean }} [outcome] @param {string} [detail] */
+const detect = (s, outcome = { stopReason: 'end_turn', threw: false }, detail = undefined) =>
+  SessionManager.prototype.withLimit.call({}, { info: { id: 's', agent: 'a' }, turnRejected: false, ...s }, outcome, detail, 10)
+
+test('a short limit notice as the whole reply is a limit hit, however the turn ended', () => {
+  const hit = detect({ entries: [{ id: 10, kind: 'agent', text: "You've hit your session limit · resets 3pm" }] })
+  assert.ok(hit.limit, 'Claude Code answers a refused turn with plain text and end_turn')
+  const stamped = detect({ entries: [{ id: 11, kind: 'agent', text: 'Claude AI usage limit reached|1792673400' }] })
+  assert.equal(stamped.limit.resetAt, new Date(1792673400 * 1000).toISOString(), 'the stamp after the pipe is the reset')
+})
+
+test('the agent talking about rate limits is not a limit hit', () => {
+  assert.equal(detect({ entries: [{ id: 10, kind: 'agent', text: 'Added rate limiting (429 on burst) to the API.' }] }).limit, undefined)
+  assert.equal(
+    detect({ entries: [{ id: 3, kind: 'agent', text: "You've hit your session limit" }] }).limit,
+    undefined,
+    'an earlier turn’s reply is not this turn’s'
+  )
+})
+
+test('a refused live event or a limit-worded error is a limit hit', () => {
+  assert.ok(detect({ entries: [], turnRejected: true }).limit)
+  assert.ok(detect({ entries: [] }, { threw: true }, 'Error: rate_limit_error: usage limit reached').limit)
+  assert.equal(detect({ entries: [] }, { threw: true }, 'ECONNRESET').limit, undefined)
 })

@@ -80,6 +80,7 @@ const SAFE_ARGS = new Set([
   'firstRunSignIn',
   'firstRunCancelSignIn',
   'getGcSettings',
+  'getLimitSettings',
   'gcRunNow',
   'getWelcomeMode',
   'setWelcomeMode',
@@ -200,6 +201,8 @@ const SAFE_ARGS = new Set([
   'getHotkeys',
   'setHotkeys',
   'setGcSettings',
+  // A single number, the threshold percent.
+  'setLimitSettings',
   // No args, and a pattern-source id from a fixed registry.
   'getPiiStatus',
   'refreshPiiSource',
