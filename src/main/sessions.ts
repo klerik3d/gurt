@@ -40,14 +40,23 @@ import {
   sessionRole,
   spawnableRoles
 } from '../shared/types'
-import { defaultAgentConfig, withFable } from '../shared/agentConfig'
-import type { AgentDef } from '../shared/agents'
+import { defaultAgentConfig } from '../shared/agentConfig'
+import type { AgentManifest } from '../shared/agentPlugin'
+import {
+  AUTO_WORDS,
+  MANUAL_WORDS,
+  agentVocabulary,
+  mcpToolOf,
+  modeHas,
+  type ModeWords,
+  type Vocabulary
+} from '../shared/agentVocabulary'
 import type { CreateAction } from '../shared/api'
 import { taskKey } from '../shared/keys'
 import { sanitizeSkillSelection } from '../shared/skills'
 import { isLimitReply, limitResetAt, turnOutcome, usageFields } from '../shared/usage'
 import { formatResetAt, type PlanHold } from '../shared/planUsage'
-import { parseClaudeRateLimitState } from './planUsage'
+import { agentMain } from './agentPlugins'
 import type { Bus } from './bus'
 import type { AdminHooks, ProactiveHooks } from './mcp/gurtServer'
 import type { ContainerStatusReason, SessionStateReason } from '../shared/events'
@@ -112,8 +121,8 @@ export const adapterExitCode = (code: number | null, signal: NodeJS.Signals | nu
  * with its group name) so the renderer sees one flat option list. Malformed entries are
  * skipped. Returns undefined when the agent reports no config options at all.
  */
-/** `kind` gates the `fable` force-merge to claude-code alone — the model
- *  select of any other adapter (codex, opencode, …) is left exactly as
+/** `kind` is the reporting session's: its plugin's `normalizeConfigOptions`
+ *  gets the last word over the list; a kind without one keeps it exactly as
  *  reported. */
 function normalizeConfigOptions(
   raw: unknown,
@@ -159,11 +168,11 @@ function normalizeConfigOptions(
         ...common,
         type: 'select',
         currentValue: typeof o.data.currentValue === 'string' ? o.data.currentValue : '',
-        options: o.data.category === 'model' && kind === 'claude-code' ? withFable(flat) : flat
+        options: flat
       })
     }
   }
-  return out
+  return agentMain(kind)?.normalizeConfigOptions?.(out) ?? out
 }
 
 /** The mode's `_meta.kind`, if it reports one. ACP's `_meta` is a free-form
@@ -196,39 +205,41 @@ export function normalizeModes(raw: unknown): SessionModes | undefined {
   }
 }
 
+/** No words beyond the core's own — what a kind without a mode vocabulary
+ *  gets. */
+const PLAIN_MODES: ModeWords = agentVocabulary(undefined).modes
+
 /**
  * Pick the ACP mode that matches a session's auto-allow preference. Modes are
  * agent-defined, so this is a best-effort match over kind/id/name (mirrors the
- * renderer's `modeVisual`). Returns undefined if the current mode already fits
- * or no matching mode is exposed.
+ * renderer's `modeVisual`), in the session's agent's own words (`words`, from
+ * its plugin) on top of the core's plain ones. Returns undefined if the
+ * current mode already fits or no matching mode is exposed.
  *
- * Order matters on the auto side. claude-code reports, in this order,
- * `acceptEdits` ("Accept edits") and then `auto` ("Auto", `_meta.kind`
- * `auto_review`) — a plain name match over "accept|auto" therefore always
- * landed on accept-edits and gurt's "auto" could never be reached. The real
- * auto mode is asked for by kind (or by the literal id) first; the
- * accept/auto-edit family is the fallback for agents that expose no such mode,
- * and a blanket bypass only for agents that expose neither.
+ * Order matters on the auto side. An adapter can list an accept-edits mode
+ * *before* its auto-review one (claude-code does), so a plain name match over
+ * "accept|auto" would always land on accept-edits and gurt's "auto" could
+ * never be reached. The real auto mode is asked for by kind (or by the
+ * literal id) first; the accept/auto-edit family is the fallback for agents
+ * that expose no such mode, and a blanket bypass only for agents that expose
+ * neither.
  */
 export function desiredModeId(
   autoAllow: boolean,
-  modes: SessionModes | undefined
+  modes: SessionModes | undefined,
+  words: ModeWords = PLAIN_MODES
 ): string | undefined {
   const list = modes?.availableModes
   if (!list?.length) return undefined
-  const has = (m: SessionMode, ...needles: string[]) => {
-    const k = `${m.id} ${m.name}`.toLowerCase()
-    return needles.some((n) => k.includes(n))
-  }
   const pick = (pred: (m: SessionMode) => boolean) => list.find(pred)?.id
   const target = autoAllow
     ? // "auto" = review the risky calls, auto-accept the rest. Fall back to
       // accept-edits, and to a full bypass only for agents that expose neither.
-      pick((m) => m.kind === 'auto_review') ??
+      pick((m) => !!m.kind && words.autoReviewKinds.includes(m.kind)) ??
       pick((m) => m.id === 'auto') ??
-      pick((m) => has(m, 'accept', 'auto')) ??
-      pick((m) => has(m, 'bypass', 'yolo'))
-    : pick((m) => m.id === 'default') ?? pick((m) => has(m, 'default', 'manual', 'ask', 'confirm'))
+      pick((m) => modeHas(m, AUTO_WORDS)) ??
+      pick((m) => modeHas(m, words.bypass))
+    : pick((m) => m.id === 'default') ?? pick((m) => modeHas(m, MANUAL_WORDS))
   if (!target || target === modes!.currentModeId) return undefined
   return target
 }
@@ -240,12 +251,13 @@ export function desiredModeId(
  *  start and every wake. Undefined = the session is already where it belongs. */
 export function nextModeId(
   info: Pick<SessionInfo, 'modeId' | 'autoAllow'>,
-  modes: SessionModes | undefined
+  modes: SessionModes | undefined,
+  words: ModeWords = PLAIN_MODES
 ): string | undefined {
   const saved = info.modeId
   if (saved && modes?.availableModes.some((m) => m.id === saved))
     return saved === modes.currentModeId ? undefined : saved
-  return desiredModeId(info.autoAllow ?? true, modes)
+  return desiredModeId(info.autoAllow ?? true, modes, words)
 }
 
 /**
@@ -648,9 +660,9 @@ export class SessionManager {
    *  cannot await a disk read, so this is seeded from disk at boot
    *  (`loadTaskCaps`) and kept current by every later edit (`setTaskCap`). */
   private taskCaps = new Map<string, number>()
-  /** Per agent-instance id, its kind (`AgentDef.id`) — mirrors agents.json so
-   *  a hardcoded default/the `fable` force-merge can resolve without a live
-   *  container's launch context (see `loadAgentKinds`). */
+  /** Per agent-instance id, its kind (`AgentManifest.id`) — mirrors agents.json so
+   *  a seed config, a plugin's hooks and its vocabulary can resolve without a
+   *  live container's launch context (see `loadAgentKinds`). */
   private agentKinds = new Map<string, string>()
   /** Per agent-instance id, the credential it runs on — the account a plan
    *  limit is pooled over. Kept beside `agentKinds`, from the same file. */
@@ -731,6 +743,12 @@ export class SessionManager {
       this.agentConfigs.set(id, cfg)
       this.agentConfigWritten.set(id, JSON.stringify(cfg))
     }
+  }
+
+  /** How this session's agent words its modes, tool titles and limit
+   *  notices — its kind's plugin vocabulary, or the core's plain one. */
+  private vocabulary(s: Session): Vocabulary {
+    return agentVocabulary(this.agentKinds.get(s.info.agent ?? ''))
   }
 
   /** Refresh the agent-instance→kind lookup — called once at boot and again
@@ -1095,7 +1113,7 @@ export class SessionManager {
     if (patch.agent !== undefined) {
       // The agent pick is structural, full stop: the mount list depends on the
       // kind even with no skill selected, now that every kind carries its own
-      // (possibly empty) `historyPaths` (`AgentDef`, containers.ts) — switching
+      // (possibly empty) `historyPaths` (`AgentManifest`, containers.ts) — switching
       // to or from a kind with a non-empty one changes what gets mounted. A
       // failed start can have left a container provisioned against the old
       // kind's mount list, so any agent change releases it
@@ -1706,9 +1724,9 @@ export class SessionManager {
       // instruction.
       const mcpServers = await this.attachMcp(s, ctx)
       const conn = await this.connection(s, ctx)
-      // Model/effort chosen for the draft ride `_meta` so the very first turn
-      // already runs on them (claude-code honors `_meta.claudeCode.options`);
-      // any other picks (e.g. fast mode) are reconciled below, before the prompt.
+      // Picks the adapter reads from `_meta` (model/effort, for one that does)
+      // ride it so the very first turn already runs on them; any other picks
+      // (e.g. fast mode) are reconciled below, before the prompt.
       const meta = this.startMeta(ctx.agent, s.info.configValues)
       const result = await conn.peer.request(
         'session/new',
@@ -2244,11 +2262,11 @@ export class SessionManager {
       if (!s.attached) {
         if (!s.acpSessionId) throw new Error('session was never started')
         try {
-          // Same `_meta` a start sends to `session/new`: for claude-code, a
-          // pinned model (e.g. fable) only appears in the CLI's model picker
-          // when the CLI is launched with it pinned. Without this, a reload
-          // brings up an adapter whose picker forgot the pin, and the next
-          // `session/set_config_option` for it is rejected as an invalid value.
+          // Same `_meta` a start sends to `session/new`: an adapter may only
+          // offer a pinned pick (a model, say) when launched with it pinned.
+          // Without this, a reload brings up an adapter whose picker forgot
+          // the pin, and the next `session/set_config_option` for it is
+          // rejected as an invalid value.
           const meta = this.startMeta(ctx.agent, s.info.configValues)
           const result = await conn.peer.request(
             'session/load',
@@ -2450,7 +2468,7 @@ export class SessionManager {
       workspace: s.ref.workspace,
       task: s.ref.task,
       ms: Date.now() - startedAt,
-      outcome: outcome.limit ? 'limited' : turnOutcome({ ...outcome, detail }),
+      outcome: outcome.limit ? 'limited' : turnOutcome({ ...outcome, detail }, this.vocabulary(s).limits),
       ...usageFields(s.usage),
       ...(detail ? { detail } : {}),
       ...(resetAt ? { resetAt } : {})
@@ -2477,9 +2495,13 @@ export class SessionManager {
    *   - a live rate-limit event during the turn said `rejected`;
    *   - the thrown error / non-`end_turn` stop reads like a limit
    *     (`turnOutcome`'s patterns, unchanged);
-   *   - the agent's whole reply is a short limit notice — Claude Code answers
-   *     a refused turn with "You've hit your limit · resets 3pm" as ordinary
-   *     text and a clean `end_turn`, which neither of the above would see.
+   *   - the agent's whole reply is a short limit notice — some adapters answer
+   *     a refused turn with one ("You've hit your limit · resets 3pm") as
+   *     ordinary text and a clean `end_turn`, which neither of the above would
+   *     see.
+   *
+   * The last two read the session's agent's own wording (its plugin's
+   * `limits`) on top of the generic patterns.
    *
    * Logged with the signal that fired, so a miss or a false hit can be traced
    * back to what the adapter actually sent.
@@ -2488,15 +2510,16 @@ export class SessionManager {
     const reply = s.entries
       .flatMap((e) => (e.id >= firstEntry && e.kind === 'agent' ? [e.text] : []))
       .join('\n')
+    const limits = this.vocabulary(s).limits
     const signal = s.turnRejected
       ? 'rate-limit-event'
-      : turnOutcome({ ...outcome, detail }) === 'limited'
+      : turnOutcome({ ...outcome, detail }, limits) === 'limited'
         ? 'error-text'
-        : isLimitReply(reply)
+        : isLimitReply(reply, limits)
           ? 'agent-reply'
           : undefined
     if (!signal) return outcome
-    const resetAt = limitResetAt(detail) ?? limitResetAt(reply)
+    const resetAt = limitResetAt(detail, limits) ?? limitResetAt(reply, limits)
     log.info('turn.limited', { s: s.info.id, agent: s.info.agent, signal, resetAt })
     return { ...outcome, limit: { ...(resetAt ? { resetAt } : {}) } }
   }
@@ -3025,9 +3048,9 @@ export class SessionManager {
     s.info.modeId = modeId
     // Keep the persisted preference in step so a later reattach restores this choice.
     const mode = s.modes?.availableModes.find((m) => m.id === modeId)
-    const k = `${mode?.id ?? modeId} ${mode?.name ?? ''}`.toLowerCase()
-    if (/bypass|yolo|accept|auto/.test(k)) s.info.autoAllow = true
-    else if (/default|manual|ask|confirm/.test(k)) s.info.autoAllow = false
+    const picked = { id: mode?.id ?? modeId, name: mode?.name ?? '' }
+    if (modeHas(picked, [...this.vocabulary(s).modes.bypass, ...AUTO_WORDS])) s.info.autoAllow = true
+    else if (modeHas(picked, MANUAL_WORDS)) s.info.autoAllow = false
     this.bus.emit('session.changed', { sessionId })
     this.schedulePersist(s.ref)
   }
@@ -3036,7 +3059,7 @@ export class SessionManager {
    * gurt's own confirmation for an operator's `apply_held`
    * (docs/requirements-session-operator.md §4.3) — the one prompt auto-allow
    * cannot reach. It is raised here, not through ACP, so neither the
-   * `mcp__gurt__` blanket allow in `onPermission` nor a bypass mode ever sees
+   * gurt-tools blanket allow in `onPermission` nor a bypass mode ever sees
    * it; it rides the timeline as a permission entry so the decision is on the
    * record afterwards. No timeout and no default: a cancelled turn, a dead
    * adapter or a deleted session resolves it as "no", and an app restart
@@ -3102,22 +3125,15 @@ export class SessionManager {
     return full
   }
 
-  /** Build the `_meta` passed to `session/new` from a draft's chosen config. Only
-   *  claude-code honors `_meta.claudeCode.options`; model and effort map onto the
-   *  SDK's query options there (effort `default` means "don't set it"). Returns
-   *  undefined when there is nothing to forward. */
+  /** Build the `_meta` passed to `session/new` and `session/load` from a
+   *  draft's chosen config — the kind's plugin says what its adapter reads
+   *  (`sessionMeta`). Returns undefined when there is nothing to forward. */
   private startMeta(
-    agent: AgentDef,
+    agent: AgentManifest,
     configValues: Record<string, string | boolean> | undefined
   ): Record<string, unknown> | undefined {
-    if (agent.id !== 'claude-code' || !configValues) return undefined
-    const options: Record<string, string> = {}
-    const model = configValues['model']
-    const effort = configValues['effort']
-    if (typeof model === 'string' && model) options['model'] = model
-    if (typeof effort === 'string' && effort && effort !== 'default') options['effort'] = effort
-    if (!Object.keys(options).length) return undefined
-    return { claudeCode: { options } }
+    if (!configValues) return undefined
+    return agentMain(agent.id)?.sessionMeta?.(configValues)
   }
 
   /** Reconcile a freshly-opened session against the draft's chosen config values:
@@ -3180,8 +3196,8 @@ export class SessionManager {
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e)
       // The agent validates a pick against what its own picker currently
-      // offers — for claude-code's model option, that list only contains a
-      // model the CLI wasn't launched pinned to (see `startMeta`) once this
+      // offers — and that list may only contain a model the CLI wasn't
+      // launched pinned to (claude-code's does, see `startMeta`) once this
       // session's adapter has been restarted with it already set. Recording
       // the choice anyway means the next `session/new`/`session/load` sends
       // it via `_meta` and the agent comes up already offering it, instead of
@@ -3217,7 +3233,7 @@ export class SessionManager {
    *  sets are left alone. */
   private async applyAutoAllow(s: Session, conn: Connection): Promise<void> {
     if (!s.acpSessionId) return
-    const target = nextModeId(s.info, s.modes)
+    const target = nextModeId(s.info, s.modes, this.vocabulary(s).modes)
     if (!target) return
     try {
       await conn.peer.request('session/set_mode', { sessionId: s.acpSessionId, modeId: target })
@@ -3362,8 +3378,10 @@ export class SessionManager {
         const u = parseOrDrop(USAGE_UPDATE, raw, 'usage_update')
         if (!u) return
         const agent = s.info.agent
-        if (agent && this.agentKinds.get(agent) === 'claude-code') {
-          const state = parseClaudeRateLimitState(u._meta?.['_claude/rateLimit'])
+        const usageMeta = agent ? agentMain(this.agentKinds.get(agent))?.usageMeta : undefined
+        if (agent && usageMeta) {
+          // Plan state some adapters attach to their usage reports.
+          const state = usageMeta(u._meta ?? undefined)
           if (state.rejected && s.busy) s.turnRejected = true
           if (state.windows.length || state.overage !== undefined || state.rejected !== undefined)
             this.bus.emit('agent.planUsage', { agent, ...state })
@@ -3397,8 +3415,9 @@ export class SessionManager {
     // and `create_session` only ever produces an inert draft the user still has
     // to launch — that launch *is* the approval step, so a permission prompt
     // here is pure friction (and a walked-away session would hang on it).
-    // Always allow, no timeline entry.
-    if (/^mcp__gurt__/.test(title)) {
+    // Always allow, no timeline entry. Recognized by the session's agent's own
+    // MCP tool-title format (its plugin's `toolTitles`).
+    if (mcpToolOf(title, this.vocabulary(s).toolTitles)?.server === 'gurt') {
       const allow =
         options.find((o) => o.kind === 'allow_once') ??
         options.find((o) => o.kind?.startsWith('allow'))

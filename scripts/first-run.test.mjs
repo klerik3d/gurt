@@ -58,7 +58,7 @@ await bundle({
     contents:
       `export { createKernel } from ${S('src/main/kernel.ts')}\n` +
       `export { firstRunStart, firstRunSignIn } from ${S('src/main/firstRun.ts')}\n` +
-      `export { AGENT_DEFS, agentDef } from ${S('src/shared/agents.ts')}\n` +
+      `export { AGENT_MANIFESTS as AGENT_DEFS, agentDef } from ${S('src/shared/agents.ts')}\n` +
       `export { getCredentials, upsertCredentialEntry } from ${S('src/main/credentials.ts')}\n` +
       `export { getAgents, listWorkspaces, getWelcomeMode, setWelcomeMode } from ${S('src/main/store.ts')}\n` +
       `export { welcomeShows, sanitizeWelcomeMode, WELCOME_MODE_DEFAULT } from ${S('src/shared/doctor.ts')}\n` +

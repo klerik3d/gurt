@@ -11,7 +11,6 @@ import type {
   PromptContext,
   PromptImage,
   SessionConfigOption,
-  SessionMode,
   SessionModes,
   SessionNetwork,
   SessionSnapshot,
@@ -19,6 +18,7 @@ import type {
 } from '../../../shared/types'
 import { sessionRole, sessionStatus } from '../../../shared/types'
 import { agentOptionView, withPickedValues } from '../../../shared/agentConfig'
+import { agentVocabulary, isBlanketMode } from '../../../shared/agentVocabulary'
 import { agentKind, agentName, useAgents } from '../useAgents'
 import { useMcpEntries, useMcpFailures } from '../useMcp'
 import { usePiiEntries, usePiiPlan, usePiiStatus, usePiiView, type PiiView } from '../usePii'
@@ -43,15 +43,6 @@ const log = createLogger('chat')
 /** Don't ping the main process on every keystroke — once per this interval is enough
  *  to keep postponing the env's idle auto-stop while the user is composing. */
 const ACTIVITY_PING_INTERVAL_MS = 5_000
-
-/**
- * Blanket permission-bypass modes (Claude's "bypassPermissions", Codex's "yolo").
- * They disable every guardrail, so they're hidden from the mode picker — gurt's
- * "auto" already maps to the safer auto-review/accept-edits mode. Kept out of the UI, not the
- * protocol: the agent may still report one as current.
- */
-const BLANKET_MODE_RE = /bypass|yolo/i
-const isBlanketMode = (m: SessionMode): boolean => BLANKET_MODE_RE.test(`${m.id} ${m.name}`)
 
 /** Word count × an average tokens-per-word ratio — not the real tokenizer, just
  *  enough to animate the live thinking counter and the session size pill. */
@@ -416,6 +407,7 @@ export function Chat({
                       <span className="msg-dot msg-dot-sm" style={{ background: 'var(--border2)' }} />
                       <ToolStrip
                         entries={b.entries}
+                        agentKind={agentKind(agents, info.agent)}
                         busy={busy}
                         liveId={busy ? (liveTail ? TAIL_ID : entries[entries.length - 1]?.id) : undefined}
                       />
@@ -809,7 +801,7 @@ function Composer({
   piiNote
 }: {
   sessionId: string
-  /** The session agent's kind (`AgentDef.id`) — scopes agent-specific UI fixups. */
+  /** The session agent's kind (`AgentManifest.id`) — scopes agent-specific UI fixups. */
   agentKind?: string | undefined
   /** The session's egress mode — what the network button on the bar reports (§8). */
   network?: SessionNetwork | undefined
@@ -1566,7 +1558,7 @@ function GearPopup({
             <div className="seclabel">MODE</div>
             <div className="chip-row">
               {modes.availableModes
-                .filter((m) => !isBlanketMode(m))
+                .filter((m) => !isBlanketMode(m, agentVocabulary(agentKind).modes))
                 .map((m) => (
                   <button
                     key={m.id}

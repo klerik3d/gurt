@@ -7,7 +7,7 @@ import path from 'node:path'
 import { createRequire } from 'node:module'
 import { z } from 'zod'
 import type { EnvConfig, EnvRef, RepoConfig } from '../shared/types'
-import type { AgentDef } from '../shared/agents'
+import type { AgentManifest } from '../shared/agentPlugin'
 import { envImageTag, parseEnvDevcontainer, validateEnvConfig } from '../shared/envConfig'
 import type { EnvImageStatus } from '../shared/api'
 import { cloneDir, getWorkspace, gurtRoot, historySlug, overrideConfigPath, taskDir } from './store'
@@ -1271,7 +1271,7 @@ export async function devcontainerUp(
 /**
  * Where a session's materialized skills are bound inside its container.
  *
- * A fixed absolute path rather than the `$HOME/.claude/skills` the agent
+ * A fixed absolute path rather than the `$HOME/<skillsDir>` the agent
  * actually reads, because a devcontainer's `mounts` are evaluated *to create*
  * the container: `${containerEnv:HOME}` is substituted in a later pass, and the
  * remote user — hence the home directory — is the image's choice, not gurt's.
@@ -1280,7 +1280,7 @@ export async function devcontainerUp(
 export const SKILLS_MOUNT = '/gurt/skills'
 
 /**
- * Point the agent's own skills directory — `AgentDef.skillsDir`, `$HOME`-
+ * Point the agent's own skills directory — `AgentManifest.skillsDir`, `$HOME`-
  * relative, e.g. claude-code's `.claude/skills` — at the read-only bind
  * (docs/requirements-skills.md §5). Where the link lands is the agent kind's
  * to say; callers skip both the mount and this link for a kind whose
@@ -1329,7 +1329,7 @@ export async function linkContainerSkills(
 export const HISTORY_MOUNT = '/gurt/history'
 
 /**
- * Link every entry of the agent kind's `historyPaths` (`AgentDef`) into the
+ * Link every entry of the agent kind's `historyPaths` (`AgentManifest`) into the
  * container's home, pointed at its own subdirectory of the read-write history
  * bind — `linkContainerHistory`, a sibling of {@link linkContainerSkills}.
  * One `sh -c` per entry, same shape as the skills link:
@@ -1386,7 +1386,7 @@ export async function linkContainerHistory(
 /** Path, relative to the container `$HOME`, of the marker file that records
  *  which exact pin was last installed for an agent — keyed by agent id so
  *  unrelated agents in the same container never collide. */
-function adapterMarkerPath(agent: AgentDef): string {
+function adapterMarkerPath(agent: AgentManifest): string {
   return `.gurt/adapter-versions/${agent.id}`
 }
 
@@ -1394,7 +1394,7 @@ function adapterMarkerPath(agent: AgentDef): string {
  *  installed marker against this (not just the binary's presence on PATH) is
  *  what makes a pin bump reinstall into a container that already has an
  *  older version on PATH from before the bump. */
-function adapterMarkerValue(agent: AgentDef): string {
+function adapterMarkerValue(agent: AgentManifest): string {
   return agent.adapterPackages.join(',')
 }
 
@@ -1412,7 +1412,7 @@ function adapterMarkerValue(agent: AgentDef): string {
  *  PATH reads as "installed" forever, across every app restart. */
 export async function adapterPresent(
   session: string,
-  agent: AgentDef,
+  agent: AgentManifest,
   configArgs: string[],
   workspaceFolder: string
 ): Promise<boolean> {
@@ -1443,7 +1443,7 @@ export async function adapterPresent(
  */
 export async function probeAdapterAndLinkSkills(
   session: string,
-  agent: AgentDef,
+  agent: AgentManifest,
   configArgs: string[],
   workspaceFolder: string,
   skillsDir: string,
@@ -1473,7 +1473,7 @@ export async function probeAdapterAndLinkSkills(
 /**
  * Write one small file into the agent's `$HOME` inside the container — the
  * §5.2.1 seam (docs/requirements-oauth-credentials.md): the access-only native
- * auth file an oauth-linked codex/gemini launch materializes. Same
+ * auth file an oauth-linked launch materializes (codex's, gemini's). Same
  * `devcontainer exec` transport every other provisioning step uses.
  *
  * The content rides in a `--remote-env` value rather than inside the shell
@@ -1512,7 +1512,7 @@ const MARKER_WRITE_FAILED = 90
 
 export async function installAcpAdapter(
   session: string,
-  agent: AgentDef,
+  agent: AgentManifest,
   configArgs: string[],
   workspaceFolder: string,
   log: LogSink
@@ -1547,7 +1547,7 @@ export async function installAcpAdapter(
 /** Spawns the ACP adapter inside the environment; caller owns the process. */
 export function spawnAcpAdapter(
   session: string,
-  agent: AgentDef,
+  agent: AgentManifest,
   configArgs: string[],
   workspaceFolder: string,
   secret: string,

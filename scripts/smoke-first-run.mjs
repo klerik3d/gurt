@@ -22,7 +22,8 @@ import { createRequire } from 'node:module'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { bundle } from './lib/bundle.mjs'
 
 const APP_DIR = path.resolve(fileURLToPath(new URL('..', import.meta.url)))
 const SCRATCH = process.env.SCRATCH ?? '/tmp/gurt-smoke-first-run'
@@ -42,6 +43,20 @@ fs.writeFileSync(
 )
 fs.writeFileSync(path.join(GURT_ROOT, 'w', 't', 'task.json'), JSON.stringify({}))
 fs.mkdirSync(SHOT_DIR, { recursive: true })
+
+// Which agent kinds exist is the registry's to say (src/plugins/agents/), and
+// the welcome screen offers every one of them.
+const REGISTRY = path.join(SCRATCH, 'agent-registry.mjs')
+await bundle({
+  stdin: {
+    contents: `export { AGENT_MANIFESTS } from ${JSON.stringify(path.join(APP_DIR, 'src/shared/agents.ts'))}`,
+    resolveDir: APP_DIR,
+    loader: 'ts',
+    sourcefile: 'entry.ts'
+  },
+  outfile: REGISTRY
+})
+const { AGENT_MANIFESTS } = await import(pathToFileURL(REGISTRY).href)
 
 const require = createRequire(path.join(APP_DIR, 'package.json'))
 const { _electron } = require('playwright-core')
@@ -162,7 +177,7 @@ try {
 
   // --- each kind leads with its own provider; opencode has none ---
   const kinds = await page.locator('.wc-kinds button').allInnerTexts()
-  assert.equal(kinds.length, 4, 'claude / codex / gemini / opencode')
+  assert.equal(kinds.length, AGENT_MANIFESTS.length, AGENT_MANIFESTS.map((d) => d.label).join(' / '))
   await page.click('.wc-kinds button:has-text("codex")')
   assert.match((await signInBtn.innerText()).trim(), /ChatGPT \(OpenAI\)/)
   await page.click('.wc-kinds button:has-text("gemini")')

@@ -80,13 +80,13 @@ export type StoredProposal = ChangeProposal & { at: string }
 
 /**
  * A user-defined agent profile: a named instance of a built-in agent *kind*
- * (see `AgentDef`) carrying its config and a link to its secret. Several
+ * (see `AgentManifest`) carrying its config and a link to its secret. Several
  * instances of one kind can coexist — e.g. two `claude-code` profiles linked to
  * different tokens ("work" / "home"), or an `opencode` pointed at a local model
  * via `env`. The registry starts empty; the user adds instances as needed.
  */
 export interface AgentInstance {
-  /** Which built-in adapter to launch — references `AgentDef.id`. */
+  /** Which built-in adapter to launch — references `AgentManifest.id`. */
   kind: string
   /** User-facing name shown in pickers and chips. */
   label: string
@@ -550,8 +550,9 @@ export interface SessionInfo {
   startPrompt: string
   /**
    * Config-option values (model, effort, fast mode, …) chosen for this session,
-   * keyed by `SessionConfigOption.id`. Applied at start: `model`/`effort` ride
-   * `_meta.claudeCode.options` on `session/new`, the rest are reconciled via
+   * keyed by `SessionConfigOption.id`. Applied at start: what the adapter reads
+   * from `_meta` rides that on `session/new` (the kind's plugin says what:
+   * `sessionMeta` — claude-code's model/effort), the rest are reconciled via
    * `session/set_config_option` before the first prompt. Picked from the agent's
    * cached option set (see {@link AgentConfig}); an empty/absent map means "let
    * the agent choose its defaults". Cleared by assignment when an edit empties
@@ -771,9 +772,9 @@ export interface SessionMode {
   /** `_meta.kind` as the agent reports it, lifted out of the envelope by the
    *  session manager's mode normalizer. Ids and names are agent-defined and
    *  overlap badly ("Accept edits" vs. "Auto"), but the kind is the one thing
-   *  that carries intent across adapters — claude-code's `auto` and another
-   *  adapter's `agent` ("Approve for me") both report `auto_review` — so mode
-   *  matching keys on it first. */
+   *  that carries intent across adapters — an auto-review mode reports the
+   *  same kind whatever it is called (the agent plugin's
+   *  `modes.autoReviewKinds`) — so mode matching keys on it first. */
   kind?: string
 }
 

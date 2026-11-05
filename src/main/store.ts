@@ -123,7 +123,7 @@ export const sessionSkillsDir = (ws: string, task: string, sessionId: string) =>
   path.join(sessionScratchDir(ws, task, sessionId), 'skills')
 
 /** A sibling of `skills/`: the source of the read-write bind that carries the
- *  agent's own conversation/resume state (`AgentDef.historyPaths`), one
+ *  agent's own conversation/resume state (`AgentManifest.historyPaths`), one
  *  directory per session, never wiped
  *  (docs/requirements-agent-history.md §5). */
 export const sessionHistoryDir = (ws: string, task: string, sessionId: string) =>

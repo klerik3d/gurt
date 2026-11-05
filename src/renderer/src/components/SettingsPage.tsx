@@ -91,7 +91,7 @@ import {
   isRecordable,
   modKeyLabel
 } from '../../../shared/hotkeys'
-import { AGENT_DEFS, agentDef } from '../../../shared/agents'
+import { AGENT_MANIFESTS, DEFAULT_AGENT_KIND, agentDef } from '../../../shared/agents'
 import { PREPARE_LOG_KEY, WELCOME_MODES } from '../../../shared/doctor'
 import { logErr } from '../log'
 import type { WelcomeMode } from '../../../shared/doctor'
@@ -105,8 +105,8 @@ import { refreshHotkeys, useHotkeys } from '../useHotkeys'
 import { useOutsideClose } from '../hooks'
 import { confirmDialog } from '../dialog'
 import type { IconName } from './icons'
-import { Icon } from './icons'
-import { AgentTag, agentIcon } from './tags'
+import { AgentIcon, Icon } from './icons'
+import { AgentTag } from './tags'
 import { Modal } from './Modal'
 import { run } from '../async'
 
@@ -179,15 +179,6 @@ const GENERAL_SECTIONS = [
 ] as const satisfies readonly SettingsSection[]
 
 const ADVANCED_SECTIONS = ['mcp', 'skills'] as const satisfies readonly SettingsSection[]
-
-/** Vendor tag shown beside each provider in the combobox (#4c). */
-const PROVIDER_VENDOR: Record<string, string> = {
-  'claude-code': 'Anthropic',
-  codex: 'OpenAI',
-  gemini: 'Google',
-  opencode: 'local',
-  pi: 'local'
-}
 
 /** Nav label for a section — the id capitalized, unless {@link SECTION_LABEL}
  *  overrides it. */
@@ -3106,7 +3097,7 @@ function ClientsSection() {
 
   const add = () => {
     const key = `__new__:${crypto.randomUUID()}`
-    const inst: AgentInstance = { kind: 'claude-code', label: '' }
+    const inst: AgentInstance = { kind: DEFAULT_AGENT_KIND, label: '' }
     setAgents((prev) => ({ ...(prev ?? {}), [key]: inst }))
     expand(key, inst)
   }
@@ -3195,6 +3186,9 @@ function ClientsSection() {
       <div className="set-list">
         {entries.map(([id, cfg]) => {
           const kindLabel = agentDef(cfg.kind)?.label ?? cfg.kind
+          // The draft kind's placeholders, else the default kind's.
+          const hints = (draft && agentDef(draft.kind)?.instanceHints) ?? agentDef(DEFAULT_AGENT_KIND)?.instanceHints
+          const example = draft && agentDef(draft.kind)?.clientConfig?.example
           if (open !== id)
             return (
               <div key={id} className="set-row clickable" onClick={() => expand(id, cfg)}>
@@ -3231,7 +3225,7 @@ function ClientsSection() {
                     <input
                       className="input"
                       autoFocus={isTemp(id)}
-                      placeholder="claude · personal"
+                      placeholder={hints?.label}
                       value={draft.label}
                       onChange={(e) => setDraft({ ...draft, label: e.target.value })}
                     />
@@ -3274,7 +3268,7 @@ function ClientsSection() {
                     <textarea
                       className="input mono"
                       rows={2}
-                      placeholder="ANTHROPIC_BASE_URL=http://host.docker.internal:1234"
+                      placeholder={hints?.env}
                       value={draftEnv}
                       onChange={(e) => setDraftEnv(e.target.value)}
                     />
@@ -3294,14 +3288,14 @@ function ClientsSection() {
                       <div className="fld-hint">
                         Native client settings. Applied on the next session start or restart.
                         Clear to reset. Keep API keys in Credentials.
-                        {(draft.kind === 'opencode' || draft.kind === 'pi') && ' For OpenRouter, set Secret env var to OPENROUTER_API_KEY.'}
+                        {example?.secretEnv && ` For ${example.label}, set Secret env var to ${example.secretEnv}.`}
                       </div>
-                      {!draftConfig.trim() && (
+                      {!draftConfig.trim() && example && (
                         <button className="btn" type="button" onClick={() => {
                           setDraftConfig(JSON.stringify(clientConfigExample(draft.kind), null, 2))
-                          if (draft.kind === 'opencode' || draft.kind === 'pi') setDraft({ ...draft, secretEnv: 'OPENROUTER_API_KEY' })
+                          if (example.secretEnv) setDraft({ ...draft, secretEnv: example.secretEnv })
                         }}>
-                          {draft.kind === 'claude-code' ? 'Example: no attribution' : 'Example: OpenRouter'}
+                          {`Example: ${example.label}`}
                         </button>
                       )}
                     </div>
@@ -3381,7 +3375,8 @@ function PlanLimitSettings(): JSX.Element {
   )
 }
 
-/** Provider combobox with search (#4c): field row → filterable menu of AGENT_DEFS. */
+/** Provider combobox with search (#4c): field row → filterable menu of the
+ *  registry's agent kinds, each with its vendor. */
 function ProviderCombo({ value, onPick }: { value: string; onPick: (kind: string) => void }) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
@@ -3390,11 +3385,8 @@ function ProviderCombo({ value, onPick }: { value: string; onPick: (kind: string
 
   const cur = agentDef(value)
   const q = query.trim().toLowerCase()
-  const filtered = AGENT_DEFS.filter(
-    (d) =>
-      !q ||
-      d.label.toLowerCase().includes(q) ||
-      (PROVIDER_VENDOR[d.id] ?? '').toLowerCase().includes(q)
+  const filtered = AGENT_MANIFESTS.filter(
+    (d) => !q || d.label.toLowerCase().includes(q) || d.vendor.toLowerCase().includes(q)
   )
 
   return (
@@ -3409,7 +3401,7 @@ function ProviderCombo({ value, onPick }: { value: string; onPick: (kind: string
             setQuery('')
           }}
         >
-          <Icon name={agentIcon(value)} size={13} className="faint" style={{ flex: 'none' }} />
+          <AgentIcon kind={value} size={13} className="faint" style={{ flex: 'none' }} />
           <span className="pick-value">{cur?.label ?? value}</span>
           <span className="spacer" />
           <Icon name="chevron" size={12} className="faint" style={{ flex: 'none' }} />
@@ -3443,9 +3435,9 @@ function ProviderCombo({ value, onPick }: { value: string; onPick: (kind: string
                   setOpen(false)
                 }}
               >
-                <Icon name={agentIcon(d.id)} size={13} className="faint" />
+                <AgentIcon kind={d.id} size={13} className="faint" />
                 <span className={d.id === value ? 'strong' : undefined}>{d.label}</span>
-                <span className="menu-meta mono">{PROVIDER_VENDOR[d.id] ?? ''}</span>
+                <span className="menu-meta mono">{d.vendor}</span>
               </div>
             ))}
             {filtered.length === 0 && <div className="menu-empty">no matching providers</div>}

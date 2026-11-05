@@ -171,7 +171,7 @@ export async function firstRunSignIn(
   if (!def) throw new Error(`unknown agent kind "${kind}"`)
   // Refused rather than sent through a flow its CLI cannot consume: a "Sign
   // in" that completes a browser round-trip and then fails at session start is
-  // worse than having asked for a key (`AgentDef.oauthProvider`).
+  // worse than having asked for a key (`AgentManifest.oauthProvider`).
   if (!def.oauthProvider)
     throw new Error(
       `${def.label} has no sign-in path — paste an API key for it instead`

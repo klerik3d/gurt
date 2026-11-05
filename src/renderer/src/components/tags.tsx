@@ -15,19 +15,7 @@ import type { DomainPolicy } from '../../../shared/proxy'
 import { explicitAllows } from '../../../shared/proxy'
 import type { McpFailure, ResolvedMcpSelection } from '../../../shared/mcp'
 import type { ResolvedSkillSelection } from '../../../shared/skills'
-import { Icon, type IconName } from './icons'
-
-/** kind (an `AgentDef.id`) → glyph. Unmatched/custom kinds fall back to a
- *  generic mark rather than breaking — agents.json can outlive this map. */
-const AGENT_ICONS: Record<string, IconName> = {
-  'claude-code': 'agent-claude',
-  codex: 'agent-codex',
-  gemini: 'agent-gemini',
-  opencode: 'agent-opencode',
-  pi: 'agent-pi'
-}
-
-export const agentIcon = (kind?: string): IconName => (kind && AGENT_ICONS[kind]) || 'agent-generic'
+import { AgentIcon, Icon, type IconName } from './icons'
 
 export function EnvTag({ name }: { name: string }): JSX.Element {
   return (
@@ -116,7 +104,7 @@ export function AgentTag({
 }): JSX.Element {
   return (
     <span className="tag tag-ico" title={title ?? name}>
-      <Icon name={agentIcon(kind)} size={10} />
+      <AgentIcon kind={kind} size={10} />
       {name}
     </span>
   )
@@ -249,7 +237,7 @@ export function AgentMark({
 }): JSX.Element {
   return (
     <span className="agent-mark">
-      <Icon name={agentIcon(kind)} size={11} className="faint" />
+      <AgentIcon kind={kind} size={11} className="faint" />
       {name}
     </span>
   )

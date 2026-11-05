@@ -66,7 +66,7 @@ const S = (rel) => JSON.stringify(path.join(ROOT, rel))
 await bundle({
   stdin: {
     contents: `
-      export { AGENT_DEFS, agentDef } from ${S('src/shared/agents.ts')}
+      export { AGENT_MANIFESTS as AGENT_DEFS, agentDef } from ${S('src/shared/agents.ts')}
       export {
         usesSkillMounts, usesHistoryMounts, historyHostMounts, sessionConfigArgs
       } from ${S('src/main/containers.ts')}

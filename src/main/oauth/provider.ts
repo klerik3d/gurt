@@ -1,24 +1,12 @@
-// The provider seam of docs/requirements-oauth-credentials.md §3: one module
-// per provider under ./providers/, every specific (endpoints, client_id,
-// scopes, body encodings, where the account name lives) behind these two
-// calls. The refresh path (`../index.ts`) and the sign-in flow know nothing a
-// provider does not tell them through this interface.
+// The provider seam of docs/requirements-oauth-credentials.md §3: every
+// specific of one provider (endpoints, client_id, scopes, body encodings,
+// where the account name lives) is declared by the agent plugin whose CLI
+// borrows that sign-in (`AgentMainPlugin.oauth`), and reaches the refresh path
+// (`./index.ts`) and the sign-in flow only through these two calls.
 
-export interface TokenSet {
-  access: string
-  refresh: string
-  /** When `access` expires (ISO 8601). */
-  expiresAt: string
-  /** Display identity of the signed-in user ("jane@example.com"). */
-  account: string
-  /**
-   * Provider-specific extra entry `data` (§2: legal, named by the provider
-   * module) — e.g. openai's `idToken`/`accountId`, which codex's native
-   * auth.json needs (§5.2.1). Persisted alongside the core fields; a key
-   * declared secret in CREDENTIAL_KINDS seals and redacts like the tokens.
-   */
-  extra?: Record<string, string>
-}
+import type { TokenSet } from '../../shared/agentPlugin'
+
+export type { TokenSet }
 
 export interface OAuthProvider {
   id: string

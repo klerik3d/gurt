@@ -479,7 +479,7 @@ export interface GurtApi {
   /** The same create, entered by signing in instead of pasting a key — the
    *  welcome screen's primary path (docs/requirements-first-run.md §6.1).
    *  Mints an `oauth` credential for the kind's provider
-   *  (`AgentDef.oauthProvider`), runs that provider's browser flow, and on
+   *  (`AgentManifest.oauthProvider`), runs that provider's browser flow, and on
    *  success creates and starts exactly what {@link firstRunStart} does. A
    *  cancelled or failed sign-in creates nothing; a kind with no sign-in path
    *  is refused rather than sent through a flow its CLI cannot consume. */

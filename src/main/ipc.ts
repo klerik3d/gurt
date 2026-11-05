@@ -137,7 +137,7 @@ export function registerIpc(): void {
   kernel.bus.on('usage.changed', () => broadcast('usage-changed'))
   kernel.bus.on('boot.progress', (p) => broadcast('boot-progress', p))
 
-  // Plan limits move with usage from every Claude surface, not just gurt's own
+  // Plan limits move with usage from every surface of an account, not just gurt's own
   // turns — so keep them fresh in the background instead of waiting for the
   // dashboard to be open. Each completed sweep announces itself over
   // `usage.changed`, which the renderer answers with a cache read.

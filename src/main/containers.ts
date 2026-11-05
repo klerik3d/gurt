@@ -15,8 +15,9 @@ import { promises as fs, existsSync } from 'node:fs'
 import type { EnvRef, RepoConfig, SessionContainer, SessionInfo } from '../shared/types'
 import { OPERATOR_ENV_NAME, roleIsReadOnly, roleNeedsRepo, sessionRole } from '../shared/types'
 import type { ContainerStatusReason } from '../shared/events'
-import type { AgentDef } from '../shared/agents'
+import type { AgentManifest } from '../shared/agentPlugin'
 import { agentDef } from '../shared/agents'
+import { agentMain } from './agentPlugins'
 import { canonicalRepoId } from '../shared/repoId'
 import { resolveCredential, resolveAgentSecret, credentialIdentity } from '../shared/credentials'
 import { listCredentials } from './credentials'
@@ -113,7 +114,7 @@ function usesRepoMounts(info: SessionInfo): boolean {
 }
 
 /** Whether this session's container carries the skills bind: it picked a skill
- *  at all, *and* its agent kind reads a skills directory (`AgentDef.skillsDir`,
+ *  at all, *and* its agent kind reads a skills directory (`AgentManifest.skillsDir`,
  *  resolved by the caller — docs/requirements-skills.md §5). A `null` dir means
  *  the pinned CLI never looks: mounting files it cannot see would let the UI
  *  claim a delivery that does not happen, so such a session provisions exactly
@@ -193,7 +194,7 @@ export function sessionConfigArgs(
  * because the install itself needs the open network (§7.1 step 3).
  */
 export interface AdapterTarget {
-  agent: AgentDef
+  agent: AgentManifest
   /** Owning session — also the container's identity (`gurt.session` id-label). */
   session: string
   /** The container the adapter runs in; the key of every container-bound cache. */
@@ -556,7 +557,7 @@ export class ContainerManager {
         workspaceFolder = anchor!.dir
       }
       // Whether the selection is *deliverable* is the agent kind's to say
-      // (`AgentDef.skillsDir`): resolve the draft's instance to its kind,
+      // (`AgentManifest.skillsDir`): resolve the draft's instance to its kind,
       // falling back to the workspace default the way the create path does
       // (ipc.ts). An id that resolves to nothing mounts nothing — gurt cannot
       // link a directory for an agent it cannot name.
@@ -864,11 +865,12 @@ export class ContainerManager {
     // Every launch starts with a fresh one; a dead refresh token throws the
     // signed-out sentence and no container-bound adapter spawns without auth.
     const injected = credEntry?.kind === 'oauth' ? await resolveOAuthAccess(credEntry.id) : secret
-    // §5.2.1: delivery is per agent kind. codex/gemini consume a sign-in
-    // through their native auth file — materialized access-only, right now,
-    // with the token just resolved — and their secretEnv var must stay unset
-    // (a non-key value in it sends those CLIs down the API-key path). Every
-    // other kind, and every agent-token link, keeps the env-var path.
+    // §5.2.1: delivery is per agent kind. A kind whose plugin names a native
+    // auth file consumes a sign-in through it — materialized access-only,
+    // right now, with the token just resolved — and its secretEnv var must
+    // stay unset (a non-key value in it sends such a CLI down the API-key
+    // path). Every other kind, and every agent-token link, keeps the env-var
+    // path.
     let envSecret = injected
     if (credEntry?.kind === 'oauth') {
       // Re-read after the refresh above: the copy resolveAgentSecret returned
@@ -896,14 +898,12 @@ export class ContainerManager {
         )
       )
     }
-    // claude-code only (§3.2): pin the mangled-cwd directory name its own
-    // history keys by to a constant — the session id, already what the host
-    // history directory is keyed by — so this kind's history survives a
-    // repo-set change too. An ordinary non-secret var, composed beside
-    // whatever the agent instance's own config already sets (which wins on a
-    // clash — it is the more specific, user-made choice).
-    const historyEnv = def.id === 'claude-code' ? { CLAUDE_CODE_PROJECT_DIR_NAME: sessionId } : {}
-    const env = { ...historyEnv, ...cfg.env }
+    // The kind's own launch env (non-secret: e.g. pinning where its CLI keys
+    // history, docs/requirements-agent-history.md §3.2), composed beside
+    // whatever the agent instance's own config already sets — which wins on a
+    // clash: it is the more specific, user-made choice.
+    const launchEnv = agentMain(def.id)?.launchEnv?.({ sessionId }) ?? {}
+    const env = { ...launchEnv, ...cfg.env }
     return {
       ...target,
       remoteWorkspaceFolder: c.remoteWorkspaceFolder,

@@ -1,249 +1,30 @@
-// Caches subscription limits from live Claude sessions and Claude/Codex OAuth polls.
+// The plan-usage cache: what each agent instance's provider says is left of
+// its plan, from two sources — live events riding normal session responses
+// (a plugin's `usageMeta`, emitted by the session manager as
+// `agent.planUsage`), and polls of a provider's usage endpoint (a plugin's
+// `planUsage` hooks). Which kinds have either, what they ask and how a body
+// parses is the plugins'; the floor, the single flight, the Retry-After and
+// the keep-the-last-good-read rule are this file's.
 //
-// Token credentials use rate-limit events from normal session responses.
-// Browser OAuth credentials can also poll the unpublished usage endpoint.
 // Both sources preserve the last good snapshot when data is unavailable.
-import { z } from 'zod'
 import type { CredentialEntry } from '../shared/credentials'
 import { resolveAgentSecret } from '../shared/credentials'
 import type { AgentsFile } from '../shared/types'
-import type { PlanUsage, PlanWindow } from '../shared/planUsage'
-import { isOauthToken, PLAN_WINDOW_LABELS } from '../shared/planUsage'
+import type { AgentLink, PlanUsagePoll } from '../shared/agentPlugin'
+import type { PlanUsage } from '../shared/planUsage'
 export { STALE_AFTER_MS } from '../shared/planUsage'
 import type { Bus } from './bus'
+import { agentMain } from './agentPlugins'
 import { createLogger } from './log'
 
 const log = createLogger('plan-usage')
 
-/** Order the meters render in; anything else — the model-scoped weeks among
- *  them, whose ids are dynamic — follows in reported order. */
-const ORDER = ['five_hour', 'seven_day', 'seven_day_opus', 'seven_day_sonnet']
-
-const isRecord = (v: unknown): v is Record<string, unknown> =>
-  !!v && typeof v === 'object' && !Array.isArray(v)
-
-/**
- * One node of the response, read through the field spellings this endpoint is
- * known to use. Every member is optional and `.catch`es back to "absent", which
- * is what keeps the parser as tolerant as the hand-rolled reads it replaces: an
- * incomplete body, a window the plan is not metering (fields arrive `null`), or
- * a spelling that changes again all degrade to "no data" for that node, never
- * to a thrown parse. Loose: unknown members are what the walk below recurses
- * into.
- */
-const USAGE_NODE = z.looseObject({
-  // Reset instant. Three spellings in the wild, and either an ISO string or an
-  // epoch number.
-  resets_at: z.union([z.string(), z.number()]).nullish().catch(undefined),
-  resetsAt: z.union([z.string(), z.number()]).nullish().catch(undefined),
-  reset: z.union([z.string(), z.number()]).nullish().catch(undefined),
-  // `percent` is the `limits[]` spelling, `utilization` the keyed one.
-  utilization: z.number().nullish().catch(undefined),
-  percent: z.number().nullish().catch(undefined),
-  kind: z.string().nullish().catch(undefined),
-  scope: z
-    .looseObject({
-      model: z.looseObject({ display_name: z.string().nullish().catch(undefined) }).nullish().catch(undefined),
-      surface: z.looseObject({ display_name: z.string().nullish().catch(undefined) }).nullish().catch(undefined)
-    })
-    .nullish()
-    .catch(undefined)
-})
-type UsageNode = z.infer<typeof USAGE_NODE>
-
-/** The reset instant of one window object, in whatever form it arrived. */
-function resetOf(o: UsageNode): string | undefined {
-  const v = o.resets_at ?? o.resetsAt ?? o.reset
-  if (typeof v === 'number') {
-    // Seconds or milliseconds since the epoch — 1e12 is 2001 in ms, and no
-    // plausible reset is 30,000 years out in seconds.
-    const at = new Date(v < 1e12 ? v * 1000 : v)
-    return Number.isNaN(at.getTime()) ? undefined : at.toISOString()
-  }
-  if (typeof v !== 'string') return undefined
-  const at = new Date(v)
-  return Number.isNaN(at.getTime()) ? undefined : at.toISOString()
-}
-
-/** The utilization of one window object, or undefined if it carries none.
- *  (Both spellings arrive null on a window the plan has but is not metering.) */
-function utilizationOf(o: UsageNode): number | undefined {
-  const v = o.utilization ?? o.percent
-  return typeof v === 'number' && Number.isFinite(v) ? v : undefined
-}
-
-/** The display name a `limits[]` entry is scoped to, if any — a model
- *  ("Fable") or a surface, whichever the entry carries. */
-function scopeNameOf(o: UsageNode): string | undefined {
-  for (const target of [o.scope?.model, o.scope?.surface]) {
-    if (target?.display_name) return target.display_name
-  }
-  return undefined
-}
-
-/**
- * Pull the windows out of a `/api/oauth/usage` body.
- *
- * Two shapes exist in the wild, and a body may carry both at once:
- * - keyed: `{ five_hour: {utilization, resets_at}, seven_day: {…} }`
- * - listed: `{ limits: [{kind, percent, resets_at, scope: {model: {display_name}}}] }`
- *   — the newer form (CLI 2.1.x), and the only place model-scoped weeks
- *   ("Current week (Fable)") are reported.
- *
- * Structural in its walk, schema-bound per node: it descends the response
- * looking for objects that carry a utilization — keyed by name or describing
- * themselves via `kind` — at any depth, and reads each candidate through
- * {@link USAGE_NODE}. The exact nesting is the one thing that could not be read
- * off the binary, so the walk stays shape-agnostic; getting it wrong still
- * costs nothing — an unrecognized body yields an empty list, which every caller
- * already renders as "no data". Where both shapes report the same window the
- * keyed one wins (first found), so nothing draws twice.
- */
-export function parsePlanWindows(body: unknown): PlanWindow[] {
-  const found = new Map<string, PlanWindow>()
-  const put = (id: string, label: string, util: number, resetsAt?: string): void => {
-    if (!found.has(id))
-      found.set(id, {
-        id,
-        label,
-        utilization: Math.max(0, Math.min(100, util)),
-        raw: util,
-        ...(resetsAt ? { resetsAt } : {})
-      })
-  }
-  const visit = (node: unknown, key: string | null, depth: number): void => {
-    if (depth > 5) return
-    if (Array.isArray(node)) {
-      for (const el of node) visit(el, null, depth + 1)
-      return
-    }
-    if (!isRecord(node)) return
-    const parsed = USAGE_NODE.safeParse(node)
-    if (!parsed.success) return
-    const util = utilizationOf(parsed.data)
-    const kind = parsed.data.kind ?? undefined
-    if (kind && util !== undefined) {
-      const base = PLAN_WINDOW_LABELS[kind] ?? kind.replace(/_/g, ' ')
-      const name = scopeNameOf(parsed.data)
-      put(name ? `${kind}:${name}` : kind, name ? `${base} (${name})` : base, util, resetOf(parsed.data))
-      return
-    }
-    if (key !== null && util !== undefined) {
-      put(key, PLAN_WINDOW_LABELS[key] ?? key.replace(/_/g, ' '), util, resetOf(parsed.data))
-      return
-    }
-    for (const [k, v] of Object.entries(node)) visit(v, k, depth + 1)
-  }
-  visit(body, null, 0)
-  const known = ORDER.filter((id) => found.has(id)).map((id) => found.get(id)!)
-  const rest = [...found.values()].filter((w) => !ORDER.includes(w.id))
-  return [...known, ...rest]
-}
-
-/** SDK events use fractions (0.7 = 70%), unlike the usage endpoint's percent.
- * Confirmed with a setup-token response; never infer units from the value. */
-export function parseClaudeRateLimit(body: unknown): PlanWindow[] {
-  if (!isRecord(body)) return []
-  const windows = isRecord(body['unifiedWindows'])
-    ? body['unifiedWindows']
-    : typeof body['rateLimitType'] === 'string'
-      ? { [body['rateLimitType']]: body }
-      : {}
-  const out: PlanWindow[] = []
-  for (const [id, value] of Object.entries(windows)) {
-    const parsed = USAGE_NODE.safeParse(value)
-    if (!parsed.success) continue
-    const raw = parsed.data.utilization
-    if (typeof raw !== 'number' || !Number.isFinite(raw) || raw < 0) continue
-    const resetsAt = resetOf(parsed.data)
-    out.push({
-      id,
-      label: PLAN_WINDOW_LABELS[id] ?? id.replace(/_/g, ' '),
-      utilization: Math.min(100, raw * 100),
-      raw,
-      ...(resetsAt ? { resetsAt } : {})
-    })
-  }
-  return out
-}
-
-/** What a live Claude rate-limit event says beyond the windows: whether the
- *  request was refused, and whether overage (extra usage) can absorb an
- *  exhausted window. `status` and `overageStatus` read `allowed`,
- *  `allowed_warning` or `rejected` (see LIVE_LIMIT in the tests). */
-export function parseClaudeRateLimitState(body: unknown): {
-  windows: PlanWindow[]
-  overage?: boolean
-  rejected?: boolean
-  rejectedUntil?: string
-} {
-  const windows = parseClaudeRateLimit(body)
-  if (!isRecord(body)) return { windows }
-  const status = body['status']
-  const overageStatus = body['overageStatus']
-  const reset = USAGE_NODE.safeParse(body)
-  const resetsAt = reset.success ? resetOf(reset.data) : undefined
-  return {
-    windows,
-    ...(typeof overageStatus === 'string' ? { overage: overageStatus.startsWith('allowed') } : {}),
-    ...(typeof status === 'string' ? { rejected: status === 'rejected' } : {}),
-    ...(status === 'rejected' && resetsAt ? { rejectedUntil: resetsAt } : {})
-  }
-}
-
-/**
- * Can this account spend past an exhausted window, per a usage poll?
- * Anthropic: `extra_usage: { is_enabled, utilization }` — on, and not itself
- * spent. Codex: `credits: { has_credits, unlimited }` (codex-rs
- * `CreditsSnapshot`). Anything absent or unreadable is "no": the hold is the
- * safe side of a guess.
- */
-export function parseOverage(body: unknown, codex: boolean): boolean {
-  if (!isRecord(body)) return false
-  if (codex) {
-    const c = body['credits']
-    return isRecord(c) && (c['unlimited'] === true || c['has_credits'] === true)
-  }
-  const x = body['extra_usage']
-  if (!isRecord(x) || x['is_enabled'] !== true) return false
-  const util = x['utilization']
-  return typeof util !== 'number' || util < 100
-}
-
-/** Codex CLI's /backend-api/wham/usage response (backend-client, v0.160.1).
- * Only the main quota is shown; code-review and model-specific pools are separate.
- * Percentages and duration seconds are explicit, never inferred from magnitudes. */
-export function parseCodexPlanWindows(body: unknown): PlanWindow[] {
-  if (!isRecord(body) || !isRecord(body['rate_limit'])) return []
-  const out: PlanWindow[] = []
-  for (const slot of ['primary', 'secondary']) {
-    const value = body['rate_limit'][`${slot}_window`]
-    if (!isRecord(value)) continue
-    const raw = value['used_percent']
-    if (typeof raw !== 'number' || !Number.isFinite(raw) || raw < 0) continue
-    const seconds = value['limit_window_seconds']
-    const durationSeconds = typeof seconds === 'number' && Number.isFinite(seconds) && seconds > 0 ? seconds : undefined
-    const reset = value['reset_at']
-    const at = typeof reset === 'number' && Number.isFinite(reset) && reset > 0 ? new Date(reset * 1000) : undefined
-    const resetsAt = at && Number.isFinite(at.getTime()) ? at.toISOString() : undefined
-    const label = durationSeconds === 604800 ? 'week'
-      : durationSeconds !== undefined && durationSeconds % 3600 === 0 ? `${durationSeconds / 3600}h`
-        : durationSeconds !== undefined ? `${durationSeconds / 60}m` : slot
-    out.push({ id: `codex_${slot}`, label, utilization: Math.min(100, raw), raw,
-      ...(durationSeconds !== undefined ? { durationSeconds } : {}),
-      ...(resetsAt ? { resetsAt } : {}) })
-  }
-  return out
-}
-
-const ENDPOINT = 'https://api.anthropic.com/api/oauth/usage'
-const CODEX_ENDPOINT = 'https://chatgpt.com/backend-api/wham/usage'
-/** The CLI's own timeout for this call. */
+/** A CLI's own timeout for this call (Claude Code's). */
 const TIMEOUT_MS = 5_000
 /**
- * Floor between two polls for one agent. The endpoint is rate limited — Claude
- * Code's own `/usage` degrades to last-known bars when it gets refused — so the
- * dashboard being open must not become a request per render.
+ * Floor between two polls for one agent. Usage endpoints are rate limited —
+ * Claude Code's own `/usage` degrades to last-known bars when it gets refused —
+ * so the dashboard being open must not become a request per render.
  */
 const MIN_INTERVAL_MS = 60_000
 /**
@@ -277,7 +58,8 @@ export interface PlanUsageDeps {
   credentials: () => Promise<CredentialEntry[]>
   /** Injected by tests; defaults to the platform fetch. */
   fetchImpl?: typeof fetch
-  /** Refresh OAuth and re-read account metadata before a Codex request. */
+  /** Refresh an OAuth sign-in and re-read its entry — for a kind that polls
+   *  with a fresh sign-in (`PlanUsagePoll.freshSignIn`). */
   freshCredential?: (id: string) => Promise<CredentialEntry>
   now?: () => number
 }
@@ -288,25 +70,13 @@ class FetchUsageError extends Error {
 }
 
 /** One GET, returning the parsed body or throwing with a short reason. */
-async function fetchUsage(secret: string, doFetch: typeof fetch, codex?: CredentialEntry): Promise<unknown> {
-  const res = await doFetch(codex ? CODEX_ENDPOINT : ENDPOINT, {
+async function fetchUsage(
+  request: { url: string; headers: Record<string, string> },
+  doFetch: typeof fetch
+): Promise<unknown> {
+  const res = await doFetch(request.url, {
     method: 'GET',
-    headers: codex ? {
-      Authorization: `Bearer ${secret}`,
-      ...(codex.data['accountId'] ? { 'ChatGPT-Account-Id': codex.data['accountId'] } : {}),
-      'User-Agent': 'codex-cli',
-      Accept: 'application/json'
-    } : {
-      // An OAuth token rides `Authorization`, never `x-api-key`, and the
-      // endpoint sits behind the same oauth beta gate as the rest of that surface.
-      Authorization: `Bearer ${secret}`,
-      'anthropic-beta': 'oauth-2025-04-20',
-      'Content-Type': 'application/json',
-      // The CLI's own UA, verbatim. This path is unpublished and its edge is
-      // stricter than the API proper — an anonymous client risks the 429 lane
-      // regardless of its token, so the request mirrors the binary's exactly.
-      'User-Agent': 'claude-cli/2.1.235 (external, cli)'
-    },
+    headers: request.headers,
     signal: AbortSignal.timeout(TIMEOUT_MS)
   })
   if (!res.ok) {
@@ -360,21 +130,23 @@ export function createPlanUsage(bus: Bus, deps: PlanUsageDeps): PlanUsageStore {
     bus.emit('usage.changed', undefined)
   })
 
-  async function poll(agent: string, secret: string, codex?: CredentialEntry): Promise<void> {
+  async function poll(
+    agent: string,
+    hooks: PlanUsagePoll,
+    link: AgentLink,
+    entry: CredentialEntry | undefined
+  ): Promise<void> {
     const started = now()
     const previous = cache.get(agent)
     lastAttempt.set(agent, started)
     try {
-      if (codex) {
-        codex = deps.freshCredential ? await deps.freshCredential(codex.id) : codex
-        const resolved = resolveAgentSecret([codex], codex.id)
-        if (codex.kind !== 'oauth' || codex.data['providerId'] !== 'openai' || resolved.error || !resolved.secret)
-          throw new Error('no ChatGPT sign-in linked')
-        secret = resolved.secret
+      if (hooks.freshSignIn && entry) {
+        const fresh = deps.freshCredential ? await deps.freshCredential(entry.id) : entry
+        const resolved = resolveAgentSecret([fresh], fresh.id)
+        link = { secret: resolved.secret, credential: fresh, error: resolved.error }
       }
-      const body = await fetchUsage(secret, doFetch, codex)
-      const windows = codex ? parseCodexPlanWindows(body) : parsePlanWindows(body)
-      const overage = parseOverage(body, !!codex)
+      const body = await fetchUsage(hooks.request(link), doFetch)
+      const { windows, overage } = hooks.parse(body)
       // A live response received during this request is the newer snapshot.
       if (cache.get(agent) !== previous) return
       if (!windows.length) {
@@ -403,23 +175,17 @@ export function createPlanUsage(bus: Bus, deps: PlanUsageDeps): PlanUsageStore {
     const creds = await deps.credentials().catch(() => [])
     const work: Promise<void>[] = []
     for (const [id, a] of Object.entries(agents)) {
-      if (a.kind !== 'claude-code' && a.kind !== 'codex') continue
+      const hooks = agentMain(a.kind)?.planUsage
+      if (!hooks) continue
       const { secret, entry, error } = resolveAgentSecret(creds, a.credentialId)
-      const codex = a.kind === 'codex'
-      if (codex && (entry?.kind !== 'oauth' || entry.data['providerId'] !== 'openai' || error)) {
-        cache.set(id, { agent: id, windows: [], error: error ?? 'Link a ChatGPT sign-in in Settings → Agents' })
-        continue
-      }
-      if (!codex && (!secret || !isOauthToken(secret))) {
-        // Not a failure and not worth retrying: an API-key agent bills per
-        // token and has no plan window to report.
-        if (!cache.has(id)) patch(id, { error: 'no subscription token linked' })
-        continue
-      }
-      // setup-token can run inference but lacks user:profile. Its real limits
-      // arrive with normal session responses; never poll it into repeated 403s.
-      if (!codex && entry?.kind === 'agent-token') {
-        if (!cache.has(id)) patch(id, { error: 'waiting for usage from a Claude response' })
+      const link: AgentLink = { secret, credential: entry, error }
+      const verdict = hooks.eligible(link)
+      if (verdict !== true) {
+        // A kind whose numbers also ride session responses keeps what those
+        // brought and only says why it is not polled while it has nothing;
+        // otherwise the reason is the whole answer.
+        if (!verdict.live) cache.set(id, { agent: id, windows: [], error: verdict.error })
+        else if (!cache.has(id)) patch(id, { error: verdict.error })
         continue
       }
       const pending = inFlight.get(id)
@@ -428,7 +194,7 @@ export function createPlanUsage(bus: Bus, deps: PlanUsageDeps): PlanUsageStore {
         continue
       }
       if (now() - (lastAttempt.get(id) ?? 0) < MIN_INTERVAL_MS) continue
-      const p = poll(id, secret, codex ? entry : undefined).finally(() => inFlight.delete(id))
+      const p = poll(id, hooks, link, entry).finally(() => inFlight.delete(id))
       inFlight.set(id, p)
       work.push(p)
     }

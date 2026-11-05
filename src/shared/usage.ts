@@ -7,6 +7,7 @@
 // exactly one honest source — the provider's own usage endpoint (see
 // shared/planUsage.ts) — so nothing here derives a quota from turn counts.
 import type { SessionUsage } from './types'
+import { NO_LIMITS, type LimitPatterns } from './agentVocabulary'
 
 export const MINUTE = 60_000
 export const HOUR = 60 * MINUTE
@@ -26,7 +27,7 @@ export interface TurnRecord {
   ts: string
   /** Agent instance id (a key of `AgentsFile`); '' when the session had none. */
   agent: string
-  /** Agent kind (an `AgentDef.id`). */
+  /** Agent kind (an `AgentManifest.id`). */
   kind: string
   sessionId: string
   workspace: string
@@ -51,14 +52,11 @@ export interface TurnRecord {
  * purpose: every adapter wraps the upstream message differently, and the cost
  * of a miss (a limit hit filed as a plain error) is worse than the cost of a
  * false positive (one turn drawn in red, with its own text right next to it).
+ *
+ * These are the generic ones, read for every kind; an adapter's own wording
+ * (its plugin's `limits.errors`) is read for its sessions only.
  */
 const LIMIT_PATTERNS = [
-  // Claude Code's own wording, verbatim: "You've hit your session limit" (the
-  // 5-hour window), "…your weekly limit", "…your Opus limit" (model-specific,
-  // and the one case where switching models keeps you working).
-  /hit your .{0,24}limit/i,
-  /\b(session|weekly|hourly|daily|opus) limit\b/i,
-  /usage limit reached/i,
   /rate.?limit/i,
   /\bquota\b.*\b(exceed|reach|exhaust)/i,
   /limit (will )?reset/i,
@@ -66,44 +64,48 @@ const LIMIT_PATTERNS = [
   /\b429\b/
 ]
 
-export const isLimitMessage = (text?: string): boolean =>
-  !!text && LIMIT_PATTERNS.some((re) => re.test(text))
+export const isLimitMessage = (text?: string, limits: LimitPatterns = NO_LIMITS): boolean =>
+  !!text && (LIMIT_PATTERNS.some((re) => re.test(text)) || limits.errors.some((re) => re.test(text)))
 
 /**
- * Is this agent reply, as a whole, a limit notice? Claude Code answers a
- * refused turn with the notice as plain text — "You've hit your session limit
- * · resets 3pm", or the older "Claude AI usage limit reached|1760000000" — and
- * a clean `end_turn`. Much stricter than {@link isLimitMessage}: this reads
- * the agent's own words, which may well *discuss* rate limiting, so only a
- * short reply in the notice's own wording counts.
+ * Is this agent reply, as a whole, a limit notice? Some adapters answer a
+ * refused turn with the notice as plain text and a clean `end_turn` — their
+ * plugin's `limits.replies` say in what words. Much stricter than
+ * {@link isLimitMessage}: this reads the agent's own words, which may well
+ * *discuss* rate limiting, so only a short reply in the notice's own wording
+ * counts.
  */
-export function isLimitReply(text?: string): boolean {
+export function isLimitReply(text?: string, limits: LimitPatterns = NO_LIMITS): boolean {
   const t = text?.trim()
   if (!t || t.length > 300) return false
-  return /hit your .{0,24}limit/i.test(t) || /usage limit reached/i.test(t) || /\blimit reached\b.{0,40}\breset/i.test(t)
+  return limits.replies.some((re) => re.test(t))
 }
 
 /** The reset instant a refusal named, when it named one as a machine-readable
- *  value (ISO or a unix stamp). Prose forms ("resets at 3pm") are left alone —
- *  parsing those needs the provider's timezone, which the message doesn't carry. */
-export function limitResetAt(text?: string): string | undefined {
-  const raw = (
-    /reset\w*(?:\s+at)?[\s:="']*(\d{4}-\d{2}-\d{2}T[\d:.]+Z?|\d{10}(?:\d{3})?)\b/i.exec(text ?? '') ??
-    // "Claude AI usage limit reached|1760000000" — the stamp after the pipe.
-    /limit reached\|(\d{10}(?:\d{3})?)\b/i.exec(text ?? '')
-  )?.[1]
+ *  value (ISO or a unix stamp) — after "reset", or wherever the kind's own
+ *  wording puts one (`limits.resetStamps`). Prose forms ("resets at 3pm") are
+ *  left alone — parsing those needs the provider's timezone, which the message
+ *  doesn't carry. */
+export function limitResetAt(text?: string, limits: LimitPatterns = NO_LIMITS): string | undefined {
+  const raw = [
+    /reset\w*(?:\s+at)?[\s:="']*(\d{4}-\d{2}-\d{2}T[\d:.]+Z?|\d{10}(?:\d{3})?)\b/i,
+    ...limits.resetStamps
+  ].reduce<RegExpExecArray | null>((found, re) => found ?? re.exec(text ?? ''), null)?.[1]
   if (!raw) return undefined
   const at = /^\d+$/.test(raw) ? new Date(Number(raw) * (raw.length === 10 ? 1000 : 1)) : new Date(raw)
   return Number.isNaN(at.getTime()) ? undefined : at.toISOString()
 }
 
 /** Fold a turn's raw ending into the recorded outcome. */
-export function turnOutcome(o: {
-  threw: boolean
-  stopReason?: string | undefined
-  detail?: string | undefined
-}): TurnOutcome {
-  if (isLimitMessage(o.detail)) return 'limited'
+export function turnOutcome(
+  o: {
+    threw: boolean
+    stopReason?: string | undefined
+    detail?: string | undefined
+  },
+  limits: LimitPatterns = NO_LIMITS
+): TurnOutcome {
+  if (isLimitMessage(o.detail, limits)) return 'limited'
   if (o.threw) return 'error'
   if (o.stopReason === 'cancelled') return 'cancelled'
   return o.stopReason === 'end_turn' || !o.stopReason ? 'ok' : 'error'

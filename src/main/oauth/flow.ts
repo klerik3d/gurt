@@ -13,33 +13,12 @@ import { createHash, randomBytes } from 'node:crypto'
 import { createServer, type ServerResponse } from 'node:http'
 import { createRequire } from 'node:module'
 import { addSecrets } from '../redact'
-import type { TokenSet } from './provider'
+import type { OAuthClient, TokenSet } from '../../shared/agentPlugin'
 
-/** How each provider's flow differs — the data behind one provider module. */
-export interface AuthCodeConfig {
-  /** Provider id, for error sentences ("anthropic answered: …"). */
-  id: string
-  authorizationEndpoint: string
-  tokenEndpoint: string
-  clientId: string
-  /** Google installed-app registrations carry a *published* "secret" (it ships
-   *  in the official CLI's source); the flow is still a public client with
-   *  PKCE — this is not a confidential-client credential. */
-  clientSecret?: string
-  scopes: string[]
-  /** Extra authorize-URL params (`access_type=offline`, …). */
-  authParams?: Record<string, string>
-  /** How the token endpoint wants its body: RFC 6749 form encoding, or JSON
-   *  (Anthropic's endpoint). */
-  tokenBody: 'form' | 'json'
-  /** Loopback port the borrowed registration pins; 0/absent = random, per
-   *  RFC 8252 and §4. The listener binds 127.0.0.1 either way. */
-  port?: number
-  /** Path of the registered redirect; default `/callback`. */
-  redirectPath?: string
-  /** Hostname the registered redirect_uri spells (`localhost` for the CLIs
-   *  that registered it that way); the socket still binds 127.0.0.1 only. */
-  redirectHost?: string
+/** How each provider's flow differs: the client data its agent plugin declares
+ *  (`AgentOAuth.client`), plus the plugin's extra-data miner bound to the
+ *  core's tools. */
+export interface AuthCodeConfig extends OAuthClient {
   /** Provider-specific extra `TokenSet.extra` fields mined from a token
    *  response (§2). On the refresh grant it also receives the current set,
    *  so a value the response omits (a non-rotated id_token, say) can be
@@ -80,7 +59,7 @@ export const expiryFrom = (expiresIn: unknown): string => {
 }
 
 /** The payload claims of a JWT, or {} — for providers whose account identity
- *  rides in an `id_token`. No signature check: the token arrived over TLS from
+ *  rides in an `id_token` (lent to plugins as `OAuthTools.idTokenClaims`). No signature check: the token arrived over TLS from
  *  the issuer itself, and only a display string is read from it. */
 export function idTokenClaims(idToken: unknown): Record<string, unknown> {
   const payload = str(idToken).split('.')[1]

@@ -10,21 +10,37 @@ import type { CredentialEntry } from '../../shared/credentials'
 import { CREDENTIAL_KINDS, oauthSignedOut, signedOutError } from '../../shared/credentials'
 import { listCredentials, patchCredentialData, upsertCredentialEntry } from '../credentials'
 import { addSecrets, createLogger } from '../log'
-import { isSignedOut } from './flow'
+import type { AgentOAuth, OAuthTools } from '../../shared/agentPlugin'
+import { agentMains } from '../agentPlugins'
+import { authorizeGrant, idTokenClaims, isSignedOut, refreshGrant, type AuthCodeConfig } from './flow'
 import type { OAuthProvider, TokenSet } from './provider'
-import { anthropic } from './providers/anthropic'
-import { google } from './providers/google'
-import { openai } from './providers/openai'
 
 const log = createLogger('oauth')
 
-/** Ids must match `OAUTH_PROVIDER_CHOICES` in shared/credentials.ts — that
- *  list is what the renderer's provider picker offers. */
-export const OAUTH_PROVIDERS: Record<string, OAuthProvider> = {
-  anthropic,
-  openai,
-  google
+/** What the engine lends a plugin's OAuth hooks. */
+const TOOLS: OAuthTools = { fetch: (...args) => fetch(...args), idTokenClaims }
+
+/** One plugin's declared sign-in, run by the shared flow. */
+function providerOf(oauth: AgentOAuth): OAuthProvider {
+  const extraData = oauth.extraData
+  const cfg: AuthCodeConfig = {
+    ...oauth.client,
+    ...(extraData ? { extraData: (tokens, current) => extraData(tokens, current, TOOLS) } : {})
+  }
+  return {
+    id: cfg.id,
+    authorize: (signal?: AbortSignal): Promise<TokenSet> =>
+      authorizeGrant(cfg, (tokens) => oauth.account(tokens, TOOLS), signal),
+    refresh: (current: TokenSet): Promise<TokenSet> => refreshGrant(cfg, current)
+  }
 }
+
+/** Every sign-in an agent plugin declares, by provider id — the id stored as
+ *  an oauth credential's `providerId`, and the same set the renderer's
+ *  provider picker offers (`OAUTH_PROVIDER_CHOICES`, from the manifests). */
+export const OAUTH_PROVIDERS: Record<string, OAuthProvider> = Object.fromEntries(
+  agentMains().flatMap((p) => (p.oauth ? [[p.oauth.client.id, providerOf(p.oauth)]] : []))
+)
 
 /** Refresh when the access token is expired *or* within this window of it — a
  *  token that dies mid-injection helps nobody (§5.3). */
@@ -149,7 +165,7 @@ async function resolveUncoalesced(
   // §5.3: the (possibly rotated) refresh token is on disk before the access
   // token reaches any consumer — losing it is losing the sign-in. The patch
   // rides the save chain, so it read-modify-writes against any renderer save.
-  // Provider extras (§2 — openai's idToken/accountId) persist alongside; the
+  // Provider extras (§2 — an idToken/accountId, say) persist alongside; the
   // patch merges keys, so an extra the provider did not return this time
   // simply keeps its stored value.
   await patchCredentialData(id, {

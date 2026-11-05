@@ -22,8 +22,29 @@ await bundle({
   stdin: {
     contents: [
       `export * from ${S('src/shared/planUsage.ts')}`,
-      `export { createPlanUsage, parsePlanWindows, parseClaudeRateLimit, parseClaudeRateLimitState, parseOverage, parseCodexPlanWindows } from ${S('src/main/planUsage.ts')}`,
-      `export { SessionManager } from ${S('src/main/sessions.ts')}`,
+      // The window ids below are Anthropic's, timed by the claude-code plugin;
+      // Codex windows carry their own duration.
+      `import { windowElapsedPercent as elapsed } from ${S('src/shared/planUsage.ts')}`,
+      `export const windowElapsedPercent = (window, now) => elapsed(window, now, 'claude-code')`,
+      `export { createPlanUsage } from ${S('src/main/planUsage.ts')}`,
+      `export { parsePlanWindows, parseClaudeRateLimit, parseClaudeRateLimitState, isOauthToken } from ${S('src/plugins/agents/claude-code/main.ts')}`,
+      `export { parseCodexPlanWindows } from ${S('src/plugins/agents/codex/main.ts')}`,
+      // A usage poll's overage, as each provider reports it: Anthropic's extra
+      // usage (the claude-code plugin), Codex's credits (the codex plugin).
+      `import { parseOverage as extraUsage } from ${S('src/plugins/agents/claude-code/main.ts')}`,
+      `import { parseCreditsOverage } from ${S('src/plugins/agents/codex/main.ts')}`,
+      `export const parseOverage = (body, codex) => (codex ? parseCreditsOverage(body) : extraUsage(body))`,
+      // The limit detector below calls `withLimit` on a bare `this` for an agent
+      // instance 'a'; it reads the session's wording through the manager's
+      // kind map, so the bare manager maps 'a' to claude-code — whose replies
+      // these are.
+      `import { SessionManager as Sessions } from ${S('src/main/sessions.ts')}`,
+      `export class SessionManager extends Sessions {`,
+      `  withLimit(...args) {`,
+      `    const manager = Object.assign(Object.create(Sessions.prototype), { agentKinds: new Map([['a', 'claude-code']]) })`,
+      `    return Sessions.prototype.withLimit.apply(manager, args)`,
+      `  }`,
+      `}`,
       `export { createBus } from ${S('src/main/bus.ts')}`
     ].join('\n'),
     resolveDir: ROOT,

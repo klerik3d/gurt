@@ -39,7 +39,7 @@ await bundle({
   stdin: {
     contents: `
       export { probeAgentToken, canProbeAgentToken } from ${S('src/main/agentProviders.ts')}
-      export { AGENT_DEFS } from ${S('src/shared/agents.ts')}
+      export { AGENT_MANIFESTS as AGENT_DEFS } from ${S('src/shared/agents.ts')}
     `,
     resolveDir: ROOT,
     loader: 'ts',

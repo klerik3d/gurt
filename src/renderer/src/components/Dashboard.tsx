@@ -10,13 +10,13 @@ import type { PlanHold, PlanUsage, PlanWindow } from '../../../shared/planUsage'
 import { LIMIT_DEFAULTS, STALE_AFTER_MS, formatResetAt, planHold, windowElapsedPercent } from '../../../shared/planUsage'
 import type { TurnRecord } from '../../../shared/usage'
 import { formatDuration } from '../../../shared/usage'
+import { agentDef } from '../../../shared/agents'
 import { SESSION_DOT } from '../status'
 import { agentKind, agentName, useAgents } from '../useAgents'
 import { markAllSeen, markSeen, useUsage } from '../reviewed'
 import { relativeTime } from '../time'
 import { logErr } from '../log'
-import { Dot, Icon } from './icons'
-import { agentIcon } from './tags'
+import { AgentIcon, Dot, Icon } from './icons'
 
 /** Cards a column shows before collapsing the rest into a "+N more" line. */
 const COLUMN_ROWS = 12
@@ -362,8 +362,9 @@ export function Dashboard({
 }
 
 /**
- * One agent instance: whatever usage its own provider actually reports. A
- * Claude or Codex instance on a subscription gets the plan meters; an instance
+ * One agent instance: whatever usage its own provider actually reports. An
+ * instance on a subscription whose provider reports one (per its kind's
+ * plugin — Claude's, Codex's) gets the plan meters; an instance
  * whose provider reports nothing (an API key, a kind with no usage surface
  * yet) gets no substitute — gurt's own turn counts measure something else,
  * and here they read as noise.
@@ -395,7 +396,7 @@ function AgentCard({
   return (
     <div className="dash-card">
       <div className="dash-card-head">
-        <Icon name={agentIcon(kind)} size={15} />
+        <AgentIcon kind={kind} size={15} />
         <span className="dash-card-name" title={`${label} · ${kind || 'unknown kind'}`}>{label}</span>
         <span className="spacer" />
         {live > 0 && (
@@ -418,7 +419,7 @@ function AgentCard({
           </span>
         )}
       </div>
-      {plan?.windows.length ? <PlanMeters plan={plan} now={now} layout={meterLayout} /> :
+      {plan?.windows.length ? <PlanMeters plan={plan} kind={kind} now={now} layout={meterLayout} /> :
         <div className="dash-usage-unavailable faint" title={plan?.error}>{plan?.error || 'Usage limits unavailable'}</div>}
     </div>
   )
@@ -426,22 +427,24 @@ function AgentCard({
 
 /**
  * The provider's own numbers: how much of each window is used, and when it
- * resets. They cover usage from claude.ai and other machines too, which is
+ * resets. They cover usage from the provider's other surfaces and machines too, which is
  * why they are useful beyond the local turn ledger. A failed poll is not announced
  * here — the last good read stays up, and only its age going yellow says the
  * numbers have stopped moving.
  */
-function PlanMeters({ plan, now, layout }: { plan: PlanUsage; now: number; layout: MeterLayout }): JSX.Element {
-  const ids = plan.windows.some((w) => w.id.startsWith('codex_'))
-    ? plan.windows.filter((w) => w.id.startsWith('codex_')).map((w) => w.id)
-    : ['five_hour', 'seven_day']
+function PlanMeters({ plan, kind, now, layout }: { plan: PlanUsage; kind: string; now: number; layout: MeterLayout }): JSX.Element {
+  // Which windows and under what names: the kind's plugin says
+  // (`planWindows.meters` / `meterLabels`); otherwise every reported window.
+  const spec = agentDef(kind)?.planWindows
+  const ids = spec?.meters ?? plan.windows.map((w) => w.id)
+  const short = spec?.meterLabels ?? {}
   const stale = !!plan.fetchedAt && now - Date.parse(plan.fetchedAt) > STALE_AFTER_MS
   return (
     <div className="dash-plan">
       {ids.map((id) => {
         const w = plan.windows.find((window) => window.id === id)
-        return w ? <PlanMeter key={id} w={w} now={now} layout={layout} stale={stale} /> :
-          <div className="dash-plan-missing" key={id}><span>{id === 'five_hour' ? '5h' : 'week'}</span><span>—</span></div>
+        return w ? <PlanMeter key={id} w={w} kind={kind} short={short[id]} now={now} layout={layout} stale={stale} /> :
+          <div className="dash-plan-missing" key={id}><span>{short[id] ?? id}</span><span>—</span></div>
       })}
     </div>
   )
@@ -456,8 +459,8 @@ export function resetCountdown(ms: number): string {
   return [days ? `${days}d` : '', hours || days ? `${hours}h` : '', `${minutes % 60}m`].filter(Boolean).join(' ')
 }
 
-function PlanMeter({ w, now, layout, stale }: { w: PlanWindow; now: number; layout: MeterLayout; stale: boolean }): JSX.Element {
-  const elapsed = windowElapsedPercent(w, now)
+function PlanMeter({ w, kind, short, now, layout, stale }: { w: PlanWindow; kind: string; short: string | undefined; now: number; layout: MeterLayout; stale: boolean }): JSX.Element {
+  const elapsed = windowElapsedPercent(w, now, kind)
   const reset = w.resetsAt ? Date.parse(w.resetsAt) : NaN
   const left = reset - now
   const active = Number.isFinite(left) && left > 0
@@ -469,7 +472,7 @@ function PlanMeter({ w, now, layout, stale }: { w: PlanWindow; now: number; layo
   return (
     <div className="dash-plan-row">
       <div className="dash-plan-legend">
-        <span className="dash-plan-label" title={detail}>{w.id === 'five_hour' ? '5h' : w.id === 'seven_day' ? 'week' : w.label}{stale && <span className="yellow" aria-label="Stale usage"> ·</span>}</span>
+        <span className="dash-plan-label" title={detail}>{short ?? w.label}{stale && <span className="yellow" aria-label="Stale usage"> ·</span>}</span>
         <span className="dash-plan-reset" title={resetDetail}>
           {Number.isFinite(reset) ? <>{resetCountdown(left)}<span className="faint"> · {new Date(reset).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })}</span></> : '—'}
         </span>
@@ -630,8 +633,8 @@ function BoardCard({
         <Dot tone={failed ? 'red' : dot.tone} pulse={dot.pulse} hollow={!failed && dot.hollow} />
         <span className="dash-row-title">{row.info.title}</span>
         {row.info.agent && (
-          <Icon
-            name={agentIcon(agents[row.info.agent]?.kind)}
+          <AgentIcon
+            kind={agents[row.info.agent]?.kind}
             size={11}
             className="faint"
             // The name would not survive the column width; the mark and its

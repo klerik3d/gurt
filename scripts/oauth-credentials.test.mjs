@@ -36,7 +36,10 @@ export {
 } from ${S('src/main/oauth/index.ts')}
 export { OAuthFlowError } from ${S('src/main/oauth/flow.ts')}
 export { oauthAuthFile } from ${S('src/main/oauth/materialize.ts')}
-export { openaiExtraData } from ${S('src/main/oauth/providers/openai.ts')}
+import { idTokenClaims } from ${S('src/main/oauth/flow.ts')}
+import { openaiExtraData as codexExtraData } from ${S('src/plugins/agents/codex/main.ts')}
+// The codex plugin's miner, with the JWT reader the core lends it.
+export const openaiExtraData = (tokens, current) => codexExtraData(tokens, current, { idTokenClaims })
 export {
   getCredentials, setCredentials, listCredentials, patchCredentialData, upsertCredentialEntry
 } from ${S('src/main/credentials.ts')}

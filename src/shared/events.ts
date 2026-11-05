@@ -119,7 +119,8 @@ export interface DomainEvents {
    *  one is a round-trip of its own and costs the same quota. The usage ledger
    *  is the only consumer; `session.turn` stays the lifecycle signal. */
   'agent.turn': TurnRecord
-  /** Subscription limits received with a normal Claude response. */
+  /** Subscription limits received with a normal agent response (the
+   *  kind's plugin reads them out of a `usage_update`: `usageMeta`). */
   'agent.planUsage': {
     agent: string
     windows: PlanWindow[]

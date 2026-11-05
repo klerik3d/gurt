@@ -24,5 +24,15 @@
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src/renderer/**/*", "src/shared/**/*", "src/preload/api.d.ts"]
+  // Agent plugins: only the shared halves (docs/requirements-agent-plugins.md
+  // §4.4) — a plugin's main.ts, and the main-only list, never reach the
+  // renderer.
+  "include": [
+    "src/renderer/**/*",
+    "src/shared/**/*",
+    "src/preload/api.d.ts",
+    "src/plugins/agents/index.ts",
+    "src/plugins/agents/*/manifest.ts",
+    "src/plugins/agents/*/shared.ts"
+  ]
 }

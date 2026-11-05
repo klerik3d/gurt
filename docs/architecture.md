@@ -21,6 +21,9 @@ Where to look in the code (the domain model itself is described below):
 - `src/renderer/` — the React UI (renderer process).
 - `src/shared/` — types shared by main and renderer, including the IPC
   contract.
+- `src/plugins/agents/` — the agent plugins: everything specific to one coding
+  agent (see [Agents](#agents) below). The rest of `src/` is the *core* and
+  names no agent.
 - `resources/proxy/gurt-proxy.mjs` — the per-session egress/MCP proxy. Plain
   dependency-free Node, bind-mounted into a stock, digest-pinned `node:22-alpine`
   container and run as-is, so it is not built with the app; its contract (the
@@ -45,6 +48,53 @@ derives from it.
 (start/stop/queue/persistence).
 
 Historical specs and design notes live in this folder — see its [index](README.md).
+
+### Agents
+
+Each coding agent gurt can run — a *kind*: `claude-code`, `codex`, `gemini`,
+`opencode`, `pi` — is one folder under `src/plugins/agents/<id>/`
+([requirements-agent-plugins.md](requirements-agent-plugins.md)):
+
+- `manifest.ts` — pure, JSON-compatible data: label, vendor, icon, the pinned
+  adapter packages and launch command, the secret env var, which sign-in it
+  uses, its skills and history directories, its native config file, seed
+  config, and the vocabulary its adapter speaks (MCP tool titles, mode words,
+  limit wording, plan windows). The provenance notes for each value sit next
+  to it.
+- `shared.ts` (optional) — pure code main and the renderer both run (how its
+  config options are presented).
+- `main.ts` (optional) — main-process hooks: launch env, the OAuth client it
+  borrows and its native auth file, the token probe, the ACP `_meta` it reads
+  and writes, plan-usage polling.
+
+The core reaches a plugin only through the two list files beside the folders —
+`src/plugins/agents/index.ts` (manifests and shared hooks; main and renderer,
+read through `src/shared/agents.ts`) and `src/plugins/agents/main.ts`
+(main-only hooks, read through `src/main/agentPlugins.ts`) — against the
+contract in `src/shared/agentPlugin.ts`. The engines stay in the core and run
+on what the plugins declare: provisioning, the OAuth flow and refresh, the
+token probe's verdicts, plan-usage polling and holds, the mode picker, the
+limit detector, the tool-title reader. A missing field or hook means the kind
+does not have that feature, and the core behaves exactly as for a kind it knows
+nothing about. Three gates keep it that way: an ESLint rule on resolved
+import paths (`scripts/lib/agent-plugin-boundaries.mjs`: a plugin imports only
+the contract, its own folder and npm packages, and nothing but the main list
+imports a plugin's `main.ts`; the core imports only the list files; the
+renderer never the main list); `scripts/agent-plugin-boundaries.test.mjs`,
+which walks the import graph from the renderer and `src/shared` and fails if it
+reaches a main half or `src/main`; and `scripts/agent-agnostic-core.test.mjs`,
+which fails on any agent name in a core literal, identifier or regex. The
+registry refuses at load a list it cannot read unambiguously (a kind or
+sign-in declared twice, a main half without a manifest).
+
+**Adding an agent** is one folder plus its entry in the list files: write
+`src/plugins/agents/<id>/manifest.ts` (an `AgentManifest`; the id is persisted
+— never rename one), add `shared.ts`/`main.ts` only for what data cannot say,
+then import and list it in `src/plugins/agents/index.ts` — and, with a
+`main.ts`, in `src/plugins/agents/main.ts`. List order is picker order; the
+first entry is the default kind. `scripts/agent-fixture.test.mjs` runs a
+data-only sixth agent through the real core paths;
+`scripts/agent-plugins.test.mjs` pins the registry's ids and data.
 
 ## Model
 
@@ -264,11 +314,10 @@ for a different repo set, or left by an unfinished start, is removed before `up`
    The container belongs to the starting session (`gurt.session=<id>`); its own
    stopped container is restarted in place, another session's is never taken.
 4. on the first connection into a container, the session's ACP adapter is
-   npm-installed globally via `devcontainer exec` (claude:
-   `@agentclientprotocol/claude-agent-acp`, codex: `@agentclientprotocol/codex-acp`,
-   gemini: `@google/gemini-cli` (run as `gemini --experimental-acp`),
-   opencode: `opencode-ai`, pi: `pi-acp` + `@earendil-works/pi-coding-agent`,
-   the CLI the adapter spawns; all pinned to exact versions) — cached per
+   npm-installed globally via `devcontainer exec` — the packages and the
+   launch command are the kind's manifest's (`adapterPackages`, `bin`,
+   `binArgs` in `src/plugins/agents/<id>/manifest.ts`), all pinned to exact
+   versions — cached per
    **container id**, so a container that is stopped and restarted keeps its
    install and a replaced one reinstalls; a version marker in the container
    triggers a reinstall when a pin changes.
@@ -288,8 +337,8 @@ for a different repo set, or left by an unfinished start, is removed before `up`
 6. ACP `session/new`, then the session's `startPrompt` is sent as the first
    prompt. ACP (JSON-RPC over stdio) runs through `devcontainer exec`; the agent
    secret is passed via `--remote-env <secretEnv>=<secret>` (an oauth sign-in for
-   codex/gemini is written as the CLI's own auth file instead, with the env var
-   left unset). One adapter process
+   a kind whose plugin names a native auth file — codex, gemini — is written as
+   that file instead, with the env var left unset). One adapter process
    per session, held under the session id and tagged with the container it was
    spawned into — a connection cannot outlive that container.
 
@@ -350,7 +399,7 @@ A turn that ends without `complete` gets one automatic nudge, then the session
 is marked `incomplete` (researcher and reviewer have no turn contract). MCP
 does not reach the `pi` kind yet — pi-acp ignores ACP `mcpServers` — so `gurt`
 and `complete` never arrive there and its turns end `incomplete`
-(`src/shared/agents.ts`).
+(`src/plugins/agents/pi/manifest.ts`).
 
 ## MCP servers
 
@@ -406,7 +455,7 @@ workspace can switch some on for every new draft (`defaultSkills`, the row's
 
 Delivery is files, not configuration. At start the selected skills are copied
 into the session's own scratch dir and bind-mounted **read-only** into its
-container, linked at the agent kind's own skills directory (`AgentDef.skillsDir`
+container, linked at the agent kind's own skills directory (`AgentManifest.skillsDir`
 — `~/.claude/skills` for claude code, `~/.agents/skills` for codex,
 `~/.gemini/skills` for gemini, `~/.config/opencode/skills` for opencode,
 `~/.pi/agent/skills` for pi).
