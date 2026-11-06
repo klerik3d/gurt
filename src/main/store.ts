@@ -14,7 +14,6 @@ import type {
   EnvConfig,
   PersistedSession,
   RepoConfig,
-  ReviewFile,
   SessionInfo,
   SessionLogRecord,
   TaskFile,
@@ -23,7 +22,7 @@ import type {
 } from '../shared/types'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import type { McpRegistryEntry } from '../shared/mcp'
-import { OPERATOR_ENV_NAME, STARTER_ENV_NAME } from '../shared/types'
+import { BASE_ENV_NAME, DEFAULT_BASE_IMAGE } from '../shared/types'
 import { sanitizeWelcomeMode, type WelcomeMode } from '../shared/doctor'
 import { agentDef } from '../shared/agents'
 import { defaultAgentConfig } from '../shared/agentConfig'
@@ -89,9 +88,6 @@ export const cloneDir = (ws: string, task: string, repo: string) =>
  *  provisioned against. */
 export const mountedWorkspaceDir = (ws: string, task: string, sessionId: string) =>
   path.join(sessionScratchDir(ws, task, sessionId), 'repos')
-/** Host-side file the env's materialized devcontainer config is written to. */
-export const overrideConfigPath = (ws: string, env: string) =>
-  path.join(gurtRoot, ws, '.devcontainers', `${env}.json`)
 
 /** The workspace's skill registry: one directory per skill, each holding a
  *  `SKILL.md` and whatever supporting files it references
@@ -109,10 +105,8 @@ export const localRepoDir = (ws: string, name: string) =>
 
 /** Per-session scratch: everything gurt stages for one session's container and
  *  nothing else, removed with the session (`deleteSessionScratch`). Holds the
- *  wrapper workspace dir, the merged devcontainer config, and the materialized
- *  skills. The `.multirepo` segment predates all three and is kept so existing
- *  sessions' containers keep pointing at the paths they were provisioned
- *  against. */
+ *  the materialized skills and the agent history. The `.multirepo` segment
+ *  predates them and is kept so existing sessions keep their paths. */
 export const sessionScratchDir = (ws: string, task: string, sessionId: string) =>
   path.join(gurtRoot, ws, task, '.multirepo', sessionId)
 
@@ -123,7 +117,7 @@ export const sessionSkillsDir = (ws: string, task: string, sessionId: string) =>
   path.join(sessionScratchDir(ws, task, sessionId), 'skills')
 
 /** A sibling of `skills/`: the source of the read-write bind that carries the
- *  agent's own conversation/resume state (`AgentDef.historyPaths`), one
+ *  agent's own conversation/resume state (`AgentManifest.historyPaths`), one
  *  directory per session, never wiped
  *  (docs/requirements-agent-history.md §5). */
 export const sessionHistoryDir = (ws: string, task: string, sessionId: string) =>
@@ -164,13 +158,10 @@ export async function ensureSessionHistory(
  *  Compared case-insensitively (macOS default FS is case-insensitive). */
 const RESERVED_NAMES: Record<string, string[]> = {
   workspace: ['agents.json', 'credentials.json', 'agent-config-cache.json'],
-  task: ['workspace.json', '.devcontainers', 'skills', 'repos'],
+  task: ['workspace.json', 'skills', 'repos'],
   repo: ['task.json', 'sessions.json', 'review.json', 'sessions', '.multirepo', 'proactive-state.json'],
-  // Env names become `.devcontainers/<env>.json`, and the bundled envs' names
-  // are spoken for: they share the env name space, so a workspace env may not
-  // take them (docs/requirements-session-operator.md §2.2,
-  // docs/requirements-new-projects.md §3).
-  env: [OPERATOR_ENV_NAME, STARTER_ENV_NAME]
+  // The base image's virtual env shares the env name space, so a workspace env may not take its name.
+  env: [BASE_ENV_NAME]
 }
 
 /** Names become path segments on disk, so reject anything that isn't a single, safe segment. */
@@ -466,7 +457,7 @@ function chained<T>(key: string, fn: () => Promise<T>): Promise<T> {
  * name above, and that reservation is a dependency of this file, not a
  * naming nicety). Out, each for a stated reason in §7: credentials.json
  * (secrets never enter a git history), runtime state and derived artifacts
- * (sessions, logs, caches, .devcontainers), and the clones (git repositories
+ * (sessions, logs, caches), and the clones (git repositories
  * themselves, excluded by construction).
  */
 const JOURNAL_GITIGNORE = `/*
@@ -657,6 +648,22 @@ export async function setGcSettings(settings: GcSettings): Promise<void> {
   await writeJson(gcFile(), settings)
 }
 
+const imagesFile = () => path.join(gurtRoot, 'images.json')
+
+/** The base image: the app-level setting, else the pinned default. */
+export async function getBaseImage(): Promise<string> {
+  const raw = await readJson<{ baseImage?: unknown }>(imagesFile(), {})
+  return typeof raw.baseImage === 'string' && raw.baseImage.trim()
+    ? raw.baseImage.trim()
+    : DEFAULT_BASE_IMAGE
+}
+
+/** `undefined` (or blank) restores the default. */
+export async function setBaseImage(image: string | undefined): Promise<void> {
+  const v = image?.trim()
+  await writeJson(imagesFile(), v && v !== DEFAULT_BASE_IMAGE ? { baseImage: v } : {})
+}
+
 const limitsFile = () => path.join(gurtRoot, 'limits.json')
 
 /** Plan-limit policy (Settings → Clients); a missing file is the defaults. */
@@ -725,50 +732,24 @@ export async function createWorkspace(name: string): Promise<void> {
   await journal(`workspace "${name}": created`, 'createWorkspace', name)
 }
 
-/** A pre-split RepoConfig carried an inline `devcontainer`; it moves to the env. */
-type LegacyRepo = RepoConfig & { devcontainer?: string }
-
-/**
- * Read workspace.json, lazily migrating stale shapes once (write-back on the
- * first read that changes anything):
- * - pre-split (no `envs`, repos carrying `devcontainer`): one env per repo with
- *   the same name, seeded with the repo's devcontainer + itself as default;
- *   repos are stripped of `devcontainer`.
- * - old Dockerfile mode (`dockerfile` set, `devcontainer` blank): the env gets
- *   a synthesized `{ build: { dockerfile: 'Dockerfile' } }` devcontainer —
- *   dockerfile/dockerfilePath are kept as-is. An env with both fields blank
- *   stays as-is (now invalid; the next start throws and the editor guides).
- */
+/** Read workspace.json. Absent stays absent: an untouched file is not rewritten
+ *  with an empty array just because it was read (§3.1 — `getWorkspace` stays
+ *  tolerant). */
 export async function getWorkspace(ws: string): Promise<WorkspaceFile> {
   const file = path.join(wsDir(ws), 'workspace.json')
   const raw = await readJson<Partial<WorkspaceFile> | null>(file, null)
   if (!raw) return { repos: [], envs: [] }
-  const legacyRepos = (raw.repos ?? []) as LegacyRepo[]
-  const repos: RepoConfig[] = legacyRepos.map(({ name, url, credentialId, local }) => ({
+  const repos: RepoConfig[] = (raw.repos ?? []).map(({ name, url, credentialId, local }) => ({
     name,
     url,
     ...(credentialId ? { credentialId } : {}),
     ...(local === true ? { local } : {})
   }))
-  let migrated = !Array.isArray(raw.envs)
-  const envs: EnvConfig[] = Array.isArray(raw.envs)
-    ? raw.envs
-    : legacyRepos.map((r) => ({
-        name: r.name,
-        devcontainer: r.devcontainer ?? '',
-        repo: r.name
-      }))
-  for (const env of envs) {
-    if (env.dockerfile && !env.devcontainer?.trim()) {
-      env.devcontainer = JSON.stringify({ build: { dockerfile: 'Dockerfile' } }, null, 2)
-      migrated = true
-    }
-  }
-  // Absent stays absent: an untouched workspace.json is not rewritten with an
-  // empty array just because it was read (§3.1 — `getWorkspace` stays tolerant).
-  const mcpServers = raw.mcpServers === undefined ? undefined : liftMcpServers(raw.mcpServers)
+  const envs: EnvConfig[] = Array.isArray(raw.envs) ? raw.envs : []
+  const migrated = !Array.isArray(raw.envs)
   // Hand-edited like everything else here: a wrong-typed value degrades to
   // "absent" rather than throwing.
+  const mcpServers = raw.mcpServers === undefined ? undefined : liftMcpServers(raw.mcpServers)
   const defaultAgent = typeof raw.defaultAgent === 'string' ? raw.defaultAgent : undefined
   const deniedAgents = Array.isArray(raw.deniedAgents)
     ? raw.deniedAgents.filter((a): a is string => typeof a === 'string')
@@ -776,7 +757,7 @@ export async function getWorkspace(ws: string): Promise<WorkspaceFile> {
   const defaultSkills = Array.isArray(raw.defaultSkills)
     ? raw.defaultSkills.filter((n): n is string => typeof n === 'string')
     : undefined
-  const operatorEnv = typeof raw.operatorEnv === 'string' ? raw.operatorEnv : undefined
+  const defaultEnv = typeof raw.defaultEnv === 'string' ? raw.defaultEnv : undefined
   const data: WorkspaceFile = {
     repos,
     envs,
@@ -784,7 +765,7 @@ export async function getWorkspace(ws: string): Promise<WorkspaceFile> {
     ...(defaultAgent ? { defaultAgent } : {}),
     ...(deniedAgents?.length ? { deniedAgents } : {}),
     ...(defaultSkills?.length ? { defaultSkills } : {}),
-    ...(operatorEnv ? { operatorEnv } : {})
+    ...(defaultEnv ? { defaultEnv } : {})
   }
   if (migrated) await saveWorkspace(ws, data)
   return data
@@ -957,7 +938,6 @@ export function removeEnv(ws: string, name: string): Promise<void> {
     const data = await getWorkspace(ws)
     data.envs = data.envs.filter((e) => e.name !== name)
     await saveWorkspace(ws, data)
-    await fs.rm(overrideConfigPath(ws, name), { force: true })
     await journal(`env "${name}": removed`, 'removeEnv', `${ws}/env/${name}`)
   })
 }
@@ -1002,23 +982,21 @@ export function setDeniedAgents(ws: string, agentIds: string[]): Promise<void> {
 }
 
 /**
- * Point the workspace's operator sessions at one of its own envs, or back at
- * the bundled default (`undefined`) — the operator twin of `setDefaultAgent`
- * (docs/requirements-session-operator.md §2.2). Rejects a name the registry
- * does not hold: a default nothing resolves to would fail every operator
- * start.
+ * Make one of the workspace's envs the default for new sessions, or back to
+ * the base image (`undefined`). Rejects a name the registry does not hold: a
+ * default nothing resolves to would fail every new session.
  */
-export function setOperatorEnv(ws: string, env: string | undefined): Promise<void> {
+export function setDefaultEnv(ws: string, env: string | undefined): Promise<void> {
   return editWorkspace(ws, async () => {
     const data = await getWorkspace(ws)
     if (env !== undefined && !data.envs.some((e) => e.name === env))
       throw new Error(`env "${env}" is not registered in "${ws}"`)
-    if (env) data.operatorEnv = env
-    else delete data.operatorEnv
+    if (env) data.defaultEnv = env
+    else delete data.defaultEnv
     await saveWorkspace(ws, data)
     await journal(
-      `workspace "${ws}": operator env ${env ? `set to "${env}"` : 'reset to the bundled default'}`,
-      'setOperatorEnv',
+      `workspace "${ws}": default env ${env ? `set to "${env}"` : 'reset to the base image'}`,
+      'setDefaultEnv',
       ws
     )
   })
@@ -1518,34 +1496,6 @@ export async function writeSessions(
   await writeJson(sessionsFile(ws, task), records)
 }
 
-// --- manual review state: <ws>/<task>/review.json ---------------------------
-
-const reviewFile = (ws: string, task: string) => path.join(taskDir(ws, task), 'review.json')
-
-/** Read review.json, tolerating a partial or hand-edited file the way
- *  `getNotificationPrefs` does — a missing half is an empty one, never a throw. */
-export async function readReview(ws: string, task: string): Promise<ReviewFile> {
-  const raw = await readJson<Partial<ReviewFile>>(reviewFile(ws, task), {})
-  return {
-    locked: raw.locked && typeof raw.locked === 'object' ? raw.locked : {},
-    comments: Array.isArray(raw.comments) ? raw.comments : []
-  }
-}
-
-export async function writeReview(ws: string, task: string, data: ReviewFile): Promise<void> {
-  await writeJson(reviewFile(ws, task), data)
-}
-
-/** Every task that has a review.json, as `[ws, task]` pairs — the boot scan
- *  that seeds the in-memory lock set (see review.ts). */
-export async function tasksWithReview(): Promise<[string, string][]> {
-  const out: [string, string][] = []
-  for (const ws of await listWorkspaces())
-    for (const task of await listTasks(ws))
-      if (existsSync(reviewFile(ws, task))) out.push([ws, task])
-  return out
-}
-
 // --- per-session append-only log: <ws>/<task>/sessions/<sessionId>.jsonl ----
 
 const sessionLogFile = (ws: string, task: string, sessionId: string) =>
@@ -1653,7 +1603,7 @@ export async function readSessionLog(
 
 /** Remove the scratch directory gurt staged a session's own mounts in
  *  (`.multirepo/<id>`, see {@link sessionScratchDir}): its repo mount points,
- *  its merged devcontainer config, its materialized skills and its agent
+ *  its materialized skills and its agent
  *  history directory (docs/requirements-agent-history.md §5). All gurt's own,
  *  with no owner once the session is deleted. A session that needed none of
  *  them hits a missing path, which `force` makes a no-op. */
@@ -1748,7 +1698,7 @@ export async function buildTree(): Promise<Tree> {
       ...(wsData.defaultAgent ? { defaultAgent: wsData.defaultAgent } : {}),
       ...(wsData.deniedAgents?.length ? { deniedAgents: wsData.deniedAgents } : {}),
       ...(wsData.defaultSkills?.length ? { defaultSkills: wsData.defaultSkills } : {}),
-      ...(wsData.operatorEnv ? { operatorEnv: wsData.operatorEnv } : {}),
+      ...(wsData.defaultEnv ? { defaultEnv: wsData.defaultEnv } : {}),
       tasks,
       proactive
     })

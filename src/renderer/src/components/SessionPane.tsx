@@ -14,7 +14,6 @@ import { Chat, ImageThumbs, pastedImages, readImages } from './Chat'
 import { ConfigTab } from './ConfigTab'
 import { SessionMenu, deleteSession, duplicateSession } from './SessionActions'
 import { TabBar, useSessionTab, type SessionTab } from './SessionTabs'
-import { VscodeButton } from './VscodeButton'
 import { ContainerTerminalButton } from './ContainerTerminalButton'
 import { run } from '../async'
 
@@ -122,7 +121,6 @@ function Header({
           </span>
         )}
       </span>
-      <VscodeButton info={info} />
       <ContainerTerminalButton info={info} />
       <SessionMenu info={info} onSelect={onSelect} onDeleted={onDeleted} />
     </div>

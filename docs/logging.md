@@ -24,8 +24,8 @@ deleted. The size is checked when the file is opened and before every write, so
 a run that ends just under the limit does not append to an oversized file on the
 next start.
 
-**`session-<id>.log`** is one session's subprocess output: the devcontainer CLI,
-docker, git, and the ACP adapter's stderr (prefixed `[agent]`). It is not
+**`session-<id>.log`** is one session's subprocess output: docker
+(build, create, the setup/start scripts, the adapter install), git, and the ACP adapter's stderr (prefixed `[agent]`). It is not
 rotated — it belongs to one session and is deleted with it. It is capped at
 **20 MB**, after which one `[log capped]` line is written and the rest dropped.
 `<id>` is reduced to `[a-zA-Z0-9-]`; provisioning that is not session-scoped
@@ -108,7 +108,7 @@ Redaction is enforced centrally, on every line that reaches a file:
   `apiKey` both hit `apikey`; substring, at any depth) is written as
   `[redacted]`.
 - **URLs.** `scheme://user:pass@host` becomes `scheme://[redacted]@host`.
-- **Streams** (agent stderr, devcontainer output) are line-buffered before
+- **Streams** (agent stderr, container output) are line-buffered before
   redaction — a secret split across two chunks is never forwarded in halves.
   Exception: a single line with no `\n` for 32 KB is force-flushed as a partial
   line rather than buffered forever, which could in principle split a secret
@@ -163,9 +163,10 @@ escaped, and `\n` written as `\\n`, so one record stays one line.
 | `window.error` / `window.unhandledrejection` | ERR | `message`, `source`, `line`, `err`       |
 | `internal.fail`           | ERR   | `site`, `err`, plus whatever identifiers (`s`, `ws`, `task`, …) the failed operation carried |
 
-† The devcontainer CLI traces at **INF** — it is rare, slow, and usually the
-thing being diagnosed. The host probes below it (`git`, `docker`, `tar`) run
-several times per panel refresh and trace at DBG; a *failing* exit is always
+† The container lifecycle — `docker build`, `pull`, `create`, `start`, the
+setup/start scripts and the adapter install — traces at **INF**: it is rare,
+slow, and usually the thing being diagnosed. The host probes around it (`git`,
+`docker inspect`/`ps`, `tar`) run several times per panel refresh and trace at DBG; a *failing* exit is always
 logged at WRN, whichever command it was.
 
 `session.state`'s `reason` names the trigger: `created`, `user`, `scheduler`,

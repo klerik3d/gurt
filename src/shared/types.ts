@@ -80,13 +80,13 @@ export type StoredProposal = ChangeProposal & { at: string }
 
 /**
  * A user-defined agent profile: a named instance of a built-in agent *kind*
- * (see `AgentDef`) carrying its config and a link to its secret. Several
+ * (see `AgentManifest`) carrying its config and a link to its secret. Several
  * instances of one kind can coexist — e.g. two `claude-code` profiles linked to
  * different tokens ("work" / "home"), or an `opencode` pointed at a local model
  * via `env`. The registry starts empty; the user adds instances as needed.
  */
 export interface AgentInstance {
-  /** Which built-in adapter to launch — references `AgentDef.id`. */
+  /** Which built-in adapter to launch — references `AgentManifest.id`. */
   kind: string
   /** User-facing name shown in pickers and chips. */
   label: string
@@ -111,7 +111,7 @@ export type AgentsFile = Record<string, AgentInstance>
 
 /**
  * Repo identity: a registered git repository of the workspace. Repos and envs
- * are separate entities now — the devcontainer definition lives on `EnvConfig`,
+ * are separate entities now — the runtime definition lives on `EnvConfig`,
  * not here.
  */
 export interface RepoConfig {
@@ -143,37 +143,37 @@ export interface PublishSpec {
   /** Organization to create it in; absent = the credential's own account. */
   owner?: string | undefined
   private: boolean
-  /** Also turn the repo's own devcontainer (if it has one) into a workspace
-   *  env defaulting to this repo — the "adopt" half of §6. */
-  adoptEnv: boolean
 }
 
 export interface PublishResult {
   url: string
   webUrl: string
-  /** Name of the env created from the repo's devcontainer, when one was. */
-  env?: string
-  /** Why no env was created although `adoptEnv` asked for one. */
-  envNote?: string
 }
 
 /**
- * Environment definition: a named, workspace-level environment. devcontainer is
- * the normal form — whatever the repo has is only seed material; gurt's copy
- * here is the single source of truth. The name is the identity key and
- * immutable (like `RepoConfig.name`).
+ * Environment definition: a named, workspace-level environment in gurt's own
+ * format (docs/requirements-env-docker.md §2); gurt's copy here is the single
+ * source of truth, the repo's own files are never read for it.
+ * The name is the identity key and immutable (like `RepoConfig.name`).
  */
 export interface EnvConfig {
   name: string
-  /** devcontainer.json (JSONC), REQUIRED — the single runtime description.
-   *  '' is invalid: saving is blocked in the editor, starting throws. */
-  devcontainer: string
-  /** Companion Dockerfile content — REQUIRED iff `devcontainer` has a
-   *  `build` section; ignored (and cleared by the editor) otherwise.
-   *  Hand-written or seeded from the repo and edited. */
+  /** Exactly one of `image` | `dockerfile`. */
+  image?: string
+  /** Dockerfile content. */
   dockerfile?: string
   /** Repo-relative path `dockerfile` was seeded from — provenance only. */
   dockerfilePath?: string
+  /** Only with `dockerfile`. `context` is repo-root-relative (default "."),
+   *  must stay inside the repo snapshot: no absolute path, no `..` escape. */
+  build?: { context?: string; args?: Record<string, string>; target?: string }
+  /** Container environment (`docker create --env`). */
+  env?: Record<string, string>
+  /** Shell script, run once when the container is created: as the container user, in the
+   *  workdir, on the open network, before the network switch. */
+  setup?: string
+  /** Shell script, run on every container start (create and restart). */
+  start?: string
   /** Default repo, seeds new sessions on this env; not a runtime binding. Read
    *  backwards too — `store.envsDefaultingToRepo` — to answer "which env does
    *  this repo run in?", the default `create_session` drafts against. */
@@ -181,32 +181,27 @@ export interface EnvConfig {
 }
 
 /**
- * Name of the bundled default operator environment
- * (docs/requirements-session-operator.md §2.2). It is code, not user data —
- * the config lives under `resources/env/` beside the proxy script — but it
- * shares the env name space, so the store validator reserves the name: a
- * workspace env may not take it.
+ * Name of the one virtual env: the base image (`getBaseImage`). It is not in
+ * any registry — it resolves to `{ image: <base image> }` — but it shares the
+ * env name space, so the store validator reserves the name. A session on it
+ * needs no repo, no setup and no Dockerfile.
  */
-export const OPERATOR_ENV_NAME = 'operator'
+export const BASE_ENV_NAME = 'base'
 
-/** The env an operator session of this workspace runs on: the workspace's
- *  `operatorEnv` when set, else the bundled default (§2.2). The role does not
- *  check which env it got — an operator pointed at a workspace env is an
- *  ordinary session on an ordinary env. */
-export const operatorEnvName = (ws: Pick<WorkspaceFile, 'operatorEnv'>): string =>
-  ws.operatorEnv ?? OPERATOR_ENV_NAME
+/** Default of the app-level base image setting: the latest Node LTS on Debian
+ *  13 slim (glibc — gurt's node runtime is a glibc build), pinned by digest.
+ *  Bump deliberately with gurt releases
+ *  (`docker manifest inspect node:26-trixie-slim`). */
+export const DEFAULT_BASE_IMAGE =
+  'node:26-trixie-slim@sha256:5adad64f9a1fca2d51972caa65983634c8a774eb300d72b20f7f2a0f60368072'
 
-/**
- * Name of the bundled starter environment (docs/requirements-new-projects.md
- * §3): an image-only env for a project that has no devcontainer of its own yet.
- * Code, not user data, exactly like the operator default — and reserved in the
- * env name space the same way.
- */
-export const STARTER_ENV_NAME = 'starter'
+/** The env a new session of this workspace starts on: the workspace's
+ *  `defaultEnv` when set, else the base image. */
+export const defaultEnvName = (ws: Pick<WorkspaceFile, 'defaultEnv'>): string =>
+  ws.defaultEnv ?? BASE_ENV_NAME
 
-/** Env names that resolve to a bundled config rather than a workspace entry. */
-export const isBundledEnv = (name: string): boolean =>
-  name === OPERATOR_ENV_NAME || name === STARTER_ENV_NAME
+/** Env names that resolve to something other than a workspace entry. */
+export const isBundledEnv = (name: string): boolean => name === BASE_ENV_NAME
 
 /** <workspace>/workspace.json */
 export interface WorkspaceFile {
@@ -232,18 +227,16 @@ export interface WorkspaceFile {
    *  is the same "selected but unavailable" case a session's own selection
    *  already has to hold. */
   defaultSkills?: string[]
-  /** Env definition name this workspace's operator sessions run on; absent =
-   *  the bundled default (`OPERATOR_ENV_NAME`). Set from Settings, beside
-   *  `defaultAgent` and `defaultSkills`, which it is the twin of
-   *  (docs/requirements-session-operator.md §2.2). */
-  operatorEnv?: string
+  /** Env definition name new sessions of this workspace default to; absent =
+   *  the base image (`BASE_ENV_NAME`). Set from the env's row in Settings. */
+  defaultEnv?: string
 }
 
 /**
  * stopped  — no container, or one that exists but is not up.
  * building — clone + image build, i.e. everything before the container exists.
- * post     — the container is up and its post-commands (devcontainer lifecycle
- *            hooks) are running; it is not usable yet.
+ * post     — the container is up and its setup/start scripts are running; it
+ *            is not usable yet.
  * running  — up and usable.
  *
  * `building`/`post` are runtime-only: a crash mid-provision restores as
@@ -252,7 +245,7 @@ export interface WorkspaceFile {
 export type ContainerStatus = 'stopped' | 'building' | 'post' | 'running' | 'error'
 
 /**
- * The devcontainer a session owns — strictly 1:1. It is created at the session's
+ * The container a session owns — strictly 1:1. It is created at the session's
  * first start, stopped when the session goes idle, and destroyed with the
  * session; it is never shared with, nor inherited by, another session.
  *
@@ -262,10 +255,16 @@ export type ContainerStatus = 'stopped' | 'building' | 'post' | 'running' | 'err
  */
 export interface SessionContainer {
   status: ContainerStatus
-  /** Docker container id; absent until the first successful `up`. */
+  /** Docker container id; absent until the container's `setup` has succeeded
+   *  (a crash mid-setup can never leave a record naming a half-provisioned
+   *  container). */
   id?: string
-  /** Workspace folder inside the container — the agent's cwd. */
+  /** Working directory inside the container — the agent's cwd. */
   remoteWorkspaceFolder?: string
+  /** User every exec runs as: the image's `Config.User`, else root. */
+  user?: string
+  /** The PATH every exec carries — probed once per container id after setup. */
+  path?: string
   /** Repos it was provisioned with (stamped at `up`), in the same order as
    *  `SessionInfo.repos`. `repos[0]` drives the build + git access; the rest
    *  are additional read/write mounts alongside it. */
@@ -550,15 +549,16 @@ export interface SessionInfo {
   startPrompt: string
   /**
    * Config-option values (model, effort, fast mode, …) chosen for this session,
-   * keyed by `SessionConfigOption.id`. Applied at start: `model`/`effort` ride
-   * `_meta.claudeCode.options` on `session/new`, the rest are reconciled via
+   * keyed by `SessionConfigOption.id`. Applied at start: what the adapter reads
+   * from `_meta` rides that on `session/new` (the kind's plugin says what:
+   * `sessionMeta` — claude-code's model/effort), the rest are reconciled via
    * `session/set_config_option` before the first prompt. Picked from the agent's
    * cached option set (see {@link AgentConfig}); an empty/absent map means "let
    * the agent choose its defaults". Cleared by assignment when an edit empties
    * the map.
    */
   configValues?: Record<string, string | boolean> | undefined
-  /** The devcontainer this session owns, 1:1. Absent until its first start. */
+  /** The container this session owns, 1:1. Absent until its first start. */
   container?: SessionContainer
   /** ISO timestamp, present while queued — defines global FIFO order. */
   queuedAt?: string | undefined
@@ -633,9 +633,8 @@ export interface Tree {
     /** Skill names switched on in every new draft here — see
      *  `WorkspaceFile.defaultSkills`. */
     defaultSkills?: string[]
-    /** Env the workspace's operator sessions run on — see
-     *  `WorkspaceFile.operatorEnv`. Absent = the bundled default. */
-    operatorEnv?: string
+    /** Env new sessions default to — see `WorkspaceFile.defaultEnv`. */
+    defaultEnv?: string
     tasks: {
       name: string
       /** ISO timestamp the task was created — see {@link TaskFile.createdAt}.
@@ -771,9 +770,9 @@ export interface SessionMode {
   /** `_meta.kind` as the agent reports it, lifted out of the envelope by the
    *  session manager's mode normalizer. Ids and names are agent-defined and
    *  overlap badly ("Accept edits" vs. "Auto"), but the kind is the one thing
-   *  that carries intent across adapters — claude-code's `auto` and another
-   *  adapter's `agent` ("Approve for me") both report `auto_review` — so mode
-   *  matching keys on it first. */
+   *  that carries intent across adapters — an auto-review mode reports the
+   *  same kind whatever it is called (the agent plugin's
+   *  `modes.autoReviewKinds`) — so mode matching keys on it first. */
   kind?: string
 }
 
@@ -1048,23 +1047,15 @@ export const isActionable = (r: RepoChanges): boolean =>
 export const isDelivered = (r: RepoChanges): boolean =>
   !isActionable(r) && !r.integrated && r.commits.some((c) => c.pushed)
 
-// Manual review: split diff, inline comments, review lock —
-// see docs/requirements-manual-review.md.
-
 /**
- * What a review reads. `uncommitted` is the working tree against HEAD (the
+ * What a diff view reads. `uncommitted` is the working tree against HEAD (the
  * Changes panel's Uncommitted block); `commit` is one thread commit against its
- * parent. Nothing else is reviewable — these are exactly the two things the
+ * parent. Nothing else is diffable — these are exactly the two things the
  * panel already renders.
  */
 export type DiffTarget = { kind: 'uncommitted' } | { kind: 'commit'; sha: string }
 
-/**
- * A target as one string, for keying comments to the diff they were written
- * against. Without it the working tree and a commit would share one comment
- * set: a note on a commit's file would then be pruned the moment that file is
- * clean in the working tree, which it usually is.
- */
+/** A target as one string, for keying per-diff state (the working tree vs. one commit). */
 export const targetKey = (t: DiffTarget): string =>
   t.kind === 'commit' ? `commit:${t.sha}` : 'uncommitted'
 
@@ -1078,47 +1069,3 @@ export const targetKey = (t: DiffTarget): string =>
 export type DiffPair =
   | { binary: false; before: string; after: string }
   | { binary: true }
-
-/**
- * One review note, anchored to a line of one side of one file's diff pair.
- *
- * The anchor is captured against the pair as it looked when the note was
- * written and is never re-anchored: a comment can only be left while the repo
- * is locked for review, so the tree it points into cannot move underneath it.
- */
-export interface ReviewComment {
-  id: string
-  repo: string
-  /** Which diff this note was written against — see {@link targetKey}. */
-  target: string
-  /** Path relative to the repo root, as it appears in the diff's file list. */
-  path: string
-  /** Which pane the note hangs off — `before` = HEAD/parent, `after` = the new content. */
-  side: 'before' | 'after'
-  /** 1-based line number within that side's content — the start of the anchor. */
-  line: number
-  /** 1-based, inclusive; present only when the anchor covers more than one
-   *  line (a dragged range, or a whole change block). Absent = single line. */
-  endLine?: number
-  text: string
-  /** ISO timestamp. */
-  createdAt: string
-  /** Cleared by assignment when a comment is re-opened. */
-  resolved?: boolean | undefined
-}
-
-/** <workspace>/<task>/review.json — review state of every repo of the task. */
-export interface ReviewFile {
-  /** repo → ISO time the review lock was taken; absent key = unlocked. */
-  locked: Record<string, string>
-  comments: ReviewComment[]
-}
-
-/** Review state of one clone, as the review surface reads it. */
-export interface ReviewState {
-  locked: boolean
-  /** ISO time the lock was taken; present only while locked. */
-  lockedAt?: string
-  /** This repo's comments; ones whose file left the diff are pruned on read. */
-  comments: ReviewComment[]
-}

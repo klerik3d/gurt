@@ -19,9 +19,11 @@ containers and installs software into them.
 - Child containers hold **clones of the user's repositories and agent
   secrets** (API keys / OAuth tokens injected via env vars), so anything
   installed into them runs next to that data.
-- Devcontainer **features are pinned by OCI digest** rather than mutable tags
-  (`src/main/provision.ts`, `src/main/git/providers.ts`,
-  `.devcontainer/devcontainer.json`).
+- The **Node runtime image** Gurt copies into every session container is pinned
+  by OCI digest rather than a mutable tag (`NODE_RUNTIME_IMAGE` in
+  `src/main/provision.ts`, as is the bundled operator env's image in
+  `resources/env/operator.json`), and so are the dev container features of this
+  repo's own `.devcontainer/devcontainer.json`.
 - The repo itself blocks npm lifecycle scripts (`.npmrc` `ignore-scripts`) and
   runs an explicit allow-list via `@lavamoat/allow-scripts`; install-time and
   build tooling is pinned to exact versions, and GitHub Actions are pinned by

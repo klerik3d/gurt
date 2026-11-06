@@ -12,6 +12,11 @@ and per-role tool sets is the mechanism reused here), then
 `src/shared/api.ts` (the surface this is *derived from*, not a parallel
 one).
 
+> **Superseded in part** by `requirements-env-docker.md` §8: the env held
+> fields (`ENV_HELD`: `initializeCommand`, `mounts`, `runArgs`, …) are gone —
+> the env format has no field that executes on the host or widens container
+> privileges, so env writes land whole. Held fields remain for MCP entries.
+
 Key code: `src/shared/api.ts` (`GurtApi`, `METHODS`, `API_METHODS` — the
 exposure annotation lands here), `src/shared/types.ts` (`SessionRole` and
 the role predicates), `src/main/sessions.ts` (the start gates, the
@@ -197,8 +202,7 @@ question and an open one (§13).
   permission answering, no mode switching. It reads their diagnostics
   (§3.4) and says what is wrong.
 - **It does not touch the host's GUI or the update path.**
-  `openLogsFolder`, `sessionOpenVscode`, `changesOpenVscode`,
-  `changesOpenPr`, `checkForUpdates` are `none`: they open windows,
+  `openLogsFolder`, `changesOpenPr`, `checkForUpdates` are `none`: they open windows,
   browsers and native dialogs on the user's desktop.
 
 ## 3. The admin surface is derived from `src/shared/api.ts`
@@ -301,14 +305,14 @@ block below, which is about *categories of asset*, not about caution.
 Four groups, each for one reason:
 
 - **Repo content** — `getFileDiff`, `getCommitDiff`, `getDiffFiles`,
-  `getDiffPair`, `getReviewState`, `latestProposal`, `changesCommit`,
+  `getDiffPair`, `latestProposal`, `changesCommit`,
   `changesPush`, `changesUpdateFromMain`. §2.4: zero repos has to be true.
 - **Session lifecycle and driving** — `createSession`, `sessionRun`,
   `sessionEnqueue`, `sessionCancelQueue`, `sessionPrompt`,
   `sessionCancel`, `sessionClearPending`, `sessionCancelPending`,
   `sessionSetMode`, `sessionSetConfigOption`, `sessionPermission`,
   `sessionActivity`, `sessionEditPrompt`, `sessionEditDraft`,
-  `sessionDuplicate`, `sessionDelete`, `renameSession`, `launchReviewFix`,
+  `sessionDuplicate`, `sessionDelete`, `renameSession`,
   `stopContainer`, `releaseContainer`. §2.4.
 - **Destructive beyond the config layer** — `removeWorkspace`,
   `removeTask`, `renameTask`. Each destroys or rewrites clones holding
@@ -316,7 +320,7 @@ Four groups, each for one reason:
   `createWorkspace` is `none` for a different reason: it is bootstrap
   (§10), and the workspace is what binds the operator's own authority.
 - **Host desktop and secrets** — `setCredentials`, `openLogsFolder`,
-  `sessionOpenVscode`, `changesOpenVscode`, `changesOpenPr`,
+  `changesOpenPr`,
   `checkForUpdates`, `markNotificationRead`, `markAllRead`,
   `dismissNotification` (the user's own read state).
 
@@ -901,17 +905,11 @@ agent depends on it. `read*` marks a narrowed read (§3.2).
 | `taskDirtyRepos` | read | |
 | `setTaskMaxConcurrentSessions` | write | |
 | `stopContainer` / `releaseContainer` | none | §2.4 |
-| `sessionOpenVscode` | none | host GUI |
 | `getTaskChanges` | read | counts and states, not content |
 | `getFileDiff` / `getCommitDiff` / `getDiffFiles` / `getDiffPair` | none | repo content (§2.4) |
-| `getReviewState` | none | comments quote code |
-| `getReviewLocks` | read | why a session cannot start — diagnostics |
-| `setReviewLock` | none | |
-| `addReviewComment` / `resolveReviewComment` / `deleteReviewComment` | none | |
-| `launchReviewFix` | none | drafts a session (§2.4) |
 | `changesCommit` / `changesPush` / `changesUpdateFromMain` | none | writes to repos and remotes |
 | `latestProposal` | none | repo content |
-| `changesOpenPr` / `changesOpenVscode` | none | host GUI / browser |
+| `changesOpenPr` | none | browser |
 | `createSession` | none | phase 1; see question 2 |
 | `sessionRun` / `sessionEnqueue` / `sessionCancelQueue` | none | §2.4 |
 | `sessionEditPrompt` / `renameSession` / `sessionEditDraft` / `sessionDuplicate` / `sessionDelete` | none | §2.4 |
@@ -942,7 +940,7 @@ it must name the draft's repo explicitly).
 
 **3. Read scope if the diagnostics reads are later offered to
 non-operator sessions.** `sessionSnapshot`, `sessionTraffic`,
-`get_provisioning_log` and `getReviewLocks` are useful to any session
+`get_provisioning_log` are useful to any session
 debugging itself ("why was I blocked from npm"), and there is an obvious
 appetite for a per-session diagnostics toggle. If that is offered, the
 scope must be **own-session-only** — bound host-side to the calling

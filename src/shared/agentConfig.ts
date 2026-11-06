@@ -1,68 +1,18 @@
-// Seed config surface per agent *kind* (see `AgentDef.id`) — used only until a
-// live session reports its own configOptions/commands. claude-code gets a
-// hardcoded model row (see `CLAUDE_MODELS`) so the New Session modal and the
-// composer offer a model pick before the agent has ever run and populated the
-// cache; every other kind still gets nothing; a hardcoded guess for those
-// would drift from (and could misrepresent) what the agent actually offers.
-import type { AgentConfig, ConfigSelectOption, SessionConfigOption } from './types'
+// Seed config surface per agent *kind* (`AgentManifest.id`) — used only until a
+// live session reports its own configOptions/commands. A kind's plugin may
+// declare one (`seedConfig`) so the New Session modal and the composer offer a
+// pick before the agent has ever run and populated the cache; every other kind
+// gets nothing — a hardcoded guess for those would drift from (and could
+// misrepresent) what the agent actually offers.
+import type { AgentConfig, AgentOptionView, SessionConfigOption } from './agentPlugin'
+import { agentDef, agentPlugin } from './agents'
 
-/**
- * claude-code's model families, as bare aliases (no version numbers — those
- * churn as new models ship; the alias resolves to whatever's current). This
- * is the seed chip row shown before a live session has reported its own list
- * — and, via `withFable`, `fable` stays force-merged into the live list too,
- * since accounts have shipped `session/new` reports that silently drop it.
- */
-const CLAUDE_MODELS: ConfigSelectOption[] = [
-  { value: 'fable', name: 'Fable' },
-  { value: 'opus', name: 'Opus' },
-  { value: 'sonnet', name: 'Sonnet' },
-  { value: 'haiku', name: 'Haiku' }
-]
-
-const FABLE_OPTION: ConfigSelectOption = { value: 'fable', name: 'Fable' }
-const isFable = (o: ConfigSelectOption): boolean =>
-  o.value === FABLE_OPTION.value || /\bfable\b/i.test(o.name)
-
-/** Force `fable` into a live-reported model select's options wherever the
- *  account's own report leaves it out — see module doc above. */
-export function withFable(options: ConfigSelectOption[]): ConfigSelectOption[] {
-  return options.some(isFable) ? options : [FABLE_OPTION, ...options]
-}
+export type { AgentOptionView }
 
 export function defaultAgentConfig(kind: string): AgentConfig {
-  if (kind !== 'claude-code') return { configOptions: [], commands: [] }
-  return {
-    configOptions: [
-      {
-        id: 'model',
-        name: 'Model',
-        category: 'model',
-        type: 'select',
-        // A concrete default (not '') so a chip reads as selected right away
-        // instead of the gear popup falling into its "no chip claims the
-        // live value" note. Display only — actually starting a session never
-        // sends `model` unless the user touches the chip (see `startMeta`).
-        currentValue: 'opus',
-        options: CLAUDE_MODELS
-      }
-    ],
-    commands: []
-  }
-}
-
-/**
- * How an agent kind's config options are *presented* — which select entries
- * become chips and which value reads as active. Pure display: nothing here may
- * change what is sent back to the agent. Kinds with reporting quirks register
- * an entry in `VIEWS`; everyone else gets the neutral pass-through, so callers
- * dispatch by kind without knowing any kind exists.
- */
-export interface AgentOptionView {
-  /** The entries to render as chips for a select option. */
-  selectOptions(opt: SessionConfigOption): ConfigSelectOption[]
-  /** The value to highlight as active. */
-  activeValue(opt: SessionConfigOption): string | boolean
+  const seed = agentDef(kind)?.seedConfig
+  // A copy: the seed is the manifest's own data, and a caller owns what it gets.
+  return seed ? structuredClone(seed) : { configOptions: [], commands: [] }
 }
 
 const neutral: AgentOptionView = {
@@ -71,35 +21,25 @@ const neutral: AgentOptionView = {
 }
 
 /**
- * claude-code's adapter reports a literal `"default"` select entry — the
- * absence of a choice, not one — and for the model option never rewrites
- * `currentValue` to the model that actually ran (`currentModelId` stays
- * `"default"` across a turn). The default entry's own description is the sole
- * hint: "Use the default model (currently Opus 5 (1M context)) · …". So: hide
- * the `default` chip, and highlight the concrete model the description names.
+ * How an agent kind's config options are *presented* (`AgentOptionView`).
+ * Kinds with reporting quirks bring a view in their plugin; everyone else gets
+ * the neutral pass-through, so callers dispatch by kind without knowing any
+ * kind exists.
  */
-const claudeCode: AgentOptionView = {
-  selectOptions: (opt) => (opt.options ?? []).filter((o) => o.value !== 'default'),
-  activeValue: (opt) => (opt.category === 'model' ? resolveClaudeModel(opt) : opt.currentValue)
-}
-
-const VIEWS: Record<string, AgentOptionView> = { 'claude-code': claudeCode }
-
-/** The option view for an agent kind — neutral pass-through when none registered. */
 export const agentOptionView = (kind?: string): AgentOptionView =>
-  (kind && VIEWS[kind]) || neutral
+  agentPlugin(kind)?.optionView ?? neutral
 
 /**
  * Overlay a session's own picks (`SessionInfo.configValues`) on the agent's
  * live report, for display.
  *
  * An agent that echoes a concrete choice back is the truth and is left alone.
- * When it does not — claude-code answers `session/set_config_option` and then
- * keeps reporting `currentValue: "default"` — the pick is the truth, and it
- * has to win: the `default` entry describes the *account* fallback, so a
- * session explicitly started on Fable would otherwise be shown (and read) as
- * whatever that fallback is, e.g. Sonnet. A pick no chip offers is ignored
- * rather than asserted.
+ * When it does not — an adapter that answers `session/set_config_option` and
+ * then keeps reporting `currentValue: "default"` (claude-code's does) — the
+ * pick is the truth, and it has to win: the `default` entry describes the
+ * *account* fallback, so a session explicitly started on one model would
+ * otherwise be shown (and read) as whatever that fallback is. A pick no chip
+ * offers is ignored rather than asserted.
  */
 export function withPickedValues(
   options: SessionConfigOption[],
@@ -115,40 +55,4 @@ export function withPickedValues(
     if (chips.some((c) => c.value === o.currentValue)) return o
     return chips.some((c) => c.value === picked) ? { ...o, currentValue: picked } : o
   })
-}
-
-/**
- * Map claude-code's `"default"` model alias to the concrete option its
- * description names. Matching is on family *and* version ("Opus 5", not just
- * "Opus"): an account can offer several models of one family (e.g. Opus 5
- * alongside Opus 4.8), and a family-only match would highlight whichever
- * happens to be listed first. Best-effort and display-only: returns the value
- * unchanged when nothing resolves unambiguously, so it can never break
- * selection.
- */
-function resolveClaudeModel(opt: SessionConfigOption): string | boolean {
-  const cur = opt.currentValue
-  if (typeof cur !== 'string') return cur
-  const opts = opt.options ?? []
-  // An explicit concrete pick already lines up with a visible chip.
-  if (opts.some((o) => o.value === cur && o.value !== 'default')) return cur
-  // "…(currently Opus 5 (1M context))…" → family "opus", version "5".
-  const target = opts
-    .find((o) => o.value === cur)
-    ?.description?.match(/currently\s+([A-Za-z]+)\s*([\d.]+)?/i)
-  if (!target) return cur
-  const [, family, version] = target
-  if (!family) return cur
-  // A candidate must agree on family and, when the default names one, version —
-  // read from the candidate's own name/description ("Opus (1M context)" carries
-  // its version only in "Opus 5 with 1M context").
-  const candidates = opts.filter((o) => {
-    if (o.value === 'default') return false
-    const text = `${o.name} ${o.description ?? ''}`.toLowerCase()
-    if (!text.includes(family.toLowerCase())) return false
-    if (!version) return true
-    return new RegExp(`${family}\\s*${version.replace('.', '\\.')}\\b`, 'i').test(text)
-  })
-  // Ambiguity is worse than no highlight — it would assert the wrong model.
-  return candidates.length === 1 ? (candidates[0]?.value ?? cur) : cur
 }

@@ -31,7 +31,7 @@ const read = (rel) => JSON.parse(fs.readFileSync(path.join(GURT_ROOT, rel), 'utf
 
 write(`${ws}/workspace.json`, {
   repos: [{ name: 'alpha', url: 'https://github.com/o/alpha.git' }],
-  envs: [{ name: 'dev', devcontainer: '{"image":"x"}', repo: 'alpha' }],
+  envs: [{ name: 'dev', image: 'x', repo: 'alpha' }],
   defaultAgent: 'a1'
 })
 write('agents.json', { a1: { kind: 'claude-code', label: 'claude' } })
@@ -57,7 +57,7 @@ write(`${ws}/triage/sessions.json`, [
   {
     info: {
       id: 'tpl-1',
-      env: 'operator',
+      env: 'base',
       role: 'proactive',
       repos: [],
       task: 'triage',
@@ -172,11 +172,11 @@ try {
   await page.waitForSelector('.queue-row:has-text("sentry:2")', { timeout: 5000 })
   console.log('proactive: seeded agent, runs, raised scopes, deferrals OK')
 
-  // The template's Config: role locked to proactive, env the bundled one.
+  // The template's Config: role locked to proactive, env the base image.
   const roleRow = '.ns-body .seclabel-row:has(.seclabel:text-is("ROLE")) + .pick-row'
   await page.waitForSelector(`${roleRow}[disabled]:has-text("proactive")`, { timeout: 5000 })
   const envRow = '.ns-body .seclabel-row:has(.seclabel:text-is("ENVIRONMENT")) + .pick-wrap .pick-value'
-  assert.equal((await page.locator(envRow).innerText()).trim(), 'operator')
+  assert.equal((await page.locator(envRow).innerText()).trim(), 'base')
   await shot('01-agent')
   await page.locator('.seclabel:text-is("DEFERRED")').scrollIntoViewIfNeeded()
   await shot('01b-runs')

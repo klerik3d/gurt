@@ -18,8 +18,6 @@ import type {
   PublishResult,
   PublishSpec,
   RepoConfig,
-  ReviewComment,
-  ReviewState,
   PendingPromptInfo,
   SessionInfo,
   SessionNetwork,
@@ -151,23 +149,13 @@ export interface GurtApi {
    *  `~/.gurt/<ws>/repos/` — and register it (docs/requirements-new-projects.md §2). */
   createLocalRepo(ws: string, name: string): Promise<RepoConfig>
   /** Publish a local repo: create it on the forge, push its history, re-point
-   *  every clone, and optionally adopt its devcontainer as an env (§6). */
+   *  every clone (§6). */
   publishRepo(ws: string, name: string, spec: PublishSpec): Promise<PublishResult>
   /** Resolves credentials the same way session clones do (by registered repo,
    *  honoring a repo-linked credential), so it works for private repos too.
-   *  When the found config has `build.dockerfile`, the companion Dockerfile is
-   *  returned too — the env editor seeds both fields at once. */
-  discoverDevcontainer(
-    ws: string,
-    repo: string
-  ): Promise<{
-    path: string
-    content: string
-    dockerfile?: { path: string; content: string }
-  } | null>
-  /** Dockerfile candidates (with content) from the repo (root +
-   *  `.devcontainer/**`), loaded into the env editor's Dockerfile field —
-   *  editable there after loading, not re-read from the repo. */
+   *  Dockerfile candidates (with content) from the repo root, loaded into the
+   *  env editor's Dockerfile field — editable there after loading, not re-read
+   *  from the repo. */
   discoverDockerfiles(ws: string, repo: string): Promise<{ path: string; content: string }[]>
   /** Image status of the SAVED env config (badge in Settings → Environments). */
   envImageStatus(ws: string, env: string): Promise<EnvImageStatus>
@@ -226,11 +214,14 @@ export interface GurtApi {
   /** Replace the workspace's default-on skill set wholesale (empty = none).
    *  Rejects a name the registry does not hold. */
   setDefaultSkills(ws: string, names: string[]): Promise<void>
-  /** Point the workspace's operator sessions at one of its own envs, or back
-   *  at the bundled default (`undefined`) — the operator twin of
-   *  `setDefaultAgent` (docs/requirements-session-operator.md §2.2). Rejects
-   *  an env the registry does not hold. */
-  setOperatorEnv(ws: string, env: string | undefined): Promise<void>
+  /** Make one of the workspace's envs the default for new sessions, or back
+   *  to the base image (`undefined`). Rejects an env the registry does not
+   *  hold. */
+  setDefaultEnv(ws: string, env: string | undefined): Promise<void>
+  /** The effective base image: the app-level setting, else `DEFAULT_BASE_IMAGE`. */
+  getBaseImage(): Promise<string>
+  /** Replace the base image; `undefined` restores the default. */
+  setBaseImage(image: string | undefined): Promise<void>
   /**
    * Reinstall an `npm` entry's package: drops the install stamp, so the next
    * start resolves the spec against the registry again instead of reusing what
@@ -275,9 +266,6 @@ export interface GurtApi {
   stopContainer(sessionId: string): Promise<void>
   /** Destroy a session's container. The clone (and its uncommitted work) stays. */
   releaseContainer(sessionId: string): Promise<void>
-  /** Launch VS Code, in its own window, attached to the session's running
-   *  container (impl: `ContainerManager.openVscode`). Rejects if it isn't running. */
-  sessionOpenVscode(sessionId: string): Promise<void>
   /** Open a system terminal inside the session's running container. */
   sessionOpenTerminal(sessionId: string): Promise<void>
   /** Git state of every clone of the task, computed on the host; `fetch` reaches the network. */
@@ -286,7 +274,7 @@ export interface GurtApi {
   getFileDiff(ws: string, task: string, repo: string, file: string): Promise<string>
   /** Read-only `git show` of one commit of the thread. */
   getCommitDiff(ws: string, task: string, repo: string, sha: string): Promise<string>
-  /** Files one review target touches (see docs/requirements-manual-review.md). */
+  /** Files one diff target touches. */
   getDiffFiles(ws: string, task: string, repo: string, target: DiffTarget): Promise<ChangedFile[]>
   /** Whole before/after content of one file — the split view aligns it renderer-side. */
   getDiffPair(
@@ -296,35 +284,6 @@ export interface GurtApi {
     target: DiffTarget,
     file: string
   ): Promise<DiffPair>
-  /** Lock + this target's comments; comments whose file left the target are pruned. */
-  getReviewState(ws: string, task: string, repo: string, target: DiffTarget): Promise<ReviewState>
-  /** Locked repos of a task, as `repo → true`. A plain read: unlike
-   *  `getReviewState` it never prunes, so the panel can poll it freely. */
-  getReviewLocks(ws: string, task: string): Promise<Record<string, boolean>>
-  /** Take/release the review lock; taking one rejects while a session holds the clone. */
-  setReviewLock(ws: string, task: string, repo: string, locked: boolean): Promise<void>
-  addReviewComment(
-    ws: string,
-    task: string,
-    repo: string,
-    target: DiffTarget,
-    path: string,
-    side: 'before' | 'after',
-    line: number,
-    text: string,
-    /** 1-based, inclusive; omit for a single-line anchor. */
-    endLine?: number
-  ): Promise<ReviewComment>
-  resolveReviewComment(ws: string, task: string, id: string, resolved: boolean): Promise<void>
-  deleteReviewComment(ws: string, task: string, id: string): Promise<void>
-  /** Draft an executor session seeded with this target's open comments plus `prompt`. */
-  launchReviewFix(
-    ws: string,
-    task: string,
-    repo: string,
-    target: DiffTarget,
-    prompt: string
-  ): Promise<{ sessionId: string }>
   changesCommit(ws: string, task: string, repo: string, message: string, options?: GitCommitOptions): Promise<void>
   changesPush(ws: string, task: string, repo: string, options?: GitPushOptions): Promise<void>
   /** Merge or rebase the fetched default branch into the task branch; conflicts surface as `conflicted`. */
@@ -341,10 +300,7 @@ export interface GurtApi {
   latestProposal(ws: string, task: string, repo: string): Promise<StoredProposal | undefined>
   /** Open the browser at the forge's compare URL (impl: `prUrl` + `shell.openExternal`). */
   changesOpenPr(ws: string, task: string, repo: string): Promise<void>
-  changesOpenVscode(ws: string, task: string, repo: string): Promise<void>
   changesOpenTerminal(ws: string, task: string, repo: string): Promise<void>
-  /** Open every repo clone under the task dir in one VS Code window. */
-  taskOpenVscode(ws: string, task: string): Promise<void>
   taskOpenTerminal(ws: string, task: string): Promise<void>
   /** Copy the absolute scope directory path to the host clipboard. */
   taskCopyPath(ws: string, task: string): Promise<void>
@@ -463,8 +419,8 @@ export interface GurtApi {
    *  and a cached one would be worse than none. Never rejects: a failure is a
    *  row, which is the whole point. */
   machineDoctor(): Promise<DoctorReport>
-  /** Pull the two digest-pinned images a first session needs — the bundled
-   *  operator env's and the session proxy's (§5.1). Progress streams over
+  /** Pull the digest-pinned images a first session needs — the base
+   *  image, gurt's node runtime and the session proxy (§5.1). Progress streams over
    *  `provision-log` under the key `machine:prepare`; the call rejects with
    *  the pull's own failure. */
   machinePrepare(): Promise<void>
@@ -479,7 +435,7 @@ export interface GurtApi {
   /** The same create, entered by signing in instead of pasting a key — the
    *  welcome screen's primary path (docs/requirements-first-run.md §6.1).
    *  Mints an `oauth` credential for the kind's provider
-   *  (`AgentDef.oauthProvider`), runs that provider's browser flow, and on
+   *  (`AgentManifest.oauthProvider`), runs that provider's browser flow, and on
    *  success creates and starts exactly what {@link firstRunStart} does. A
    *  cancelled or failed sign-in creates nothing; a kind with no sign-in path
    *  is refused rather than sent through a flow its CLI cannot consume. */
@@ -601,7 +557,6 @@ const METHODS = {
   addRepo: 'write',
   createLocalRepo: 'write', //  addRepo plus the empty bare repo it points at
   publishRepo: 'none', //       creates a repo on an external forge with a credential
-  discoverDevcontainer: 'read', // repo file contents, by the §2.4 exception
   discoverDockerfiles: 'read', //  repo file contents, by the §2.4 exception
   envImageStatus: 'read',
   envBuildImage: 'write',
@@ -623,7 +578,9 @@ const METHODS = {
   removeSkill: 'write',
   skillUsedBy: 'read',
   setDefaultSkills: 'write',
-  setOperatorEnv: 'write', //   configuring gurt is the point
+  setDefaultEnv: 'write', //    configuring gurt is the point
+  getBaseImage: 'read',
+  setBaseImage: 'none', //      host-wide policy: a user gesture
   reinstallMcpServer: 'write',
   probeMcpServer: 'read', //    narrowed by kind at the host (§6): local kinds by saved id only
   createTask: 'write',
@@ -633,29 +590,19 @@ const METHODS = {
   setTaskMaxConcurrentSessions: 'write',
   stopContainer: 'none', //     §2.4: does not drive other sessions
   releaseContainer: 'none', //  §2.4
-  sessionOpenVscode: 'none', // host GUI
   sessionOpenTerminal: 'none', // host GUI
   getTaskChanges: 'read', //    counts and states, not content
   getFileDiff: 'none', //       repo content (§2.4)
   getCommitDiff: 'none', //     repo content (§2.4)
   getDiffFiles: 'none', //      repo content (§2.4)
   getDiffPair: 'none', //       repo content (§2.4)
-  getReviewState: 'none', //    comments quote code
-  getReviewLocks: 'read', //    why a session cannot start — diagnostics
-  setReviewLock: 'none',
-  addReviewComment: 'none',
-  resolveReviewComment: 'none',
-  deleteReviewComment: 'none',
-  launchReviewFix: 'none', //   drafts a session (§2.4)
   changesCommit: 'none', //     writes to repos and remotes
   changesPush: 'none', //       writes to repos and remotes
   changesUpdateFromMain: 'none',
   changesMergeToMain: 'none', // writes to repos and remotes
   latestProposal: 'none', //    repo content
   changesOpenPr: 'none', //     host browser
-  changesOpenVscode: 'none', // host GUI
   changesOpenTerminal: 'none', // host GUI
-  taskOpenVscode: 'none', // host GUI
   taskOpenTerminal: 'none', // host GUI
   taskCopyPath: 'none', // host clipboard
   createSession: 'none', //     phase 1; §13 question 2

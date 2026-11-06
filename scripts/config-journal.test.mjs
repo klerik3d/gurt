@@ -68,7 +68,7 @@ test('mutations journal into an allow-listed git repository', async () => {
 
   await m.setAgents({ a1: { kind: 'claude-code', label: 'claude' } })
   await m.addRepo('acme', { name: 'alpha', url: 'https://github.com/o/alpha.git' })
-  await m.addEnv('acme', { name: 'node20', devcontainer: '{"image":"node:20"}' })
+  await m.addEnv('acme', { name: 'node20', image: 'node:20' })
   await m.addSkill('acme', 'greet', '---\nname: greet\ndescription: says hi\n---\nhi\n')
 
   const tracked = git('ls-files').split('\n').sort()
@@ -88,7 +88,7 @@ test('the reservation the ignore file depends on: a task named `skills` is refus
 
 test('one commit per mutation, the op in the trailer, the actor in the author', async () => {
   const before = commitCount()
-  await m.updateEnv('acme', { name: 'node20', devcontainer: '{"image":"node:22"}' })
+  await m.updateEnv('acme', { name: 'node20', image: 'node:22' })
   assert.equal(commitCount(), before + 1, 'exactly one commit for one mutation')
   const body = git('log', '-1', '--format=%s%n%b')
   assert.match(body, /env "node20": updated/, 'the subject names the entity')
@@ -97,13 +97,13 @@ test('one commit per mutation, the op in the trailer, the actor in the author', 
   assert.equal(git('log', '-1', '--format=%an <%ae>'), 'gurt-ui <user@gurt.local>', 'UI is the default actor')
 
   // A same-value save changes no tracked bytes and commits nothing.
-  await m.updateEnv('acme', { name: 'node20', devcontainer: '{"image":"node:22"}' })
+  await m.updateEnv('acme', { name: 'node20', image: 'node:22' })
   assert.equal(commitCount(), before + 1, 'a no-op save adds no commit')
 })
 
 test('a UI change and an operator change are distinguishable by --author', async () => {
   await m.withJournalActor({ kind: 'operator', id: '4f3c' }, () =>
-    m.updateEnv('acme', { name: 'node20', devcontainer: '{"image":"node:23"}' })
+    m.updateEnv('acme', { name: 'node20', image: 'node:23' })
   )
   assert.equal(
     git('log', '-1', '--format=%an <%ae>'),
@@ -122,16 +122,16 @@ test('a journal failure never fails the write', async () => {
   // not refuse to save an env.
   const lock = path.join(GURT_ROOT, '.git', 'index.lock')
   fs.writeFileSync(lock, '')
-  await m.updateEnv('acme', { name: 'node20', devcontainer: '{"image":"node:24"}' })
+  await m.updateEnv('acme', { name: 'node20', image: 'node:24' })
   const saved = JSON.parse(fs.readFileSync(path.join(GURT_ROOT, 'acme', 'workspace.json'), 'utf8'))
-  assert.match(saved.envs[0].devcontainer, /node:24/, 'the write stands')
+  assert.match(saved.envs[0].image, /node:24/, 'the write stands')
   assert.equal(commitCount(), count, 'no commit landed — the journal failed quietly')
   fs.rmSync(lock)
 
   // A deleted repository: the next mutation re-inits and journals again.
   fs.rmSync(path.join(GURT_ROOT, '.git'), { recursive: true, force: true })
-  await m.updateEnv('acme', { name: 'node20', devcontainer: '{"image":"node:25"}' })
+  await m.updateEnv('acme', { name: 'node20', image: 'node:25' })
   const reborn = JSON.parse(fs.readFileSync(path.join(GURT_ROOT, 'acme', 'workspace.json'), 'utf8'))
-  assert.match(reborn.envs[0].devcontainer, /node:25/, 'the write stands here too')
+  assert.match(reborn.envs[0].image, /node:25/, 'the write stands here too')
   assert.equal(commitCount(), 1, 'a fresh journal picked the record back up')
 })

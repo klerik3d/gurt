@@ -275,17 +275,6 @@ export function Sidebar({
               onMouseDown={(e) => {
                 e.preventDefault()
                 close()
-                fire(() => window.gurt.taskOpenVscode(row.ws, row.task))
-              }}
-            >
-              <Icon name="vscode" size={13} />
-              <span>Open in VS Code</span>
-            </div>
-            <div
-              className="menu-item"
-              onMouseDown={(e) => {
-                e.preventDefault()
-                close()
                 fire(() => window.gurt.taskOpenTerminal(row.ws, row.task))
               }}
             >
@@ -327,7 +316,7 @@ export function Sidebar({
               }}
             >
               <Icon name="copy" size={13} className="faint" />
-              <span>Duplicate as draft</span>
+              <span>Duplicate</span>
             </div>
             {launched && (
               <div
@@ -339,7 +328,7 @@ export function Sidebar({
                 }}
               >
                 <Icon name="history" size={13} className="faint" />
-                <span>Recreate as draft…</span>
+                <span>Recreate…</span>
               </div>
             )}
             {readSession && (
@@ -766,7 +755,6 @@ export function Sidebar({
                   layout={fileLayout}
                   selection={diffFile ?? null}
                   nav={diffNav(task.name)}
-                  onRefresh={() => onRefreshChanges(wsName, task.name)}
                 />
               )}
               {!isCollapsed && mode === 'sessions' &&

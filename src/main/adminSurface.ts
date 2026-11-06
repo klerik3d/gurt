@@ -24,7 +24,7 @@ import { MCP_DEFS, mcpEntryKind } from '../shared/mcp'
 import { ADMIN_TOOLS } from '../shared/adminTools.generated'
 import { getCredentials, credentialUsedBy } from './credentials'
 import { probeMcpServer } from './mcp/probe'
-import { discoverDevcontainer, discoverDockerfiles, envImageStatus } from './provision'
+import { discoverDockerfiles, envImageStatus } from './provision'
 import { machineDoctor } from './doctor'
 import { traffic } from './proxy/traffic'
 import * as store from './store'
@@ -116,12 +116,12 @@ export function createAdminSurface(kernel: Kernel): AdminSurface {
     },
     getCredentials: async () => stripCredentialValues(await getCredentials()),
     credentialUsedBy: (id) => credentialUsedBy(id),
-    discoverDevcontainer: (w, repo) => discoverDevcontainer(w, repo),
     discoverDockerfiles: (w, repo) => discoverDockerfiles(w, repo),
     envImageStatus: (w, env) => envImageStatus(w, env),
     getMcpServers: (w) => store.getMcpServers(w),
     getSkills: (w) => store.getSkills(w),
     getSkillDoc: (w, name) => store.getSkillDoc(w, name),
+    getBaseImage: () => store.getBaseImage(),
     skillUsedBy: (w, name) => store.tasksUsingSkill(w, name),
     // §3.2 narrowing 4 (§6's rule, applied where the schema cannot carry it):
     // an http entry may be probed by value, unsaved — probing one is an HTTP
@@ -142,7 +142,6 @@ export function createAdminSurface(kernel: Kernel): AdminSurface {
     },
     taskDirtyRepos: (w, name) => kernel.taskDirtyRepos(w, name),
     getTaskChanges: (w, task, opts) => changes.getTaskChanges(w, task, opts ?? {}),
-    getReviewLocks: (w, task) => kernel.review.locks(w, task),
     // Deliberately without ipc.ts's markSessionRead side effect: the
     // notification read-state is the user's own (§3.4), and an operator
     // reading diagnostics must not clear it.

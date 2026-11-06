@@ -15,7 +15,7 @@ const log = createLogger('app')
 // Before anything can spawn: a macOS app launched from the Dock inherits
 // launchd's PATH, which has neither `docker` nor a Homebrew `git` on it
 // (hostPath.ts). Every child gurt starts — and every child *they* start, like
-// the docker the devcontainer CLI runs — inherits what this installs.
+// every docker child — inherits what this installs.
 const hostSearchPath = applyHostPath()
 
 // One instance only: two processes would share ~/.gurt with none of the

@@ -31,7 +31,7 @@ fs.writeFileSync(
   path.join(GURT_ROOT, ws, 'workspace.json'),
   JSON.stringify({
     repos: [{ name: 'alpha', url: 'https://github.com/o/alpha.git' }],
-    envs: [{ name: 'dev', devcontainer: '{"image":"x"}', repo: 'alpha' }]
+    envs: [{ name: 'dev', image: 'x', repo: 'alpha' }]
   })
 )
 fs.writeFileSync(path.join(GURT_ROOT, ws, 'agents.json'), JSON.stringify({}))
@@ -97,7 +97,7 @@ try {
   await row('Alpha').click({ button: 'right' })
   await page.waitForSelector('.ctx-menu', { timeout: 5000 })
   await shot('01-row-menu')
-  await page.click('.ctx-menu .menu-item:has-text("Duplicate as draft")')
+  await page.click('.ctx-menu .menu-item:has-text("Duplicate")')
   await page.waitForFunction(() => document.querySelectorAll('.sb-session').length === 3, null, {
     timeout: 5000
   })
@@ -120,7 +120,7 @@ try {
   await page.click('.session-pane .session-menu button')
   await page.waitForSelector('.session-menu-pop', { timeout: 5000 })
   await shot('03-pane-menu')
-  await page.click('.session-menu-pop .menu-item:has-text("Duplicate as draft")')
+  await page.click('.session-menu-pop .menu-item:has-text("Duplicate")')
   await page.waitForFunction(() => document.querySelectorAll('.sb-session').length === 4, null, {
     timeout: 5000
   })

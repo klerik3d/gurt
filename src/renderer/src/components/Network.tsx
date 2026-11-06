@@ -273,7 +273,7 @@ export function NetworkPicker({
         )}
         {open && internal && (
           <div className="hc-note">
-            Setup — image build, devcontainer features, postCreate, the agent install — still runs
+            Setup — image build, setup script, the agent install — still runs
             with an open network before the isolation applies. SSH git is not supported; git goes
             over HTTPS through the github MCP.
           </div>

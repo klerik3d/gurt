@@ -4,56 +4,32 @@ import { promises as fs } from 'node:fs'
 import { existsSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { createRequire } from 'node:module'
-import { z } from 'zod'
-import type { EnvConfig, EnvRef, RepoConfig } from '../shared/types'
-import type { AgentDef } from '../shared/agents'
-import { envImageTag, parseEnvDevcontainer, validateEnvConfig } from '../shared/envConfig'
+import { DEFAULT_BASE_IMAGE, type EnvConfig, type EnvRef, type RepoConfig } from '../shared/types'
+import type { AgentManifest } from '../shared/agentPlugin'
+import { envImageTag, insideRoot, validateEnvConfig } from '../shared/envConfig'
 import type { EnvImageStatus } from '../shared/api'
-import { cloneDir, getWorkspace, gurtRoot, historySlug, overrideConfigPath, taskDir } from './store'
+import { cloneDir, getWorkspace, gurtRoot, historySlug, taskDir } from './store'
 import { listCredentials } from './credentials'
 import { hostGitAccess } from './git/env'
 import { hostPath, resolveHostCommand } from './hostPath'
 import { createLogger } from './log'
 
-const require = createRequire(import.meta.url)
-
 // Named `procLog` because most functions here take a `log: LogSink` sink.
 const procLog = createLogger('proc')
-
-/**
- * What `devcontainer up` reports on stdout. It is a subprocess we shell out to,
- * so the JSON line it prints is parsed, not trusted: an outcome that is not
- * "success" (or a body that carries no container id) fails the start with a
- * readable error instead of returning an undefined id downstream.
- */
-const UP_RESULT = z.looseObject({
-  outcome: z.string().optional().catch(undefined),
-  message: z.string().optional().catch(undefined),
-  containerId: z.string().optional().catch(undefined),
-  remoteWorkspaceFolder: z.string().optional().catch(undefined)
-})
-
-/** The members of a materialized devcontainer config that the sibling-mount
- *  merge reads. Everything else in the file rides through untouched. */
-const MOUNT_MERGE_FIELDS = z.looseObject({
-  workspaceFolder: z.string().optional().catch(undefined),
-  mounts: z.array(z.unknown()).catch([])
-})
 
 /** Cap on the unterminated remainder buffered between chunks in `lineBuffer`. A
  *  process that never emits '\n' must not grow it without bound — matches the
  *  record truncation limit in log.ts. Well above any realistic secret length,
  *  but not a hard guarantee: a single line longer than this with no '\n' can
  *  still force a flush mid-secret, splitting it across two redacted records.
- *  Accepted as a rare edge case (real devcontainer/git output does not run this
+ *  Accepted as a rare edge case (real docker/git output does not run this
  *  long without a newline) — the unbounded-growth risk this cap prevents
  *  matters more than closing that last gap. */
 const MAX_LINE_BUFFER = 32 * 1024
 
 /**
- * Trace one child process. The devcontainer CLI is rare and slow enough that
- * its lifecycle belongs in the default log; the host probes below it (`git`,
+ * Trace one child process. Container lifecycle steps are rare and slow enough
+ * that they belong in the default log; the host probes below it (`git`,
  * `docker inspect`, `tar`) run several times per panel refresh, so they trace
  * at DBG — a failing one still surfaces at WRN. argv rides through the ctx
  * redactor, which scrubs `://user:pass@` URLs and every known secret value —
@@ -85,32 +61,6 @@ function traceProc(
     if (ok) procLog[level]('proc.exit', record)
     else procLog.warn('proc.exit', record)
   }
-}
-
-/**
- * Features every environment gets (adapters are npm packages).
- *
- * Pinned by digest, not tag (supply chain): tags are mutable, so a compromised
- * feature release would flow straight into user containers. Digest = the `:1`
- * tag as of 2026-08-23; bump deliberately with gurt releases
- * (`docker manifest inspect ghcr.io/devcontainers/features/node:1`).
- */
-const BASE_FEATURES = {
-  'ghcr.io/devcontainers/features/node@sha256:8c0de46939b61958041700ee89e3493f3b2e4131a06dc46b4d9423427d06e5f6':
-    {}
-}
-
-/**
- * In a packaged build the CLI lives inside app.asar, which only Electron's own
- * fs can read — we spawn it as a separate process, so it must come from the
- * unpacked mirror instead (see `asarUnpack` in electron-builder.yml). Resolving
- * still goes through the asar path; only the returned path is redirected.
- */
-function devcontainerCliPath(): string {
-  const dir = path
-    .dirname(require.resolve('@devcontainers/cli/package.json'))
-    .replace(`${path.sep}app.asar${path.sep}`, `${path.sep}app.asar.unpacked${path.sep}`)
-  return path.join(dir, 'devcontainer.js')
 }
 
 export type LogSink = (line: string) => void
@@ -149,11 +99,6 @@ export function lineBuffer(sink: LogSink): { push: (chunk: Buffer) => void; flus
   }
 }
 
-interface RunResult {
-  code: number
-  stdout: string
-}
-
 /** Bounds every docker/git probe below: a wedged daemon must surface as the
  *  probe's own failure value (false / null), not as an await that never
  *  settles — dockerVersion's comment states the hazard; this applies its
@@ -170,71 +115,6 @@ function killAfter(child: ChildProcess, ms: number): void {
   child.on('error', () => clearTimeout(timer))
 }
 
-/** devcontainer CLI inactivity bound. A cold image build legitimately runs for
- *  many minutes — but it keeps printing; total silence this long means a
- *  wedged daemon or a stalled pull, and the await would otherwise never
- *  settle (the session would sit in `starting` forever). */
-const CLI_SILENCE_TIMEOUT_MS = 5 * 60_000
-
-/** Runs the CLI under Electron's own binary in Node mode — no system node needed. */
-function runNodeCli(args: string[], sink: LogSink, opaqueArgv = false): Promise<RunResult> {
-  if (!opaqueArgv) sink(`$ devcontainer ${args.join(' ')}`)
-  return new Promise((resolve, reject) => {
-    const started = Date.now()
-    const child = spawn(process.execPath, [devcontainerCliPath(), ...args], {
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }
-    })
-    const exited = traceProc('info', 'devcontainer', args, child.pid, opaqueArgv)
-    // Silence watchdog: re-armed by every output line, so a long build that
-    // keeps talking never trips it. No auto-retry — the caller surfaces the
-    // error and the user decides.
-    let silenced = false
-    let watchdog: NodeJS.Timeout | undefined
-    const rearm = (): void => {
-      clearTimeout(watchdog)
-      watchdog = setTimeout(() => {
-        silenced = true
-        child.kill('SIGKILL')
-      }, CLI_SILENCE_TIMEOUT_MS)
-      watchdog.unref?.()
-    }
-    rearm()
-    const out = lineBuffer(sink)
-    const err = lineBuffer(sink)
-    let stdout = ''
-    child.stdout.on('data', (d: Buffer) => {
-      rearm()
-      stdout += d.toString()
-      out.push(d)
-    })
-    child.stderr.on('data', (d: Buffer) => {
-      rearm()
-      err.push(d)
-    })
-    child.on('error', (e) => {
-      clearTimeout(watchdog)
-      out.flush()
-      err.flush()
-      exited(null, Date.now() - started, false)
-      reject(e)
-    })
-    child.on('close', (code) => {
-      clearTimeout(watchdog)
-      out.flush()
-      err.flush()
-      exited(code, Date.now() - started, code === 0)
-      if (silenced)
-        reject(
-          new Error(
-            `devcontainer CLI produced no output for ${CLI_SILENCE_TIMEOUT_MS / 60_000} minutes — ` +
-              'assuming it is stuck. Check that Docker is responsive, then run the session again.'
-          )
-        )
-      else resolve({ code: code ?? -1, stdout })
-    })
-  })
-}
-
 interface RunOpts {
   cwd?: string
   env?: NodeJS.ProcessEnv
@@ -245,6 +125,9 @@ interface RunOpts {
   /** This argv carries prose (a commit message, …) — `proc.spawn` traces an
    *  argument count instead of the values. See `traceProc`. */
   opaqueArgv?: boolean
+  /** Container lifecycle steps (build, pull, create, start) are rare, slow and
+   *  usually the thing being diagnosed: they trace at INF. Probes stay DBG. */
+  level?: 'info' | 'debug'
 }
 
 /** Resolves with the child's stdout; exported for host-git modules (changes.ts). */
@@ -252,7 +135,7 @@ export function run(cmd: string, args: string[], sink: LogSink, opts: RunOpts = 
   return new Promise((resolve, reject) => {
     const started = Date.now()
     const child = spawn(cmd, args, { cwd: opts.cwd, env: opts.env })
-    const exited = traceProc('debug', cmd, args, child.pid, opts.opaqueArgv)
+    const exited = traceProc(opts.level ?? 'debug', cmd, args, child.pid, opts.opaqueArgv)
     // The last few lines are what a failure message quotes.
     const tail: string[] = []
     let stdout = ''
@@ -450,23 +333,6 @@ export function isDirty(dir: string): Promise<boolean> {
 /** Upper bound on the discovery clone before it's killed. */
 const DISCOVER_TIMEOUT_MS = 60_000
 
-export interface DiscoveredDevcontainer {
-  path: string
-  content: string
-  /** Companion Dockerfile, when the discovered config has `build.dockerfile`. */
-  dockerfile?: { path: string; content: string }
-}
-
-/** Repo-relative paths checked, in order, plus any `.devcontainer/<name>/` variant. */
-async function devcontainerCandidates(dir: string): Promise<string[]> {
-  const candidates = ['.devcontainer/devcontainer.json', '.devcontainer.json']
-  const devcontainerDir = path.join(dir, '.devcontainer')
-  for (const entry of await fs.readdir(devcontainerDir, { withFileTypes: true }).catch(() => []))
-    if (entry.isDirectory())
-      candidates.push(path.join('.devcontainer', entry.name, 'devcontainer.json'))
-  return candidates
-}
-
 /** Looks up the registered repo the same way `ensureClone` does, so discovery
  *  resolves credentials (including a repo-linked `credentialId`) identically
  *  to the real clone instead of falling back to host-auto-match only. */
@@ -500,56 +366,13 @@ async function withShallowClone<T>(repo: RepoConfig, fn: (dir: string) => Promis
   }
 }
 
-/** Shallow-clones the repo to a scratch dir and looks for its devcontainer.json.
- *  When the discovered config has `build.dockerfile`, the companion Dockerfile
- *  (path resolved relative to the config's directory) is returned too — the env
- *  editor seeds both fields at once. */
-export async function discoverDevcontainer(
-  ws: string,
-  repoName: string
-): Promise<DiscoveredDevcontainer | null> {
-  const repo = await requireRepo(ws, repoName)
-  return withShallowClone(repo, async (dir) => {
-    for (const rel of await devcontainerCandidates(dir)) {
-      const content = await fs.readFile(path.join(dir, rel), 'utf8').catch(() => null)
-      if (content == null) continue
-      const found: DiscoveredDevcontainer = { path: rel, content }
-      const buildDockerfile = parseEnvDevcontainer(content).build?.dockerfile
-      if (buildDockerfile) {
-        const dfAbs = path.resolve(
-          dir,
-          path.dirname(rel),
-          buildDockerfile.replaceAll('${localWorkspaceFolder}', dir)
-        )
-        const dfContent = await fs.readFile(dfAbs, 'utf8').catch(() => null)
-        if (dfContent != null)
-          found.dockerfile = { path: path.relative(dir, dfAbs), content: dfContent }
-      }
-      return found
-    }
-    return null
-  })
-}
-
 const isDockerfileName = (name: string) => name === 'Dockerfile' || name.startsWith('Dockerfile.')
 
-/** Root `Dockerfile*` plus `.devcontainer/**`'s `Dockerfile*`, root first —
- *  candidates for a repo with no devcontainer.json to build from directly. */
+/** Root `Dockerfile*` — candidates to build an env from. */
 async function dockerfileCandidates(dir: string): Promise<string[]> {
   const out: string[] = []
   for (const entry of await fs.readdir(dir, { withFileTypes: true }).catch(() => []))
     if (entry.isFile() && isDockerfileName(entry.name)) out.push(entry.name)
-  const devcontainerDir = path.join(dir, '.devcontainer')
-  for (const entry of await fs.readdir(devcontainerDir, { withFileTypes: true }).catch(() => [])) {
-    if (entry.isFile() && isDockerfileName(entry.name)) {
-      out.push(path.join('.devcontainer', entry.name))
-    } else if (entry.isDirectory()) {
-      const sub = path.join(devcontainerDir, entry.name)
-      for (const nested of await fs.readdir(sub, { withFileTypes: true }).catch(() => []))
-        if (nested.isFile() && isDockerfileName(nested.name))
-          out.push(path.join('.devcontainer', entry.name, nested.name))
-    }
-  }
   return out
 }
 
@@ -558,9 +381,8 @@ export interface DiscoveredDockerfile {
   content: string
 }
 
-/** Shallow-clones the repo and returns every Dockerfile candidate (repo root +
- *  `.devcontainer/**`) with its content — the env editor loads one into its
- *  (editable) Dockerfile field when there's no devcontainer.json. */
+/** Shallow-clones the repo and returns every root Dockerfile candidate with its
+ *  content — the env editor loads one into its (editable) Dockerfile field. */
 export async function discoverDockerfiles(
   ws: string,
   repoName: string
@@ -575,55 +397,6 @@ export async function discoverDockerfiles(
     return out
   })
 }
-
-/** In-flight write per override path: the file is shared by every session of
- *  the `(workspace, env)` pair, and one session's `up` reads it while another
- *  may be rewriting it. */
-const overrideWrites = new Map<string, Promise<void>>()
-
-/** Writes `content` as the env's materialized devcontainer.json. Serialized
- *  per path and atomic (tmp + rename), so a concurrent reader — our own
- *  `devcontainerUp`, or the CLI resolving `--override-config` — can never see
- *  a truncated file. */
-function writeOverrideConfig(ref: EnvRef, content: string): Promise<void> {
-  const override = overrideConfigPath(ref.workspace, ref.env)
-  const prev = overrideWrites.get(override) ?? Promise.resolve()
-  const next = prev.catch(() => {}).then(async () => {
-    await fs.mkdir(path.dirname(override), { recursive: true })
-    const tmp = `${override}.tmp`
-    await fs.writeFile(tmp, content)
-    await fs.rename(tmp, override)
-  })
-  overrideWrites.set(
-    override,
-    next.catch(() => {})
-  )
-  return next
-}
-
-/** ['--override-config', path] — no content logic; the file was written by
- *  `materializeEnvConfig` at `up` (it persists on disk across app restarts, so
- *  the reattach path needs nothing). The same args must go to `up` and to each
- *  `exec` — exec re-resolves the config. Mounted sessions instead resolve the
- *  per-session merged copy at `sessionConfigPath` (written by `devcontainerUp`,
- *  same persistence). */
-export function overrideConfigArgs(ref: EnvRef): string[] {
-  return ['--override-config', overrideConfigPath(ref.workspace, ref.env)]
-}
-
-/** A session's merged devcontainer config — inside its scratch dir
- *  (`.multirepo/<sessionId>/devcontainer.json`, see `store.sessionScratchDir`),
- *  so it is per-session and lives exactly as long as the session does.
- *
- *  Written whenever gurt has mounts of its own to add: the sibling repo binds
- *  of a multi-repo or read-only session, the read-only skills bind, or both.
- *  Addressed off the scratch dir rather than off the wrapper workspace dir it
- *  used to be derived from — a single-repo executor has no wrapper, and its
- *  workspace folder is the clone, whose parent is the task directory every
- *  session of the task shares. Same path as before for every session that
- *  already had one. */
-export const sessionConfigPath = (scratchDir: string): string =>
-  path.join(scratchDir, 'devcontainer.json')
 
 /** True if an image with this tag exists in the local Docker image store. */
 export function dockerImageExists(tag: string): Promise<boolean> {
@@ -684,19 +457,19 @@ async function removeStaleEnvImages(
  *  same content (e.g. two tasks starting on the same env at once). */
 const buildsInFlight = new Map<string, Promise<string>>()
 
-/** True while an env image is being built — between the build and the `up` that
+/** True while an env image is being built — between the build and the create that
  *  uses it the image has no container, so a sweep must not take it. */
 export const envBuildInFlight = (): boolean => buildsInFlight.size > 0
 
 /**
  * Ensure the image for (repo, commit, envCfg) exists and return its tag.
- * `contextDir` is a disposable snapshot of the repo at `commit` — the env's own
- * devcontainer.json + Dockerfile are written into its `.devcontainer/`
- * (overwriting the repo's versions: the env config is the source of truth),
- * then `docker build` runs with the config's build args/target. Tagged by
- * content (`envImageTag`), so the image is built once and reused by every later
- * session on this env until the Dockerfile, the build args, or the repo's
- * committed content change. Shared by session start and Settings pre-build.
+ * `contextDir` is a disposable snapshot of the repo at `commit`; the env's
+ * Dockerfile is written to a scratch dir *outside* it and passed with `-f`
+ * (nothing lands in the snapshot), and the build context is `build.context`
+ * resolved against the snapshot root. Tagged by content (`envImageTag`), so
+ * the image is built once and reused by every later session on this env until
+ * the Dockerfile, the build args, or the repo's committed content change.
+ * Shared by session start and Settings pre-build.
  */
 export async function buildEnvImage(
   repo: RepoConfig,
@@ -707,9 +480,9 @@ export async function buildEnvImage(
 ): Promise<string> {
   const invalid = validateEnvConfig(envCfg)
   if (invalid) throw new Error(`env "${envCfg.name}": ${invalid}`)
-  const build = parseEnvDevcontainer(envCfg.devcontainer).build
-  if (!build) throw new Error(`env "${envCfg.name}" has no build section — nothing to build`)
-  const tag = envImageTag(repo.url, commit, envCfg.dockerfile!, build)
+  if (!envCfg.dockerfile) throw new Error(`env "${envCfg.name}" has no Dockerfile — nothing to build`)
+  const build = envCfg.build ?? {}
+  const tag = envImageTag(repo.url, commit, envCfg.dockerfile, build)
   const inflight = buildsInFlight.get(tag)
   if (inflight) return inflight
   const p = (async () => {
@@ -717,28 +490,22 @@ export async function buildEnvImage(
       log(`image ${tag} already present`)
       return tag
     }
-    const devcontainerDir = path.join(contextDir, '.devcontainer')
-    await fs.mkdir(devcontainerDir, { recursive: true })
-    await fs.writeFile(path.join(devcontainerDir, 'devcontainer.json'), envCfg.devcontainer)
-    // ${localWorkspaceFolder} in build.dockerfile/context means the repo root —
-    // the CLI substitutes it at `up`, but this build runs outside the CLI.
-    // Use-time only: the tag hashes the raw build object, so the temporary
-    // snapshot path never enters the image identity.
-    const subst = (p: string) => p.replaceAll('${localWorkspaceFolder}', contextDir)
-    const dockerfilePath = path.resolve(devcontainerDir, subst(build.dockerfile ?? 'Dockerfile'))
-    await fs.mkdir(path.dirname(dockerfilePath), { recursive: true })
-    await fs.writeFile(dockerfilePath, envCfg.dockerfile!)
-    // build.context resolves relative to `.devcontainer/`; the default is the
-    // repo root — gurt's convention (documented divergence from the spec
-    // default). `build.options` / `cacheFrom` are ignored (non-goals).
-    const context = build.context ? path.resolve(devcontainerDir, subst(build.context)) : contextDir
-    const args = ['build', '-f', dockerfilePath, '-t', tag]
-    for (const l of envImageLabels(repo, envCfg)) args.push('--label', l)
-    for (const [k, v] of Object.entries(build.args ?? {})) args.push('--build-arg', `${k}=${v}`)
-    if (build.target) args.push('--target', build.target)
-    args.push(context)
-    log(`building ${tag} ...`)
-    await run('docker', args, log)
+    const scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'gurt-env-build-'))
+    try {
+      const dockerfilePath = path.join(scratch, 'Dockerfile')
+      await fs.writeFile(dockerfilePath, envCfg.dockerfile!)
+      // Validated above: relative, and inside the snapshot.
+      const context = path.join(contextDir, insideRoot(build.context ?? '.') ?? '.')
+      const args = ['build', '-f', dockerfilePath, '-t', tag]
+      for (const l of envImageLabels(repo, envCfg)) args.push('--label', l)
+      for (const [k, v] of Object.entries(build.args ?? {})) args.push('--build-arg', `${k}=${v}`)
+      if (build.target) args.push('--target', build.target)
+      args.push(context)
+      log(`building ${tag} ...`)
+      await run('docker', args, log, { level: 'info' })
+    } finally {
+      await fs.rm(scratch, { recursive: true, force: true })
+    }
     await removeStaleEnvImages(repo, envCfg, tag, log)
     return tag
   })()
@@ -748,33 +515,28 @@ export async function buildEnvImage(
 }
 
 /**
- * Write the env's effective devcontainer.json to `overrideConfigPath` and
- * return ['--override-config', path]. Without a `build` section the stored
- * config is written verbatim (JSONC is fine, the CLI reads it). With one, the
- * image is ensured first — built in a temporary snapshot of the clone at HEAD
- * (`git archive`; the working clone is never touched) — and the materialized
- * config has `build` replaced by `image: tag`, all other fields preserved.
- * Comments are lost only in that materialized file, never in the stored config.
+ * The image a session's container is created from (§3.1). An `image` env is
+ * pulled when it is not in the local store. A `dockerfile` env is built in a
+ * temporary snapshot of the clone at HEAD (`git archive`; the working clone is
+ * never touched) and tagged by content.
  *
  * `repo`/`cloneDir` are null for a repo-less operator session
- * (docs/requirements-session-operator.md §2.1): the build branch needs a clone
- * to `git archive` and a commit to tag the image with, so an env with a
- * `build` section is structurally unreachable there — refused here with its
- * own sentence, not at the anchor guard with "session has no repository".
+ * (docs/requirements-session-operator.md §2.1): the build needs a clone to
+ * `git archive` and a commit to tag the image with, so a Dockerfile env is
+ * structurally unreachable there — refused with its own sentence, not at the
+ * anchor guard with "session has no repository".
  */
-export async function materializeEnvConfig(
-  ref: EnvRef,
+export async function prepareEnvImage(
   envCfg: EnvConfig,
   repo: RepoConfig | null,
   cloneDir: string | null,
   log: LogSink
-): Promise<string[]> {
+): Promise<string> {
   const invalid = validateEnvConfig(envCfg)
   if (invalid) throw new Error(`env "${envCfg.name}": ${invalid}`)
-  const { config, build } = parseEnvDevcontainer(envCfg.devcontainer)
-  if (!build) {
-    await writeOverrideConfig(ref, envCfg.devcontainer)
-    return overrideConfigArgs(ref)
+  if (envCfg.image) {
+    await pullIfMissing(envCfg.image, log)
+    return envCfg.image
   }
   if (!repo || !cloneDir)
     throw new Error(
@@ -789,14 +551,18 @@ export async function materializeEnvConfig(
     await run('git', ['-C', cloneDir, 'archive', '--format=tar', '-o', tarFile, 'HEAD'], log)
     await run('tar', ['-xf', tarFile, '-C', srcDir], log)
     const commit = (await run('git', ['-C', cloneDir, 'rev-parse', 'HEAD'], () => {})).trim()
-    const tag = await buildEnvImage(repo, envCfg, srcDir, commit, log)
-    const materialized: Record<string, unknown> = { ...config!, image: tag }
-    delete materialized['build']
-    await writeOverrideConfig(ref, JSON.stringify(materialized, null, 2))
-    return overrideConfigArgs(ref)
+    return await buildEnvImage(repo, envCfg, srcDir, commit, log)
   } finally {
     await fs.rm(scratch, { recursive: true, force: true })
   }
+}
+
+/** `docker pull` when the image is not in the local store; the output goes to
+ *  the provisioning log (phase `image`). */
+export async function pullIfMissing(image: string, log: LogSink): Promise<void> {
+  if (await dockerImageExists(image)) return
+  log(`pulling ${image} ...`)
+  await run('docker', ['pull', image], log, { level: 'info' })
 }
 
 /** Remote HEAD commit of `repo`, resolved with the same credentials as clones. */
@@ -819,12 +585,11 @@ export async function envImageStatus(ws: string, envName: string): Promise<EnvIm
   const envCfg = wsData.envs.find((e) => e.name === envName)
   if (!envCfg) throw new Error(`env "${envName}" not found in "${ws}"`)
   if (validateEnvConfig(envCfg)) return { state: 'invalid' }
-  const build = parseEnvDevcontainer(envCfg.devcontainer).build
-  if (!build) return { state: 'not-applicable' }
+  if (!envCfg.dockerfile) return { state: 'not-applicable' }
   const repo = envCfg.repo ? wsData.repos.find((r) => r.name === envCfg.repo) : undefined
   if (!repo) return { state: 'no-repo' }
   const commit = await remoteHead(repo)
-  const tag = envImageTag(repo.url, commit, envCfg.dockerfile!, build)
+  const tag = envImageTag(repo.url, commit, envCfg.dockerfile, envCfg.build ?? {})
   return { state: (await dockerImageExists(tag)) ? 'exists' : 'missing', tag, commit }
 }
 
@@ -841,8 +606,7 @@ export async function envBuildImage(
   if (!envCfg) throw new Error(`env "${envName}" not found in "${ws}"`)
   const invalid = validateEnvConfig(envCfg)
   if (invalid) throw new Error(`env "${envName}": ${invalid}`)
-  if (!parseEnvDevcontainer(envCfg.devcontainer).build)
-    throw new Error(`env "${envName}" has no build section — nothing to build`)
+  if (!envCfg.dockerfile) throw new Error(`env "${envName}" has no Dockerfile — nothing to build`)
   const repo = envCfg.repo ? wsData.repos.find((r) => r.name === envCfg.repo) : undefined
   if (!repo) throw new Error(`env "${envName}" has no default repository to build from`)
   const tag = await withShallowClone(repo, async (dir) => {
@@ -852,150 +616,181 @@ export async function envBuildImage(
   return { tag }
 }
 
-/**
- * Id-labels are the devcontainer CLI's find-key for an existing container.
- * A container belongs to exactly one session, so the session IS the identity —
- * one label, passed identically by `up`, `exec` and the adapter spawn. The env
- * manager guarantees at most one container per env (it removes any other
- * session's container before `up`).
- */
-function idLabelArgs(session: string): string[] {
-  return ['--id-label', `gurt.session=${session}`]
+// --- the docker runtime (docs/requirements-env-docker.md §3) ----------------
+//
+// Every container step is the docker CLI, and every exec targets the container
+// *id* in the session record — never a label lookup.
+
+/** Everything an exec needs to land in the right place: the container, the user
+ *  it runs as, its working directory, and the PATH the agent should see. `path`
+ *  is absent only before the env probe has run (setup/start/probe themselves). */
+export interface ExecTarget {
+  containerId: string
+  user: string
+  cwd: string
+  path?: string
 }
 
-/**
- * The CLI's own default, when `--workspace-folder` sits inside a git working
- * tree, is to resolve `git rev-parse --show-toplevel` from it and treat
- * *that* as the workspace root — meant for opening a worktree at its main
- * checkout. Every `workspaceFolder` gurt ever passes is either a repo clone
- * (already its own toplevel, so this is a no-op) or the empty wrapper dir a
- * mounted session stages under `~/.gurt/<ws>/<task>/.multirepo/<session>/repos`
- * (`store.mountedWorkspaceDir`) — and `~/.gurt` itself is a git repo
- * (`ensureJournalRepo`), so for that case the default would walk up to the
- * whole journal, credentials.json included.
- *
- * `up` and `exec` both take the option and both derive paths from it: `up`
- * decides what to bind-mount and where, `exec` decides the cwd it hands
- * docker (`/workspaces/<basename(root)>/<path below root>` unless the config
- * names a `workspaceFolder`). The two must agree — an `up` with the flag
- * mounts the wrapper at `/workspaces/repos`, and an `exec` without it then
- * asks for `/workspaces/.gurt/gurt/<ws>/<task>/.multirepo/<session>/repos`,
- * which does not exist in that container, so docker refuses the exec with
- * "chdir to cwd … failed" and exit 127 before the command ever runs. Hence
- * one constant, passed by `up` (`devcontainerUp`) and every `exec`
- * (`execArgs`) alike.
- *
- * Spelled `=false`, not `--no-…`: the CLI builds its yargs parser with
- * `boolean-negation` off, so the `--no-` prefix is rejected as an unknown
- * argument and the command exits 1 before doing anything.
- */
-const MOUNT_WORKSPACE_GIT_ROOT_OFF = '--mount-workspace-git-root=false'
+/** Where gurt's own Node runtime is mounted (read-only volume). */
+export const NODE_MOUNT = '/opt/gurt/node'
 
 /**
- * The argv prefix every `devcontainer exec` shares: the container is found by
- * the session id-label, and the workspace folder + override config resolve
- * the cwd and remote user exactly the way the `up` that created it did.
+ * gurt's Node runtime (§3.2): adapters are npm packages and need Node whatever
+ * the env image carries. Pinned by digest, not tag (supply chain) — bump
+ * deliberately with gurt releases (`docker manifest inspect
+ * node:26-trixie-slim`). Every plugin's minimum must hold (pi needs ≥ 22.19).
+ * glibc on purpose: the volume's node runs inside the *env's* image, so a
+ * musl/alpine env is unsupported (§12).
  */
-function execArgs(session: string, configArgs: string[], workspaceFolder: string): string[] {
+export const NODE_RUNTIME_IMAGE = DEFAULT_BASE_IMAGE
+
+/** `docker exec` argv up to (not including) the command: the one helper every
+ *  in-container step goes through. Secrets are never in it — `envNames` are
+ *  passed as `-e NAME`, the values ride in the docker client's own environment
+ *  (see {@link spawnDockerExec}). */
+export function dockerExecArgs(
+  t: ExecTarget,
+  envNames: readonly string[] = [],
+  flags: { interactive?: boolean; tty?: boolean } = { interactive: true }
+): string[] {
   return [
     'exec',
-    '--workspace-folder', workspaceFolder,
-    MOUNT_WORKSPACE_GIT_ROOT_OFF,
-    ...idLabelArgs(session),
-    ...configArgs
+    ...(flags.interactive ? ['-i'] : []),
+    ...(flags.tty ? ['-t'] : []),
+    '-u', t.user,
+    '-w', t.cwd,
+    ...(t.path ? ['-e', `PATH=${t.path}`] : []),
+    ...envNames.flatMap((n) => ['-e', n]),
+    t.containerId
   ]
 }
 
-/** A terminal uses the same devcontainer config/user as the agent, but targets
- * the exact live container so a delayed window cannot attach to a replacement. */
-export function containerTerminalCommand(
-  containerId: string,
-  configArgs: string[],
-  workspaceFolder: string
-): { cmd: string; args: string[] } {
+/** Spawn `docker exec` and hand back the child — the caller owns it and its
+ *  pipes (ACP adapter, PII-masked fs/terminal). `env` values reach the process
+ *  through the client's environment only. */
+export function spawnDockerExec(
+  t: ExecTarget,
+  argv: string[],
+  env: Record<string, string> = {},
+  flags?: { interactive?: boolean; tty?: boolean }
+) {
+  return spawn('docker', [...dockerExecArgs(t, Object.keys(env), flags), ...argv], {
+    env: { ...process.env, ...env },
+    stdio: ['pipe', 'pipe', 'pipe']
+  })
+}
+
+interface ExecResult {
+  code: number
+  stdout: string
+  /** The last lines of combined output, for a failure to quote. */
+  tail: string[]
+}
+
+/** Run one command in a container to completion. Never rejects on a non-zero
+ *  exit — the caller decides what a code means — only when `docker` itself
+ *  cannot be spawned. `stdin` is written and closed (file content goes this
+ *  way, never through argv). */
+export function dockerExec(
+  t: ExecTarget,
+  argv: string[],
+  sink: LogSink,
+  opts: {
+    env?: Record<string, string>
+    stdin?: string
+    timeoutMs?: number
+    quiet?: boolean
+    level?: 'info' | 'debug'
+  } = {}
+): Promise<ExecResult> {
+  return new Promise((resolve, reject) => {
+    const started = Date.now()
+    const env = opts.env ?? {}
+    const args = [...dockerExecArgs(t, Object.keys(env), { interactive: opts.stdin !== undefined }), ...argv]
+    const child = spawn('docker', args, { env: { ...process.env, ...env } })
+    // `quiet` (file writes, probes): trace an argument count, not the values.
+    const exited = traceProc(opts.level ?? 'debug', 'docker', args, child.pid, !!opts.quiet)
+    const tail: string[] = []
+    const emit = (line: string): void => {
+      tail.push(line)
+      if (tail.length > HOOK_WINDOW_LINES) tail.shift()
+      if (!opts.quiet) sink(line)
+    }
+    const out = lineBuffer(emit)
+    const err = lineBuffer(emit)
+    let stdout = ''
+    let timedOut = false
+    const timer = opts.timeoutMs
+      ? setTimeout(() => {
+          timedOut = true
+          child.kill('SIGKILL')
+        }, opts.timeoutMs)
+      : undefined
+    child.stdout.on('data', (d: Buffer) => {
+      stdout += d.toString()
+      out.push(d)
+    })
+    child.stderr.on('data', (d: Buffer) => err.push(d))
+    child.stdin.on('error', () => {})
+    if (opts.stdin !== undefined) child.stdin.end(opts.stdin)
+    else child.stdin.end()
+    child.on('error', (e) => {
+      if (timer) clearTimeout(timer)
+      exited(null, Date.now() - started, false)
+      reject(e)
+    })
+    child.on('close', (code) => {
+      if (timer) clearTimeout(timer)
+      out.flush()
+      err.flush()
+      const ok = code === 0 && !timedOut
+      exited(code, Date.now() - started, ok)
+      resolve({ code: timedOut ? -1 : (code ?? -1), stdout, tail })
+    })
+  })
+}
+
+/** The user's login shell, resolved inside the container from /etc/passwd
+ *  (nologin/false and anything not executable fall back to /bin/sh). */
+const PICK_SHELL =
+  'sh_=$(getent passwd "$(id -un 2>/dev/null)" 2>/dev/null | cut -d: -f7); ' +
+  'case "$sh_" in ""|*/nologin|*/false) sh_=/bin/sh;; esac; [ -x "$sh_" ] || sh_=/bin/sh; '
+
+/** argv that runs `script` in the user's login shell: `$SHELL -lc <script>`. */
+export const loginShell = (script: string, flags = '-lc'): string[] => [
+  'sh', '-c', `${PICK_SHELL}exec "$sh_" ${flags} "$0"`, script
+]
+
+/** What a human terminal in the container runs: the user's login shell. */
+export const interactiveShellArgv = (): string[] => ['sh', '-c', `${PICK_SHELL}exec "$sh_" -l`]
+
+/** A terminal uses the same user/cwd/PATH as the agent, but targets the exact
+ *  live container so a delayed window cannot attach to a replacement. */
+export function containerTerminalCommand(t: ExecTarget): { cmd: string; args: string[] } {
   return {
     cmd: '/usr/bin/env',
     args: [
-      'ELECTRON_RUN_AS_NODE=1',
       `PATH=${hostPath()}`,
-      process.execPath,
-      devcontainerCliPath(),
-      'exec',
-      '--container-id', containerId,
-      '--workspace-folder', workspaceFolder,
-      MOUNT_WORKSPACE_GIT_ROOT_OFF,
-      ...configArgs,
-      '/bin/sh', '-c', 'exec "${SHELL:-/bin/sh}" -l'
+      'docker',
+      ...dockerExecArgs(t, [], { interactive: true, tty: true }),
+      ...interactiveShellArgv()
     ]
   }
 }
-
-export interface UpResult {
-  containerId: string
-  remoteWorkspaceFolder: string
-}
-
-/**
- * The CLI announces every lifecycle hook it is about to run with this banner
- * (`Running the postCreateCommand from devcontainer.json...`, or
- * `Running 'name' from <feature>...` for named/feature commands). Seeing it is
- * the point where the image is done and the container exists — everything after
- * it is post-commands. Bold-ANSI wrapped, hence the loose match.
- */
-const LIFECYCLE_BANNER = /Running (?:the \w+|'[^']*') from /
 
 /** Docker Desktop (macOS) reports a host path it has stale-cached as missing,
  *  prefixed with the VM's /host_mnt root. */
 const STALE_BIND_RE = /bind source path does not exist: (?:\/host_mnt)?(\/\S+)/
 
-/**
- * Lifecycle hooks the CLI runs only when it *creates* the container, named the
- * way its `description` field names them (`postCreateCommand from
- * devcontainer.json failed.`, `postCreateCommand from feature "..." failed.`).
- *
- * Their failure is the one that must never be retried in place. The container
- * exists by then, so the next `up` finds it by id-label, skips every
- * create-time hook as already run, and reports success — a session that starts
- * against a workspace whose `npm install` died half-way, with no sign anything
- * went wrong. That is the "it works the second time" of a flaky install: it
- * does not work, it stops trying. A container in that state is one to remove
- * and build again, never one to reuse.
- */
-const CREATE_HOOK_RE = /^(?:onCreate|updateContent|postCreate)Command from /
-
-/** How many output lines a hook failure quotes, and how many it keeps to pick
- *  them from (stack frames and the result JSON are dropped, so the window has
- *  to be the wider of the two). */
+/** How many output lines a failure quotes, and how many it keeps to pick them
+ *  from (stack frames are dropped, so the window has to be the wider). */
 const HOOK_TAIL_LINES = 6
 const HOOK_WINDOW_LINES = 40
 
-/**
- * The lines worth quoting when a lifecycle hook fails. The CLI's own `message`
- * is the shell line it ran and nothing else (`Command failed: /bin/sh -c npm
- * install`) — never why it failed; the reason is in the hook's own output, a
- * few lines above it in the log.
- *
- * Everything before the last lifecycle banner belongs to the image build, which
- * succeeded — quoting it would bury the one thing that did not. Node stack
- * frames and the CLI's trailing JSON result say nothing a user can act on
- * either, so they never make the quote.
- */
+/** The lines worth quoting when a setup/start script fails: its own output,
+ *  without node stack frames. */
 export function hookOutputTail(lines: string[], max = HOOK_TAIL_LINES): string[] {
-  let start = 0
-  for (let i = lines.length - 1; i >= 0; i--)
-    if (LIFECYCLE_BANNER.test(lines[i] ?? '')) {
-      start = i
-      break
-    }
-  return lines
-    .slice(start)
-    .filter(
-      (l) =>
-        !/^\s*at /.test(l.trim()) &&
-        !l.trim().startsWith('{') &&
-        !/^Error: Command failed:/.test(l.trim())
-    )
-    .slice(-max)
+  return lines.filter((l) => l.trim() && !/^\s*at /.test(l)).slice(-max)
 }
 
 /**
@@ -1022,292 +817,458 @@ async function warmBindPaths(paths: string[], log: LogSink): Promise<void> {
   log(`warmed Docker's path cache for ${inside.length} bind source(s)`)
 }
 
-export async function devcontainerUp(
-  session: string,
-  configArgs: string[],
-  workspaceFolder: string,
-  log: LogSink,
-  repoName: string,
-  /** Called once, when `up` moves from building the image to post-commands. */
-  onPostCommands?: () => void,
-  /** Repos mounted explicitly as siblings under the container-side root
-   *  (`/workspaces/<repoName>/<name>`), instead of through the workspace folder
-   *  itself: every repo of a session whose `--workspace-folder` is the empty
-   *  wrapper directory. That is any session with more than one repo, and any
-   *  read-only role — `readonly` is what the CLI's own workspace mount can never
-   *  be (per-mount `readonly` now only set for researcher, see `containers.ts`).
-   *  Empty for a plain read-write single-repo session. */
-  extraMounts: { hostDir: string; name: string; readonly?: boolean }[] = [],
-  /** Binds with an **absolute container target**, which is what the skills
-   *  delivery needs and what a repo sibling can never be
-   *  (docs/requirements-skills.md §5.1). A separate list rather than a flag on
-   *  `extraMounts` because two rules key off that one — a single entry
-   *  re-points `workspaceFolder`, and any read-only entry strips the
-   *  create-time hooks — and neither may fire for a skills bind. */
-  hostMounts: { hostDir: string; target: string; readonly?: boolean }[] = [],
-  /** Where the merged config goes when one is needed — the session's scratch
-   *  dir. Defaults to the wrapper workspace folder's parent, which is the same
-   *  directory for every session that has a wrapper. */
-  scratchDir = path.dirname(workspaceFolder),
-  /** The env is the bundled operator one, whose image is `node:26-bookworm-slim`
-   *  and so already carries node and npm: the node feature is not injected.
-   *  Left to run it installs a second, newer Node via nvm that needs
-   *  `libatomic.so.1`, which that slim image lacks — the build fails (exit
-   *  127). Any other env, a re-pointed operator included, still gets it. */
-  bundledOperatorImage = false
-): Promise<UpResult> {
-  // The container is agent-agnostic: only the node feature is injected (not
-  // for the bundled operator env, which has node already). No
-  // forge CLI — the container authenticates to nothing, so a `gh` in it would
-  // have no credential to use (docs/requirements-mcp-proxy.md §10.2). Agent
-  // adapters are installed lazily via `exec` on connect.
-  const features = bundledOperatorImage ? {} : BASE_FEATURES
-  const remoteRoot = '/workspaces/' + repoName
-  // The CLI's `--mount` argument is validated by a strict regex
-  // (`type=,source=,target=[,external=]`) with no `readonly` key, while strings
-  // in the config's `mounts` array go to `docker --mount` verbatim — the only
-  // channel that can express a read-only bind. `readonly` (docker's own
-  // flag-style key) is the filesystem-level enforcement a read-only role asks
-  // for — not a convention the agent could talk itself out of. The env's
-  // materialized config is shared per (workspace, env) while mounts are
-  // per-session, so the merged copy lives beside the session's wrapper dir —
-  // and every `exec` of a mounted session must resolve it too (the config
-  // decides the exec cwd and the reported remoteWorkspaceFolder).
-  let mountConfigArgs = configArgs
-  if (extraMounts.length || hostMounts.length) {
-    // `configArgs` is always the ['--override-config', path] pair built by
-    // materializeEnvConfig — the flag is there, and so is its value.
-    const envConfigPath = configArgs[configArgs.indexOf('--override-config') + 1] ?? ''
-    const { config, error } = parseEnvDevcontainer(await fs.readFile(envConfigPath, 'utf8'))
-    if (error) throw new Error(`materialized config ${envConfigPath}: ${error}`)
-    // Only the two members the merge below reads; everything else is copied
-    // through verbatim by the spread.
-    const read = MOUNT_MERGE_FIELDS.parse(config ?? {})
-    // The sibling mounts land under the env's own workspace root: the config's
-    // workspaceFolder/workspaceMount stay untouched, so its workspaceMount
-    // still binds `${localWorkspaceFolder}` — here the empty wrapper dir — over
-    // the image's baked copy at the configured path, and each repo binds inside
-    // it by name (`<workspaceFolder>/<repo>`). Only without a configured
-    // workspaceFolder does the wrapper's CLI-default landing spot
-    // (`/workspaces/<basename>` = remoteRoot) serve as the root.
-    const mountRoot = read.workspaceFolder
-      ? read.workspaceFolder.replace(/\/+$/, '')
-      : remoteRoot
-    const merged: Record<string, unknown> = {
-      ...config,
-      // A single mounted repo (every reviewer, and a researcher on just one)
-      // has one unambiguous cwd for lifecycle hooks and `exec` to land in —
-      // point workspaceFolder straight at it instead of the empty wrapper
-      // root, so a hook that does `npm install` finds package.json instead of
-      // failing with ENOENT one level up. workspaceMount (untouched, still
-      // binds the wrapper) and workspaceFolder are independent CLI fields —
-      // disagreeing between them is fine. A true multi-repo session has no
-      // single repo to point at, so it keeps the wrapper root.
-      ...(extraMounts.length === 1 && extraMounts[0]
-        ? { workspaceFolder: `${mountRoot}/${extraMounts[0].name}` }
-        : {}),
-      mounts: [
-        ...read.mounts,
-        ...extraMounts.map(
-          (m) =>
-            `type=bind,source=${m.hostDir},target=${mountRoot}/${m.name}${m.readonly ? ',readonly' : ''}`
-        ),
-        ...hostMounts.map(
-          (m) =>
-            `type=bind,source=${m.hostDir},target=${m.target}${m.readonly ? ',readonly' : ''}`
-        )
-      ]
-    }
-    // A read-only mount (researcher, see `containers.ts`) can never satisfy a
-    // create-time hook that expects to write into the checkout — the CLI would
-    // fail it deterministically, and `CREATE_HOOK_RE` below would burn a
-    // pointless container rebuild retrying a guaranteed repeat. Strip them
-    // instead: a researcher gets a clean, dependency-less container and never
-    // hits that path. Reviewer's mount isn't read-only, so its hooks run
-    // normally against the corrected cwd above.
-    if (extraMounts.some((m) => m.readonly)) {
-      delete merged['onCreateCommand']
-      delete merged['updateContentCommand']
-      delete merged['postCreateCommand']
-      log(
-        'read-only mount session: skipping onCreate/updateContent/postCreate ' +
-          'hooks (this role does not install dependencies)'
-      )
-    }
-    await fs.mkdir(scratchDir, { recursive: true })
-    await fs.writeFile(sessionConfigPath(scratchDir), JSON.stringify(merged, null, 2))
-    mountConfigArgs = ['--override-config', sessionConfigPath(scratchDir)]
+export interface ContainerMount {
+  type: 'bind' | 'volume'
+  source: string
+  target: string
+  readonly?: boolean
+}
+
+/** One `--mount` value. A field holding a comma or a quote is CSV-quoted, which
+ *  is how `docker --mount` reads a path like `/Users/a,b/repo`. */
+export function mountArg(m: ContainerMount): string {
+  const field = (k: string, v: string): string =>
+    /[,"]/.test(v) ? `"${k}=${v.replaceAll('"', '""')}"` : `${k}=${v}`
+  return [
+    `type=${m.type}`,
+    field('source', m.source),
+    field('target', m.target),
+    ...(m.readonly ? ['readonly'] : [])
+  ].join(',')
+}
+
+/** `docker image inspect` facts the runtime needs: the image's own user and its
+ *  architecture (which picks the node volume). null = not in the store. */
+async function inspectImage(image: string): Promise<{ user: string; arch: string } | null> {
+  try {
+    const out = await run(
+      'docker',
+      ['image', 'inspect', '-f', '{{.Config.User}}|{{.Architecture}}', image],
+      () => {},
+      { timeoutMs: PROBE_TIMEOUT_MS }
+    )
+    const [user = '', arch = ''] = out.trim().split('|')
+    return { user, arch }
+  } catch {
+    return null
   }
-  const args = [
-    'up',
-    '--workspace-folder', workspaceFolder,
-    '--additional-features', JSON.stringify(features),
-    // The CLI writes its feature lockfile to `<workspaceFolder>/.devcontainer/
-    // devcontainer-lock.json` by default since 0.87 — a directory that only
-    // exists when the workspace folder is itself a repo checkout that already
-    // has one. Neither the mounted wrapper dir nor a bare clone without a
-    // `.devcontainer/` of its own has it, so `up` failed there with ENOENT.
-    // Nothing here reads the lockfile back, so disable it outright.
-    '--no-lockfile',
-    // Never bind-mount a git ancestor of the folder gurt named — see
-    // `MOUNT_WORKSPACE_GIT_ROOT_OFF` for why, and why every `exec` against
-    // this container must pass the same flag. Unconditional rather than only
-    // for the wrapper case: gurt never wants anything but the literal folder.
-    MOUNT_WORKSPACE_GIT_ROOT_OFF,
-    ...idLabelArgs(session),
-    ...mountConfigArgs
-  ]
-  let announced = false
-  const MAX_ATTEMPTS = 3
-  /** Waits before attempt 2 and 3. The stale window is time-sensitive and
-   *  self-heals on its own eventually — back-to-back retries seconds apart all
-   *  failed, so give the VM a moment after each warm-up. */
-  const BACKOFF_MS = [2_000, 5_000]
-  /** Every path this run has reported as missing. One `up` can report several
-   *  (the whole subtree goes stale together), and only the last attempt's
-   *  wording reaches the user, so accumulate across attempts. */
+}
+
+/** True if a container with this id exists (running or not). */
+export async function dockerContainerExists(containerId: string): Promise<boolean> {
+  return run('docker', ['inspect', '-f', '{{.Id}}', containerId], () => {}, {
+    timeoutMs: PROBE_TIMEOUT_MS
+  }).then(
+    () => true,
+    () => false
+  )
+}
+
+// --- node runtime volume (§3.2) ---
+
+const nodeVolumeName = (arch: string): string =>
+  `gurt-node-${/sha256:([0-9a-f]{12})/.exec(NODE_RUNTIME_IMAGE)?.[1] ?? 'unpinned'}-${arch}`
+
+/** Volumes verified ready in this app process — the `.gurt-ready` check is one
+ *  container run, paid once per process, not per start. */
+const readyNodeVolumes = new Set<string>()
+const nodeVolumesInFlight = new Map<string, Promise<string>>()
+
+/**
+ * The docker volume holding gurt's Node, filled once from
+ * {@link NODE_RUNTIME_IMAGE}. A volume without `.gurt-ready` (a fill that died
+ * half-way) is emptied and refilled. Concurrent callers share one fill.
+ */
+export function ensureNodeRuntimeVolume(arch: string, log: LogSink): Promise<string> {
+  const name = nodeVolumeName(arch)
+  if (readyNodeVolumes.has(name)) return Promise.resolve(name)
+  const inflight = nodeVolumesInFlight.get(name)
+  if (inflight) return inflight
+  const p = (async () => {
+    const platform = `linux/${arch}`
+    const probe = (): Promise<boolean> =>
+      run(
+        'docker',
+        [
+          'run', '--rm', '--platform', platform, '--entrypoint', 'test',
+          '--mount', mountArg({ type: 'volume', source: name, target: '/out', readonly: true }),
+          NODE_RUNTIME_IMAGE, '-f', '/out/.gurt-ready'
+        ],
+        () => {},
+        { timeoutMs: PROBE_TIMEOUT_MS }
+      ).then(
+        () => true,
+        () => false
+      )
+    const exists = await run('docker', ['volume', 'inspect', name], () => {}, {
+      timeoutMs: PROBE_TIMEOUT_MS
+    }).then(
+      () => true,
+      () => false
+    )
+    if (exists && (await probe())) return name
+    if (!exists)
+      await run(
+        'docker',
+        ['volume', 'create', '--label', 'gurt.managed=1', '--label', 'gurt.kind=node-runtime', name],
+        log
+      )
+    log(`filling gurt's node runtime volume ${name} from ${NODE_RUNTIME_IMAGE.split('@')[0]} ...`)
+    await pullIfMissing(NODE_RUNTIME_IMAGE, log)
+    await run(
+      'docker',
+      [
+        'run', '--rm', '--platform', platform, '--entrypoint', 'sh',
+        '--mount', mountArg({ type: 'volume', source: name, target: '/out' }),
+        NODE_RUNTIME_IMAGE, '-c',
+        'find /out -mindepth 1 -delete && cp -a /usr/local/. /out/ && touch /out/.gurt-ready'
+      ],
+      log,
+      { level: 'info' }
+    )
+    return name
+  })().then((n) => {
+    readyNodeVolumes.add(n)
+    return n
+  })
+  nodeVolumesInFlight.set(name, p)
+  p.finally(() => nodeVolumesInFlight.delete(name)).catch(() => {})
+  return p
+}
+
+// --- create / start ---
+
+const STALE_ATTEMPTS = 3
+/** Waits before attempt 2 and 3. The stale window is time-sensitive and
+ *  self-heals on its own eventually — back-to-back retries seconds apart all
+ *  failed, so give the VM a moment after each warm-up. */
+const STALE_BACKOFF_MS = [2_000, 5_000]
+
+/** Run `fn` (a `docker create`/`start`), retrying the Docker Desktop stale-bind
+ *  fault: warm every bind source and back off. Anything else is not retried. */
+async function withStaleBindRetry<T>(
+  bindSources: string[],
+  log: LogSink,
+  fn: (watch: LogSink) => Promise<T>,
+  cleanup?: () => Promise<void>
+): Promise<T> {
+  /** Every path reported missing: one attempt can report several (the whole
+   *  subtree goes stale together) and only the last attempt's wording reaches
+   *  the user, so accumulate across attempts. */
   const stalePaths = new Set<string>()
-  /** Stale-bind and create-time-hook failures each retry on their own budget:
-   *  they are different faults with different fixes, and one must not spend the
-   *  other's attempts. A hook gets exactly one more go — the usual cause is a
-   *  transient registry or network error, which a second run clears, and one
-   *  that isn't transient would only make every start pay twice for it. */
-  let staleAttempts = 0
-  let hookRetries = 0
-  const MAX_HOOK_RETRIES = 1
-  for (;;) {
+  for (let attempt = 1; ; attempt++) {
     let sawStale = false
-    /** The tail of this attempt's output, for a hook failure to quote. */
-    const recent: string[] = []
     const watch: LogSink = (line) => {
-      if (!announced && LIFECYCLE_BANNER.test(line)) {
-        announced = true
-        onPostCommands?.()
-      }
       const stalePath = STALE_BIND_RE.exec(line)?.[1]
       if (stalePath) {
         sawStale = true
         stalePaths.add(stalePath)
       }
-      recent.push(line)
-      if (recent.length > HOOK_WINDOW_LINES) recent.shift()
       log(line)
     }
-    const { code, stdout } = await runNodeCli(args, watch)
-    const jsonLine = stdout
-      .split('\n')
-      .reverse()
-      .find((l) => l.trim().startsWith('{'))
-    // The CLI's own result object, straight off a subprocess' stdout: read
-    // through a schema, not by field access on a JSON.parse. A `{`-line that
-    // does not parse (truncated by a killed pipe) is no result, not a throw —
-    // the failure handling below must run, not be bypassed.
-    let parsedLine: unknown
     try {
-      parsedLine = jsonLine ? JSON.parse(jsonLine) : undefined
-    } catch {
-      parsedLine = undefined
-    }
-    const result = UP_RESULT.safeParse(parsedLine).data
-    if (code !== 0 || result?.outcome !== 'success') {
-      if (sawStale) {
-        staleAttempts++
-        if (staleAttempts < MAX_ATTEMPTS) {
-          // Warm every bind source of this `up`, not just the reported one: the
-          // staleness covers a whole subtree, so the next path would fail next.
-          await warmBindPaths(
-            [
-              workspaceFolder,
-              ...extraMounts.map((m) => m.hostDir),
-              ...hostMounts.map((m) => m.hostDir),
-              ...stalePaths
-            ],
-            log
-          )
-          await new Promise((r) => setTimeout(r, BACKOFF_MS[staleAttempts - 1] ?? 5_000))
-          continue
-        }
-        // The raw `docker run ...` command line the CLI reports says nothing
-        // about why it failed; lead with the cause and the way out instead.
+      return await fn(watch)
+    } catch (e) {
+      if (!sawStale) throw e
+      await cleanup?.()
+      if (attempt >= STALE_ATTEMPTS)
+        // The raw `docker create ...` line says nothing about why it failed;
+        // lead with the cause and the way out instead.
         throw new Error(
           `container start failed: Docker could not see ${[...stalePaths].join(', ')} even ` +
             `though it exists on the host (Docker Desktop's stale path cache). Retried ` +
-            `${MAX_ATTEMPTS}× with a cache warm-up. If this keeps happening, restart ` +
-            `Docker Desktop, or switch Settings → Resources → File sharing to gRPC FUSE.`
+            `${STALE_ATTEMPTS}× with a cache warm-up. If this keeps happening, restart ` +
+            `Docker Desktop, or switch Settings → Resources → File sharing to gRPC FUSE.`,
+          { cause: e }
         )
-      }
-      // A create-time hook (`npm install`, typically) failed, so the container
-      // it half-provisioned has to go — see CREATE_HOOK_RE for what reusing it
-      // would silently do on the next start. The clone it was installing into
-      // is a host bind mount, so nothing diagnostic dies with it.
-      const description: string =
-        typeof result?.['description'] === 'string' ? result['description'] : ''
-      if (CREATE_HOOK_RE.test(description) && typeof result?.containerId === 'string') {
-        await dockerRemove(result.containerId, log)
-        if (hookRetries < MAX_HOOK_RETRIES) {
-          hookRetries++
-          log(`${description} Removed the half-provisioned container; retrying once.`)
-          continue
-        }
-        const tail = hookOutputTail(recent)
-        throw new Error(
-          `${description} ${result.message ?? `exit ${code}`} — retried ` +
-            `${MAX_HOOK_RETRIES + 1}× in a fresh container.` +
-            (tail.length ? `\n${tail.join('\n')}` : '')
-        )
-      }
-      throw new Error(result?.message ?? `devcontainer up failed (exit ${code})`)
-    }
-    // A success without a container id is not a success: everything after this
-    // addresses the container by that id.
-    if (!result.containerId) throw new Error('devcontainer up reported success without a container id')
-    return {
-      containerId: result.containerId,
-      remoteWorkspaceFolder: result.remoteWorkspaceFolder ?? remoteRoot
+      // Warm every bind source, not just the reported one: the staleness covers
+      // a whole subtree, so the next path would fail next.
+      await warmBindPaths([...bindSources, ...stalePaths], log)
+      // GURT_STALE_BACKOFF_SCALE: test seam, scales the waits (0 = none).
+      const scale = Number(process.env['GURT_STALE_BACKOFF_SCALE'] ?? 1)
+      await new Promise((r) => setTimeout(r, (STALE_BACKOFF_MS[attempt - 1] ?? 5_000) * scale))
     }
   }
+}
+
+/** `docker start` an existing container, with the stale-bind retry. */
+export async function dockerStart(
+  containerId: string,
+  bindSources: string[],
+  log: LogSink
+): Promise<void> {
+  await withStaleBindRetry(bindSources, log, (watch) =>
+    run('docker', ['start', containerId], watch, { timeoutMs: PROBE_TIMEOUT_MS * 2, level: 'info' }).then(() => {})
+  )
+}
+
+export interface ContainerSpec {
+  session: string
+  /** The image to create from — already pulled/built. */
+  image: string
+  env: EnvConfig
+  /** Container-side working directory of every exec. */
+  workdir: string
+  /** Every mount except the node runtime volume, which is added here. */
+  mounts: ContainerMount[]
+  /** The role mounts read-only: its `setup` script is skipped (§3.4 step 2). */
+  skipSetup: boolean
+}
+
+export interface CreatedContainer {
+  containerId: string
+  user: string
+  /** The PATH every exec carries (probed, plus gurt's node and npm bins). */
+  path: string
+}
+
+/** How many times a failed `setup` gets a fresh container: the usual cause is a
+ *  transient registry or network error, which a second run clears, and one that
+ *  isn't transient would only make every start pay twice for it. */
+const MAX_SETUP_RETRIES = 1
+
+/** Align the container user's uid/gid with the host's (Linux, non-root user,
+ *  mismatch only) so files the agent writes into the bind-mounted clone are the
+ *  host user's. Not on
+ *  macOS/Windows, where Docker's file sharing maps ownership itself. Any
+ *  obstacle is a logged warning, never a failed start. */
+async function alignUserUid(t: ExecTarget, log: LogSink): Promise<void> {
+  const hostUid = process.getuid?.()
+  const hostGid = process.getgid?.()
+  if (process.platform !== 'linux' || hostUid === undefined || hostGid === undefined) return
+  if (hostUid === 0 || t.user === 'root' || t.user === '0') return
+  const user = t.user.split(':')[0] ?? t.user
+  const script =
+    'user="$1"; huid="$2"; hgid="$3"\n' +
+    'name=$(id -un "$user" 2>/dev/null) || { echo "user $user has no passwd entry"; exit 3; }\n' +
+    'cur=$(id -u "$name")\n' +
+    '[ "$cur" = "$huid" ] && exit 0\n' +
+    'command -v usermod >/dev/null 2>&1 || { echo "usermod is not installed"; exit 4; }\n' +
+    'if getent passwd "$huid" >/dev/null 2>&1; then echo "uid $huid is already taken"; exit 5; fi\n' +
+    'grp=$(id -gn "$name")\n' +
+    'if [ "$(id -g "$name")" != "$hgid" ] && ! getent group "$hgid" >/dev/null 2>&1; then groupmod -g "$hgid" "$grp" || exit 6; fi\n' +
+    'usermod -u "$huid" "$name" || exit 7\n' +
+    'home=$(getent passwd "$name" | cut -d: -f6)\n' +
+    '[ -n "$home" ] && [ -d "$home" ] && chown -R "$huid:$(id -g "$name")" "$home"\n' +
+    'exit 0'
+  const { code, tail } = await dockerExec(
+    { ...t, user: 'root' },
+    ['sh', '-c', script, 'align', user, String(hostUid), String(hostGid)],
+    () => {}
+  )
+  if (code !== 0)
+    log(
+      `could not align ${t.user}'s uid with the host's ${hostUid} (exit ${code}` +
+        `${tail.length ? `: ${tail[tail.length - 1]}` : ''}) — files created in the clone may be owned by another uid`
+    )
+  else log(`aligned ${t.user}'s uid/gid with the host's (${hostUid}:${hostGid})`)
+}
+
+/** Run a setup/start script as `user`, in the workdir, in the user's login shell. */
+function runScript(t: ExecTarget, script: string, log: LogSink): Promise<ExecResult> {
+  return dockerExec(t, loginShell(script), log, { level: 'info' })
+}
+
+const PROBE_MARK = '__GURT_ENV__'
+
+/**
+ * The PATH a session's execs carry (§3.4 step 4). The login shell's PATH is
+ * what the user's toolchain (nvm, pyenv, …) puts there, which a plain exec
+ * never sees — so ask a login shell (`-lic`, 10 s; then `-lc`; then the image's
+ * own PATH), and *append* gurt's node and npm bins: the project's toolchain
+ * wins for the agent's own commands, gurt's node only fills the gap.
+ */
+export async function probeExecPath(t: ExecTarget, log: LogSink): Promise<string> {
+  const printer = `printf '%s' "${PROBE_MARK}$HOME${PROBE_MARK}$PATH${PROBE_MARK}"`
+  const bare: ExecTarget = { ...t }
+  delete bare.path
+  let home = ''
+  let probed = ''
+  const attempts: string[][] = [
+    loginShell(printer, '-lic'),
+    loginShell(printer, '-lc'),
+    ['sh', '-c', printer]
+  ]
+  for (const argv of attempts) {
+    const r = await dockerExec(bare, argv, () => {}, { timeoutMs: 10_000, quiet: true }).catch(
+      () => null
+    )
+    const m = r && r.code === 0 ? r.stdout.match(/__GURT_ENV__(.*?)__GURT_ENV__(.*?)__GURT_ENV__/s) : null
+    if (m && m[2]) {
+      home = m[1] ?? ''
+      probed = m[2]
+      break
+    }
+  }
+  if (!probed) {
+    log('could not read the container PATH — using the system default')
+    probed = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
+  }
+  // A login shell always has a HOME; the guess only covers a probe that read nothing.
+  const homeDir = home || (t.user === 'root' || t.user === '0' ? '/root' : `/home/${t.user.split(':')[0]}`)
+  return `${probed}:${NODE_MOUNT}/bin:${homeDir}/.gurt/npm/bin`
+}
+
+/**
+ * Create and start a session's container (§3.3, §3.4): `docker create` on the
+ * default bridge → start → uid alignment → `setup` (on the open network, before
+ * the network switch) → `start` → env probe.
+ *
+ * The container id reaches the caller (`onSetupDone`) only after `setup`
+ * succeeded, so a crash mid-setup can never leave a record naming a
+ * half-provisioned container. A `setup` that fails removes its container and
+ * runs once more in a fresh one — the container exists by then, and reusing it
+ * would silently skip the script ("it works the second time" of a flaky
+ * install is not that it works). A `start` failure fails the start and keeps
+ * the container.
+ */
+export async function createContainer(
+  spec: ContainerSpec,
+  log: LogSink,
+  hooks: { onCreated?: () => void; onSetupDone?: (containerId: string, user: string) => void } = {}
+): Promise<CreatedContainer> {
+  const info = await inspectImage(spec.image)
+  if (!info) throw new Error(`image ${spec.image} is not available locally`)
+  const user = info.user || 'root'
+  const volume = await ensureNodeRuntimeVolume(info.arch, log)
+  const mounts: ContainerMount[] = [
+    ...spec.mounts,
+    { type: 'volume', source: volume, target: NODE_MOUNT, readonly: true }
+  ]
+  const bindSources = mounts.filter((m) => m.type === 'bind').map((m) => m.source)
+  const createArgs = [
+    'create',
+    '--label', `gurt.session=${spec.session}`,
+    '--label', 'gurt.managed=1',
+    '--label', 'gurt.runtime=docker',
+    '--init',
+    '-w', spec.workdir,
+    ...Object.entries(spec.env.env ?? {}).flatMap(([k, v]) => ['--env', `${k}=${v}`]),
+    ...mounts.flatMap((m) => ['--mount', mountArg(m)]),
+    '--entrypoint', '/bin/sh',
+    spec.image,
+    '-c', 'trap "exit 0" TERM; sleep infinity & wait'
+  ]
+  let setupRetries = 0
+  for (;;) {
+    let containerId = ''
+    await withStaleBindRetry(
+      bindSources,
+      log,
+      async (watch) => {
+        containerId = (
+          await run('docker', createArgs, watch, { timeoutMs: PROBE_TIMEOUT_MS * 2, level: 'info' })
+        ).trim()
+        await run('docker', ['start', containerId], watch, {
+          timeoutMs: PROBE_TIMEOUT_MS * 2,
+          level: 'info'
+        })
+      },
+      async () => {
+        if (containerId) await dockerRemove(containerId, log)
+        containerId = ''
+      }
+    ).catch(async (e: unknown) => {
+      if (containerId) await dockerRemove(containerId, log)
+      throw e
+    })
+    hooks.onCreated?.()
+    const target: ExecTarget = { containerId, user, cwd: spec.workdir }
+    await alignUserUid(target, log)
+    if (spec.env.setup?.trim()) {
+      if (spec.skipSetup)
+        log('read-only mount session: skipping the setup script (this role does not install dependencies)')
+      else {
+        log('running the setup script ...')
+        const r = await runScript(target, spec.env.setup, log)
+        if (r.code !== 0) {
+          await dockerRemove(containerId, log)
+          if (setupRetries < MAX_SETUP_RETRIES) {
+            setupRetries++
+            log(`setup script failed (exit ${r.code}). Removed the half-provisioned container; retrying once.`)
+            continue
+          }
+          const tail = hookOutputTail(r.tail)
+          throw new Error(
+            `setup script failed (exit ${r.code}) — retried ${MAX_SETUP_RETRIES + 1}× in a fresh container.` +
+              (tail.length ? `\n${tail.join('\n')}` : '')
+          )
+        }
+      }
+    }
+    hooks.onSetupDone?.(containerId, user)
+    if (spec.env.start?.trim()) {
+      log('running the start script ...')
+      const r = await runScript(target, spec.env.start, log)
+      if (r.code !== 0) throw startScriptError(r)
+    }
+    const path = await probeExecPath(target, log)
+    return { containerId, user, path }
+  }
+}
+
+function startScriptError(r: ExecResult): Error {
+  const tail = hookOutputTail(r.tail)
+  return new Error(`start script failed (exit ${r.code})` + (tail.length ? `\n${tail.join('\n')}` : ''))
+}
+
+/**
+ * Bring a stopped container of this session back (§3.4, restart): `docker
+ * start` → the `start` script → the cached env probe (a missing one is probed
+ * again — a container created by an older build has none recorded).
+ */
+export async function restartContainer(
+  t: ExecTarget,
+  env: EnvConfig,
+  bindSources: string[],
+  log: LogSink
+): Promise<string> {
+  await dockerStart(t.containerId, bindSources, log)
+  if (env.start?.trim()) {
+    log('running the start script ...')
+    const r = await runScript(t, env.start, log)
+    if (r.code !== 0) throw startScriptError(r)
+  }
+  return t.path ?? (await probeExecPath(t, log))
 }
 
 /**
  * Where a session's materialized skills are bound inside its container.
  *
- * A fixed absolute path rather than the `$HOME/.claude/skills` the agent
- * actually reads, because a devcontainer's `mounts` are evaluated *to create*
- * the container: `${containerEnv:HOME}` is substituted in a later pass, and the
- * remote user — hence the home directory — is the image's choice, not gurt's.
+ * A fixed absolute path rather than the `$HOME/<skillsDir>` the agent
+ * actually reads, because the remote user — hence the home directory — is the
+ * image's choice, not gurt's, and a mount target cannot name it.
  * {@link linkContainerSkills} closes the gap once the container is up.
  */
 export const SKILLS_MOUNT = '/gurt/skills'
 
 /**
- * Point the agent's own skills directory — `AgentDef.skillsDir`, `$HOME`-
+ * Point the agent's own skills directory — `AgentManifest.skillsDir`, `$HOME`-
  * relative, e.g. claude-code's `.claude/skills` — at the read-only bind
  * (docs/requirements-skills.md §5). Where the link lands is the agent kind's
  * to say; callers skip both the mount and this link for a kind whose
  * `skillsDir` is `null`.
  *
- * Run by gurt through `devcontainer exec`, deliberately not as a devcontainer
- * lifecycle hook: a read-only role has its `onCreate`/`updateContent`/
- * `postCreate` commands stripped (see `devcontainerUp`), so a hook-based
- * delivery would skip exactly the roles most likely to be handed a read-only
- * procedure. Writes into the container's home, which is writable for every
- * role — only the repo mounts and this bind are read-only.
+ * Run by gurt through `docker exec`, deliberately not as part of the env's
+ * `setup` script: a read-only role has its setup stripped (see
+ * `createContainer`), so a script-based delivery would skip exactly the roles
+ * most likely to be handed a read-only procedure. Writes into the container's
+ * home, which is writable for every role — only the repo mounts and this bind
+ * are read-only.
  *
  * Replaces whatever was at that path: the enabled set is the whole set the
  * session sees, which is the promise the picker makes. Idempotent, and re-run
- * after every `up`, so a container the CLI rebuilt is relinked.
+ * after every container start.
  */
 export async function linkContainerSkills(
-  session: string,
-  configArgs: string[],
-  workspaceFolder: string,
+  t: ExecTarget,
   skillsDir: string,
   log: LogSink
 ): Promise<void> {
   const parent = path.posix.dirname(skillsDir)
-  const { code } = await runNodeCli(
+  const { code } = await dockerExec(
+    t,
     [
-      ...execArgs(session, configArgs, workspaceFolder),
       'sh', '-c',
       `mkdir -p "$HOME/${parent}" && rm -rf "$HOME/${skillsDir}" && ln -s ${SKILLS_MOUNT} "$HOME/${skillsDir}"`
     ],
@@ -1321,15 +1282,13 @@ export async function linkContainerSkills(
 
 /**
  * Where a session's agent history is bound inside its container — the
- * read-write counterpart of {@link SKILLS_MOUNT}, for the same reason: fixed
- * and absolute because a devcontainer's `mounts` are evaluated to *create*
- * the container, before `${containerEnv:HOME}` is substituted
- * (docs/requirements-agent-history.md §4 step 2).
+ * read-write counterpart of {@link SKILLS_MOUNT}, fixed and absolute for the
+ * same reason (docs/requirements-agent-history.md §4 step 2).
  */
 export const HISTORY_MOUNT = '/gurt/history'
 
 /**
- * Link every entry of the agent kind's `historyPaths` (`AgentDef`) into the
+ * Link every entry of the agent kind's `historyPaths` (`AgentManifest`) into the
  * container's home, pointed at its own subdirectory of the read-write history
  * bind — `linkContainerHistory`, a sibling of {@link linkContainerSkills}.
  * One `sh -c` per entry, same shape as the skills link:
@@ -1339,12 +1298,10 @@ export const HISTORY_MOUNT = '/gurt/history'
  *   && ln -s /gurt/history/<slug> "$HOME/<entry>"
  * ```
  *
- * Run through `devcontainer exec`, not a lifecycle hook, for the same reason
- * as the skills link (a read-only role has its create-time hooks stripped)
- * — and `rm -rf` on the link target removes a symlink without following it,
- * so a re-link never touches the bound history
+ * `rm -rf` on the link target removes a symlink without following it, so a
+ * re-link never touches the bound history
  * (docs/requirements-agent-history.md §4 step 3). Idempotent, re-run after
- * every `up`.
+ * every container start.
  *
  * Failure is logged per entry and never fatal: a session that starts without
  * durable history beats one that does not start, and "which half landed"
@@ -1352,10 +1309,9 @@ export const HISTORY_MOUNT = '/gurt/history'
  * log line only — it is never read back.
  */
 export async function linkContainerHistory(
+  t: ExecTarget,
   session: string,
   kind: string,
-  configArgs: string[],
-  workspaceFolder: string,
   historyPaths: readonly string[],
   log: LogSink
 ): Promise<void> {
@@ -1364,9 +1320,9 @@ export async function linkContainerHistory(
   for (const entry of historyPaths) {
     const parent = path.posix.dirname(entry)
     const slug = historySlug(entry)
-    const { code } = await runNodeCli(
+    const { code } = await dockerExec(
+      t,
       [
-        ...execArgs(session, configArgs, workspaceFolder),
         'sh', '-c',
         `mkdir -p "$HOME/${parent}" && rm -rf "$HOME/${entry}" && ln -s ${HISTORY_MOUNT}/${slug} "$HOME/${entry}"`
       ],
@@ -1386,41 +1342,32 @@ export async function linkContainerHistory(
 /** Path, relative to the container `$HOME`, of the marker file that records
  *  which exact pin was last installed for an agent — keyed by agent id so
  *  unrelated agents in the same container never collide. */
-function adapterMarkerPath(agent: AgentDef): string {
+function adapterMarkerPath(agent: AgentManifest): string {
   return `.gurt/adapter-versions/${agent.id}`
 }
 
 /** The marker's expected content for the *current* pin. Comparing the
  *  installed marker against this (not just the binary's presence on PATH) is
  *  what makes a pin bump reinstall into a container that already has an
- *  older version on PATH from before the bump. */
-function adapterMarkerValue(agent: AgentDef): string {
+ *  older version from before the bump. */
+function adapterMarkerValue(agent: AgentManifest): string {
   return agent.adapterPackages.join(',')
 }
 
 /** True when the agent's adapter binary is on PATH inside the container
  *  *and* the version marker left by the last successful install matches the
- *  currently pinned `adapterPackages` exactly. Probed through `devcontainer
- *  exec` — the same environment the install and the adapter spawn resolve,
- *  so PATH (nvm's node) reads the same way for all three. The host-side
- *  installed-cache dies with the app process while the install itself lives
- *  in the container, and this probe is what keeps a fresh process from
- *  reinstalling over it — a reinstall skipped is also a reinstall that
- *  cannot rewrite the package under a live spawn. The version check on top
- *  of the PATH check is what makes a pin bump apply to a container
- *  provisioned under the old pin: without it, a stale binary already on
- *  PATH reads as "installed" forever, across every app restart. */
-export async function adapterPresent(
-  session: string,
-  agent: AgentDef,
-  configArgs: string[],
-  workspaceFolder: string
-): Promise<boolean> {
+ *  currently pinned `adapterPackages` exactly. The host-side installed-cache
+ *  dies with the app process while the install itself lives in the container,
+ *  and this probe is what keeps a fresh process from reinstalling over it — a
+ *  reinstall skipped is also a reinstall that cannot rewrite the package under
+ *  a live spawn. The version check on top of the PATH check is what makes a
+ *  pin bump apply to a container provisioned under the old pin. */
+export async function adapterPresent(t: ExecTarget, agent: AgentManifest): Promise<boolean> {
   const marker = adapterMarkerPath(agent)
   const expected = adapterMarkerValue(agent)
-  const { code } = await runNodeCli(
+  const { code } = await dockerExec(
+    t,
     [
-      ...execArgs(session, configArgs, workspaceFolder),
       'sh', '-c',
       `command -v ${agent.bin} >/dev/null 2>&1 && [ "$(cat "$HOME/${marker}" 2>/dev/null)" = "${expected}" ]`
     ],
@@ -1431,30 +1378,27 @@ export async function adapterPresent(
 
 /**
  * Merges {@link linkContainerSkills} and {@link adapterPresent} into one
- * `devcontainer exec` — in the session-start chain that mounts skills, the two
- * run back to back right after a fresh `up`
+ * `docker exec`: in the session-start chain that mounts skills, the two run
+ * back to back right after a container start
  * (`ContainerManager.installAdapter` consumes the pending link left by
- * `ensureUncoalesced`), and each is otherwise its own CLI boot (a few seconds
- * just to spin up the CLI's own process, before either does anything). The
- * exit code packs both independent outcomes, since one shell reports only one
- * status: bit 0 is the adapter probe (0 = present, the same sense
- * `adapterPresent` itself returns), bit 1 is whether the skills link failed —
- * non-fatal either way, exactly as `linkContainerSkills` treats it on its own.
+ * `ensureUncoalesced`). The exit code packs both independent outcomes, since
+ * one shell reports only one status: bit 0 is the adapter probe (0 = present,
+ * the same sense `adapterPresent` itself returns), bit 1 is whether the skills
+ * link failed — non-fatal either way, exactly as `linkContainerSkills` treats
+ * it on its own.
  */
 export async function probeAdapterAndLinkSkills(
-  session: string,
-  agent: AgentDef,
-  configArgs: string[],
-  workspaceFolder: string,
+  t: ExecTarget,
+  agent: AgentManifest,
   skillsDir: string,
   log: LogSink
 ): Promise<boolean> {
   const parent = path.posix.dirname(skillsDir)
   const marker = adapterMarkerPath(agent)
   const expected = adapterMarkerValue(agent)
-  const { code } = await runNodeCli(
+  const { code } = await dockerExec(
+    t,
     [
-      ...execArgs(session, configArgs, workspaceFolder),
       'sh', '-c',
       `skills_rc=0\n` +
         `mkdir -p "$HOME/${parent}" && rm -rf "$HOME/${skillsDir}" && ` +
@@ -1473,33 +1417,24 @@ export async function probeAdapterAndLinkSkills(
 /**
  * Write one small file into the agent's `$HOME` inside the container — the
  * §5.2.1 seam (docs/requirements-oauth-credentials.md): the access-only native
- * auth file an oauth-linked codex/gemini launch materializes. Same
- * `devcontainer exec` transport every other provisioning step uses.
+ * auth file an oauth-linked launch materializes (codex's, gemini's), and the
+ * client's own config.
  *
- * The content rides in a `--remote-env` value rather than inside the shell
- * script, so the sh argv carries no secret and no quoting can mangle one; the
- * value holds the token in its raw registered form, which value-based
- * redaction knows — and the trace is opaque anyway (`opaqueArgv`, plus a muted
- * sink), so no log line ever carries the argv. `umask 077` keeps the file
- * owner-only, like the CLIs' own writes of it.
+ * The content goes through **stdin**: the sh argv carries no secret and no
+ * quoting can mangle one, and the trace is opaque anyway. `umask 077` keeps
+ * the file owner-only, like the CLIs' own writes of it.
  */
 export async function writeContainerUserFile(
-  session: string,
-  configArgs: string[],
-  workspaceFolder: string,
+  t: ExecTarget,
   relPath: string,
   content: string
 ): Promise<void> {
   const parent = path.posix.dirname(relPath)
-  const { code } = await runNodeCli(
-    [
-      ...execArgs(session, configArgs, workspaceFolder),
-      '--remote-env', `GURT_PROVISION_FILE=${content}`,
-      'sh', '-c',
-      `umask 077 && mkdir -p "$HOME/${parent}" && printf '%s' "$GURT_PROVISION_FILE" > "$HOME/${relPath}"`
-    ],
+  const { code } = await dockerExec(
+    t,
+    ['sh', '-c', `umask 077 && mkdir -p "$HOME/${parent}" && cat > "$HOME/${relPath}"`],
     () => {},
-    true
+    { stdin: content, quiet: true }
   )
   if (code !== 0) throw new Error(`could not write ~/${relPath} in the container (exit ${code})`)
 }
@@ -1511,31 +1446,43 @@ export async function writeContainerUserFile(
 const MARKER_WRITE_FAILED = 90
 
 export async function installAcpAdapter(
-  session: string,
-  agent: AgentDef,
-  configArgs: string[],
-  workspaceFolder: string,
+  t: ExecTarget,
+  agent: AgentManifest,
   log: LogSink
 ): Promise<void> {
+  // gurt's node must run in *this* image: it is a glibc build, so a musl
+  // (alpine) env fails here, and "node: not found" out of an npm shebang is
+  // the worst place to learn that.
+  const node = await dockerExec(t, [`${NODE_MOUNT}/bin/node`, '--version'], () => {})
+  if (node.code !== 0)
+    throw new Error(
+      `gurt's Node runtime does not run in this image (exit ${node.code}` +
+        `${node.tail.length ? `: ${node.tail.slice(-3).join(' | ')}` : ''}). ` +
+        'The env image needs a glibc distro (Debian, Ubuntu, …) — musl/Alpine images are not supported.'
+    )
   log(`installing ${agent.adapterPackages.join(', ')} in container ...`)
   // One exec for both `npm install -g` and recording the version marker
   // `adapterPresent` compares against on the next probe — the marker is
   // written only when the install exits 0 (`&&`, never on the `exit "$rc"`
-  // branch above it), same as when this was two execs run one after another.
+  // branch above it). gurt's node leads PATH for this exec alone, so npm's own
+  // `#!/usr/bin/env node` and any package's postinstall use it, not a project's
+  // older one; the prefix keeps the install out of the image's own tree.
   const marker = adapterMarkerPath(agent)
   const parent = path.posix.dirname(marker)
-  const { code } = await runNodeCli(
+  const { code } = await dockerExec(
+    t,
     [
-      ...execArgs(session, configArgs, workspaceFolder),
       'sh', '-c',
-      `npm install -g ${agent.adapterPackages.map((p) => `'${p}'`).join(' ')}\n` +
+      `export PATH="${NODE_MOUNT}/bin:$PATH" NPM_CONFIG_PREFIX="$HOME/.gurt/npm"\n` +
+        `${NODE_MOUNT}/bin/npm install -g ${agent.adapterPackages.map((p) => `'${p}'`).join(' ')}\n` +
         `rc=$?\n` +
         `if [ "$rc" -ne 0 ]; then exit "$rc"; fi\n` +
         `mkdir -p "$HOME/${parent}" && printf '%s' '${adapterMarkerValue(agent)}' > "$HOME/${marker}" ` +
         `&& exit 0\n` +
         `exit ${MARKER_WRITE_FAILED}`
     ],
-    log
+    log,
+    { level: 'info' }
   )
   if (code === MARKER_WRITE_FAILED) {
     log('could not record adapter version marker — next probe will reinstall')
@@ -1544,72 +1491,69 @@ export async function installAcpAdapter(
   if (code !== 0) throw new Error(`ACP adapter install failed (exit ${code})`)
 }
 
-/** Spawns the ACP adapter inside the environment; caller owns the process. */
+/**
+ * The shell that launches an adapter with gurt's own node (§3.2): `$0` is the
+ * bin name, the rest its args. A JS bin runs as `node <resolved script>`, so a
+ * project's own, older Node on PATH can never be the one that runs it; a bin
+ * that is not JS (opencode's native binary) is exec'd directly.
+ */
+const LAUNCH_SCRIPT =
+  'f=$(readlink -f "$HOME/.gurt/npm/bin/$0" 2>/dev/null) || f=""\n' +
+  '[ -n "$f" ] || { echo "$0 is not installed" >&2; exit 127; }\n' +
+  'case "$f" in\n' +
+  `  *.js|*.mjs|*.cjs) exec ${NODE_MOUNT}/bin/node "$f" "$@" ;;\n` +
+  '  *) exec "$f" "$@" ;;\n' +
+  'esac'
+
+/** Spawns the ACP adapter inside the container; caller owns the process. The
+ *  agent secret, proxy vars, git identity and launch env all go by name
+ *  (`-e NAME`) with the values in the docker client's environment. */
 export function spawnAcpAdapter(
-  session: string,
-  agent: AgentDef,
-  configArgs: string[],
-  workspaceFolder: string,
+  t: ExecTarget,
+  agent: AgentManifest,
   secret: string,
   secretEnv: string,
   extraEnv?: Record<string, string>,
   gitIdentityEnv?: Record<string, string>
 ) {
-  const args = [
-    devcontainerCliPath(),
-    ...execArgs(session, configArgs, workspaceFolder)
-  ]
-  if (secret) args.push('--remote-env', `${secretEnv}=${secret}`)
-  for (const [k, v] of Object.entries(extraEnv ?? {}))
-    args.push('--remote-env', `${k}=${v}`)
-  // Commit identity for the container's local git, as GIT_CONFIG_* env (§10.3).
-  // No credentials, no helper, no launcher — there are no shims to put on PATH.
-  for (const [k, v] of Object.entries(gitIdentityEnv ?? {}))
-    args.push('--remote-env', `${k}=${v}`)
-  args.push(agent.bin, ...agent.binArgs)
-  return spawn(process.execPath, args, {
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
-    stdio: ['pipe', 'pipe', 'pipe']
-  })
+  const env: Record<string, string> = {
+    ...(secret ? { [secretEnv]: secret } : {}),
+    ...extraEnv,
+    // Commit identity for the container's local git, as GIT_CONFIG_* env (§10.3).
+    // No credentials, no helper, no launcher — there are no shims to put on PATH.
+    ...gitIdentityEnv
+  }
+  return spawnDockerExec(t, ['sh', '-c', LAUNCH_SCRIPT, agent.bin, ...agent.binArgs], env)
 }
 
 /**
  * Run one command in a session's container, as the same user and environment
  * the agent has — the host's half of the ACP client methods (`fs/*`,
  * `terminal/*`): the agent asks gurt to touch a file or run a command, and gurt
- * does it here. `argv` is the command exactly (no shell is added); `env` rides
- * as `--remote-env`. The caller owns the process and its pipes.
+ * does it here. `argv` is the command exactly (no shell is added); `env` goes
+ * by name, values in the client environment. The caller owns the process and
+ * its pipes.
  */
-export function spawnInContainer(
-  target: { session: string; configArgs: string[]; hostWorkspaceFolder: string },
-  argv: string[],
-  env?: Record<string, string>
-) {
-  const args = [
-    devcontainerCliPath(),
-    ...execArgs(target.session, target.configArgs, target.hostWorkspaceFolder)
-  ]
-  for (const [k, v] of Object.entries(env ?? {})) args.push('--remote-env', `${k}=${v}`)
-  args.push(...argv)
-  return spawn(process.execPath, args, {
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
-    stdio: ['pipe', 'pipe', 'pipe']
-  })
+export function spawnInContainer(t: ExecTarget, argv: string[], env?: Record<string, string>) {
+  return spawnDockerExec(t, argv, env ?? {})
 }
 
 /**
  * Every gurt-created container the daemon currently knows, as session id →
- * container id, running or not. Containers are stamped `gurt.session=<id>` at
- * `up`, so Docker itself is the registry: this is what the persisted records
- * are reconciled against at boot, and how containers orphaned by a crash (their
- * session record never written) are found.
+ * `{ id, runtime }`, running or not. Containers are stamped `gurt.session=<id>`
+ * at create, so Docker itself is the registry: this is what the persisted
+ * records are reconciled against at boot, and how containers orphaned by a
+ * crash (their session record never written) are found. `runtime` is the
+ * `gurt.runtime` label — '' on a container made before this runtime.
  */
-export function dockerSessionContainers(): Promise<Map<string, string> | null> {
+export function dockerSessionContainersDetailed(): Promise<
+  Map<string, { id: string; runtime: string }> | null
+> {
   return new Promise((resolve) => {
     const child = spawn('docker', [
       'ps', '-a',
       '--filter', 'label=gurt.session',
-      '--format', '{{.Label "gurt.session"}} {{.ID}}'
+      '--format', '{{.Label "gurt.session"}} {{.ID}} {{.Label "gurt.runtime"}}'
     ])
     killAfter(child, PROBE_TIMEOUT_MS)
     let out = ''
@@ -1620,14 +1564,20 @@ export function dockerSessionContainers(): Promise<Map<string, string> | null> {
     child.on('error', () => resolve(null))
     child.on('close', (code) => {
       if (code !== 0) return resolve(null)
-      const map = new Map<string, string>()
+      const map = new Map<string, { id: string; runtime: string }>()
       for (const line of out.split('\n')) {
-        const [session, id] = line.trim().split(/\s+/)
-        if (session && id) map.set(session, id)
+        const [session, id, runtime = ''] = line.trim().split(/\s+/)
+        if (session && id) map.set(session, { id, runtime })
       }
       resolve(map)
     })
   })
+}
+
+/** {@link dockerSessionContainersDetailed}, as session id → container id. */
+export async function dockerSessionContainers(): Promise<Map<string, string> | null> {
+  const detailed = await dockerSessionContainersDetailed()
+  return detailed && new Map([...detailed].map(([s, c]) => [s, c.id]))
 }
 
 /** `docker --version`, or null when docker is not reachable — best-effort, for
@@ -1787,7 +1737,7 @@ export async function dockerRemove(containerId: string, log: LogSink): Promise<v
  * Every container carrying *this* session's id-label, running or not. The same
  * registry {@link dockerSessionContainers} reads, narrowed to one session — the
  * teardown path needs it because a container can exist without any record of it
- * pointing at it: `up` stamps the label at `docker run`, but its id is only
+ * pointing at it: `create` stamps the label, but its id is only
  * written to the session once `up` returns, so a start that fails (or is
  * deleted) in between leaves a container findable here and nowhere else.
  */

@@ -28,7 +28,21 @@ const S = (rel) => JSON.stringify(path.join(ROOT, rel))
 
 await bundle({
   stdin: {
-    contents: `export { desiredModeId, nextModeId, normalizeModes } from ${S('src/main/sessions.ts')}`,
+    // The mode lists below come from several adapters, so they are read with
+    // every built-in plugin's mode words at once.
+    contents: `
+      import * as sessions from ${S('src/main/sessions.ts')}
+      import { AGENT_MANIFESTS } from ${S('src/shared/agents.ts')}
+      import { agentVocabulary } from ${S('src/shared/agentVocabulary.ts')}
+      const all = AGENT_MANIFESTS.map((m) => agentVocabulary(m.id).modes)
+      const words = {
+        autoReviewKinds: [...new Set(all.flatMap((w) => w.autoReviewKinds))],
+        bypass: [...new Set(all.flatMap((w) => w.bypass))]
+      }
+      export const desiredModeId = (autoAllow, modes) => sessions.desiredModeId(autoAllow, modes, words)
+      export const nextModeId = (info, modes) => sessions.nextModeId(info, modes, words)
+      export const normalizeModes = sessions.normalizeModes
+    `,
     resolveDir: ROOT,
     loader: 'ts',
     sourcefile: 'entry.ts'

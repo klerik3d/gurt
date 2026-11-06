@@ -78,8 +78,8 @@ prompt) and the same title, in the same slot of its task. It is
 the draft has a **new id**, because everything the run owned is keyed by
 the id and torn down asynchronously (the container release, the scratch
 removed once it is down, an in-flight log append), so a reused id could
-see the old run land on the new draft. The clone, uncommitted work in it
-and any review lock on it are untouched, as with delete.
+see the old run land on the new draft. The clone and uncommitted work in it
+are untouched, as with delete.
 
 Creation dialog offers three actions: **Run now**, **Add to queue**,
 **Save draft**. A draft's pane offers the same actions plus prompt editing;

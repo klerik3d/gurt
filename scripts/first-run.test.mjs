@@ -38,7 +38,7 @@ process.env.GURT_ROOT = GURT_ROOT
 process.env.GURT_FORCE_PLAINTEXT = '1'
 
 // Same stub as operator-role.test.mjs: on a machine WITH a daemon the start
-// would run a real `devcontainer up` against a fake image, which is slow,
+// would run a real `docker pull` of a fake image, which is slow,
 // networked, and fails only after a pull. A stub that refuses instantly makes
 // the path identical everywhere.
 const stubBin = path.join(GURT_ROOT, 'stub-bin')
@@ -48,9 +48,6 @@ fs.writeFileSync(path.join(stubBin, 'docker'), '#!/bin/sh\necho "no daemon" >&2\
 })
 process.env.PATH = `${stubBin}${path.delimiter}${process.env.PATH}`
 
-const OPERATOR_ENV_FILE = path.join(GURT_ROOT, 'bundled-operator-env.json')
-fs.writeFileSync(OPERATOR_ENV_FILE, JSON.stringify({ image: 'node:22-test' }))
-process.env.GURT_OPERATOR_ENV = OPERATOR_ENV_FILE
 
 const outfile = path.join(os.tmpdir(), `gurt-first-run-${process.pid}.mjs`)
 await bundle({
@@ -58,12 +55,12 @@ await bundle({
     contents:
       `export { createKernel } from ${S('src/main/kernel.ts')}\n` +
       `export { firstRunStart, firstRunSignIn } from ${S('src/main/firstRun.ts')}\n` +
-      `export { AGENT_DEFS, agentDef } from ${S('src/shared/agents.ts')}\n` +
+      `export { AGENT_MANIFESTS as AGENT_DEFS, agentDef } from ${S('src/shared/agents.ts')}\n` +
       `export { getCredentials, upsertCredentialEntry } from ${S('src/main/credentials.ts')}\n` +
       `export { getAgents, listWorkspaces, getWelcomeMode, setWelcomeMode } from ${S('src/main/store.ts')}\n` +
       `export { welcomeShows, sanitizeWelcomeMode, WELCOME_MODE_DEFAULT } from ${S('src/shared/doctor.ts')}\n` +
       `export { FIRST_RUN_PROMPT, FIRST_RUN_TASK, FIRST_RUN_WORKSPACE } from ${S('src/shared/doctor.ts')}\n` +
-      `export { OPERATOR_ENV_NAME } from ${S('src/shared/types.ts')}`,
+      `export { BASE_ENV_NAME } from ${S('src/shared/types.ts')}`,
     resolveDir: ROOT,
     loader: 'ts',
     sourcefile: 'entry.ts'
@@ -150,7 +147,7 @@ test('one call creates the workspace, credential, agent, task and operator sessi
   assert.equal(snap.info.workspace, m.FIRST_RUN_WORKSPACE)
   assert.equal(snap.info.role, 'operator')
   assert.deepEqual(snap.info.repos, [], 'an operator holds no repository — that is the role')
-  assert.equal(snap.info.env, m.OPERATOR_ENV_NAME, 'the bundled env, which needs no repo and no setup')
+  assert.equal(snap.info.env, m.BASE_ENV_NAME, 'the bundled env, which needs no repo and no setup')
   assert.equal(snap.info.agent, ids[0])
   assert.equal(snap.info.startPrompt, m.FIRST_RUN_PROMPT)
   assert.equal(snap.info.network?.internal, true, 'the same default every other new draft gets')
@@ -303,7 +300,7 @@ test('signing in mints an oauth credential and creates the same five entities', 
   assert.equal(agents[claudeId].credentialId, minted.id)
   const snap = kernel.sessions.snapshot(sessionId)
   assert.equal(snap.info.role, 'operator')
-  assert.equal(snap.info.env, m.OPERATOR_ENV_NAME)
+  assert.equal(snap.info.env, m.BASE_ENV_NAME)
   assert.equal(snap.info.task, m.FIRST_RUN_TASK)
 })
 

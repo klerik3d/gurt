@@ -58,10 +58,10 @@ fs.writeFileSync(
       { name: 'gamma', url: 'https://github.com/o/gamma.git' }
     ],
     envs: [
-      { name: 'alpha-dev', devcontainer: '{"image":"x"}', repo: 'alpha' },
-      { name: 'adhoc', devcontainer: '{"image":"x"}' },
-      { name: 'gamma-one', devcontainer: '{"image":"x"}', repo: 'gamma' },
-      { name: 'gamma-two', devcontainer: '{"image":"x"}', repo: 'gamma' }
+      { name: 'alpha-dev', image: 'x', repo: 'alpha' },
+      { name: 'adhoc', image: 'x' },
+      { name: 'gamma-one', image: 'x', repo: 'gamma' },
+      { name: 'gamma-two', image: 'x', repo: 'gamma' }
     ]
   })
 )

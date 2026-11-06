@@ -3,7 +3,7 @@
 // domain-shaped lives in kernel.ts and below.
 import { app, BrowserWindow, clipboard, ipcMain, shell } from 'electron'
 import { API_METHODS, type GurtApi } from '../shared/api'
-import { isSessionRole, targetKey } from '../shared/types'
+import { defaultEnvName, isSessionRole } from '../shared/types'
 import { MCP_DEFS } from '../shared/mcp'
 import { createKernel } from './kernel'
 import { POLL_INTERVAL_MS } from './planUsage'
@@ -20,7 +20,6 @@ import { sanitizeSkillSelection } from '../shared/skills'
 import { checkMcpCommand, clearNpmInstall } from './mcp/stdioBridge'
 import { probeMcpServer } from './mcp/probe'
 import {
-  discoverDevcontainer,
   discoverDockerfiles,
   envBuildImage,
   envImageStatus
@@ -54,7 +53,7 @@ function broadcast(channel: string, ...args: unknown[]): void {
 
 /**
  * Methods whose arguments carry user or agent prose — prompts, commit messages,
- * credential payloads, whole devcontainer configs. Their args are never logged,
+ * credential payloads, whole env definitions. Their args are never logged,
  * not even at DBG: "no chat content in the log" has to hold at the boundary,
  * not at each call site's discretion.
  */
@@ -72,9 +71,6 @@ const OPAQUE_ARGS = new Set<keyof GurtApi>([
   'sessionEditDraft',
   'renameSession',
   'changesCommit',
-  // Review prose: the note itself, and the fix prompt built out of the notes.
-  'addReviewComment',
-  'launchReviewFix',
   'setCredentials',
   // The whole entry rides in the call; its secret fields only ever hold masks,
   // but the payload is a credential's and stays opaque like setCredentials'.
@@ -137,7 +133,7 @@ export function registerIpc(): void {
   kernel.bus.on('usage.changed', () => broadcast('usage-changed'))
   kernel.bus.on('boot.progress', (p) => broadcast('boot-progress', p))
 
-  // Plan limits move with usage from every Claude surface, not just gurt's own
+  // Plan limits move with usage from every surface of an account, not just gurt's own
   // turns — so keep them fresh in the background instead of waiting for the
   // dashboard to be open. Each completed sweep announces itself over
   // `usage.changed`, which the renderer answers with a cache read.
@@ -195,7 +191,6 @@ export function registerIpc(): void {
       kernel.bus.emit('tree.changed', undefined)
       return result
     },
-    discoverDevcontainer: (ws, repo) => discoverDevcontainer(ws, repo),
     discoverDockerfiles: (ws, repo) => discoverDockerfiles(ws, repo),
     envImageStatus: (ws, env) => envImageStatus(ws, env),
     envBuildImage: async (ws, env) => {
@@ -282,10 +277,12 @@ export function registerIpc(): void {
       await store.setDefaultSkills(ws, sanitizeSkillSelection(names).map((k) => k.name))
       kernel.bus.emit('tree.changed', undefined)
     },
-    setOperatorEnv: async (ws, env) => {
-      await store.setOperatorEnv(ws, env)
+    setDefaultEnv: async (ws, env) => {
+      await store.setDefaultEnv(ws, env)
       kernel.bus.emit('tree.changed', undefined)
     },
+    getBaseImage: () => store.getBaseImage(),
+    setBaseImage: (image) => store.setBaseImage(image),
     reinstallMcpServer: async (ws, id) => {
       // Read the entry rather than trusting the caller's word for its kind:
       // "reinstall" means nothing for a command or an http entry, and clearing
@@ -316,7 +313,6 @@ export function registerIpc(): void {
       kernel.setTaskMaxConcurrentSessions(ws, name, max),
     stopContainer: (sessionId) => kernel.containers.stop(sessionId),
     releaseContainer: (sessionId) => kernel.containers.release(sessionId),
-    sessionOpenVscode: (sessionId) => kernel.containers.openVscode(sessionId),
     sessionOpenTerminal: (sessionId) => kernel.containers.openTerminal(sessionId),
     taskFilePath: files.taskFilePath,
     renameTaskFile: files.renameTaskFile,
@@ -331,34 +327,6 @@ export function registerIpc(): void {
     getDiffFiles: (ws, task, repo, target) => changes.getDiffFiles(ws, task, repo, target),
     getDiffPair: (ws, task, repo, target, file) =>
       changes.getDiffPair(ws, task, repo, target, file),
-    getReviewState: (ws, task, repo, target) => kernel.reviewState(ws, task, repo, target),
-    getReviewLocks: (ws, task) => kernel.review.locks(ws, task),
-    setReviewLock: (ws, task, repo, locked) => kernel.setReviewLock(ws, task, repo, !!locked),
-    addReviewComment: (ws, task, repo, target, path, side, line, text, endLine) => {
-      // Straight off the wire and straight onto disk — the anchor has to be a
-      // real anchor, and an empty note is a UI slip, not a comment.
-      if (side !== 'before' && side !== 'after')
-        // `side` is typed, but this is the wire: what arrives is whatever the
-        // renderer sent, so the message has to be able to name a value the
-        // type says cannot exist.
-        throw new Error(`unknown diff side "${String(side)}"`)
-      if (!Number.isInteger(line) || line < 1) throw new Error(`not a line number: ${line}`)
-      if (endLine !== undefined && (!Number.isInteger(endLine) || endLine < line))
-        throw new Error(`not a valid range end: ${endLine}`)
-      if (!text.trim()) throw new Error('comment is empty')
-      return kernel.review.addComment(ws, task, repo, targetKey(target), {
-        path,
-        side,
-        line,
-        ...(endLine !== undefined && endLine > line ? { endLine } : {}),
-        text: text.trim()
-      })
-    },
-    resolveReviewComment: (ws, task, id, resolved) =>
-      kernel.review.resolveComment(ws, task, id, !!resolved),
-    deleteReviewComment: (ws, task, id) => kernel.review.deleteComment(ws, task, id),
-    launchReviewFix: (ws, task, repo, target, prompt) =>
-      kernel.launchReviewFix(ws, task, repo, target, prompt),
     changesCommit: (ws, task, repo, message, options) => changes.commit(ws, task, repo, message, options),
     changesPush: (ws, task, repo, options) => changes.push(ws, task, repo, options),
     changesUpdateFromMain: (ws, task, repo, strategy) =>
@@ -368,9 +336,7 @@ export function registerIpc(): void {
     changesOpenPr: async (ws, task, repo) => {
       await shell.openExternal(await kernel.prUrl(ws, task, repo))
     },
-    changesOpenVscode: (ws, task, repo) => changes.openInVscode(ws, task, repo),
     changesOpenTerminal: (ws, task, repo) => changes.openRepoInTerminal(ws, task, repo),
-    taskOpenVscode: (ws, task) => changes.openTaskInVscode(ws, task),
     taskOpenTerminal: (ws, task) => changes.openTaskInTerminal(ws, task),
     taskCopyPath: async (ws, task) => {
       clipboard.writeText(store.taskDir(ws, task))
@@ -411,9 +377,13 @@ export function registerIpc(): void {
       const agentId = agent || wsData.defaultAgent || ''
       if (agentId && wsData.deniedAgents?.includes(agentId))
         throw new Error(`agent "${agentId}" is not allowed in workspace "${ref.workspace}"`)
+      // A fresh draft (App.tsx) names no env either: it starts on the
+      // workspace's default env, else the base image — there is no "no env".
+      const envName = ref.env || defaultEnvName(wsData)
+      const defaultRepo = wsData.envs.find((e) => e.name === envName)?.repo
       return kernel.sessions.createSession(
-        ref,
-        repos,
+        { ...ref, env: envName },
+        repos.length || role === 'operator' || !defaultRepo ? repos : [defaultRepo],
         agentId,
         prompt,
         action,

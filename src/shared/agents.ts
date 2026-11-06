@@ -1,210 +1,40 @@
-// Agent definitions — pure data, shared by main and renderer.
+// The agent registry, shared half: which agent kinds exist and what each one
+// is, read from the built-in plugin list (src/plugins/agents/index.ts). Main
+// and the renderer both reach agents through here (main's hooks through
+// main/agentPlugins.ts) — nothing else in the core imports a plugin, and
+// nothing in the core names a kind.
+import type { AgentManifest, AgentPlugin } from './agentPlugin'
+import { AGENT_PLUGINS } from '../plugins/agents'
 
-export interface AgentDef {
-  id: string
-  label: string
-  /**
-   * npm packages installed globally in the container the first time this agent
-   * connects to an env. The container itself is agent-agnostic (node feature
-   * only) — no per-agent devcontainer features.
-   */
-  adapterPackages: string[]
-  /** ACP adapter launch inside the container. */
-  bin: string
-  binArgs: string[]
-  /** Default env var that receives the stored secret. */
-  secretEnv: string
-  /**
-   * Which `src/main/oauth/providers/` module signs this kind in, or null when
-   * the kind has no sign-in path and needs a pasted API key. Sits beside
-   * {@link secretEnv} because it answers the same question — how this kind is
-   * authenticated — and because §5.2.1 of
-   * docs/requirements-oauth-credentials.md already makes *delivery* a
-   * per-kind fact (`oauthAuthFile` in `main/oauth/materialize.ts`).
-   *
-   * A kind is only listed here once that document says how its CLI consumes a
-   * subscription sign-in. Guessing would produce a "Sign in" button that
-   * completes a browser round-trip and then fails at session start, which is a
-   * worse outcome than asking for a key.
-   */
-  oauthProvider: string | null
-  /**
-   * Where this kind discovers Claude-style skills (SKILL.md directories)
-   * inside the container, relative to `$HOME` — the target
-   * `linkContainerSkills` points at the read-only bind. `null` means the
-   * pinned CLI reads no such directory: the session gets neither the mount
-   * nor the link (it provisions as if the feature did not exist), and the
-   * config tab says so instead of offering pickers
-   * (docs/requirements-skills.md §5).
-   *
-   * Verified against the *pinned* adapter/CLI versions below, not against
-   * whatever the projects ship today — a bump of a pin re-checks this field.
-   */
-  skillsDir: string | null
-  /** The `$HOME`-relative paths this kind persists its own conversation and
-   *  resume state in, each linked into the read-write bind by
-   *  `linkContainerHistory`. Empty means no delivery at all: the session
-   *  provisions exactly as it does today.
-   *
-   *  A **list**, not a single directory, because no CLI examined keeps all
-   *  of it in one place (§3.1) — and every entry MUST be separable from
-   *  that kind's credential file (§6.2). A kind whose transcript cannot be
-   *  separated from its secrets gets `[]` and stays there (§3.3).
-   *
-   *  Verified against the *pinned* versions, not whatever the projects ship
-   *  today — a pin bump re-checks this field, same rule as `skillsDir`.
-   *  (docs/requirements-agent-history.md §3) */
-  historyPaths: readonly string[]
+/**
+ * Refuse a list the registry cannot answer for unambiguously. Every lookup here
+ * is by kind and takes the first match, so a second plugin claiming a kind
+ * would be silently unreachable — and a sign-in with no name to show would
+ * draw an empty button. Loud at load instead: the list is code, and a broken
+ * one should not get as far as a window.
+ */
+export function assertAgentManifests(manifests: readonly AgentManifest[]): void {
+  const seen = new Set<string>()
+  for (const m of manifests) {
+    if (!m.id) throw new Error('agent plugins: a manifest has an empty id')
+    if (seen.has(m.id)) throw new Error(`agent plugins: kind "${m.id}" is declared twice`)
+    seen.add(m.id)
+    if (!!m.signIn !== (m.oauthProvider !== null))
+      throw new Error(`agent plugins: "${m.id}" must name its sign-in (signIn) exactly when it has one (oauthProvider)`)
+  }
 }
 
-// Adapter packages are pinned to exact versions on purpose (supply chain):
-// they are installed from npm at runtime inside user containers, so a mutable
-// range would let a compromised release reach users without a gurt release.
-// Bumping these versions happens only through gurt releases.
-export const AGENT_DEFS: AgentDef[] = [
-  {
-    id: 'claude-code',
-    label: 'claude code',
-    // @agentclientprotocol/claude-agent-acp bundles the Claude Agent SDK — the
-    // claude-code devcontainer feature is not needed.
-    adapterPackages: ['@agentclientprotocol/claude-agent-acp@0.94.0'],
-    bin: 'claude-agent-acp',
-    binArgs: [],
-    secretEnv: 'CLAUDE_CODE_OAUTH_TOKEN',
-    // §5.2.1: the access token rides that variable directly — the one kind for
-    // which the original env-var assumption held.
-    oauthProvider: 'anthropic',
-    // Claude Code's own user-level skills directory — the path this feature
-    // was built against (docs/requirements-skills.md §5).
-    skillsDir: '.claude/skills',
-    // Rechecked against claude-agent-acp@0.94.0 (SDK 0.3.303): conversation +
-    // resume state lives in `.claude/projects/<mangled-cwd>/<sessionId>.jsonl`.
-    // Keep `.claude/todos` for state from earlier SDKs. There is no
-    // auth file anywhere in `~/.claude` (the credential rides the
-    // CLAUDE_CODE_OAUTH_TOKEN env var / a materialized-nowhere secret), so
-    // nothing here can collide with §6.2. The cwd-keyed directory name is
-    // overridden by CLAUDE_CODE_PROJECT_DIR_NAME (see containers.ts
-    // `resolveLaunch`), pinned to the session id, so this kind's history
-    // survives a repo-set change too (docs/requirements-agent-history.md
-    // §3.2). Phase 1 of that document.
-    historyPaths: ['.claude/projects', '.claude/todos']
-  },
-  {
-    id: 'codex',
-    label: 'codex',
-    // the adapter package bundles a compatible @openai/codex
-    adapterPackages: ['@agentclientprotocol/codex-acp@2.2.2'],
-    bin: 'codex-acp',
-    binArgs: [],
-    secretEnv: 'OPENAI_API_KEY',
-    // §5.2.1: fed through a materialized `~/.codex/auth.json`, with the env var
-    // suppressed — a non-key value there wins and forces the API-key path.
-    oauthProvider: 'openai',
-    // Verified in the @openai/codex@0.160.1 binary (codex-acp@2.2.2
-    // range-depends on @openai/codex@^0.160.1): a default-on skills subsystem reads
-    // `~/.agents/skills` (canonical)
-    // and `~/.codex/skills` (deprecated but still loaded) — SKILL.md format,
-    // surfaced as `$<name>` commands over ACP. It never reads
-    // `~/.claude/skills`. Link the canonical directory.
-    skillsDir: '.agents/skills',
-    // Not phase 1 (docs/requirements-agent-history.md §10 item 3): the
-    // rollout files live under `.codex/sessions`, but the resume index
-    // (`state_5.sqlite` / `thread_history_1.sqlite`) sits top-level, beside
-    // `auth.json`, and stores an absolute `rollout_path` — binding those
-    // files individually needs a live resume check first. Empty until then.
-    historyPaths: []
-  },
-  {
-    id: 'gemini',
-    label: 'gemini',
-    // gemini cli speaks ACP itself (`--experimental-acp`) — no adapter package
-    // besides the CLI, so `bin` is the CLI and the flag rides in `binArgs`.
-    adapterPackages: ['@google/gemini-cli@0.65.0'],
-    bin: 'gemini',
-    binArgs: ['--experimental-acp'],
-    secretEnv: 'GEMINI_API_KEY',
-    // §5.2.1: fed through a materialized `~/.gemini/oauth_creds.json`, env var
-    // likewise suppressed.
-    oauthProvider: 'google',
-    // Verified in the @google/gemini-cli@0.65.0 tarball: Agent Skills are
-    // default-on since v0.26.0 (`skillsSupport ?? true`), discovered from
-    // `~/.gemini/skills` and the `~/.agents/skills` alias — SKILL.md
-    // frontmatter format, activated through its `activate_skill` tool. It
-    // never reads `~/.claude/skills`. Link the primary documented directory.
-    skillsDir: '.gemini/skills',
-    // Not phase 1 (docs/requirements-agent-history.md §10 item 2): the
-    // transcripts live in `.gemini/tmp`/`.gemini/history`, plus the
-    // `projects.json` registry file that assigns the shortId — the first
-    // kind that needs §3.1's file-entry case. Empty until that phase.
-    historyPaths: []
-  },
-  {
-    id: 'opencode',
-    label: 'opencode',
-    adapterPackages: ['opencode-ai@1.19.3'],
-    bin: 'opencode',
-    binArgs: ['acp'],
-    secretEnv: 'ANTHROPIC_API_KEY',
-    // No sign-in path: docs/requirements-oauth-credentials.md §5.2.1 verified
-    // delivery for the three kinds above and not for this one. Pointing it at
-    // the anthropic provider would buy a browser round-trip and a failure at
-    // session start; a pasted key is the honest answer until that is checked.
-    oauthProvider: null,
-    // Verified in the opencode-linux-x64@1.19.3 binary (the -ai package is a
-    // wrapper): global skills load from `~/.config/opencode/{skill,skills}/`,
-    // same SKILL.md frontmatter format. It also auto-reads `~/.claude/skills`,
-    // but that compat scan sits behind opt-out env vars
-    // (OPENCODE_DISABLE_EXTERNAL_SKILLS / …_CLAUDE_CODE[_SKILLS]) a user env
-    // could set — the native config dir is unconditional, so link there.
-    skillsDir: '.config/opencode/skills',
-    // No phase — verified permanently empty (docs/requirements-agent-history.md
-    // §3.3). opencode-ai@1.19.3 keeps sessions, messages and parts in
-    // `~/.local/share/opencode/opencode.db`, and its `account` /
-    // `control_account` / `credential` rows — live OAuth tokens — sit in that
-    // same sqlite file. There is no path that separates the transcript from
-    // the secret, so this stays `[]` unless upstream splits the store.
-    historyPaths: []
-  },
-  {
-    id: 'pi',
-    label: 'pi',
-    // pi itself speaks only its own RPC (`pi --mode rpc`); pi-acp is the ACP
-    // bridge and spawns `pi` from PATH, so the CLI is installed beside it —
-    // the adapter does not depend on it. pi-acp@0.0.34 asks for pi >= 0.81
-    // and names @earendil-works/pi-coding-agent (fka @mariozechner/…) as the
-    // package; that CLI needs node >= 22.19, which the node feature's lts
-    // default covers.
-    //
-    // MCP does not reach this kind yet: pi-acp@0.0.34 advertises
-    // `mcpCapabilities: { http: false, sse: false }` and keeps the
-    // `session/new` `mcpServers` without handing them to pi (which reads its
-    // own `~/.pi/agent/mcp.json` instead). So the gurt server — and with it
-    // `complete` — is invisible to pi, and every turn ends in the nudge and
-    // then `incomplete` (docs/requirements-turn-contract.md §4).
-    adapterPackages: ['pi-acp@0.0.34', '@earendil-works/pi-coding-agent@1.4.0'],
-    bin: 'pi-acp',
-    binArgs: [],
-    // pi is multi-provider and reads each provider's standard key variable
-    // (its docs/providers.md); Anthropic's is the default here, the same as
-    // opencode — an instance pointed elsewhere renames the env var.
-    secretEnv: 'ANTHROPIC_API_KEY',
-    // No sign-in path: pi's own `/login` stores OAuth tokens in
-    // `~/.pi/agent/auth.json`, a delivery docs/requirements-oauth-credentials.md
-    // §5.2.1 has not verified. A pasted key until it has.
-    oauthProvider: null,
-    // Verified in the @earendil-works/pi-coding-agent@1.4.0 docs (skills.md)
-    // and pi-acp@0.0.34's startup listing: global skills load from
-    // `<agentDir>/skills`, agentDir defaulting to `~/.pi/agent`, plus the
-    // `~/.agents/skills` alias — SKILL.md format, surfaced as `/skill:<name>`.
-    // Link the native directory.
-    skillsDir: '.pi/agent/skills',
-    // Not yet: transcripts live in `.pi/agent/sessions` (grouped by cwd) and
-    // pi-acp keeps its ACP→pi map in `.pi/pi-acp/session-map.json` with
-    // absolute session-file paths, while `auth.json` sits in `.pi/agent`
-    // beside the sessions directory. Separable, but the resume path needs a
-    // live check first — the codex rule (docs/requirements-agent-history.md).
-    historyPaths: []
-  }
-]
+/** Every known kind, in registry order — the order pickers list them in. */
+export const AGENT_MANIFESTS: readonly AgentManifest[] = AGENT_PLUGINS.map((p) => p.manifest)
+assertAgentManifests(AGENT_MANIFESTS)
 
-export const agentDef = (id: string): AgentDef | undefined => AGENT_DEFS.find((a) => a.id === id)
+/** The kind a new agent instance starts as (Welcome, Settings → Clients). */
+export const DEFAULT_AGENT_KIND: string = AGENT_MANIFESTS[0]?.id ?? ''
+
+/** One kind's plugin entry (manifest plus shared hooks), by kind. */
+export const agentPlugin = (id: string | undefined): AgentPlugin | undefined =>
+  id ? AGENT_PLUGINS.find((p) => p.manifest.id === id) : undefined
+
+/** One kind's manifest, by kind — undefined for a kind no plugin provides
+ *  (agents.json can outlive a plugin). */
+export const agentDef = (id: string): AgentManifest | undefined => agentPlugin(id)?.manifest

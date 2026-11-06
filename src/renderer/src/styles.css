@@ -1087,7 +1087,7 @@ textarea.input {
   white-space: nowrap;
   /* Last line of defence: the marks inside already collapse long lists into
      "+N", but an unusually long env or agent name must still clip here rather
-     than shove the VS Code and menu buttons off the right of the pane. */
+     than shove the terminal and menu buttons off the right of the pane. */
   flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
@@ -2504,59 +2504,8 @@ textarea.input {
   padding: 0 4px;
 }
 
-/* ---- manual review: split diff, comments, lock ---- */
+/* ---- diff pane ---- */
 
-.review {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
-}
-.review-body {
-  display: flex;
-  flex: 1;
-  min-height: 0;
-}
-.review-files {
-  width: 200px;
-  flex: none;
-  border-right: 1px solid var(--border);
-  overflow: auto;
-  padding: 8px 0;
-}
-.review-file {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 4px 12px;
-  font-family: var(--mono);
-  font-size: 11.5px;
-  cursor: pointer;
-}
-.review-file:hover {
-  background: var(--hover);
-}
-.review-file.active {
-  background: var(--hover);
-  box-shadow: inset 2px 0 0 var(--accent);
-}
-.review-file-path {
-  color: var(--dim);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.review-count {
-  flex: none;
-  min-width: 15px;
-  text-align: center;
-  border-radius: 4.667px;
-  background: var(--accent);
-  color: var(--on-accent);
-  font-size: 10px;
-  font-weight: 600;
-  padding: 0 4px;
-}
 .review-diff {
   flex: 1;
   min-width: 0;
@@ -2564,6 +2513,7 @@ textarea.input {
   flex-direction: column;
   overflow: hidden;
 }
+
 .review-diff-head {
   flex: none;
   display: flex;
@@ -2574,440 +2524,40 @@ textarea.input {
   font-size: 11.5px;
   color: var(--dim);
 }
+
 .review-diff-path {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* Split / Unified — a two-way segmented toggle. */
+
 .review-view {
   display: inline-flex;
 }
+
 .review-view .btn {
   border-radius: 0;
 }
+
 .review-view .btn:first-child {
   border-radius: 4px 0 0 4px;
 }
+
 .review-view .btn:last-child {
   border-radius: 0 4px 4px 0;
   margin-left: -1px;
 }
+
 .review-view .btn.active {
   color: var(--text);
   border-color: var(--accent);
   position: relative;
 }
 
-/* The split itself: every row is two equal panes, so a line and its
-   counterpart always sit at the same height. Horizontal scrolling does not
-   happen here — it's owned by the two synced tracks in .split-hscroll-row,
-   one per side, so every row shares exactly one scrollbar per column
-   instead of getting its own. */
-.split {
-  flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
-  font-size: 12px;
-  line-height: 1.55;
-}
-.split-row {
-  display: flex;
-}
-.split-pane {
-  display: flex;
-  width: 50%;
-  min-width: 0;
-}
-.split-pane + .split-pane {
-  border-left: 1px solid var(--border);
-}
-.split-pane.add {
-  background: rgba(108, 196, 127, 0.1);
-}
-.split-pane.del {
-  background: rgba(229, 84, 75, 0.1);
-}
-/* The empty half of a one-sided change — visibly not code, not a blank line. */
-.split-pane.pad {
-  background: repeating-linear-gradient(
-    -45deg,
-    transparent,
-    transparent 5px,
-    rgba(114, 110, 102, 0.07) 5px,
-    rgba(114, 110, 102, 0.07) 10px
-  );
-}
-/* A line currently under a gutter drag-select. */
-.split-pane.selecting {
-  background: rgba(77, 163, 255, 0.16);
-}
-/* A line an existing comment's range covers. */
-.split-pane.in-range {
-  box-shadow: inset 2px 0 0 var(--accent);
-}
-.split-gutter {
-  flex: none;
-  width: 52px;
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 3px;
-  padding-right: 6px;
-  color: var(--faint);
-  font-size: 10.5px;
-  user-select: none;
-}
-.split-ln {
-  min-width: 26px;
-  text-align: right;
-}
-.split-gutter.commentable .split-ln {
-  cursor: pointer;
-}
-.split-add {
-  width: 14px;
-  height: 14px;
-  border: 0;
-  border-radius: 2.667px;
-  background: var(--accent);
-  color: var(--on-accent);
-  font-size: 11px;
-  line-height: 1;
-  cursor: pointer;
-  /* Faintly there on every line so it can be found; solid on the hovered row. */
-  opacity: 0.22;
-}
-.split-row:hover .split-add,
-.uni-line:hover .split-add {
-  opacity: 1;
-}
-.split-code {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  padding: 0 6px;
-  color: var(--text);
-}
-/* Translated by the shared scrollX of its side — see .split-hscroll-row. */
-.split-code-inner {
-  display: inline-block;
-  white-space: pre;
-  will-change: transform;
-}
-.split-word {
-  background: rgba(77, 163, 255, 0.22);
-  border-radius: 2px;
-}
-
-/* Syntax coloring (syntaxHighlight.ts): the app is dark-only, so this is a
-   small hand-picked mapping onto the existing palette rather than a stock
-   hljs theme, which would clash. */
-.split-code .hljs-comment,
-.split-code .hljs-quote {
-  color: var(--faint);
-  font-style: italic;
-}
-.split-code .hljs-keyword,
-.split-code .hljs-selector-tag,
-.split-code .hljs-literal,
-.split-code .hljs-section,
-.split-code .hljs-link {
-  color: var(--accent);
-}
-.split-code .hljs-string,
-.split-code .hljs-attr,
-.split-code .hljs-regexp,
-.split-code .hljs-addition,
-.split-code .hljs-meta-string {
-  color: var(--green);
-}
-.split-code .hljs-number,
-.split-code .hljs-symbol,
-.split-code .hljs-bullet {
-  color: var(--yellow);
-}
-.split-code .hljs-title,
-.split-code .hljs-name,
-.split-code .hljs-type,
-.split-code .hljs-built_in {
-  color: var(--code);
-}
-.split-code .hljs-meta {
-  color: var(--dim);
-}
-.split-code .hljs-deletion {
-  color: var(--red);
-}
-.split-code .hljs-emphasis {
-  font-style: italic;
-}
-.split-code .hljs-strong {
-  font-weight: 600;
-}
-.split-pane.add .split-word {
-  background: rgba(108, 196, 127, 0.3);
-}
-.split-pane.del .split-word {
-  background: rgba(229, 84, 75, 0.28);
-}
-
-/* One shared horizontal scrollbar per side, pinned to the bottom of the
-   split rather than one per row. Mirrors the gutter/code widths of a
-   .split-row exactly so each track sits under its own column. */
-.split-hscroll-row {
-  position: sticky;
-  bottom: 0;
-  display: flex;
-  background: var(--panel);
-  border-top: 1px solid var(--border);
-}
-.split-hscroll-pane {
-  display: flex;
-  width: 50%;
-  min-width: 0;
-}
-.split-hscroll-pane + .split-hscroll-pane {
-  border-left: 1px solid var(--border);
-}
-.split-hscroll-gutter {
-  flex: none;
-  width: 52px;
-}
-.split-hscroll {
-  flex: 1;
-  min-width: 0;
-  overflow-x: auto;
-  overflow-y: hidden;
-  height: 11px;
-}
-.split-hscroll-spacer {
-  height: 1px;
-}
-.split-fold {
-  padding: 2px 12px;
-  color: var(--faint);
-  font-size: 11px;
-  text-align: center;
-  background: var(--surface);
-  border-top: 1px solid var(--border);
-  border-bottom: 1px solid var(--border);
-  cursor: pointer;
-}
-.split-fold:hover {
-  color: var(--accent);
-  background: var(--hover);
-}
-
-/* Wraps a maximal run of changed rows — one hover affordance comments on the
-   whole block instead of one line. */
-.split-block {
-  position: relative;
-}
-.split-block-add {
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  z-index: 1;
-  padding: 1px 6px;
-  border: 0;
-  border-radius: 2.667px;
-  background: var(--accent);
-  color: var(--on-accent);
-  font-size: 10px;
-  line-height: 1.4;
-  cursor: pointer;
-  visibility: hidden;
-}
-.split-block:hover .split-block-add {
-  visibility: visible;
-}
-
-/* Unified layout: one column, removed lines above added ones per block. The
-   whole column scrolls horizontally as one (no per-side tracks), so .uni-body
-   grows to the longest line and every line's background spans it. */
-.split.unified {
-  overflow-x: auto;
-}
-.uni-body {
-  display: inline-block;
-  min-width: 100%;
-}
-.uni-line {
-  display: flex;
-}
-.uni-line.add {
-  background: rgba(108, 196, 127, 0.1);
-}
-.uni-line.del {
-  background: rgba(229, 84, 75, 0.1);
-}
-.uni-line.selecting {
-  background: rgba(77, 163, 255, 0.16);
-}
-.uni-line.in-range {
-  box-shadow: inset 2px 0 0 var(--accent);
-}
-.uni-line.add .split-word {
-  background: rgba(108, 196, 127, 0.28);
-}
-.uni-line.del .split-word {
-  background: rgba(229, 84, 75, 0.28);
-}
-.uni-gutter {
-  width: 86px;
-  position: sticky;
-  left: 0;
-  background: inherit;
-}
-.uni-line .uni-gutter {
-  background: var(--panel);
-}
-.uni-line.add .uni-gutter {
-  background: #1d2a22;
-}
-.uni-line.del .uni-gutter {
-  background: #2c2021;
-}
-.uni-code {
-  overflow: visible;
-}
-
-/* A comment hangs off the row it anchors to, across both panes. */
-.split-note {
-  display: flex;
-  align-items: flex-start;
-  gap: 7px;
-  margin: 3px 10px;
-  padding: 5px 8px;
-  border-left: 2px solid var(--accent);
-  border-radius: 0 4px 4px 0;
-  background: var(--surface);
-  font-family: var(--ui);
-  font-size: 12px;
-}
-.split-note.resolved {
-  border-left-color: var(--faint);
-  opacity: 0.55;
-}
-.split-note.resolved .split-note-text {
-  text-decoration: line-through;
-}
-.split-note-anchor {
-  font-family: var(--mono);
-  font-size: 10.5px;
-  color: var(--faint);
-  flex: none;
-  padding-top: 1px;
-}
-.split-note-text {
-  white-space: pre-wrap;
-  min-width: 0;
-}
-.split-composer {
-  margin: 3px 10px;
-  padding: 6px 8px;
-  border-left: 2px solid var(--accent);
-  border-radius: 0 4px 4px 0;
-  background: var(--surface);
-  font-family: var(--ui);
-}
-.split-composer-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 6px;
-  padding-top: 6px;
-}
-
-.review-foot {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 14px;
-  border-top: 1px solid var(--border);
-}
-.review-foot-count {
-  flex: none;
-  font-size: 12px;
-  color: var(--dim);
-}
-.review-hint {
-  color: var(--faint);
-  font-size: 11.5px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  min-width: 0;
-}
-.review-foot-count {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  white-space: nowrap;
-}
-.review-foot-count.active {
-  color: var(--text);
-  border-color: var(--accent);
-}
-/* Every comment on the target, flat — a click jumps to its line. */
-.review-list {
-  flex: none;
-  max-height: 32vh;
-  overflow: auto;
-  border-top: 1px solid var(--border);
-  padding: 4px 0;
-}
-.review-list-item {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 4px 14px;
-  font-size: 12px;
-  cursor: pointer;
-}
-.review-list-item:hover {
-  background: var(--hover);
-}
-.review-list-item.here {
-  box-shadow: inset 2px 0 0 var(--accent);
-}
-.review-list-item.resolved {
-  opacity: 0.55;
-}
-.review-list-item.resolved .review-list-text {
-  text-decoration: line-through;
-}
-.review-list-anchor {
-  flex: none;
-  font-size: 11px;
-  color: var(--dim);
-  padding-top: 1px;
-}
-.review-list-text {
-  min-width: 0;
-  white-space: pre-wrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-height: 3.2em;
-}
-.review-prompt {
-  flex: 1;
-  height: 32px;
-}
 .review-error,
 .review-ok {
   padding: 0 14px 10px;
-  font-size: 12px;
-}
-.review-ok {
-  color: var(--green);
-}
-
-.commit-message {
-  font-family: var(--mono);
   font-size: 12px;
 }
 

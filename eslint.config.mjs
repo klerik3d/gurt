@@ -2,6 +2,7 @@ import js from '@eslint/js'
 import globals from 'globals'
 import reactHooks from 'eslint-plugin-react-hooks'
 import tseslint from 'typescript-eslint'
+import agentPluginBoundaries from './scripts/lib/agent-plugin-boundaries.mjs'
 
 export default tseslint.config(
   { ignores: ['out/**', 'dist/**', 'node_modules/**', 'resources/**'] },
@@ -54,6 +55,16 @@ export default tseslint.config(
       'react-hooks/rules-of-hooks': 'error',
       'react-hooks/exhaustive-deps': 'error'
     }
+  },
+
+  // Agent plugins (docs/requirements-agent-plugins.md §4): the core reaches a
+  // plugin only through the two list files in src/plugins/agents/, and a
+  // plugin reaches nothing but the contract (src/shared/agentPlugin.ts), its
+  // own folder and npm packages. Decided on resolved paths — see the rule.
+  {
+    files: ['src/**/*.{ts,tsx}'],
+    plugins: { gurt: { rules: { 'agent-plugin-boundaries': agentPluginBoundaries } } },
+    rules: { 'gurt/agent-plugin-boundaries': 'error' }
   },
 
   // Test and smoke scripts: plain ESM run straight through node, not part of a

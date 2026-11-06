@@ -1,5 +1,4 @@
-// Host "open a terminal here" escape hatch, mirroring the VS Code one in
-// changes.ts. Linux has no terminal emulator every distro ships, so the
+// Host "open a terminal here" escape hatch. Linux has no terminal emulator every distro ships, so the
 // Linux path tries common ones in turn until one is actually installed.
 import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'

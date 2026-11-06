@@ -1,16 +1,16 @@
-// A create-time lifecycle hook (`postCreateCommand: npm install`, typically)
-// that fails leaves a container the next `up` would adopt by id-label —
-// skipping the hooks it "already ran" and reporting success against a workspace
-// whose install never finished. That is the "it fails on the first start and
-// works on the second" report; the second start was the broken one.
-//
-// `devcontainerUp` (src/main/provision.ts) must therefore remove the container
-// a failed create-time hook leaves behind, retry once in a fresh one, and — if
-// that fails too — say which hook failed and quote its output.
+// The `setup` script (docs/requirements-env-docker.md §3.4) runs when a
+// container is *created*. One that fails — a flaky `npm install` is the common
+// one — leaves a container behind; reusing it would skip the script as already
+// run and start the session against a workspace whose install never finished
+// ("it works on the second try" — it does not work, it stops trying). So a
+// failed setup removes its container, retries once in a fresh one, and
+// otherwise fails with the output tail; and no container the session's record
+// cannot name is ever adopted. Driven by the fake docker (scripts/lib).
 //
 //   node scripts/provision-hook-retry.test.mjs
-import { test, after } from 'node:test'
+import { test, after, beforeEach } from 'node:test'
 import { bundle } from './lib/bundle.mjs'
+import { installFakeDocker } from './lib/fake-docker.mjs'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import path from 'node:path'
 import os from 'node:os'
@@ -20,153 +20,129 @@ import assert from 'node:assert/strict'
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gurt-hook-retry-'))
 process.env.GURT_ROOT = path.join(tmp, 'gurt') // store.ts reads this at import time
-
-// The devcontainer CLI and `docker` are both stubbed, so this test needs no
-// Docker daemon. `runNodeCli` resolves the CLI through `require.resolve` from
-// the bundle's own directory, so the stub goes in a node_modules next to it;
-// `dockerRemove` spawns plain `docker`, so that stub goes on PATH.
-const cliDir = path.join(tmp, 'node_modules', '@devcontainers', 'cli')
-fs.mkdirSync(cliDir, { recursive: true })
-fs.writeFileSync(
-  path.join(cliDir, 'package.json'),
-  JSON.stringify({ name: '@devcontainers/cli', version: '0.0.0-stub', main: 'devcontainer.js' })
-)
-// Fails its postCreateCommand on the first FAKE_FAILURES invocations, exactly
-// the way the real CLI reports it: hook output on stderr, one JSON result line
-// on stdout naming the container it left behind.
-fs.writeFileSync(
-  path.join(cliDir, 'devcontainer.js'),
-  `const fs = require('fs')
-const state = process.env.FAKE_STATE
-const runs = JSON.parse(fs.readFileSync(state, 'utf8'))
-runs.push(process.argv.slice(2))
-fs.writeFileSync(state, JSON.stringify(runs))
-const n = runs.length
-console.error('[stub] #7 exporting to image')
-console.error('[stub] Running the postCreateCommand from devcontainer.json...')
-if (n <= Number(process.env.FAKE_FAILURES)) {
-  console.error('[stub] npm error code ECONNRESET')
-  console.error('[stub] npm error network request to https://registry.npmjs.org/react failed')
-  console.error('Error: Command failed: /bin/sh -c npm install')
-  console.error('    at Q (/stub/devContainersSpecCLI.js:1:1)')
-  console.log(JSON.stringify({
-    outcome: 'error',
-    message: 'Command failed: /bin/sh -c npm install',
-    description: process.env.FAKE_DESCRIPTION ?? 'postCreateCommand from devcontainer.json failed.',
-    ...(process.env.FAKE_NO_CONTAINER ? {} : { containerId: 'container-' + n })
-  }))
-  process.exit(1)
+const writeOpEnv = (cfg) => {
+  fs.mkdirSync(path.join(process.env.GURT_ROOT, 'ws'), { recursive: true })
+  fs.writeFileSync(
+    path.join(process.env.GURT_ROOT, 'ws', 'workspace.json'),
+    JSON.stringify({ repos: [], envs: [cfg] })
+  )
 }
-console.log(JSON.stringify({ outcome: 'success', containerId: 'container-' + n, remoteWorkspaceFolder: '/workspaces/repo' }))
-`
-)
-const bin = path.join(tmp, 'bin')
-fs.mkdirSync(bin)
-const dockerLog = path.join(tmp, 'docker.log')
-fs.writeFileSync(path.join(bin, 'docker'), `#!/bin/sh\necho "$@" >> ${JSON.stringify(dockerLog)}\n`)
-fs.chmodSync(path.join(bin, 'docker'), 0o755)
-process.env.PATH = `${bin}${path.delimiter}${process.env.PATH}`
+const fake = installFakeDocker(tmp)
 
+const S = (rel) => JSON.stringify(path.join(ROOT, rel))
 const outfile = path.join(tmp, 'entry.mjs')
 await bundle({
   stdin: {
-    contents: `export { devcontainerUp, hookOutputTail } from ${JSON.stringify(path.join(ROOT, 'src/main/provision.ts'))}`,
+    contents: `
+      export { createContainer, hookOutputTail } from ${S('src/main/provision.ts')}
+      export { ContainerManager } from ${S('src/main/containers.ts')}
+    `,
     resolveDir: ROOT,
     loader: 'ts',
     sourcefile: 'entry.ts'
   },
-  // Resolved at run time from `outfile`'s directory — i.e. the stub above.
-  external: ['@devcontainers/cli'],
+  external: ['electron'],
   outfile
 })
-
-const workspace = path.join(tmp, 'workspace')
-fs.mkdirSync(workspace)
-
-/** One `devcontainerUp` against the stub, with its own invocation record. */
-async function up(m, failures, extraEnv = {}) {
-  const state = path.join(tmp, `runs-${Math.random().toString(36).slice(2)}.json`)
-  fs.writeFileSync(state, '[]')
-  fs.writeFileSync(dockerLog, '')
-  process.env.FAKE_STATE = state
-  process.env.FAKE_FAILURES = String(failures)
-  delete process.env.FAKE_DESCRIPTION
-  delete process.env.FAKE_NO_CONTAINER
-  Object.assign(process.env, extraEnv)
-  const log = []
-  const result = await m
-    .devcontainerUp('s1', [], workspace, (l) => log.push(l), 'repo', null, undefined, [])
-    .then((r) => ({ ok: r }), (e) => ({ err: e }))
-  return {
-    ...result,
-    log,
-    attempts: JSON.parse(fs.readFileSync(state, 'utf8')).length,
-    removed: fs.readFileSync(dockerLog, 'utf8').trim().split('\n').filter(Boolean)
-  }
-}
-
-after(() => {
-  fs.rmSync(tmp, { recursive: true, force: true })
-})
-
 const m = await import(pathToFileURL(outfile).href)
 
-// 1. The transient case — the hook fails once, then succeeds. `up` must run a
-//    second time *in a fresh container*, not adopt the one it just failed in.
-test('a failed create-time hook is retried in a fresh container, never adopted', async () => {
-  const once = await up(m, 1)
-  assert.equal(once.err, undefined, `a hook that fails once must not fail the start: ${once.err?.message}`)
-  assert.equal(once.attempts, 2, 'the CLI is invoked again after a create-time hook failure')
-  assert.equal(once.ok.containerId, 'container-2', 'the start returns the retry container, not the failed one')
-  assert.deepEqual(once.removed, ['rm -fv container-1'], 'the half-provisioned container is removed before the retry')
+after(() => fs.rmSync(tmp, { recursive: true, force: true }))
+beforeEach(() => fake.reset({ volumeExists: true, volumeReady: true }))
+
+const SETUP = 'npm install'
+const spec = (over = {}) => ({
+  session: 's1',
+  image: 'img:1',
+  env: { name: 'e', image: 'img:1', setup: SETUP },
+  workdir: '/workspaces/repo',
+  mounts: [],
+  skipSetup: false,
+  ...over
+})
+const failing = (codes) => ({
+  exec: [
+    {
+      match: SETUP,
+      codes,
+      stdout: 'npm error code ECONNRESET\nnpm error network request to https://registry.npmjs.org/react failed\n'
+    }
+  ]
+})
+const removed = () => fake.of('rm').map((c) => c.args.at(-1))
+const noop = () => {}
+
+test('a setup that fails once removes its container and succeeds in a fresh one', async () => {
+  fake.ctl(failing([1, 0]))
+  const logs = []
+  const done = []
+  const r = await m.createContainer(spec(), (l) => logs.push(l), { onSetupDone: (id) => done.push(id) })
+  assert.equal(fake.of('create').length, 2, 'a second container was created')
+  assert.deepEqual(removed(), ['cid-1'], 'the half-provisioned one was removed, not adopted')
+  assert.equal(r.containerId, 'cid-2')
+  assert.deepEqual(done, ['cid-2'], 'only the container whose setup succeeded is announced')
+  assert.ok(logs.some((l) => /retrying once/.test(l)))
+  // setup ran in each container, once
+  const runs = fake.execs().filter((e) => e.cmd.includes(SETUP))
+  assert.deepEqual(runs.map((e) => e.id), ['cid-1', 'cid-2'])
 })
 
-// 2. The persistent case — one retry, then a message that names the hook and
-//    quotes its output. The CLI's own `message` is only the shell line.
-test('a hook that keeps failing names the hook and quotes its output', async () => {
-  const always = await up(m, 99)
-  assert.ok(always.err, 'a hook failing twice fails the start')
-  assert.equal(always.attempts, 2, 'a create-time hook is retried exactly once')
-  assert.deepEqual(
-    always.removed,
-    ['rm -fv container-1', 'rm -fv container-2'],
-    'no half-provisioned container survives, not even the last one'
+test('a setup that keeps failing fails the start, quoting its output, after exactly one retry', async () => {
+  fake.ctl(failing([1]))
+  const done = []
+  await assert.rejects(
+    m.createContainer(spec(), noop, { onSetupDone: (id) => done.push(id) }),
+    (/** @type {Error} */ e) => {
+      assert.match(e.message, /setup script failed \(exit 1\) — retried 2× in a fresh container/)
+      assert.match(e.message, /npm error network request to https:\/\/registry\.npmjs\.org\/react failed/)
+      return true
+    }
   )
-  const msg = always.err.message
-  assert.ok(msg.includes('postCreateCommand from devcontainer.json failed.'), `names the hook: ${msg}`)
-  assert.ok(msg.includes('Command failed: /bin/sh -c npm install'), `keeps the CLI's own message: ${msg}`)
-  assert.ok(msg.includes('retried 2×'), `says it already retried: ${msg}`)
-  assert.ok(msg.includes('npm error code ECONNRESET'), `quotes the reason the hook itself gave: ${msg}`)
-  assert.ok(!msg.includes('exporting to image'), `does not quote the build that succeeded: ${msg}`)
-  assert.ok(!msg.includes('    at Q ('), `does not quote CLI stack frames: ${msg}`)
+  assert.equal(fake.of('create').length, 2, 'one retry, no more')
+  assert.deepEqual(removed(), ['cid-1', 'cid-2'], 'neither container is left behind')
+  assert.deepEqual(done, [], 'no container id was ever announced')
 })
 
-// 3. Failures that are not a create-time hook are untouched: one attempt, the
-//    CLI's message, and nothing removed (there may be no container at all).
-test('a non-hook failure is not retried', async () => {
-  const other = await up(m, 99, {
-    FAKE_DESCRIPTION: 'Error: Could not resolve image',
-    FAKE_NO_CONTAINER: '1'
+test('read-only roles skip setup: nothing to fail, nothing retried', async () => {
+  fake.ctl(failing([1]))
+  const r = await m.createContainer(spec({ skipSetup: true }), noop)
+  assert.equal(r.containerId, 'cid-1')
+  assert.equal(fake.of('create').length, 1)
+  assert.equal(removed().length, 0)
+})
+
+test('other failures are untouched: a failing create is one attempt with the daemon’s own message', async () => {
+  fake.ctl({ createFails: [{ stderr: 'pull access denied for img' }] })
+  await assert.rejects(m.createContainer(spec(), noop), /pull access denied/)
+  assert.equal(fake.of('create').length, 1)
+  assert.equal(removed().length, 0, 'nothing was created, so nothing is removed')
+})
+
+test('hookOutputTail keeps the last lines of the script’s output and drops stack frames', () => {
+  const lines = ['a', '', '    at Q (/stub/x.js:1:1)', 'b', 'c', 'd', 'e', 'f', 'g', 'h']
+  assert.deepEqual(m.hookOutputTail(lines), ['c', 'd', 'e', 'f', 'g', 'h'])
+  assert.deepEqual(m.hookOutputTail(lines, 2), ['g', 'h'])
+  assert.deepEqual(m.hookOutputTail(['only']), ['only'])
+})
+
+test('a container the record cannot name is removed before create — a crash mid-setup is never adopted', async () => {
+  writeOpEnv({ name: 'op', image: 'op:1', setup: SETUP })
+  fake.ctl({ psSession: 'leftover-1\nleftover-2\n' })
+  const sess = { id: 's1', workspace: 'ws', task: 't', env: 'op', repos: [], role: 'operator' }
+  const manager = new m.ContainerManager({
+    bus: { emit: noop },
+    session: () => sess,
+    sessions: () => [sess],
+    patchContainer: (id, c) => {
+      sess.container = c
+    },
+    isSessionIdle: () => true,
+    detach: noop
   })
-  assert.ok(other.err, 'a non-hook failure still fails')
-  assert.equal(other.attempts, 1, 'a non-hook failure is not retried')
-  assert.deepEqual(other.removed, [], 'a non-hook failure removes nothing')
-  assert.equal(other.err.message, 'Command failed: /bin/sh -c npm install')
-})
-
-// 4. `hookOutputTail` keeps the hook's own output and drops the noise around
-//    it — everything before the last lifecycle banner belongs to the build.
-test('hookOutputTail keeps the hook output and drops the build noise', () => {
-  const tail = m.hookOutputTail([
-    '#5 [2/3] RUN apt-get install -y curl',
-    'Running the postCreateCommand from devcontainer.json...',
-    'npm error code EACCES',
-    '    at Q (/x.js:1:1)',
-    'Error: Command failed: /bin/sh -c npm install',
-    '{"outcome":"error"}'
-  ])
-  assert.deepEqual(tail, [
-    'Running the postCreateCommand from devcontainer.json...',
-    'npm error code EACCES'
-  ])
+  await manager.ensure('s1')
+  const calls = fake.calls().map((c) => c.args)
+  const create = calls.findIndex((a) => a[0] === 'create')
+  const rm = calls.flatMap((a, i) => (a[0] === 'rm' ? [[a.at(-1), i]] : []))
+  assert.deepEqual(rm.map(([id]) => id), ['leftover-1', 'leftover-2'])
+  assert.ok(rm.every(([, i]) => i < create), 'removed before the create')
+  assert.equal(sess.container.id, 'cid-1')
 })

@@ -124,12 +124,12 @@ Details: [docs/architecture.md](docs/architecture.md).
 **Per session**
 - MCP servers picked per session: the built-in GitHub server (off, read-only or full), remote HTTP servers and local stdio servers.
 - Skills (`SKILL.md` directories) picked per session and mounted read-only into the container.
-- Environments are devcontainer definitions stored in Gurt and seeded from the repo. Repos without one can use the bundled `starter` env.
+- Environments are definitions stored in Gurt (an image or a Dockerfile, environment variables, a setup script and a start script). Sessions start on the base image (Settings → Environments), which any environment can replace as the default.
 
 **Workflow**
-- Queue: a new session is a draft until you press **Run**. Run always goes through the queue: the session starts at once if nothing is in the way, and waits otherwise. The lock is per clone, so sessions on different repos run in parallel. You can cap concurrent sessions per scope, and a clone locked for manual review blocks writers. The queue survives a restart.
+- Queue: a new session is a draft until you press **Run**. Run always goes through the queue: the session starts at once if nothing is in the way, and waits otherwise. The lock is per clone, so sessions on different repos run in parallel. You can cap concurrent sessions per scope. The queue survives a restart.
 - Plan limits: once an account's subscription window reaches the threshold (Settings → Clients, default 95%), nothing new starts on it. Queued sessions and queued messages wait for the reset, and a session the limit cut off sends "continue" on its own afterwards. Extra usage and credits lift the hold.
-- Review: split diff, inline comments and "Launch fix". Then commit, push and open a pull request. Local repos with no forge yet use "Merge into main".
+- Review: the split diff of the agent's changes. Then commit, push and open a pull request. Local repos with no forge yet use "Merge into main".
 - [Proactive agents](docs/design-proactive-agents.md): an agent that runs on a schedule, reads its sources through MCP (Sentry, a tracker, mail) and raises scopes with draft sessions for you to launch. Each source item is bound to at most one scope, so repeated runs do not raise the same thing twice.
 - [Files](docs/files.md): browse a scope's repositories and edit files in CodeMirror tabs, with syntax highlighting, explicit saves and JS/TS definition/reference navigation.
 - Terminals on the host, opened per scope.
@@ -158,7 +158,7 @@ Download a build from [Releases](https://github.com/klerik3d/gurt/releases/lates
 1. Start Docker and launch Gurt. The welcome screen checks the Docker CLI, the daemon and the images. **Prepare** pulls any missing images.
 2. Pick an agent kind. Then either **Sign in with …** or paste an API key ("or paste an API key instead"). The key is stored in this machine's credential store.
 3. Gurt creates a workspace, a scope and an **operator** session, and starts it. The operator holds no repository. It reads your configuration, tells you what to fix, and can make the change itself; changes that would run code on the host wait for your confirmation.
-4. In Settings → Repos, add a repository. For pushing, add a GitHub token in Settings → Credentials. A repo with no devcontainer of its own can run in the bundled `starter` env.
+4. In Settings → Repos, add a repository. For pushing, add a GitHub token in Settings → Credentials. A repo with no env of its own runs on the base image.
 5. Create a new session (command palette → "New session…"). It starts as a draft. On its Config tab choose role **executor**, the env, the repo and an agent, write the first prompt, and press **Run**.
 6. When the agent finishes with changes, open the **Diff** view in the activity bar. Review the diff, then **Commit changes…** and **Push changes**.
 
@@ -167,7 +167,7 @@ Download a build from [Releases](https://github.com/klerik3d/gurt/releases/lates
 - **workspace**: the top-level divider. It has its own repos, envs, MCP servers and skills.
 - **scope**: one unit of work in a workspace. It can span several repos; each is cloned once for the scope, on a branch named after the scope, and all sessions of the scope share those clones.
 - **repo**: a registered git repository (URL plus a credential link), or a local repo that Gurt keeps until you publish it.
-- **env**: a devcontainer definition stored in Gurt. It is a template, so any number of sessions can run the same env.
+- **env**: an image-or-Dockerfile definition stored in Gurt. It is a template, so any number of sessions can run the same env.
 - **agent**: an instance of a built-in kind, linked to its credential. Settings lists agents under **Clients**.
 - **session**: one agent with one role, in one container, with one chat. A session goes `draft → queued → starting → started`.
 - **role**: what a session is for: executor, researcher, reviewer or operator. The role sets mounts, the clone lock and tools.
@@ -189,7 +189,7 @@ What it does not enforce:
 
 - **`open`** network mode (opt-in per session, for example for SSH git) is visibility, not enforcement. A process that ignores `HTTP_PROXY`/`HTTPS_PROXY` bypasses the proxy entirely.
 - A host you name in the allow list is dialled by name, without the address check. Naming any host also turns off the built-in refusal of this machine.
-- Setup always runs on the open network: the image build, devcontainer features, `postCreate` and the adapter install.
+- Setup always runs on the open network: the image build, the setup script and the adapter install.
 - The agent's own API key or token is passed into its container as an environment variable.
 - A reviewer's clone is currently writable, so it can install dependencies and run tests. Only the researcher's mounts are read-only.
 - Local stdio MCP servers run on the host, unsandboxed.

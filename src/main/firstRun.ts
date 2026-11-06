@@ -48,7 +48,7 @@ import {
   FIRST_RUN_WORKSPACE,
   type FirstRunResult
 } from '../shared/doctor'
-import { operatorEnvName, type AgentsFile } from '../shared/types'
+import { defaultEnvName, type AgentsFile } from '../shared/types'
 import { probeAgentToken } from './agentProviders'
 import { cancelOAuthSignIn, oauthSignIn } from './oauth'
 import { getCredentials, setCredentials } from './credentials'
@@ -171,7 +171,7 @@ export async function firstRunSignIn(
   if (!def) throw new Error(`unknown agent kind "${kind}"`)
   // Refused rather than sent through a flow its CLI cannot consume: a "Sign
   // in" that completes a browser round-trip and then fails at session start is
-  // worse than having asked for a key (`AgentDef.oauthProvider`).
+  // worse than having asked for a key (`AgentManifest.oauthProvider`).
   if (!def.oauthProvider)
     throw new Error(
       `${def.label} has no sign-in path — paste an API key for it instead`
@@ -251,7 +251,7 @@ async function createAndStart(
   //    refuses egress to this host.
   const wsData = await store.getWorkspace(ws)
   const info = kernel.sessions.createSession(
-    { workspace: ws, task: FIRST_RUN_TASK, env: operatorEnvName(wsData) },
+    { workspace: ws, task: FIRST_RUN_TASK, env: defaultEnvName(wsData) },
     [],
     agentId,
     FIRST_RUN_PROMPT,

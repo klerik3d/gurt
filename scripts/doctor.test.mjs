@@ -34,10 +34,6 @@ const S = (rel) => JSON.stringify(path.join(ROOT, rel))
 
 const GURT_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'gurt-doctor-'))
 process.env.GURT_ROOT = GURT_ROOT
-// `operatorEnvPath()` resolves off `import.meta.url`, which for a bundle is a
-// temp file — the same seam `GURT_PROXY_SCRIPT` gives the proxy, and the one
-// the operator smoke already uses (requirements-session-operator.md §16).
-process.env.GURT_OPERATOR_ENV = path.join(ROOT, 'resources', 'env', 'devcontainer.json')
 
 const outfile = path.join(os.tmpdir(), `gurt-doctor-${process.pid}.mjs`)
 await bundle({
@@ -47,6 +43,7 @@ await bundle({
       export { dockerDaemon } from ${S('src/main/provision.ts')}
       export { doctorReady, DOCTOR_ROWS, pendingRows } from ${S('src/shared/doctor.ts')}
       export { PROXY_IMAGE } from ${S('src/main/proxy/manager.ts')}
+      export { NODE_RUNTIME_IMAGE } from ${S('src/main/provision.ts')}
     `,
     resolveDir: ROOT,
     loader: 'ts',
@@ -99,9 +96,9 @@ test('a machine with everything reports three green rows and is ready', async ()
   // writes into app.start, at the moment it can still be acted on.
   assert.equal(row(r, 'docker-cli').detail, '/usr/local/bin/docker')
   assert.equal(row(r, 'docker-daemon').detail, '27.3.1')
-  // And never the word "ready": the node feature and the ACP adapter still
-  // install over the network on the first start (§5.2).
-  assert.match(row(r, 'images').detail, /still installs the node feature/)
+  // And never the word "ready": the ACP adapter still installs over the
+  // network on the first start (§5.2).
+  assert.match(row(r, 'images').detail, /still installs the agent adapter/)
 })
 
 // --- 1. skipping is not passing --------------------------------------------
@@ -185,14 +182,17 @@ test('a healthy daemon offers no action at all', async () => {
 
 // --- what Prepare pulls -----------------------------------------------------
 
-test('prepare covers the bundled operator env AND the session proxy', async () => {
-  // Both are read from where they are defined rather than restated: a packaged
-  // update bumps the operator env's pin and Prepare has to follow it.
+test('prepare covers the operator env, gurt\'s node runtime AND the session proxy', async () => {
+  // All read from where they are defined rather than restated: a packaged
+  // update bumps the base image's pin and Prepare has to follow it.
   const refs = await m.prepareImages()
-  assert.equal(refs.length, 2)
   assert.equal(refs.includes(m.PROXY_IMAGE), true, 'every session gets a proxy container')
-  const operator = refs.find((r) => r !== m.PROXY_IMAGE)
-  assert.match(operator, /^node:.*@sha256:/, 'digest-pinned, like everything else gurt runs')
+  assert.equal(refs.includes(m.NODE_RUNTIME_IMAGE), true, 'every session mounts the node volume')
+  assert.equal(new Set(refs).size, refs.length, 'one pull per distinct image')
+  const operator = refs.find((r) => r !== m.PROXY_IMAGE && r !== m.NODE_RUNTIME_IMAGE)
+  // The base image may be the very image the runtime is filled from.
+  for (const r of operator ? [operator] : [m.NODE_RUNTIME_IMAGE])
+    assert.match(r, /^node:.*@sha256:/, 'digest-pinned, like everything else gurt runs')
 })
 
 // --- the probe under the daemon row -----------------------------------------

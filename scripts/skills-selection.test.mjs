@@ -41,7 +41,7 @@ await bundle({
     contents: `
       export { createKernel } from ${S('src/main/kernel.ts')}
       export { skillEntries, resolveSkillSelection, sanitizeSkillSelection, validateSkillDoc, skillNameProblem } from ${S('src/shared/skills.ts')}
-      export { AGENT_DEFS, agentDef } from ${S('src/shared/agents.ts')}
+      export { AGENT_MANIFESTS as AGENT_DEFS, agentDef } from ${S('src/shared/agents.ts')}
       export { usesSkillMounts } from ${S('src/main/containers.ts')}
       export {
         addSkill, getSkills, getSkillDoc, updateSkill, removeSkill, setDefaultSkills,
@@ -68,7 +68,7 @@ fs.writeFileSync(
   workspaceFile,
   JSON.stringify({
     repos: [{ name: 'alpha', url: 'https://github.com/o/alpha.git' }],
-    envs: [{ name: 'dev', devcontainer: '{"image":"x"}', repo: 'alpha' }]
+    envs: [{ name: 'dev', image: 'x', repo: 'alpha' }]
   })
 )
 fs.writeFileSync(path.join(GURT_ROOT, ws, task, 'task.json'), JSON.stringify({}))

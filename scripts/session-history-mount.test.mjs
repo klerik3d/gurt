@@ -7,13 +7,13 @@
 // The properties, in the order they matter:
 //
 //   1. A kind with an empty `historyPaths` (opencode, §3.3) changes nothing:
-//      same mount list, same `sessionConfigArgs`, no link exec.
+//      same mount list, no link exec.
 //   2. A kind with entries (claude-code) adds exactly ONE read-write
 //      `hostMounts` entry targeting `/gurt/history`, regardless of how many
 //      entries `historyPaths` has, plus one link per entry.
-//   3. `sessionConfigArgs` flips to the per-session merged config for a
-//      plain single-repo executor with no skills on claude-code — the §4.1
-//      regression a missed condition would surface as a broken `exec`.
+//   3. A plain single-repo executor on claude-code gets the history bind in
+//      its `containerLayout` (read-write, at /gurt/history) next to its clone
+//      — and none on a kind without history.
 //   4. The mount is never `readonly`, and slugs from different agent homes
 //      do not collide.
 //   5. Ensuring the history directory twice, with a file written in
@@ -21,8 +21,9 @@
 //      not (§4 step 2).
 //
 //   node scripts/session-history-mount.test.mjs
-import { test, after } from 'node:test'
+import { test, after, beforeEach } from 'node:test'
 import { bundle } from './lib/bundle.mjs'
+import { installFakeDocker } from './lib/fake-docker.mjs'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import path from 'node:path'
 import os from 'node:os'
@@ -33,32 +34,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gurt-history-mount-'))
 process.env.GURT_ROOT = path.join(tmp, 'gurt')
 
-// A stubbed `@devcontainers/cli` that records one JSON line per invocation to
-// FAKE_STATE and answers with the exit code named by FAKE_EXIT (default 0) —
-// the same trick scripts/mount-workspace-git-root.test.mjs uses, extended to
-// count invocations rather than inspect a single one.
-const cliDir = path.join(tmp, 'node_modules', '@devcontainers', 'cli')
-fs.mkdirSync(cliDir, { recursive: true })
-fs.writeFileSync(
-  path.join(cliDir, 'package.json'),
-  JSON.stringify({ name: '@devcontainers/cli', version: '0.0.0-stub', main: 'devcontainer.js' })
-)
-fs.writeFileSync(
-  path.join(cliDir, 'devcontainer.js'),
-  `const fs = require('fs')
-const line = JSON.stringify(process.argv.slice(2)) + '\\n'
-fs.appendFileSync(process.env.FAKE_STATE, line)
-process.exit(Number(process.env.FAKE_EXIT || '0'))
-`
-)
-const bin = path.join(tmp, 'bin')
-fs.mkdirSync(bin)
-fs.writeFileSync(path.join(bin, 'docker'), `#!/bin/sh\ntrue\n`)
-fs.chmodSync(path.join(bin, 'docker'), 0o755)
-process.env.PATH = `${bin}${path.delimiter}${process.env.PATH}`
-
-const state = path.join(tmp, 'invocations.jsonl')
-process.env.FAKE_STATE = state
+const fake = installFakeDocker(tmp)
 
 const outfile = path.join(tmp, 'entry.mjs')
 const S = (rel) => JSON.stringify(path.join(ROOT, rel))
@@ -66,11 +42,11 @@ const S = (rel) => JSON.stringify(path.join(ROOT, rel))
 await bundle({
   stdin: {
     contents: `
-      export { AGENT_DEFS, agentDef } from ${S('src/shared/agents.ts')}
+      export { AGENT_MANIFESTS as AGENT_DEFS, agentDef } from ${S('src/shared/agents.ts')}
       export {
-        usesSkillMounts, usesHistoryMounts, historyHostMounts, sessionConfigArgs
+        usesSkillMounts, usesHistoryMounts, historyHostMounts, containerLayout
       } from ${S('src/main/containers.ts')}
-      export { HISTORY_MOUNT, linkContainerHistory, sessionConfigPath } from ${S('src/main/provision.ts')}
+      export { HISTORY_MOUNT, linkContainerHistory } from ${S('src/main/provision.ts')}
       export {
         historySlug, ensureSessionHistory, sessionHistoryDir, sessionScratchDir
       } from ${S('src/main/store.ts')}
@@ -79,31 +55,24 @@ await bundle({
     loader: 'ts',
     sourcefile: 'entry.ts'
   },
-  external: ['@devcontainers/cli', 'electron'],
+  external: ['electron'],
   outfile
 })
 
 const m = await import(pathToFileURL(outfile).href)
+beforeEach(() => fake.reset())
 
 after(() => {
   fs.rmSync(tmp, { recursive: true, force: true })
 })
 
-/** Invocations recorded by the stub CLI since the last call. */
-function drainInvocations() {
-  const raw = fs.existsSync(state) ? fs.readFileSync(state, 'utf8') : ''
-  fs.rmSync(state, { force: true })
-  return raw
-    .split('\n')
-    .filter((l) => l.trim())
-    .map((l) => JSON.parse(l))
-}
+const T = { containerId: 'cid-h', user: 'dev', cwd: '/workspaces/repo', path: '/p/bin' }
 
 const ws = 'w'
 const task = 't'
 const sessionId = 's1'
 
-/** Minimal `SessionInfo`, the shape `sessionConfigArgs` reads. */
+/** Minimal `SessionInfo`, the shape `containerLayout` reads. */
 function info(role, repos, skills) {
   return {
     id: sessionId, env: 'dev', role, repos, task, workspace: ws, title: 't',
@@ -119,19 +88,13 @@ test('a kind with empty historyPaths mounts nothing and links nothing', async ()
   assert.equal(m.usesHistoryMounts(opencode.historyPaths), false)
   assert.deepEqual(m.historyHostMounts(ws, task, sessionId, opencode.historyPaths), [])
 
-  // Byte-identical to calling sessionConfigArgs without the new parameter at
-  // all — the default keeps every existing call site's behaviour.
-  const withDefault = m.sessionConfigArgs(info('executor', ['alpha']), sessionId, opencode.skillsDir)
-  const withEmpty = m.sessionConfigArgs(info('executor', ['alpha']), sessionId, opencode.skillsDir, opencode.historyPaths)
-  assert.deepEqual(withDefault, withEmpty)
-  assert.deepEqual(withEmpty, [
-    '--override-config',
-    path.join(process.env.GURT_ROOT, ws, '.devcontainers', 'dev.json')
-  ])
+  const clone = [{ name: 'alpha', dir: '/h/alpha' }]
+  const layout = m.containerLayout(info('executor', ['alpha']), clone, false, m.historyHostMounts(ws, task, sessionId, opencode.historyPaths))
+  assert.deepEqual(layout.mounts.map((x) => x.target), ['/workspaces/alpha'], 'the clone, nothing else')
 
   const log = []
-  await m.linkContainerHistory(sessionId, 'opencode', [], '/tmp/does-not-matter', opencode.historyPaths, (l) => log.push(l))
-  assert.deepEqual(drainInvocations(), [], 'no exec was run for an empty historyPaths')
+  await m.linkContainerHistory(T, sessionId, 'opencode', opencode.historyPaths, (l) => log.push(l))
+  assert.deepEqual(fake.calls(), [], 'no exec was run for an empty historyPaths')
   assert.deepEqual(log, [], 'nothing to log either')
 })
 
@@ -157,17 +120,15 @@ test('a kind with entries adds exactly one read-write hostMounts entry, regardle
 test('one link per historyPaths entry, each mkdir/rm/ln-ing its own slug', async () => {
   const claude = m.agentDef('claude-code')
   const log = []
-  await m.linkContainerHistory(
-    sessionId, 'claude-code', ['--override-config', '/cfg.json'], '/workspace', claude.historyPaths,
-    (l) => log.push(l)
-  )
-  const calls = drainInvocations()
+  await m.linkContainerHistory(T, sessionId, 'claude-code', claude.historyPaths, (l) => log.push(l))
+  const calls = fake.execs()
   assert.equal(calls.length, claude.historyPaths.length, 'one exec per entry')
   for (const [i, entry] of claude.historyPaths.entries()) {
-    const argv = calls[i]
-    assert.equal(argv[0], 'exec')
-    assert.ok(argv.includes('--override-config') && argv.includes('/cfg.json'))
-    const script = argv.at(-1)
+    const e = calls[i]
+    assert.equal(e.id, 'cid-h')
+    assert.equal(e.user, 'dev')
+    assert.equal(e.cwd, '/workspaces/repo')
+    const script = e.cmd.at(-1)
     const slug = m.historySlug(entry)
     assert.ok(script.includes(`mkdir -p "$HOME/${path.posix.dirname(entry)}"`), script)
     assert.ok(script.includes(`rm -rf "$HOME/${entry}"`), script)
@@ -180,33 +141,26 @@ test('one link per historyPaths entry, each mkdir/rm/ln-ing its own slug', async
 })
 
 test('a failed link is logged per entry and is not fatal', async () => {
-  process.env.FAKE_EXIT = '1'
-  try {
-    const log = []
-    await m.linkContainerHistory(sessionId, 'claude-code', [], '/workspace', ['.claude/projects'], (l) => log.push(l))
-    assert.ok(log.some((l) => l.includes('could not link') && l.includes('.claude/projects')), JSON.stringify(log))
-  } finally {
-    delete process.env.FAKE_EXIT
-  }
+  fake.ctl({ exec: [{ match: 'ln -s', codes: [1] }] })
+  const log = []
+  await m.linkContainerHistory(T, sessionId, 'claude-code', ['.claude/projects'], (l) => log.push(l))
+  assert.ok(log.some((l) => l.includes('could not link') && l.includes('.claude/projects')), JSON.stringify(log))
 })
 
 // --- 3. §4.1 regression: a plain single-repo executor on claude-code -------
 
-test('sessionConfigArgs returns the per-session merged config for a plain single-repo executor with no skills, on claude-code', () => {
+test('a plain single-repo executor on claude-code gets the history bind beside its clone; on opencode it does not', () => {
   const claude = m.agentDef('claude-code')
+  const clone = [{ name: 'alpha', dir: '/h/alpha' }]
   const plain = info('executor', ['alpha'])
-  const args = m.sessionConfigArgs(plain, sessionId, claude.skillsDir, claude.historyPaths)
-  assert.deepEqual(args, [
-    '--override-config',
-    m.sessionConfigPath(m.sessionScratchDir(ws, task, sessionId))
+  const withHistory = m.containerLayout(plain, clone, false, m.historyHostMounts(ws, task, sessionId, claude.historyPaths))
+  assert.deepEqual(withHistory.mounts, [
+    { type: 'bind', source: '/h/alpha', target: '/workspaces/alpha' },
+    { type: 'bind', source: m.sessionHistoryDir(ws, task, sessionId), target: m.HISTORY_MOUNT }
   ])
-  // Confirm this really is a flip: the same session on a kind with no
-  // history mount stays on the env's shared config, as it does today.
   const opencode = m.agentDef('opencode')
-  assert.deepEqual(m.sessionConfigArgs(plain, sessionId, opencode.skillsDir, opencode.historyPaths), [
-    '--override-config',
-    path.join(process.env.GURT_ROOT, ws, '.devcontainers', 'dev.json')
-  ])
+  const without = m.containerLayout(plain, clone, false, m.historyHostMounts(ws, task, sessionId, opencode.historyPaths))
+  assert.equal(without.mounts.length, 1)
 })
 
 // --- 4. never readonly; slugs from different homes don't collide -----------

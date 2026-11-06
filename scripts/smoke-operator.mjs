@@ -1,7 +1,7 @@
 // The operator role in the real UI (docs/requirements-session-operator.md
 // §12 item 9, the docker-free half): the role is selectable on a draft's
 // Config tab, picking it clears and disables the repository picker, the env
-// defaults to the bundled operator env (or the workspace's `operatorEnv`),
+// defaults to the base image (or the workspace's `defaultEnv`),
 // Run is not blocked on a repository, and the role round-trips through
 // `sessions.json` and a reload.
 //
@@ -31,7 +31,7 @@ fs.writeFileSync(
   path.join(GURT_ROOT, ws, 'workspace.json'),
   JSON.stringify({
     repos: [{ name: 'alpha', url: 'https://github.com/o/alpha.git' }],
-    envs: [{ name: 'dev', devcontainer: '{"image":"x"}', repo: 'alpha' }],
+    envs: [{ name: 'dev', image: 'x', repo: 'alpha' }],
     // Seeded into the bare draft by the Config tab, so the only thing that
     // could gate Run below is the repository — which is the assertion.
     defaultAgent: 'a1'
@@ -122,13 +122,13 @@ try {
   assert.match(repoText, /an operator holds none/, 'the disabled row says why')
   console.log('operator: repo picker disabled OK')
 
-  // --- the env defaulted to the bundled operator env ---
-  assert.equal(await envValue(), 'operator', 'env defaults to the bundled operator env')
-  console.log('operator: bundled env default OK')
+  // --- the env defaulted to the base image env ---
+  assert.equal(await envValue(), 'base', 'env defaults to the base image')
+  console.log('operator: base env default OK')
 
   // --- zero repos persisted; Run not blocked on a repository ---
   const rec = await persisted(
-    (r) => r.info.role === 'operator' && r.info.env === 'operator',
+    (r) => r.info.role === 'operator' && r.info.env === 'base',
     'the operator draft'
   )
   assert.deepEqual(rec.info.repos, [], 'zero repos on disk — the definition, not a default')
@@ -148,7 +148,7 @@ try {
   await page.click('.sb-session >> nth=0')
   await openConfig()
   await untilRole('operator')
-  assert.equal(await envValue(), 'operator', 'env comes back too')
+  assert.equal(await envValue(), 'base', 'env comes back too')
   await shot('03-reloaded')
   console.log('operator: reload OK')
 

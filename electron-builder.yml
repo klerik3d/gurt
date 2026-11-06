@@ -19,12 +19,10 @@ files:
   - "!electron.vite.config.ts"
   - "!tsconfig.*.json"
 
-# Two things must exist as real files on disk, not inside app.asar:
-#  - the devcontainer CLI, because we spawn it as a separate process
-#    (see devcontainerCliPath() in src/main/provision.ts)
+# Things that must exist as real files on disk, not inside app.asar:
 #  - the icon, which is handed to nativeImage/BrowserWindow by path
+#  - the bundled env files and proxy script under resources/
 asarUnpack:
-  - node_modules/@devcontainers/cli/**
   # Native PTY binding and macOS spawn-helper must be real files.
   - node_modules/node-pty/**
   - resources/**

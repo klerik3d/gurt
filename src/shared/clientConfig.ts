@@ -1,11 +1,12 @@
+// A client's native settings file: an agent instance's config JSON, written on
+// every adapter launch to the path its kind's plugin names
+// (`AgentManifest.clientConfig`). Kinds without one take no config JSON.
+import type { JsonObject } from './agentPlugin'
+import { agentDef } from './agents'
+
 /** Native settings are profile-scoped; paths are fixed, never user-supplied. */
 export function clientConfigPath(kind: string): string | undefined {
-  switch (kind) {
-    case 'claude-code': return '.claude/settings.json'
-    case 'pi': return '.pi/agent/settings.json'
-    case 'opencode': return '.config/opencode/opencode.json'
-    default: return undefined
-  }
+  return agentDef(kind)?.clientConfig?.path
 }
 
 export function parseClientConfig(text: string): Record<string, unknown> {
@@ -24,21 +25,8 @@ export function clientConfigFile(kind: string, config: Record<string, unknown> |
   return { path, content: JSON.stringify(parseClientConfig(JSON.stringify(config)), null, 2) + '\n' }
 }
 
-export function clientConfigExample(kind: string): Record<string, unknown> {
-  if (kind === 'claude-code') return { attribution: { commit: '', pr: '', sessionUrl: false } }
-  if (kind === 'pi') return {
-    defaultProvider: 'openrouter',
-    defaultModel: 'anthropic/claude-sonnet-4.5'
-  }
-  if (kind === 'opencode') return {
-    $schema: 'https://opencode.ai/config.json',
-    model: 'openrouter/anthropic/claude-sonnet-4.5',
-    provider: {
-      openrouter: {
-        options: { apiKey: '{env:OPENROUTER_API_KEY}' },
-        models: { 'anthropic/claude-sonnet-4.5': {} }
-      }
-    }
-  }
-  return {}
+/** What the config field's example button fills in — {} for a kind with none. */
+export function clientConfigExample(kind: string): JsonObject {
+  const example = agentDef(kind)?.clientConfig?.example.config
+  return example ? structuredClone(example) : {}
 }

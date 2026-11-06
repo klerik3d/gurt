@@ -24,7 +24,8 @@ const S = (rel) => JSON.stringify(path.join(ROOT, rel))
 
 await bundle({
   stdin: {
-    contents: `export * from ${S('src/shared/agentConfig.ts')}`,
+    contents: `export * from ${S('src/shared/agentConfig.ts')}
+      export { withFable } from ${S('src/plugins/agents/claude-code/main.ts')}`,
     resolveDir: ROOT,
     loader: 'ts',
     sourcefile: 'entry.ts'

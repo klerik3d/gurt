@@ -1,7 +1,7 @@
 // Phase 4: iteration-2 features through the real UI. Repo CRUD (add/edit/delete)
 // in Settings, task create/delete in the sidebar, the per-session container
 // lifecycle (stop/delete) in the task pane, and the codex adapter handshake.
-// Requires docker and network (the devcontainer image is pulled).
+// Requires docker and network (the env image is pulled).
 //
 //   npm run build && SCRATCH=/tmp/gurt-smoke-crud node scripts/smoke-crud.mjs
 //
@@ -11,11 +11,7 @@
 // session/new end to end.
 //
 // The repos are local bare origins rather than github, so the git half is
-// hermetic. They carry a `.devcontainer/` directory on purpose: gurt always
-// passes `--additional-features`, and @devcontainers/cli 0.88 writes the
-// resolved feature lockfile to `<workspace>/.devcontainer/devcontainer-lock.json`
-// without creating the directory — a repo without one fails `devcontainer up`
-// with ENOENT before the image is ever built.
+// hermetic.
 import { createRequire } from 'node:module'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -66,21 +62,19 @@ fs.writeFileSync(
   })
 )
 
-const DEVCONTAINER = '{ "image": "mcr.microsoft.com/devcontainers/base:ubuntu" }'
+const IMAGE = 'mcr.microsoft.com/devcontainers/base:ubuntu'
 
 const git = (dir, ...args) =>
   execFileSync('git', ['-C', dir, '-c', 'user.email=smoke@test', '-c', 'user.name=smoke', ...args], {
     encoding: 'utf8'
   })
 
-/** A bare origin with one commit and a `.devcontainer/` for the feature lockfile. */
+/** A bare origin with one commit. */
 function makeBareRepo(name) {
   const seed = path.join(REPO_ROOT, `${name}-seed`)
   const bare = path.join(REPO_ROOT, `${name}.git`)
-  fs.mkdirSync(path.join(seed, '.devcontainer'), { recursive: true })
   git(REPO_ROOT, 'init', '-q', '-b', 'main', seed)
   fs.writeFileSync(path.join(seed, 'README.md'), `# ${name}\n`)
-  fs.writeFileSync(path.join(seed, '.devcontainer', 'devcontainer.json'), `${DEVCONTAINER}\n`)
   git(seed, 'add', '-A')
   git(seed, 'commit', '-qm', 'initial')
   git(REPO_ROOT, 'clone', '-q', '--bare', seed, bare)
@@ -179,7 +173,7 @@ const openRepo = async (name) => {
   await page.waitForSelector('.modal:has-text("Edit repo")', { timeout: 5000 })
 }
 
-/** Define an environment (name + default repo + devcontainer) in Settings. */
+/** Define an environment (name + default repo + image) in Settings. */
 async function addEnv(name, repo) {
   await openSettings('Environments')
   await page.click('.set-head .btn-primary') // + New environment
@@ -187,7 +181,7 @@ async function addEnv(name, repo) {
   await page.fill('.modal input[placeholder="web-app"]', name)
   await page.click('.modal .fld:has(.seclabel:text-is("DEFAULT REPOSITORY")) .pick-row')
   await page.click(`.modal .pick-menu .menu-item:has-text("${repo}")`)
-  await page.fill('.modal .jsoned textarea', DEVCONTAINER)
+  await page.fill('.modal input[placeholder="node:22-trixie"]', IMAGE)
   await page.click('.modal-foot .btn-primary') // Save
   await modalGone()
   await page.waitForSelector(`.set-row-label:text-is("${name}")`, { timeout: 5000 })

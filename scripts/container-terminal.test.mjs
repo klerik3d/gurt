@@ -12,16 +12,13 @@ import { bundle } from './lib/bundle.mjs'
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gurt-container-terminal-'))
 process.env.GURT_ROOT = root
 const outfile = path.join(root, 'terminal.mjs')
-// The bundled CLI resolver uses createRequire(import.meta.url).
-fs.symlinkSync(path.resolve('node_modules'), path.join(root, 'node_modules'), 'dir')
 const source = (file) => JSON.stringify(path.resolve(file))
 await bundle({
   stdin: {
     contents: `
       export { terminalShellCommand } from ${source('src/main/terminal.ts')}
       export { ContainerManager } from ${source('src/main/containers.ts')}
-      export { containerTerminalCommand, sessionConfigPath } from ${source('src/main/provision.ts')}
-      export { cloneDir, mountedWorkspaceDir, sessionScratchDir, overrideConfigPath } from ${source('src/main/store.ts')}
+      export { containerTerminalCommand } from ${source('src/main/provision.ts')}
     `,
     resolveDir: process.cwd(), loader: 'ts'
   },
@@ -44,17 +41,19 @@ test('terminal shell quoting preserves paths and treats shell syntax as data', a
   assert.equal(fs.existsSync(marker), false)
 })
 
-test('container terminal addresses the exact container with its workspace and config', () => {
-  const command = m.containerTerminalCommand('container-a', ['--override-config', '/config with spaces.json'], '/workspace a')
+test('container terminal addresses the exact container as the agent’s user, cwd and PATH', () => {
+  const command = m.containerTerminalCommand({
+    containerId: 'container-a', user: 'dev', cwd: '/workspace a', path: '/p/bin:/opt/gurt/node/bin'
+  })
   const args = command.args
   assert.equal(command.cmd, '/usr/bin/env')
-  assert.equal(args[0], 'ELECTRON_RUN_AS_NODE=1')
-  assert.equal(args[2], process.execPath)
-  assert.deepEqual(args.slice(4), [
-    'exec', '--container-id', 'container-a', '--workspace-folder', '/workspace a',
-    '--mount-workspace-git-root=false', '--override-config', '/config with spaces.json',
-    '/bin/sh', '-c', 'exec "${SHELL:-/bin/sh}" -l'
+  assert.match(args[0], /^PATH=/)
+  assert.deepEqual(args.slice(1, 12), [
+    'docker', 'exec', '-i', '-t', '-u', 'dev', '-w', '/workspace a',
+    '-e', 'PATH=/p/bin:/opt/gurt/node/bin', 'container-a'
   ])
+  assert.deepEqual(args.slice(12, 14), ['sh', '-c'])
+  assert.match(args[14], /exec "\$sh_" -l$/, 'the user’s login shell, interactive')
 })
 
 test('session terminal launches a system window for single-repo, mounted and repo-less sessions', {
@@ -69,24 +68,20 @@ require('node:fs').writeFileSync(${JSON.stringify(capture)}, JSON.stringify(proc
   const oldPath = process.env.PATH
   process.env.PATH = `${bin}${path.delimiter}${oldPath ?? ''}`
   try {
-    for (const { id, repos, role, merged } of [
-      { id: 'single', repos: ['repo'], role: 'executor', merged: false },
-      { id: 'history', repos: ['repo'], role: 'executor', merged: true },
-      { id: 'multi', repos: ['a', 'b'], role: 'executor', merged: true },
-      { id: 'operator', repos: [], role: 'operator', merged: false }
+    for (const { id, repos, role } of [
+      { id: 'single', repos: ['repo'], role: 'executor' },
+      { id: 'history', repos: ['repo'], role: 'executor' },
+      { id: 'multi', repos: ['a', 'b'], role: 'executor' },
+      { id: 'operator', repos: [], role: 'operator' }
     ]) {
       const info = {
         id, workspace: 'ws', task: 'task', env: 'dev', repos, role,
-        container: { status: 'running', id: `container-${id}`, remoteWorkspaceFolder: '/work' }
+        container: {
+          status: 'running', id: `container-${id}`, remoteWorkspaceFolder: '/workspaces',
+          user: `user-${id}`, path: `/path-${id}`
+        }
       }
       const manager = new m.ContainerManager({ session: () => info })
-      const config = merged
-        ? m.sessionConfigPath(m.sessionScratchDir('ws', 'task', id))
-        : m.overrideConfigPath('ws', 'dev')
-      if (merged) {
-        fs.mkdirSync(path.dirname(config), { recursive: true })
-        fs.writeFileSync(config, '{}')
-      }
       fs.rmSync(capture, { force: true })
       await manager.openTerminal(id)
       const deadline = Date.now() + 3000
@@ -95,13 +90,16 @@ require('node:fs').writeFileSync(${JSON.stringify(capture)}, JSON.stringify(proc
       const args = JSON.parse(fs.readFileSync(capture, 'utf8'))
       assert.equal(args[0], '--')
       assert.equal(args[1], '/usr/bin/env')
-      assert.equal(args[args.indexOf('--container-id') + 1], `container-${id}`)
-      assert.equal(args[args.indexOf('--override-config') + 1], config)
-      const workspace = repos.length === 1
-        ? m.cloneDir('ws', 'task', repos[0])
-        : m.mountedWorkspaceDir('ws', 'task', id)
-      assert.equal(args[args.indexOf('--workspace-folder') + 1], workspace)
+      assert.equal(args[args.indexOf('docker') + 1], 'exec')
+      // everything comes from the session's record — nothing resolved on the host
+      assert.equal(args[args.indexOf('-u') + 1], `user-${id}`)
+      assert.equal(args[args.indexOf('-w') + 1], '/workspaces')
+      assert.ok(args.includes(`PATH=/path-${id}`))
+      assert.equal(args[args.indexOf(`PATH=/path-${id}`) + 1], `container-${id}`)
     }
+    // a container that is not running (or not recorded) is refused
+    const stopped = { id: 'x', workspace: 'ws', task: 'task', env: 'dev', repos: [], container: { status: 'stopped', id: 'c', remoteWorkspaceFolder: '/w' } }
+    assert.throws(() => new m.ContainerManager({ session: () => stopped }).openTerminal('x'), /not running/)
   } finally {
     if (oldPath === undefined) delete process.env.PATH
     else process.env.PATH = oldPath

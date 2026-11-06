@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefO
 import type { ChatText, ChatToolCall } from '../../../shared/types'
 import { Icon, type IconName } from './icons'
 import { durationLabel } from '../time'
+import { agentVocabulary, mcpToolOf } from '../../../shared/agentVocabulary'
 
 /** A tool call or a thought — the entries that collapse into one icon strip. */
 type Timed = { id: number; at?: number; endAt?: number }
@@ -14,14 +15,17 @@ const GAP_PX = 6
 
 const stripName = (s: string, re: RegExp): string => s.replace(re, '')
 
-/** An MCP tool call, as `mcp__server__method` (claude-code) or `Tool: server/method`
- *  (codex): the server's short mark and the method with the redundant `mcp` and
- *  server name cut out. */
-export function parseMcp(title: string): { server: string; abbr: string; method: string } | null {
-  const m = /^mcp__(.+?)__(.+)$/.exec(title) ?? /^Tool:\s*([\w.-]+)\/([\w.-]+)$/.exec(title)
+/** An MCP tool call, as the session's agent titles one (its plugin's
+ *  `toolTitles` — `mcp__server__method`, say): the server's short mark and the
+ *  method with the redundant `mcp` and server name cut out. */
+export function parseMcp(
+  title: string,
+  titles: readonly RegExp[]
+): { server: string; abbr: string; method: string } | null {
+  const m = mcpToolOf(title, titles)
   if (!m) return null
-  const server = m[1]!
-  const rawMethod = m[2]!
+  const server = m.server
+  const rawMethod = m.tool
   const tokens = stripName(server, /mcp/gi)
     .split(/[-_.\s]+/)
     .filter(Boolean)
@@ -45,8 +49,11 @@ export function parseMcp(title: string): { server: string; abbr: string; method:
   return { server, abbr, method: method || rawMethod }
 }
 
-const mcpOf = (e: StripEntry) => (e.kind === 'tool' ? parseMcp(e.title) : null)
-const widthOf = (e: StripEntry): number => (mcpOf(e) ? MCP_PX : ITEM_PX)
+/** The session's agent's MCP tool-title patterns (`parseMcp`). */
+type Titles = readonly RegExp[]
+
+const mcpOf = (e: StripEntry, titles: Titles) => (e.kind === 'tool' ? parseMcp(e.title, titles) : null)
+const widthOf = (e: StripEntry, titles: Titles): number => (mcpOf(e, titles) ? MCP_PX : ITEM_PX)
 
 const KIND_ICON: Record<string, IconName> = {
   execute: 'terminal',
@@ -60,9 +67,9 @@ const KIND_ICON: Record<string, IconName> = {
 }
 
 /** What the row is called ("run", "edit", …); a generic tag when the agent sent no kind. */
-function labelOf(e: StripEntry): string {
+function labelOf(e: StripEntry, titles: Titles): string {
   if (e.kind === 'thought') return 'think'
-  if (mcpOf(e)) return 'mcp'
+  if (mcpOf(e, titles)) return 'mcp'
   const k = e.toolKind
   if (!k) return 'tool'
   return k === 'execute' ? 'run' : k
@@ -114,8 +121,8 @@ function DurationMark({ entry, now, live }: { entry: StripEntry; now: number; li
 
 /** Icon body of a strip item: the kind icon, or for an MCP tool a two-line mark —
  *  the server's abbreviation over the method. */
-function ItemFace({ e }: { e: StripEntry }) {
-  const mcp = mcpOf(e)
+function ItemFace({ e, titles }: { e: StripEntry; titles: Titles }) {
+  const mcp = mcpOf(e, titles)
   if (!mcp) return <Icon name={iconOf(e)} size={14} />
   return (
     <span className="ts-mcp-face mono">
@@ -248,12 +255,16 @@ function FloatingPanel({ anchor, children }: { anchor: RefObject<HTMLElement | n
 export function ToolStrip({
   entries,
   busy,
-  liveId
+  liveId,
+  agentKind
 }: {
   entries: StripEntry[]
   busy: boolean
   liveId?: number | undefined
+  /** The session agent's kind — whose tool titles say which calls are MCP. */
+  agentKind?: string | undefined
 }) {
+  const titles = agentVocabulary(agentKind).toolTitles
   const rowRef = useRef<HTMLDivElement>(null)
   const stripRef = useRef<HTMLDivElement>(null)
   const [width, setWidth] = useState(Infinity)
@@ -272,13 +283,13 @@ export function ToolStrip({
 
   // Newest stay visible; the oldest fold into the "+N" chip, which takes a slot
   // of its own once anything is folded.
-  const total = entries.reduce((sum, e) => sum + widthOf(e) + GAP_PX, -GAP_PX)
+  const total = entries.reduce((sum, e) => sum + widthOf(e, titles) + GAP_PX, -GAP_PX)
   let first = 0
   if (total > width) {
     let room = width - ITEM_PX - GAP_PX
     first = entries.length
-    while (first > 0 && room >= widthOf(entries[first - 1]!)) {
-      room -= widthOf(entries[first - 1]!) + GAP_PX
+    while (first > 0 && room >= widthOf(entries[first - 1]!, titles)) {
+      room -= widthOf(entries[first - 1]!, titles) + GAP_PX
       first--
     }
     // Always show the newest one, even in a sliver of a row.
@@ -323,15 +334,15 @@ export function ToolStrip({
           return (
             <span key={e.id} className="ts-cell">
               <button
-                className={`ts-item ts-${stateOf(e)} ${mcpOf(e) ? 'ts-mcp' : ''} ${activeId === e.id ? 'on' : ''}`}
+                className={`ts-item ts-${stateOf(e)} ${mcpOf(e, titles) ? 'ts-mcp' : ''} ${activeId === e.id ? 'on' : ''}`}
                 onMouseEnter={() => {
                   setMoreOpen(false)
                   setHover(e.id)
                 }}
                 onClick={() => setPinned((p) => (p === e.id ? null : e.id))}
-                aria-label={`${labelOf(e)}: ${titleOf(e)}`}
+                aria-label={`${labelOf(e, titles)}: ${titleOf(e)}`}
               >
-                <ItemFace e={e} />
+                <ItemFace e={e} titles={titles} />
               </button>
               {dur && <span className={`ts-dur mono ${live ? 'live' : ''}`}>{dur}</span>}
             </span>
@@ -351,7 +362,7 @@ export function ToolStrip({
                 }}
               >
                 <Icon name={iconOf(e)} size={13} />
-                <span className="tool-kind mono">{labelOf(e)}</span>
+                <span className="tool-kind mono">{labelOf(e, titles)}</span>
                 <span className="tool-title mono">{titleOf(e)}</span>
               </div>
             ))}
@@ -362,10 +373,10 @@ export function ToolStrip({
         <FloatingPanel anchor={stripRef}>
           <div className="ts-panel-head">
             <Icon name={iconOf(active)} size={13} />
-            <span className="tool-kind mono">{labelOf(active)}</span>
-            {mcpOf(active) && (
+            <span className="tool-kind mono">{labelOf(active, titles)}</span>
+            {mcpOf(active, titles) && (
               <span className="tool-title mono">
-                {mcpOf(active)!.server} / {mcpOf(active)!.method}
+                {mcpOf(active, titles)!.server} / {mcpOf(active, titles)!.method}
               </span>
             )}
             <span className="spacer" />

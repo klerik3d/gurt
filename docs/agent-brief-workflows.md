@@ -9,8 +9,8 @@ links for depth.
 ## 1. What gurt is, in one paragraph
 
 gurt is a local-first Electron app that runs coding agents (claude code,
-codex, gemini, opencode) inside per-session devcontainers. Every agent talks
-to gurt over **ACP** (JSON-RPC over stdio via `devcontainer exec`) and gets a
+codex, gemini, opencode) inside per-session containers. Every agent talks
+to gurt over **ACP** (JSON-RPC over stdio via `docker exec`) and gets a
 per-session host MCP server named **`gurt`** for structured output. All state
 lives under `~/.gurt/` (override with `GURT_ROOT`), never inside a repo.
 The core is an **Electron-free kernel** (`src/main/kernel.ts`) — importable
@@ -28,7 +28,7 @@ renderer (React)  ⇄  preload (window.gurt)  ⇄  main (kernel)
 |---|---|---|
 | workspace | `~/.gurt/<ws>/` | holds repos, envs, MCP registry, skills, agent defaults |
 | repo | git URL + optional credential link | registered per workspace |
-| env | devcontainer.json (+ Dockerfile) **definition** | a template; many sessions may use one |
+| env | image or Dockerfile + user/env/setup/start **definition** | a template; many sessions may use one |
 | task | `~/.gurt/<ws>/<task>/` | unit of work; holds clones on branch `gurt/<task>` |
 | clone | one working tree per (task, repo) | shared by all sessions of the task; **exclusive lock** for writers |
 | session | (ws, task, env, role, repos, agent, startPrompt, state) | the primary entity; owns exactly one container |
@@ -72,10 +72,7 @@ These are what you compose. Do not reinvent them.
    *draft* a fully configured session. A draft **never runs by itself** —
    the user launching it is the approval step, and nothing flows back to the
    spawner. Shape: `AgentSessionRequest` in `src/shared/types.ts`.
-4. **Manual review → fix.** `kernel.review` (comments + review lock on a
-   clone) and `kernel.launchReviewFix(...)` drafts an executor that fixes the
-   open comments. Spec: [requirements-manual-review.md](requirements-manual-review.md).
-5. **Changes panel = the ship stage.** Commit / push / PR are explicit user
+4. **Changes panel = the ship stage.** Commit / push / PR are explicit user
    actions (`changesCommit`, `changesPush`, `changesOpenPr`); authenticated git
    happens only on the host via the github MCP tools. The container never
    holds credentials.
@@ -124,8 +121,8 @@ order:
   orchestrator without a doc change.
 - **Security invariants:** no credential values cross into containers or
   tool results; `credentialId` / credential-bearing `url` are never written by
-  an agent; devcontainer host-execution fields (`initializeCommand`, `mounts`,
-  `runArgs`, `privileged`, `capAdd`) are held for user confirmation.
+  an agent; a local MCP server's host-execution fields (`command`, `args`, `cwd`,
+  `env`) are held for user confirmation (the env format has none).
 
 **Before implementing any piece of orchestration, get the owner to turn it
 into a `docs/requirements-*.md`.** That is how work is authorized here.
@@ -189,6 +186,5 @@ operator write tools.
 5. [requirements-session-queue.md](requirements-session-queue.md),
    [requirements-event-bus.md](requirements-event-bus.md),
    [requirements-kernel.md](requirements-kernel.md)
-6. [requirements-manual-review.md](requirements-manual-review.md),
-   [requirements-session-operator.md](requirements-session-operator.md)
+6. [requirements-session-operator.md](requirements-session-operator.md)
 7. `src/main/kernel.ts`, then `src/main/sessions.ts`.

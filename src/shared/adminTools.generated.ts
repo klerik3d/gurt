@@ -112,19 +112,10 @@ export const ADMIN_TOOLS: readonly AdminToolDef[] = [
     input: { "name": z.string() }
   },
   {
-    name: "discover_devcontainer",
-    method: "discoverDevcontainer",
-    exposure: "read",
-    description: "Resolves credentials the same way session clones do (by registered repo,\nhonoring a repo-linked credential), so it works for private repos too.\nWhen the found config has `build.dockerfile`, the companion Dockerfile is\nreturned too — the env editor seeds both fields at once.",
-    bindWs: true,
-    params: ["repo"],
-    input: { "repo": z.string() }
-  },
-  {
     name: "discover_dockerfiles",
     method: "discoverDockerfiles",
     exposure: "read",
-    description: "Dockerfile candidates (with content) from the repo (root +\n`.devcontainer/**`), loaded into the env editor's Dockerfile field —\neditable there after loading, not re-read from the repo.",
+    description: "Resolves credentials the same way session clones do (by registered repo,\nhonoring a repo-linked credential), so it works for private repos too.\nDockerfile candidates (with content) from the repo root, loaded into the\nenv editor's Dockerfile field — editable there after loading, not re-read\nfrom the repo.",
     bindWs: true,
     params: ["repo"],
     input: { "repo": z.string() }
@@ -172,7 +163,7 @@ export const ADMIN_TOOLS: readonly AdminToolDef[] = [
     description: "Register an env definition in the workspace.",
     bindWs: true,
     params: ["env"],
-    input: { "env": z.strictObject({ "name": z.string(), "devcontainer": z.string(), "dockerfile": z.string().optional(), "dockerfilePath": z.string().optional(), "repo": z.string().optional() }) }
+    input: { "env": z.strictObject({ "name": z.string(), "image": z.string().optional(), "dockerfile": z.string().optional(), "dockerfilePath": z.string().optional(), "build": z.strictObject({ "context": z.string().optional(), "args": z.record(z.string(), z.string()).optional(), "target": z.string().optional() }).optional(), "env": z.record(z.string(), z.string()).optional(), "setup": z.string().optional(), "start": z.string().optional(), "repo": z.string().optional() }) }
   },
   {
     name: "update_env",
@@ -181,7 +172,7 @@ export const ADMIN_TOOLS: readonly AdminToolDef[] = [
     description: "Update an env definition, matched by its (immutable) name.",
     bindWs: true,
     params: ["env"],
-    input: { "env": z.strictObject({ "name": z.string(), "devcontainer": z.string(), "dockerfile": z.string().optional(), "dockerfilePath": z.string().optional(), "repo": z.string().optional() }) }
+    input: { "env": z.strictObject({ "name": z.string(), "image": z.string().optional(), "dockerfile": z.string().optional(), "dockerfilePath": z.string().optional(), "build": z.strictObject({ "context": z.string().optional(), "args": z.record(z.string(), z.string()).optional(), "target": z.string().optional() }).optional(), "env": z.record(z.string(), z.string()).optional(), "setup": z.string().optional(), "start": z.string().optional(), "repo": z.string().optional() }) }
   },
   {
     name: "remove_env",
@@ -310,13 +301,22 @@ export const ADMIN_TOOLS: readonly AdminToolDef[] = [
     input: { "names": z.array(z.string()) }
   },
   {
-    name: "set_operator_env",
-    method: "setOperatorEnv",
+    name: "set_default_env",
+    method: "setDefaultEnv",
     exposure: "write",
-    description: "Point the workspace's operator sessions at one of its own envs, or back\nat the bundled default (`undefined`) — the operator twin of\n`setDefaultAgent` (docs/requirements-session-operator.md §2.2). Rejects\nan env the registry does not hold.",
+    description: "Make one of the workspace's envs the default for new sessions, or back\nto the base image (`undefined`). Rejects an env the registry does not\nhold.",
     bindWs: true,
     params: ["env"],
     input: { "env": z.string().optional() }
+  },
+  {
+    name: "get_base_image",
+    method: "getBaseImage",
+    exposure: "read",
+    description: "The effective base image: the app-level setting, else `DEFAULT_BASE_IMAGE`.",
+    bindWs: false,
+    params: [],
+    input: {}
   },
   {
     name: "reinstall_mcp_server",
@@ -371,15 +371,6 @@ export const ADMIN_TOOLS: readonly AdminToolDef[] = [
     bindWs: true,
     params: ["task","opts"],
     input: { "task": z.string(), "opts": z.strictObject({ "fetch": z.boolean().optional() }).optional() }
-  },
-  {
-    name: "get_review_locks",
-    method: "getReviewLocks",
-    exposure: "read",
-    description: "Locked repos of a task, as `repo → true`. A plain read: unlike\n`getReviewState` it never prunes, so the panel can poll it freely.",
-    bindWs: true,
-    params: ["task"],
-    input: { "task": z.string() }
   },
   {
     name: "session_snapshot",

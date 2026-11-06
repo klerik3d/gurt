@@ -2,6 +2,11 @@
 
 Status: implemented (as-built) · Target: gurt Electron MVP (this repo)
 
+> **Superseded in part** by `requirements-env-docker.md` §7: *adopt* (§6)
+> is removed: publishing creates no env and gurt reads no devcontainer.json
+> or Dockerfile of the repo for it. The bundled starter is
+> `resources/env/starter.json`.
+
 Key code: `src/main/localRepo.ts` (`createLocalRepo`, `publishLocalRepo`),
 `src/main/store.ts` (`localRepoDir`, `addRepo`/`updateRepo`/`removeRepo`,
 `markRepoPublished`), `src/main/git/env.ts` (the `local` mode),
@@ -9,7 +14,7 @@ Key code: `src/main/localRepo.ts` (`createLocalRepo`, `publishLocalRepo`),
 `src/main/mcp/githubServer.ts` (`create_pull_request` refusal),
 `src/main/git/providers.ts` (`ForgeProvider.createRepo`),
 `src/main/operatorEnv.ts` (`bundledStarterEnv`, `bundledEnv`),
-`resources/env/starter.devcontainer.json`, `src/shared/types.ts`
+`resources/env/starter.json`, `src/shared/types.ts`
 (`RepoConfig.local`, `STARTER_ENV_NAME`, `PublishSpec`),
 `src/renderer/src/components/ConfigTab.tsx` (the repo and env pickers),
 `src/renderer/src/components/SettingsPage.tsx` (`RepoModal`,
@@ -68,7 +73,7 @@ repository at `~/.gurt/<ws>/repos/<name>.git`, which `url` points at.
 
 `starter` (`STARTER_ENV_NAME`) is a bundled, image-only env. It is code, not
 user data, just like the operator default: it lives in
-`resources/env/starter.devcontainer.json`, resolves by name wherever a
+`resources/env/starter.json`, resolves by name wherever a
 workspace env would (`bundledEnv`, `isBundledEnv`), and its name is reserved
 against workspace envs.
 

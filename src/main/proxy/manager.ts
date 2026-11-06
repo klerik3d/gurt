@@ -12,7 +12,7 @@
 //      (`gurt.proxy=<session>`), never by a record — a `docker run` that
 //      succeeded moments before the app died leaves a container that only the
 //      label can name. The key is deliberately *not* `gurt.session`: that one
-//      is how `dockerSessionContainers()` builds session → devcontainer, and a
+//      is how `dockerSessionContainers()` builds session → container, and a
 //      proxy carrying it would be swept as if it were the session's own
 //      container (§4.1).
 //   2. **Fail closed.** The scope is pushed *after* the proxy is up and
@@ -90,7 +90,7 @@ export const proxyContainerName = (session: string): string => `gurt-proxy-${ses
 const moduleDir = path.dirname(fileURLToPath(import.meta.url))
 
 /**
- * Where the proxy script ships, following `devcontainerCliPath()`'s
+ * Where the proxy script ships, following `operatorEnvPath()`'s
  * dev-vs-packaged split: in a packaged build the app lives inside app.asar,
  * which only Electron's own fs can read, so the path is redirected to the
  * unpacked mirror (`asarUnpack` in electron-builder.yml already carries
@@ -171,7 +171,7 @@ const fields = (out: string, sep: string): string[] => out.trim().split(sep).fil
 
 /**
  * Proxy containers carrying a session's label, running or not — the same
- * record-independent sweep `dockerSessionContainerIds` does for devcontainers.
+ * record-independent sweep `dockerSessionContainerIds` does for session containers.
  * Null means "could not ask the daemon", which must never be read as "there are
  * none": the callers below remove things on the strength of this answer.
  */

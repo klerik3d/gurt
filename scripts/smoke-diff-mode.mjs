@@ -38,7 +38,7 @@ fs.unlinkSync(path.join(clone, 'README.md'))
 fs.writeFileSync(path.join(clone, 'asset.bin'), Buffer.from([0, 1, 2, 0, 3]))
 fs.writeFileSync(path.join(root, 'demo', 'workspace.json'), JSON.stringify({
   repos: [{ name: 'frontend', url: origin }, { name: 'backend', url: origin }],
-  envs: [{ name: 'dev', devcontainer: '{"image":"unused"}' }]
+  envs: [{ name: 'dev', image: 'unused' }]
 }))
 fs.writeFileSync(path.join(taskDir, 'task.json'), '{}')
 fs.writeFileSync(path.join(taskDir, 'sessions.json'), JSON.stringify([{ info: {
@@ -133,7 +133,7 @@ try {
   await backend.locator('.diff-repo-row').click()
   assert.equal(await page.locator('.git-commit-panel').count(), 0)
   await frontend.locator('.diff-change-group').click({ button: 'right' })
-  await page.getByRole('button', { name: 'Open repository', exact: true }).waitFor()
+  await page.getByRole('button', { name: 'Open in Terminal', exact: true }).waitFor()
   await page.getByRole('button', { name: 'Commit changes…', exact: true }).click()
   assert.equal(await page.locator('.git-commit-panel textarea').inputValue(), 'Draft preserved across repositories')
   assert.equal(await page.locator('.git-commit-panel textarea').evaluate((el) => document.activeElement === el), true)
@@ -141,7 +141,7 @@ try {
   await page.keyboard.press('Escape')
   await page.locator('.sidebar .sb-tree').focus()
   await page.keyboard.press('Shift+F10')
-  await page.getByRole('button', { name: 'Open repository', exact: true }).waitFor()
+  await page.getByRole('button', { name: 'Open in Terminal', exact: true }).waitFor()
   await page.keyboard.press('Escape')
   assert.equal(await frontend.locator('button[title="src/app.ts"]').count(), 0, 'files start inside collapsed groups')
   await frontend.locator('.diff-change-group').click()
@@ -277,11 +277,6 @@ try {
   assert.match(git(clone, 'log', '-1', '--format=%B'), /Signed-off-by: Smoke/)
   assert.equal(await frontend.locator('.diff-change-group[title="Uncommitted"]').count(), 0)
   assert.equal(await page.locator('.git-commit-panel').count(), 0, 'commit footer disappears after commit')
-  await frontend.locator('.diff-change-group[title="Add diff mode"]').click({ button: 'right' })
-  await page.getByRole('button', { name: 'Review commit…', exact: true }).click()
-  await page.locator('.review').waitFor()
-  await page.locator('.modal-head button[title="close"]').click()
-  await page.locator('.review').waitFor({ state: 'detached' })
   await frontend.locator('.diff-change-group[title="Add diff mode"]').click()
   await frontend.locator('button[title="src/app.ts"]').click()
   await page.waitForSelector('.code-diff-split .cm-changedLine')

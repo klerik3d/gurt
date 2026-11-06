@@ -1,8 +1,8 @@
 import { clientConfigFile } from '../shared/clientConfig'
 // Container lifecycle. One container per session, strictly: created at the
 // session's first start, stopped when it goes idle, destroyed with it. Nothing
-// here is keyed by env — an env is a *definition* (which devcontainer.json to
-// build), and several sessions of a task may run the same one while owning
+// here is keyed by env — an env is a *definition* (which image or Dockerfile to
+// run), and several sessions of a task may run the same one while owning
 // separate containers.
 //
 // The state this manager derives — the installed ACP adapter, and whatever else
@@ -10,13 +10,13 @@ import { clientConfigFile } from '../shared/clientConfig'
 // or env name. A container id is minted by `docker` and never reused, so a
 // record keyed by it cannot survive the thing it describes. That is what makes
 // stale-cache reuse unrepresentable rather than merely avoided.
-import { spawn } from 'node:child_process'
-import { promises as fs, existsSync } from 'node:fs'
 import type { EnvRef, RepoConfig, SessionContainer, SessionInfo } from '../shared/types'
-import { OPERATOR_ENV_NAME, roleIsReadOnly, roleNeedsRepo, sessionRole } from '../shared/types'
+import { roleNeedsRepo, sessionRole } from '../shared/types'
 import type { ContainerStatusReason } from '../shared/events'
-import type { AgentDef } from '../shared/agents'
+import type { AgentManifest } from '../shared/agentPlugin'
 import { agentDef } from '../shared/agents'
+import { validateEnvConfig } from '../shared/envConfig'
+import { agentMain } from './agentPlugins'
 import { canonicalRepoId } from '../shared/repoId'
 import { resolveCredential, resolveAgentSecret, credentialIdentity } from '../shared/credentials'
 import { listCredentials } from './credentials'
@@ -24,31 +24,32 @@ import { resolveOAuthAccess } from './oauth'
 import { oauthAuthFile } from './oauth/materialize'
 import { containerGitEnv } from './git/config'
 import * as store from './store'
-import { cloneDir } from './store'
 import {
   adapterPresent,
   containerTerminalCommand,
   assertDockerCli,
   assertDockerDaemon,
-  devcontainerUp,
+  createContainer,
+  dockerContainerExists,
   dockerRemove,
   dockerRunning,
   dockerSessionContainerIds,
-  dockerSessionContainers,
+  dockerSessionContainersDetailed,
   dockerStop,
   ensureClone,
   installAcpAdapter,
-  materializeEnvConfig,
-  overrideConfigArgs,
-  sessionConfigPath,
+  prepareEnvImage,
+  restartContainer,
   linkContainerSkills,
   probeAdapterAndLinkSkills,
   linkContainerHistory,
   writeContainerUserFile,
   SKILLS_MOUNT,
-  HISTORY_MOUNT
+  HISTORY_MOUNT,
+  type ContainerMount,
+  type ExecTarget
 } from './provision'
-import { bundledEnv } from './operatorEnv'
+import { bundledEnv } from './baseEnv'
 import { openCommandInTerminal } from './terminal'
 import type { Bus } from './bus'
 import { createLogger, errCtx } from './log'
@@ -69,51 +70,8 @@ function sameRepos(a: string[] | undefined, b: string[]): boolean {
   return !!a && a.length === b.length && a.every((r, i) => r === b[i])
 }
 
-/**
- * Whether a session's still-owned container can be resurrected against its
- * *existing* materialized env config, skipping a fresh `materializeEnvConfig`
- * — for a `build` env that is a `git archive` of the whole repo plus a full
- * tar extraction, on every restart of a container that already has an image.
- *
- * Safe because `devcontainer up` finds an existing container by its
- * `gurt.session` id-label and never recreates it: whatever the override file
- * says at this `up` was never going to reach a container this call is merely
- * resuming, so materializing it again buys nothing. `owned.id` here is only
- * ever a container this same call is about to hand to `up` — the repo-change
- * path above has already removed and forgotten anything mismatched, which is
- * why `sameRepos` alone (not e.g. `owned.status`) is the gate: a stale/errored
- * `owned` with the same repos is exactly the "existing container, restart in
- * place" case `up` itself will resurrect.
- *
- * Exported (pure, no I/O of its own) for the regression test in
- * scripts/env-config-reuse.test.mjs; `exists` is `existsSync` by default and
- * only overridden there.
- */
-export function canReuseMaterializedConfig(
-  owned: { id?: string; repos?: string[] } | undefined,
-  repos: string[],
-  overridePath: string,
-  exists: (p: string) => boolean = existsSync
-): boolean {
-  return !!owned?.id && sameRepos(owned.repos, repos) && exists(overridePath)
-}
-
-/**
- * Does this session mount its repos explicitly, into an empty wrapper directory
- * used as `--workspace-folder`? Two cases need it: more than one repo (there is
- * no single clone the workspace folder could be), and every read-only role — the
- * mount the CLI derives from `--workspace-folder` is always read-write, so a
- * read-only clone has to be an explicit `--mount` alongside it.
- *
- * A plain read-write single-repo session (an executor) is unchanged: the clone
- * dir *is* the workspace folder, no extra mounts at all.
- */
-function usesRepoMounts(info: SessionInfo): boolean {
-  return info.repos.length > 1 || roleIsReadOnly(sessionRole(info))
-}
-
 /** Whether this session's container carries the skills bind: it picked a skill
- *  at all, *and* its agent kind reads a skills directory (`AgentDef.skillsDir`,
+ *  at all, *and* its agent kind reads a skills directory (`AgentManifest.skillsDir`,
  *  resolved by the caller — docs/requirements-skills.md §5). A `null` dir means
  *  the pinned CLI never looks: mounting files it cannot see would let the UI
  *  claim a delivery that does not happen, so such a session provisions exactly
@@ -153,38 +111,34 @@ export function historyHostMounts(
 }
 
 /**
- * The `--override-config` pair every `up` and every `exec` of this session must
- * resolve — they have to agree, since the config decides the exec cwd and the
- * reported `remoteWorkspaceFolder`. It is the session's own merged copy
- * whenever gurt added mounts of its own (sibling repos, the skills bind, the
- * history bind, or any combination), and the env's shared materialized file
- * otherwise. The file behind it was written by `ensure`'s `up` and persists
- * across app restarts, so the reattach path needs nothing.
+ * The container-side layout of a session (§3.3) — a pure function of the
+ * session shape, so the contract is testable without a container.
  *
- * "Added mounts of its own" is literal, and must mirror `devcontainerUp`'s
- * write condition exactly: a repo-less operator is the mounted case with ZERO
- * mounts (docs/requirements-session-operator.md §2.1), so its `up` ran on the
- * env's own materialized file and wrote no merged copy — an exec resolving
- * the per-session path there would point at a file that does not exist, and
- * the adapter install would die on it (the first real repo-less start did).
- * The history mount makes this the common case for a plain single-repo
- * executor on claude-code: it now carries a mount of its own even with no
- * skill selected (docs/requirements-agent-history.md §4.1). Exported for the
- * regression test in scripts/operator-role.test.mjs.
+ * - every repo → `/workspaces/<name>` (read-only per role), whether the
+ *   session has one repo or several, so file paths never depend on the count;
+ *   the workdir is that repo's directory when there is exactly one, else
+ *   `/workspaces`. A repo-less operator has no repo mounts and works in
+ *   `/workspaces`;
+ * - `extra` binds (skills, history) land at their own absolute targets.
  */
-export function sessionConfigArgs(
+export function containerLayout(
   info: SessionInfo,
-  sessionId: string,
-  skillsDir: string | null,
-  historyPaths: readonly string[] = []
-): string[] {
-  const hasRepoMounts = usesRepoMounts(info) && info.repos.length > 0
-  return hasRepoMounts || usesSkillMounts(info, skillsDir) || usesHistoryMounts(historyPaths)
-    ? [
-        '--override-config',
-        sessionConfigPath(store.sessionScratchDir(info.workspace, info.task, sessionId))
-      ]
-    : overrideConfigArgs({ workspace: info.workspace, task: info.task, env: info.env })
+  clones: { name: string; dir: string }[],
+  readonly: boolean,
+  extra: { hostDir: string; target: string; readonly?: boolean }[] = []
+): { mounts: ContainerMount[]; workdir: string } {
+  const bind = (source: string, target: string, ro?: boolean): ContainerMount => ({
+    type: 'bind',
+    source,
+    target,
+    ...(ro ? { readonly: true } : {})
+  })
+  if (!clones.length && sessionRole(info) !== 'operator') throw new Error('session has no repository')
+  const mounts = clones.map((c) => bind(c.dir, `/workspaces/${c.name}`, readonly))
+  const [only] = clones
+  const workdir = clones.length === 1 && only ? `/workspaces/${only.name}` : '/workspaces'
+  for (const m of extra) mounts.push(bind(m.hostDir, m.target, m.readonly))
+  return { mounts, workdir }
 }
 
 /**
@@ -193,13 +147,13 @@ export function sessionConfigArgs(
  * because the install itself needs the open network (§7.1 step 3).
  */
 export interface AdapterTarget {
-  agent: AgentDef
-  /** Owning session — also the container's identity (`gurt.session` id-label). */
+  agent: AgentManifest
+  /** Owning session — also the container's identity (`gurt.session` label). */
   session: string
   /** The container the adapter runs in; the key of every container-bound cache. */
   containerId: string
-  hostWorkspaceFolder: string
-  configArgs: string[]
+  /** Where and as whom every exec into that container runs (§3.5). */
+  exec: ExecTarget
 }
 
 /** Everything needed to (re)spawn the agent process for a session. */
@@ -259,7 +213,7 @@ export class ContainerManager {
   /** A skills link `ensureUncoalesced` owes a container it just brought up
    *  (fresh or resumed), keyed by container id — consumed by `installAdapter`,
    *  which runs right after in every caller (`ensure` has none but
-   *  `resolveLaunch`), so the two land in one `devcontainer exec` instead of
+   *  `resolveLaunch`), so the two land in one `docker exec` instead of
    *  two (`probeAdapterAndLinkSkills`). Cleared by `forget` alongside
    *  `adapterInstalled`, so a container that never reaches `installAdapter`
    *  (removed mid-start, teardown) cannot leak an entry here. */
@@ -312,63 +266,31 @@ export class ContainerManager {
     return this.container(id)?.status ?? 'stopped'
   }
 
-  /**
-   * Launch VS Code attached to this session's running container, in its own
-   * window. Goes through the `code` CLI with `--new-window` rather than the
-   * `vscode://` URI handler (`shell.openExternal`), which reuses whatever
-   * window is already focused instead of opening one per session. Throws if
-   * the container isn't up — the header button gates on `running`.
-   *
-   * `--disable-workspace-trust`: the folder URI is keyed on the container id,
-   * which changes on every recreate, so VS Code would otherwise treat each
-   * attach as a brand-new untrusted workspace and prompt every time. The
-   * container is already gurt's own sandbox, so there's nothing to gate here.
-   */
-  openVscode(sessionId: string): Promise<void> {
-    const c = this.container(sessionId)
-    if (c?.status !== 'running' || !c.id || !c.remoteWorkspaceFolder)
-      throw new Error('container is not running')
-    const hex = Buffer.from(c.id).toString('hex')
-    const folderUri = `vscode-remote://attached-container+${hex}${c.remoteWorkspaceFolder}`
-    return new Promise((resolve, reject) => {
-      const child = spawn(
-        'code',
-        ['--new-window', '--disable-workspace-trust', '--folder-uri', folderUri],
-        { stdio: 'ignore', detached: true }
-      )
-      child.on('error', () =>
-        reject(new Error('could not launch "code" — install the VS Code shell command'))
-      )
-      child.on('spawn', () => {
-        child.unref()
-        resolve()
-      })
-    })
-  }
-
   /** Open a human shell in the running container, without starting an agent. */
   openTerminal(sessionId: string): Promise<void> {
     const info = this.deps.session(sessionId)
-    const c = info?.container
-    if (!info || c?.status !== 'running' || !c.id || !c.remoteWorkspaceFolder)
-      throw new Error('container is not running')
-    const hostWorkspaceFolder = usesRepoMounts(info)
-      ? store.mountedWorkspaceDir(info.workspace, info.task, sessionId)
-      : cloneDir(info.workspace, info.task, info.repos[0]!)
-    // Use the materialized config from this container's last up, including
-    // merged mounts when present. Opening a shell needs no agent credentials.
-    const merged = sessionConfigPath(store.sessionScratchDir(info.workspace, info.task, sessionId))
-    const configArgs = existsSync(merged)
-      ? ['--override-config', merged]
-      : overrideConfigArgs(this.refOf(info))
-    const { cmd, args } = containerTerminalCommand(c.id, configArgs, hostWorkspaceFolder)
+    const t = info?.container && this.execTarget(info.container)
+    if (!t || info?.container?.status !== 'running') throw new Error('container is not running')
+    const { cmd, args } = containerTerminalCommand(t)
     return openCommandInTerminal(cmd, args)
   }
 
+  /** Where and as whom an exec into this session's container runs — the
+   *  record's own facts, nothing resolved from the host. null until the
+   *  container's setup has succeeded (`id`/`remoteWorkspaceFolder` unset). */
+  private execTarget(c: SessionContainer): ExecTarget | null {
+    if (!c.id || !c.remoteWorkspaceFolder) return null
+    return {
+      containerId: c.id,
+      user: c.user ?? 'root',
+      cwd: c.remoteWorkspaceFolder,
+      ...(c.path ? { path: c.path } : {})
+    }
+  }
+
   /**
-   * Ensure this session's container is up: clone (if needed) and `devcontainer
-   * up` under the session's id-label — creating its container, or restarting the
-   * one it already owns. Who may start at all is the scheduler's gate, not this.
+   * Ensure this session's container is up: clone (if needed) and create the
+   * session's container, or restart the one it already owns. Who may start at all is the scheduler's gate, not this.
    */
   ensure(sessionId: string): Promise<SessionContainer> {
     const inflight = this.ensureInFlight.get(sessionId)
@@ -400,11 +322,14 @@ export class ContainerManager {
 
     // Its own container, still up → just reuse it. (Probe the daemon: a Docker
     // restart leaves a persisted `running` record describing an exited container.)
+    // `path` is part of the record's usable shape: the exec PATH is probed once
+    // per container and every exec carries it.
     const owned = info.container
     if (
       owned?.status === 'running' &&
       owned.id &&
       owned.remoteWorkspaceFolder &&
+      owned.path &&
       sameRepos(owned.repos, info.repos) &&
       (await dockerRunning(owned.id))
     )
@@ -416,47 +341,53 @@ export class ContainerManager {
       if (!cfg) throw new Error(`repo "${name}" is not registered in "${info.workspace}"`)
       return cfg
     })
-    // The bundled envs (the operator default, the starter) share the env name
-    // space (their names are reserved against workspace envs), so they resolve
-    // by name exactly where a workspace env would — no role check: an operator
-    // pointed at a workspace env is an ordinary session on an ordinary env
-    // (§2.2), and any role may run on the starter.
+    // The base env shares the env name space (its name is reserved against
+    // workspace envs), so it resolves by name exactly where a workspace env
+    // would — no role check: any role may run on the base image.
     const envCfg = ws.envs.find((e) => e.name === info.env) ?? (await bundledEnv(info.env))
     if (!envCfg) throw new Error(`env "${info.env}" is not registered in "${info.workspace}"`)
+    const invalid = validateEnvConfig(envCfg)
+    if (invalid) throw new Error(`env "${envCfg.name}": ${invalid}`)
 
     // A container this session owns but can no longer use — it was built for a
-    // different repo set, or it is stopped/errored. `devcontainer up` would
-    // restart a stopped one in place, so only a repo change forces a rebuild.
+    // different repo set. A stopped one on the same repo set is restarted in
+    // place, so only a repo change forces a rebuild.
     if (owned?.id && owned.repos.length && !sameRepos(owned.repos, info.repos)) {
       this.deps.detach(sessionId)
       this.forget(owned.id)
       await dockerRemove(owned.id, provisionLog)
     }
 
-    // Containers carrying this session's id-label that its record cannot name.
-    // `up` stamps the label at `docker run` but the id only reaches the record
-    // once `up` returns, so a start that died in between — the app quit, the
-    // machine slept, Docker restarted — leaves one behind, possibly stopped
-    // part-way through its create-time hooks. The next `up` would find it by
-    // that label and adopt it, skipping every hook as already run (see
-    // CREATE_HOOK_RE in provision.ts); the session would then come up against a
-    // workspace those hooks never finished preparing. Nothing may adopt them.
+    // Containers carrying this session's label that its record cannot name.
+    // `create` stamps the label but the id only reaches the record once `setup`
+    // succeeded, so a start that died in between — the app quit, the machine
+    // slept, Docker restarted — leaves one behind, possibly stopped part-way
+    // through the setup script. Nothing may adopt it: the session would come up
+    // against a workspace the script never finished preparing.
     const recorded = owned?.id
     const labeled = (await dockerSessionContainerIds(sessionId)) ?? []
     for (const id of labeled) {
-      // Prefix, not equality — `docker ps` and the CLI disagree on short vs.
-      // full ids, the same way `teardown` has to allow for.
+      // Prefix, not equality — `docker ps` and `docker create` disagree on
+      // short vs. full ids, the same way `teardown` has to allow for.
       if (recorded && (id.startsWith(recorded) || recorded.startsWith(id))) continue
       provisionLog(`removing container ${id.slice(0, 12)} left by an unfinished start`)
       this.forget(id)
       await dockerRemove(id, provisionLog)
     }
 
-    // `building` covers the clone and the image (ours or the CLI's); `up` flips
-    // it to `post` as soon as the container exists and its hooks start running.
+    // The container to restart in place: the record names one, on the same repo
+    // set, and the daemon still has it. Anything else is a fresh create.
+    const existing =
+      owned?.id && sameRepos(owned.repos, info.repos) && (await dockerContainerExists(owned.id))
+        ? owned
+        : undefined
+    if (owned?.id && !existing) this.forget(owned.id)
+
+    // `building` covers the clone and the image; the create flips it to `post`
+    // as soon as the container exists and its setup script starts running.
     this.setStatus(
       sessionId,
-      { repos: info.repos, ...(owned ?? {}), status: 'building', error: undefined },
+      { repos: info.repos, ...(existing ?? {}), status: 'building', error: undefined },
       'user'
     )
     // Each provisioning step is timed on its own — "which phase is slow" is the
@@ -488,75 +419,17 @@ export class ContainerManager {
       const [anchor] = clones
       if (!anchor && roleNeedsRepo(sessionRole(info)))
         throw new Error('session has no repository')
-      enter('image')
-      // A container this session still owns, on the same repo set, that `up`
-      // is about to resurrect in place rather than recreate: whatever the
-      // override file said at some earlier `up` is what that container was
-      // actually built against, and no later rewrite of it would reach that
-      // container either — so re-materializing costs a `git archive` + a
-      // full-repo tar extraction (more, for a `build` env: an image build
-      // check) to produce a file `up` cannot make any use of. Skipped only
-      // when it is actually still on disk (`canReuseMaterializedConfig`); with
-      // no anchor, an env with a `build` section is refused inside
-      // `materializeEnvConfig` with its own sentence — image-only is
-      // structural for a repo-less session (docs/requirements-session-
-      // operator.md §2.1).
-      const overridePath = store.overrideConfigPath(info.workspace, info.env)
-      let configArgs: string[]
-      if (canReuseMaterializedConfig(owned, info.repos, overridePath)) {
-        provisionLog('env config already materialized for this container — reusing it')
-        configArgs = overrideConfigArgs(this.refOf(info))
-      } else {
-        configArgs = await materializeEnvConfig(
-          this.refOf(info),
-          envCfg,
-          anchor?.cfg ?? null,
-          anchor?.dir ?? null,
-          provisionLog
-        )
-      }
-      enter('up')
-      // Step 1 of the provisioning sequence (§7.1): whatever this container is
-      // attached to, `up` runs on the open network. The image build, the
-      // devcontainer features and every create-time hook need unrestricted
-      // egress, and in internal mode the session's own network has none — so a
-      // reused container is moved back to the default bridge *before* the CLI
-      // starts it, and moved onto the session network again once it is done
-      // (`convergeNetworks` below). A fresh container is born on the bridge
-      // anyway, which is why this only has work to do on a reused one.
-      if (owned?.id) await this.convergeNetworks(sessionId, owned.id, [DEFAULT_BRIDGE])
-      const mounted = usesRepoMounts(info)
       // Stopgap (2026-08-24, see requirements-session-roles.md §2/§4): a
       // reviewer needs a writable clone to install dependencies and run
       // typecheck/tests against the diff it is judging, so only researcher
       // keeps the filesystem-level read-only bind. Everything else about a
-      // read-only role (no `complete`, mount still routed through the wrapper
-      // below) is unchanged — `roleIsReadOnly` still governs those, just not
-      // this flag.
+      // read-only role (no `complete`, mounts under /workspaces) is
+      // unchanged — read-only roles are governed by role, not this flag.
       // A proactive run reads its repos as context and writes nothing, the way
       // a researcher does (docs/design-proactive-agents.md §2).
       const readonly = sessionRole(info) === 'researcher' || sessionRole(info) === 'proactive'
-      // Read-write single repo (an executor): unchanged — `--workspace-folder`
-      // IS the clone, exactly as before. Otherwise `--workspace-folder` is an
-      // empty wrapper dir and every repo (anchor included) is mounted into it
-      // explicitly, so none of them sits at the container's top-level workspace
-      // folder and each carries its own read-only flag. An operator is the
-      // mounted case with zero mounts: the wrapper stages an empty directory
-      // and `remoteRoot` derives from its basename, not from a repo name
-      // (docs/requirements-session-operator.md §2.1).
-      let workspaceFolder: string
-      let extraMounts: { hostDir: string; name: string; readonly?: boolean }[] = []
-      if (mounted) {
-        workspaceFolder = store.mountedWorkspaceDir(info.workspace, info.task, sessionId)
-        await fs.mkdir(workspaceFolder, { recursive: true })
-        extraMounts = clones.map(({ cfg, dir }) => ({ hostDir: dir, name: cfg.name, readonly }))
-      } else {
-        // Not mounted ⇒ a plain read-write single-repo session, whose anchor
-        // the gate above guarantees.
-        workspaceFolder = anchor!.dir
-      }
       // Whether the selection is *deliverable* is the agent kind's to say
-      // (`AgentDef.skillsDir`): resolve the draft's instance to its kind,
+      // (`AgentManifest.skillsDir`): resolve the draft's instance to its kind,
       // falling back to the workspace default the way the create path does
       // (ipc.ts). An id that resolves to nothing mounts nothing — gurt cannot
       // link a directory for an agent it cannot name.
@@ -593,54 +466,97 @@ export class ContainerManager {
       if (usesHistoryMounts(historyPaths))
         await store.ensureSessionHistory(info.workspace, info.task, sessionId, historyPaths)
       const historyMounts = historyHostMounts(info.workspace, info.task, sessionId, historyPaths)
-      const hostMounts = [...skillMounts, ...historyMounts]
-      const up = await devcontainerUp(
-        sessionId,
-        configArgs,
-        workspaceFolder,
-        provisionLog,
-        mounted ? 'repos' : anchor!.cfg.name,
-        () =>
-          this.setStatus(
-            sessionId,
-            { repos: info.repos, ...(this.container(sessionId) ?? {}), status: 'post' },
-            'user'
-          ),
-        extraMounts,
-        hostMounts,
-        store.sessionScratchDir(info.workspace, info.task, sessionId),
-        info.env === OPERATOR_ENV_NAME
+      const { mounts, workdir } = containerLayout(
+        info,
+        clones.map(({ cfg, dir }) => ({ name: cfg.name, dir })),
+        readonly,
+        [...skillMounts, ...historyMounts]
       )
-      // Owed after `up`, before anything reports the container usable: the
-      // agent resolves its skills and its history at startup. The history
-      // link runs here, same as always; the skills link is deferred instead
-      // of run inline — `installAdapter` is the only caller ever reached
-      // right after this one (only `resolveLaunch` calls `ensure`), and
-      // consuming the debt there merges it into the same `devcontainer exec`
-      // as the adapter probe instead of spending a second CLI boot on it.
-      if (skillsDir !== null && skillMounts.length) this.pendingSkillsLink.set(up.containerId, skillsDir)
-      if (historyMounts.length)
-        await linkContainerHistory(
-          sessionId,
-          kind ?? 'unknown',
-          sessionConfigArgs(info, sessionId, skillsDir, historyPaths),
-          workspaceFolder,
-          historyPaths,
+      const bindSources = mounts.filter((m) => m.type === 'bind').map((m) => m.source)
+
+      let execT: ExecTarget
+      if (existing) {
+        // Restart in place. Whatever image the container was created from is
+        // what it keeps, so nothing is pulled or built. It still runs on the
+        // open network for the start script, like a fresh one: the session
+        // network is joined again once everything has run
+        // (`convergeProxyNetwork`, §7.1).
+        enter('image')
+        enter('up')
+        await this.convergeNetworks(sessionId, existing.id!, [DEFAULT_BRIDGE])
+        this.setStatus(sessionId, { ...existing, status: 'post' }, 'user')
+        const t: ExecTarget = {
+          containerId: existing.id!,
+          user: existing.user ?? 'root',
+          cwd: existing.remoteWorkspaceFolder ?? workdir,
+          ...(existing.path ? { path: existing.path } : {})
+        }
+        const execPath = await restartContainer(t, envCfg, bindSources, provisionLog)
+        execT = { ...t, path: execPath }
+      } else {
+        enter('image')
+        const image = await prepareEnvImage(
+          envCfg,
+          anchor?.cfg ?? null,
+          anchor?.dir ?? null,
           provisionLog
         )
+        enter('up')
+        const created = await createContainer(
+          { session: sessionId, image, env: envCfg, workdir, mounts, skipSetup: readonly },
+          provisionLog,
+          {
+            // The container exists and its setup script starts: flip to `post`.
+            // No id yet — a record naming a half-provisioned container is the
+            // one thing that must never be written.
+            onCreated: () =>
+              this.setStatus(sessionId, { repos: info.repos, status: 'post' }, 'user'),
+            onSetupDone: (id, user) =>
+              this.setStatus(
+                sessionId,
+                {
+                  repos: info.repos,
+                  status: 'post',
+                  id,
+                  user,
+                  remoteWorkspaceFolder: workdir
+                },
+                'user'
+              )
+          }
+        )
+        execT = {
+          containerId: created.containerId,
+          user: created.user,
+          cwd: workdir,
+          path: created.path
+        }
+      }
+      // Owed after the container is up, before anything reports it usable: the
+      // agent resolves its skills and its history at startup. The history
+      // link runs here; the skills link is deferred instead of run inline —
+      // `installAdapter` is the only caller ever reached right after this one
+      // (only `resolveLaunch` calls `ensure`), and consuming the debt there
+      // merges it into the same `docker exec` as the adapter probe.
+      if (skillsDir !== null && skillMounts.length)
+        this.pendingSkillsLink.set(execT.containerId, skillsDir)
+      if (historyMounts.length)
+        await linkContainerHistory(execT, sessionId, kind ?? 'unknown', historyPaths, provisionLog)
       // Deleted mid-start: this container was born after its session's delete
       // had already looked for one to take down, so nothing owns it and nothing
       // records it (`patchContainer` on a gone session is a no-op). Remove it
       // here rather than leaving an orphan for the next boot reconcile.
       if (!this.deps.session(sessionId)) {
-        this.forget(up.containerId)
-        await dockerRemove(up.containerId, provisionLog)
+        this.forget(execT.containerId)
+        await dockerRemove(execT.containerId, provisionLog)
         throw new Error('session no longer exists')
       }
       const next: SessionContainer = {
         status: 'running',
-        id: up.containerId,
-        remoteWorkspaceFolder: up.remoteWorkspaceFolder,
+        id: execT.containerId,
+        remoteWorkspaceFolder: execT.cwd,
+        user: execT.user,
+        ...(execT.path ? { path: execT.path } : {}),
         repos: info.repos
       }
       this.setStatus(sessionId, next, 'user')
@@ -649,9 +565,11 @@ export class ContainerManager {
       return next
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e)
+      // Keep whatever the record already names (a container whose setup
+      // succeeded, kept after a failed start script) — never invent an id.
       this.setStatus(
         sessionId,
-        { repos: info.repos, ...(owned ?? {}), status: 'error', error: message },
+        { repos: info.repos, ...(this.container(sessionId) ?? existing ?? {}), status: 'error', error: message },
         'error'
       )
       log.error('provision.fail', { s: sessionId, phase, code: errCtx(e).code, err: e })
@@ -703,7 +621,7 @@ export class ContainerManager {
   /**
    * The proxy half of steps 4–5 (§7.1) that does not touch the *session's*
    * container network — reserving/starting the session's proxy, which runs on
-   * whatever network it runs on regardless of where the devcontainer container
+   * whatever network it runs on regardless of where the session's container
    * currently sits. Split from {@link convergeProxyNetwork} so `resolveLaunch`
    * can run this alongside the adapter install (step 3): both only need the
    * container's *current* (open) network, and neither is the thing that closes
@@ -833,21 +751,13 @@ export class ContainerManager {
     if (c.status !== 'running' || !c.id || !c.remoteWorkspaceFolder)
       throw new Error('container is not running')
 
-    const mounted = usesRepoMounts(info)
-    // Must match whatever `ensureUncoalesced` passed as `--workspace-folder`
-    // for this same session — the wrapper dir whenever the repos are mounted
-    // explicitly (a repo-less operator included), the plain clone dir
-    // otherwise. `anchorRepo` is non-null on the unmounted path: that is the
-    // plain single-repo executor.
-    const hostWorkspaceFolder = mounted
-      ? store.mountedWorkspaceDir(info.workspace, info.task, sessionId)
-      : cloneDir(info.workspace, info.task, anchorRepo!)
+    const exec = this.execTarget(c)
+    if (!exec) throw new Error('container is not running')
     const target: AdapterTarget = {
       agent: def,
       session: sessionId,
       containerId: c.id,
-      hostWorkspaceFolder,
-      configArgs: sessionConfigArgs(info, sessionId, def.skillsDir, def.historyPaths)
+      exec
     }
     // Step 3 of the provisioning sequence (§7.1), and the reason it runs
     // alongside the proxy reservation rather than in the connection path:
@@ -864,11 +774,12 @@ export class ContainerManager {
     // Every launch starts with a fresh one; a dead refresh token throws the
     // signed-out sentence and no container-bound adapter spawns without auth.
     const injected = credEntry?.kind === 'oauth' ? await resolveOAuthAccess(credEntry.id) : secret
-    // §5.2.1: delivery is per agent kind. codex/gemini consume a sign-in
-    // through their native auth file — materialized access-only, right now,
-    // with the token just resolved — and their secretEnv var must stay unset
-    // (a non-key value in it sends those CLIs down the API-key path). Every
-    // other kind, and every agent-token link, keeps the env-var path.
+    // §5.2.1: delivery is per agent kind. A kind whose plugin names a native
+    // auth file consumes a sign-in through it — materialized access-only,
+    // right now, with the token just resolved — and its secretEnv var must
+    // stay unset (a non-key value in it sends such a CLI down the API-key
+    // path). Every other kind, and every agent-token link, keeps the env-var
+    // path.
     let envSecret = injected
     if (credEntry?.kind === 'oauth') {
       // Re-read after the refresh above: the copy resolveAgentSecret returned
@@ -879,9 +790,7 @@ export class ContainerManager {
       const authFile = oauthAuthFile(def.id, freshEntry, injected, Date.now())
       if (authFile) {
         await this.timed(sessionId, 'oauth-write-file', () =>
-          writeContainerUserFile(
-            sessionId, target.configArgs, hostWorkspaceFolder, authFile.path, authFile.content
-          )
+          writeContainerUserFile(target.exec, authFile.path, authFile.content)
         )
         this.logFor(sessionId)(`wrote ~/${authFile.path} (oauth sign-in, access token only)`)
         envSecret = ''
@@ -891,19 +800,15 @@ export class ContainerManager {
     const configFile = clientConfigFile(cfg.kind, cfg.config)
     if (configFile) {
       await this.timed(sessionId, 'client-config-write', () =>
-        writeContainerUserFile(
-          sessionId, target.configArgs, hostWorkspaceFolder, configFile.path, configFile.content
-        )
+        writeContainerUserFile(target.exec, configFile.path, configFile.content)
       )
     }
-    // claude-code only (§3.2): pin the mangled-cwd directory name its own
-    // history keys by to a constant — the session id, already what the host
-    // history directory is keyed by — so this kind's history survives a
-    // repo-set change too. An ordinary non-secret var, composed beside
-    // whatever the agent instance's own config already sets (which wins on a
-    // clash — it is the more specific, user-made choice).
-    const historyEnv = def.id === 'claude-code' ? { CLAUDE_CODE_PROJECT_DIR_NAME: sessionId } : {}
-    const env = { ...historyEnv, ...cfg.env }
+    // The kind's own launch env (non-secret: e.g. pinning where its CLI keys
+    // history, docs/requirements-agent-history.md §3.2), composed beside
+    // whatever the agent instance's own config already sets — which wins on a
+    // clash: it is the more specific, user-made choice.
+    const launchEnv = agentMain(def.id)?.launchEnv?.({ sessionId }) ?? {}
+    const env = { ...launchEnv, ...cfg.env }
     return {
       ...target,
       remoteWorkspaceFolder: c.remoteWorkspaceFolder,
@@ -941,13 +846,7 @@ export class ContainerManager {
       // stopped container resumed without an app restart) — nothing to merge
       // the skills link into, so it runs on its own.
       return this.timed(ctx.session, 'skills-link', () =>
-        linkContainerSkills(
-          ctx.session,
-          ctx.configArgs,
-          ctx.hostWorkspaceFolder,
-          pendingSkillsDir,
-          this.logFor(ctx.session)
-        )
+        linkContainerSkills(ctx.exec, pendingSkillsDir, this.logFor(ctx.session))
       )
     }
     const inflight = this.installsInFlight.get(ctx.containerId)
@@ -959,20 +858,13 @@ export class ContainerManager {
         pendingSkillsDir !== undefined ? 'adapter-probe+skills-link' : 'adapter-probe',
         () =>
           pendingSkillsDir !== undefined
-            ? probeAdapterAndLinkSkills(
-                ctx.session,
-                ctx.agent,
-                ctx.configArgs,
-                ctx.hostWorkspaceFolder,
-                pendingSkillsDir,
-                provisionLog
-              )
-            : adapterPresent(ctx.session, ctx.agent, ctx.configArgs, ctx.hostWorkspaceFolder)
+            ? probeAdapterAndLinkSkills(ctx.exec, ctx.agent, pendingSkillsDir, provisionLog)
+            : adapterPresent(ctx.exec, ctx.agent)
       )
       if (present) provisionLog(`${ctx.agent.bin} already installed in container`)
       else
         await this.timed(ctx.session, 'adapter-install', () =>
-          installAcpAdapter(ctx.session, ctx.agent, ctx.configArgs, ctx.hostWorkspaceFolder, provisionLog)
+          installAcpAdapter(ctx.exec, ctx.agent, provisionLog)
         )
       this.adapterInstalled.add(ctx.containerId)
     })()
@@ -1086,7 +978,7 @@ export class ContainerManager {
     // rather than read the daemon's silence as "this session owns nothing".
     const swept = (await dockerSessionContainerIds(sessionId)) ?? []
     const recorded = c?.id
-    // Prefix, not equality: `docker ps` and the devcontainer CLI disagree on
+    // Prefix, not equality: `docker ps` and `docker create` disagree on
     // whether a container id is the short or the full form, and the same
     // container named both ways must not be removed (or counted) twice.
     const isRecorded = (id: string): boolean =>
@@ -1227,15 +1119,17 @@ export class ContainerManager {
    *     deleted while the app was down, or a crash lost the record) and is removed.
    */
   async reconcile(): Promise<void> {
-    const live = await dockerSessionContainers()
+    const detailed = await dockerSessionContainersDetailed()
     // Could not reach the daemon — leave every record alone rather than read its
     // silence as "no containers exist" and delete all of them.
-    if (!live) {
+    if (!detailed) {
       log.warn('reconcile skipped — docker unavailable, container records left as-is')
       return
     }
+    const live = new Map([...detailed].map(([session, c]) => [session, c.id]))
     let fixed = 0
     let orphans = 0
+    let migrated = 0
     const known = new Set<string>()
     for (const info of this.deps.sessions()) {
       known.add(info.id)
@@ -1246,6 +1140,19 @@ export class ContainerManager {
         // Container gone: keep the session, drop the record it can't use.
         this.deps.patchContainer(info.id, undefined)
         fixed++
+        continue
+      }
+      // A container made before this runtime (no `gurt.runtime=docker`) cannot
+      // be driven by this runtime — different keep-alive, no node volume, no
+      // recorded user/PATH. Remove it and reset the record: the session
+      // recreates it on its next start. Clones and agent history are host
+      // binds, so only in-container state is lost. Skipped when the store is
+      // degraded, for the same reason the orphan sweep is.
+      if (detailed.get(info.id)?.runtime !== 'docker' && !store.storeDegraded()) {
+        await dockerRemove(actual, (line) => log.debug('reconcile.premigration', { c: actual, line }))
+        this.forget(actual)
+        this.deps.patchContainer(info.id, undefined)
+        migrated++
         continue
       }
       const running = await dockerRunning(actual)
@@ -1286,7 +1193,7 @@ export class ContainerManager {
       // down leaves both behind, and only the daemon knows they exist.
       sweepResult = await proxies.sweepOrphans(known, (line) => log.debug('reconcile.orphan', { line }))
     }
-    log.info('reconcile.done', { fixed, orphans, swept: mayReap, ...sweepResult })
+    log.info('reconcile.done', { fixed, orphans, migrated, swept: mayReap, ...sweepResult })
     this.deps.bus.emit('tree.changed', undefined)
   }
 }

@@ -59,7 +59,7 @@ for (const [ws, repo] of [
     path.join(GURT_ROOT, ws, 'workspace.json'),
     JSON.stringify({
       repos: [{ name: repo, url: `https://github.com/o/${repo}.git` }],
-      envs: [{ name: 'dev', devcontainer: '{"image":"x"}', repo }],
+      envs: [{ name: 'dev', image: 'x', repo }],
       mcpServers: [
         { id: `${ws}-up`, url: 'https://mcp.example/mcp' },
         { id: `${ws}-local`, kind: 'command', command: '/bin/echo' }

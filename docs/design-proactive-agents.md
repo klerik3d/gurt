@@ -42,8 +42,8 @@ listed under `Tree.workspaces[].proactive`, not among the scopes, and holds:
   and the start path refuse it;
 - the run sessions (§3), and `proactive-state.json` (§6).
 
-New agents start switched off, on the workspace's operator env (bundled,
-image-only), with auto-allow on and the network internal. An agent cannot be
+New agents start switched off, on the workspace's default env (the base
+image unless one is set), with auto-allow on and the network internal. An agent cannot be
 renamed: its name is what every scope it raised records as `origin.agent`.
 Deleting it is deleting its scope; the scopes it raised stay.
 

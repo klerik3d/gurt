@@ -36,11 +36,11 @@ timer. Fetch failure is non-fatal: render last-known refs, no error UI.
 
 ## UI
 
-Flat/grouped rules, modal style, `Open in VS Code`, `↻`, inline errors —
+Flat/grouped rules, modal style, `↻`, inline errors —
 unchanged. Two blocks per repo, each only when non-empty:
 
 ```
-Changes ────────────────────────── [↻] [Open in VS Code]
+Changes ────────────────────────── [↻]
  Uncommitted
   M  src/auth/login.ts
   2 files · +85 −10

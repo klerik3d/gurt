@@ -19,7 +19,18 @@ const S = (rel) => JSON.stringify(path.join(ROOT, rel))
 
 await bundle({
   stdin: {
-    contents: `export * from ${S('src/shared/usage.ts')}`,
+    // The limit texts below are Claude Code's, so the detector reads them with
+    // the claude-code plugin's wording on top of the generic patterns.
+    contents: `
+      import * as usage from ${S('src/shared/usage.ts')}
+      import { agentVocabulary } from ${S('src/shared/agentVocabulary.ts')}
+      const limits = agentVocabulary('claude-code').limits
+      export * from ${S('src/shared/usage.ts')}
+      export const isLimitMessage = (text) => usage.isLimitMessage(text, limits)
+      export const isLimitReply = (text) => usage.isLimitReply(text, limits)
+      export const limitResetAt = (text) => usage.limitResetAt(text, limits)
+      export const turnOutcome = (o) => usage.turnOutcome(o, limits)
+    `,
     resolveDir: ROOT,
     loader: 'ts',
     sourcefile: 'entry.ts'

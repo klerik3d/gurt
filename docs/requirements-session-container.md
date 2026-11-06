@@ -12,6 +12,14 @@ inventory of `requirements-stable-keys.md`. Those documents describe the
 env-instance model this one replaces; the parts of them not about container
 ownership still hold.
 
+> **Superseded in part** by `requirements-env-docker.md`: gurt no longer wraps
+> the `@devcontainers/cli`. Containers are created and driven with the docker
+> CLI directly, every exec addresses the container id in the session record,
+> and the env is gurt's own format (`image` | `dockerfile`, `setup`, `start`)
+> instead of a devcontainer.json. Where this document says `devcontainer up` /
+> `exec`, override config, lifecycle hooks or id-label lookups, read the
+> docker runtime of that document; the 1:1 container model itself is unchanged.
+
 > **Superseded in part** by `requirements-mcp-proxy.md` §10: the
 > container-side git credential broker (`src/main/git/broker.ts`), the
 > container shims, ssh git support and the `gitAccess` session flag are
@@ -40,8 +48,8 @@ address a physical resource.
 
 ## 2. Decisions
 
-- **Session header shortcuts target the session's running container.** VS Code
-  and Terminal buttons sit together in both session headers and are disabled
+- **Session header shortcuts target the session's running container.** The
+  Terminal button sits in both session headers and is disabled
   while the container is not running. Terminal opens a separate system terminal
   window (macOS Terminal or an available Linux emulator) with an interactive
   shell through `devcontainer exec`. It uses the exact container id, the host

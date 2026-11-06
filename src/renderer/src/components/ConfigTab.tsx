@@ -6,17 +6,15 @@ import type {
   RepoConfig,
   SessionConfigOption,
   SessionInfo,
-  SessionMode,
   SessionModes,
   SessionRole,
   SessionSnapshot,
   Tree
 } from '../../../shared/types'
 import {
-  OPERATOR_ENV_NAME,
-  STARTER_ENV_NAME,
+  BASE_ENV_NAME,
   USER_SESSION_ROLES,
-  operatorEnvName,
+  defaultEnvName,
   roleAllowsMultiRepo,
   roleForbidsRepo,
   roleNeedsRepo,
@@ -28,6 +26,7 @@ import { LOCAL_MCP_NOTICE, isLocalMcpEntry, mcpHasModes, resolveMcpSelection } f
 import type { SkillEntry } from '../../../shared/skills'
 import { resolveSkillSelection } from '../../../shared/skills'
 import { agentOptionView } from '../../../shared/agentConfig'
+import { agentVocabulary, isBlanketMode } from '../../../shared/agentVocabulary'
 import { agentDef } from '../../../shared/agents'
 import { agentKind, agentName, useAgents } from '../useAgents'
 import { useMcpEntries } from '../useMcp'
@@ -35,7 +34,7 @@ import { useSkillEntries } from '../useSkills'
 import { NetworkPicker } from './Network'
 import { useOutsideClose } from '../hooks'
 import { alertDialog } from '../dialog'
-import { Icon, Dot, InfoDot } from './icons'
+import { AgentIcon, Icon, Dot, InfoDot } from './icons'
 import {
   AgentMark,
   AgentTag,
@@ -45,8 +44,7 @@ import {
   ROLE_INFO,
   RepoTag,
   RoleTag,
-  SkillTag,
-  agentIcon
+  SkillTag
 } from './tags'
 import { run } from '../async'
 
@@ -56,14 +54,6 @@ import { run } from '../async'
 // the session is a draft — every pick saves immediately via `sessionEditDraft`,
 // there is no Save button — and read-only once it has queued or started, since
 // most of this is fixed at that point (see `SessionInfo`/`SessionDraftPatch`).
-
-/** Blanket permission-bypass modes (Claude's "bypassPermissions", Codex's
- *  "yolo") — hidden from the live mode picker, same as the composer's gear
- *  popup (Chat.tsx): gurt's own "auto" already maps to the safer auto-review
- *  (or accept-edits) mode, and the agent may still report one as current
- *  without it being offered. */
-const BLANKET_MODE_RE = /bypass|yolo/i
-const isBlanketMode = (m: SessionMode): boolean => BLANKET_MODE_RE.test(`${m.id} ${m.name}`)
 
 /** Quiet select row: a field-styled button that opens a menu of options. */
 function PickRow({
@@ -336,9 +326,9 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
       setPicker(null)
       return
     }
-    // The starter claims no repo — it exists for whatever repo is picked, a
+    // The base image claims no repo — it exists for whatever repo is picked, a
     // freshly created one most of all — so picking it keeps the selection.
-    if (name === STARTER_ENV_NAME) {
+    if (name === BASE_ENV_NAME) {
       patch({ env: name })
       setPicker(null)
       return
@@ -351,13 +341,12 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
   // Only a researcher may hold several repos, so leaving that role drops the
   // extras rather than letting an invalid pair reach the IPC boundary. An
   // operator holds exactly zero — the pick clears the repos and points the
-  // draft at the workspace's operator env (its own, or the bundled default —
-  // docs/requirements-session-operator.md §2.2).
+  // draft at the workspace default env (its own, or the base image).
   const pickRole = (next: SessionRole) => {
     const p: SessionDraftPatch = { role: next }
     if (roleForbidsRepo(next)) {
       p.repos = []
-      p.env = operatorEnvName(wsData ?? {})
+      p.env = defaultEnvName(wsData ?? {})
     } else if (!roleAllowsMultiRepo(next) && repos.length > 1) {
       p.repos = repos.slice(0, 1)
     }
@@ -386,8 +375,7 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
   }
 
   // A new local repo, made right here and picked at once — and, being new, it
-  // has no devcontainer, so a draft with no env yet gets the starter
-  // (docs/requirements-new-projects.md §5). It is a workspace repo from then
+  // has no env, so a draft with no env yet gets the base image. It is a workspace repo from then
   // on, offered to every later session like any other.
   const createRepo = async (): Promise<void> => {
     const name = (newRepo ?? '').trim()
@@ -396,7 +384,7 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
       const created = await window.gurt.createLocalRepo(info.workspace, name)
       patch({
         repos: roleAllowsMultiRepo(role) ? [...repos, created.name] : [created.name],
-        ...(info.env ? {} : { env: STARTER_ENV_NAME })
+        ...(info.env ? {} : { env: BASE_ENV_NAME })
       })
       setNewRepo(null)
       setRepoFilter('')
@@ -419,7 +407,7 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
   const mcpOrphans = mcp.filter((sel) => !mcpOffered.some((e) => e.id === sel.id))
 
   // The `mcpHasModes` rule again: gurt does not claim what it cannot deliver.
-  // A kind whose pinned CLI reads no skills directory (`AgentDef.skillsDir` is
+  // A kind whose pinned CLI reads no skills directory (`AgentManifest.skillsDir` is
   // null, agents.ts) gets a plain statement instead of pickers. The stored
   // selection is left exactly as it is — absent/[] semantics included — so
   // switching to a supporting agent and back loses nothing.
@@ -579,7 +567,7 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
                     }}
                   >
                     <Dot tone="green" size={7} />
-                    <Icon name={agentIcon(a.kind)} size={12} className="faint" />
+                    <AgentIcon kind={a.kind} size={12} className="faint" />
                     {a.label}
                   </div>
                 ))
@@ -612,39 +600,20 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
             onClose={() => setPicker(null)}
             menu={
               <>
-                {/* The bundled operator default shares the env name space and
-                    is always startable (docs/requirements-session-operator.md
-                    §2.2) — offered to the role it exists for. */}
-                {(role === 'operator' || role === 'proactive') && (
-                  <div
-                    className={`menu-item ${info.env === OPERATOR_ENV_NAME ? 'active' : ''}`}
-                    onMouseDown={(ev) => {
-                      ev.preventDefault()
-                      pickEnv(OPERATOR_ENV_NAME)
-                    }}
-                  >
-                    <Icon name="box" size={13} className="dim" style={{ flex: 'none' }} />
-                    {OPERATOR_ENV_NAME}
-                    <span className="menu-meta mono">bundled default</span>
-                  </div>
-                )}
-                {/* The bundled starter (docs/requirements-new-projects.md §3):
-                    image-only, so it runs any repo — a new one with no
-                    devcontainer of its own included. */}
-                {role !== 'operator' && (
-                  <div
-                    className={`menu-item ${info.env === STARTER_ENV_NAME ? 'active' : ''}`}
-                    title="node 22 on Debian 13 (trixie) with git, python3 and build tools — for a project with no devcontainer yet"
-                    onMouseDown={(ev) => {
-                      ev.preventDefault()
-                      pickEnv(STARTER_ENV_NAME)
-                    }}
-                  >
-                    <Icon name="box" size={13} className="dim" style={{ flex: 'none' }} />
-                    {STARTER_ENV_NAME}
-                    <span className="menu-meta mono">bundled</span>
-                  </div>
-                )}
+                {/* The base image: always startable, runs any repo — a new one
+                    with no env of its own included. */}
+                <div
+                  className={`menu-item ${info.env === BASE_ENV_NAME ? 'active' : ''}`}
+                  title="the base image (Settings → Environments)"
+                  onMouseDown={(ev) => {
+                    ev.preventDefault()
+                    pickEnv(BASE_ENV_NAME)
+                  }}
+                >
+                  <Icon name="box" size={13} className="dim" style={{ flex: 'none' }} />
+                  {BASE_ENV_NAME}
+                  <span className="menu-meta mono">base image</span>
+                </div>
                 {envs.length ? (
                   envs.map((e) => (
                     <div
@@ -1056,7 +1025,10 @@ function LiveHarness({
   const view = agentOptionView(kind)
   const sectionTitle = (o: SessionConfigOption) =>
     o.category === 'model' ? 'MODEL' : o.category === 'thought_level' ? 'EFFORT' : o.name.toUpperCase()
-  const liveModes = modes ? modes.availableModes.filter((m) => !isBlanketMode(m)) : []
+  // Blanket bypass modes are hidden, same as the composer's gear popup
+  // (Chat.tsx) — see `isBlanketMode`.
+  const modeWords = agentVocabulary(kind).modes
+  const liveModes = modes ? modes.availableModes.filter((m) => !isBlanketMode(m, modeWords)) : []
   if (cfg.length === 0 && liveModes.length === 0) return null
 
   return (

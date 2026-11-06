@@ -2,16 +2,11 @@
 // Session-centric flow: a container is born when a session starts, and belongs
 // to that one session. Two repos are registered; one session runs on "hello" —
 // only that session may own a container, and it must reach running. The prompt
-// fails auth (no secret), which still proves the whole devcontainer + ACP pipe.
+// fails auth (no secret), which still proves the whole container + ACP pipe.
 //
 //   npm run build && SCRATCH=/tmp/gurt-smoke-prov node scripts/smoke-provisioning.mjs
 //
-// The repos are local bare origins, so the git half is hermetic. They carry a
-// `.devcontainer/` directory on purpose: gurt always passes
-// `--additional-features`, and @devcontainers/cli 0.88 writes the resolved
-// feature lockfile to `<workspace>/.devcontainer/devcontainer-lock.json` without
-// creating the directory — a repo without one fails `devcontainer up` with
-// ENOENT before the image is ever built.
+// The repos are local bare origins, so the git half is hermetic.
 import { createRequire } from 'node:module'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -48,21 +43,19 @@ fs.writeFileSync(
   JSON.stringify({ 'claude-code': { kind: 'claude-code', label: 'claude code' } })
 )
 
-const DEVCONTAINER = '{ "image": "mcr.microsoft.com/devcontainers/base:ubuntu" }'
+const IMAGE = 'mcr.microsoft.com/devcontainers/base:ubuntu'
 
 const git = (dir, ...args) =>
   execFileSync('git', ['-C', dir, '-c', 'user.email=smoke@test', '-c', 'user.name=smoke', ...args], {
     encoding: 'utf8'
   })
 
-/** A bare origin with one commit and a `.devcontainer/` for the feature lockfile. */
+/** A bare origin with one commit. */
 function makeBareRepo(name) {
   const seed = path.join(REPO_ROOT, `${name}-seed`)
   const bare = path.join(REPO_ROOT, `${name}.git`)
-  fs.mkdirSync(path.join(seed, '.devcontainer'), { recursive: true })
   git(REPO_ROOT, 'init', '-q', '-b', 'main', seed)
   fs.writeFileSync(path.join(seed, 'README.md'), `# ${name}\n`)
-  fs.writeFileSync(path.join(seed, '.devcontainer', 'devcontainer.json'), `${DEVCONTAINER}\n`)
   git(seed, 'add', '-A')
   git(seed, 'commit', '-qm', 'initial')
   git(REPO_ROOT, 'clone', '-q', '--bare', seed, bare)
@@ -84,7 +77,7 @@ const app = await _electron.launch({
 app.process().stdout.on('data', (d) => process.stdout.write(`[main] ${d}`))
 
 /** `app.close()` can hang when a session's ACP agent is still attached inside
- *  its container: Electron waits on the `devcontainer exec` child that carries
+ *  its container: Electron waits on the `docker exec` child that carries
  *  the agent, and that child outlives the window. Give the clean shutdown a
  *  grace period, then kill the process — by this point the script's own
  *  assertions are what decide the exit code. */
@@ -127,7 +120,7 @@ async function addRepo(name, url) {
   console.log(`repo "${name}" added`)
 }
 
-/** Define an environment (name + default repo + devcontainer) in Settings. */
+/** Define an environment (name + default repo + image) in Settings. */
 async function addEnv(name, repo) {
   await openSettings('Environments')
   await page.click('.set-head .btn-primary') // + New environment
@@ -135,7 +128,7 @@ async function addEnv(name, repo) {
   await page.fill('.modal input[placeholder="web-app"]', name)
   await page.click('.modal .fld:has(.seclabel:text-is("DEFAULT REPOSITORY")) .pick-row')
   await page.click(`.modal .pick-menu .menu-item:has-text("${repo}")`)
-  await page.fill('.modal .jsoned textarea', DEVCONTAINER)
+  await page.fill('.modal input[placeholder="node:22-trixie"]', IMAGE)
   await page.click('.modal-foot .btn-primary') // Save
   await modalGone()
   await page.waitForSelector(`.set-row-label:text-is("${name}")`, { timeout: 5000 })

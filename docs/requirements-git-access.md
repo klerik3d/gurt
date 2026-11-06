@@ -418,5 +418,5 @@ credential-capability concern — fine-grained/read-only tokens, `git-app`
 minted scopes), forge providers beyond github (`glab` etc. — the seam
 exists, nothing is implemented), any credential path back into the
 container (removed on purpose — see the banner), env for non-agent
-processes in the container (VS Code terminals do not inherit the identity
+processes in the container (terminals do not inherit the identity
 injection — by design).

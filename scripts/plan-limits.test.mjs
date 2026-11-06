@@ -56,7 +56,7 @@ fs.writeFileSync(
       { name: 'beta', url: 'https://github.com/o/beta.git' },
       { name: 'gamma', url: 'https://github.com/o/gamma.git' }
     ],
-    envs: [{ name: 'dev', devcontainer: '{"image":"x"}', repo: 'alpha' }]
+    envs: [{ name: 'dev', image: 'x', repo: 'alpha' }]
   })
 )
 fs.writeFileSync(path.join(GURT_ROOT, ws, task, 'task.json'), JSON.stringify({}))

@@ -6,7 +6,7 @@
 // under one per-workspace lock. Gurt is a single instance (index.ts takes the
 // single-instance lock), so an in-process chain is the whole of the locking.
 import type { EnvRef, SessionInfo, Tree } from '../shared/types'
-import { operatorEnvName } from '../shared/types'
+import { defaultEnvName } from '../shared/types'
 import type {
   ProactiveAgentView,
   ProactiveConfig,
@@ -597,7 +597,7 @@ export function createProactive(deps: ProactiveDeps): ProactiveManager {
         const config: ProactiveConfig = { ...PROACTIVE_DEFAULTS }
         await store.createTask(ws, name, { proactive: config })
         const info = sessions.createSession(
-          { workspace: ws, task: name, env: operatorEnvName(wsData) },
+          { workspace: ws, task: name, env: defaultEnvName(wsData) },
           [],
           agentId,
           DEFAULT_PROACTIVE_INSTRUCTIONS,

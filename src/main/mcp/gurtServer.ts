@@ -95,8 +95,8 @@ const OPERATOR_INSTRUCTIONS =
   "entity's current revision from `get_revisions` (\"absent\" to create);\n" +
   'a mismatch means it changed since you read it — re-read, reconsider,\n' +
   'retry. Fields that run code on, or reach into, the user\'s machine\n' +
-  '(`initializeCommand`, `mounts`, `runArgs`, a local MCP server\'s command,\n' +
-  '…) do not land: they come back in `held`, and only the user can release\n' +
+  '(a local MCP server\'s command, args, env, …) do not land: they come back\n' +
+  'in `held`, and only the user can release\n' +
   'them — call `apply_held`, which asks them. Credential links, and the url\n' +
   'of anything that carries one, cannot be changed by you at all; name the\n' +
   'Settings change instead. Credential VALUES are never available, to you\n' +
@@ -363,13 +363,13 @@ const GET_REVISIONS_INPUT = {
     .describe(
       'entities to read, e.g. ["env:node20", "mcp:linear", "defaults"]; omit for all of ' +
         'them. Kinds: repo:<name>, env:<name>, mcp:<id>, skill:<name>, task:<name>, ' +
-        'defaults (default agent / denied agents / default skills / operator env), agents, ' +
+        'defaults (default agent / denied agents / default skills / default env), agents, ' +
         'notification-prefs, hotkeys, welcome-mode.'
     )
 }
 
 const APPLY_HELD_INPUT = {
-  entity: z.string().min(1).describe('the entity the held fields belong to, e.g. "env:node20"'),
+  entity: z.string().min(1).describe('the entity the held fields belong to, e.g. "mcp:github"'),
   fields: z
     .array(z.string().min(1))
     .min(1)
@@ -452,8 +452,8 @@ function registerAdminTools(server: McpServer, admin: AdminHooks): void {
     'get_provisioning_log',
     {
       description:
-        "The tail of a session's provisioning log (clone, image build, `devcontainer up`, " +
-        'lifecycle hooks, adapter stderr) — where the reason a start failed is written. ' +
+        "The tail of a session's provisioning log (clone, image build, container create, " +
+        'setup/start scripts, adapter stderr) — where the reason a start failed is written. ' +
         "Also serves an env image build's log via `env-build:<env>`.",
       inputSchema: PROVISIONING_LOG_INPUT
     },

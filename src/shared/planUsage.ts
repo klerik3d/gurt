@@ -1,45 +1,23 @@
-// Live Claude SDK rate_limit_event snapshots are the primary source for token
-// credentials. ACP forwards them as usage_update._meta['_claude/rateLimit'].
-// unifiedWindows utilization is a fraction: 0.7 means 70%. No profile scope or
-// additional model request is needed; values update after normal responses.
-//
 // Plan limits as the provider itself reports them — the other half of the
 // dashboard's agent cards, and the only half that knows what is *left*.
 //
-// Provenance. `GET /api/oauth/usage` on api.anthropic.com is the call Claude
-// Code's own `/usage` makes to draw its plan bars; it is not part of the
-// published API. Everything below (the path, the window keys, the field names,
-// the labels) was read out of the CLI binary the ACP adapter ships, not
-// guessed — last re-verified against CLI 2.1.235, whose response schema is
-// what `parsePlanWindows` (main/planUsage.ts, next to the fetch that needs it)
-// documents. An unpublished endpoint can still change
-// without notice, so every consumer treats a shape it does not recognize as
-// "no data", never as zero.
+// Where the numbers come from is each agent plugin's business: a live event
+// riding normal session responses, a poll of the provider's usage endpoint,
+// or both (main/planUsage.ts; the claude-code plugin documents the
+// unpublished endpoint it reads). Such a source can change without notice, so
+// every consumer treats a shape it does not recognize as "no data", never as
+// zero.
 //
 // This is why it is worth the fragility: usage.ts can only ever count the turns
-// gurt itself ran, while a plan's windows are pooled across every Claude
-// surface and machine. Utilization from here is the real figure; the ledger is
-// the local detail behind it.
-
-/** How the provider keys its windows — both the keyed form (`five_hour: {…}`)
- *  and the `kind` of a `limits[]` entry resolve through this. Unknown keys are
- *  kept, not dropped: a window we have no label for still has a real number on
- *  it, and renders under its humanized key. `weekly_scoped` entries carry the
- *  model (or surface) they are scoped to in `scope.*.display_name`, which the
- *  parser appends — "Current week (Fable)". */
-export const PLAN_WINDOW_LABELS: Record<string, string> = {
-  five_hour: 'Current session',
-  seven_day: 'Current week (all models)',
-  seven_day_opus: 'Current week (Opus)',
-  seven_day_sonnet: 'Current week (Sonnet)',
-  seven_day_oauth_apps: 'Current week (apps)',
-  weekly_scoped: 'Current week',
-  extra_usage: 'Extra usage'
-}
+// gurt itself ran, while a plan's windows are pooled across every surface and
+// machine of the account. Utilization from here is the real figure; the ledger
+// is the local detail behind it.
+import { agentDef } from './agents'
 
 /** One plan window, as reported. */
 export interface PlanWindow {
-  /** Provider's own key (`five_hour`, `seven_day`, …). */
+  /** Provider's own key (`five_hour`, `seven_day`, …), as the kind's plugin
+   *  reports it. */
   id: string
   label: string
   /**
@@ -80,11 +58,6 @@ export interface PlanUsage {
   rejectedUntil?: string | undefined
 }
 
-/** `sk-ant-oat…` — the endpoint authenticates a subscription's OAuth token, and
- *  an API key gets a 401 from it. Checked so a console-key agent is skipped
- *  with a reason instead of failing on every poll. */
-export const isOauthToken = (secret: string): boolean => /^sk-ant-oat/.test(secret)
-
 /** Past this, a cached read has stopped being current. The same hour Claude
  *  Code's own `/usage` keeps its last-known bars for; the dashboard labels a
  *  stale read rather than hiding it, because a stale real number still beats
@@ -97,13 +70,28 @@ export const tightest = (windows: PlanWindow[]): PlanWindow | undefined =>
     ? windows.reduce((a, b) => (b.utilization > a.utilization ? b : a))
     : undefined
 
-/** Time progress is only meaningful for windows with a known duration/reset. */
-export function windowElapsedPercent(window: PlanWindow, now: number): number | undefined {
-  const hours = window.id === 'five_hour' ? 5
-    : window.id === 'seven_day' || window.id.startsWith('seven_day_') || window.id === 'weekly_scoped' ? 7 * 24
-      : undefined
+/** One kind's window lengths, for windows whose report carries none —
+ *  compiled once per kind. Only the kind's own plugin can say: window ids are
+ *  each provider's own keys, and two providers may well spell one alike. */
+const durationsByKind = new Map<string, readonly { match: RegExp; seconds: number }[]>()
+function windowDurations(kind: string | undefined): readonly { match: RegExp; seconds: number }[] {
+  const def = kind ? agentDef(kind) : undefined
+  if (!def) return []
+  let hit = durationsByKind.get(def.id)
+  if (!hit) {
+    hit = (def.planWindows?.durations ?? []).map((d) => ({ match: new RegExp(d.match), seconds: d.seconds }))
+    durationsByKind.set(def.id, hit)
+  }
+  return hit
+}
+
+/** Time progress is only meaningful for windows with a known duration/reset.
+ *  `kind` is the agent kind the window was reported for: a window that names
+ *  no duration of its own is timed by that kind's plugin
+ *  (`planWindows.durations`), and by nothing else. */
+export function windowElapsedPercent(window: PlanWindow, now: number, kind: string | undefined): number | undefined {
   const reset = window.resetsAt ? Date.parse(window.resetsAt) : NaN
-  const duration = window.durationSeconds ?? (hours === undefined ? undefined : hours * 3600)
+  const duration = window.durationSeconds ?? windowDurations(kind).find((d) => d.match.test(window.id))?.seconds
   if (duration === undefined || !Number.isFinite(duration) || duration <= 0 || !Number.isFinite(reset) || !Number.isFinite(now)) return undefined
   return Math.min(100, Math.max(0, (1 - (reset - now) / (duration * 1000)) * 100))
 }

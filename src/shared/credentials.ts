@@ -6,6 +6,7 @@
 
 import type { RepoConfig } from './types'
 import { canonicalRepoId } from './repoId'
+import { AGENT_MANIFESTS } from './agents'
 import type { McpHeader, McpHttpEntry, McpLocalEntry } from './mcp'
 import { headerValueProblem, isHeaderName, isMcpCredentialRef } from './mcp'
 
@@ -178,17 +179,18 @@ export const CREDENTIAL_KINDS: CredentialKindDef[] = [
     kind: 'oauth',
     label: 'oauth sign-in',
     hint:
-      'Sign in with your Claude / ChatGPT / Gemini account — gurt runs the browser ' +
-      'sign-in and refreshes the tokens itself. Links from an agent or an MCP server ' +
-      'exactly like a token.',
+      `Sign in with your ${AGENT_MANIFESTS.flatMap((m) => (m.signIn ? [m.signIn.account] : [])).join(' / ')} ` +
+      'account — gurt runs the browser sign-in and refreshes the tokens itself. Links ' +
+      'from an agent or an MCP server exactly like a token.',
     // Hidden, not omitted (§2.1): no text input ever renders for these, but the
     // declaration is what makes `secretKeys()` seal, mask and redact the token
     // set the sign-in flow stores.
     fields: [
       { key: 'refresh', label: 'refresh token', secret: true, hidden: true },
       { key: 'access', label: 'access token', secret: true, hidden: true },
-      // Provider-specific (§2: extra fields are legal, named by the provider
-      // module): openai's id_token JWT — bearer-ish, so sealed like the tokens.
+      // Provider-specific (§2: extra fields are legal, named by the provider):
+      // an id_token JWT a CLI's native auth file needs — bearer-ish, so sealed
+      // like the tokens.
       { key: 'idToken', label: 'id token', secret: true, hidden: true }
     ],
     implemented: true
@@ -216,13 +218,12 @@ const NON_GIT_KINDS: readonly CredentialKind[] = ['agent-token', 'mcp-token', 'o
 /** Whether a kind matches a git host (auto-match, forge verification, hosts field). */
 export const isGitKind = (kind: CredentialKind): boolean => !NON_GIT_KINDS.includes(kind)
 
-/** The provider modules `src/main/oauth/providers/` implements, for the
- *  renderer's provider picker — ids must match `OAUTH_PROVIDERS` in main. */
-export const OAUTH_PROVIDER_CHOICES: readonly { id: string; label: string }[] = [
-  { id: 'anthropic', label: 'Claude (Anthropic)' },
-  { id: 'openai', label: 'ChatGPT (OpenAI)' },
-  { id: 'google', label: 'Gemini (Google)' }
-]
+/** The sign-ins the agent plugins declare, for the renderer's provider picker
+ *  — the manifests' half of what main's `OAUTH_PROVIDERS` runs (the plugins'
+ *  `oauth` hooks, by the same ids), in registry order. */
+export const OAUTH_PROVIDER_CHOICES: readonly { id: string; label: string }[] = AGENT_MANIFESTS.flatMap(
+  (m) => (m.oauthProvider && m.signIn ? [{ id: m.oauthProvider, label: m.signIn.label }] : [])
+)
 
 /**
  * §2 of docs/requirements-oauth-credentials.md: the sentence an unresolvable

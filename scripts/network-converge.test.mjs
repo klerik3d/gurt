@@ -160,7 +160,7 @@ const SESSION = 'a3f9'
 const SESSION_NET = m.sessionNetworkName(SESSION)
 
 test('the plan is the delta, and nothing else', () => {
-  // Fresh out of `devcontainer up`: on the default bridge, wants its own network.
+  // Fresh out of `docker create`: on the default bridge, wants its own network.
   assert.deepEqual(m.planNetworkConverge([m.DEFAULT_BRIDGE], [SESSION_NET]), {
     connect: [SESSION_NET],
     disconnect: [m.DEFAULT_BRIDGE]
@@ -235,7 +235,7 @@ test('the names and labels the sweeps are built on', () => {
   assert.equal(m.proxyContainerName(SESSION), `gurt-proxy-${SESSION}`)
   assert.equal(m.SESSION_LABEL, 'gurt.session')
   // Deliberately NOT gurt.session: `dockerSessionContainers()` builds
-  // session → devcontainer from that label and treats every hit as a container
+  // session → container from that label and treats every hit as a container
   // to stop, adopt or remove. A proxy carrying it would be swept as if it were
   // the session's own container (§4.1). Networks are a different namespace and
   // cannot collide, so they do carry gurt.session.

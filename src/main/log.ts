@@ -122,7 +122,7 @@ function wireText(v: unknown): string {
   return Object.prototype.toString.call(v)
 }
 
-// Standard ANSI/OSC escape matcher — agent stderr and devcontainer output are
+// Standard ANSI/OSC escape matcher — agent stderr and container output are
 // full of colour codes, and an OSC sequence can even carry a terminal command.
 // The control characters in both patterns below are the point of them, which is
 // what no-control-regex exists to question.
@@ -870,7 +870,7 @@ export function createLogger(scope: string): Logger {
 // --- per-session subprocess output ----------------------------------------
 
 /**
- * One line of a session's subprocess output (devcontainer CLI, agent stderr,
+ * One line of a session's subprocess output (docker, agent stderr,
  * docker) into `logs/session-<id>.log`. Never reaches the app log: this is
  * volume, and it is the session's own diagnostic trail.
  */

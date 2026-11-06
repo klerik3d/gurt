@@ -16,7 +16,7 @@
 // removes is having to know their order on a machine gurt has never seen.
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { JSX } from 'react'
-import { AGENT_DEFS, agentDef } from '../../../shared/agents'
+import { AGENT_MANIFESTS, DEFAULT_AGENT_KIND, agentDef } from '../../../shared/agents'
 import type { DoctorReport, DoctorRow, FirstRunResult, WelcomeMode } from '../../../shared/doctor'
 import { pendingRows, WELCOME_MODE_DEFAULT } from '../../../shared/doctor'
 import { OAUTH_PROVIDER_CHOICES } from '../../../shared/credentials'
@@ -308,7 +308,7 @@ export function MachineChecklist({
  * into a form.
  *
  * It is not the *only* path, for two reasons that are not preference: opencode
- * has no verified sign-in delivery at all (`AgentDef.oauthProvider` is null for
+ * has no verified sign-in delivery at all (`AgentManifest.oauthProvider` is null for
  * it, §5.2.1 of that document), and API keys are the right shape for CI,
  * self-hosted gateways and enterprise proxies — which is why that document's
  * §1 says OAuth "complements `agent-token`; it never replaces it".
@@ -343,7 +343,7 @@ export function Welcome({
   onClose: () => void
 }): JSX.Element {
   const [ready, setReady] = useState(false)
-  const [kind, setKind] = useState(preferredKind || AGENT_DEFS[0]!.id)
+  const [kind, setKind] = useState(preferredKind || DEFAULT_AGENT_KIND)
   const [token, setToken] = useState('')
   const [showKey, setShowKey] = useState(false)
   const [busy, setBusy] = useState<'' | 'signin' | 'token'>('')
@@ -446,7 +446,7 @@ export function Welcome({
                 run.
               </div>
               <div className="wc-kinds">
-                {AGENT_DEFS.map((a) => (
+                {AGENT_MANIFESTS.map((a) => (
                   <button
                     key={a.id}
                     type="button"
