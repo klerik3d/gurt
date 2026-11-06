@@ -408,7 +408,7 @@ export class ContainerManager {
       const clones = await Promise.all(
         repoCfgs.map(async (cfg) => ({
           cfg,
-          dir: await ensureClone(this.refOf(info), cfg, provisionLog)
+          dir: await ensureClone(this.refOf(info), cfg, provisionLog, sessionRole(info) === 'proactive')
         }))
       )
       // repos[0] is the build anchor, same role a normal session's only repo
