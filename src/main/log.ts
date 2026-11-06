@@ -14,7 +14,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { createRequire } from 'node:module'
-import { gurtRoot } from './store'
+import { gurtRoot } from './root'
 import { REDACTED, deniedKey, redact } from './redact'
 
 // Redaction itself (the registered-value set, `redact`, the key deny-list)
@@ -843,22 +843,17 @@ function scopeName(scope: string, fallback = 'app'): string {
  * A logger for one subsystem. The level check happens before ctx is touched, so
  * a disabled DBG call costs one comparison and never serializes anything.
  *
- * `scopeName` is resolved lazily, on the first record actually written, not
- * eagerly here: `store.ts` calls `createLogger('store')` at its own module
- * top level, and `log.ts` imports `gurtRoot` from `store.ts` — a circular
- * import. Resolving eagerly would run `scopeName`'s `sanitize()` (and thus
- * touch `secretsByLength`) while that cycle is still unwinding, before this
- * module's own top-level initializers have run. By the time any logger
- * actually logs, the whole module graph is long since initialized.
+ * The scope is resolved once, here. `scopeName`'s `sanitize()` reads state owned
+ * by `redact.ts`, which this module imports and which imports nothing itself,
+ * so that state is initialized before any caller can reach `createLogger`.
  */
 export function createLogger(scope: string): Logger {
-  let s: string | undefined
+  const s = scopeName(scope)
   const at =
     (level: Level) =>
     (msg: string, ctx?: object): void => {
       if (RANK[level] < threshold) return
       try {
-        if (s === undefined) s = scopeName(scope)
         emit('m', level, s, msg, ctx)
       } catch (e) {
         internalFailure('gurt.log', e)

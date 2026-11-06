@@ -3,7 +3,6 @@ import { promises as fs } from 'node:fs'
 import { existsSync } from 'node:fs'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import os from 'node:os'
 import path from 'node:path'
 import { z } from 'zod'
 import type {
@@ -47,6 +46,7 @@ import { HOTKEY_DEFAULTS, sanitizeHotkeys } from '../shared/hotkeys'
 import type { ProactiveState } from '../shared/proactive'
 import { emptyProactiveState, sanitizeProactiveConfig } from '../shared/proactive'
 import { createLogger } from './log'
+import { gurtRoot } from './root'
 
 const pexecFile = promisify(execFile)
 
@@ -72,7 +72,7 @@ export async function rmTree(dir: string): Promise<void> {
   await fs.rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
 }
 
-export const gurtRoot = process.env['GURT_ROOT'] || path.join(os.homedir(), '.gurt')
+export { gurtRoot }
 
 export const wsDir = (ws: string) => path.join(gurtRoot, ws)
 export const taskDir = (ws: string, task: string) => path.join(gurtRoot, ws, task)
