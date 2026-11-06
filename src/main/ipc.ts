@@ -3,7 +3,7 @@
 // domain-shaped lives in kernel.ts and below.
 import { app, BrowserWindow, clipboard, ipcMain, shell } from 'electron'
 import { API_METHODS, type GurtApi } from '../shared/api'
-import { isSessionRole, targetKey } from '../shared/types'
+import { defaultEnvName, isSessionRole, targetKey } from '../shared/types'
 import { MCP_DEFS } from '../shared/mcp'
 import { createKernel } from './kernel'
 import { POLL_INTERVAL_MS } from './planUsage'
@@ -277,10 +277,12 @@ export function registerIpc(): void {
       await store.setDefaultSkills(ws, sanitizeSkillSelection(names).map((k) => k.name))
       kernel.bus.emit('tree.changed', undefined)
     },
-    setOperatorEnv: async (ws, env) => {
-      await store.setOperatorEnv(ws, env)
+    setDefaultEnv: async (ws, env) => {
+      await store.setDefaultEnv(ws, env)
       kernel.bus.emit('tree.changed', undefined)
     },
+    getBaseImage: () => store.getBaseImage(),
+    setBaseImage: (image) => store.setBaseImage(image),
     reinstallMcpServer: async (ws, id) => {
       // Read the entry rather than trusting the caller's word for its kind:
       // "reinstall" means nothing for a command or an http entry, and clearing
@@ -375,9 +377,13 @@ export function registerIpc(): void {
       const agentId = agent || wsData.defaultAgent || ''
       if (agentId && wsData.deniedAgents?.includes(agentId))
         throw new Error(`agent "${agentId}" is not allowed in workspace "${ref.workspace}"`)
+      // A fresh draft (App.tsx) names no env either: it starts on the
+      // workspace's default env, else the base image — there is no "no env".
+      const envName = ref.env || defaultEnvName(wsData)
+      const defaultRepo = wsData.envs.find((e) => e.name === envName)?.repo
       return kernel.sessions.createSession(
-        ref,
-        repos,
+        { ...ref, env: envName },
+        repos.length || role === 'operator' || !defaultRepo ? repos : [defaultRepo],
         agentId,
         prompt,
         action,

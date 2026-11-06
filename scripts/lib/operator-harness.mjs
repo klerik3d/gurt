@@ -57,7 +57,7 @@ export async function operatorHarness(name, seed) {
   // An operator configured exactly as a real one will be (§4.4(b)):
   // auto-allow on.
   const op = kernel.sessions.createSession(
-    { workspace: 'w', task: 't', env: 'operator' },
+    { workspace: 'w', task: 't', env: 'base' },
     [], 'a1', 'configure things', 'draft', [], true, {}, 'operator'
   )
 

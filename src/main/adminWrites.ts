@@ -99,7 +99,7 @@ const ENTITY_OF: Record<WriteMethod, (a: Args) => string> = {
   updateSkill: (a) => `skill:${String(a['name'])}`,
   removeSkill: (a) => `skill:${String(a['name'])}`,
   setDefaultSkills: () => 'defaults',
-  setOperatorEnv: () => 'defaults',
+  setDefaultEnv: () => 'defaults',
   reinstallMcpServer: (a) => `mcp:${String(a['id'])}`,
   createTask: (a) => `task:${String(a['name'])}`,
   setTaskMaxConcurrentSessions: (a) => `task:${String(a['name'])}`,
@@ -133,7 +133,7 @@ async function readEntity(ws: string, entity: string): Promise<unknown> {
         defaultAgent: w.defaultAgent,
         deniedAgents: w.deniedAgents ?? [],
         defaultSkills: w.defaultSkills ?? [],
-        operatorEnv: w.operatorEnv
+        defaultEnv: w.defaultEnv
       }
     }
     case 'agents':
@@ -437,8 +437,8 @@ export function createAdminWrites(kernel: Kernel): AdminWrites {
         await store.setDefaultSkills(w, sanitizeSkillSelection(names).map((k) => k.name))
         changed()
       },
-      setOperatorEnv: async (w, env) => {
-        await store.setOperatorEnv(w, env)
+      setDefaultEnv: async (w, env) => {
+        await store.setDefaultEnv(w, env)
         changed()
       },
       reinstallMcpServer: async (w, id) => {

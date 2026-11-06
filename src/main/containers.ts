@@ -49,7 +49,7 @@ import {
   type ContainerMount,
   type ExecTarget
 } from './provision'
-import { bundledEnv } from './operatorEnv'
+import { bundledEnv } from './baseEnv'
 import { openCommandInTerminal } from './terminal'
 import type { Bus } from './bus'
 import { createLogger, errCtx } from './log'
@@ -341,11 +341,9 @@ export class ContainerManager {
       if (!cfg) throw new Error(`repo "${name}" is not registered in "${info.workspace}"`)
       return cfg
     })
-    // The bundled envs (the operator default, the starter) share the env name
-    // space (their names are reserved against workspace envs), so they resolve
-    // by name exactly where a workspace env would — no role check: an operator
-    // pointed at a workspace env is an ordinary session on an ordinary env
-    // (§2.2), and any role may run on the starter.
+    // The base env shares the env name space (its name is reserved against
+    // workspace envs), so it resolves by name exactly where a workspace env
+    // would — no role check: any role may run on the base image.
     const envCfg = ws.envs.find((e) => e.name === info.env) ?? (await bundledEnv(info.env))
     if (!envCfg) throw new Error(`env "${info.env}" is not registered in "${info.workspace}"`)
     const invalid = validateEnvConfig(envCfg)

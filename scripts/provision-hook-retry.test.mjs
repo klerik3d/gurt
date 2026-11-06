@@ -20,8 +20,13 @@ import assert from 'node:assert/strict'
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gurt-hook-retry-'))
 process.env.GURT_ROOT = path.join(tmp, 'gurt') // store.ts reads this at import time
-const OPERATOR_ENV = path.join(tmp, 'operator.json')
-process.env.GURT_OPERATOR_ENV = OPERATOR_ENV
+const writeOpEnv = (cfg) => {
+  fs.mkdirSync(path.join(process.env.GURT_ROOT, 'ws'), { recursive: true })
+  fs.writeFileSync(
+    path.join(process.env.GURT_ROOT, 'ws', 'workspace.json'),
+    JSON.stringify({ repos: [], envs: [cfg] })
+  )
+}
 const fake = installFakeDocker(tmp)
 
 const S = (rel) => JSON.stringify(path.join(ROOT, rel))
@@ -120,9 +125,9 @@ test('hookOutputTail keeps the last lines of the script’s output and drops sta
 })
 
 test('a container the record cannot name is removed before create — a crash mid-setup is never adopted', async () => {
-  fs.writeFileSync(OPERATOR_ENV, JSON.stringify({ image: 'op:1', setup: SETUP }))
+  writeOpEnv({ name: 'op', image: 'op:1', setup: SETUP })
   fake.ctl({ psSession: 'leftover-1\nleftover-2\n' })
-  const sess = { id: 's1', workspace: 'ws', task: 't', env: 'operator', repos: [], role: 'operator' }
+  const sess = { id: 's1', workspace: 'ws', task: 't', env: 'op', repos: [], role: 'operator' }
   const manager = new m.ContainerManager({
     bus: { emit: noop },
     session: () => sess,

@@ -10,7 +10,7 @@ import type {
   RepoConfig,
   Tree
 } from '../../../shared/types'
-import { OPERATOR_ENV_NAME, STARTER_ENV_NAME } from '../../../shared/types'
+import { BASE_ENV_NAME, DEFAULT_BASE_IMAGE } from '../../../shared/types'
 import type { EnvImageStatus } from '../../../shared/api'
 import { formatEnvLines, parseEnvLines, validateEnvConfig } from '../../../shared/envConfig'
 import type {
@@ -541,6 +541,8 @@ function EnvironmentsSection({ tree, ws }: { tree: Tree | null; ws: string | nul
   const [editing, setEditing] = useState<EnvConfig | null>(null)
   const [adding, setAdding] = useState(false)
   const [operatorError, setOperatorError] = useState('')
+  const [baseImage, setBaseImage] = useState(DEFAULT_BASE_IMAGE)
+  const [baseDraft, setBaseDraft] = useState(DEFAULT_BASE_IMAGE)
   const [statuses, setStatuses] = useState<Record<string, EnvImageStatus>>({})
   const [building, setBuilding] = useState<Set<string>>(new Set())
   const [buildLogs, setBuildLogs] = useState<Record<string, string[]>>({})
@@ -548,6 +550,19 @@ function EnvironmentsSection({ tree, ws }: { tree: Tree | null; ws: string | nul
   const wsData = tree?.workspaces.find((w) => w.name === ws)
   const envs = wsData?.envs ?? []
   const repos = wsData?.repos ?? []
+
+  useEffect(() => {
+    void window.gurt.getBaseImage().then((v) => {
+      setBaseImage(v)
+      setBaseDraft(v)
+    })
+  }, [])
+
+  const setDefault = (env: string | undefined): Promise<void> =>
+    window.gurt
+      .setDefaultEnv(ws ?? '', env)
+      .then(() => setOperatorError(''))
+      .catch((e: unknown) => setOperatorError(e instanceof Error ? e.message : String(e)))
 
   // These maps are keyed by env *name*, which is only unique within one
   // workspace — switching workspaces must drop them, and a reply that raced
@@ -632,63 +647,65 @@ function EnvironmentsSection({ tree, ws }: { tree: Tree | null; ws: string | nul
           + New environment
         </button>
       </div>
-      {/* Which env the workspace's operator sessions run on — the twin of the
-          default agent, beside the thing it points at
-          (docs/requirements-session-operator.md §2.2). Absent = the bundled,
-          always-startable default. */}
-      {ws && (
-        <div className="set-list">
-          <div className="set-row">
-            <span className="set-row-label">Operator environment</span>
-            <span className="spacer" />
+      <div className="set-list">
+        {/* The base image: one app-level setting, the default of every new
+            session. Not editable per workspace; replace it here. */}
+        <div className="set-row" title="the image new sessions run on unless an env is picked">
+          <span className="set-row-label">{BASE_ENV_NAME}</span>
+          <input
+            className="input mono"
+            style={{ flex: 1 }}
+            value={baseDraft}
+            spellCheck={false}
+            onChange={(ev) => setBaseDraft(ev.target.value)}
+            placeholder={DEFAULT_BASE_IMAGE}
+          />
+          <button
+            className="btn-link"
+            disabled={baseDraft.trim() === baseImage}
+            onClick={() =>
+              void window.gurt
+                .setBaseImage(baseDraft)
+                .then(() => window.gurt.getBaseImage())
+                .then((v) => {
+                  setBaseImage(v)
+                  setBaseDraft(v)
+                  setOperatorError('')
+                })
+                .catch((e: unknown) => setOperatorError(e instanceof Error ? e.message : String(e)))
+            }
+          >
+            save
+          </button>
+          {baseImage !== DEFAULT_BASE_IMAGE && (
             <button
-              type="button"
-              className={`btn-link ${!wsData?.operatorEnv ? 'active' : ''}`}
-              title={`the image-only default gurt ships (${OPERATOR_ENV_NAME}) — needs no repo and no setup`}
+              className="btn-link"
               onClick={() =>
                 void window.gurt
-                  .setOperatorEnv(ws, undefined)
-                  .then(() => setOperatorError(''))
+                  .setBaseImage(undefined)
+                  .then(() => {
+                    setBaseImage(DEFAULT_BASE_IMAGE)
+                    setBaseDraft(DEFAULT_BASE_IMAGE)
+                  })
                   .catch((e: unknown) =>
                     setOperatorError(e instanceof Error ? e.message : String(e))
                   )
               }
             >
-              {!wsData?.operatorEnv ? 'bundled default ✓' : 'bundled default'}
+              reset
             </button>
-            {envs.map((e) => (
-              <button
-                key={e.name}
-                type="button"
-                className={`btn-link ${wsData?.operatorEnv === e.name ? 'active' : ''}`}
-                onClick={() =>
-                  void window.gurt
-                    .setOperatorEnv(ws, e.name)
-                    .then(() => setOperatorError(''))
-                    .catch((err: unknown) =>
-                      setOperatorError(err instanceof Error ? err.message : String(err))
-                    )
-                }
-              >
-                {wsData?.operatorEnv === e.name ? `${e.name} ✓` : e.name}
-              </button>
-            ))}
-          </div>
-          {operatorError && <div className="error">{operatorError}</div>}
+          )}
+          {!wsData?.defaultEnv && <span className="tag tag-green">default</span>}
+          {wsData?.defaultEnv && ws && (
+            <button
+              className="btn-link"
+              onClick={() => void setDefault(undefined)}
+            >
+              make default
+            </button>
+          )}
         </div>
-      )}
-      <div className="set-list">
-        {/* Read-only: the bundled starter is code, not workspace data
-            (docs/requirements-new-projects.md §3) — listed so it is not a
-            surprise in the session's env picker. */}
-        {ws && (
-          <div className="set-row" title="offered in every session's env picker; not editable">
-            <span className="set-row-label">{STARTER_ENV_NAME}</span>
-            <span className="set-row-url mono">
-              bundled · node 22 on Debian 13, git, python3, build tools — for a repo with no env yet
-            </span>
-          </div>
-        )}
+        {operatorError && <div className="error">{operatorError}</div>}
         {envs.map((e) => {
           const st = statuses[e.name]
           const isBuilding = building.has(e.name)
@@ -724,6 +741,13 @@ function EnvironmentsSection({ tree, ws }: { tree: Tree | null; ws: string | nul
                       build
                     </button>
                   ))}
+                {wsData?.defaultEnv === e.name ? (
+                  <span className="tag tag-green">default</span>
+                ) : (
+                  <button className="btn-link" onClick={() => void setDefault(e.name)}>
+                    make default
+                  </button>
+                )}
                 <button className="btn-link" onClick={() => setEditing(e)}>
                   edit
                 </button>

@@ -57,7 +57,7 @@ write(`${ws}/triage/sessions.json`, [
   {
     info: {
       id: 'tpl-1',
-      env: 'operator',
+      env: 'base',
       role: 'proactive',
       repos: [],
       task: 'triage',

@@ -27,9 +27,14 @@ process.env.GURT_STALE_BACKOFF_SCALE = '0'
 fs.mkdirSync(GURT_ROOT, { recursive: true })
 const fake = installFakeDocker(tmp)
 
-// A bundled env the (repo-less) operator resolves by name.
-const OPERATOR_ENV = path.join(tmp, 'operator.json')
-process.env.GURT_OPERATOR_ENV = OPERATOR_ENV
+// A workspace env the (repo-less) operator resolves by name.
+const writeOpEnv = (cfg) => {
+  fs.mkdirSync(path.join(process.env.GURT_ROOT, 'ws'), { recursive: true })
+  fs.writeFileSync(
+    path.join(process.env.GURT_ROOT, 'ws', 'workspace.json'),
+    JSON.stringify({ repos: [], envs: [cfg] })
+  )
+}
 
 const outfile = path.join(tmp, 'entry.mjs')
 await bundle({
@@ -279,9 +284,9 @@ test('hooks: the id is announced only after setup succeeded', async () => {
 })
 
 test('ensure (repo-less operator): no patch names the container before setup has run', async () => {
-  fs.writeFileSync(OPERATOR_ENV, JSON.stringify({ image: 'op:1', setup: 'echo prep', start: 'echo go' }))
+  writeOpEnv({ name: 'op', image: 'op:1', setup: 'echo prep', start: 'echo go' })
   fake.ctl({ volumeExists: true, volumeReady: true })
-  const sess = { id: 'op1', workspace: 'ws', task: 't', env: 'operator', repos: [], role: 'operator', agent: undefined }
+  const sess = { id: 'op1', workspace: 'ws', task: 't', env: 'op', repos: [], role: 'operator', agent: undefined }
   const patches = []
   const manager = new m.ContainerManager({
     bus: { emit: noop },

@@ -49,7 +49,7 @@ xattr -dr com.apple.quarantine /Applications/gurt.app
 
 Gurt drives the `docker` CLI directly (there is no bundled container tooling);
 the files it hands to other processes by path — the node-pty binding and
-`resources/**` (the bundled env files, the proxy script) — are kept outside
+`resources/**` (the proxy script) — are kept outside
 `app.asar` (`asarUnpack`), because only Electron's own fs can read from an asar.
 
 ## Auto-update

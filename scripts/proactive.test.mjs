@@ -80,7 +80,7 @@ const view = () => kernel.proactive.views(ws).find((a) => a.name === 'triage')
 const tools = (runId) => kernel.proactive.hooksFor(ws, 'triage', runId)
 const executor = (prompt = 'fix it') => ({ role: 'executor', repos: ['alpha'], prompt })
 const endTurn = (sessionId) =>
-  kernel.bus.emit('session.turn', { sessionId, ref: { workspace: ws, task: 'triage', env: 'operator' }, phase: 'ended', final: true })
+  kernel.bus.emit('session.turn', { sessionId, ref: { workspace: ws, task: 'triage', env: 'base' }, phase: 'ended', final: true })
 
 // --- pure rules ---------------------------------------------------------------
 test('refs, slugs, config, schedule', () => {
@@ -130,7 +130,7 @@ test('create: a scope with a template that never runs', async () => {
   const t = kernel.sessions.sessionInfo(templateId)
   assert.equal(t.role, 'proactive')
   assert.equal(t.template, true)
-  assert.equal(t.env, 'operator', 'the bundled image-only env')
+  assert.equal(t.env, 'base', 'the bundled image-only env')
   assert.equal(t.agent, 'a1', "the workspace's default agent")
   assert.deepEqual(t.repos, [])
   assert.throws(() => kernel.sessions.run(templateId), /template/)
@@ -322,7 +322,7 @@ test('the clock: due, overlap, timeout, run collection', async () => {
 test('a run from a previous app life is not offered for recovery', () => {
   const info = {
     id: 'old-run',
-    env: 'operator',
+    env: 'base',
     role: 'proactive',
     repos: [],
     task: 'triage',

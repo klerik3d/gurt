@@ -2,7 +2,7 @@
 // acceptance §12 item 2), without docker or an agent: zero repos enforced at
 // every entrance, the repo-less start path through all four gates, no clone
 // lock taken and none waited for, no `complete` and no nudge, no
-// `create_session`, the image-only refusal, and the `operatorEnv` resolution.
+// `create_session`, the image-only refusal, and the default env resolution.
 //
 // Container state is staged through `sessions.patchContainer` where a holder
 // is needed — same trick as session-roles.test.mjs, so no daemon is involved.
@@ -44,12 +44,8 @@ fs.writeFileSync(
 )
 fs.chmodSync(path.join(stubBin, 'docker'), 0o755)
 process.env.PATH = `${stubBin}${path.delimiter}${process.env.PATH}`
-// The bundled env's on-disk home resolves relative to the real module dir,
-// which a bundled test does not have — the same seam GURT_PROXY_SCRIPT gives
-// the proxy points the tests at a config they control.
-const OPERATOR_ENV_FILE = path.join(GURT_ROOT, 'bundled-operator-env.json')
-fs.writeFileSync(OPERATOR_ENV_FILE, JSON.stringify({ image: 'node:22-test' }))
-process.env.GURT_OPERATOR_ENV = OPERATOR_ENV_FILE
+// The base image setting the base env resolves to.
+fs.writeFileSync(path.join(GURT_ROOT, 'images.json'), JSON.stringify({ baseImage: 'node:22-test' }))
 
 const outfile = path.join(os.tmpdir(), `gurt-operator-${process.pid}.mjs`)
 const S = (rel) => JSON.stringify(path.join(ROOT, rel))
@@ -59,10 +55,10 @@ await bundle({
     contents:
       `export { createKernel } from ${S('src/main/kernel.ts')}\n` +
       `export { assertRoleFitsRepos, postTurnDecision } from ${S('src/main/sessions.ts')}\n` +
-      `export { addEnv, getWorkspace, setOperatorEnv } from ${S('src/main/store.ts')}\n` +
-      `export { bundledOperatorEnv } from ${S('src/main/operatorEnv.ts')}\n` +
+      `export { addEnv, getWorkspace, setDefaultEnv } from ${S('src/main/store.ts')}\n` +
+      `export { bundledEnv } from ${S('src/main/baseEnv.ts')}\n` +
       `export { containerLayout } from ${S('src/main/containers.ts')}\n` +
-      `export { OPERATOR_ENV_NAME, operatorEnvName, roleHasTurnContract, roleIsReadOnly, roleLocksClone, roleNeedsRepo, spawnableRoles } from ${S('src/shared/types.ts')}`,
+      `export { BASE_ENV_NAME, defaultEnvName, roleHasTurnContract, roleIsReadOnly, roleLocksClone, roleNeedsRepo, spawnableRoles } from ${S('src/shared/types.ts')}`,
     resolveDir: ROOT,
     loader: 'ts',
     sourcefile: 'entry.ts'
@@ -110,7 +106,7 @@ fs.writeFileSync(path.join(GURT_ROOT, 'agents.json'), JSON.stringify({}))
 
 const kernel = m.createKernel()
 await kernel.ready
-const ref = { workspace: ws, task, env: m.OPERATOR_ENV_NAME }
+const ref = { workspace: ws, task, env: m.BASE_ENV_NAME }
 
 // --- the table row (§2.1) ---------------------------------------------------
 
@@ -157,7 +153,7 @@ test('exactly zero repos: create, draft edit, IPC', async () => {
   )
   assert.equal(kernel.sessions.snapshot(draft.id).info.role, 'executor', 'rejected edit changed nothing')
   // With the repos dropped in the same patch the edit lands.
-  await kernel.editDraft(draft.id, { role: 'operator', repos: [], env: m.OPERATOR_ENV_NAME })
+  await kernel.editDraft(draft.id, { role: 'operator', repos: [], env: m.BASE_ENV_NAME })
   assert.equal(kernel.sessions.snapshot(draft.id).info.role, 'operator')
   kernel.sessions.deleteSession(draft.id)
 })
@@ -285,25 +281,25 @@ test('an env with a build section is refused with its own sentence', async () =>
   fs.writeFileSync(path.join(GURT_ROOT, 'agents.json'), JSON.stringify({}))
 })
 
-// --- operatorEnv resolution (§2.2) ------------------------------------------
+// --- default env resolution ------------------------------------------
 
-test('operatorEnv: absent → bundled, set → that env', async () => {
-  assert.equal(m.operatorEnvName({}), m.OPERATOR_ENV_NAME, 'absent resolves to the bundled default')
-  assert.equal(m.operatorEnvName({ operatorEnv: 'dev' }), 'dev', 'set resolves to that env')
+test('defaultEnv: absent → base, set → that env', async () => {
+  assert.equal(m.defaultEnvName({}), m.BASE_ENV_NAME, 'absent resolves to the bundled default')
+  assert.equal(m.defaultEnvName({ defaultEnv: 'dev' }), 'dev', 'set resolves to that env')
 
-  const bundled = await m.bundledOperatorEnv()
-  assert.equal(bundled.name, m.OPERATOR_ENV_NAME)
-  assert.equal(bundled.image, 'node:22-test', 'reads the bundled config (override seam)')
+  const bundled = await m.bundledEnv(m.BASE_ENV_NAME)
+  assert.equal(bundled.name, m.BASE_ENV_NAME)
+  assert.equal(bundled.image, 'node:22-test', 'reads the base image setting')
 
-  await m.setOperatorEnv(ws, 'dev')
-  assert.equal((await m.getWorkspace(ws)).operatorEnv, 'dev', 'persisted')
-  await assert.rejects(m.setOperatorEnv(ws, 'nope'), /not registered/, 'unknown env refused')
-  await m.setOperatorEnv(ws, undefined)
-  assert.equal((await m.getWorkspace(ws)).operatorEnv, undefined, 'cleared back to bundled')
+  await m.setDefaultEnv(ws, 'dev')
+  assert.equal((await m.getWorkspace(ws)).defaultEnv, 'dev', 'persisted')
+  await assert.rejects(m.setDefaultEnv(ws, 'nope'), /not registered/, 'unknown env refused')
+  await m.setDefaultEnv(ws, undefined)
+  assert.equal((await m.getWorkspace(ws)).defaultEnv, undefined, 'cleared back to bundled')
 
   // The name is reserved: a workspace env may not take it (§2.2).
   await assert.rejects(
-    m.addEnv(ws, { name: m.OPERATOR_ENV_NAME, image: 'x' }),
+    m.addEnv(ws, { name: m.BASE_ENV_NAME, image: 'x' }),
     /reserved/,
     'the bundled name is reserved in the store validator'
   )

@@ -124,7 +124,7 @@ Details: [docs/architecture.md](docs/architecture.md).
 **Per session**
 - MCP servers picked per session: the built-in GitHub server (off, read-only or full), remote HTTP servers and local stdio servers.
 - Skills (`SKILL.md` directories) picked per session and mounted read-only into the container.
-- Environments are definitions stored in Gurt (an image or a Dockerfile, environment variables, a setup script and a start script). Repos without one can use the bundled `starter` env.
+- Environments are definitions stored in Gurt (an image or a Dockerfile, environment variables, a setup script and a start script). Sessions start on the base image (Settings → Environments), which any environment can replace as the default.
 
 **Workflow**
 - Queue: a new session is a draft until you press **Run**. Run always goes through the queue: the session starts at once if nothing is in the way, and waits otherwise. The lock is per clone, so sessions on different repos run in parallel. You can cap concurrent sessions per scope. The queue survives a restart.
@@ -158,7 +158,7 @@ Download a build from [Releases](https://github.com/klerik3d/gurt/releases/lates
 1. Start Docker and launch Gurt. The welcome screen checks the Docker CLI, the daemon and the images. **Prepare** pulls any missing images.
 2. Pick an agent kind. Then either **Sign in with …** or paste an API key ("or paste an API key instead"). The key is stored in this machine's credential store.
 3. Gurt creates a workspace, a scope and an **operator** session, and starts it. The operator holds no repository. It reads your configuration, tells you what to fix, and can make the change itself; changes that would run code on the host wait for your confirmation.
-4. In Settings → Repos, add a repository. For pushing, add a GitHub token in Settings → Credentials. A repo with no env of its own can run in the bundled `starter` env.
+4. In Settings → Repos, add a repository. For pushing, add a GitHub token in Settings → Credentials. A repo with no env of its own runs on the base image.
 5. Create a new session (command palette → "New session…"). It starts as a draft. On its Config tab choose role **executor**, the env, the repo and an agent, write the first prompt, and press **Run**.
 6. When the agent finishes with changes, open the **Diff** view in the activity bar. Review the diff, then **Commit changes…** and **Push changes**.
 

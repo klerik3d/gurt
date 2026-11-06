@@ -34,10 +34,6 @@ const S = (rel) => JSON.stringify(path.join(ROOT, rel))
 
 const GURT_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'gurt-doctor-'))
 process.env.GURT_ROOT = GURT_ROOT
-// `operatorEnvPath()` resolves off `import.meta.url`, which for a bundle is a
-// temp file — the same seam `GURT_PROXY_SCRIPT` gives the proxy, and the one
-// the operator smoke already uses (requirements-session-operator.md §16).
-process.env.GURT_OPERATOR_ENV = path.join(ROOT, 'resources', 'env', 'operator.json')
 
 const outfile = path.join(os.tmpdir(), `gurt-doctor-${process.pid}.mjs`)
 await bundle({
@@ -188,13 +184,13 @@ test('a healthy daemon offers no action at all', async () => {
 
 test('prepare covers the operator env, gurt\'s node runtime AND the session proxy', async () => {
   // All read from where they are defined rather than restated: a packaged
-  // update bumps the operator env's pin and Prepare has to follow it.
+  // update bumps the base image's pin and Prepare has to follow it.
   const refs = await m.prepareImages()
   assert.equal(refs.includes(m.PROXY_IMAGE), true, 'every session gets a proxy container')
   assert.equal(refs.includes(m.NODE_RUNTIME_IMAGE), true, 'every session mounts the node volume')
   assert.equal(new Set(refs).size, refs.length, 'one pull per distinct image')
   const operator = refs.find((r) => r !== m.PROXY_IMAGE && r !== m.NODE_RUNTIME_IMAGE)
-  // The bundled operator image may be the very image the runtime is filled from.
+  // The base image may be the very image the runtime is filled from.
   for (const r of operator ? [operator] : [m.NODE_RUNTIME_IMAGE])
     assert.match(r, /^node:.*@sha256:/, 'digest-pinned, like everything else gurt runs')
 })

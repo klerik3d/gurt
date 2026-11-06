@@ -22,7 +22,7 @@ import type {
 } from '../shared/types'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import type { McpRegistryEntry } from '../shared/mcp'
-import { OPERATOR_ENV_NAME, STARTER_ENV_NAME } from '../shared/types'
+import { BASE_ENV_NAME, DEFAULT_BASE_IMAGE } from '../shared/types'
 import { sanitizeWelcomeMode, type WelcomeMode } from '../shared/doctor'
 import { agentDef } from '../shared/agents'
 import { defaultAgentConfig } from '../shared/agentConfig'
@@ -160,10 +160,8 @@ const RESERVED_NAMES: Record<string, string[]> = {
   workspace: ['agents.json', 'credentials.json', 'agent-config-cache.json'],
   task: ['workspace.json', 'skills', 'repos'],
   repo: ['task.json', 'sessions.json', 'review.json', 'sessions', '.multirepo', 'proactive-state.json'],
-  // The bundled envs' names are spoken for: they share the env name space, so a workspace env may not
-  // take them (docs/requirements-session-operator.md §2.2,
-  // docs/requirements-new-projects.md §3).
-  env: [OPERATOR_ENV_NAME, STARTER_ENV_NAME]
+  // The base image's virtual env shares the env name space, so a workspace env may not take its name.
+  env: [BASE_ENV_NAME]
 }
 
 /** Names become path segments on disk, so reject anything that isn't a single, safe segment. */
@@ -650,6 +648,22 @@ export async function setGcSettings(settings: GcSettings): Promise<void> {
   await writeJson(gcFile(), settings)
 }
 
+const imagesFile = () => path.join(gurtRoot, 'images.json')
+
+/** The base image: the app-level setting, else the pinned default. */
+export async function getBaseImage(): Promise<string> {
+  const raw = await readJson<{ baseImage?: unknown }>(imagesFile(), {})
+  return typeof raw.baseImage === 'string' && raw.baseImage.trim()
+    ? raw.baseImage.trim()
+    : DEFAULT_BASE_IMAGE
+}
+
+/** `undefined` (or blank) restores the default. */
+export async function setBaseImage(image: string | undefined): Promise<void> {
+  const v = image?.trim()
+  await writeJson(imagesFile(), v && v !== DEFAULT_BASE_IMAGE ? { baseImage: v } : {})
+}
+
 const limitsFile = () => path.join(gurtRoot, 'limits.json')
 
 /** Plan-limit policy (Settings → Clients); a missing file is the defaults. */
@@ -743,7 +757,7 @@ export async function getWorkspace(ws: string): Promise<WorkspaceFile> {
   const defaultSkills = Array.isArray(raw.defaultSkills)
     ? raw.defaultSkills.filter((n): n is string => typeof n === 'string')
     : undefined
-  const operatorEnv = typeof raw.operatorEnv === 'string' ? raw.operatorEnv : undefined
+  const defaultEnv = typeof raw.defaultEnv === 'string' ? raw.defaultEnv : undefined
   const data: WorkspaceFile = {
     repos,
     envs,
@@ -751,7 +765,7 @@ export async function getWorkspace(ws: string): Promise<WorkspaceFile> {
     ...(defaultAgent ? { defaultAgent } : {}),
     ...(deniedAgents?.length ? { deniedAgents } : {}),
     ...(defaultSkills?.length ? { defaultSkills } : {}),
-    ...(operatorEnv ? { operatorEnv } : {})
+    ...(defaultEnv ? { defaultEnv } : {})
   }
   if (migrated) await saveWorkspace(ws, data)
   return data
@@ -968,23 +982,21 @@ export function setDeniedAgents(ws: string, agentIds: string[]): Promise<void> {
 }
 
 /**
- * Point the workspace's operator sessions at one of its own envs, or back at
- * the bundled default (`undefined`) — the operator twin of `setDefaultAgent`
- * (docs/requirements-session-operator.md §2.2). Rejects a name the registry
- * does not hold: a default nothing resolves to would fail every operator
- * start.
+ * Make one of the workspace's envs the default for new sessions, or back to
+ * the base image (`undefined`). Rejects a name the registry does not hold: a
+ * default nothing resolves to would fail every new session.
  */
-export function setOperatorEnv(ws: string, env: string | undefined): Promise<void> {
+export function setDefaultEnv(ws: string, env: string | undefined): Promise<void> {
   return editWorkspace(ws, async () => {
     const data = await getWorkspace(ws)
     if (env !== undefined && !data.envs.some((e) => e.name === env))
       throw new Error(`env "${env}" is not registered in "${ws}"`)
-    if (env) data.operatorEnv = env
-    else delete data.operatorEnv
+    if (env) data.defaultEnv = env
+    else delete data.defaultEnv
     await saveWorkspace(ws, data)
     await journal(
-      `workspace "${ws}": operator env ${env ? `set to "${env}"` : 'reset to the bundled default'}`,
-      'setOperatorEnv',
+      `workspace "${ws}": default env ${env ? `set to "${env}"` : 'reset to the base image'}`,
+      'setDefaultEnv',
       ws
     )
   })
@@ -1686,7 +1698,7 @@ export async function buildTree(): Promise<Tree> {
       ...(wsData.defaultAgent ? { defaultAgent: wsData.defaultAgent } : {}),
       ...(wsData.deniedAgents?.length ? { deniedAgents: wsData.deniedAgents } : {}),
       ...(wsData.defaultSkills?.length ? { defaultSkills: wsData.defaultSkills } : {}),
-      ...(wsData.operatorEnv ? { operatorEnv: wsData.operatorEnv } : {}),
+      ...(wsData.defaultEnv ? { defaultEnv: wsData.defaultEnv } : {}),
       tasks,
       proactive
     })

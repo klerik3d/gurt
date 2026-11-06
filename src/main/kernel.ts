@@ -110,9 +110,8 @@ async function assertDraftTarget(
   for (const r of repos)
     if (!wsData.repos.some((c) => c.name === r))
       throw new Error(`repo "${r}" is not registered in "${ws}"`)
-  // The bundled envs resolve by name wherever a workspace env would — they
-  // share one name space, and the store reserves their names
-  // (docs/requirements-session-operator.md §2.2).
+  // The base env resolves by name wherever a workspace env would — they share
+  // one name space, and the store reserves its name.
   if (env !== undefined && !isBundledEnv(env) && !wsData.envs.some((e) => e.name === env))
     throw new Error(`environment "${env}" is not registered in "${ws}"`)
   if (agent && wsData.deniedAgents?.includes(agent))

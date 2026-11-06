@@ -22,7 +22,7 @@ import {
 } from '../shared/doctor'
 import { hostPath } from './hostPath'
 import { createLogger } from './log'
-import { bundledOperatorEnv } from './operatorEnv'
+import { getBaseImage } from './store'
 import { PROXY_IMAGE } from './proxy/manager'
 import {
   NODE_RUNTIME_IMAGE,
@@ -43,19 +43,14 @@ const PULL_TIMEOUT_MS = 15 * 60_000
 /**
  * The images a first session needs, digest-pinned, all read from where they
  * are already defined rather than restated here — a packaged update bumps the
- * operator env's pin and Prepare has to follow it: the operator env's image,
- * gurt's Node runtime image (its volume is filled right after the pulls) and
- * the proxy.
+ * base image's pin and Prepare has to follow it: the base image, gurt's Node
+ * runtime image (its volume is filled right after the pulls) and the proxy.
  *
- * Only the *bundled* env. A workspace that re-pointed `operatorEnv`
- * (`setOperatorEnv`) may name an env with a Dockerfile, which is not a pull at
- * all; the row says so instead of claiming a check it did not make.
+ * Only the base image: a workspace env may name a Dockerfile, which is not a
+ * pull at all.
  */
 export async function prepareImages(): Promise<string[]> {
-  const env = await bundledOperatorEnv()
-  const refs = [NODE_RUNTIME_IMAGE, PROXY_IMAGE]
-  if (env.image?.trim()) refs.unshift(env.image.trim())
-  return [...new Set(refs)]
+  return [...new Set([await getBaseImage(), NODE_RUNTIME_IMAGE, PROXY_IMAGE])]
 }
 
 /** A row's label and gating come from the one shared list, so main and the

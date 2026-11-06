@@ -91,7 +91,7 @@ export { createWorkspace, createTask, getWorkspace, addRepo, updateRepo, removeR
 const m = await import(pathToFileURL(outfile).href)
 
 const WS = 'ws'
-const ref = (task) => ({ workspace: WS, task, env: 'starter' })
+const ref = (task) => ({ workspace: WS, task, env: 'base' })
 const git = (dir, ...args) => pexecFile('git', ['-C', dir, ...args]).then((r) => r.stdout.trim())
 
 after(() => {

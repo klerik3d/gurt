@@ -29,7 +29,6 @@ Where to look in the code (the domain model itself is described below):
   container and run as-is, so it is not built with the app; its contract (the
   config file it reads) is `src/shared/proxy.ts`, written by
   `src/main/proxy/config.ts`.
-- `resources/env/` — the bundled `operator` and `starter` env configs.
 
 ```
 renderer (React)  ⇄  preload (window.gurt)  ⇄  main (kernel)
@@ -125,9 +124,10 @@ tree is never polluted with Gurt files.
   editor can load a root Dockerfile of the repo into its field); Gurt reads no
   devcontainer.json, and the repo is never the source of truth at runtime. It is a template, not an
   instance: any number of sessions may run the same env at once.
-  Two envs are bundled rather than defined: `operator` (see the operator role) and
-  `starter` — `node:22-trixie`, image-only, offered to every role for a repo
-  that has no env yet.
+  One env is virtual rather than defined: `base`, the app-level base image
+  (`~/.gurt/images.json`, default `node:<LTS>-trixie-slim` pinned by digest). It
+  is the default of every new session, offered to every role, and runs any repo.
+  A workspace can make one of its own envs the default instead (`defaultEnv`).
 - **container** — owned by exactly one session, 1:1. Created at that session's
   first start, stopped when it goes idle, destroyed with it; never shared with
   or inherited by another session. Docker is the registry (every container
@@ -168,8 +168,8 @@ tree is never polluted with Gurt files.
     admin tools on its `gurt` MCP server (`src/main/adminSurface.ts`,
     `src/main/adminWrites.ts`): every write carries the entity's revision,
     credential re-links are refused, and fields that would run code on the host
-    are held until the user confirms. It runs in the workspace's operator env
-    (by default the bundled `operator` one); the first-run screen starts one. See
+    are held until the user confirms. It runs in the workspace's default env
+    (by default the base image); the first-run screen starts one. See
     [requirements-session-operator.md](requirements-session-operator.md).
   - **proactive** — one run of a proactive agent: zero or more repos,
     read-only, locks nothing. It does no work itself; its `gurt` tools raise

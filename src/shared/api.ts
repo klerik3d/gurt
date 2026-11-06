@@ -214,11 +214,14 @@ export interface GurtApi {
   /** Replace the workspace's default-on skill set wholesale (empty = none).
    *  Rejects a name the registry does not hold. */
   setDefaultSkills(ws: string, names: string[]): Promise<void>
-  /** Point the workspace's operator sessions at one of its own envs, or back
-   *  at the bundled default (`undefined`) — the operator twin of
-   *  `setDefaultAgent` (docs/requirements-session-operator.md §2.2). Rejects
-   *  an env the registry does not hold. */
-  setOperatorEnv(ws: string, env: string | undefined): Promise<void>
+  /** Make one of the workspace's envs the default for new sessions, or back
+   *  to the base image (`undefined`). Rejects an env the registry does not
+   *  hold. */
+  setDefaultEnv(ws: string, env: string | undefined): Promise<void>
+  /** The effective base image: the app-level setting, else `DEFAULT_BASE_IMAGE`. */
+  getBaseImage(): Promise<string>
+  /** Replace the base image; `undefined` restores the default. */
+  setBaseImage(image: string | undefined): Promise<void>
   /**
    * Reinstall an `npm` entry's package: drops the install stamp, so the next
    * start resolves the spec against the registry again instead of reusing what
@@ -416,8 +419,8 @@ export interface GurtApi {
    *  and a cached one would be worse than none. Never rejects: a failure is a
    *  row, which is the whole point. */
   machineDoctor(): Promise<DoctorReport>
-  /** Pull the two digest-pinned images a first session needs — the bundled
-   *  operator env's and the session proxy's (§5.1). Progress streams over
+  /** Pull the digest-pinned images a first session needs — the base
+   *  image, gurt's node runtime and the session proxy (§5.1). Progress streams over
    *  `provision-log` under the key `machine:prepare`; the call rejects with
    *  the pull's own failure. */
   machinePrepare(): Promise<void>
@@ -575,7 +578,9 @@ const METHODS = {
   removeSkill: 'write',
   skillUsedBy: 'read',
   setDefaultSkills: 'write',
-  setOperatorEnv: 'write', //   configuring gurt is the point
+  setDefaultEnv: 'write', //    configuring gurt is the point
+  getBaseImage: 'read',
+  setBaseImage: 'none', //      host-wide policy: a user gesture
   reinstallMcpServer: 'write',
   probeMcpServer: 'read', //    narrowed by kind at the host (§6): local kinds by saved id only
   createTask: 'write',

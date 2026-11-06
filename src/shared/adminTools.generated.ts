@@ -301,13 +301,22 @@ export const ADMIN_TOOLS: readonly AdminToolDef[] = [
     input: { "names": z.array(z.string()) }
   },
   {
-    name: "set_operator_env",
-    method: "setOperatorEnv",
+    name: "set_default_env",
+    method: "setDefaultEnv",
     exposure: "write",
-    description: "Point the workspace's operator sessions at one of its own envs, or back\nat the bundled default (`undefined`) — the operator twin of\n`setDefaultAgent` (docs/requirements-session-operator.md §2.2). Rejects\nan env the registry does not hold.",
+    description: "Make one of the workspace's envs the default for new sessions, or back\nto the base image (`undefined`). Rejects an env the registry does not\nhold.",
     bindWs: true,
     params: ["env"],
     input: { "env": z.string().optional() }
+  },
+  {
+    name: "get_base_image",
+    method: "getBaseImage",
+    exposure: "read",
+    description: "The effective base image: the app-level setting, else `DEFAULT_BASE_IMAGE`.",
+    bindWs: false,
+    params: [],
+    input: {}
   },
   {
     name: "reinstall_mcp_server",

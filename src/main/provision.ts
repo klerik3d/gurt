@@ -4,7 +4,7 @@ import { promises as fs } from 'node:fs'
 import { existsSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import type { EnvConfig, EnvRef, RepoConfig } from '../shared/types'
+import { DEFAULT_BASE_IMAGE, type EnvConfig, type EnvRef, type RepoConfig } from '../shared/types'
 import type { AgentManifest } from '../shared/agentPlugin'
 import { envImageTag, insideRoot, validateEnvConfig } from '../shared/envConfig'
 import type { EnvImageStatus } from '../shared/api'
@@ -638,12 +638,11 @@ export const NODE_MOUNT = '/opt/gurt/node'
  * gurt's Node runtime (§3.2): adapters are npm packages and need Node whatever
  * the env image carries. Pinned by digest, not tag (supply chain) — bump
  * deliberately with gurt releases (`docker manifest inspect
- * node:26-bookworm-slim`). Every plugin's minimum must hold (pi needs ≥ 22.19).
+ * node:26-trixie-slim`). Every plugin's minimum must hold (pi needs ≥ 22.19).
  * glibc on purpose: the volume's node runs inside the *env's* image, so a
  * musl/alpine env is unsupported (§12).
  */
-export const NODE_RUNTIME_IMAGE =
-  'node:26-bookworm-slim@sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9'
+export const NODE_RUNTIME_IMAGE = DEFAULT_BASE_IMAGE
 
 /** `docker exec` argv up to (not including) the command: the one helper every
  *  in-container step goes through. Secrets are never in it — `envNames` are

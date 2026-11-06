@@ -181,32 +181,27 @@ export interface EnvConfig {
 }
 
 /**
- * Name of the bundled default operator environment
- * (docs/requirements-session-operator.md §2.2). It is code, not user data —
- * the config lives under `resources/env/` beside the proxy script — but it
- * shares the env name space, so the store validator reserves the name: a
- * workspace env may not take it.
+ * Name of the one virtual env: the base image (`getBaseImage`). It is not in
+ * any registry — it resolves to `{ image: <base image> }` — but it shares the
+ * env name space, so the store validator reserves the name. A session on it
+ * needs no repo, no setup and no Dockerfile.
  */
-export const OPERATOR_ENV_NAME = 'operator'
+export const BASE_ENV_NAME = 'base'
 
-/** The env an operator session of this workspace runs on: the workspace's
- *  `operatorEnv` when set, else the bundled default (§2.2). The role does not
- *  check which env it got — an operator pointed at a workspace env is an
- *  ordinary session on an ordinary env. */
-export const operatorEnvName = (ws: Pick<WorkspaceFile, 'operatorEnv'>): string =>
-  ws.operatorEnv ?? OPERATOR_ENV_NAME
+/** Default of the app-level base image setting: the latest Node LTS on Debian
+ *  13 slim (glibc — gurt's node runtime is a glibc build), pinned by digest.
+ *  Bump deliberately with gurt releases
+ *  (`docker manifest inspect node:26-trixie-slim`). */
+export const DEFAULT_BASE_IMAGE =
+  'node:26-trixie-slim@sha256:5adad64f9a1fca2d51972caa65983634c8a774eb300d72b20f7f2a0f60368072'
 
-/**
- * Name of the bundled starter environment (docs/requirements-new-projects.md
- * §3): an image-only env for a project that has no env of its own yet.
- * Code, not user data, exactly like the operator default — and reserved in the
- * env name space the same way.
- */
-export const STARTER_ENV_NAME = 'starter'
+/** The env a new session of this workspace starts on: the workspace's
+ *  `defaultEnv` when set, else the base image. */
+export const defaultEnvName = (ws: Pick<WorkspaceFile, 'defaultEnv'>): string =>
+  ws.defaultEnv ?? BASE_ENV_NAME
 
-/** Env names that resolve to a bundled config rather than a workspace entry. */
-export const isBundledEnv = (name: string): boolean =>
-  name === OPERATOR_ENV_NAME || name === STARTER_ENV_NAME
+/** Env names that resolve to something other than a workspace entry. */
+export const isBundledEnv = (name: string): boolean => name === BASE_ENV_NAME
 
 /** <workspace>/workspace.json */
 export interface WorkspaceFile {
@@ -232,11 +227,9 @@ export interface WorkspaceFile {
    *  is the same "selected but unavailable" case a session's own selection
    *  already has to hold. */
   defaultSkills?: string[]
-  /** Env definition name this workspace's operator sessions run on; absent =
-   *  the bundled default (`OPERATOR_ENV_NAME`). Set from Settings, beside
-   *  `defaultAgent` and `defaultSkills`, which it is the twin of
-   *  (docs/requirements-session-operator.md §2.2). */
-  operatorEnv?: string
+  /** Env definition name new sessions of this workspace default to; absent =
+   *  the base image (`BASE_ENV_NAME`). Set from the env's row in Settings. */
+  defaultEnv?: string
 }
 
 /**
@@ -640,9 +633,8 @@ export interface Tree {
     /** Skill names switched on in every new draft here — see
      *  `WorkspaceFile.defaultSkills`. */
     defaultSkills?: string[]
-    /** Env the workspace's operator sessions run on — see
-     *  `WorkspaceFile.operatorEnv`. Absent = the bundled default. */
-    operatorEnv?: string
+    /** Env new sessions default to — see `WorkspaceFile.defaultEnv`. */
+    defaultEnv?: string
     tasks: {
       name: string
       /** ISO timestamp the task was created — see {@link TaskFile.createdAt}.

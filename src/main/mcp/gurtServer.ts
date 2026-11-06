@@ -363,7 +363,7 @@ const GET_REVISIONS_INPUT = {
     .describe(
       'entities to read, e.g. ["env:node20", "mcp:linear", "defaults"]; omit for all of ' +
         'them. Kinds: repo:<name>, env:<name>, mcp:<id>, skill:<name>, task:<name>, ' +
-        'defaults (default agent / denied agents / default skills / operator env), agents, ' +
+        'defaults (default agent / denied agents / default skills / default env), agents, ' +
         'notification-prefs, hotkeys, welcome-mode.'
     )
 }

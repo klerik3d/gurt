@@ -48,7 +48,7 @@ import {
   FIRST_RUN_WORKSPACE,
   type FirstRunResult
 } from '../shared/doctor'
-import { operatorEnvName, type AgentsFile } from '../shared/types'
+import { defaultEnvName, type AgentsFile } from '../shared/types'
 import { probeAgentToken } from './agentProviders'
 import { cancelOAuthSignIn, oauthSignIn } from './oauth'
 import { getCredentials, setCredentials } from './credentials'
@@ -251,7 +251,7 @@ async function createAndStart(
   //    refuses egress to this host.
   const wsData = await store.getWorkspace(ws)
   const info = kernel.sessions.createSession(
-    { workspace: ws, task: FIRST_RUN_TASK, env: operatorEnvName(wsData) },
+    { workspace: ws, task: FIRST_RUN_TASK, env: defaultEnvName(wsData) },
     [],
     agentId,
     FIRST_RUN_PROMPT,
