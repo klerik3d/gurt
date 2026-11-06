@@ -1196,7 +1196,6 @@ export default function App() {
                   ws={ws.name}
                   name={openProactive}
                   snapshots={snapshots}
-                  onSelectSession={selectSession}
                   onSelectTask={(w, t) => {
                     setWorkMode('sessions')
                     selectTask(w, t)

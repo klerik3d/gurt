@@ -1,13 +1,13 @@
 import { useEffect, useState } from 'react'
 import type { SessionSnapshot, Tree } from '../../../shared/types'
 import type { ProactiveConfig } from '../../../shared/proactive'
-import { PROACTIVE_BOUNDS, isPendingScope } from '../../../shared/proactive'
+import { PROACTIVE_BOUNDS, isPendingScope, cronError } from '../../../shared/proactive'
 import { alertDialog, confirmDialog } from '../dialog'
 import { logErr } from '../log'
 import { run } from '../async'
 import { ConfigTab } from './ConfigTab'
 import { Dot, Icon, InfoDot } from './icons'
-import { OUTCOME_TONE, everyLabel, proactiveDot } from './ProactiveSidebar'
+import { everyLabel, proactiveDot } from './ProactiveSidebar'
 
 type NumberKey = keyof typeof PROACTIVE_BOUNDS
 const NUMBER_KEYS = Object.keys(PROACTIVE_BOUNDS) as NumberKey[]
@@ -26,7 +26,6 @@ export function ProactivePane({
   ws,
   name,
   snapshots,
-  onSelectSession,
   onSelectTask,
   onDeleted
 }: {
@@ -34,7 +33,6 @@ export function ProactivePane({
   ws: string
   name: string
   snapshots: Record<string, SessionSnapshot>
-  onSelectSession: (id: string) => void
   onSelectTask: (ws: string, task: string) => void
   onDeleted: () => void
 }) {
@@ -42,7 +40,6 @@ export function ProactivePane({
   const agent = wsData?.proactive.find((a) => a.name === name)
   const templateId = agent?.config.templateId
   const template = agent?.sessions.find((s) => s.id === templateId)
-  const runSessions = new Set(agent?.sessions.map((s) => s.id) ?? [])
 
   // The template's full snapshot (ConfigTab reads one); kept fresh by the
   // `session-changed` pushes App folds into `snapshots`.
@@ -75,8 +72,9 @@ export function ProactivePane({
   const [prompt, setPrompt] = useState(template?.startPrompt ?? '')
   useEffect(() => setPrompt(template?.startPrompt ?? ''), [template?.startPrompt])
 
+  const [cron, setCron] = useState('')
+  useEffect(() => setCron(agent?.config.cron ?? ''), [agent?.config.cron])
   const [advanced, setAdvanced] = useState(false)
-  const [runsShown, setRunsShown] = useState(PAGE)
   const [scopesShown, setScopesShown] = useState(PAGE)
 
   if (!agent) return <div className="placeholder">proactive agent not found</div>
@@ -141,7 +139,7 @@ export function ProactivePane({
           {agent.activeRun
             ? 'running now'
             : agent.config.enabled
-              ? `${everyLabel(agent.config.everyMinutes)} · next ${time(agent.nextRunAt)}`
+              ? `${agent.config.cron ?? everyLabel(agent.config.everyMinutes)} · next ${time(agent.nextRunAt)}`
               : 'off'}
         </span>
         <span className="spacer" />
@@ -182,10 +180,20 @@ export function ProactivePane({
             />
           </div>
           <div className="pa-phrase">
-            <span>Run every</span>
-            {numberInput('everyMinutes', 'run every (minutes)')}
-            <span>min</span>
-            <InfoDot text="Counted from the last run’s start." />
+            <span>Cron</span>
+            <input
+              className="input mono pa-cron"
+              aria-label="cron schedule"
+              placeholder="0 * * * *"
+              value={cron}
+              aria-invalid={!!cron && !!cronError(cron)}
+              onChange={(e) => setCron(e.target.value)}
+              onBlur={() => { if (cron.trim() && !cronError(cron) && cron.trim() !== agent.config.cron) update({ cron: cron.trim() }) }}
+              onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }}
+            />
+            <InfoDot text="minute hour day month weekday · local timezone. Examples: 0 * * * * (hourly), 0 9 * * 1-5 (weekdays at 09:00). Supports *, lists, ranges and /steps." />
+            {cron && cronError(cron) && <span role="alert">{cronError(cron)}</span>}
+            {!agent.config.cron && <span className="dim">currently {everyLabel(agent.config.everyMinutes)}; enter cron to change</span>}
             <span className="pa-dotsep">·</span>
             <span>at most</span>
             {numberInput('maxPendingScopes', 'at most waiting scopes')}
@@ -217,7 +225,7 @@ export function ProactivePane({
               <InfoDot
                 text={
                   'Finished run sessions kept, to read or talk to; older ones are deleted. Their summary stays ' +
-                  'in the history below.'
+                  'in the saved history.'
                 }
               />
             </div>
@@ -260,39 +268,6 @@ export function ProactivePane({
             <ConfigTab tree={tree} snapshot={snapshot} />
           ) : (
             <div className="tp-empty">{template ? 'loading…' : 'the template session is missing'}</div>
-          )}
-        </div>
-
-        <div className="tp-sep" />
-
-        <div className="tp-section">
-          <span className="seclabel">RUNS</span>
-          {!agent.state.runs.length && <div className="tp-dashed">no runs yet</div>}
-          {agent.state.runs.slice(0, runsShown).map((r) => (
-            <div key={r.id} className="queue-row pa-run">
-              <Dot tone={OUTCOME_TONE[r.outcome]} pulse={r.outcome === 'running'} />
-              <span
-                className={`queue-title mono ${runSessions.has(r.id) ? 'clickable' : ''}`}
-                title={runSessions.has(r.id) ? 'open the run session' : undefined}
-                onClick={() => runSessions.has(r.id) && onSelectSession(r.id)}
-              >
-                {time(r.startedAt)}
-              </span>
-              <span className="tag">{r.outcome}</span>
-              {r.outcome !== 'skipped' && (
-                <span className="dim mono pa-counts">
-                  +{r.proposed.length} raised · {r.attached.length} attached
-                </span>
-              )}
-              <span className="pa-summary dim" title={r.error ?? r.summary}>
-                {r.error ?? r.summary ?? ''}
-              </span>
-            </div>
-          ))}
-          {agent.state.runs.length > runsShown && (
-            <button type="button" className="btn-link pa-more" onClick={() => setRunsShown((n) => n + PAGE * 2)}>
-              show more ({agent.state.runs.length - runsShown})
-            </button>
           )}
         </div>
 

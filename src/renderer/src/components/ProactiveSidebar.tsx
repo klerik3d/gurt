@@ -121,7 +121,7 @@ export function ProactiveSidebar({
                 <Dot tone={dot.tone} pulse={dot.pulse} hollow={dot.hollow} />
                 <span className="sb-task-name">{a.name}</span>
                 <span className="spacer" />
-                <span className="sb-session-client">{everyLabel(a.config.everyMinutes)}</span>
+                <span className="sb-session-client">{a.config.cron ?? everyLabel(a.config.everyMinutes)}</span>
               </div>
               {open &&
                 runs.map(({ session: s, record: r }) => {

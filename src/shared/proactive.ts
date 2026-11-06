@@ -13,6 +13,8 @@ export interface ProactiveConfig {
   enabled: boolean
   /** One run every this many minutes, counted from the last run's start. */
   everyMinutes: number
+  /** Five-field cron in the local timezone; absent for legacy intervals. */
+  cron?: string
   /** Scopes of this agent still waiting for the user — every session still an
    *  untouched draft. At the limit a due run is skipped, and a run in progress
    *  may raise no more (§5). */
@@ -36,7 +38,7 @@ export const PROACTIVE_DEFAULTS: Omit<ProactiveConfig, 'templateId'> = {
 
 /** Bounds every numeric setting is clamped to. */
 export const PROACTIVE_BOUNDS: Record<
-  Exclude<keyof ProactiveConfig, 'enabled' | 'templateId'>,
+  Exclude<keyof ProactiveConfig, 'enabled' | 'templateId' | 'cron'>,
   [number, number]
 > = {
   everyMinutes: [5, 7 * 24 * 60],
@@ -67,6 +69,9 @@ export function sanitizeProactiveConfig(
     const v = r[key]
     if (typeof v === 'number' && Number.isFinite(v)) out[key] = Math.min(hi, Math.max(lo, Math.round(v)))
   }
+  const cron = typeof r['cron'] === 'string' ? r['cron'].trim() : fallback.cron
+  if (cron && !cronError(cron)) out.cron = cron
+  else if (fallback.cron) out.cron = fallback.cron
   const templateId = typeof r['templateId'] === 'string' ? r['templateId'] : fallback.templateId
   if (templateId) out.templateId = templateId
   return out
@@ -184,10 +189,74 @@ export function scopeSlug(title: string): string {
   return slug || 'proactive'
 }
 
+/** Numeric cron fields: wildcards, lists, ranges and steps. Sunday is 0 or 7. */
+type CronFields = [Set<number>, Set<number>, Set<number>, Set<number>, Set<number>]
+
+function cronFields(expression: string): CronFields {
+  const fields = expression.trim().split(/\s+/)
+  if (fields.length !== 5) throw new Error('Use five fields: minute hour day month weekday')
+  return fields.map((field, i) => {
+    const lo = [0, 0, 1, 1, 0][i]!
+    const hi = [59, 23, 31, 12, 7][i]!
+    const values = new Set<number>()
+    for (const part of field.split(',')) {
+      const match = /^(\*|\d+(?:-\d+)?)(?:\/(\d+))?$/.exec(part)
+      if (!match) throw new Error(`Invalid cron field: ${field}`)
+      const step = Number(match[2] ?? 1)
+      const range = match[1]!.split('-').map(Number)
+      const start = match[1] === '*' ? lo : range[0]!
+      const end = match[1] === '*' || (match[2] && range.length === 1) ? hi : (range[1] ?? start)
+      if (step < 1 || start < lo || end > hi || start > end)
+        throw new Error(`Invalid cron field: ${field}`)
+      for (let n = start; n <= end; n += step) values.add(i === 4 && n === 7 ? 0 : n)
+    }
+    return values
+  }) as CronFields
+}
+
+export function cronError(expression: string): string | undefined {
+  try {
+    cronFields(expression)
+    if (!Number.isFinite(nextCronDue(expression, Date.now()))) return 'This schedule has no matching date'
+    return undefined
+  } catch (e) {
+    return String((e as Error).message)
+  }
+}
+
+/** First matching local minute strictly after the reference time. */
+export function nextCronDue(expression: string, after: number): number {
+  const [minutes, hours, days, months, weekdays] = cronFields(expression)
+  const fields = expression.trim().split(/\s+/)
+  const day = new Date(after)
+  day.setHours(0, 0, 0, 0)
+  // A full leap-year cycle, including a skipped century, fits in eight years.
+  for (let d = 0; d < 366 * 8; d++, day.setDate(day.getDate() + 1)) {
+    if (!months.has(day.getMonth() + 1)) continue
+    const dom = days.has(day.getDate())
+    const dow = weekdays.has(day.getDay())
+    const matches = fields[2]!.startsWith('*') || fields[4]!.startsWith('*') ? dom && dow : dom || dow
+    if (!matches) continue
+    for (const hour of [...hours].sort((a, b) => a - b)) {
+      for (const minute of [...minutes].sort((a, b) => a - b)) {
+        const candidate = new Date(day)
+        candidate.setHours(hour, minute, 0, 0)
+        if (candidate.getHours() !== hour || candidate.getMinutes() !== minute) continue
+        if (candidate.getTime() > after) return candidate.getTime()
+      }
+    }
+  }
+  return Infinity
+}
+
 /** When the next scheduled run is due: `everyMinutes` after the last run's
  *  start, or right away for an agent that has never run. Missed slots are not
  *  replayed — a run due in the past is one run, now (§3.1). */
 export function nextRunDue(config: ProactiveConfig, state: Pick<ProactiveState, 'lastRunAt'>): number {
+  if (config.cron) {
+    const last = state.lastRunAt ? Date.parse(state.lastRunAt) : NaN
+    return nextCronDue(config.cron, Number.isFinite(last) ? last : Math.floor(Date.now() / 60_000) * 60_000 - 1)
+  }
   if (!state.lastRunAt) return 0
   const last = Date.parse(state.lastRunAt)
   return Number.isFinite(last) ? last + config.everyMinutes * 60_000 : 0
