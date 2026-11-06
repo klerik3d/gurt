@@ -1,15 +1,4 @@
-/** Coarse "when was this" wording, shared by the notifications panel and the
- *  dashboard so the two never phrase the same age differently. */
-export function relativeTime(iso: string): string {
-  const s = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000))
-  if (s < 45) return 'just now'
-  const m = Math.round(s / 60)
-  if (m < 60) return `${m}m ago`
-  const h = Math.round(m / 60)
-  if (h < 24) return `${h}h ago`
-  const d = Math.round(h / 24)
-  return `${d}d ago`
-}
+export { relativeTime } from '../../shared/time'
 
 /** `6:30pm` today, `Aug 20 at 12am` on another day — when a plan window
  *  resets, in this machine's timezone. The wording Claude Code's own `/usage`
