@@ -42,6 +42,7 @@ import { hostPath, resolveHostCommand } from '../hostPath'
 import { gurtRoot } from '../paths'
 import { lineBuffer } from '../provision'
 import { createLogger } from '../log'
+import { readBody } from '../httpBody'
 
 const log = createLogger('mcp')
 
@@ -627,23 +628,6 @@ export function startStdioBridge(
     send(await ensureChild(), msg)
   }
 
-  const readBody = (req: IncomingMessage): Promise<string> =>
-    new Promise((resolve, reject) => {
-      const chunks: Buffer[] = []
-      let size = 0
-      req.on('data', (chunk: Buffer) => {
-        size += chunk.length
-        if (size > MAX_BODY_BYTES) {
-          reject(new Error('request body too large'))
-          req.destroy()
-          return
-        }
-        chunks.push(chunk)
-      })
-      req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
-      req.on('error', reject)
-    })
-
   const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     if (!req.url || !req.url.startsWith(prefix)) {
       res.writeHead(404).end()
@@ -658,7 +642,7 @@ export function startStdioBridge(
     }
     let parsed: unknown
     try {
-      parsed = JSON.parse(await readBody(req))
+      parsed = JSON.parse(await readBody(req, MAX_BODY_BYTES))
     } catch {
       res.writeHead(400, { 'content-type': 'application/json' }).end(
         JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'parse error' } })

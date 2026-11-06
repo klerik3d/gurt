@@ -12,10 +12,11 @@
 // own scope file. The agent can route to this port (it is `host.docker.internal`
 // like the MCP listeners) but cannot call it: without the token every path is a
 // 404, and `reveal` is exactly an oracle for what a token stands for.
-import { createServer, type IncomingMessage, type Server } from 'node:http'
+import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { createLogger } from './log'
+import { readBody } from './httpBody'
 import type { PiiMask } from './pii'
 
 const log = createLogger('pii')
@@ -35,24 +36,6 @@ let listening: Promise<number> | undefined
 let server: Server | undefined
 
 const bearer = (token: Buffer): string => token.toString('base64url')
-
-function readBody(req: IncomingMessage): Promise<string> {
-  return new Promise((resolve, reject) => {
-    let size = 0
-    const chunks: Buffer[] = []
-    req.on('data', (d: Buffer) => {
-      size += d.length
-      if (size > MAX_BODY) {
-        reject(new Error('body too large'))
-        req.destroy()
-        return
-      }
-      chunks.push(d)
-    })
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
-    req.on('error', reject)
-  })
-}
 
 /** Encode every string, a few at a time, one detector call per distinct value. */
 async function encodeAll(entry: Entry, sessionId: string, strings: string[]): Promise<string[]> {
@@ -89,7 +72,7 @@ function start(): Promise<number> {
       }
       const [sessionId, entry] = found
       try {
-        const body = JSON.parse(await readBody(req)) as { strings?: unknown }
+        const body = JSON.parse(await readBody(req, MAX_BODY)) as { strings?: unknown }
         if (!Array.isArray(body.strings) || body.strings.some((s) => typeof s !== 'string'))
           throw new Error('strings must be an array of strings')
         const input = body.strings as string[]
