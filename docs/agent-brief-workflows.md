@@ -9,8 +9,8 @@ links for depth.
 ## 1. What gurt is, in one paragraph
 
 gurt is a local-first Electron app that runs coding agents (claude code,
-codex, gemini, opencode) inside per-session devcontainers. Every agent talks
-to gurt over **ACP** (JSON-RPC over stdio via `devcontainer exec`) and gets a
+codex, gemini, opencode) inside per-session containers. Every agent talks
+to gurt over **ACP** (JSON-RPC over stdio via `docker exec`) and gets a
 per-session host MCP server named **`gurt`** for structured output. All state
 lives under `~/.gurt/` (override with `GURT_ROOT`), never inside a repo.
 The core is an **Electron-free kernel** (`src/main/kernel.ts`) — importable
@@ -28,7 +28,7 @@ renderer (React)  ⇄  preload (window.gurt)  ⇄  main (kernel)
 |---|---|---|
 | workspace | `~/.gurt/<ws>/` | holds repos, envs, MCP registry, skills, agent defaults |
 | repo | git URL + optional credential link | registered per workspace |
-| env | devcontainer.json (+ Dockerfile) **definition** | a template; many sessions may use one |
+| env | image or Dockerfile + user/env/setup/start **definition** | a template; many sessions may use one |
 | task | `~/.gurt/<ws>/<task>/` | unit of work; holds clones on branch `gurt/<task>` |
 | clone | one working tree per (task, repo) | shared by all sessions of the task; **exclusive lock** for writers |
 | session | (ws, task, env, role, repos, agent, startPrompt, state) | the primary entity; owns exactly one container |
@@ -124,8 +124,8 @@ order:
   orchestrator without a doc change.
 - **Security invariants:** no credential values cross into containers or
   tool results; `credentialId` / credential-bearing `url` are never written by
-  an agent; devcontainer host-execution fields (`initializeCommand`, `mounts`,
-  `runArgs`, `privileged`, `capAdd`) are held for user confirmation.
+  an agent; a local MCP server's host-execution fields (`command`, `args`, `cwd`,
+  `env`) are held for user confirmation (the env format has none).
 
 **Before implementing any piece of orchestration, get the owner to turn it
 into a `docs/requirements-*.md`.** That is how work is authorized here.

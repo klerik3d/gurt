@@ -20,7 +20,7 @@ export const manifest: AgentManifest = {
     color: '#D97757'
   },
   // @agentclientprotocol/claude-agent-acp bundles the Claude Agent SDK — the
-  // claude-code devcontainer feature is not needed.
+  // claude-code image feature is not needed.
   adapterPackages: ['@agentclientprotocol/claude-agent-acp@0.94.0'],
   bin: 'claude-agent-acp',
   binArgs: [],

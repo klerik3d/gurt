@@ -5,7 +5,7 @@
 //   node scripts/smoke-proxy-net.mjs
 //
 // It stands a fake "session container" (alpine, labelled `gurt.session=<id>`,
-// on the default bridge, exactly where `devcontainer up` leaves one) next to a
+// on the default bridge, exactly where `docker create` leaves one) next to a
 // real proxy and drives the lifecycle end to end:
 //
 //   1. ensure  — network created, proxy started, both attached, alias resolves
@@ -95,7 +95,7 @@ async function main() {
   assert.deepEqual((await m.dockerSessionNetworks(SESSION)).get(SESSION), [NET])
   ok('the session network and its proxy exist, labelled and attached')
 
-  // The session's container, where `devcontainer up` would have left it.
+  // The session's container, where `docker create` would have left it.
   docker(
     'run', '-d', '--name', FAKE_CONTAINER, '--label', `gurt.session=${SESSION}`,
     '--add-host', 'host.docker.internal:host-gateway', 'alpine', 'sleep', '600'

@@ -57,7 +57,7 @@ fs.writeFileSync(
       { name: 'alpha', url: 'https://github.com/o/alpha.git' },
       { name: 'beta', url: 'https://github.com/o/beta.git' }
     ],
-    envs: [{ name: 'dev', devcontainer: '{"image":"x"}', repo: 'alpha' }],
+    envs: [{ name: 'dev', image: 'x', repo: 'alpha' }],
     defaultAgent: 'a1'
   })
 )

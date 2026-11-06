@@ -13,7 +13,6 @@
 // installed — and a stale "everything is fine" is worse than no checklist at
 // all, because it is the sentence that sends a user looking somewhere else.
 import { spawn } from 'node:child_process'
-import { parseEnvDevcontainer } from '../shared/envConfig'
 import {
   DOCTOR_ROWS,
   doctorReady,
@@ -26,9 +25,11 @@ import { createLogger } from './log'
 import { bundledOperatorEnv } from './operatorEnv'
 import { PROXY_IMAGE } from './proxy/manager'
 import {
+  NODE_RUNTIME_IMAGE,
   dockerCliPath,
   dockerDaemon,
   dockerImageExists,
+  ensureNodeRuntimeVolume,
   run,
   type LogSink
 } from './provision'
@@ -40,20 +41,21 @@ const log = createLogger('doctor')
 const PULL_TIMEOUT_MS = 15 * 60_000
 
 /**
- * The two images a first session needs, digest-pinned, both read from where
- * they are already defined rather than restated here — a packaged update bumps
- * the operator env's pin and Prepare has to follow it.
+ * The images a first session needs, digest-pinned, all read from where they
+ * are already defined rather than restated here — a packaged update bumps the
+ * operator env's pin and Prepare has to follow it: the operator env's image,
+ * gurt's Node runtime image (its volume is filled right after the pulls) and
+ * the proxy.
  *
  * Only the *bundled* env. A workspace that re-pointed `operatorEnv`
- * (`setOperatorEnv`) may name an env with a `build` section, which is not a
- * pull at all; the row says so instead of claiming a check it did not make.
+ * (`setOperatorEnv`) may name an env with a Dockerfile, which is not a pull at
+ * all; the row says so instead of claiming a check it did not make.
  */
 export async function prepareImages(): Promise<string[]> {
   const env = await bundledOperatorEnv()
-  const image = parseEnvDevcontainer(env.devcontainer).config?.['image']
-  const refs = [PROXY_IMAGE]
-  if (typeof image === 'string' && image.trim()) refs.unshift(image.trim())
-  return refs
+  const refs = [NODE_RUNTIME_IMAGE, PROXY_IMAGE]
+  if (env.image?.trim()) refs.unshift(env.image.trim())
+  return [...new Set(refs)]
 }
 
 /** A row's label and gating come from the one shared list, so main and the
@@ -162,10 +164,10 @@ export async function machineDoctor(
       missing.length
         ? `${missing.length} image${missing.length === 1 ? '' : 's'} to pull — the first session ` +
           'pulls them anyway; Prepare does it now'
-        : // Deliberately not the word "ready": `devcontainer up` still injects
-          // the node feature and gurt still npm-installs the ACP adapter inside
-          // the container, both over the network, on every first start (§5.2).
-          'images present — the first start still installs the node feature and the agent adapter'
+        : // Deliberately not the word "ready": gurt still npm-installs the ACP
+          // adapter inside the container, over the network, on every first
+          // start (§5.2).
+          'images present — the first start still installs the agent adapter'
     ),
     ...(missing.length ? { action: 'prepare' as const } : {})
   })
@@ -185,6 +187,12 @@ export async function machinePrepare(sink: LogSink): Promise<void> {
     sink(`pulling ${ref}`)
     await run('docker', ['pull', ref], sink, { timeoutMs: PULL_TIMEOUT_MS })
   }
+  // The Node runtime volume the session containers mount: filled from the
+  // image just pulled, so the first start does not pay for it.
+  const arch = (
+    await run('docker', ['image', 'inspect', '-f', '{{.Architecture}}', NODE_RUNTIME_IMAGE], () => {})
+  ).trim()
+  await ensureNodeRuntimeVolume(arch, sink)
   sink('images ready')
 }
 

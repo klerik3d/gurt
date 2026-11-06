@@ -38,7 +38,7 @@ process.env.GURT_ROOT = GURT_ROOT
 process.env.GURT_FORCE_PLAINTEXT = '1'
 
 // Same stub as operator-role.test.mjs: on a machine WITH a daemon the start
-// would run a real `devcontainer up` against a fake image, which is slow,
+// would run a real `docker pull` of a fake image, which is slow,
 // networked, and fails only after a pull. A stub that refuses instantly makes
 // the path identical everywhere.
 const stubBin = path.join(GURT_ROOT, 'stub-bin')

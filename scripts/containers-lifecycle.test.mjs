@@ -11,9 +11,9 @@
 //   - the record is read BEFORE the first await, because `deleteSession` drops
 //     the session synchronously right after starting the teardown (that is the
 //     exact shape of fcc244a);
-//   - removal is record-INDEPENDENT: `up` stamps the `gurt.session` label at
-//     `docker run` but the id only reaches the record when `up` returns, so a
-//     start that dies in between leaves a container only the daemon can name;
+//   - removal is record-INDEPENDENT: `create` stamps the `gurt.session` label
+//     but the id only reaches the record once `setup` succeeded, so a start
+//     that dies in between leaves a container only the daemon can name;
 //   - `docker ps` failing means "we could not ask", never "there are none" —
 //     reading the daemon's silence as an empty set drops the recorded id on
 //     the floor (teardown) or deletes every container record (reconcile);
@@ -60,7 +60,7 @@ const FAKE = path.join(BIN, 'fake-docker.cjs')
  *     (provision.ts turns a non-zero `ps` into `null`, which is emphatically
  *     not the empty list);
  *   - ids match by PREFIX, the way the real `docker ps` (short) and the
- *     devcontainer CLI (full) name the same container;
+ *     `docker create` (full) name the same container;
  *   - session containers (`gurt.session`), proxies (`gurt.proxy`) and networks
  *     are three separate registries, because that separation is the point of
  *     giving the proxy its own label: a query for one must never answer with
@@ -101,7 +101,12 @@ if (args[0] === 'ps') {
   const withLabel = args.join(' ').includes('{{.Label')
   for (const c of rows)
     if (owner === null || c.session === owner)
-      process.stdout.write((withLabel ? c.session + ' ' : '') + c.id + '\\n')
+      process.stdout.write(
+        (withLabel ? c.session + ' ' : '') + c.id +
+          // gurt.runtime: a container made before the docker runtime has none.
+          (withLabel && key === 'gurt.session' ? ' ' + (c.runtime === undefined ? 'docker' : c.runtime) : '') +
+          '\\n'
+      )
   process.exit(0)
 }
 if (args[0] === 'inspect') {
@@ -706,6 +711,20 @@ test('reconcile corrects records and reaps orphans', async () => {
 })
 
 // --- the unreachable daemon: leave every record alone ---
+test('reconcile removes a pre-migration container (no gurt.runtime=docker) and resets its record', async () => {
+  scenario([
+    { id: 'c-new', session: 'm1', running: true },
+    { id: 'c-old', session: 'm2', running: true, runtime: '' }
+  ])
+  session('m1', { status: 'running', id: 'c-new', remoteWorkspaceFolder: '/w', repos: ['alpha'] })
+  session('m2', { status: 'running', id: 'c-old', remoteWorkspaceFolder: '/w', repos: ['alpha'] })
+  await manager.reconcile()
+  assert.equal(sessions.get('m1').container.status, 'running', 'a docker-runtime container is kept')
+  assert.equal(sessions.get('m2').container, undefined, 'the old one’s record is reset: the session recreates it')
+  assert.deepEqual(mutations(), [['rm', '-fv', 'c-old']], 'and only it is removed')
+  assert.deepEqual(alive().map((c) => c.id), ['c-new'])
+})
+
 test('reconcile skips entirely when docker is unreachable', async () => {
   scenario([{ id: 'c-safe', session: 'u1', running: true }], { psExit: 1 })
   session('u1', { status: 'running', id: 'c-safe', repos: ['alpha'] })
@@ -719,9 +738,9 @@ test('reconcile skips entirely when docker is unreachable', async () => {
 })
 
 // ==========================================================================
-// openVscode gates on a running container
+// openTerminal gates on a running container
 // ==========================================================================
-test('container editor and terminal refuse anything but a fully-up container', () => {
+test('container terminal refuses anything but a fully-up container', () => {
   scenario([])
   session('v1', { status: 'stopped', id: 'c-v', remoteWorkspaceFolder: '/w', repos: ['alpha'] })
   session('v2', { status: 'running', repos: ['alpha'] })
@@ -732,7 +751,6 @@ test('container editor and terminal refuse anything but a fully-up container', (
     ['a container with no workspace folder', 'v3'],
     ['an unknown session', 'v4']
   ]) {
-    assert.throws(() => manager.openVscode(id), /container is not running/, `${what} is refused`)
     assert.throws(() => manager.openTerminal(id), /container is not running/, `${what} is refused`)
   }
   assert.deepEqual(calls(), [], 'and nothing was spawned')

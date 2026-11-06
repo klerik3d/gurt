@@ -19,12 +19,11 @@
 // confirmation the session raises itself, outside the ACP permission path and
 // therefore out of auto-allow's reach (§4.3).
 import { createHash } from 'node:crypto'
-import { applyEdits, modify } from 'jsonc-parser'
 import type { GurtApi, WriteMethod } from '../shared/api'
 import type { EnvConfig, RepoConfig } from '../shared/types'
 import type { McpRegistryEntry } from '../shared/mcp'
 import { isLocalMcpEntry, mcpCredentialUses, mcpEntryKind, normalizeMcpEntry } from '../shared/mcp'
-import { canonicalJson, parseEnvDevcontainer } from '../shared/envConfig'
+import { canonicalJson } from '../shared/envConfig'
 import { sanitizeSkillSelection } from '../shared/skills'
 import { normalizeNotificationPrefs } from '../shared/notifications'
 import { sanitizeHotkeys } from '../shared/hotkeys'
@@ -241,29 +240,6 @@ function checkAgentLinks(next: Record<string, { credentialId?: string | undefine
 
 // --- §4.1: held fields --------------------------------------------------------
 
-/**
- * The env deny list: devcontainer.json members through which a write runs code
- * on the host or opens the host to the container. §4.1's five, plus the
- * members that turned out to reach the host the same way once the provisioning
- * code was read against the rule — `build.dockerfile` is a host path gurt
- * writes the Dockerfile *to*, `build.context` a host directory sent into a
- * build, `workspaceMount` a bind like `mounts`, `securityOpt` the isolation
- * `privileged` drops wholesale, and a compose file can declare all of them.
- * Dotted names are paths into the JSON.
- */
-const ENV_HELD: Record<string, string> = {
-  initializeCommand: 'runs on your user’s machine, outside every container, before anything is built',
-  mounts: 'binds host paths into the container',
-  runArgs: 'is raw `docker run` arguments — `--privileged`, `-v /:/host`, the docker socket',
-  privileged: 'gives the container full access to the host',
-  capAdd: 'grants the container host capabilities',
-  securityOpt: 'relaxes the container’s isolation from the host',
-  workspaceMount: 'binds a host path as the container’s workspace',
-  dockerComposeFile: 'names a compose file, which can mount host paths and run privileged services',
-  'build.dockerfile': 'is a host path gurt writes the Dockerfile to',
-  'build.context': 'sends a host directory into the image build'
-}
-
 /** The command-bearing fields of a local MCP entry — a process gurt spawns on
  *  the host, unsandboxed (§4.1). `env` too: `NODE_OPTIONS` and `LD_PRELOAD`
  *  are commands by another name. The npm `version` pin is not here — §13
@@ -281,28 +257,10 @@ const heldReason = (field: string, why: string): string =>
 
 const differs = (a: unknown, b: unknown): boolean => canonicalJson(a) !== canonicalJson(b)
 
-function getPath(obj: unknown, field: string): unknown {
-  let cur = obj
-  for (const key of field.split('.')) {
-    if (!cur || typeof cur !== 'object' || Array.isArray(cur)) return undefined
-    cur = (cur as Record<string, unknown>)[key]
-  }
-  return cur
-}
-
-/** Set (or, with `undefined`, remove) one member of a JSONC text, keeping its
- *  comments and layout. */
-function setJsonc(text: string, field: string, value: unknown): string {
-  const edits = modify(text, field.split('.'), value, {
-    formattingOptions: { insertSpaces: true, tabSize: 2 }
-  })
-  return applyEdits(text, edits)
-}
-
 /** What a held fragment holds — the agent's values, kept host-side so
  *  `applyHeld` can name fields without carrying them (§4.3). */
 interface Held {
-  kind: 'env' | 'mcp'
+  kind: 'mcp'
   /** The entity's revision after the safe part landed; the fragment is valid
    *  only while the entity still reads at it. */
   rev: string
@@ -321,29 +279,8 @@ interface Plan {
 }
 
 function heldList(kind: Held['kind'], fields: Iterable<string>): HeldField[] {
-  const reasons = kind === 'env' ? ENV_HELD : MCP_HELD
-  return [...fields].map((field) => ({ field, reason: heldReason(field, reasons[field] ?? '') }))
-}
-
-/** Split an env write: the agent's text with every deny-listed member put
- *  back to what it is now (or removed, for a new env). */
-function planEnv(env: EnvConfig, prev: EnvConfig | undefined): Plan['held'] & { env: EnvConfig } | { env: EnvConfig } {
-  const next = parseEnvDevcontainer(env.devcontainer)
-  // Unparseable: nothing can be read out of it, so nothing can be smuggled
-  // through it — the store's own validation refuses it with the parse error.
-  if (!next.config) return { env }
-  const before = prev ? parseEnvDevcontainer(prev.devcontainer).config : undefined
-  const values = new Map<string, unknown>()
-  let text = env.devcontainer
-  for (const field of Object.keys(ENV_HELD)) {
-    const want = getPath(next.config, field)
-    const have = getPath(before, field)
-    if (!differs(want, have)) continue
-    values.set(field, want)
-    text = setJsonc(text, field, have)
-  }
-  if (!values.size) return { env }
-  return { env: { ...env, devcontainer: text }, kind: 'env', values }
+  void kind
+  return [...fields].map((field) => ({ field, reason: heldReason(field, MCP_HELD[field] ?? '') }))
 }
 
 function planMcp(entry: McpRegistryEntry, prev: McpRegistryEntry | undefined): Plan['held'] & { entry: McpRegistryEntry | undefined } | { entry: McpRegistryEntry } {
@@ -546,14 +483,6 @@ export function createAdminWrites(kernel: Kernel): AdminWrites {
           before as Record<string, { credentialId?: string }>
         )
         return { args: positional }
-      case 'addEnv':
-      case 'updateEnv': {
-        const split = planEnv(args['env'] as EnvConfig, before as EnvConfig | undefined)
-        return {
-          args: [ws, split.env],
-          ...('values' in split ? { held: { kind: 'env', values: split.values } } : {})
-        }
-      }
       case 'addMcpServer':
       case 'updateMcpServer': {
         const entry = args['entry'] as McpRegistryEntry
@@ -585,14 +514,10 @@ export function createAdminWrites(kernel: Kernel): AdminWrites {
   const describe = (entity: string, h: Held, fields: string[], current: unknown): string => {
     const show = (v: unknown): string =>
       v === undefined ? '(absent)' : JSON.stringify(v, null, 2).replace(/\n/g, '\n    ')
-    const currentOf = (f: string): unknown =>
-      h.kind === 'env'
-        ? getPath(current ? parseEnvDevcontainer((current as EnvConfig).devcontainer).config : undefined, f)
-        : (current as Args | undefined)?.[f]
+    const currentOf = (f: string): unknown => (current as Args | undefined)?.[f]
     const lines = [`${entity}${h.replace ? (current ? ' — replaced whole' : ' — created') : ''}`]
     for (const f of fields) {
-      const reasons = h.kind === 'env' ? ENV_HELD : MCP_HELD
-      lines.push('', `${f} — ${reasons[f] ?? ''}`, `  - ${show(currentOf(f))}`, `  + ${show(h.values.get(f))}`)
+      lines.push('', `${f} — ${MCP_HELD[f] ?? ''}`, `  - ${show(currentOf(f))}`, `  + ${show(h.values.get(f))}`)
     }
     return lines.join('\n')
   }
@@ -657,10 +582,9 @@ export function createAdminWrites(kernel: Kernel): AdminWrites {
         held.delete(k)
         throw mismatch(entity, rev, revOf(current))
       }
-      const what = h.kind === 'env' ? 'environment' : 'MCP server'
       const answer = await kernel.sessions.confirmHeld(
         ctx.sessionId,
-        `The operator asks to apply held settings to ${what} "${entity.slice(entity.indexOf(':') + 1)}" — ` +
+        `The operator asks to apply held settings to MCP server "${entity.slice(entity.indexOf(':') + 1)}" — ` +
           'these run on, or reach into, this machine',
         describe(entity, h, fields, current)
       )
@@ -682,12 +606,7 @@ export function createAdminWrites(kernel: Kernel): AdminWrites {
         }
         const w = writes()
         await store.withJournalActor(actor, async () => {
-          if (h.kind === 'env') {
-            const env = now as EnvConfig
-            let text = env.devcontainer
-            for (const f of fields) text = setJsonc(text, f, h.values.get(f))
-            await w.updateEnv(ctx.ws, { ...env, devcontainer: text })
-          } else if (h.replace) {
+          if (h.replace) {
             if (now) await w.updateMcpServer(ctx.ws, h.replace)
             else await w.addMcpServer(ctx.ws, h.replace)
           } else {

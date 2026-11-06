@@ -112,19 +112,10 @@ export const ADMIN_TOOLS: readonly AdminToolDef[] = [
     input: { "name": z.string() }
   },
   {
-    name: "discover_devcontainer",
-    method: "discoverDevcontainer",
-    exposure: "read",
-    description: "Resolves credentials the same way session clones do (by registered repo,\nhonoring a repo-linked credential), so it works for private repos too.\nWhen the found config has `build.dockerfile`, the companion Dockerfile is\nreturned too — the env editor seeds both fields at once.",
-    bindWs: true,
-    params: ["repo"],
-    input: { "repo": z.string() }
-  },
-  {
     name: "discover_dockerfiles",
     method: "discoverDockerfiles",
     exposure: "read",
-    description: "Dockerfile candidates (with content) from the repo (root +\n`.devcontainer/**`), loaded into the env editor's Dockerfile field —\neditable there after loading, not re-read from the repo.",
+    description: "Resolves credentials the same way session clones do (by registered repo,\nhonoring a repo-linked credential), so it works for private repos too.\nDockerfile candidates (with content) from the repo root, loaded into the\nenv editor's Dockerfile field — editable there after loading, not re-read\nfrom the repo.",
     bindWs: true,
     params: ["repo"],
     input: { "repo": z.string() }
@@ -172,7 +163,7 @@ export const ADMIN_TOOLS: readonly AdminToolDef[] = [
     description: "Register an env definition in the workspace.",
     bindWs: true,
     params: ["env"],
-    input: { "env": z.strictObject({ "name": z.string(), "devcontainer": z.string(), "dockerfile": z.string().optional(), "dockerfilePath": z.string().optional(), "repo": z.string().optional() }) }
+    input: { "env": z.strictObject({ "name": z.string(), "image": z.string().optional(), "dockerfile": z.string().optional(), "dockerfilePath": z.string().optional(), "build": z.strictObject({ "context": z.string().optional(), "args": z.record(z.string(), z.string()).optional(), "target": z.string().optional() }).optional(), "env": z.record(z.string(), z.string()).optional(), "setup": z.string().optional(), "start": z.string().optional(), "repo": z.string().optional() }) }
   },
   {
     name: "update_env",
@@ -181,7 +172,7 @@ export const ADMIN_TOOLS: readonly AdminToolDef[] = [
     description: "Update an env definition, matched by its (immutable) name.",
     bindWs: true,
     params: ["env"],
-    input: { "env": z.strictObject({ "name": z.string(), "devcontainer": z.string(), "dockerfile": z.string().optional(), "dockerfilePath": z.string().optional(), "repo": z.string().optional() }) }
+    input: { "env": z.strictObject({ "name": z.string(), "image": z.string().optional(), "dockerfile": z.string().optional(), "dockerfilePath": z.string().optional(), "build": z.strictObject({ "context": z.string().optional(), "args": z.record(z.string(), z.string()).optional(), "target": z.string().optional() }).optional(), "env": z.record(z.string(), z.string()).optional(), "setup": z.string().optional(), "start": z.string().optional(), "repo": z.string().optional() }) }
   },
   {
     name: "remove_env",

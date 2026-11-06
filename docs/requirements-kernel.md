@@ -40,8 +40,7 @@ two files.
 - `changes.ts` currently imports `shell`. Replace `openPr` with
   `prUrl(ws, task, repo): Promise<string>` (throws the same "origin is not
   a known forge remote" error when unknown); `shell.openExternal(url)`
-  moves to the IPC layer. `openInVscode` keeps its `spawn` (no electron
-  dependency).
+  moves to the IPC layer.
 
 ## 3. EnvManager — `src/main/envs.ts`
 

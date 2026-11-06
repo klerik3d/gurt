@@ -24,10 +24,10 @@ process.env.GURT_ROOT = GURT_ROOT
 
 // Docker must not be reachable from these tests: they assert host-side gates
 // and refusals, and on a machine WITH a daemon (CI's ubuntu runner) a start
-// that gets past them would run a real `devcontainer up` — slow, networked,
-// and failing on the fake image only after a feature fetch and a pull, well
-// past `settle`'s patience. A stub that refuses instantly makes the path
-// identical everywhere; every child inherits PATH through `run`/`runNodeCli`.
+// that gets past them would run a real `docker pull` — slow, networked,
+// and failing on the fake image only after a registry round trip, well past
+// `settle`'s patience. A stub that refuses instantly makes the path identical
+// everywhere; every child inherits PATH through `run`.
 //
 // `docker info` is the one subcommand it answers, because the start preflight
 // asks it before anything else (`assertDockerDaemon`,
@@ -61,7 +61,7 @@ await bundle({
       `export { assertRoleFitsRepos, postTurnDecision } from ${S('src/main/sessions.ts')}\n` +
       `export { addEnv, getWorkspace, setOperatorEnv } from ${S('src/main/store.ts')}\n` +
       `export { bundledOperatorEnv } from ${S('src/main/operatorEnv.ts')}\n` +
-      `export { sessionConfigArgs } from ${S('src/main/containers.ts')}\n` +
+      `export { containerLayout } from ${S('src/main/containers.ts')}\n` +
       `export { OPERATOR_ENV_NAME, operatorEnvName, roleHasTurnContract, roleIsReadOnly, roleLocksClone, roleNeedsRepo, spawnableRoles } from ${S('src/shared/types.ts')}`,
     resolveDir: ROOT,
     loader: 'ts',
@@ -97,13 +97,8 @@ fs.writeFileSync(
   JSON.stringify({
     repos: [{ name: 'alpha', url: 'https://github.com/o/alpha.git' }],
     envs: [
-      { name: 'dev', devcontainer: '{"image":"x"}', repo: 'alpha' },
-      {
-        name: 'buildenv',
-        devcontainer: JSON.stringify({ build: { dockerfile: 'Dockerfile' } }),
-        dockerfile: 'FROM scratch\n',
-        repo: 'alpha'
-      }
+      { name: 'dev', image: 'x', repo: 'alpha' },
+      { name: 'buildenv', dockerfile: 'FROM scratch\n', repo: 'alpha' }
     ]
   })
 )
@@ -298,7 +293,7 @@ test('operatorEnv: absent → bundled, set → that env', async () => {
 
   const bundled = await m.bundledOperatorEnv()
   assert.equal(bundled.name, m.OPERATOR_ENV_NAME)
-  assert.match(bundled.devcontainer, /node:22-test/, 'reads the bundled config (override seam)')
+  assert.equal(bundled.image, 'node:22-test', 'reads the bundled config (override seam)')
 
   await m.setOperatorEnv(ws, 'dev')
   assert.equal((await m.getWorkspace(ws)).operatorEnv, 'dev', 'persisted')
@@ -308,7 +303,7 @@ test('operatorEnv: absent → bundled, set → that env', async () => {
 
   // The name is reserved: a workspace env may not take it (§2.2).
   await assert.rejects(
-    m.addEnv(ws, { name: m.OPERATOR_ENV_NAME, devcontainer: '{"image":"x"}' }),
+    m.addEnv(ws, { name: m.OPERATOR_ENV_NAME, image: 'x' }),
     /reserved/,
     'the bundled name is reserved in the store validator'
   )
@@ -326,42 +321,37 @@ test('the bundled env resolves at start (env lookup passes)', async () => {
   assert.ok(!/is not registered/.test(snap.startError ?? ''), `bundled env resolved: ${snap.startError}`)
   assert.ok(!/image-only/.test(snap.startError ?? ''), 'bundled env is image-only')
   assert.ok(!/no repository/.test(snap.startError ?? ''), 'gates passed')
-  // The wrapper workspace-folder was staged, empty — zero repos is the mounted
-  // case, and the mount list is empty (§2.1).
-  const wrapper = path.join(GURT_ROOT, ws, task, '.multirepo', op.id, 'repos')
-  assert.ok(fs.existsSync(wrapper), 'empty wrapper dir staged as --workspace-folder')
-  assert.deepEqual(fs.readdirSync(wrapper), [], 'and it holds no mounts')
   kernel.sessions.deleteSession(op.id)
 })
 
-// --- up and exec resolve the same config (the first-real-run regression) ----
+// --- the container layout of a repo-less operator (§2.1) --------------------
 
-test('exec resolves exactly the config up wrote — zero mounts included', () => {
-  const info = (role, repos, skills) => ({
+test('a repo-less operator mounts no repos and works in /workspaces', () => {
+  const info = (role, repos) => ({
     id: 's1', env: 'dev', role, repos, task, workspace: ws, title: 't',
-    state: 'draft', startPrompt: '', ...(skills ? { skills } : {})
+    state: 'draft', startPrompt: ''
   })
-  const envConfig = ['--override-config', path.join(GURT_ROOT, ws, '.devcontainers', 'dev.json')]
-  const sessionConfig = [
-    '--override-config',
-    path.join(GURT_ROOT, ws, task, '.multirepo', 's1', 'devcontainer.json')
-  ]
-  // A repo-less operator's `up` runs on the env's own materialized file and
-  // writes no per-session merged copy — every exec (the adapter probe, the
-  // install, the spawn) must resolve that same file, not a merged copy that
-  // was never written. This is the "ACP adapter install failed (exit 1)" of
-  // the first real repo-less start.
-  assert.deepEqual(m.sessionConfigArgs(info('operator', []), 's1', '.claude/skills'), envConfig)
-  // With a skills bind there IS a merged copy (the bind is a mount of gurt's
-  // own), and both sides resolve it.
-  assert.deepEqual(
-    m.sessionConfigArgs(info('operator', [], [{ name: 'greet' }]), 's1', '.claude/skills'),
-    sessionConfig
-  )
-  // The existing pairings are untouched: a mounted role WITH repos merges, a
-  // plain single-repo executor stays on the env's file.
-  assert.deepEqual(m.sessionConfigArgs(info('researcher', ['alpha']), 's1', null), sessionConfig)
-  assert.deepEqual(m.sessionConfigArgs(info('executor', ['alpha']), 's1', null), envConfig)
+  // Zero repos is the mounted case with ZERO repo mounts: nothing to bind, a
+  // workdir docker creates at container start (docs/requirements-env-docker.md §3.3).
+  assert.deepEqual(m.containerLayout(info('operator', []), [], false), {
+    mounts: [],
+    workdir: '/workspaces'
+  })
+  // …and the gurt binds (skills, history) still ride beside it.
+  const bind = { hostDir: '/h/skills', target: '/gurt/skills', readonly: true }
+  assert.deepEqual(m.containerLayout(info('operator', []), [], false, [bind]).mounts, [
+    { type: 'bind', source: '/h/skills', target: '/gurt/skills', readonly: true }
+  ])
+  // The other shapes keep today's container paths.
+  const clone = { name: 'alpha', dir: '/h/alpha' }
+  assert.deepEqual(m.containerLayout(info('researcher', ['alpha']), [clone], true), {
+    mounts: [{ type: 'bind', source: '/h/alpha', target: '/workspaces/alpha', readonly: true }],
+    workdir: '/workspaces/alpha'
+  })
+  assert.deepEqual(m.containerLayout(info('executor', ['alpha']), [clone], false), {
+    mounts: [{ type: 'bind', source: '/h/alpha', target: '/workspaces/alpha' }],
+    workdir: '/workspaces/alpha'
+  })
 })
 
 /** A ref on another env of the same task. */

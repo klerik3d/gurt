@@ -2045,10 +2045,8 @@ export class SessionManager {
     await this.events.installAdapter(ctx)
 
     const child = spawnAcpAdapter(
-      ctx.session,
+      ctx.exec,
       ctx.agent,
-      ctx.configArgs,
-      ctx.hostWorkspaceFolder,
       ctx.secret,
       ctx.secretEnv,
       // The proxy variables go last, so a session's sandbox is not something an
@@ -2166,7 +2164,7 @@ export class SessionManager {
         session: key,
         agent: ctx.agent.id,
         cwd: s.remoteCwd ?? ctx.remoteWorkspaceFolder,
-        exec: (argv, env) => spawnInContainer(ctx, argv, env),
+        exec: (argv, env) => spawnInContainer(ctx.exec, argv, env),
         encode: (text) => this.mask.encode(key, text),
         reveal: (text) => this.mask.decode(key, text)
       })

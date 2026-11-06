@@ -12,7 +12,7 @@ import type {
 } from '../../../shared/types'
 import { OPERATOR_ENV_NAME, STARTER_ENV_NAME } from '../../../shared/types'
 import type { EnvImageStatus } from '../../../shared/api'
-import { parseEnvDevcontainer, validateEnvConfig } from '../../../shared/envConfig'
+import { formatEnvLines, parseEnvLines, validateEnvConfig } from '../../../shared/envConfig'
 import type {
   CredentialEntry,
   CredentialKind,
@@ -685,7 +685,7 @@ function EnvironmentsSection({ tree, ws }: { tree: Tree | null; ws: string | nul
           <div className="set-row" title="offered in every session's env picker; not editable">
             <span className="set-row-label">{STARTER_ENV_NAME}</span>
             <span className="set-row-url mono">
-              bundled · node 22 on Debian 13, git, python3, build tools — for a repo with no devcontainer yet
+              bundled · node 22 on Debian 13, git, python3, build tools — for a repo with no env yet
             </span>
           </div>
         )}
@@ -702,7 +702,9 @@ function EnvironmentsSection({ tree, ws }: { tree: Tree | null; ws: string | nul
                   {e.repo ? e.repo : 'no default repo'}
                   {e.dockerfile
                     ? ` · Dockerfile${e.dockerfilePath ? `: ${e.dockerfilePath}` : ''}`
-                    : ''}
+                    : e.image
+                      ? ` · ${e.image}`
+                      : ''}
                 </span>
                 {st?.state === 'exists' && (
                   <span className="tag tag-green">image ✓ {st.tag}</span>
@@ -759,7 +761,7 @@ function EnvironmentsSection({ tree, ws }: { tree: Tree | null; ws: string | nul
   )
 }
 
-// ---- Edit environment popup (#4b) — name, default repo, devcontainer ----
+// ---- Edit environment popup (#4b) — name, default repo, image or Dockerfile, scripts ----
 
 function EnvModal({
   ws,
@@ -775,16 +777,21 @@ function EnvModal({
   const editing = !!initial
   const [name, setName] = useState(initial?.name ?? '')
   const [repo, setRepo] = useState<string | null>(initial?.repo ?? null)
-  const [devcontainer, setDevcontainer] = useState(initial?.devcontainer ?? '')
   const [repoMenu, setRepoMenu] = useState(false)
-  const [discovering, setDiscovering] = useState(false)
-  const [discoverMsg, setDiscoverMsg] = useState('')
   const [error, setError] = useState('')
   const repoRef = useRef<HTMLDivElement>(null)
   useOutsideClose(repoMenu, repoRef, () => setRepoMenu(false))
 
+  // The source: an image to run, or a Dockerfile gurt builds. Exactly one.
+  const [source, setSource] = useState<'image' | 'dockerfile'>(
+    initial?.dockerfile ? 'dockerfile' : 'image'
+  )
+  const [image, setImage] = useState(initial?.image ?? '')
   const [dockerfile, setDockerfile] = useState(initial?.dockerfile ?? '')
   const [dockerfilePath, setDockerfilePath] = useState(initial?.dockerfilePath ?? '')
+  const [buildContext, setBuildContext] = useState(initial?.build?.context ?? '')
+  const [buildArgs, setBuildArgs] = useState(formatEnvLines(initial?.build?.args))
+  const [buildTarget, setBuildTarget] = useState(initial?.build?.target ?? '')
   const [dockerfileCandidates, setDockerfileCandidates] = useState<
     { path: string; content: string }[] | null
   >(null)
@@ -794,46 +801,39 @@ function EnvModal({
   const dockerfileRef = useRef<HTMLDivElement>(null)
   useOutsideClose(dockerfileMenu, dockerfileRef, () => setDockerfileMenu(false))
 
-  // The devcontainer is the single runtime description; the Dockerfile section
-  // exists only while the (parseable) config carries a `build` section.
-  const hasBuild = !!parseEnvDevcontainer(devcontainer).build
+  const [envText, setEnvText] = useState(formatEnvLines(initial?.env))
+  const [setup, setSetup] = useState(initial?.setup ?? '')
+  const [start, setStart] = useState(initial?.start ?? '')
+
+  const envVars = parseEnvLines(envText)
+  const argVars = parseEnvLines(buildArgs)
+  const build: NonNullable<EnvConfig['build']> = {
+    ...(buildContext.trim() ? { context: buildContext.trim() } : {}),
+    ...('vars' in argVars && Object.keys(argVars.vars).length ? { args: argVars.vars } : {}),
+    ...(buildTarget.trim() ? { target: buildTarget.trim() } : {})
+  }
   // Built by spread rather than by writing `undefined`: this is the record that
   // gets saved, and a key carrying nothing would be stored as one.
   const draft: EnvConfig = {
     name: name.trim(),
-    devcontainer,
-    ...(hasBuild && dockerfile ? { dockerfile } : {}),
-    ...(hasBuild && dockerfile && dockerfilePath ? { dockerfilePath } : {}),
+    ...(source === 'image'
+      ? { image: image.trim() }
+      : {
+          dockerfile,
+          ...(dockerfilePath ? { dockerfilePath } : {}),
+          ...(Object.keys(build).length ? { build } : {})
+        }),
+    ...('vars' in envVars && Object.keys(envVars.vars).length ? { env: envVars.vars } : {}),
+    ...(setup.trim() ? { setup } : {}),
+    ...(start.trim() ? { start } : {}),
     ...(repo ? { repo } : {})
   }
-  const cfgError = validateEnvConfig(draft)
+  const cfgError =
+    ('error' in envVars ? `environment: ${envVars.error}` : null) ??
+    ('error' in argVars ? `build args: ${argVars.error}` : null) ??
+    validateEnvConfig(draft)
   const valid = !!name.trim() && cfgError === null
   const repoUrl = repo ? repos.find((r) => r.name === repo)?.url : undefined
-
-  const discover = async () => {
-    if (!repo) return
-    setDiscoverMsg('')
-    setDiscovering(true)
-    try {
-      const found = await window.gurt.discoverDevcontainer(ws, repo)
-      if (found) {
-        setDevcontainer(found.content)
-        if (found.dockerfile) {
-          setDockerfile(found.dockerfile.content)
-          setDockerfilePath(found.dockerfile.path)
-          setDiscoverMsg(`loaded ${found.path} + ${found.dockerfile.path}`)
-        } else {
-          setDiscoverMsg(`loaded ${found.path}`)
-        }
-      } else {
-        setDiscoverMsg('no devcontainer.json found in repo')
-      }
-    } catch (e) {
-      setDiscoverMsg(e instanceof Error ? e.message : String(e))
-    } finally {
-      setDiscovering(false)
-    }
-  }
 
   const detectDockerfiles = async () => {
     if (!repo) return
@@ -949,23 +949,43 @@ function EnvModal({
 
         <div className="fld">
           <div className="fld-head">
-            <span className="seclabel">DEVCONTAINER</span>
-            <span className="fld-hint mono">{devcontainer.trim() ? '' : 'required'}</span>
-            <span className="spacer" />
+            <span className="seclabel">SOURCE</span>
+          </div>
+          <div className="seg">
             <button
-              className="btn-link mono"
-              disabled={!repoUrl || discovering}
-              title={!repoUrl ? 'set a default repository first' : undefined}
-              onClick={run(discover)}
+              type="button"
+              className={`seg-btn ${source === 'image' ? 'active' : ''}`}
+              onClick={() => setSource('image')}
             >
-              {discovering ? 'detecting…' : '⤢ detect from repo'}
+              Image
+            </button>
+            <button
+              type="button"
+              className={`seg-btn ${source === 'dockerfile' ? 'active' : ''}`}
+              onClick={() => setSource('dockerfile')}
+            >
+              Dockerfile
             </button>
           </div>
-          <JsonEditor value={devcontainer} onChange={setDevcontainer} />
-          {discoverMsg && <div className="fld-hint mono">{discoverMsg}</div>}
         </div>
 
-        {hasBuild && (
+        {source === 'image' && (
+          <label className="fld">
+            <span className="seclabel">IMAGE</span>
+            <input
+              className="input mono"
+              placeholder="node:22-trixie"
+              value={image}
+              onChange={(e) => setImage(e.target.value)}
+            />
+            <span className="fld-hint">
+              pulled when it is not on this machine; a Debian/Ubuntu (glibc) image — Alpine is not
+              supported
+            </span>
+          </label>
+        )}
+
+        {source === 'dockerfile' && (
           <div className="fld">
             <div className="fld-head">
               <span className="seclabel">DOCKERFILE</span>
@@ -974,7 +994,7 @@ function EnvModal({
                   ? dockerfilePath
                     ? `from ${dockerfilePath}`
                     : 'custom'
-                  : 'required by the build section'}
+                  : 'required'}
               </span>
               <span className="spacer" />
               <button
@@ -1023,16 +1043,67 @@ function EnvModal({
             <CodeEditor
               value={dockerfile}
               onChange={setDockerfile}
-              placeholder={'FROM node:20\nWORKDIR /app\nCOPY . .\nRUN npm ci'}
+              placeholder={'FROM node:22\nWORKDIR /app\nCOPY . .\nRUN npm ci'}
             />
             {dockerfileMsg && <div className="fld-hint mono">{dockerfileMsg}</div>}
             <div className="fld-hint">
-              gurt builds this Dockerfile in a temporary snapshot of the repo at HEAD (build
-              context = repo root); the image is cached and reused until the Dockerfile, the
-              build args, or the repo's committed content change.
+              gurt builds this Dockerfile in a temporary snapshot of the repo at HEAD; the image
+              is cached and reused until the Dockerfile, the build options, or the repo's
+              committed content change.
             </div>
+            <details>
+              <summary className="fld-hint mono">advanced — build context, args, target</summary>
+              <label className="fld">
+                <span className="seclabel">CONTEXT</span>
+                <input
+                  className="input mono"
+                  placeholder=". (repo root)"
+                  value={buildContext}
+                  onChange={(e) => setBuildContext(e.target.value)}
+                />
+                <span className="fld-hint">relative to the repo root, inside it</span>
+              </label>
+              <div className="fld">
+                <span className="seclabel">BUILD ARGS</span>
+                <CodeEditor
+                  value={buildArgs}
+                  onChange={setBuildArgs}
+                  placeholder={'NODE_VERSION=22'}
+                />
+                <span className="fld-hint">KEY=VALUE per line</span>
+              </div>
+              <label className="fld">
+                <span className="seclabel">TARGET</span>
+                <input
+                  className="input mono"
+                  value={buildTarget}
+                  onChange={(e) => setBuildTarget(e.target.value)}
+                />
+              </label>
+            </details>
           </div>
         )}
+
+        <div className="fld">
+          <span className="seclabel">ENVIRONMENT</span>
+          <CodeEditor value={envText} onChange={setEnvText} placeholder={'KEY=VALUE'} />
+          <span className="fld-hint">container environment variables, KEY=VALUE per line</span>
+        </div>
+
+        <div className="fld">
+          <span className="seclabel">SETUP SCRIPT</span>
+          <CodeEditor value={setup} onChange={setSetup} placeholder={'npm ci'} />
+          <span className="fld-hint">
+            runs once when the container is created, in the repo, with network access; skipped for
+            read-only roles
+          </span>
+        </div>
+
+        <div className="fld">
+          <span className="seclabel">START SCRIPT</span>
+          <CodeEditor value={start} onChange={setStart} placeholder={'service postgresql start'} />
+          <span className="fld-hint">runs every time the container starts</span>
+        </div>
 
         {cfgError && <div className="fld-hint mono">⚠ {cfgError}</div>}
         {error && <div className="error">{error}</div>}
@@ -1327,8 +1398,7 @@ function RepoModal({
 /**
  * Publish a local repo (docs/requirements-new-projects.md §6): one form that
  * creates the GitHub repository, pushes the history there, re-points every
- * clone — and, in the same go, turns the repo's own devcontainer into a
- * workspace env, which is when it has usually just been written.
+ * clone.
  */
 function PublishRepoModal({
   ws,
@@ -1346,7 +1416,6 @@ function PublishRepoModal({
   const [remoteName, setRemoteName] = useState(repo.name)
   const [owner, setOwner] = useState('')
   const [priv, setPriv] = useState(true)
-  const [adoptEnv, setAdoptEnv] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [result, setResult] = useState<PublishResult | null>(null)
@@ -1378,8 +1447,7 @@ function PublishRepoModal({
           credentialId,
           remoteName,
           owner,
-          private: priv,
-          adoptEnv
+          private: priv
         })
       )
     } catch (e) {
@@ -1396,16 +1464,6 @@ function PublishRepoModal({
           <div className="fld">
             <span className="seclabel">REPOSITORY</span>
             <span className="mono">{result.webUrl}</span>
-          </div>
-          <div className="fld">
-            <span className="seclabel">ENVIRONMENT</span>
-            <span className="env-access-note">
-              {result.env
-                ? `created "${result.env}" from the repo's devcontainer — new sessions on ${repo.name} can run in it`
-                : adoptEnv
-                  ? `none created: ${result.envNote ?? 'nothing found'}`
-                  : 'not requested'}
-            </span>
           </div>
         </div>
         <div className="modal-foot">
@@ -1461,21 +1519,6 @@ function PublishRepoModal({
             </button>
             <button className={`seg-btn ${!priv ? 'active' : ''}`} onClick={() => setPriv(false)}>
               public
-            </button>
-          </div>
-        </div>
-        <div className="fld">
-          <span className="seclabel">ENVIRONMENT</span>
-          <div className="seg">
-            <button
-              className={`seg-btn ${adoptEnv ? 'active' : ''}`}
-              title="if the repo has a .devcontainer, create a workspace env from it, defaulting to this repo"
-              onClick={() => setAdoptEnv(true)}
-            >
-              adopt the repo&apos;s devcontainer
-            </button>
-            <button className={`seg-btn ${!adoptEnv ? 'active' : ''}`} onClick={() => setAdoptEnv(false)}>
-              leave envs as they are
             </button>
           </div>
         </div>
@@ -1555,67 +1598,6 @@ function CodeEditor({
       </div>
     </div>
   )
-}
-
-/** JSON-flavored `CodeEditor` — devcontainer.json inline overrides. */
-function JsonEditor({ value, onChange }: { value: string; onChange: (v: string) => void }) {
-  return (
-    <CodeEditor
-      value={value}
-      onChange={onChange}
-      highlight={highlightJson}
-      placeholder='{ "image": "mcr.microsoft.com/devcontainers/base:ubuntu" }'
-    />
-  )
-}
-
-/** Tokenized JSON for the editor overlay: keys accent, strings teal, punctuation faint. */
-function highlightJson(src: string): JSX.Element[] {
-  const out: JSX.Element[] = []
-  const re =
-    /("(?:[^"\\]|\\.)*")(\s*:)|("(?:[^"\\]|\\.)*")|(\btrue\b|\bfalse\b|\bnull\b)|(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)|([{}[\],:])/g
-  let last = 0
-  let k = 0
-  let m: RegExpExecArray | null
-  while ((m = re.exec(src))) {
-    if (m.index > last) out.push(<span key={k++}>{src.slice(last, m.index)}</span>)
-    if (m[1] != null) {
-      out.push(
-        <span key={k++} className="j-key">
-          {m[1]}
-        </span>,
-        <span key={k++} className="j-punc">
-          {m[2]}
-        </span>
-      )
-    } else if (m[3] != null)
-      out.push(
-        <span key={k++} className="j-str">
-          {m[3]}
-        </span>
-      )
-    else if (m[4] != null)
-      out.push(
-        <span key={k++} className="j-lit">
-          {m[4]}
-        </span>
-      )
-    else if (m[5] != null)
-      out.push(
-        <span key={k++} className="j-num">
-          {m[5]}
-        </span>
-      )
-    else
-      out.push(
-        <span key={k++} className="j-punc">
-          {m[6]}
-        </span>
-      )
-    last = re.lastIndex
-  }
-  if (last < src.length) out.push(<span key={k}>{src.slice(last)}</span>)
-  return out
 }
 
 // ---- Clients (#4c) — agent instances ----

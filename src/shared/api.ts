@@ -151,23 +151,13 @@ export interface GurtApi {
    *  `~/.gurt/<ws>/repos/` — and register it (docs/requirements-new-projects.md §2). */
   createLocalRepo(ws: string, name: string): Promise<RepoConfig>
   /** Publish a local repo: create it on the forge, push its history, re-point
-   *  every clone, and optionally adopt its devcontainer as an env (§6). */
+   *  every clone (§6). */
   publishRepo(ws: string, name: string, spec: PublishSpec): Promise<PublishResult>
   /** Resolves credentials the same way session clones do (by registered repo,
    *  honoring a repo-linked credential), so it works for private repos too.
-   *  When the found config has `build.dockerfile`, the companion Dockerfile is
-   *  returned too — the env editor seeds both fields at once. */
-  discoverDevcontainer(
-    ws: string,
-    repo: string
-  ): Promise<{
-    path: string
-    content: string
-    dockerfile?: { path: string; content: string }
-  } | null>
-  /** Dockerfile candidates (with content) from the repo (root +
-   *  `.devcontainer/**`), loaded into the env editor's Dockerfile field —
-   *  editable there after loading, not re-read from the repo. */
+   *  Dockerfile candidates (with content) from the repo root, loaded into the
+   *  env editor's Dockerfile field — editable there after loading, not re-read
+   *  from the repo. */
   discoverDockerfiles(ws: string, repo: string): Promise<{ path: string; content: string }[]>
   /** Image status of the SAVED env config (badge in Settings → Environments). */
   envImageStatus(ws: string, env: string): Promise<EnvImageStatus>
@@ -275,9 +265,6 @@ export interface GurtApi {
   stopContainer(sessionId: string): Promise<void>
   /** Destroy a session's container. The clone (and its uncommitted work) stays. */
   releaseContainer(sessionId: string): Promise<void>
-  /** Launch VS Code, in its own window, attached to the session's running
-   *  container (impl: `ContainerManager.openVscode`). Rejects if it isn't running. */
-  sessionOpenVscode(sessionId: string): Promise<void>
   /** Open a system terminal inside the session's running container. */
   sessionOpenTerminal(sessionId: string): Promise<void>
   /** Git state of every clone of the task, computed on the host; `fetch` reaches the network. */
@@ -341,10 +328,7 @@ export interface GurtApi {
   latestProposal(ws: string, task: string, repo: string): Promise<StoredProposal | undefined>
   /** Open the browser at the forge's compare URL (impl: `prUrl` + `shell.openExternal`). */
   changesOpenPr(ws: string, task: string, repo: string): Promise<void>
-  changesOpenVscode(ws: string, task: string, repo: string): Promise<void>
   changesOpenTerminal(ws: string, task: string, repo: string): Promise<void>
-  /** Open every repo clone under the task dir in one VS Code window. */
-  taskOpenVscode(ws: string, task: string): Promise<void>
   taskOpenTerminal(ws: string, task: string): Promise<void>
   /** Copy the absolute scope directory path to the host clipboard. */
   taskCopyPath(ws: string, task: string): Promise<void>
@@ -601,7 +585,6 @@ const METHODS = {
   addRepo: 'write',
   createLocalRepo: 'write', //  addRepo plus the empty bare repo it points at
   publishRepo: 'none', //       creates a repo on an external forge with a credential
-  discoverDevcontainer: 'read', // repo file contents, by the §2.4 exception
   discoverDockerfiles: 'read', //  repo file contents, by the §2.4 exception
   envImageStatus: 'read',
   envBuildImage: 'write',
@@ -633,7 +616,6 @@ const METHODS = {
   setTaskMaxConcurrentSessions: 'write',
   stopContainer: 'none', //     §2.4: does not drive other sessions
   releaseContainer: 'none', //  §2.4
-  sessionOpenVscode: 'none', // host GUI
   sessionOpenTerminal: 'none', // host GUI
   getTaskChanges: 'read', //    counts and states, not content
   getFileDiff: 'none', //       repo content (§2.4)
@@ -653,9 +635,7 @@ const METHODS = {
   changesMergeToMain: 'none', // writes to repos and remotes
   latestProposal: 'none', //    repo content
   changesOpenPr: 'none', //     host browser
-  changesOpenVscode: 'none', // host GUI
   changesOpenTerminal: 'none', // host GUI
-  taskOpenVscode: 'none', // host GUI
   taskOpenTerminal: 'none', // host GUI
   taskCopyPath: 'none', // host clipboard
   createSession: 'none', //     phase 1; §13 question 2

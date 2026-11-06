@@ -9,7 +9,7 @@ import { existsSync } from 'node:fs'
 import { promises as fs } from 'node:fs'
 import type { PublishResult, PublishSpec, RepoConfig } from '../shared/types'
 import * as store from './store'
-import { discoverDevcontainer, run } from './provision'
+import { run } from './provision'
 import { listCredentials } from './credentials'
 import { hostGitAccess } from './git/env'
 import { providerForHost } from './git/providers'
@@ -78,8 +78,7 @@ export async function createLocalRepo(ws: string, name: string): Promise<RepoCon
  *
  * Ordered so a failure leaves the repo usable: until the push has landed
  * nothing local has changed (a repo created on the forge but not pushed to is
- * the one leftover, and the error names it). Adopting the env comes last and
- * never undoes a publish — a failure there is reported, not thrown.
+ * the one leftover, and the error names it).
  */
 export async function publishLocalRepo(
   ws: string,
@@ -97,10 +96,6 @@ export async function publishLocalRepo(
   const provider = host ? providerForHost(host) : null
   if (!host || !provider)
     throw new Error(`credential "${cred.label}" names no forge host gurt can create a repo on`)
-
-  // Read before anything moves: discovery clones from the url, which is still
-  // the local storage here and will be gone once the publish is through.
-  const discovered = spec.adoptEnv ? await discoverDevcontainer(ws, name) : null
 
   const created = await provider.createRepo(cred, host, {
     name: spec.remoteName?.trim() || name,
@@ -140,22 +135,5 @@ export async function publishLocalRepo(
     )
   await store.rmTree(store.localRepoDir(ws, name))
 
-  const result: PublishResult = { url: created.cloneUrl, webUrl: created.webUrl }
-  if (!spec.adoptEnv) return result
-  if (!discovered) return { ...result, envNote: 'the repo has no devcontainer.json' }
-  if ((await store.getWorkspace(ws)).envs.some((e) => e.name === name))
-    return { ...result, envNote: `an env named "${name}" already exists — left as is` }
-  try {
-    await store.addEnv(ws, {
-      name,
-      devcontainer: discovered.content,
-      ...(discovered.dockerfile
-        ? { dockerfile: discovered.dockerfile.content, dockerfilePath: discovered.dockerfile.path }
-        : {}),
-      repo: name
-    })
-    return { ...result, env: name }
-  } catch (e) {
-    return { ...result, envNote: e instanceof Error ? e.message : String(e) }
-  }
+  return { url: created.cloneUrl, webUrl: created.webUrl }
 }

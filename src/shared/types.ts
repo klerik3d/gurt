@@ -111,7 +111,7 @@ export type AgentsFile = Record<string, AgentInstance>
 
 /**
  * Repo identity: a registered git repository of the workspace. Repos and envs
- * are separate entities now — the devcontainer definition lives on `EnvConfig`,
+ * are separate entities now — the runtime definition lives on `EnvConfig`,
  * not here.
  */
 export interface RepoConfig {
@@ -143,37 +143,37 @@ export interface PublishSpec {
   /** Organization to create it in; absent = the credential's own account. */
   owner?: string | undefined
   private: boolean
-  /** Also turn the repo's own devcontainer (if it has one) into a workspace
-   *  env defaulting to this repo — the "adopt" half of §6. */
-  adoptEnv: boolean
 }
 
 export interface PublishResult {
   url: string
   webUrl: string
-  /** Name of the env created from the repo's devcontainer, when one was. */
-  env?: string
-  /** Why no env was created although `adoptEnv` asked for one. */
-  envNote?: string
 }
 
 /**
- * Environment definition: a named, workspace-level environment. devcontainer is
- * the normal form — whatever the repo has is only seed material; gurt's copy
- * here is the single source of truth. The name is the identity key and
- * immutable (like `RepoConfig.name`).
+ * Environment definition: a named, workspace-level environment in gurt's own
+ * format (docs/requirements-env-docker.md §2); gurt's copy here is the single
+ * source of truth, the repo's own files are never read for it.
+ * The name is the identity key and immutable (like `RepoConfig.name`).
  */
 export interface EnvConfig {
   name: string
-  /** devcontainer.json (JSONC), REQUIRED — the single runtime description.
-   *  '' is invalid: saving is blocked in the editor, starting throws. */
-  devcontainer: string
-  /** Companion Dockerfile content — REQUIRED iff `devcontainer` has a
-   *  `build` section; ignored (and cleared by the editor) otherwise.
-   *  Hand-written or seeded from the repo and edited. */
+  /** Exactly one of `image` | `dockerfile`. */
+  image?: string
+  /** Dockerfile content. */
   dockerfile?: string
   /** Repo-relative path `dockerfile` was seeded from — provenance only. */
   dockerfilePath?: string
+  /** Only with `dockerfile`. `context` is repo-root-relative (default "."),
+   *  must stay inside the repo snapshot: no absolute path, no `..` escape. */
+  build?: { context?: string; args?: Record<string, string>; target?: string }
+  /** Container environment (`docker create --env`). */
+  env?: Record<string, string>
+  /** Shell script, run once when the container is created: as the container user, in the
+   *  workdir, on the open network, before the network switch. */
+  setup?: string
+  /** Shell script, run on every container start (create and restart). */
+  start?: string
   /** Default repo, seeds new sessions on this env; not a runtime binding. Read
    *  backwards too — `store.envsDefaultingToRepo` — to answer "which env does
    *  this repo run in?", the default `create_session` drafts against. */
@@ -198,7 +198,7 @@ export const operatorEnvName = (ws: Pick<WorkspaceFile, 'operatorEnv'>): string 
 
 /**
  * Name of the bundled starter environment (docs/requirements-new-projects.md
- * §3): an image-only env for a project that has no devcontainer of its own yet.
+ * §3): an image-only env for a project that has no env of its own yet.
  * Code, not user data, exactly like the operator default — and reserved in the
  * env name space the same way.
  */
@@ -242,8 +242,8 @@ export interface WorkspaceFile {
 /**
  * stopped  — no container, or one that exists but is not up.
  * building — clone + image build, i.e. everything before the container exists.
- * post     — the container is up and its post-commands (devcontainer lifecycle
- *            hooks) are running; it is not usable yet.
+ * post     — the container is up and its setup/start scripts are running; it
+ *            is not usable yet.
  * running  — up and usable.
  *
  * `building`/`post` are runtime-only: a crash mid-provision restores as
@@ -252,7 +252,7 @@ export interface WorkspaceFile {
 export type ContainerStatus = 'stopped' | 'building' | 'post' | 'running' | 'error'
 
 /**
- * The devcontainer a session owns — strictly 1:1. It is created at the session's
+ * The container a session owns — strictly 1:1. It is created at the session's
  * first start, stopped when the session goes idle, and destroyed with the
  * session; it is never shared with, nor inherited by, another session.
  *
@@ -262,10 +262,16 @@ export type ContainerStatus = 'stopped' | 'building' | 'post' | 'running' | 'err
  */
 export interface SessionContainer {
   status: ContainerStatus
-  /** Docker container id; absent until the first successful `up`. */
+  /** Docker container id; absent until the container's `setup` has succeeded
+   *  (a crash mid-setup can never leave a record naming a half-provisioned
+   *  container). */
   id?: string
-  /** Workspace folder inside the container — the agent's cwd. */
+  /** Working directory inside the container — the agent's cwd. */
   remoteWorkspaceFolder?: string
+  /** User every exec runs as: the image's `Config.User`, else root. */
+  user?: string
+  /** The PATH every exec carries — probed once per container id after setup. */
+  path?: string
   /** Repos it was provisioned with (stamped at `up`), in the same order as
    *  `SessionInfo.repos`. `repos[0]` drives the build + git access; the rest
    *  are additional read/write mounts alongside it. */
@@ -559,7 +565,7 @@ export interface SessionInfo {
    * the map.
    */
   configValues?: Record<string, string | boolean> | undefined
-  /** The devcontainer this session owns, 1:1. Absent until its first start. */
+  /** The container this session owns, 1:1. Absent until its first start. */
   container?: SessionContainer
   /** ISO timestamp, present while queued — defines global FIFO order. */
   queuedAt?: string | undefined

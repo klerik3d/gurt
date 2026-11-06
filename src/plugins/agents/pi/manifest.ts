@@ -16,8 +16,8 @@ export const manifest: AgentManifest = {
   // bridge and spawns `pi` from PATH, so the CLI is installed beside it —
   // the adapter does not depend on it. pi-acp@0.0.34 asks for pi >= 0.81
   // and names @earendil-works/pi-coding-agent (fka @mariozechner/…) as the
-  // package; that CLI needs node >= 22.19, which the node feature's lts
-  // default covers.
+  // package; that CLI needs node >= 22.19, which gurt's node runtime (the
+  // LTS pinned in NODE_RUNTIME_IMAGE) covers.
   //
   // MCP does not reach this kind yet: pi-acp@0.0.34 advertises
   // `mcpCapabilities: { http: false, sse: false }` and keeps the

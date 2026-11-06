@@ -32,7 +32,7 @@ export const SESSION_LABEL = 'gurt.session'
 /** Anything gurt created that is *not* per session — the shared egress bridge. */
 export const MANAGED_LABEL = 'gurt.managed'
 
-/** Docker's default bridge, where `devcontainer up` lands a fresh container and
+/** Docker's default bridge, where `docker create` lands a fresh container and
  *  where provisioning deliberately runs (§7.3, the open-network window). */
 export const DEFAULT_BRIDGE = 'bridge'
 

@@ -31,7 +31,7 @@ const read = (rel) => JSON.parse(fs.readFileSync(path.join(GURT_ROOT, rel), 'utf
 
 write(`${ws}/workspace.json`, {
   repos: [{ name: 'alpha', url: 'https://github.com/o/alpha.git' }],
-  envs: [{ name: 'dev', devcontainer: '{"image":"x"}', repo: 'alpha' }],
+  envs: [{ name: 'dev', image: 'x', repo: 'alpha' }],
   defaultAgent: 'a1'
 })
 write('agents.json', { a1: { kind: 'claude-code', label: 'claude' } })

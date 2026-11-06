@@ -44,15 +44,15 @@ after(() => {
   fs.rmSync(GURT_ROOT, { recursive: true, force: true })
 })
 
-// --- workspace.json: repos fuse devcontainer, no envs ---
-test('workspace.json migration + write-once', async () => {
+// --- workspace.json: a pre-envs file reads as repos + an empty env list ---
+test('workspace.json without envs: repos kept (stray fields dropped), envs [] , write-once', async () => {
   const wsPath = path.join(GURT_ROOT, ws, 'workspace.json')
   fs.writeFileSync(
     wsPath,
     JSON.stringify({
       repos: [
         { name: 'alpha', url: 'https://github.com/o/alpha.git', devcontainer: '{"image":"x"}', credentialId: 'c1' },
-        { name: 'beta', url: 'https://github.com/o/beta.git', devcontainer: '' }
+        { name: 'beta', url: 'https://github.com/o/beta.git' }
       ]
     })
   )
@@ -60,22 +60,17 @@ test('workspace.json migration + write-once', async () => {
   assert.ok(!legacyWs.includes('"envs"'), 'fixture starts without envs')
 
   const wsData = await m.getWorkspace(ws)
-  // one env per repo, same name, seeded with the repo's devcontainer + itself as default
-  assert.deepEqual(wsData.envs, [
-    { name: 'alpha', devcontainer: '{"image":"x"}', repo: 'alpha' },
-    { name: 'beta', devcontainer: '', repo: 'beta' }
-  ])
-  // repos are stripped of devcontainer, credential link preserved
+  // The devcontainer text is not carried anywhere: gurt reads no devcontainer.
+  assert.deepEqual(wsData.envs, [])
   assert.deepEqual(wsData.repos, [
     { name: 'alpha', url: 'https://github.com/o/alpha.git', credentialId: 'c1' },
     { name: 'beta', url: 'https://github.com/o/beta.git' }
   ])
-  assert.ok(wsData.repos.every((r) => !('devcontainer' in r)), 'no repo carries devcontainer')
 
   // write-back happened (file changed, now has envs) …
   const migratedWs = read(wsPath)
   assert.notEqual(migratedWs, legacyWs, 'workspace.json rewritten on first read')
-  assert.ok(readJson(wsPath).envs.length === 2, 'envs persisted')
+  assert.deepEqual(readJson(wsPath).envs, [], 'envs persisted')
   // … and exactly once: a second read leaves the file byte-identical
   await m.getWorkspace(ws)
   assert.equal(read(wsPath), migratedWs, 'workspace.json write-back happens exactly once')

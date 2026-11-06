@@ -55,7 +55,7 @@ fs.writeFileSync(
   path.join(GURT_ROOT, ws, 'workspace.json'),
   JSON.stringify({
     repos: [],
-    envs: [{ name: 'dev', devcontainer: JSON.stringify({ image: 'x', note: SECRET }) }],
+    envs: [{ name: 'dev', image: 'x', setup: `echo ${SECRET}` }],
     // The §8 case in so many words: a secret sitting in an MCP entry's static
     // header, pasted rather than linked.
     mcpServers: [
@@ -124,7 +124,7 @@ test('config reads: the workspace.json header value never crosses the boundary',
   assert.match(servers, /Authorization/, 'the header *name* survives — it is not the secret')
 
   const tree = JSON.stringify(await admin.call({ ws, sessionId: 'op' }, 'getTree', {}))
-  assertClean(tree, 'get_tree (env devcontainer content)')
+  assertClean(tree, 'get_tree (env setup script)')
 })
 
 test('get_provisioning_log: a log file carrying the credential comes back scrubbed', async () => {

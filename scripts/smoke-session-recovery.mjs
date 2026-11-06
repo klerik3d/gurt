@@ -19,7 +19,7 @@ for (const session of sessions) {
   const taskDir = path.join(root, session.workspace, session.task)
   fs.mkdirSync(taskDir, { recursive: true })
   fs.writeFileSync(path.join(root, session.workspace, 'workspace.json'), JSON.stringify({
-    repos: [], envs: [{ name: 'dev', devcontainer: '{"image":"unused"}' }]
+    repos: [], envs: [{ name: 'dev', image: 'unused' }]
   }))
   fs.writeFileSync(path.join(taskDir, 'task.json'), '{}')
   fs.writeFileSync(path.join(taskDir, 'sessions.json'), JSON.stringify([{

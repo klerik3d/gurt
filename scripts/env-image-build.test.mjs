@@ -1,10 +1,12 @@
 // Integration test for the env image build (real git + real docker, no
 // electron, no network — `FROM scratch` needs no image pull): `buildEnvImage`
-// writes the env's *own* devcontainer + Dockerfile content into the snapshot's
-// `.devcontainer/` (overwriting the repo's versions — never re-reading them),
-// tags by (repo url, commit, dockerfile content, build config), reuses the
-// cached image on unchanged input, and rebuilds when the dockerfile content,
-// the build args, or the commit change.
+// builds from the env's *own* Dockerfile content, passed with `-f` from a
+// scratch dir (nothing is written into the snapshot — the repo's own files are
+// never touched or re-read), resolves `build.context` against the snapshot
+// root, tags by (repo url, commit, dockerfile content, build config), reuses
+// the cached image on unchanged input, and rebuilds when the dockerfile
+// content, the build args, or the commit change.
+// (docs/requirements-env-docker.md §3.1). Needs a real docker daemon.
 //
 //   node scripts/env-image-build.test.mjs
 import { test, after } from 'node:test'
@@ -41,11 +43,7 @@ const commit = async () => (await git('rev-parse', 'HEAD')).stdout.trim()
 const REPO = { name: 'r', url: 'https://example.com/gurt-image-build-test.git' }
 const DOCKERFILE_V1 = 'FROM scratch\nCOPY hello.txt /hello.txt\n'
 const DOCKERFILE_V2 = 'FROM scratch\nCOPY hello.txt /hello.txt\nLABEL edited=true\n'
-const envCfg = (dockerfile, buildExtra = {}) => ({
-  name: 'e',
-  devcontainer: JSON.stringify({ build: { dockerfile: 'Dockerfile', ...buildExtra } }),
-  dockerfile
-})
+const envCfg = (dockerfile, build) => ({ name: 'e', dockerfile, ...(build ? { build } : {}) })
 const builtTags = new Set()
 
 async function ensure(cfg) {
@@ -63,26 +61,28 @@ after(async () => {
 
 await git('init', '-q')
 fs.writeFileSync(path.join(repoDir, 'hello.txt'), 'v1\n')
-// The repo's own .devcontainer/Dockerfile is a decoy: the env's content must
-// overwrite it in the snapshot, or the build fails on the bogus instruction.
-fs.mkdirSync(path.join(repoDir, '.devcontainer'))
-fs.writeFileSync(path.join(repoDir, '.devcontainer', 'Dockerfile'), 'NOT A DOCKERFILE\n')
+// The repo's own Dockerfile is a decoy: the env's content is what gets built,
+// and the snapshot is left exactly as it was.
+fs.writeFileSync(path.join(repoDir, 'Dockerfile'), 'NOT A DOCKERFILE\n')
+fs.mkdirSync(path.join(repoDir, 'sub'))
+fs.writeFileSync(path.join(repoDir, 'sub', 'inner.txt'), 'inner\n')
 await git('add', '-A')
 await git('-c', 'user.email=t@t.test', '-c', 'user.name=t', 'commit', '-q', '-m', 'init')
 
 // The baseline build every later test compares its tag against.
 let r1
 
-// --- first call: builds and tags; env content overwrites the repo's file ---
-test('first call builds and tags; env content overwrites the repo file', async () => {
+// --- first call: builds and tags; the snapshot is not written into ---
+test('first call builds and tags; the snapshot is left untouched', async () => {
   r1 = await ensure(envCfg(DOCKERFILE_V1))
   assert.match(r1.tag, /^gurt-env:[0-9a-f]{16}$/, 'tag has the expected shape')
   assert.ok(r1.built, 'first call actually builds')
   assert.equal(
-    fs.readFileSync(path.join(repoDir, '.devcontainer', 'Dockerfile'), 'utf8'),
-    DOCKERFILE_V1,
-    'the env Dockerfile content overwrites the repo copy in the snapshot'
+    fs.readFileSync(path.join(repoDir, 'Dockerfile'), 'utf8'),
+    'NOT A DOCKERFILE\n',
+    'the repo’s own Dockerfile is neither overwritten nor read'
   )
+  assert.ok(!fs.existsSync(path.join(repoDir, '.devcontainer')), 'nothing is written into the snapshot')
 })
 
 // --- second call, same content: cache hit, no rebuild ---
@@ -116,20 +116,11 @@ test('repo content change changes tag + rebuilds', async () => {
   assert.ok(r5.built, 'changed repo content rebuilds')
 })
 
-// --- ${localWorkspaceFolder} in dockerfile/context: substituted with the
-// snapshot root, so COPY sees the repo files (regression: it used to become
-// a literal directory name holding only the written Dockerfile) ---
-test('${localWorkspaceFolder} substitution', async () => {
-  const r6 = await ensure(
-    envCfg(DOCKERFILE_V1, {
-      dockerfile: '${localWorkspaceFolder}/Dockerfile',
-      context: '${localWorkspaceFolder}'
-    })
-  )
-  assert.ok(r6.built, '${localWorkspaceFolder} form builds')
-  assert.equal(
-    fs.readFileSync(path.join(repoDir, 'Dockerfile'), 'utf8'),
-    DOCKERFILE_V1,
-    'dockerfile written at the substituted path (snapshot root)'
-  )
+// --- build.context is repo-root-relative: COPY sees the files under it ---
+test('build.context resolves against the snapshot root', async () => {
+  const r6 = await ensure(envCfg('FROM scratch\nCOPY inner.txt /inner.txt\n', { context: 'sub' }))
+  assert.ok(r6.built, 'a Dockerfile that only builds with context=sub builds')
+  assert.notEqual(r6.tag, r1.tag)
+  // A context that escapes the snapshot never reaches docker.
+  await assert.rejects(ensure(envCfg(DOCKERFILE_V1, { context: '../..' })), /build\.context/)
 })

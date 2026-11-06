@@ -1,56 +1,88 @@
-// Env-config normal form (docs/requirements-env-devcontainer.md): one shared
-// parse/validate/identity helper used by the editor, the store and the
-// provisioning pipeline, so every path agrees on what a valid env is.
+// Env format (docs/requirements-env-docker.md): one shared validate/
+// identity helper used by the editor, the store and the provisioning pipeline,
+// so every path agrees on what a valid env is.
 import { parse, printParseErrorCode, type ParseError } from 'jsonc-parser'
 import type { EnvConfig } from './types'
 
-/** The `build` section of a devcontainer.json, as far as gurt reads it. */
-export interface DevcontainerBuild {
-  dockerfile?: string
-  context?: string
-  args?: Record<string, string>
-  target?: string
-}
+type Json = Record<string, unknown>
 
-export interface ParsedEnvConfig {
-  /** Parsed devcontainer object — absent on `error`. */
-  config?: Record<string, unknown>
-  /** The config's `build` section, when present (and an object). */
-  build?: DevcontainerBuild
-  /** Set on JSONC parse failure / non-object root. */
-  error?: string
-}
+const isObject = (v: unknown): v is Json => !!v && typeof v === 'object' && !Array.isArray(v)
 
-/** Parse the env's devcontainer text (JSONC — comments and trailing commas ok). */
-export function parseEnvDevcontainer(text: string): ParsedEnvConfig {
+/** Parse JSONC (comments and trailing commas ok) into an object. */
+function parseJsoncObject(text: string, what: string): { value: Json } | { error: string } {
   const errors: ParseError[] = []
-  const config = parse(text, errors, { allowTrailingComma: true }) as unknown
+  const value = parse(text, errors, { allowTrailingComma: true }) as unknown
   const [first] = errors
-  if (first)
-    return {
-      error: `devcontainer: ${printParseErrorCode(first.error)} at offset ${first.offset}`
-    }
-  if (!config || typeof config !== 'object' || Array.isArray(config))
-    return { error: 'devcontainer must be a JSON object' }
-  const cfg = config as Record<string, unknown>
-  const rawBuild = cfg['build']
-  const build =
-    rawBuild && typeof rawBuild === 'object' && !Array.isArray(rawBuild)
-      ? (rawBuild as DevcontainerBuild)
-      : undefined
-  return { config: cfg, ...(build ? { build } : {}) }
+  if (first) return { error: `${what}: ${printParseErrorCode(first.error)} at offset ${first.offset}` }
+  if (!isObject(value)) return { error: `${what} must be a JSON object` }
+  return { value }
 }
 
-/** null = ok. The devcontainer is mandatory; a `build` section requires the
- *  companion Dockerfile content. Nothing else is validated — compose configs
- *  etc. are the author's responsibility. */
+const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
+
+/** A path that is relative and, normalized, stays inside its root. Returns the
+ *  normalized form ('.' for the root itself) or null. */
+export function insideRoot(p: string): string | null {
+  if (!p || p.startsWith('/') || p.startsWith('\\') || /^[A-Za-z]:/.test(p)) return null
+  const out: string[] = []
+  for (const seg of p.split('/')) {
+    if (seg === '' || seg === '.') continue
+    if (seg === '..') {
+      if (!out.pop()) return null
+      continue
+    }
+    out.push(seg)
+  }
+  return out.length ? out.join('/') : '.'
+}
+
+/** null = ok. Exactly one of image/dockerfile; `build` only with `dockerfile`
+ *  and confined to the repo snapshot; `env` keys well-formed. */
 export function validateEnvConfig(env: EnvConfig): string | null {
-  if (!env.devcontainer.trim()) return 'devcontainer config is required'
-  const parsed = parseEnvDevcontainer(env.devcontainer)
-  if (parsed.error) return parsed.error
-  if (parsed.build && !env.dockerfile?.trim())
-    return 'Dockerfile is required when devcontainer has a build section'
+  const hasImage = !!env.image?.trim()
+  const hasDockerfile = !!env.dockerfile?.trim()
+  if (hasImage === hasDockerfile)
+    return hasImage
+      ? 'set either an image or a Dockerfile, not both'
+      : 'an image or a Dockerfile is required'
+  if (env.build !== undefined) {
+    if (!hasDockerfile) return 'build options need a Dockerfile'
+    const ctx = env.build.context
+    if (ctx !== undefined && insideRoot(ctx) === null)
+      return `build.context "${ctx}" must be relative and stay inside the repo`
+  }
+  for (const key of Object.keys(env.env ?? {}))
+    if (!ENV_KEY_RE.test(key)) return `env key "${key}" is not a valid variable name`
   return null
+}
+
+/** `KEY=VALUE` per line (the editor's form of `env` / `build.args`): blank lines
+ *  and `#` comments are skipped, the value is everything after the first `=`. */
+export function parseEnvLines(text: string): { vars: Record<string, string> } | { error: string } {
+  const vars: Record<string, string> = {}
+  const lines = text.split('\n')
+  for (const [i, raw] of lines.entries()) {
+    const line = raw.replace(/\r$/, '')
+    if (!line.trim() || line.trimStart().startsWith('#')) continue
+    const eq = line.indexOf('=')
+    if (eq <= 0) return { error: `line ${i + 1}: expected KEY=VALUE` }
+    vars[line.slice(0, eq).trim()] = line.slice(eq + 1)
+  }
+  return { vars }
+}
+
+/** The inverse of {@link parseEnvLines}. */
+export const formatEnvLines = (vars: Record<string, string> | undefined): string =>
+  Object.entries(vars ?? {})
+    .map(([k, v]) => `${k}=${v}`)
+    .join('\n')
+
+/** Parse a bundled/hand-written env file (JSONC in the §2 shape) into an
+ *  EnvConfig of the given name. */
+export function parseEnvConfigText(name: string, text: string): EnvConfig | { error: string } {
+  const parsed = parseJsoncObject(text, 'env')
+  if ('error' in parsed) return parsed
+  return { name, ...(parsed.value as Omit<EnvConfig, 'name'>) }
 }
 
 /**

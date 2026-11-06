@@ -73,7 +73,7 @@ const withFixture = {
 }
 
 // Inside the checkout, not the temp dir: the adapter spawn resolves the
-// devcontainer CLI (and react-dom/server its built-ins) relative to the bundle.
+// react-dom/server's built-ins relative to the bundle.
 fs.mkdirSync(path.join(ROOT, 'node_modules', '.cache'), { recursive: true })
 const outDir = fs.mkdtempSync(path.join(ROOT, 'node_modules', '.cache', 'gurt-agent-fixture-'))
 const outfile = path.join(outDir, 'entry.mjs')
@@ -91,7 +91,7 @@ await bundle({
     contents: `
       export { AGENT_MANIFESTS, agentDef } from ${S('src/shared/agents.ts')}
       export { ContainerManager } from ${S('src/main/containers.ts')}
-      export { spawnAcpAdapter, overrideConfigArgs } from ${S('src/main/provision.ts')}
+      export { spawnAcpAdapter } from ${S('src/main/provision.ts')}
       export { createBus } from ${S('src/main/bus.ts')}
       export { setAgents, getAgents, getAgentConfig, liftAgent } from ${S('src/main/store.ts')}
       export { upsertCredentialEntry } from ${S('src/main/credentials.ts')}
@@ -150,7 +150,7 @@ test('launch: bin, args and secret env from the manifest; no skills, no history 
   fs.mkdirSync(path.join(GURT_ROOT, ws, 't'), { recursive: true })
   fs.writeFileSync(
     path.join(GURT_ROOT, ws, 'workspace.json'),
-    JSON.stringify({ repos: [{ name: 'r', url: 'https://example.com/r.git' }], envs: [{ name: 'r', devcontainer: '', repo: 'r' }] })
+    JSON.stringify({ repos: [{ name: 'r', url: 'https://example.com/r.git' }], envs: [{ name: 'r', image: 'x', repo: 'r' }] })
   )
   await m.upsertCredentialEntry({ id: 'fx-key', label: 'fixture key', kind: 'agent-token', hosts: [], data: { secret: 'fx-secret' } })
   await m.setAgents({ fx: { kind: KIND, label: 'Fixture', credentialId: 'fx-key' } })
@@ -181,17 +181,18 @@ test('launch: bin, args and secret env from the manifest; no skills, no history 
   assert.equal(ctx.secretEnv, 'FIXTURE_API_KEY')
   assert.equal(ctx.env, undefined, 'no launch env of its own')
   assert.deepEqual(
-    ctx.configArgs,
-    m.overrideConfigArgs({ workspace: ws, task: 't', env: 'r' }),
-    'no skills bind, no history bind: the env’s own config, as if neither feature existed'
+    ctx.exec,
+    { containerId: 'c0ffee0123456789ab', user: 'root', cwd: '/workspaces/r' },
+    'the exec target is the container record’s own facts'
   )
 
-  const child = m.spawnAcpAdapter(info.id, ctx.agent, ctx.configArgs, ctx.hostWorkspaceFolder, ctx.secret, ctx.secretEnv, ctx.env)
+  const child = m.spawnAcpAdapter(ctx.exec, ctx.agent, ctx.secret, ctx.secretEnv, ctx.env)
   child.on('error', () => {})
   child.kill()
   const argv = child.spawnargs
   assert.deepEqual(argv.slice(-3), ['fixture-acp', '--acp', '--quiet'], 'the adapter is the manifest’s bin and args')
-  assert.ok(argv.includes('FIXTURE_API_KEY=fx-secret'), 'the secret rides the manifest’s env var')
+  assert.ok(argv.includes('FIXTURE_API_KEY'), 'the secret rides the manifest’s env var, by name')
+  assert.ok(!argv.some((a) => a.includes('fx-secret')), 'its value is never in argv')
 })
 
 test('no seed config, no option quirks, no native config, the generic icon', async () => {

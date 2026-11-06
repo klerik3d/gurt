@@ -11,7 +11,6 @@
         "electron-builder",
         "electron-vite",
         "esbuild",
-        "@devcontainers/cli",
         "@agentclientprotocol/claude-agent-acp",
         "@agentclientprotocol/codex-acp",
         "@google/gemini-cli",

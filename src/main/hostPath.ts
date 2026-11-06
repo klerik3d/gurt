@@ -1,7 +1,7 @@
 // The PATH a GUI app has to repair before it can shell out to anything.
 //
 // gurt spawns `docker` (every session's container), `git` (every clone), `tar`,
-// the devcontainer CLI (which spawns `docker` itself), and whatever command a
+// every `docker` child, and whatever command a
 // local MCP entry names. On macOS none of that is guaranteed to resolve as
 // shipped: a bundle launched from Finder or the Dock inherits launchd's PATH —
 // `/usr/bin:/bin:/usr/sbin:/sbin` — not the login shell's, while Docker
@@ -16,7 +16,7 @@
 //
 //   - {@link applyHostPath} repairs `process.env.PATH` once at startup, so
 //     every child inherits it — including the ones gurt never names, like the
-//     `docker` the devcontainer CLI spawns.
+//     `docker` a child of a child spawns.
 //   - {@link resolveHostCommand} answers "is this binary on this machine at
 //     all", which is what turns an ENOENT an hour later into a message at the
 //     moment it can still be acted on: when an MCP entry is saved, or when a

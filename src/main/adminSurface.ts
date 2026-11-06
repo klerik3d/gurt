@@ -24,7 +24,7 @@ import { MCP_DEFS, mcpEntryKind } from '../shared/mcp'
 import { ADMIN_TOOLS } from '../shared/adminTools.generated'
 import { getCredentials, credentialUsedBy } from './credentials'
 import { probeMcpServer } from './mcp/probe'
-import { discoverDevcontainer, discoverDockerfiles, envImageStatus } from './provision'
+import { discoverDockerfiles, envImageStatus } from './provision'
 import { machineDoctor } from './doctor'
 import { traffic } from './proxy/traffic'
 import * as store from './store'
@@ -116,7 +116,6 @@ export function createAdminSurface(kernel: Kernel): AdminSurface {
     },
     getCredentials: async () => stripCredentialValues(await getCredentials()),
     credentialUsedBy: (id) => credentialUsedBy(id),
-    discoverDevcontainer: (w, repo) => discoverDevcontainer(w, repo),
     discoverDockerfiles: (w, repo) => discoverDockerfiles(w, repo),
     envImageStatus: (w, env) => envImageStatus(w, env),
     getMcpServers: (w) => store.getMcpServers(w),

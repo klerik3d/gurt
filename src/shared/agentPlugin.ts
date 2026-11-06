@@ -64,8 +64,8 @@ export interface AgentManifest {
   icon?: AgentIcon
   /**
    * npm packages installed globally in the container the first time this agent
-   * connects to an env. The container itself is agent-agnostic (node feature
-   * only) — no per-agent devcontainer features.
+   * connects to an env. The container itself is agent-agnostic (gurt's node runtime
+   * volume only) — no per-agent image changes.
    */
   adapterPackages: string[]
   /** ACP adapter launch inside the container. */

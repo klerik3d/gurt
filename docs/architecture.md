@@ -107,7 +107,7 @@ tree is never polluted with Gurt files.
   itself — a bare repo under `~/.gurt/<ws>/repos/`, made from the draft's repo
   picker ("new local repository…") or Settings — for a project with no forge
   yet: tasks deliver into it with **Merge into main**, and **Publish to
-  GitHub…** later moves it to a forge, adopting its devcontainer as an env.
+  GitHub…** later moves it to a forge.
   See [requirements-new-projects.md](requirements-new-projects.md)
 - **agent** — an instance of a built-in kind (claude code / codex / gemini /
   opencode / pi).
@@ -118,14 +118,16 @@ tree is never polluted with Gurt files.
   inline, like a repo's credential link); env var name + extra env are per-agent
 - **task** — unit of work, `~/.gurt/<ws>/<task>/`, holds repo clones; deletable.
   The UI calls it a **scope**
-- **env** — a workspace entity and purely a *definition*: a mandatory
-  devcontainer.json (+ companion Dockerfile when it has `build`), stored
-  entirely in Gurt and seeded from the repo's own files (then edited in Gurt —
-  the repo is never the source of truth at runtime). It is a template, not an
+- **env** — a workspace entity and purely a *definition*, in Gurt's own format
+  ([requirements-env-docker.md](requirements-env-docker.md)): an `image` or a
+  `dockerfile` (+ build context/args/target), container `env`, and a `setup` and
+  a `start` script. It is stored entirely in Gurt and written in Gurt (the
+  editor can load a root Dockerfile of the repo into its field); Gurt reads no
+  devcontainer.json, and the repo is never the source of truth at runtime. It is a template, not an
   instance: any number of sessions may run the same env at once.
   Two envs are bundled rather than defined: `operator` (see the operator role) and
   `starter` — `node:22-trixie`, image-only, offered to every role for a repo
-  that has no devcontainer yet.
+  that has no env yet.
 - **container** — owned by exactly one session, 1:1. Created at that session's
   first start, stopped when it goes idle, destroyed with it; never shared with
   or inherited by another session. Docker is the registry (every container
@@ -287,41 +289,62 @@ while Gurt is open, never overlap, and are cancelled past their timeout.
 
 ## How a session starts
 
-Provisioning wraps the official `@devcontainers/cli` rather than driving Docker
-itself: features are injected via `--additional-features`, the stored env config
-via `--override-config`, identity labels via `--id-label`, secrets via
-`--remote-env`. Everything else — container discovery/stop/removal, image
-builds, networks and the proxy — goes through the docker CLI, with the Docker
-labels as the source of truth (hence the reconcile at boot). A container built
-for a different repo set, or left by an unfinished start, is removed before `up`.
+Provisioning drives the docker CLI directly; there is no wrapper in between.
+The Docker labels are the source of truth (hence the reconcile at boot), and
+every container step addresses the **container id** in the session record —
+never a lookup by label. A container left by an unfinished start, or one made
+by an older build, is removed before a new one is created.
 
 1. clone repo into `~/.gurt/<ws>/<task>/<repo>/` (if missing), branch `<task>`
    (an existing `origin/<task>` is continued rather than forked again)
-2. when the env's devcontainer has a `build` section, the image is built first:
+2. the image. An `image` env is pulled when it is not in the local store (the
+   output streams to the provisioning log). A `dockerfile` env is built first:
    a temporary snapshot of the clone at HEAD (`git archive` — the working clone
-   is never touched) gets the env's devcontainer.json + Dockerfile written into
-   its `.devcontainer/`, then `docker build` runs with the config's
+   is never touched) is the build context (`build.context`, repo-root-relative
+   and confined to the snapshot); the Dockerfile itself is written to a scratch
+   dir outside it and passed with `-f`; `docker build` runs with the env's
    args/target. Images are tagged by content (repo url + commit + Dockerfile +
    build config), so an unchanged env is reused, including one pre-built from
    Settings → Environments (the `build` button there, with an exists/missing
    badge per env) — a pre-build uses the default repo's remote HEAD, so it is
    reused only while the clone's HEAD is that commit. Superseded env images are
    removed after each build (`gurt.kind=env-image` labels).
-3. `devcontainer up` (bundled `@devcontainers/cli`, spawned via Electron's own
-   binary in Node mode) injecting only the digest-pinned `node` feature (none for the bundled
-   operator env) + Gurt id-labels, with `--no-lockfile` and
-   `--mount-workspace-git-root=false`.
-   The container belongs to the starting session (`gurt.session=<id>`); its own
-   stopped container is restarted in place, another session's is never taken.
-4. on the first connection into a container, the session's ACP adapter is
-   npm-installed globally via `devcontainer exec` — the packages and the
-   launch command are the kind's manifest's (`adapterPackages`, `bin`,
-   `binArgs` in `src/plugins/agents/<id>/manifest.ts`), all pinned to exact
-   versions — cached per
-   **container id**, so a container that is stopped and restarted keeps its
+3. gurt's **Node runtime**: adapters are npm packages and need Node whatever
+   the image carries, so a pinned `node:<LTS>-bookworm-slim` image is copied
+   once into a docker volume (`gurt-node-<digest>-<arch>`, labelled
+   `gurt.kind=node-runtime`; refilled if its `.gurt-ready` marker is missing)
+   and mounted read-only at `/opt/gurt/node` in every container. It is a glibc
+   build: musl/Alpine env images are unsupported.
+4. `docker create` + `start` on Docker's default bridge: labels
+   `gurt.session=<id>`, `gurt.managed=1`, `gurt.runtime=docker`; `--init` and a
+   keep-alive entrypoint (the image's own ENTRYPOINT/CMD does not run); the env's
+   `env`; the mounts — every repo, one or several, read-write or read-only by role,
+   at `/workspaces/<name>` (so file paths do not depend on the repo count), plus
+   skills `/gurt/skills` (read-only), history `/gurt/history`, the node volume.
+   The container belongs to the starting session; its own stopped container is
+   restarted in place (`docker start`), another session's is never taken.
+5. in order, on the open network: the user is the image's `Config.User`, else root
+   (set it in the Dockerfile) and, on a Linux host, a non-root user's uid/gid is
+   aligned with the host's so files written into the clone are the host user's;
+   the env's **`setup`** script runs once (as that user, in the workdir, through
+   the user's login shell; skipped for read-only roles) — a failure removes the
+   container and retries once in a fresh one, then fails with the output tail;
+   the container id is written to the session record only *after* setup
+   succeeded; the **`start`** script runs on every start (create and restart);
+   then the exec `PATH` is probed once per container (`$SHELL -lic`, with gurt's
+   node and npm bins *appended*, so the project's toolchain wins) and cached on
+   the record.
+6. on the first connection into a container, the session's ACP adapter is
+   npm-installed globally (`NPM_CONFIG_PREFIX=$HOME/.gurt/npm`, by gurt's npm) via
+   `docker exec` — the packages and the launch command are the kind's
+   manifest's (`adapterPackages`, `bin`, `binArgs` in
+   `src/plugins/agents/<id>/manifest.ts`), all pinned to exact versions — cached
+   per **container id**, so a container that is stopped and restarted keeps its
    install and a replaced one reinstalls; a version marker in the container
-   triggers a reinstall when a pin changes.
-5. the session's own Docker network (`gurt-s-<id>`, labelled
+   triggers a reinstall when a pin changes. The adapter is launched with gurt's
+   own node (`/opt/gurt/node/bin/node <resolved script>`; a bin that is not JS is
+   exec'd directly).
+7. the session's own Docker network (`gurt-s-<id>`, labelled
    `gurt.session=<id>`) and its **proxy container** are ensured, and the
    container is switched onto that network with no restart (`docker network
    connect`/`disconnect` — a converge against what the daemon reports, so a
@@ -330,27 +353,23 @@ for a different repo set, or left by an unfinished start, is removed before `up`
    sitting on the session network *and* on a shared `gurt-egress` bridge, and it
    is where every MCP call and — in `internal` sessions — every byte of egress
    goes. Everything above runs on the open network, because the image build,
-   the features, `postCreate` and the adapter install all need it
+   the `setup` script and the adapter install all need it
    (requirements-mcp-proxy.md §7.3); the provisioning log records the
    switch. An `internal` session verifies its isolation after the switch and
    fails the start if it cannot be confirmed.
-6. ACP `session/new`, then the session's `startPrompt` is sent as the first
-   prompt. ACP (JSON-RPC over stdio) runs through `devcontainer exec`; the agent
-   secret is passed via `--remote-env <secretEnv>=<secret>` (an oauth sign-in for
-   a kind whose plugin names a native auth file — codex, gemini — is written as
-   that file instead, with the env var left unset). One adapter process
-   per session, held under the session id and tagged with the container it was
-   spawned into — a connection cannot outlive that container.
+8. ACP `session/new`, then the session's `startPrompt` is sent as the first
+   prompt. ACP (JSON-RPC over stdio) runs through `docker exec -i`; **secrets
+   never ride in argv**: the agent secret, the proxy variables, the git identity
+   and the launch env are passed as `-e NAME` with the values in the docker
+   client's own environment (an oauth sign-in for a kind whose plugin names a
+   native auth file — codex, gemini — is written as that file instead, piped
+   through stdin, with the env var left unset). One adapter process per session,
+   held under the session id and tagged with the container it was spawned
+   into — a connection cannot outlive that container.
 
-The materialized env config (the stored devcontainer.json, with `build`
-replaced by the built `image` tag when present) is ALWAYS passed via
-`--override-config` — to `up` and to every `exec` (exec re-resolves the
-config and fails without it). For a session with Gurt mounts (several repos,
-read-only roles, skills, agent history — so every claude code session) it is a
-per-session merged copy, `.multirepo/<id>/devcontainer.json`. Selected skills
-are bind-mounted read-only at `/gurt/skills` and linked into the agent's home;
-for read-only roles the `onCreate`/`updateContent`/`postCreate` hooks are
-stripped.
+Selected skills are bind-mounted read-only at `/gurt/skills` and linked into the
+agent's home; the agent's history is bind-mounted at `/gurt/history`. For
+read-only roles the `setup` script is skipped.
 
 Sessions are persisted to `<ws>/<task>/sessions.json` (info incl. state /
 startPrompt / queuedAt / its container record, ACP session id, latest proposal)
@@ -360,7 +379,9 @@ carries its `createdAt` and `maxConcurrentSessions`; `review.json` sits beside
 it. At boot the restored container records are reconciled against
 `docker ps --filter label=gurt.session`: one describing a container the daemon no
 longer has is dropped, a record's container id and running/stopped status are
-corrected, and a container whose session is gone is removed — unless the session
+corrected, a container without the `gurt.runtime=docker` label (made by the
+devcontainer-CLI era) is removed and its record reset — the session recreates it
+on its next start — and a container whose session is gone is removed — unless the session
 store is degraded or reads as empty while containers exist, in which case the
 sweep is skipped. Proxies
 (`docker ps --filter label=gurt.proxy`) and session networks (`docker network ls
@@ -464,7 +485,7 @@ link, and the config tab would say "does not support skills" instead of
 offering the pickers — no current kind is in that case.
 A skill that was not picked is physically absent, and nothing Gurt writes ever
 lands in a clone. It works for every role: the mount is made before any
-devcontainer lifecycle hook runs, and read-only roles have those hooks stripped.
+`setup` script runs, and read-only roles skip that script.
 
 A repository's own `.claude/skills` is the repository's — Gurt does not list,
 merge or disable it.
@@ -510,7 +531,7 @@ MCP routing is outside the policy: an upstream in the registry is one a human
 put there, and it is usually on the docker host.
 
 Two caveats the UI states where the choice is made: **setup runs open** — the
-image build, the devcontainer features, `postCreate` and the adapter install all
+image build, the `setup` script and the adapter install all
 need the network and all happen before the switch (requirements-mcp-proxy.md
 §7.3; the provisioning log records the boundary) — and **SSH git is
 unsupported** in internal mode; authenticated git is the host-side github MCP.

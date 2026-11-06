@@ -247,7 +247,7 @@ export function AgentMark({
  * How many names a header mark spells out before the rest collapses into a
  * "+N" counter — the full list stays one hover away in the mark's tooltip.
  *
- * The header row is fixed height and holds real controls (VS Code, the session
+ * The header row is fixed height and holds real controls (the session
  * menu) to the right of these marks: a session on eight repositories used to
  * push those controls off the pane rather than clip itself.
  */
@@ -313,7 +313,7 @@ export const NET_INFO: Record<'open' | 'internal', { label: string; hint: string
   },
   internal: {
     label: 'internal',
-    hint: "isolated: the session network is created with no route out, so the proxy is the session's only egress and the allow list is enforced on every host it asks for. Two caveats: setup (image build, devcontainer features, postCreate, the agent install) runs before the switch, with unrestricted network; and SSH git is unsupported — git over the proxy is HTTPS, via the github MCP.",
+    hint: "isolated: the session network is created with no route out, so the proxy is the session's only egress and the allow list is enforced on every host it asks for. Two caveats: setup (image build, setup script, the agent install) runs before the switch, with unrestricted network; and SSH git is unsupported — git over the proxy is HTTPS, via the github MCP.",
     icon: 'globe-lock'
   }
 }

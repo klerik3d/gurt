@@ -377,7 +377,7 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
   }
 
   // A new local repo, made right here and picked at once — and, being new, it
-  // has no devcontainer, so a draft with no env yet gets the starter
+  // has no env, so a draft with no env yet gets the starter
   // (docs/requirements-new-projects.md §5). It is a workspace repo from then
   // on, offered to every later session like any other.
   const createRepo = async (): Promise<void> => {
@@ -621,11 +621,11 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
                 )}
                 {/* The bundled starter (docs/requirements-new-projects.md §3):
                     image-only, so it runs any repo — a new one with no
-                    devcontainer of its own included. */}
+                    env of its own included. */}
                 {role !== 'operator' && (
                   <div
                     className={`menu-item ${info.env === STARTER_ENV_NAME ? 'active' : ''}`}
-                    title="node 22 on Debian 13 (trixie) with git, python3 and build tools — for a project with no devcontainer yet"
+                    title="node 22 on Debian 13 (trixie) with git, python3 and build tools — for a project with no env yet"
                     onMouseDown={(ev) => {
                       ev.preventDefault()
                       pickEnv(STARTER_ENV_NAME)

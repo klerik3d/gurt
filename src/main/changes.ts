@@ -2,7 +2,6 @@
 // branch, computed on the host from git alone — no forge APIs, no state outside
 // the clone, works with containers stopped.
 // See docs/requirements-changes-thread.md.
-import { spawn } from 'node:child_process'
 import { promises as fs } from 'node:fs'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
@@ -552,35 +551,6 @@ export async function renameTaskBranches(ws: string, task: string, oldTask: stri
       log.warn('branch rename failed', { dir: repoDir, err: e })
     )
   }
-}
-
-/** MVP escape hatch: open the clone with host VS Code. `--disable-workspace-trust`
- *  skips the first-open trust prompt — the clone lives under gurt's own managed
- *  task dir, so there is nothing an untrusted-workspace gate would protect
- *  against here. */
-function launchVscode(dir: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const child = spawn('code', ['--new-window', '--disable-workspace-trust', dir], {
-      stdio: 'ignore',
-      detached: true
-    })
-    child.on('error', () =>
-      reject(new Error('could not launch "code" — install the VS Code shell command'))
-    )
-    child.on('spawn', () => {
-      child.unref()
-      resolve()
-    })
-  })
-}
-
-export function openInVscode(ws: string, task: string, repo: string): Promise<void> {
-  return launchVscode(cloneDir(ws, task, repo))
-}
-
-/** Open the whole task directory (every repo clone) in one VS Code window. */
-export function openTaskInVscode(ws: string, task: string): Promise<void> {
-  return launchVscode(taskDir(ws, task))
 }
 
 export function openTaskInTerminal(ws: string, task: string): Promise<void> {

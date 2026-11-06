@@ -31,7 +31,7 @@ fs.writeFileSync(
   path.join(GURT_ROOT, ws, 'workspace.json'),
   JSON.stringify({
     repos: [{ name: 'alpha', url: 'https://github.com/o/alpha.git' }],
-    envs: [{ name: 'dev', devcontainer: '{"image":"x"}', repo: 'alpha' }],
+    envs: [{ name: 'dev', image: 'x', repo: 'alpha' }],
     // Seeded into the bare draft by the Config tab, so the only thing that
     // could gate Run below is the repository — which is the assertion.
     defaultAgent: 'a1'

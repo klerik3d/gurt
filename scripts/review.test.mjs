@@ -73,7 +73,7 @@ fs.writeFileSync(
   path.join(GURT_ROOT, ws, 'workspace.json'),
   JSON.stringify({
     repos: [{ name: repo, url: 'https://github.com/o/alpha.git' }],
-    envs: [{ name: 'dev', devcontainer: '{"image":"x"}', repo }]
+    envs: [{ name: 'dev', image: 'x', repo }]
   })
 )
 fs.writeFileSync(path.join(GURT_ROOT, ws, task, 'task.json'), JSON.stringify({}))

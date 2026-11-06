@@ -34,7 +34,7 @@ const second = path.join(root, 'demo', 'second')
 fs.mkdirSync(second, { recursive: true })
 fs.writeFileSync(path.join(second, 'task.json'), JSON.stringify({ createdAt: '2026-01-01T00:00:00Z' }))
 fs.writeFileSync(path.join(root, 'demo', 'workspace.json'), JSON.stringify({
-  repos: [{ name: 'frontend', url: repo }], envs: [{ name: 'dev', devcontainer: '{"image":"unused"}' }]
+  repos: [{ name: 'frontend', url: repo }], envs: [{ name: 'dev', image: 'unused' }]
 }))
 
 const require = createRequire(path.join(appDir, 'package.json'))

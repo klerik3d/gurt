@@ -116,7 +116,6 @@ const SAFE_ARGS = new Set([
   // A workspace/task name and a number — the cap itself, nothing opaque.
   'setTaskMaxConcurrentSessions',
   'envImageStatus',
-  'discoverDevcontainer',
   'discoverDockerfiles',
   // Tree edits. Names are identifiers (they become directories and branches)
   // and already ride in `session.*`/`container.*` records all over the log.
@@ -160,7 +159,6 @@ const SAFE_ARGS = new Set([
   // Session and container lifecycle: a session id, sometimes an option id.
   'stopContainer',
   'releaseContainer',
-  'sessionOpenVscode',
   'sessionOpenTerminal',
   'sessionRun',
   'sessionEnqueue',
@@ -187,9 +185,7 @@ const SAFE_ARGS = new Set([
   'changesUpdateFromMain',
   'changesMergeToMain',
   'changesOpenPr',
-  'changesOpenVscode',
   'changesOpenTerminal',
-  'taskOpenVscode',
   'taskOpenTerminal',
   'taskCopyPath',
   // Notifications and shell. Ids, and a prefs object of booleans/enums.
@@ -238,7 +234,7 @@ const PROSE_PARAM_NAMES = new Set([
 
 /**
  * Payload types that carry prose or secrets inside them, so the parameter name
- * says nothing on its own: a whole devcontainer definition, an MCP registry
+ * says nothing on its own: a whole env definition, an MCP registry
  * entry (user-filled static headers), the credential file, the agent registry
  * (agent env and credential links), a draft patch (`startPrompt`), attached
  * prompt context and images.

@@ -47,8 +47,10 @@ downloaded onto another Mac won't open until the quarantine flag is cleared:
 xattr -dr com.apple.quarantine /Applications/gurt.app
 ```
 
-The devcontainer CLI is kept outside `app.asar` (`asarUnpack`) because Gurt
-spawns it as a child process — only Electron's own fs can read from an asar.
+Gurt drives the `docker` CLI directly (there is no bundled container tooling);
+the files it hands to other processes by path — the node-pty binding and
+`resources/**` (the bundled env files, the proxy script) — are kept outside
+`app.asar` (`asarUnpack`), because only Electron's own fs can read from an asar.
 
 ## Auto-update
 

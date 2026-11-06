@@ -118,7 +118,7 @@ export function SessionMenu({
             }}
           >
             <Icon name="copy" size={13} className="faint" />
-            <span>Duplicate as draft</span>
+            <span>Duplicate</span>
           </div>
           {info.state !== 'draft' && (
             <div
@@ -130,7 +130,7 @@ export function SessionMenu({
               }}
             >
               <Icon name="history" size={13} className="faint" />
-              <span>Recreate as draft…</span>
+              <span>Recreate…</span>
             </div>
           )}
           <div className="menu-sep" />

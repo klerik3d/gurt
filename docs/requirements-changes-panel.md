@@ -55,7 +55,7 @@ appear. If none: a single muted "No changes" line.
 Exactly one actionable repo → flat rendering, no repo header:
 
 ```
-Changes ────────────────── [↻] [Open in VS Code]
+Changes ────────────────── [↻]
  M  src/auth/login.ts
  M  src/auth/session.ts
  A  src/auth/refresh.ts
@@ -68,13 +68,13 @@ control moves into its group:
 
 ```
 Changes ──────────────────────────────── [↻]
- ▾ myapp-backend ────────── [Open in VS Code]
+ ▾ myapp-backend
     M  internal/auth/token.go
     A  internal/auth/refresh.go
     2 files · +85 −10
     [Commit]  [Push]  [Create PR]
 
- ▾ myapp-frontend ───────── [Open in VS Code]
+ ▾ myapp-frontend
     M  src/api/client.ts
     1 file · +12 −3
     [Commit]  [Push]  [Create PR]
@@ -103,12 +103,8 @@ Per group (or the flat panel):
     deriving `<owner>/<repo>` from the origin URL path. Show the button
     only when the origin host contains `github` (SSH host aliases like
     `github.com-personal` count); hide otherwise.
-  - `Open in VS Code` — MVP scope: open the clone directory with host
-    VS Code (`code <cloneDir>`). This is the escape hatch for when the
-    diff view is not enough; later it becomes the in-container `vsc`
-    service.
   - `↻` — manual refresh of the whole panel.
-- Action errors (push rejected, missing auth, `code` not found) render
+- Action errors (push rejected, missing auth) render
   inline in the group as red text; no automatic retries.
 
 ### 3.2 Sidebar indicator on the task row
@@ -116,7 +112,7 @@ Per group (or the flat panel):
 A task whose repos include at least one `actionable` clone shows a badge
 on its sidebar row (accent-colored dot after the title; tooltip
 "uncommitted or unpushed changes"). The badge reflects ONLY
-commit/push/PR actionability — never vsc availability or container state.
+commit/push/PR actionability — never container state.
 It disappears when every clone is clean and pushed.
 
 ### 3.3 Refresh triggers
@@ -133,7 +129,7 @@ polling loops.
     `{ repo, dirty, ahead, files: [{ path, status }], insertions, deletions }`
   - `getFileDiff(ws, task, repo, path)` → unified diff text
   - `commit(ws, task, repo, message)`, `push(ws, task, repo)`,
-    `openPr(ws, task, repo)`, `openInVscode(ws, task, repo)`
+    `openPr(ws, task, repo)`
 - Wire through `ipc.ts` + preload like existing calls; the renderer keeps
   a per-task snapshot that both TaskPane and the sidebar badge read.
 

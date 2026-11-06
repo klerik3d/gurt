@@ -158,8 +158,8 @@ story of §5 untouched — the whole thing is still one directory tree.
 
 Every one of the four keys its transcripts by the working directory. That
 matters because gurt's container-side path is derived from the session's
-repo set: `/workspaces/<repo>` for a plain executor, `/workspaces/repos` for
-a mounted one (`containers.ts`), and `attachUncoalesced` passes it to
+repo set: `/workspaces/<repo>` for a single repo, `/workspaces` for
+several (`containers.ts`), and `attachUncoalesced` passes it to
 `session/load` as `cwd`. It is stable across a rebuild that keeps the repo
 set — which is the case this feature is for — and changes when the repo set
 changes, which is a rebuild the user asked for.

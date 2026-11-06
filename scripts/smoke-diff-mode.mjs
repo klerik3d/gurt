@@ -38,7 +38,7 @@ fs.unlinkSync(path.join(clone, 'README.md'))
 fs.writeFileSync(path.join(clone, 'asset.bin'), Buffer.from([0, 1, 2, 0, 3]))
 fs.writeFileSync(path.join(root, 'demo', 'workspace.json'), JSON.stringify({
   repos: [{ name: 'frontend', url: origin }, { name: 'backend', url: origin }],
-  envs: [{ name: 'dev', devcontainer: '{"image":"unused"}' }]
+  envs: [{ name: 'dev', image: 'unused' }]
 }))
 fs.writeFileSync(path.join(taskDir, 'task.json'), '{}')
 fs.writeFileSync(path.join(taskDir, 'sessions.json'), JSON.stringify([{ info: {

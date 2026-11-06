@@ -225,10 +225,6 @@ function Repository({ ws, task, repo: r, layout, nav, activePath, activeTarget, 
         <RowContextMenu x={menu.x} y={menu.y} onClose={() => setMenu(null)}>
           <button className="menu-item diff-menu-action" disabled={busy} onClick={run(async () => {
             setMenu(null)
-            await act(() => window.gurt.changesOpenVscode(ws, task, r.repo))
-          })} title="Open repository in VS Code"><Icon name="vscode" size={13} /> Open repository</button>
-          <button className="menu-item diff-menu-action" disabled={busy} onClick={run(async () => {
-            setMenu(null)
             await act(() => window.gurt.changesOpenTerminal(ws, task, r.repo))
           })}><Icon name="terminal" size={13} /> Open in Terminal</button>
           <button className="menu-item diff-menu-action" disabled={busy || (menu.target?.kind !== 'commit' && !r.dirty)} onClick={() => {

@@ -8,8 +8,8 @@ getting the project running and getting a change merged.
 - **Node.js >= 22** and **npm >= 9** (enforced via `engine-strict` in
   `.npmrc` — install fails fast on an older toolchain). The pinned package
   manager is npm (see `packageManager` in `package.json`).
-- **Docker** — required at runtime: Gurt provisions devcontainer environments
-  and runs agent sessions in them. UI-only work and most unit tests run
+- **Docker** — required at runtime: Gurt creates containers from the
+  env images and runs agent sessions in them (it drives the `docker` CLI directly). UI-only work and most unit tests run
   without it.
 - Platforms: **macOS and Linux are the primary platforms; Windows is a
   candidate (untested)**.
@@ -159,8 +159,8 @@ whether it checks a pure function or drives a real HTTP server.
 
 No test framework, because Gurt is supply-chain-sensitive (see `SECURITY.md`:
 it installs packages into containers holding your repos and agent secrets).
-The repo blocks npm lifecycle scripts, pins Actions by SHA and devcontainer
-features by digest, and keeps a deliberately small dependency tree. A test
+The repo blocks npm lifecycle scripts, pins Actions by SHA and container
+images and dev container features by digest, and keeps a deliberately small dependency tree. A test
 runner is a large dev dependency whose whole job is executing code in CI, so
 it is not a free addition here. Node 22 is already the floor, so `node:test`
 covers it for nothing; esbuild is already a build dependency, so bundling the

@@ -191,19 +191,17 @@ test('removeRepo deletes a local repo’s storage once no task holds a clone', a
   assert.ok(fs.existsSync(m.localRepoDir(WS, 'proj')))
 })
 
-test('publish: forge repo created, history pushed, clones re-pointed, env adopted, storage gone', async () => {
-  // Give the project a devcontainer on main, the way an agent would.
+test('publish: forge repo created, history pushed, clones re-pointed, storage gone', async () => {
+  // Give the project a commit on main, the way an agent would.
   const dir = path.join(process.env.GURT_ROOT, WS, 't1', 'proj')
   await git(dir, 'pull', '-q', '--ff-only', 'origin', 'main')
-  fs.mkdirSync(path.join(dir, '.devcontainer'))
-  fs.writeFileSync(path.join(dir, '.devcontainer', 'devcontainer.json'), '{ "image": "python:3" }\n')
-  await m.commit(WS, 't1', 'proj', 'devcontainer')
+  fs.writeFileSync(path.join(dir, 'main.py'), 'print("hi")\n')
+  await m.commit(WS, 't1', 'proj', 'add main.py')
   await m.mergeToMain(WS, 't1', 'proj')
 
   const res = await m.publishLocalRepo(WS, 'proj', {
     credentialId: 'gh',
-    private: true,
-    adoptEnv: true
+    private: true
   })
   unrefBroker()
   assert.deepEqual(forgeCalls, [
@@ -214,7 +212,6 @@ test('publish: forge repo created, history pushed, clones re-pointed, env adopte
     }
   ])
   assert.equal(res.url, 'https://github.com/octo/proj.git')
-  assert.equal(res.env, 'proj')
 
   const ws = await m.getWorkspace(WS)
   assert.deepEqual(ws.repos.find((r) => r.name === 'proj'), {
@@ -222,7 +219,7 @@ test('publish: forge repo created, history pushed, clones re-pointed, env adopte
     url: 'https://github.com/octo/proj.git',
     credentialId: 'gh'
   })
-  assert.deepEqual(ws.envs, [{ name: 'proj', devcontainer: '{ "image": "python:3" }\n', repo: 'proj' }])
+  assert.deepEqual(ws.envs, [], 'publishing creates no env')
   assert.equal(fs.existsSync(m.localRepoDir(WS, 'proj')), false, 'local storage removed')
 
   // The forge holds the whole history, and every task's clone follows it.

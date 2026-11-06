@@ -33,7 +33,6 @@ import { ConfigTab } from './ConfigTab'
 import { SessionMenu } from './SessionActions'
 import { ToolStrip, type StripEntry } from './ToolStrip'
 import { TabBar, useSessionTab } from './SessionTabs'
-import { VscodeButton } from './VscodeButton'
 import { ContainerTerminalButton } from './ContainerTerminalButton'
 import { run } from '../async'
 import { stamp } from '../time'
@@ -368,7 +367,6 @@ export function Chat({
             </span>
           )}
         </span>
-        <VscodeButton info={info} />
         <ContainerTerminalButton info={info} />
         {/* A session already running is exactly where "this was set up wrong"
             is noticed — duplicate/delete belong on this header, not only on the

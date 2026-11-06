@@ -13,10 +13,10 @@ for (const dir of ['build/Release', 'build/Debug', 'prebuilds/darwin-arm64', 'pr
 }
 
 // node-pty rewrites its spawn-helper path with replace('app.asar',
-// 'app.asar.unpacked'), which is not idempotent. The devcontainer CLI runs from
-// app.asar.unpacked and picks up this node-pty, so the helper resolves to
-// app.asar.unpacked.unpacked/... and every docker call fails with
-// "posix_spawnp failed". Only rewrite paths that are not already unpacked.
+// 'app.asar.unpacked'), which is not idempotent. node-pty is loaded from
+// app.asar.unpacked, so the helper resolves to app.asar.unpacked.unpacked/...
+// and every spawn fails with "posix_spawnp failed". Only rewrite paths that
+// are not already unpacked.
 const unixTerminal = path.join(root, 'lib/unixTerminal.js')
 const source = readFileSync(unixTerminal, 'utf8')
 const patched = source

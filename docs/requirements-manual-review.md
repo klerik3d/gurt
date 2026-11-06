@@ -154,7 +154,7 @@ operations, not an agent write. It only gates session starts.
 
 ```
 Changes ──────────────────────────────── [↻]
- ▾ myapp-backend ────── [Open in VS Code]
+ ▾ myapp-backend
     M  internal/auth/token.go
     A  internal/auth/refresh.go
     2 files · +85 −10

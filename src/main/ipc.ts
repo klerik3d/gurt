@@ -20,7 +20,6 @@ import { sanitizeSkillSelection } from '../shared/skills'
 import { checkMcpCommand, clearNpmInstall } from './mcp/stdioBridge'
 import { probeMcpServer } from './mcp/probe'
 import {
-  discoverDevcontainer,
   discoverDockerfiles,
   envBuildImage,
   envImageStatus
@@ -54,7 +53,7 @@ function broadcast(channel: string, ...args: unknown[]): void {
 
 /**
  * Methods whose arguments carry user or agent prose — prompts, commit messages,
- * credential payloads, whole devcontainer configs. Their args are never logged,
+ * credential payloads, whole env definitions. Their args are never logged,
  * not even at DBG: "no chat content in the log" has to hold at the boundary,
  * not at each call site's discretion.
  */
@@ -195,7 +194,6 @@ export function registerIpc(): void {
       kernel.bus.emit('tree.changed', undefined)
       return result
     },
-    discoverDevcontainer: (ws, repo) => discoverDevcontainer(ws, repo),
     discoverDockerfiles: (ws, repo) => discoverDockerfiles(ws, repo),
     envImageStatus: (ws, env) => envImageStatus(ws, env),
     envBuildImage: async (ws, env) => {
@@ -316,7 +314,6 @@ export function registerIpc(): void {
       kernel.setTaskMaxConcurrentSessions(ws, name, max),
     stopContainer: (sessionId) => kernel.containers.stop(sessionId),
     releaseContainer: (sessionId) => kernel.containers.release(sessionId),
-    sessionOpenVscode: (sessionId) => kernel.containers.openVscode(sessionId),
     sessionOpenTerminal: (sessionId) => kernel.containers.openTerminal(sessionId),
     taskFilePath: files.taskFilePath,
     renameTaskFile: files.renameTaskFile,
@@ -368,9 +365,7 @@ export function registerIpc(): void {
     changesOpenPr: async (ws, task, repo) => {
       await shell.openExternal(await kernel.prUrl(ws, task, repo))
     },
-    changesOpenVscode: (ws, task, repo) => changes.openInVscode(ws, task, repo),
     changesOpenTerminal: (ws, task, repo) => changes.openRepoInTerminal(ws, task, repo),
-    taskOpenVscode: (ws, task) => changes.openTaskInVscode(ws, task),
     taskOpenTerminal: (ws, task) => changes.openTaskInTerminal(ws, task),
     taskCopyPath: async (ws, task) => {
       clipboard.writeText(store.taskDir(ws, task))

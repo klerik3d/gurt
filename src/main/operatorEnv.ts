@@ -10,12 +10,13 @@ import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { EnvConfig } from '../shared/types'
+import { parseEnvConfigText } from '../shared/envConfig'
 import { OPERATOR_ENV_NAME, STARTER_ENV_NAME } from '../shared/types'
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url))
 
 /**
- * Host path of the bundled env's devcontainer.json, following
+ * Host path of the bundled env's operator.json, following
  * `proxyScriptPath()`'s dev-vs-packaged split: in a packaged build the app
  * lives inside app.asar, which only Electron's own fs can read — the path is
  * redirected to the unpacked mirror (`asarUnpack` in electron-builder.yml
@@ -29,7 +30,7 @@ export function operatorEnvPath(): string {
   const override = process.env['GURT_OPERATOR_ENV']
   if (override) return override
   return path
-    .join(moduleDir, '..', '..', 'resources', 'env', 'devcontainer.json')
+    .join(moduleDir, '..', '..', 'resources', 'env', 'operator.json')
     .replace(`${path.sep}app.asar${path.sep}`, `${path.sep}app.asar.unpacked${path.sep}`)
 }
 
@@ -37,10 +38,14 @@ export function operatorEnvPath(): string {
  *  (§2.2), read fresh so a packaged update's new pin is picked up without
  *  cache invalidation to get wrong. */
 export async function bundledOperatorEnv(): Promise<EnvConfig> {
-  return {
-    name: OPERATOR_ENV_NAME,
-    devcontainer: await fs.readFile(operatorEnvPath(), 'utf8')
-  }
+  return readEnvFile(OPERATOR_ENV_NAME, operatorEnvPath())
+}
+
+/** A bundled env file (JSONC, the env format of docs/requirements-env-docker.md §2). */
+async function readEnvFile(name: string, file: string): Promise<EnvConfig> {
+  const env = parseEnvConfigText(name, await fs.readFile(file, 'utf8'))
+  if ('error' in env) throw new Error(`bundled env "${name}" (${file}): ${env.error}`)
+  return env
 }
 
 /** Host path of the bundled starter env (docs/requirements-new-projects.md
@@ -49,16 +54,13 @@ export function starterEnvPath(): string {
   const override = process.env['GURT_STARTER_ENV']
   if (override) return override
   return path
-    .join(moduleDir, '..', '..', 'resources', 'env', 'starter.devcontainer.json')
+    .join(moduleDir, '..', '..', 'resources', 'env', 'starter.json')
     .replace(`${path.sep}app.asar${path.sep}`, `${path.sep}app.asar.unpacked${path.sep}`)
 }
 
 /** The bundled starter env as an `EnvConfig` — image-only, read fresh. */
 export async function bundledStarterEnv(): Promise<EnvConfig> {
-  return {
-    name: STARTER_ENV_NAME,
-    devcontainer: await fs.readFile(starterEnvPath(), 'utf8')
-  }
+  return readEnvFile(STARTER_ENV_NAME, starterEnvPath())
 }
 
 /** The bundled env of this name, or undefined when the name is not one. Every
