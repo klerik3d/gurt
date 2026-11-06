@@ -101,8 +101,6 @@ const SAFE_ARGS = new Set([
   'getCommitDiff',
   'getDiffFiles',
   'getDiffPair',
-  'getReviewState',
-  'getReviewLocks',
   'latestProposal',
   'sessionSnapshot',
   // A session id in, host/port/count records out — the proxy log this reads
@@ -175,11 +173,6 @@ const SAFE_ARGS = new Set([
   'sessionSetConfigOption',
   'sessionPermission',
   'sessionActivity',
-  // Review bookkeeping — ids and booleans; the comment *text* enters through
-  // `addReviewComment`, which is opaque.
-  'setReviewLock',
-  'resolveReviewComment',
-  'deleteReviewComment',
   // Changes panel, minus `changesCommit`: repo keys only.
   'changesPush',
   'changesUpdateFromMain',

@@ -755,7 +755,6 @@ export function Sidebar({
                   layout={fileLayout}
                   selection={diffFile ?? null}
                   nav={diffNav(task.name)}
-                  onRefresh={() => onRefreshChanges(wsName, task.name)}
                 />
               )}
               {!isCollapsed && mode === 'sessions' &&

@@ -305,14 +305,14 @@ block below, which is about *categories of asset*, not about caution.
 Four groups, each for one reason:
 
 - **Repo content** — `getFileDiff`, `getCommitDiff`, `getDiffFiles`,
-  `getDiffPair`, `getReviewState`, `latestProposal`, `changesCommit`,
+  `getDiffPair`, `latestProposal`, `changesCommit`,
   `changesPush`, `changesUpdateFromMain`. §2.4: zero repos has to be true.
 - **Session lifecycle and driving** — `createSession`, `sessionRun`,
   `sessionEnqueue`, `sessionCancelQueue`, `sessionPrompt`,
   `sessionCancel`, `sessionClearPending`, `sessionCancelPending`,
   `sessionSetMode`, `sessionSetConfigOption`, `sessionPermission`,
   `sessionActivity`, `sessionEditPrompt`, `sessionEditDraft`,
-  `sessionDuplicate`, `sessionDelete`, `renameSession`, `launchReviewFix`,
+  `sessionDuplicate`, `sessionDelete`, `renameSession`,
   `stopContainer`, `releaseContainer`. §2.4.
 - **Destructive beyond the config layer** — `removeWorkspace`,
   `removeTask`, `renameTask`. Each destroys or rewrites clones holding
@@ -907,11 +907,6 @@ agent depends on it. `read*` marks a narrowed read (§3.2).
 | `stopContainer` / `releaseContainer` | none | §2.4 |
 | `getTaskChanges` | read | counts and states, not content |
 | `getFileDiff` / `getCommitDiff` / `getDiffFiles` / `getDiffPair` | none | repo content (§2.4) |
-| `getReviewState` | none | comments quote code |
-| `getReviewLocks` | read | why a session cannot start — diagnostics |
-| `setReviewLock` | none | |
-| `addReviewComment` / `resolveReviewComment` / `deleteReviewComment` | none | |
-| `launchReviewFix` | none | drafts a session (§2.4) |
 | `changesCommit` / `changesPush` / `changesUpdateFromMain` | none | writes to repos and remotes |
 | `latestProposal` | none | repo content |
 | `changesOpenPr` | none | browser |
@@ -945,7 +940,7 @@ it must name the draft's repo explicitly).
 
 **3. Read scope if the diagnostics reads are later offered to
 non-operator sessions.** `sessionSnapshot`, `sessionTraffic`,
-`get_provisioning_log` and `getReviewLocks` are useful to any session
+`get_provisioning_log` are useful to any session
 debugging itself ("why was I blocked from npm"), and there is an obvious
 appetite for a per-session diagnostics toggle. If that is offered, the
 scope must be **own-session-only** — bound host-side to the calling

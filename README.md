@@ -127,9 +127,9 @@ Details: [docs/architecture.md](docs/architecture.md).
 - Environments are definitions stored in Gurt (an image or a Dockerfile, environment variables, a setup script and a start script). Repos without one can use the bundled `starter` env.
 
 **Workflow**
-- Queue: a new session is a draft until you press **Run**. Run always goes through the queue: the session starts at once if nothing is in the way, and waits otherwise. The lock is per clone, so sessions on different repos run in parallel. You can cap concurrent sessions per scope, and a clone locked for manual review blocks writers. The queue survives a restart.
+- Queue: a new session is a draft until you press **Run**. Run always goes through the queue: the session starts at once if nothing is in the way, and waits otherwise. The lock is per clone, so sessions on different repos run in parallel. You can cap concurrent sessions per scope. The queue survives a restart.
 - Plan limits: once an account's subscription window reaches the threshold (Settings → Clients, default 95%), nothing new starts on it. Queued sessions and queued messages wait for the reset, and a session the limit cut off sends "continue" on its own afterwards. Extra usage and credits lift the hold.
-- Review: split diff, inline comments and "Launch fix". Then commit, push and open a pull request. Local repos with no forge yet use "Merge into main".
+- Review: the split diff of the agent's changes. Then commit, push and open a pull request. Local repos with no forge yet use "Merge into main".
 - [Proactive agents](docs/design-proactive-agents.md): an agent that runs on a schedule, reads its sources through MCP (Sentry, a tracker, mail) and raises scopes with draft sessions for you to launch. Each source item is bound to at most one scope, so repeated runs do not raise the same thing twice.
 - [Files](docs/files.md): browse a scope's repositories and edit files in CodeMirror tabs, with syntax highlighting, explicit saves and JS/TS definition/reference navigation.
 - Terminals on the host, opened per scope.

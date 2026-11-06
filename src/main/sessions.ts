@@ -459,12 +459,9 @@ export interface SessionEvents {
   /** Workspace's default agent (an `AgentsFile` key), used to resolve a
    *  `create_session` request that names none — see `createAgentDraft`. */
   defaultAgentForWorkspace: (ws: string) => Promise<string | undefined>
-  /** Is this clone held by a manual review? Synchronous by contract: the
-   *  scheduler asks on every pass and cannot await a disk read (see review.ts). */
-  isRepoLockedForReview: (ws: string, task: string, repo: string) => boolean
   /** Is the plan these agent instances share at its limit (`planHold` over
-   *  their cached usage, at the configured threshold)? Synchronous for the
-   *  same reason as the review lock: the scheduler asks on every pass. */
+   *  their cached usage, at the configured threshold)? Synchronous: the
+   *  scheduler asks on every pass. */
   planHold: (agents: readonly string[]) => PlanHold | undefined
   /** Make sure the task exists (create it if missing) — a draft may not land in
    *  a task directory without its `task.json` marker, so a cross-task
@@ -1387,13 +1384,6 @@ export class SessionManager {
         this.noteQueued(s, 'repo-held', holder.info.id)
         continue
       }
-      // A locked clone is not a transient conflict the queue can outwait on its
-      // own: it stays queued until the user unlocks, which re-runs the pass.
-      if (this.reviewLocked(s)) {
-        still.add(s.info.id)
-        this.noteQueued(s, 'repo-locked-for-review')
-        continue
-      }
       claimed.add(rkey)
       start()
     }
@@ -1506,25 +1496,8 @@ export class SessionManager {
   }
 
   /**
-   * The clone is held by a manual review (docs/requirements-manual-review.md).
-   *
-   * The review lock is the second kind of holder of the same registry as
-   * {@link repoHolder} — so it gates exactly the roles that participate in it.
-   * A researcher's clone is mounted `readonly` and claims no key, so a review
-   * never blocks one: it cannot be what the lock exists to stop.
-   */
-  private reviewLocked(s: Session): boolean {
-    const [repo] = s.info.repos
-    // `repoKey` is null for a session with no repo, so `repo` is set whenever
-    // this gets past the first line.
-    if (!this.repoKey(s) || !repo) return false
-    return this.events.isRepoLockedForReview(s.ref.workspace, s.ref.task, repo)
-  }
-
-  /**
    * The session currently holding this clone, addressed by (task, repo) rather
-   * than by another session — what the review lock needs before it can claim
-   * the same clone. Same "able to touch it" rule as {@link repoHolder}: an idle
+   * than by another session. Same "able to touch it" rule as {@link repoHolder}: an idle
    * session whose container is down holds nothing and is not reported.
    */
   repoHolderFor(ws: string, task: string, repo: string): SessionInfo | undefined {
@@ -1551,7 +1524,7 @@ export class SessionManager {
    * The task-cap half is deliberately loose, same as the repo half: any idle
    * running session of a capped task with something queued is listed, whether
    * or not stopping it actually clears *this* queued item's way (it may be
-   * blocked by something else too, e.g. a review lock) — an idle container was
+   * blocked by something else too) — an idle container was
    * headed down on its own regardless, so reaping it a little early never
    * costs anything.
    */
@@ -1704,12 +1677,6 @@ export class SessionManager {
       if (holder)
         throw new Error(
           `repository "${s.info.repos[0]}" is in use by session "${holder.info.title}" — queue this one instead`
-        )
-      // A hard block, unlike the holder conflict above: "Run now" cannot confirm
-      // its way past a review, because not writing is the whole point of one.
-      if (this.reviewLocked(s))
-        throw new Error(
-          `repository "${s.info.repos[0]}" is locked for review — unlock it to run agents against it`
         )
       // Before the container is resolved: `resolveLaunch` provisions it, and
       // the read-only bind it adds points at the directory this call fills

@@ -3,8 +3,8 @@
 // both. Importable without an Electron app (headless runs, orchestrator,
 // tests).
 import { startGc } from './gc'
-import type { DiffTarget, ReviewState, Tree } from '../shared/types'
-import { isBundledEnv, isSessionRole, targetKey } from '../shared/types'
+import type { Tree } from '../shared/types'
+import { isBundledEnv, isSessionRole } from '../shared/types'
 import type { BootProgress, SessionDraftPatch } from '../shared/api'
 import { NOTIFICATION_DEFAULTS } from '../shared/notifications'
 import { sanitizeSkillSelection } from '../shared/skills'
@@ -20,7 +20,6 @@ import { ContainerManager } from './containers'
 import { traffic } from './proxy/traffic'
 import { SessionManager, type RestoredSession } from './sessions'
 import { createAdminSurface, type AdminSurface } from './adminSurface'
-import { createReview, fixPrompt, type ReviewManager } from './review'
 import { createNotifications, type Notifications } from './notifications'
 import { createUsageLedger, type UsageLedger } from './usage'
 import { createPlanUsage, type PlanUsageStore } from './planUsage'
@@ -46,8 +45,6 @@ export interface Kernel {
   terminals: TerminalManager
   containers: ContainerManager
   sessions: SessionManager
-  /** Manual review state — comments and the per-clone review lock. */
-  review: ReviewManager
   /** Settles when the boot restore is done — sessions loaded, container records
    *  reconciled against Docker, queue resumed. The app never waits on it (the UI
    *  renders the sessions as they land), but anything that stages state *as if*
@@ -95,20 +92,6 @@ export interface Kernel {
    *  its title/body ride along as url-encoded query params (the compare page picks
    *  them up). */
   prUrl(ws: string, task: string, repo: string): Promise<string>
-  /** Review state of a clone, with comments pruned against the files the target
-   *  still has (see `ReviewManager.state`). */
-  reviewState(ws: string, task: string, repo: string, target: DiffTarget): Promise<ReviewState>
-  /** Take or release the review lock. Taking one fails while a session holds
-   *  the clone — the two are the same exclusion, so they cannot both hold it. */
-  setReviewLock(ws: string, task: string, repo: string, locked: boolean): Promise<void>
-  /** Draft an executor session that fixes the target's open comments. */
-  launchReviewFix(
-    ws: string,
-    task: string,
-    repo: string,
-    target: DiffTarget,
-    prompt: string
-  ): Promise<{ sessionId: string }>
 }
 
 /** Reject a draft target that does not exist in the workspace, or an agent the
@@ -169,10 +152,6 @@ export function createKernel(): Kernel {
   const pii = createPiiMask({ credentials: () => listCredentials() })
   pii.onTable((sessionId, table) => bus.emit('session.pii', { sessionId, table }))
 
-  // Review state is standalone (no dependency back into sessions — the kernel
-  // itself joins the two where they meet, at lock acquisition).
-  const review = createReview()
-
   // The container manager reads and writes container state that lives *on* the
   // session, and the session manager asks it to provision — a genuine mutual
   // dependency. The knot unties because every reference below is inside a
@@ -219,7 +198,6 @@ export function createKernel(): Kernel {
       checkDraftTarget: assertDraftTarget,
       defaultEnvsForRepo,
       defaultAgentForWorkspace: async (ws) => (await store.getWorkspace(ws)).defaultAgent,
-      isRepoLockedForReview: (ws, task, repo) => review.isLocked(ws, task, repo),
       // `planUsage` is built further down; this closure reads it at call time,
       // and the first call is the boot restore's scheduler pass.
       planHold: (agents) => planHold(planUsage.peek(agents), limitSettings.thresholdPercent, Date.now()),
@@ -418,11 +396,8 @@ export function createKernel(): Kernel {
     // clear. `load` never rejects for a bad configuration — it records the
     // reason and stays not-ready.
     await pii.load().catch((e: unknown) => log.error('internal.fail', { site: 'pii-load', err: e }))
-    // Before the scheduler's first pass: a lock taken in a previous run still
-    // holds, and a queue resumed past it would start exactly what it excludes.
-    await review.load()
     sessions.loadAgentConfigs(await store.getAgentConfigs())
-    // Before the scheduler's first pass, like the review lock: the resumed
+    // Before the scheduler's first pass: the resumed
     // queue must not start what the limit policy holds.
     limitSettings = await store.getLimitSettings()
     sessions.loadAgentKinds(await store.getAgents())
@@ -434,7 +409,7 @@ export function createKernel(): Kernel {
       // A proactive agent's scope holds sessions too: its template and runs.
       for (const agent of ws.proactive) allTasks.push({ ws: ws.name, task: agent.name })
     }
-    // Before the scheduler's first pass, same reason as the review lock above.
+    // Before the scheduler's first pass, same reason as above.
     sessions.loadTaskCaps(
       t.workspaces.flatMap((ws) =>
         ws.tasks.map((task) => ({ ws: ws.name, task: task.name, max: task.maxConcurrentSessions }))
@@ -486,7 +461,6 @@ export function createKernel(): Kernel {
     terminals,
     containers,
     sessions,
-    review,
     ready,
     bootProgress: () => lastProgress,
     notifications,
@@ -512,7 +486,6 @@ export function createKernel(): Kernel {
         await containers.teardownTask(ws, task)
         terminals.dropScope(ws, task)
         sessions.dropTaskSessions(ws, task)
-        review.dropTask(ws, task)
         await store.removeTaskDir(ws, task)
         bus.emit('tree.changed', undefined)
       })
@@ -523,7 +496,6 @@ export function createKernel(): Kernel {
         await containers.teardownWorkspace(ws)
         terminals.dropScope(ws)
         sessions.dropWorkspaceSessions(ws)
-        review.dropWorkspace(ws)
         proactive.dropWorkspace(ws)
         await store.removeWorkspaceDir(ws)
         bus.emit('tree.changed', undefined)
@@ -540,7 +512,6 @@ export function createKernel(): Kernel {
         terminals.renameScope(ws, task, newName)
         await changes.renameTaskBranches(ws, newName, task)
         sessions.renameTask(ws, task, newName)
-        review.renameTask(ws, task, newName)
         proactive.onScopeRenamed(ws, task, newName)
         bus.emit('tree.changed', undefined)
       })
@@ -570,22 +541,6 @@ export function createKernel(): Kernel {
       )
     },
 
-    async reviewState(
-      ws: string,
-      task: string,
-      repo: string,
-      target: DiffTarget
-    ): Promise<ReviewState> {
-      // The live file list is what prunes comments whose file left the diff. A
-      // git failure (clone gone, unborn HEAD) must not lose comments: with no
-      // list to prune against, the state is read as-is.
-      const files = await changes
-        .getDiffFiles(ws, task, repo, target)
-        .then((f) => f.map((x) => x.path))
-        .catch(() => undefined)
-      return review.state(ws, task, repo, targetKey(target), files)
-    },
-
     async setLimitSettings(settings: LimitSettings): Promise<void> {
       const next = normalizeLimitSettings(settings, limitSettings)
       await store.setLimitSettings(next)
@@ -599,60 +554,6 @@ export function createKernel(): Kernel {
       await store.saveTask(ws, task, clean === undefined ? rest : { ...rest, maxConcurrentSessions: clean })
       sessions.setTaskCap(ws, task, clean)
       bus.emit('tree.changed', undefined)
-    },
-
-    async setReviewLock(ws: string, task: string, repo: string, locked: boolean): Promise<void> {
-      if (locked) {
-        const holder = sessions.repoHolderFor(ws, task, repo)
-        if (holder)
-          throw new Error(
-            `session "${holder.title}" is running against "${repo}" — stop it before locking for review`
-          )
-      }
-      await review.setLock(ws, task, repo, locked)
-      // Unlocking frees the clone for whatever has been waiting on it; locking
-      // re-runs the pass too, so a queue item's reason updates immediately.
-      sessions.schedule()
-      bus.emit('tree.changed', undefined)
-    },
-
-    async launchReviewFix(
-      ws: string,
-      task: string,
-      repo: string,
-      target: DiffTarget,
-      prompt: string
-    ): Promise<{ sessionId: string }> {
-      const state = await review.state(ws, task, repo, targetKey(target))
-      const text = fixPrompt(repo, state.comments, prompt)
-      if (!text) throw new Error('nothing to send — leave a comment or write a prompt')
-      // Inherit the way `create_session` inherits from its spawner: the newest
-      // session that already worked this clone knows the env, agent and
-      // settings this task runs on. With none, fall back to the workspace's
-      // first env and the only agent — the same two things the New Session
-      // modal would preselect.
-      const prior = sessions
-        .listForTask(ws, task)
-        .filter((s) => s.repos.includes(repo))
-        .pop()
-      const wsData = await store.getWorkspace(ws)
-      const env = prior?.env ?? wsData.envs[0]?.name
-      if (!env) throw new Error(`no environment is registered in "${ws}"`)
-      const agents = Object.keys(await store.getAgents())
-      const agent = prior?.agent ?? agents[0]
-      if (!agent) throw new Error('no agent is configured — add one in Settings')
-      const info = sessions.createSession(
-        { workspace: ws, task, env },
-        [repo],
-        agent,
-        text,
-        'draft',
-        prior?.mcp ?? [],
-        prior?.autoAllow ?? true,
-        prior?.configValues ?? {},
-        'executor'
-      )
-      return { sessionId: info.id }
     },
 
     async prUrl(ws: string, task: string, repo: string): Promise<string> {

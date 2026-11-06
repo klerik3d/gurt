@@ -364,15 +364,6 @@ export const ADMIN_TOOLS: readonly AdminToolDef[] = [
     input: { "task": z.string(), "opts": z.strictObject({ "fetch": z.boolean().optional() }).optional() }
   },
   {
-    name: "get_review_locks",
-    method: "getReviewLocks",
-    exposure: "read",
-    description: "Locked repos of a task, as `repo → true`. A plain read: unlike\n`getReviewState` it never prunes, so the panel can poll it freely.",
-    bindWs: true,
-    params: ["task"],
-    input: { "task": z.string() }
-  },
-  {
     name: "session_snapshot",
     method: "sessionSnapshot",
     exposure: "read",

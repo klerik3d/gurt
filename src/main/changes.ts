@@ -288,8 +288,8 @@ export async function getTaskChanges(
   return out.sort((a, b) => a.repo.localeCompare(b.repo))
 }
 
-// --- split review: file lists and before/after pairs -----------------------
-// See docs/requirements-manual-review.md. The host returns whole file content
+// --- diff view: file lists and before/after pairs --------------------------
+// The host returns whole file content
 // and lets the renderer align it; nothing here knows about hunks.
 
 /** Parse `--name-status` output (`M\tpath`, `R100\told\tnew`) into ChangedFile. */

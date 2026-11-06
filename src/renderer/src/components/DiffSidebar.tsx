@@ -6,7 +6,6 @@ import { run } from '../async'
 import { Icon } from './icons'
 import { RowContextMenu } from './RowContextMenu'
 import { commitInputId, GitPushModal } from './GitActions'
-import { ReviewModal } from './ReviewModal'
 import { FileTreeRow } from './FileTreeRow'
 
 export type FileLayout = 'list' | 'tree'
@@ -127,14 +126,13 @@ function fileRows(repo: string, files: ChangedFile[], target: DiffTarget, layout
  *  walks them with its own cursor, so a click must not leave focus on one. */
 const keepTreeFocus = (e: ReactMouseEvent) => e.preventDefault()
 
-export function TaskRepositories({ ws, task, changes, layout, selection, nav, onRefresh }: {
+export function TaskRepositories({ ws, task, changes, layout, selection, nav }: {
   ws: string
   task: string
   changes: RepoChanges[] | undefined
   layout: FileLayout
   selection: DiffFileSelection | null
   nav: DiffNav
-  onRefresh: () => Promise<void>
 }) {
   if (!changes) return <div className="sb-empty">loading repositories…</div>
   if (!changes.length) return <div className="sb-empty">no repositories yet</div>
@@ -151,14 +149,13 @@ export function TaskRepositories({ ws, task, changes, layout, selection, nav, on
           activeTarget={selection?.target}
           activePath={selection?.ws === ws && selection.task === task && selection.repo === repo.repo
             ? selection.path : null}
-          onRefresh={onRefresh}
         />
       ))}
     </div>
   )
 }
 
-function Repository({ ws, task, repo: r, layout, nav, activePath, activeTarget, onRefresh }: {
+function Repository({ ws, task, repo: r, layout, nav, activePath, activeTarget }: {
   ws: string
   task: string
   repo: RepoChanges
@@ -166,14 +163,12 @@ function Repository({ ws, task, repo: r, layout, nav, activePath, activeTarget, 
   nav: DiffNav
   activeTarget?: DiffTarget | undefined
   activePath: string | null
-  onRefresh: () => Promise<void>
 }) {
   const open = nav.repoOpen(r.repo)
   const menu = nav.menu?.repo === r.repo ? nav.menu : null
   const setMenu = (m: { x: number; y: number } | null) => nav.setMenu(m && { repo: r.repo, ...m })
   const repoRow: DiffRow = { kind: 'repo', repo: r.repo }
   const [pushing, setPushing] = useState(false)
-  const [review, setReview] = useState<DiffTarget | null>(null)
   const busy = nav.busy(r.repo)
   const hasChanges = isActionable(r) || isDelivered(r)
   const act = (fn: () => Promise<void>) => nav.act(r.repo, fn)
@@ -227,10 +222,6 @@ function Repository({ ws, task, repo: r, layout, nav, activePath, activeTarget, 
             setMenu(null)
             await act(() => window.gurt.changesOpenTerminal(ws, task, r.repo))
           })}><Icon name="terminal" size={13} /> Open in Terminal</button>
-          <button className="menu-item diff-menu-action" disabled={busy || (menu.target?.kind !== 'commit' && !r.dirty)} onClick={() => {
-            setMenu(null)
-            setReview(menu.target ?? { kind: 'uncommitted' })
-          }}>{menu.target?.kind === 'commit' ? 'Review commit…' : 'Review uncommitted changes…'}</button>
           <button
             className="menu-item diff-menu-action"
             disabled={busy || r.conflicted}
@@ -267,7 +258,7 @@ function Repository({ ws, task, repo: r, layout, nav, activePath, activeTarget, 
           {r.prUrl && <button className="menu-item diff-menu-action" disabled={busy} onClick={run(async () => {
             setMenu(null)
             await act(() => window.gurt.changesOpenPr(ws, task, r.repo))
-          })}>Create PR</button>}
+          })}><Icon name="pull-request" size={13} /> Create PR</button>}
           {r.local && (
             <button
               className="menu-item diff-menu-action"
@@ -284,9 +275,6 @@ function Repository({ ws, task, repo: r, layout, nav, activePath, activeTarget, 
       )}
       {pushing && <GitPushModal repo={r.repo} busy={busy} onClose={() => setPushing(false)}
         onPush={(options) => act(() => window.gurt.changesPush(ws, task, r.repo, options))} />}
-      {review && <ReviewModal ws={ws} task={task} repo={r.repo} target={review} title={r.repo}
-        onClose={() => setReview(null)} onChanged={run(onRefresh)} />}
-
     </div>
   )
 }

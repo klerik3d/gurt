@@ -71,9 +71,6 @@ const OPAQUE_ARGS = new Set<keyof GurtApi>([
   'sessionEditDraft',
   'renameSession',
   'changesCommit',
-  // Review prose: the note itself, and the fix prompt built out of the notes.
-  'addReviewComment',
-  'launchReviewFix',
   'setCredentials',
   // The whole entry rides in the call; its secret fields only ever hold masks,
   // but the payload is a credential's and stays opaque like setCredentials'.
@@ -328,34 +325,6 @@ export function registerIpc(): void {
     getDiffFiles: (ws, task, repo, target) => changes.getDiffFiles(ws, task, repo, target),
     getDiffPair: (ws, task, repo, target, file) =>
       changes.getDiffPair(ws, task, repo, target, file),
-    getReviewState: (ws, task, repo, target) => kernel.reviewState(ws, task, repo, target),
-    getReviewLocks: (ws, task) => kernel.review.locks(ws, task),
-    setReviewLock: (ws, task, repo, locked) => kernel.setReviewLock(ws, task, repo, !!locked),
-    addReviewComment: (ws, task, repo, target, path, side, line, text, endLine) => {
-      // Straight off the wire and straight onto disk — the anchor has to be a
-      // real anchor, and an empty note is a UI slip, not a comment.
-      if (side !== 'before' && side !== 'after')
-        // `side` is typed, but this is the wire: what arrives is whatever the
-        // renderer sent, so the message has to be able to name a value the
-        // type says cannot exist.
-        throw new Error(`unknown diff side "${String(side)}"`)
-      if (!Number.isInteger(line) || line < 1) throw new Error(`not a line number: ${line}`)
-      if (endLine !== undefined && (!Number.isInteger(endLine) || endLine < line))
-        throw new Error(`not a valid range end: ${endLine}`)
-      if (!text.trim()) throw new Error('comment is empty')
-      return kernel.review.addComment(ws, task, repo, targetKey(target), {
-        path,
-        side,
-        line,
-        ...(endLine !== undefined && endLine > line ? { endLine } : {}),
-        text: text.trim()
-      })
-    },
-    resolveReviewComment: (ws, task, id, resolved) =>
-      kernel.review.resolveComment(ws, task, id, !!resolved),
-    deleteReviewComment: (ws, task, id) => kernel.review.deleteComment(ws, task, id),
-    launchReviewFix: (ws, task, repo, target, prompt) =>
-      kernel.launchReviewFix(ws, task, repo, target, prompt),
     changesCommit: (ws, task, repo, message, options) => changes.commit(ws, task, repo, message, options),
     changesPush: (ws, task, repo, options) => changes.push(ws, task, repo, options),
     changesUpdateFromMain: (ws, task, repo, strategy) =>

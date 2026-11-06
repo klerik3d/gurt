@@ -254,8 +254,7 @@ otherwise waits instead of failing:
   claim no clone and start as soon as the queue reaches them.
 - **`run()` on main** (no longer behind a button; tests and internal callers)
   starts immediately only if the clone is free. If another session holds it,
-  the start is refused ("queue this one instead"); if the clone is locked for
-  manual review, it is refused outright; if the task is at its
+  the start is refused ("queue this one instead"); if the task is at its
   `maxConcurrentSessions` cap, or its account is at its plan limit, the session
   is queued instead.
 - **plan limits** — an account (credential) with a plan window at the usage
@@ -266,8 +265,6 @@ otherwise waits instead of failing:
 - **per-task cap** (`maxConcurrentSessions` in `task.json`, the "max
   concurrent" field on the queue; unset = unlimited) holds queued items until a
   slot frees, and the handoff stops idle containers of a capped task.
-- **review lock** — a clone locked for manual review keeps writers queued
-  (`repo-locked-for-review`).
 - **follow-up prompts** to a `started` session wait in a per-session pending
   queue while another session holds the clone, and drive the same handoff.
 
@@ -375,8 +372,7 @@ Sessions are persisted to `<ws>/<task>/sessions.json` (info incl. state /
 startPrompt / queuedAt / its container record, ACP session id, latest proposal)
 and restored on app start; the chat history is an append-only
 `<ws>/<task>/sessions/<id>.jsonl`. `task.json` marks a directory as a task and
-carries its `createdAt` and `maxConcurrentSessions`; `review.json` sits beside
-it. At boot the restored container records are reconciled against
+carries its `createdAt` and `maxConcurrentSessions`. At boot the restored container records are reconciled against
 `docker ps --filter label=gurt.session`: one describing a container the daemon no
 longer has is dropped, a record's container id and running/stopped status are
 corrected, a container without the `gurt.runtime=docker` label (made by the

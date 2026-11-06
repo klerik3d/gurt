@@ -18,8 +18,6 @@ import type {
   PublishResult,
   PublishSpec,
   RepoConfig,
-  ReviewComment,
-  ReviewState,
   PendingPromptInfo,
   SessionInfo,
   SessionNetwork,
@@ -273,7 +271,7 @@ export interface GurtApi {
   getFileDiff(ws: string, task: string, repo: string, file: string): Promise<string>
   /** Read-only `git show` of one commit of the thread. */
   getCommitDiff(ws: string, task: string, repo: string, sha: string): Promise<string>
-  /** Files one review target touches (see docs/requirements-manual-review.md). */
+  /** Files one diff target touches. */
   getDiffFiles(ws: string, task: string, repo: string, target: DiffTarget): Promise<ChangedFile[]>
   /** Whole before/after content of one file — the split view aligns it renderer-side. */
   getDiffPair(
@@ -283,35 +281,6 @@ export interface GurtApi {
     target: DiffTarget,
     file: string
   ): Promise<DiffPair>
-  /** Lock + this target's comments; comments whose file left the target are pruned. */
-  getReviewState(ws: string, task: string, repo: string, target: DiffTarget): Promise<ReviewState>
-  /** Locked repos of a task, as `repo → true`. A plain read: unlike
-   *  `getReviewState` it never prunes, so the panel can poll it freely. */
-  getReviewLocks(ws: string, task: string): Promise<Record<string, boolean>>
-  /** Take/release the review lock; taking one rejects while a session holds the clone. */
-  setReviewLock(ws: string, task: string, repo: string, locked: boolean): Promise<void>
-  addReviewComment(
-    ws: string,
-    task: string,
-    repo: string,
-    target: DiffTarget,
-    path: string,
-    side: 'before' | 'after',
-    line: number,
-    text: string,
-    /** 1-based, inclusive; omit for a single-line anchor. */
-    endLine?: number
-  ): Promise<ReviewComment>
-  resolveReviewComment(ws: string, task: string, id: string, resolved: boolean): Promise<void>
-  deleteReviewComment(ws: string, task: string, id: string): Promise<void>
-  /** Draft an executor session seeded with this target's open comments plus `prompt`. */
-  launchReviewFix(
-    ws: string,
-    task: string,
-    repo: string,
-    target: DiffTarget,
-    prompt: string
-  ): Promise<{ sessionId: string }>
   changesCommit(ws: string, task: string, repo: string, message: string, options?: GitCommitOptions): Promise<void>
   changesPush(ws: string, task: string, repo: string, options?: GitPushOptions): Promise<void>
   /** Merge or rebase the fetched default branch into the task branch; conflicts surface as `conflicted`. */
@@ -622,13 +591,6 @@ const METHODS = {
   getCommitDiff: 'none', //     repo content (§2.4)
   getDiffFiles: 'none', //      repo content (§2.4)
   getDiffPair: 'none', //       repo content (§2.4)
-  getReviewState: 'none', //    comments quote code
-  getReviewLocks: 'read', //    why a session cannot start — diagnostics
-  setReviewLock: 'none',
-  addReviewComment: 'none',
-  resolveReviewComment: 'none',
-  deleteReviewComment: 'none',
-  launchReviewFix: 'none', //   drafts a session (§2.4)
   changesCommit: 'none', //     writes to repos and remotes
   changesPush: 'none', //       writes to repos and remotes
   changesUpdateFromMain: 'none',

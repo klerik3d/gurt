@@ -141,7 +141,6 @@ export function createAdminSurface(kernel: Kernel): AdminSurface {
     },
     taskDirtyRepos: (w, name) => kernel.taskDirtyRepos(w, name),
     getTaskChanges: (w, task, opts) => changes.getTaskChanges(w, task, opts ?? {}),
-    getReviewLocks: (w, task) => kernel.review.locks(w, task),
     // Deliberately without ipc.ts's markSessionRead side effect: the
     // notification read-state is the user's own (§3.4), and an operator
     // reading diagnostics must not clear it.
