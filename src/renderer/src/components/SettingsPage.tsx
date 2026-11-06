@@ -110,19 +110,22 @@ import { AgentTag } from './tags'
 import { Modal } from './Modal'
 import { run } from '../async'
 
-export type SettingsSection =
-  | 'environments'
-  | 'repos'
-  | 'clients'
-  | 'agentAccess'
-  | 'mcp'
-  | 'skills'
-  | 'credentials'
-  | 'masking'
-  | 'notifications'
-  | 'hotkeys'
-  | 'machine'
-  | 'docker'
+export const SETTINGS_SECTIONS = [
+  'environments',
+  'repos',
+  'clients',
+  'agentAccess',
+  'mcp',
+  'skills',
+  'credentials',
+  'masking',
+  'notifications',
+  'hotkeys',
+  'machine',
+  'docker',
+] as const
+
+export type SettingsSection = (typeof SETTINGS_SECTIONS)[number]
 
 /** Nav labels for sections whose id does not simply capitalize. */
 const SECTION_LABEL: Partial<Record<SettingsSection, string>> = {

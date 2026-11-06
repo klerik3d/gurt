@@ -28,7 +28,7 @@ import { ProactivePane } from './components/ProactivePane'
 import { useFiles } from './useFiles'
 import { useScopeList } from './useScopeList'
 import type { DiffFileSelection } from './components/DiffSidebar'
-import { SettingsPage, type SettingsSection } from './components/SettingsPage'
+import { SettingsPage, SETTINGS_SECTIONS, type SettingsSection } from './components/SettingsPage'
 import { Dashboard } from './components/Dashboard'
 import { CommandPalette } from './components/CommandPalette'
 import { Welcome } from './components/Welcome'
@@ -52,9 +52,11 @@ export type Selection =
   | { type: 'task'; ws: string; task: string }
   | null
 
-export type View = 'work' | 'dashboard' | 'settings'
+export const VIEWS = ['work', 'dashboard', 'settings'] as const
+export type View = (typeof VIEWS)[number]
 
-export type WorkMode = 'sessions' | 'diff' | 'files' | 'proactive'
+export const WORK_MODES = ['sessions', 'diff', 'files', 'proactive'] as const
+export type WorkMode = (typeof WORK_MODES)[number]
 
 // Draggable sidebar width, persisted across launches.
 const SIDEBAR_MIN = 200
@@ -101,16 +103,16 @@ export default function App() {
   const seenMarks = useSeen()
   const { turns: usage, loaded: readStateReady } = useUsage()
   const [selection, setSelection] = usePreference<Selection>('selection', null, selectionSchema)
-  const [view, setView] = usePreference<View>('view', 'work', z.enum(['work', 'dashboard', 'settings']))
+  const [view, setView] = usePreference<View>('view', 'work', z.enum(VIEWS))
   const [leftSidebarVisible, setLeftSidebarVisible] = usePreference('leftSidebar', true, z.boolean())
   const [terminalVisible, setTerminalVisible] = usePreference('terminalVisible', false, z.boolean())
-  const [workMode, setWorkMode] = usePreference<WorkMode>('workMode', 'sessions', z.enum(['sessions', 'diff', 'files', 'proactive']))
+  const [workMode, setWorkMode] = usePreference<WorkMode>('workMode', 'sessions', z.enum(WORK_MODES))
   /** The proactive agent open in the Proactive mode, by name within the
    *  current workspace. */
   const [proactiveAgent, setProactiveAgent] = usePreference<string | null>('proactiveAgent', null, z.string().nullable())
   const [newProactive, setNewProactive] = useState(false)
   const [diffFile, setDiffFile] = usePreference<DiffFileSelection | null>('diffFile', null, diffFileSchema)
-  const [settingsSection, setSettingsSection] = usePreference<SettingsSection>('settingsSection', 'environments', z.enum(['environments', 'repos', 'clients', 'agentAccess', 'mcp', 'skills', 'credentials', 'notifications', 'hotkeys', 'machine', 'docker']))
+  const [settingsSection, setSettingsSection] = usePreference<SettingsSection>('settingsSection', 'environments', z.enum(SETTINGS_SECTIONS))
   const [snapshots, setSnapshots] = useState<Record<string, SessionSnapshot>>({})
   const [logs, setLogs] = useState<Record<string, string[]>>({})
   /** Per-task git changes snapshot, keyed `ws/task` — read by git mode and the sidebar badge. */
