@@ -1,10 +1,11 @@
 // The whole Electron-facing surface: broadcast bridge, the `GurtApi`
 // implementation over the kernel, and handler registration. Everything
 // domain-shaped lives in kernel.ts and below.
-import { app, BrowserWindow, clipboard, ipcMain, shell } from 'electron'
+import { app, clipboard, ipcMain, shell } from 'electron'
 import { API_METHODS, type GurtApi } from '../shared/api'
 import { defaultEnvName, isSessionRole } from '../shared/types'
 import { MCP_DEFS } from '../shared/mcp'
+import { broadcast } from './broadcast'
 import { createKernel } from './kernel'
 import { POLL_INTERVAL_MS } from './planUsage'
 import { createLogger, dropSessionLog, enabled, logDir, logLevel, logRenderer } from './log'
@@ -40,16 +41,6 @@ import { PREPARE_LOG_KEY, sanitizeWelcomeMode } from '../shared/doctor'
 import { checkForUpdates, deferUpdate, installUpdate, updateStatus } from './update'
 
 const log = createLogger('ipc')
-
-function broadcast(channel: string, ...args: unknown[]): void {
-  // A window mid-close can still be listed while its webContents is already
-  // destroyed; sending there throws (the background poll's usage.changed is
-  // the common trigger).
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (win.isDestroyed() || win.webContents.isDestroyed()) continue
-    win.webContents.send(channel, ...args)
-  }
-}
 
 /**
  * Methods whose arguments carry user or agent prose — prompts, commit messages,

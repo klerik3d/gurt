@@ -4,10 +4,11 @@
 // panel, so the build info the panel would otherwise omit (commit, build
 // date, Electron/Chromium/Node/V8) is there and copyable in one click — same
 // shape as VS Code's About dialog.
-import { app, BrowserWindow, clipboard, dialog, Menu, type MenuItemConstructorOptions } from 'electron'
+import { app, clipboard, dialog, Menu, type MenuItemConstructorOptions } from 'electron'
 import os from 'node:os'
 import type { HotkeyMap } from '../shared/hotkeys'
 import { bindingToAccelerator } from '../shared/hotkeys'
+import { broadcast } from './broadcast'
 
 /** Coarse "when was this" wording — same rounding as the renderer's
  *  `relativeTime` (src/renderer/src/time.ts), duplicated because that file
@@ -51,13 +52,6 @@ function showAbout(): void {
     noLink: true
   })
   if (button === 0) clipboard.writeText(`Gurt\n${detail}`)
-}
-
-function broadcast(channel: string, ...args: unknown[]): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (win.isDestroyed() || win.webContents.isDestroyed()) continue
-    win.webContents.send(channel, ...args)
-  }
 }
 
 /** Accelerator items for the workspace-cycle hotkeys, appended to the Window
