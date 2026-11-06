@@ -7,6 +7,7 @@
 // never a dialog, whichever path fetched it.
 import { app, BrowserWindow, dialog } from 'electron'
 import { autoUpdater } from 'electron-updater'
+import { broadcast } from './broadcast'
 import { createLogger } from './log'
 
 const log = createLogger('update')
@@ -15,16 +16,6 @@ const CHECK_INTERVAL_MS = 60_000
 
 function focusedWindow(): BrowserWindow | undefined {
   return BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
-}
-
-// Same guard as ipc.ts's broadcast (not imported from there: ipc.ts already
-// imports this module): a window mid-close can still be listed while its
-// webContents is destroyed, and sending there throws.
-function broadcast(channel: string, payload: unknown): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (win.isDestroyed() || win.webContents.isDestroyed()) continue
-    win.webContents.send(channel, payload)
-  }
 }
 
 let deferred = false
