@@ -252,12 +252,12 @@ async function operationInProgress(
  *  finds the finished clone. */
 const clonesInFlight = new Map<string, Promise<string>>()
 
-export function ensureClone(ref: EnvRef, repo: RepoConfig, log: LogSink): Promise<string> {
+export function ensureClone(ref: EnvRef, repo: RepoConfig, log: LogSink, refresh = false): Promise<string> {
   const dir = cloneDir(ref.workspace, ref.task, repo.name)
   const prev = clonesInFlight.get(dir)
   // A failed predecessor must not fail this caller — it re-runs the work itself.
   const p = (prev ? prev.catch(() => {}) : Promise.resolve()).then(() =>
-    provisionClone(dir, ref, repo, log)
+    provisionClone(dir, ref, repo, log, refresh)
   )
   clonesInFlight.set(dir, p)
   p.catch(() => {}).finally(() => {
@@ -270,7 +270,8 @@ async function provisionClone(
   dir: string,
   ref: EnvRef,
   repo: RepoConfig,
-  log: LogSink
+  log: LogSink,
+  refresh: boolean
 ): Promise<string> {
   // Same git-native contract as the container: a gurt-managed token clones over
   // https even from an ssh URL, and no operation blocks on a credential prompt.
@@ -279,6 +280,20 @@ async function provisionClone(
     await fs.mkdir(taskDir(ref.workspace, ref.task), { recursive: true })
     log(`cloning ${repo.url} ...`)
     await run('git', [...gitArgs, 'clone', '--', repo.url, dir], log, { env })
+  }
+  // Proactive runs reuse a read-only context clone. Refresh it on the host,
+  // before mounting it, and fail closed rather than scanning stale code.
+  if (refresh) {
+    if (await operationInProgress(dir, gitArgs, env))
+      throw new Error('Cannot refresh proactive repository: a git operation is in progress')
+    const status = await run('git', ['-C', dir, ...gitArgs, 'status', '--porcelain'], log, { env })
+    if (status.trim()) throw new Error('Cannot refresh proactive repository: uncommitted changes')
+    log('refreshing proactive repository from origin HEAD ...')
+    await run('git', ['-C', dir, ...gitArgs, 'fetch', 'origin', 'HEAD'], log, { env })
+    // Refuse local-only commits too: --ff-only alone accepts an ahead branch.
+    await run('git', ['-C', dir, ...gitArgs, 'merge-base', '--is-ancestor', 'HEAD', 'FETCH_HEAD'], log, { env })
+    await run('git', ['-C', dir, ...gitArgs, 'merge', '--ff-only', 'FETCH_HEAD'], log, { env })
+    return dir
   }
   const branch = ref.task
   // Nothing to check out when we are already on the task branch — and skipping

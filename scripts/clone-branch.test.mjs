@@ -144,3 +144,27 @@ test('concurrent sessions', async () => {
   assert.equal(new Set(results).size, 1, 'all sessions get the same clone')
   assert.equal(await branchOf(results[0]), 'task-2')
 })
+
+test('proactive runs refresh the reused clone and preserve local changes on failure', async () => {
+  const ref = { workspace: 'ws', task: 'watcher', env: 'env-a' }
+  const watched = await m.ensureClone(ref, REPO, () => {}, true)
+  const git = (...args) => pexecFile('git', ['-C', watched, ...args])
+  fs.writeFileSync(path.join(seed, 'fixed.txt'), 'bug fixed\n')
+  await gitSeed('add', '-A')
+  await gitSeed('commit', '-qm', 'fix bug')
+  await gitSeed('push', '-q', origin, 'HEAD:refs/heads/main')
+  assert.equal(fs.existsSync(path.join(watched, 'fixed.txt')), false)
+  await m.ensureClone(ref, REPO, () => {}, true)
+  assert.equal(fs.readFileSync(path.join(watched, 'fixed.txt'), 'utf8'), 'bug fixed\n')
+  const head = (await git('rev-parse', 'HEAD')).stdout
+  await m.ensureClone(ref, REPO, () => {}, true)
+  assert.equal((await git('rev-parse', 'HEAD')).stdout, head)
+  fs.writeFileSync(path.join(watched, 'local.txt'), 'keep me\n')
+  await assert.rejects(m.ensureClone(ref, REPO, () => {}, true), /uncommitted changes/)
+  assert.equal(fs.readFileSync(path.join(watched, 'local.txt'), 'utf8'), 'keep me\n')
+  await git('add', '-A')
+  await git('-c', 'user.email=t@t.test', '-c', 'user.name=t', 'commit', '-qm', 'local work')
+  const localHead = (await git('rev-parse', 'HEAD')).stdout
+  await assert.rejects(m.ensureClone(ref, REPO, () => {}, true))
+  assert.equal((await git('rev-parse', 'HEAD')).stdout, localHead)
+})
