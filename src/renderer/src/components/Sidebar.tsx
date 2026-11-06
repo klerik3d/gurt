@@ -9,7 +9,7 @@ import { useHotkeys } from '../useHotkeys'
 import { useOutsideClose } from '../hooks'
 import { alertDialog, confirmDialog } from '../dialog'
 import { showToast } from '../toast'
-import { GitCommitPanel } from './GitActions'
+import { GitCommitPanel, type CommitDraft } from './GitActions'
 import { SESSION_DOT } from '../status'
 import { markUnread } from '../reviewed'
 import { Icon, Dot } from './icons'
@@ -156,7 +156,7 @@ export function Sidebar({
    *  task row itself. Repos and folders aren't selections App knows about, so
    *  the cursor has to be kept here; it only counts while its task is selected. */
   const [diffCursor, setDiffCursor] = useState<{ ws: string; task: string; key: string | null } | null>(null)
-  const [commitDrafts, setCommitDrafts] = useState<Record<string, string>>({})
+  const [commitDrafts, setCommitDrafts] = useState<Record<string, CommitDraft>>({})
   const [busyRepos, setBusyRepos] = useState<Set<string>>(() => new Set())
   const inFlightRepos = useRef(new Set<string>())
   const [repoMenu, setRepoMenu] = useState<{ ws: string; task: string; repo: string; x: number; y: number; target?: DiffTarget } | null>(null)
@@ -815,8 +815,8 @@ export function Sidebar({
         )}
       </div>
       {commitScope && <GitCommitPanel key={commitKey} ws={commitScope.ws} task={commitScope.task} repo={commitScope.row.repo}
-        message={commitDrafts[commitKey]}
-        onMessage={(message) => setCommitDrafts((prev) => ({ ...prev, [commitKey]: message }))}
+        draft={commitDrafts[commitKey]}
+        onDraft={(update) => setCommitDrafts((prev) => ({ ...prev, [commitKey]: update(prev[commitKey]) }))}
         busy={busyRepos.has(commitKey)}
         act={(fn) => actOnRepo(commitScope.ws, commitScope.task, commitScope.row.repo, fn)} />}
       {ctxMenu && renderCtxMenu(ctxMenu, () => setCtxMenu(null))}

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { GitCommitOptions, GitPushOptions } from '../../../shared/api'
+import type { StoredProposal } from '../../../shared/types'
 import { run } from '../async'
 import { Modal } from './Modal'
 
@@ -28,38 +29,57 @@ function PushOptions({ value, onChange, disabled }: {
   </fieldset>
 }
 
+export interface CommitDraft {
+  text: string
+  edited: boolean
+  /** Last proposal seen, including one already used in a successful commit. */
+  proposalAt?: string | undefined
+}
+
+type UpdateDraft = (update: (draft: CommitDraft | undefined) => CommitDraft) => void
+
 /** The selected clone's commit form. Drafts belong to the sidebar so walking to
  * another repository and back preserves the message, including on failed git. */
-export function GitCommitPanel({ ws, task, repo, message, onMessage, busy, act }: {
+export function GitCommitPanel({ ws, task, repo, draft, onDraft, busy, act }: {
   ws: string
   task: string
   repo: string
-  message: string | undefined
-  onMessage: (message: string) => void
+  draft: CommitDraft | undefined
+  onDraft: UpdateDraft
   busy: boolean
   act: (fn: () => Promise<void>) => Promise<boolean>
 }) {
   const [commitOptions, setCommitOptions] = useState<GitCommitOptions>({})
   const [pushOptions, setPushOptions] = useState<GitPushOptions>({})
-  const touched = useRef(message !== undefined)
-  const onMessageRef = useRef(onMessage)
-  onMessageRef.current = onMessage
+  const onDraftRef = useRef(onDraft)
+  onDraftRef.current = onDraft
   useEffect(() => {
     let live = true
-    window.gurt.latestProposal(ws, task, repo).then((p) => {
-      if (!live || touched.current || !p?.commit) return
-      onMessageRef.current(p.commit.body ? `${p.commit.subject}\n\n${p.commit.body}` : p.commit.subject)
-    }).catch(() => {})
-    return () => { live = false }
+    const apply = (proposal: StoredProposal | undefined) => {
+      if (!live || !proposal?.commit) return
+      const { subject, body } = proposal.commit
+      onDraftRef.current((prev) => {
+        if (prev?.proposalAt && prev.proposalAt >= proposal.at) return prev
+        // An agent update can replace its own prefill, but never a manual edit.
+        if (prev?.edited) return { ...prev, proposalAt: proposal.at }
+        return { text: body ? `${subject}\n\n${body}` : subject, edited: false, proposalAt: proposal.at }
+      })
+    }
+    const off = window.gurt.onSessionChanged((snap) => {
+      if (snap.info.workspace === ws && snap.info.task === task && snap.info.repos.includes(repo))
+        apply(snap.proposal)
+    })
+    // Subscribe first: a newer live proposal must win over a slow initial read.
+    window.gurt.latestProposal(ws, task, repo).then(apply).catch(() => {})
+    return () => { live = false; off() }
   }, [ws, task, repo])
 
-  const text = message ?? `gurt: ${task}`
+  const text = draft?.text ?? `gurt: ${task}`
   const commit = async (push: boolean) => {
     if (busy || !text.trim()) return
     await act(async () => {
       await window.gurt.changesCommit(ws, task, repo, text.trim(), commitOptions)
-      touched.current = true
-      onMessage('')
+      onDraft((prev) => ({ text: '', edited: false, proposalAt: prev?.proposalAt }))
       // A failed push must not look like a failed commit or invite a second one.
       if (push) {
         try {
@@ -77,7 +97,7 @@ export function GitCommitPanel({ ws, task, repo, message, onMessage, busy, act }
       <span className="seclabel">MESSAGE</span>
       <textarea id={commitInputId(ws, task, repo)} className="input commit-message" rows={3}
         placeholder="Commit message" aria-label={`Commit message for ${repo}`} value={text} disabled={busy}
-        onChange={(e) => { touched.current = true; onMessage(e.target.value) }}
+        onChange={(e) => { const text = e.target.value; onDraft((prev) => ({ ...prev, text, edited: true })) }}
         onKeyDown={(e) => {
           if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void commit(e.shiftKey) }
         }} />

@@ -44,7 +44,8 @@ fs.writeFileSync(path.join(taskDir, 'task.json'), '{}')
 fs.writeFileSync(path.join(taskDir, 'sessions.json'), JSON.stringify([{ info: {
   id: 'draft-session', workspace: 'demo', task: 'navigation', env: 'dev',
   repos: ['frontend'], title: 'Build navigation', state: 'draft'
-} }]))
+}, proposal: { version: 1, outcome: 'changes', at: '2026-01-01T00:00:00.000Z',
+  commit: { subject: 'First turn', body: 'Initial implementation.' } } }]))
 
 // Advance main after cloning: entering Diff must fetch and show the behind count.
 git(seed, 'remote', 'add', 'origin', origin)
@@ -107,6 +108,20 @@ const app = await _electron.launch({
 const errors = []
 try {
   const page = await app.firstWindow()
+  // Deliver the same snapshot event the host sends after an agent's complete.
+  const propose = async (subject, at, repos = ['frontend']) => {
+    const snap = await page.evaluate(() => window.gurt.sessionSnapshot('draft-session'))
+    await app.evaluate(({ BrowserWindow }, { snap, subject, at, repos }) => {
+      BrowserWindow.getAllWindows()[0].webContents.send('session-changed', {
+        ...snap, info: { ...snap.info, repos },
+        proposal: { version: 1, outcome: 'changes', at, commit: { subject, body: 'Turn details.' } }
+      })
+    }, { snap, subject, at, repos })
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+  }
+  const expectMessage = (text) => page.waitForFunction((text) =>
+    document.querySelector('.commit-message')?.value === text, text)
+
   page.on('pageerror', (e) => errors.push(e.message))
   await page.waitForSelector('.sb-session')
   await page.locator('.sb-session').click()
@@ -129,7 +144,19 @@ try {
   await frontend.locator('.diff-repo-row').click()
   assert.equal(await frontend.locator('.diff-change-group').count(), 1)
   await page.locator('.git-commit-panel').waitFor()
+  await expectMessage('First turn\n\nInitial implementation.')
+  await propose('Second turn', '2026-01-02T00:00:00.000Z')
+  await expectMessage('Second turn\n\nTurn details.')
+  await backend.locator('.diff-repo-row').click()
+  await frontend.locator('.diff-repo-row').click()
+  await page.keyboard.press('ArrowRight')
+  await propose('Third turn', '2026-01-03T00:00:00.000Z')
+  await expectMessage('Third turn\n\nTurn details.')
+  await propose('Other repository', '2026-01-04T00:00:00.000Z', ['backend'])
+  assert.equal(await page.locator('.commit-message').inputValue(), 'Third turn\n\nTurn details.')
   await page.locator('.git-commit-panel textarea').fill('Draft preserved across repositories')
+  await propose('Keep manual edits', '2026-01-05T00:00:00.000Z')
+  assert.equal(await page.locator('.commit-message').inputValue(), 'Draft preserved across repositories')
   await backend.locator('.diff-repo-row').click()
   assert.equal(await page.locator('.git-commit-panel').count(), 0)
   await frontend.locator('.diff-change-group').click({ button: 'right' })
@@ -316,7 +343,12 @@ try {
   fs.writeFileSync(path.join(clone, 'last.txt'), 'commit and push\n')
   await page.getByRole('button', { name: 'Refresh changes', exact: true }).click()
   await frontend.locator('.diff-change-group[title="Uncommitted"]').waitFor()
-  await page.locator('.git-commit-panel textarea').fill('Commit and push together')
+  await expectMessage('')
+  await propose('Commit and push together', '2026-01-06T00:00:00.000Z')
+  await expectMessage('Commit and push together\n\nTurn details.')
+  await backend.locator('.diff-repo-row').click()
+  await frontend.locator('.diff-repo-row').click()
+  await expectMessage('Commit and push together\n\nTurn details.')
   await page.locator('.git-commit-panel').getByRole('button', { name: 'Commit & Push', exact: true }).click()
   await page.locator('.git-commit-panel').waitFor({ state: 'detached' })
   assert.equal(git(origin, 'rev-parse', 'navigation'), git(clone, 'rev-parse', 'HEAD'))
