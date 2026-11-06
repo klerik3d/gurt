@@ -169,7 +169,10 @@ export const NO_PROXY_HOSTS = ['localhost', '127.0.0.1', '::1', PROXY_ALIAS]
  * The proxy variables the agent process is launched with (§4.5).
  *
  * Both spellings of each, because curl and Node disagree about which one they
- * read. `gurt-proxy` resolves through the session network's embedded DNS, which
+ * read. `NODE_USE_ENV_PROXY=1` makes Node's built-in `fetch` honor them too —
+ * without it Node 24+ ignores them, and a CLI whose model calls go through
+ * the global `fetch` (gemini's SDK does) dials out directly, which on an
+ * internal session network is no way out at all. `gurt-proxy` resolves through the session network's embedded DNS, which
  * exists only on user-defined networks — one more reason the session container
  * never sits on the default bridge.
  *
@@ -185,7 +188,8 @@ export function proxyEnv(base: string = proxyBaseUrl()): Record<string, string> 
     HTTPS_PROXY: base,
     https_proxy: base,
     NO_PROXY: no,
-    no_proxy: no
+    no_proxy: no,
+    NODE_USE_ENV_PROXY: '1'
   }
 }
 

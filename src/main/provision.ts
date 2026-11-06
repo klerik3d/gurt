@@ -638,7 +638,7 @@ export const NODE_MOUNT = '/opt/gurt/node'
  * gurt's Node runtime (§3.2): adapters are npm packages and need Node whatever
  * the env image carries. Pinned by digest, not tag (supply chain) — bump
  * deliberately with gurt releases (`docker manifest inspect
- * node:26-trixie-slim`). Every plugin's minimum must hold (pi needs ≥ 22.19).
+ * node:26-trixie`). Every plugin's minimum must hold (pi needs ≥ 22.19).
  * glibc on purpose: the volume's node runs inside the *env's* image, so a
  * musl/alpine env is unsupported (§12).
  */
