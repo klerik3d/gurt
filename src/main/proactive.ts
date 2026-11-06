@@ -17,9 +17,7 @@ import type {
 } from '../shared/proactive'
 import {
   PROACTIVE_DEFAULTS,
-  PROACTIVE_DEFERRALS_KEPT,
   PROACTIVE_RUNS_KEPT,
-  PROACTIVE_TOMBSTONES_KEPT,
   isPendingScope,
   nextRunDue,
   normalizeRefs,
@@ -43,7 +41,7 @@ export const DEFAULT_PROACTIVE_INSTRUCTIONS =
   'Look at the unresolved Sentry issues of project "storefront" seen since the cursor ' +
   '(start with the last 24 hours if there is none). Raise a scope for each issue that ' +
   'affects checkout or more than 50 users, with one executor session for the repo the ' +
-  'stack trace points at. Defer the rest for 24 hours with the reason.'
+  'stack trace points at. Leave out issues tagged "flaky".'
 
 export interface ProactiveDeps {
   bus: Bus
@@ -54,8 +52,6 @@ export interface ProactiveDeps {
 
 interface ActiveRun {
   id: string
-  /** Scopes proposed so far — what `maxScopesPerRun` counts. */
-  proposed: number
   finished: boolean
 }
 
@@ -82,13 +78,10 @@ export interface ProactiveManager {
   create(ws: string, name: string): Promise<void>
   update(ws: string, name: string, patch: Partial<ProactiveConfig>): Promise<void>
   runNow(ws: string, name: string): Promise<string>
-  undefer(ws: string, name: string, ref: string): Promise<void>
-  /** Drop a tombstone, so the agent may raise the ref again. */
-  forget(ws: string, name: string, ref: string): Promise<void>
   /** The tools of one run, bound to its workspace, agent and session. */
   hooksFor(ws: string, agent: string, sessionId: string): ProactiveHooks
   /** A scope is about to be deleted: an agent goes away with its scope, a
-   *  raised scope leaves its refs behind as tombstones. */
+   *  raised scope frees its refs — a later run may raise them again. */
   onScopeDeleted(ws: string, task: string): Promise<void>
   onScopeRenamed(ws: string, task: string, newName: string): void
   dropWorkspace(ws: string): void
@@ -143,21 +136,6 @@ export function createProactive(deps: ProactiveDeps): ProactiveManager {
     persistState(a).catch((e: unknown) => log.error('internal.fail', { site: 'proactive-state', agent: a.name, err: e }))
   }
 
-  /** A ref's tombstone, in any agent of the workspace. */
-  function tombstoneOf(ws: string, ref: string): { scope: string } | undefined {
-    for (const a of agents.values()) {
-      if (a.ws !== ws) continue
-      const t = a.state.tombstones.find((x) => x.ref === ref)
-      if (t) return t
-    }
-    return undefined
-  }
-
-  function activeDeferral(a: Agent, ref: string): { until: string; reason: string } | undefined {
-    const t = Date.now()
-    return a.state.deferrals.find((d) => d.ref === ref && Date.parse(d.until) > t)
-  }
-
   function template(a: Agent): SessionInfo | undefined {
     const id = a.config.templateId
     const info = id ? sessions.sessionInfo(id) : undefined
@@ -181,9 +159,8 @@ export function createProactive(deps: ProactiveDeps): ProactiveManager {
     return a.state.runs.find((r) => r.id === id)
   }
 
-  /** The run calling a tool must be the agent's run in progress — a run that
-   *  has ended has no limits left to count against, and a user prompting its
-   *  session afterwards must not reopen it. */
+  /** The run calling a tool must be the agent's run in progress — a user
+   *  prompting an ended run's session afterwards must not reopen it. */
   function activeFor(a: Agent, sessionId: string): ActiveRun {
     if (a.active?.id !== sessionId) throw new Error('this run has ended — its tools are closed')
     return a.active
@@ -198,9 +175,9 @@ export function createProactive(deps: ProactiveDeps): ProactiveManager {
     const startedAt = now()
     const title = `run ${startedAt.slice(0, 16).replace('T', ' ')}`
     const info = sessions.spawnRun(t.id, title)
-    a.active = { id: info.id, proposed: 0, finished: false }
+    a.active = { id: info.id, finished: false }
     a.state.lastRunAt = startedAt
-    a.state.runs.unshift({ id: info.id, startedAt, outcome: 'running', proposed: [], attached: [], deferred: 0 })
+    a.state.runs.unshift({ id: info.id, startedAt, outcome: 'running', proposed: [], attached: [] })
     a.state.runs.length = Math.min(a.state.runs.length, PROACTIVE_RUNS_KEPT)
     persistLater(a)
     log.info('proactive.run.start', { ws: a.ws, agent: a.name, s: info.id })
@@ -264,6 +241,34 @@ export function createProactive(deps: ProactiveDeps): ProactiveManager {
     if (a) finishRun(a, 'cancelled')
   })
 
+  /** Record a due slot that started no session — skipped at the limit, or a
+   *  template that cannot start. It still counts as the slot's run, so the
+   *  next attempt is a whole interval away rather than the next tick. Skips in
+   *  a row fold into one entry, so a full inbox does not wash the history out. */
+  function recordSlot(a: Agent, outcome: 'skipped' | 'failed', text: string): void {
+    const at = now()
+    a.state.lastRunAt = at
+    const last = a.state.runs[0]
+    if (outcome === 'skipped' && last?.outcome === 'skipped') {
+      last.endedAt = at
+      last.summary = text
+    } else {
+      a.state.runs.unshift({
+        id: `${outcome}-${Date.now()}`,
+        startedAt: at,
+        endedAt: at,
+        outcome,
+        proposed: [],
+        attached: [],
+        ...(outcome === 'skipped' ? { summary: text } : { error: text })
+      })
+      a.state.runs.length = Math.min(a.state.runs.length, PROACTIVE_RUNS_KEPT)
+    }
+    persistLater(a)
+    log.info('proactive.run.slot', { ws: a.ws, agent: a.name, outcome })
+    bus.emit('tree.changed', undefined)
+  }
+
   function tick(): void {
     const t = Date.now()
     for (const a of agents.values()) {
@@ -281,25 +286,17 @@ export function createProactive(deps: ProactiveDeps): ProactiveManager {
         continue
       }
       if (!a.config.enabled || t < nextRunDue(a.config, a.state)) continue
+      // A run could raise nothing while the user's inbox from this agent is
+      // full: no session is started for it.
+      const waiting = pendingCount(a)
+      if (waiting >= a.config.maxPendingScopes) {
+        recordSlot(a, 'skipped', `${waiting} scopes waiting for you`)
+        continue
+      }
       try {
         startRun(a)
       } catch (e) {
-        // Recorded once per due slot: the attempt still counts as the slot's
-        // run, so a broken template is not retried every tick.
-        a.state.lastRunAt = now()
-        a.state.runs.unshift({
-          id: `failed-${Date.now()}`,
-          startedAt: now(),
-          endedAt: now(),
-          outcome: 'failed',
-          proposed: [],
-          attached: [],
-          deferred: 0,
-          error: e instanceof Error ? e.message : String(e)
-        })
-        a.state.runs.length = Math.min(a.state.runs.length, PROACTIVE_RUNS_KEPT)
-        persistLater(a)
-        bus.emit('tree.changed', undefined)
+        recordSlot(a, 'failed', e instanceof Error ? e.message : String(e))
       }
     }
   }
@@ -310,18 +307,18 @@ export function createProactive(deps: ProactiveDeps): ProactiveManager {
     return {
       listOpen: async (check) => {
         const a = agentOf(ws, name)
-        const active = activeFor(a, sessionId)
+        activeFor(a, sessionId)
         const scopes = ownScopes(a)
-        const t = Date.now()
+        const waiting = scopes.filter((s) => isPendingScope(s.sessions)).length
         const result: Record<string, unknown> = {
           agent: a.name,
           cursor: a.state.cursor ?? null,
           limits: {
-            scopesLeftThisRun: Math.max(0, a.config.maxScopesPerRun - active.proposed),
-            pendingScopes: scopes.filter((s) => isPendingScope(s.sessions)).length,
-            maxPendingScopes: a.config.maxPendingScopes
+            waitingScopes: waiting,
+            maxWaitingScopes: a.config.maxPendingScopes,
+            // How many more propose_scope may create in this run.
+            canRaise: Math.max(0, a.config.maxPendingScopes - waiting)
           },
-          activeDeferrals: a.state.deferrals.filter((d) => Date.parse(d.until) > t).length,
           scopes: scopes.slice(0, 100).map((s) => ({
             scope: s.scope,
             title: s.origin.title,
@@ -337,15 +334,9 @@ export function createProactive(deps: ProactiveDeps): ProactiveManager {
           const status: Record<string, unknown> = {}
           for (const ref of normalizeRefs(check)) {
             const scope = refsOf(ws).get(ref)
-            const tomb = scope ? undefined : tombstoneOf(ws, ref)
-            const deferred = scope || tomb ? undefined : activeDeferral(a, ref)
             status[ref] = scope
               ? { status: 'open', scope, agent: origins.get(key(ws, scope))?.agent }
-              : tomb
-                ? { status: 'dismissed', scope: tomb.scope }
-                : deferred
-                  ? { status: 'deferred', until: deferred.until, reason: deferred.reason }
-                  : { status: 'new' }
+              : { status: 'new' }
           }
           result['check'] = status
         }
@@ -366,8 +357,6 @@ export function createProactive(deps: ProactiveDeps): ProactiveManager {
             const bound = refsOf(ws).get(ref)
             if (bound === input.scope) continue
             if (bound) throw new Error(`${ref} already belongs to scope "${bound}"`)
-            const tomb = tombstoneOf(ws, ref)
-            if (tomb) throw new Error(`${ref} belonged to scope "${tomb.scope}", which the user deleted`)
             fresh.push(ref)
           }
           if (!fresh.length && !input.note) return { scope: input.scope, attached: [] }
@@ -381,44 +370,11 @@ export function createProactive(deps: ProactiveDeps): ProactiveManager {
           const file = await store.getTask(ws, input.scope)
           await store.saveTask(ws, input.scope, { ...file, origin: next })
           indexOrigin(ws, input.scope, next)
-          a.state.deferrals = a.state.deferrals.filter((d) => !fresh.includes(d.ref))
           const rec = runRecord(a, active.id)
           if (rec && !rec.attached.includes(input.scope)) rec.attached.push(input.scope)
           await persistState(a)
           bus.emit('tree.changed', undefined)
           return { scope: input.scope, attached: fresh, noted: !!input.note }
-        }),
-
-      defer: (input) =>
-        locked(ws, async () => {
-          const a = agentOf(ws, name)
-          const active = activeFor(a, sessionId)
-          const refs = normalizeRefs(input.refs)
-          const until = new Date(Date.now() + input.forHours * 3_600_000).toISOString()
-          const skipped: Record<string, string> = {}
-          const t = Date.now()
-          // Expired deferrals go first: they decide nothing any more.
-          a.state.deferrals = a.state.deferrals.filter((d) => Date.parse(d.until) > t && !refs.includes(d.ref))
-          let n = 0
-          for (const ref of refs) {
-            const scope = refsOf(ws).get(ref)
-            if (scope) {
-              skipped[ref] = `already raised as scope "${scope}"`
-              continue
-            }
-            const tomb = tombstoneOf(ws, ref)
-            if (tomb) {
-              skipped[ref] = `dismissed by the user (scope "${tomb.scope}")`
-              continue
-            }
-            a.state.deferrals.push({ ref, until, reason: input.reason, run: active.id, at: now() })
-            n++
-          }
-          a.state.deferrals = a.state.deferrals.slice(-PROACTIVE_DEFERRALS_KEPT)
-          const rec = runRecord(a, active.id)
-          if (rec) rec.deferred += n
-          await persistState(a)
-          return { deferred: n, until, ...(Object.keys(skipped).length ? { skipped } : {}) }
         }),
 
       finishRun: (input) =>
@@ -476,23 +432,12 @@ export function createProactive(deps: ProactiveDeps): ProactiveManager {
         note: `${ref} already belongs to scope "${bound}" — nothing was created; attach new refs or a note to it instead`
       }
     }
-    for (const ref of refs) {
-      const tomb = tombstoneOf(ws, ref)
-      if (tomb)
-        throw new Error(
-          `${ref} belonged to scope "${tomb.scope}", which the user deleted — it is not raised again`
-        )
-    }
-    if (active.proposed >= a.config.maxScopesPerRun)
-      throw new Error(
-        `this run already proposed ${active.proposed} scopes (the limit is ${a.config.maxScopesPerRun}) — ` +
-          'defer the rest with reason "backpressure" and finish the run'
-      )
     const pending = pendingCount(a)
     if (pending >= a.config.maxPendingScopes)
       throw new Error(
         `${pending} scopes are waiting for the user already (the limit is ${a.config.maxPendingScopes}) — ` +
-          'defer the rest with reason "backpressure" and finish the run'
+          'raise nothing more this run: call finish_run now, with a cursor that does not pass the items ' +
+          'you could not raise, so the next run sees them again'
       )
     const prepared = await prepare()
 
@@ -520,8 +465,6 @@ export function createProactive(deps: ProactiveDeps): ProactiveManager {
     await store.createTask(ws, scope, { origin })
     indexOrigin(ws, scope, origin)
     const drafted = prepared.map((p) => sessions.createPreparedDraft(ws, scope, p, inherit))
-    active.proposed++
-    a.state.deferrals = a.state.deferrals.filter((d) => !refs.includes(d.ref))
     runRecord(a, active.id)?.proposed.push(scope)
     await persistState(a)
     log.info('proactive.scope', { ws, agent: a.name, scope, s: active.id, sessions: drafted.length })
@@ -638,22 +581,6 @@ export function createProactive(deps: ProactiveDeps): ProactiveManager {
 
     runNow: async (ws, name) => startRun(agentOf(ws, name)),
 
-    undefer: (ws, name, ref) =>
-      locked(ws, async () => {
-        const a = agentOf(ws, name)
-        a.state.deferrals = a.state.deferrals.filter((d) => d.ref !== ref)
-        await persistState(a)
-        bus.emit('tree.changed', undefined)
-      }),
-
-    forget: (ws, name, ref) =>
-      locked(ws, async () => {
-        const a = agentOf(ws, name)
-        a.state.tombstones = a.state.tombstones.filter((t) => t.ref !== ref)
-        await persistState(a)
-        bus.emit('tree.changed', undefined)
-      }),
-
     hooksFor,
 
     onScopeDeleted: (ws, task) =>
@@ -667,18 +594,11 @@ export function createProactive(deps: ProactiveDeps): ProactiveManager {
         const origin = origins.get(key(ws, task))
         if (!origin) return
         origins.delete(key(ws, task))
+        // Its refs are free again: a later run may raise them anew. Noise the
+        // user does not want back is excluded in the agent's instructions or
+        // at the source, not remembered here (§6).
         const refs = refsOf(ws)
         for (const r of origin.refs) if (refs.get(r) === task) refs.delete(r)
-        // The refs stay bound, as tombstones in the agent that raised them: the
-        // user deleting the scope is an answer, not a request to ask again (§8).
-        const owner = agents.get(key(ws, origin.agent))
-        if (!owner) return
-        const at = now()
-        owner.state.tombstones = [
-          ...owner.state.tombstones.filter((t) => !origin.refs.includes(t.ref)),
-          ...origin.refs.map((ref) => ({ ref, scope: task, at }))
-        ].slice(-PROACTIVE_TOMBSTONES_KEPT)
-        await persistState(owner)
       }),
 
     onScopeRenamed(ws, task, newName) {

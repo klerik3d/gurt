@@ -152,7 +152,7 @@ node scripts/smoke-logging.mjs                    # app log: startup banner, IPC
 node scripts/smoke-diff-mode.mjs                  # Diff mode: switching modes + real host-git actions on local repos, no docker
 node scripts/smoke-terminal.mjs                   # terminal panel: real PTY, toggles, per-scope lifetime, cleanup on delete, no docker
 node scripts/smoke-operator.mjs                   # operator role: picker, repo picker disabled, operator env default, persistence, no docker
-node scripts/smoke-proactive.mjs                  # Proactive mode: seeded agent, settings/on-off/instructions persist, raised scope origin, new agent, no docker
+node scripts/smoke-proactive.mjs                  # Proactive mode: runs nested under their agent and opened inside the mode, phrase settings, on-off/instructions persist, raised scopes, new agent, no docker
 node scripts/smoke-proxy-net.mjs                  # per-session network + proxy container (docker; pulls node:22-alpine and alpine)
 node scripts/smoke.linux.mjs                      # linux variant of smoke.mjs: client registry + agent-token credential linkage over a plaintext store, no docker
 ```

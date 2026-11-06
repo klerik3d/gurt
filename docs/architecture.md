@@ -280,10 +280,13 @@ is a scope of its own, listed in the **Proactive agents** mode instead of
 among the scopes: its `task.json` holds the schedule and limits, its template
 draft (role `proactive`) holds everything else, and every run is a copy of
 the template that enqueues itself. A run reads its sources through its MCP
-servers and calls `propose_scope` / `attach` / `defer`; the scopes it raises
-carry `origin.refs` in their `task.json`, and one ref is bound to at most one
-scope in the workspace. What a run raises is always a draft. Runs happen only
-while Gurt is open, never overlap, and are cancelled past their timeout.
+servers and calls `propose_scope` / `attach`; the scopes it raises carry
+`origin.refs` in their `task.json`, and while a scope exists each of its refs
+is bound to it alone in the workspace (deleting the scope frees them). What a
+run raises is always a draft, and one limit — scopes waiting for the user —
+caps it: at the limit a due run is skipped and `propose_scope` refuses. Runs
+happen only while Gurt is open, never overlap, and are cancelled past their
+timeout.
 
 ## How a session starts
 

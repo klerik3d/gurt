@@ -26,7 +26,7 @@ import { resolveMcpSelection } from '../../../shared/mcp'
 import { alertDialog } from '../dialog'
 import { createLogger, logErr } from '../log'
 import { SESSION_DOT } from '../status'
-import { Icon, Dot } from './icons'
+import { Icon, Dot, InfoDot } from './icons'
 import { AgentMark, EnvRepoMarks, hasNetMark, McpFailBanner, McpMarks, NetMark, RoleMark } from './tags'
 import { NetButton } from './Network'
 import { ConfigTab } from './ConfigTab'
@@ -97,12 +97,19 @@ function useEntryTimes(sessionId: string, raw: ChatEntry[] | undefined): ChatEnt
   })
 }
 
+/** One compact line above the composer, its explanation behind an "i". */
+export interface ComposerNote {
+  text: string
+  hint: string
+}
+
 export function Chat({
   tree,
   snapshot,
   sessionId,
   seen,
   log,
+  composerNote,
   onSelect,
   onDeleted
 }: {
@@ -112,6 +119,7 @@ export function Chat({
   /** Whether the last turn reads as already looked at — see `SessionPane`. */
   seen?: boolean | undefined
   log: string[]
+  composerNote?: ComposerNote | undefined
   /** Select another session — where a duplicate's fresh draft is handed to. */
   onSelect: (id: string) => void
   onDeleted: () => void
@@ -437,6 +445,7 @@ export function Chat({
             promptCaps={promptCapabilities}
             pii={pii}
             piiNote={piiStatus?.ready ? undefined : `masking is off: ${piiStatus?.reason ?? 'reading masking settings…'}`}
+            note={composerNote}
           />
         </>
       )}
@@ -796,7 +805,8 @@ function Composer({
   configValues,
   promptCaps,
   pii,
-  piiNote
+  piiNote,
+  note
 }: {
   sessionId: string
   /** The session agent's kind (`AgentManifest.id`) — scopes agent-specific UI fixups. */
@@ -826,6 +836,9 @@ function Composer({
   /** Why masking is not (fully) active for this session, when it is not — shown
    *  on the switch, which stays visible so its absence is never the question. */
   piiNote?: string | undefined
+  /** What the session can no longer do, said once above the composer (an
+   *  ended proactive run's closed tools). */
+  note?: ComposerNote | undefined
 }) {
   const draft = composerDrafts.get(sessionId)
   const [text, setText] = useState(draft?.text ?? '')
@@ -1182,6 +1195,12 @@ function Composer({
           <div className="pending-note">
             {pendingBlocked ?? 'sends when the current turn ends'}
           </div>
+        </div>
+      )}
+      {note && (
+        <div className="composer-note">
+          <InfoDot text={note.hint} />
+          <span>{note.text}</span>
         </div>
       )}
       <div className={`composer ${focused ? 'focused' : ''}`}>

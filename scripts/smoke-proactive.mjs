@@ -1,8 +1,12 @@
 // The Proactive mode in the real UI (docs/design-proactive-agents.md §7), no
-// docker: a seeded agent shows its schedule, runs, raised scopes and
-// deferrals; the settings, the on/off switch and the instructions persist to
-// disk; its template's Config tab is locked to the proactive role; a raised
-// scope's pane says where it came from; a new agent is created from "+".
+// docker: a seeded agent (written by an older build: a per-run limit,
+// deferrals) lists its kept run under it in the sidebar, and its pane shows
+// the settings as a phrase with "i" hints instead of captions, its runs and
+// its raised scopes; a run opens its chat inside the Proactive mode, with the
+// closed-tools note above the composer; the settings, the on/off switch and
+// the instructions persist to disk; its template's Config tab is locked to the
+// proactive role; a raised scope's pane says where it came from, and deleting
+// it drops it from the list; a new agent is created from "+".
 //
 // Nothing here starts a run — that needs a Docker daemon and an agent. The
 // run's tools are covered headless by scripts/proactive.test.mjs.
@@ -46,6 +50,7 @@ write(`${ws}/triage/task.json`, {
   proactive: {
     enabled: false,
     everyMinutes: 60,
+    // An older build's per-run limit: ignored, and gone after the next save.
     maxScopesPerRun: 5,
     maxPendingScopes: 10,
     maxRunMinutes: 30,
@@ -71,6 +76,24 @@ write(`${ws}/triage/sessions.json`, [
       startPrompt: 'Watch Sentry project storefront.',
       template: true
     }
+  },
+  // A finished run still kept: the user may read it and talk to it.
+  {
+    info: {
+      id: 'run-kept',
+      env: 'operator',
+      role: 'proactive',
+      repos: [],
+      task: 'triage',
+      workspace: ws,
+      title: 'run kept',
+      agent: 'a1',
+      autoAllow: true,
+      state: 'started',
+      mcp: [],
+      network: { internal: true },
+      startPrompt: 'Watch Sentry project storefront.'
+    }
   }
 ])
 write(`${ws}/triage/proactive-state.json`, {
@@ -78,16 +101,35 @@ write(`${ws}/triage/proactive-state.json`, {
   lastRunAt: iso(now - 60_000),
   runs: [
     {
-      id: 'run-gone',
+      id: 'run-kept',
       startedAt: iso(now - 60_000),
       endedAt: iso(now - 30_000),
       outcome: 'finished',
       proposed: ['checkout-crash'],
       attached: [],
+      summary: 'raised the checkout crash'
+    },
+    {
+      id: 'skipped-1',
+      startedAt: iso(now - 7_200_000),
+      endedAt: iso(now - 7_200_000),
+      outcome: 'skipped',
+      proposed: [],
+      attached: [],
+      summary: '10 scopes waiting for you'
+    },
+    {
+      id: 'run-gone',
+      startedAt: iso(now - 86_400_000),
+      endedAt: iso(now - 86_000_000),
+      outcome: 'finished',
+      proposed: [],
+      attached: [],
       deferred: 2,
-      summary: 'raised the checkout crash, deferred two low-impact issues'
+      summary: 'nothing new to raise'
     }
   ],
+  // What an older build kept here; dropped on load.
   deferrals: [
     { ref: 'sentry:2', until: iso(now + 86_400_000), reason: 'low impact', run: 'run-gone', at: iso(now - 40_000) }
   ],
@@ -164,13 +206,27 @@ try {
   await page.click('button[aria-label="Proactive agents"]')
   await page.waitForSelector('.pa-row:has-text("triage")', { timeout: 10000 })
 
-  // The agent is not among the scopes; its raised scope is.
+  // The agent is a container: its kept run is listed under it, the history's
+  // skips and collected runs are not.
+  assert.equal(await page.locator('.pa-run-row').count(), 1, 'one kept run in the sidebar')
+
+  // The agent's pane: the settings read as a phrase, explanations behind "i".
   await page.click('.pa-row:has-text("triage")')
   await page.waitForSelector('.task-pane .chat-title:has-text("triage")', { timeout: 5000 })
   await page.waitForSelector('.pa-run:has-text("raised the checkout crash")', { timeout: 5000 })
-  await page.waitForSelector('.queue-row:has-text("Checkout crash")', { timeout: 5000 })
-  await page.waitForSelector('.queue-row:has-text("sentry:2")', { timeout: 5000 })
-  console.log('proactive: seeded agent, runs, raised scopes, deferrals OK')
+  await page.waitForSelector('.pa-run:has-text("10 scopes waiting for you")', { timeout: 5000 })
+  await page.waitForSelector('.pa-phrase:has-text("Run every"):has-text("now 1/10")', { timeout: 5000 })
+  assert.equal(await page.locator('.task-pane .tp-sec-hint').count(), 0, 'no grey captions')
+  assert.ok((await page.locator('.task-pane .info-dot').count()) >= 4, 'hints sit behind "i" marks')
+  await page.waitForSelector('.pa-scope:has-text("Checkout crash"):has-text("waiting for you")', { timeout: 5000 })
+  for (const gone of ['DEFERRED', 'DISMISSED'])
+    assert.equal(await page.locator(`.seclabel:text-is("${gone}")`).count(), 0, `no ${gone} section`)
+  // Timeout and runs kept wait under "Advanced".
+  assert.equal(await page.locator('input[aria-label="runs kept"]').count(), 0)
+  await page.click('.pa-advanced')
+  await page.waitForSelector('input[aria-label="runs kept"]', { timeout: 5000 })
+  await page.waitForSelector('input[aria-label="run timeout (minutes)"]', { timeout: 5000 })
+  console.log('proactive: seeded agent, runs, raised scopes, phrase settings OK')
 
   // The template's Config: role locked to proactive, env the base image.
   const roleRow = '.ns-body .seclabel-row:has(.seclabel:text-is("ROLE")) + .pick-row'
@@ -178,15 +234,16 @@ try {
   const envRow = '.ns-body .seclabel-row:has(.seclabel:text-is("ENVIRONMENT")) + .pick-wrap .pick-value'
   assert.equal((await page.locator(envRow).innerText()).trim(), 'base')
   await shot('01-agent')
-  await page.locator('.seclabel:text-is("DEFERRED")').scrollIntoViewIfNeeded()
+  await page.locator('.seclabel:text-is("RAISED SCOPES")').scrollIntoViewIfNeeded()
   await shot('01b-runs')
   console.log('proactive: template config locked to the role OK')
 
   // Settings persist to task.json.
-  const every = page.locator('.pa-number:has-text("every (minutes)") input')
+  const every = page.locator('input[aria-label="run every (minutes)"]')
   await every.fill('15')
   await every.press('Enter')
   await until(() => read(`${ws}/triage/task.json`).proactive.everyMinutes === 15, 'everyMinutes 15')
+  assert.equal('maxScopesPerRun' in read(`${ws}/triage/task.json`).proactive, false, 'the old per-run limit is dropped')
   await page.click('button:has-text("Turn on")')
   await until(() => read(`${ws}/triage/task.json`).proactive.enabled === true, 'enabled')
   await page.waitForSelector('.pa-head-status:has-text("every 15m")', { timeout: 5000 })
@@ -205,6 +262,24 @@ try {
   )
   console.log('proactive: instructions persist OK')
 
+  // A run opens its chat inside the Proactive mode, under its agent — not in
+  // the Sessions mode, whose sidebar does not list the agent.
+  await page.click('.pa-run-row')
+  await page.waitForSelector('.pa-run-row.selected', { timeout: 5000 })
+  await page.waitForSelector('.composer-note:has-text("its gurt tools are closed")', { timeout: 10000 })
+  assert.equal(await page.locator('button[aria-label="Proactive agents"][aria-pressed="true"]').count(), 1, 'still in the Proactive mode')
+  assert.equal(await page.locator('.task-pane .chat-title:has-text("triage")').count(), 0, 'the agent pane gave way to the run')
+  await shot('01c-run')
+  // The same from the agent's Runs list; the agent row brings its pane back.
+  await page.click('.pa-row:has-text("triage")')
+  await page.waitForSelector('.task-pane .chat-title:has-text("triage")', { timeout: 5000 })
+  await page.click('.pa-run .queue-title.clickable')
+  await page.waitForSelector('.pa-run-row.selected', { timeout: 5000 })
+  assert.equal(await page.locator('button[aria-label="Proactive agents"][aria-pressed="true"]').count(), 1)
+  await page.click('.pa-row:has-text("triage")')
+  await page.waitForSelector('.task-pane .chat-title:has-text("triage")', { timeout: 5000 })
+  console.log('proactive: a run opens inside the mode, closed-tools note OK')
+
   // A raised scope says where it came from.
   await page.click('.queue-row .queue-title:has-text("Checkout crash")')
   await page.waitForSelector('.task-pane .seclabel:has-text("RAISED BY TRIAGE")', { timeout: 5000 })
@@ -213,8 +288,17 @@ try {
   await shot('02-raised-scope')
   console.log('proactive: raised scope shows its origin OK')
 
-  // A new agent from "+".
+  // Deleting a raised scope is closing it: its row just goes.
   await page.click('button[aria-label="Proactive agents"]')
+  await page.click('.pa-row:has-text("triage")')
+  await page.waitForSelector('.pa-scope:has-text("Checkout crash")', { timeout: 5000 })
+  await page.evaluate((w) => window.gurt.removeTask(w, 'checkout-crash'), ws)
+  await page.waitForSelector('.tp-section:has(.seclabel:text-is("RAISED SCOPES")) .tp-dashed', { timeout: 5000 })
+  assert.equal(await page.locator('.pa-scope').count(), 0)
+  await page.waitForSelector('.pa-phrase:has-text("now 0/10")', { timeout: 5000 })
+  console.log('proactive: a deleted raised scope leaves the list OK')
+
+  // A new agent from "+" (still in the Proactive mode).
   await page.click('button[aria-label="New proactive agent"]')
   await page.fill('.modal-body .input', 'mail-watch')
   await page.click('.modal-foot button:has-text("Create")')

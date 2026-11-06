@@ -1,42 +1,22 @@
 import { useEffect, useState } from 'react'
 import type { SessionSnapshot, Tree } from '../../../shared/types'
-import type { ProactiveConfig, ProactiveRun } from '../../../shared/proactive'
+import type { ProactiveConfig } from '../../../shared/proactive'
 import { PROACTIVE_BOUNDS, isPendingScope } from '../../../shared/proactive'
 import { alertDialog, confirmDialog } from '../dialog'
 import { logErr } from '../log'
 import { run } from '../async'
 import { ConfigTab } from './ConfigTab'
-import { Dot, Icon } from './icons'
-import { everyLabel, proactiveDot } from './ProactiveSidebar'
+import { Dot, Icon, InfoDot } from './icons'
+import { OUTCOME_TONE, everyLabel, proactiveDot } from './ProactiveSidebar'
 
 type NumberKey = keyof typeof PROACTIVE_BOUNDS
+const NUMBER_KEYS = Object.keys(PROACTIVE_BOUNDS) as NumberKey[]
 
-/** The settings row, in the order they are read: when it runs, then what it
- *  may do per run, then what it keeps. */
-const NUMBER_FIELDS: { key: NumberKey; label: string; hint: string }[] = [
-  { key: 'everyMinutes', label: 'every (minutes)', hint: 'one run this often, counted from the last run’s start' },
-  { key: 'maxScopesPerRun', label: 'scopes per run', hint: 'how many scopes one run may raise' },
-  {
-    key: 'maxPendingScopes',
-    label: 'waiting scopes',
-    hint: 'scopes you have not acted on yet (every session still a draft); at this many the agent defers instead of raising more'
-  },
-  { key: 'maxRunMinutes', label: 'run timeout (minutes)', hint: 'a run still going after this long is cancelled' },
-  { key: 'keepRuns', label: 'runs kept', hint: 'finished run sessions kept for inspection; older ones are deleted, their summary stays below' }
-]
+/** Rows a list shows before "show more", and how many more each click adds. */
+const PAGE = 10
 
 const time = (iso: string | undefined): string =>
   iso ? new Date(iso).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' }) : '—'
-
-const OUTCOME_TONE: Record<ProactiveRun['outcome'], 'green' | 'yellow' | 'red' | 'accent' | 'faint'> = {
-  running: 'accent',
-  finished: 'green',
-  incomplete: 'yellow',
-  failed: 'red',
-  timeout: 'red',
-  cancelled: 'faint',
-  interrupted: 'faint'
-}
 
 /** One proactive agent: its schedule, its template's instructions and
  *  configuration, its runs, and what it raised (docs/design-proactive-agents.md
@@ -87,15 +67,17 @@ export function ProactivePane({
   const configKey = agent ? JSON.stringify(agent.config) : ''
   useEffect(() => {
     if (!agent) return
-    setNumbers(
-      Object.fromEntries(NUMBER_FIELDS.map((f) => [f.key, String(agent.config[f.key])])) as Record<NumberKey, string>
-    )
+    setNumbers(Object.fromEntries(NUMBER_KEYS.map((k) => [k, String(agent.config[k])])) as Record<NumberKey, string>)
     // Re-seeded whenever the stored config changes, and only then.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [configKey])
 
   const [prompt, setPrompt] = useState(template?.startPrompt ?? '')
   useEffect(() => setPrompt(template?.startPrompt ?? ''), [template?.startPrompt])
+
+  const [advanced, setAdvanced] = useState(false)
+  const [runsShown, setRunsShown] = useState(PAGE)
+  const [scopesShown, setScopesShown] = useState(PAGE)
 
   if (!agent) return <div className="placeholder">proactive agent not found</div>
 
@@ -110,14 +92,29 @@ export function ProactivePane({
     }
     if (n !== agent.config[key]) update({ [key]: n })
   }
+  /** One setting, inline in the sentence that reads it. */
+  const numberInput = (key: NumberKey, label: string) => (
+    <input
+      type="number"
+      className="tp-cap-input"
+      aria-label={label}
+      min={PROACTIVE_BOUNDS[key][0]}
+      max={PROACTIVE_BOUNDS[key][1]}
+      value={numbers[key] ?? ''}
+      onChange={(e) => setNumbers((prev) => ({ ...prev, [key]: e.target.value }))}
+      onBlur={() => commitNumber(key)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+      }}
+    />
+  )
 
   const dot = proactiveDot(agent)
+  // The scopes this agent raised that still exist; deleting one is closing it.
   const scopes = (wsData?.tasks ?? [])
     .filter((t) => t.origin?.agent === name)
     .sort((a, b) => (b.origin?.createdAt ?? '').localeCompare(a.origin?.createdAt ?? ''))
-  const now = Date.now()
-  const deferrals = agent.state.deferrals.filter((d) => Date.parse(d.until) > now)
-  const tombstones = agent.state.tombstones
+  const waiting = scopes.filter((t) => isPendingScope(t.sessions)).length
 
   const del = async (): Promise<void> => {
     const ok = await confirmDialog(
@@ -175,38 +172,69 @@ export function ProactivePane({
 
       <div className="tp-body">
         <div className="tp-section">
-          <span className="seclabel">SCHEDULE AND LIMITS</span>
-          <div className="pa-numbers">
-            {NUMBER_FIELDS.map((f) => (
-              <label key={f.key} className="pa-number" title={f.hint}>
-                <span className="tp-sec-hint">{f.label}</span>
-                <input
-                  type="number"
-                  className="tp-cap-input"
-                  min={PROACTIVE_BOUNDS[f.key][0]}
-                  max={PROACTIVE_BOUNDS[f.key][1]}
-                  value={numbers[f.key] ?? ''}
-                  onChange={(e) => setNumbers((prev) => ({ ...prev, [f.key]: e.target.value }))}
-                  onBlur={() => commitNumber(f.key)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
-                  }}
-                />
-              </label>
-            ))}
+          <div className="seclabel-row">
+            <span className="seclabel">SCHEDULE</span>
+            <InfoDot
+              text={
+                'Runs start by themselves while the agent is on — everything a run raises waits for you ' +
+                'as a draft. They happen only while gurt is open; runs missed while it was closed become one run.'
+              }
+            />
           </div>
-          <div className="tp-sec-hint">
-            Runs start only while gurt is open; runs missed while it was closed become one run. Its
-            runs start by themselves — everything a run raises waits for you as a draft.
+          <div className="pa-phrase">
+            <span>Run every</span>
+            {numberInput('everyMinutes', 'run every (minutes)')}
+            <span>min</span>
+            <InfoDot text="Counted from the last run’s start." />
+            <span className="pa-dotsep">·</span>
+            <span>at most</span>
+            {numberInput('maxPendingScopes', 'at most waiting scopes')}
+            <span>waiting scopes</span>
+            <span className="dim pa-now">
+              (now {waiting}/{agent.config.maxPendingScopes})
+            </span>
+            <InfoDot
+              text={
+                'Scopes waiting for you: every session still a draft. At this many a run is skipped, and a ' +
+                'run in progress raises no more — it picks up the rest next time. Launch or delete scopes to make room.'
+              }
+            />
           </div>
+          <button type="button" className="btn-link pa-advanced" onClick={() => setAdvanced((v) => !v)}>
+            <Icon name="chevron" size={11} style={advanced ? undefined : { transform: 'rotate(-90deg)' }} />
+            Advanced
+          </button>
+          {advanced && (
+            <div className="pa-phrase">
+              <span>Cancel a run after</span>
+              {numberInput('maxRunMinutes', 'run timeout (minutes)')}
+              <span>min</span>
+              <InfoDot text="A run still going after this long is cancelled and recorded as timed out." />
+              <span className="pa-dotsep">·</span>
+              <span>keep</span>
+              {numberInput('keepRuns', 'runs kept')}
+              <span>runs</span>
+              <InfoDot
+                text={
+                  'Finished run sessions kept, to read or talk to; older ones are deleted. Their summary stays ' +
+                  'in the history below.'
+                }
+              />
+            </div>
+          )}
         </div>
 
         <div className="tp-sep" />
 
         <div className="tp-section">
-          <div className="tp-sec-head">
+          <div className="seclabel-row">
             <span className="seclabel">INSTRUCTIONS</span>
-            <span className="tp-sec-hint">· what to watch, what to raise, what to defer</span>
+            <InfoDot
+              text={
+                'What to watch, what to raise, and what to leave out. A scope you delete may come back on a ' +
+                'later run — exclude what you never want raised here (or at the source).'
+              }
+            />
           </div>
           <textarea
             className="draft-prompt"
@@ -224,11 +252,9 @@ export function ProactivePane({
         <div className="tp-sep" />
 
         <div className="tp-section">
-          <div className="tp-sec-head">
+          <div className="seclabel-row">
             <span className="seclabel">RUN CONFIGURATION</span>
-            <span className="tp-sec-hint">
-              · each run is a copy of this; MCP servers are its sources, repos are read-only context
-            </span>
+            <InfoDot text="Each run is a copy of this. MCP servers are its sources; repos are read-only context." />
           </div>
           {snapshot && tree ? (
             <ConfigTab tree={tree} snapshot={snapshot} />
@@ -242,102 +268,67 @@ export function ProactivePane({
         <div className="tp-section">
           <span className="seclabel">RUNS</span>
           {!agent.state.runs.length && <div className="tp-dashed">no runs yet</div>}
-          {agent.state.runs.map((r) => (
+          {agent.state.runs.slice(0, runsShown).map((r) => (
             <div key={r.id} className="queue-row pa-run">
               <Dot tone={OUTCOME_TONE[r.outcome]} pulse={r.outcome === 'running'} />
               <span
                 className={`queue-title mono ${runSessions.has(r.id) ? 'clickable' : ''}`}
-                title={runSessions.has(r.id) ? 'open the run session' : 'the run session was collected'}
+                title={runSessions.has(r.id) ? 'open the run session' : undefined}
                 onClick={() => runSessions.has(r.id) && onSelectSession(r.id)}
               >
                 {time(r.startedAt)}
               </span>
               <span className="tag">{r.outcome}</span>
-              <span className="dim mono pa-counts">
-                +{r.proposed.length} raised · {r.attached.length} attached · {r.deferred} deferred
-              </span>
+              {r.outcome !== 'skipped' && (
+                <span className="dim mono pa-counts">
+                  +{r.proposed.length} raised · {r.attached.length} attached
+                </span>
+              )}
               <span className="pa-summary dim" title={r.error ?? r.summary}>
                 {r.error ?? r.summary ?? ''}
               </span>
             </div>
           ))}
+          {agent.state.runs.length > runsShown && (
+            <button type="button" className="btn-link pa-more" onClick={() => setRunsShown((n) => n + PAGE * 2)}>
+              show more ({agent.state.runs.length - runsShown})
+            </button>
+          )}
         </div>
 
         <div className="tp-sep" />
 
         <div className="tp-section">
-          <span className="seclabel">RAISED SCOPES</span>
-          {!scopes.length && <div className="tp-dashed">nothing raised yet</div>}
-          {scopes.map((t) => (
-            <div key={t.name} className="queue-row">
-              <Dot tone={isPendingScope(t.sessions) ? 'accent' : 'faint'} hollow={!isPendingScope(t.sessions)} />
-              <span className="queue-title clickable" onClick={() => onSelectTask(ws, t.name)}>
-                {t.origin?.title ?? t.name}
+          <div className="seclabel-row">
+            <span className="seclabel">RAISED SCOPES</span>
+            {scopes.length > 0 && (
+              <span className="dim pa-now">
+                {waiting} waiting · {scopes.length - waiting} in progress
               </span>
-              <span className="dim mono">{t.name}</span>
-              <span className="spacer" />
-              <span className="tp-sec-hint">
-                {isPendingScope(t.sessions) ? 'waiting for you' : 'taken up'} · {t.origin?.refs.length ?? 0} refs
-              </span>
-            </div>
-          ))}
-        </div>
-
-        <div className="tp-sep" />
-
-        <div className="tp-section">
-          <div className="tp-sec-head">
-            <span className="seclabel">DEFERRED</span>
-            <span className="tp-sec-hint">· {deferrals.length} hidden from runs until their time</span>
+            )}
+            <InfoDot text="Scopes this agent raised that still exist. Deleting a scope closes it." />
           </div>
-          {deferrals.slice(-100).reverse().map((d) => (
-            <div key={d.ref} className="queue-row">
-              <span className="queue-title mono">{d.ref}</span>
-              <span className="dim pa-summary" title={d.reason}>
-                {d.reason}
-              </span>
-              <span className="spacer" />
-              <span className="tp-sec-hint">until {time(d.until)}</span>
-              <button
-                className="btn btn-xs"
-                title="the next run sees it as new"
-                onClick={run(() =>
-                  window.gurt.proactiveUndefer(ws, name, d.ref).catch((e: unknown) => alertDialog(String(e)))
-                )}
-              >
-                Look again
-              </button>
-            </div>
-          ))}
-        </div>
-
-        {tombstones.length > 0 && (
-          <>
-            <div className="tp-sep" />
-            <div className="tp-section">
-              <div className="tp-sec-head">
-                <span className="seclabel">DISMISSED</span>
-                <span className="tp-sec-hint">· refs of scopes you deleted — not raised again</span>
+          {!scopes.length && <div className="tp-dashed">nothing waiting or in progress</div>}
+          {scopes.slice(0, scopesShown).map((t) => {
+            const pending = isPendingScope(t.sessions)
+            return (
+              <div key={t.name} className="queue-row pa-scope">
+                <Dot tone={pending ? 'accent' : 'green'} hollow={!pending} />
+                <span className="queue-title clickable" onClick={() => onSelectTask(ws, t.name)}>
+                  {t.origin?.title ?? t.name}
+                </span>
+                <span className="dim mono">{t.name}</span>
+                <span className="spacer" />
+                <span className={pending ? 'pa-state' : 'pa-state dim'}>{pending ? 'waiting for you' : 'in progress'}</span>
               </div>
-              {tombstones.slice(-100).reverse().map((t) => (
-                <div key={t.ref} className="queue-row">
-                  <span className="queue-title mono">{t.ref}</span>
-                  <span className="dim mono">{t.scope}</span>
-                  <span className="spacer" />
-                  <button
-                    className="btn btn-xs"
-                    title="let the agent raise it again"
-                    onClick={run(() =>
-                      window.gurt.proactiveForget(ws, name, t.ref).catch((e: unknown) => alertDialog(String(e)))
-                    )}
-                  >
-                    Allow again
-                  </button>
-                </div>
-              ))}
-            </div>
-          </>
-        )}
+            )
+          })}
+          {scopes.length > scopesShown && (
+            <button type="button" className="btn-link pa-more" onClick={() => setScopesShown((n) => n + PAGE * 2)}>
+              show more ({scopes.length - scopesShown})
+            </button>
+          )}
+        </div>
       </div>
     </div>
   )
