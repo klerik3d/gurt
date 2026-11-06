@@ -633,8 +633,8 @@ textarea.input {
    (see main/update.ts). */
 .tb-update-btn {
   flex: none;
-  margin-left: 8px;
-  padding: 2px 9px;
+  height: 30px;
+  padding: 0 10px;
   border-radius: 4px;
   font-size: 11.5px;
   font-weight: 600;
@@ -645,6 +645,21 @@ textarea.input {
 }
 .tb-update-btn:hover {
   filter: brightness(1.12);
+}
+/* Update popup: shrink-wraps to its widest button; every button gets that width. */
+.tb-update-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  width: max-content;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  -webkit-app-region: no-drag;
+}
+.tb-update-menu .menu-item {
+  justify-content: center;
+  text-align: center;
 }
 .tb-crumb-sep {
   color: var(--faint);
@@ -657,6 +672,7 @@ textarea.input {
 }
 .tb-icons {
   display: flex;
+  align-items: center;
   gap: 4px;
   flex: none;
 }

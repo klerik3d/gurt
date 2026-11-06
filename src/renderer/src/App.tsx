@@ -944,7 +944,7 @@ export default function App() {
             <button className="tb-update-btn" title={`Update to ${updateVersion}`} onClick={() => setUpdateMenu((v) => !v)}>
               {updateDeferred ? 'update pending' : 'update'}
             </button>
-            {updateMenu && <div className="menu" style={{ position: 'absolute', right: 0, top: '100%', minWidth: 230 }}>
+            {updateMenu && <div className="menu tb-update-menu">
               <button className="menu-item" onClick={() => {
                 setUpdateMenu(false)
                 void confirmDialog('Restart now? Running sessions will be interrupted and can be resumed after restart.', { title: `Update to ${updateVersion}`, confirmText: 'Update now' })
