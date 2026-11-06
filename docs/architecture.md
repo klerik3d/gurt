@@ -125,8 +125,9 @@ tree is never polluted with Gurt files.
   devcontainer.json, and the repo is never the source of truth at runtime. It is a template, not an
   instance: any number of sessions may run the same env at once.
   One env is virtual rather than defined: `base`, the app-level base image
-  (`~/.gurt/images.json`, default `node:<LTS>-trixie-slim` pinned by digest). It
-  is the default of every new session, offered to every role, and runs any repo.
+  (`~/.gurt/images.json`, default `node:<LTS>-trixie` pinned by digest — not
+  -slim, which lacks `ca-certificates` and git). It is the default of every
+  new session, offered to every role, and runs any repo.
   A workspace can make one of its own envs the default instead (`defaultEnv`).
 - **container** — owned by exactly one session, 1:1. Created at that session's
   first start, stopped when it goes idle, destroyed with it; never shared with

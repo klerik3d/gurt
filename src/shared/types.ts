@@ -189,11 +189,15 @@ export interface EnvConfig {
 export const BASE_ENV_NAME = 'base'
 
 /** Default of the app-level base image setting: the latest Node LTS on Debian
- *  13 slim (glibc — gurt's node runtime is a glibc build), pinned by digest.
- *  Bump deliberately with gurt releases
- *  (`docker manifest inspect node:26-trixie-slim`). */
+ *  13 (glibc — gurt's node runtime is a glibc build), pinned by digest.
+ *  The full variant, not -slim: it sits on buildpack-deps, so it carries
+ *  `ca-certificates` and git. codex's native binary verifies TLS against the
+ *  system trust store only (slim has none: every request fails with
+ *  "invalid peer certificate: UnknownIssuer"), and agents commit from inside
+ *  the container. Bump deliberately with gurt releases
+ *  (`docker manifest inspect node:26-trixie`). */
 export const DEFAULT_BASE_IMAGE =
-  'node:26-trixie-slim@sha256:5adad64f9a1fca2d51972caa65983634c8a774eb300d72b20f7f2a0f60368072'
+  'node:26-trixie@sha256:438603bbb5cda404b9416f0b5c8026f61501ab911760d861ec28c36b5d675725'
 
 /** The env a new session of this workspace starts on: the workspace's
  *  `defaultEnv` when set, else the base image. */

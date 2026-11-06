@@ -264,9 +264,12 @@ test('the agent gets both spellings of every proxy variable', () => {
   // first would be a loop, the second would arrive at the *proxy's* loopback.
   assert.deepEqual(env.NO_PROXY.split(','), m.NO_PROXY_HOSTS)
   assert.ok(m.NO_PROXY_HOSTS.includes(m.PROXY_ALIAS))
+  // Node's built-in fetch ignores the variables above unless told otherwise —
+  // and gemini's model calls go through it.
+  assert.equal(env.NODE_USE_ENV_PROXY, '1')
   // No secret rides in here: the token is in the MCP descriptor URLs, not in
   // the environment the agent can dump.
-  assert.equal(Object.keys(env).length, 6)
+  assert.equal(Object.keys(env).length, 7)
 })
 
 // ==========================================================================
