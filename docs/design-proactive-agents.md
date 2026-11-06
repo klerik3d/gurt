@@ -31,9 +31,10 @@ for it, here are the sessions I would run".
 `proactiveCreate(ws, name)` creates a scope named after the agent. It is
 listed under `Tree.workspaces[].proactive`, not among the scopes, and holds:
 
-- `task.json` → `proactive`: `enabled`, `everyMinutes`, `maxScopesPerRun`,
-  `maxPendingScopes`, `maxRunMinutes`, `keepRuns`, `templateId`
-  (`ProactiveConfig`, clamped by `sanitizeProactiveConfig`);
+- `task.json` → `proactive`: `enabled`, `everyMinutes`, `maxPendingScopes`,
+  `maxRunMinutes`, `keepRuns`, `templateId` (`ProactiveConfig`, clamped by
+  `sanitizeProactiveConfig`, which drops unknown keys — an older build's
+  `maxScopesPerRun` goes with the next save);
 - the **template**: a draft session of role `proactive` with
   `SessionInfo.template` set. Everything else about the agent (agent
   instance, model, env, repos, MCP servers = its sources, skills, network,
@@ -62,6 +63,12 @@ The manager's clock ticks every 30 s:
   is deleted) and recorded as `timeout`.
 - A run whose template cannot start is recorded as `failed` for that slot —
   not retried every tick.
+- **A run due while the user's inbox is full is skipped.** If the agent
+  already has `maxPendingScopes` scopes waiting for the user (§5) when a run
+  falls due, the host starts no session: it records the slot as `skipped`
+  ("N scopes waiting for you") and tries again an interval later. Skips in a
+  row fold into one history entry and never notify. "Run now" is the user's
+  explicit ask and starts regardless.
 
 Events are out of scope. If they come, they come from a host-side poller
 (deterministic code, no LLM) that emits events. Polling is not the agent's
@@ -90,11 +97,14 @@ the identity rules of §5 cannot be bypassed. Its turn contract is
 
 | tool | does |
 |---|---|
-| `list_open({ check? })` | open scopes it raised (title, summary, refs, whether the user has acted), its cursor, this run's limits; with `check`, the status of each ref: `new`, `deferred`, `open` (scope), `dismissed` |
-| `propose_scope({ title, summary, refs, sessions })` | a scope plus draft sessions (executor / researcher / reviewer, `create_session`'s fields). A ref already bound answers with that scope and creates nothing |
+| `list_open({ check? })` | open scopes it raised (title, summary, refs, whether the user has acted), its cursor, how many more scopes it may raise (`limits.canRaise`); with `check`, the status of each ref: `new` or `open` (with its scope) |
+| `propose_scope({ title, summary, refs, sessions })` | a scope plus draft sessions (executor / researcher / reviewer, `create_session`'s fields). A ref already bound answers with that scope and creates nothing. Refused at the limit (§5) |
 | `attach({ scope, refs, note? })` | binds more refs to a raised scope and appends a note |
-| `defer({ refs, forHours, reason })` | hides refs from `check` until then |
 | `finish_run({ summary, cursor? })` | closes the run, stores the cursor |
+
+There is no "not now" tool: what does not need doing is simply left, and
+what the user never wants raised is excluded in the agent's instructions,
+which the server instructions tell it to respect.
 
 The tools are bound to the run's workspace, agent and session by the session
 manager, and only the agent's run in progress may use them: an ended run's
@@ -111,11 +121,11 @@ There is no item entity: **the scope is the unit**. A scope it raised carries
   `mail:<Message-ID>`, `slack:C01ABC/1699999999.000100`, `gh:org/repo#123`.
   Every message and event has one. Only the *problem* behind several of them
   has none.
-- **Host guarantee: one ref is bound to at most one scope**, across all
-  proactive agents of a workspace. Every identity decision runs under a
-  per-workspace lock (Gurt is single-instance, so an in-process chain is
-  enough). A retried or concurrent `propose_scope` therefore creates one
-  scope; the other caller gets it back.
+- **Host guarantee: while a scope exists, each of its refs is bound to it
+  alone**, across all proactive agents of a workspace. Every identity
+  decision runs under a per-workspace lock (Gurt is single-instance, so an
+  in-process chain is enough). A retried or concurrent `propose_scope`
+  therefore creates one scope; the other caller gets it back.
 - **Duplicates by meaning** ("these five mails are one bug") are the agent's
   call: it sees `list_open` and chooses between `propose_scope` and `attach`.
   A miss costs one extra draft, which the user deletes.
@@ -124,53 +134,69 @@ There is no item entity: **the scope is the unit**. A scope it raised carries
   suffixed when taken. If the app dies between the scope and its drafts, the
   next `propose_scope` with one of its refs drafts into it instead of
   answering with an empty scope.
-- **Backpressure.** `maxScopesPerRun` caps one run; `maxPendingScopes` caps
-  the scopes the user has not acted on (every session still a draft). At
-  either cap `propose_scope` refuses and the agent is told to defer with
-  `reason: backpressure`.
+- **One limit.** `maxPendingScopes` caps the scopes of this agent waiting for
+  the user (every session still a draft). At the limit a due run is skipped
+  by the host (§3.1); during a run `propose_scope` succeeds while fewer are
+  waiting and refuses after. Refused, the agent raises nothing more and calls
+  `finish_run` **without moving its cursor past the items it could not
+  raise**, so the next run sees them again. Attaching is never limited. The
+  user makes room by launching or deleting scopes.
 
 ## 6. State and volume
 
-`<ws>/<agent>/proactive-state.json`: the cursor, `lastRunAt`, the run history,
-the deferrals and the tombstones. The ref index is not stored: it is rebuilt
-at boot from the scopes' `origin`.
+`<ws>/<agent>/proactive-state.json`: the cursor, `lastRunAt` and the run
+history. The ref index is not stored: it is rebuilt at boot from the scopes'
+`origin`. (An older build also kept deferrals and tombstones there; they are
+dropped on load.)
 
-- **Deleted scope → tombstones.** Its refs stay bound as tombstones of the
-  agent that raised it: `check` reports them `dismissed` and `propose_scope`
-  refuses them. "Allow again" in the UI drops a tombstone.
-- **Deferrals** hide a ref until `until`; raising or attaching the ref clears
-  its deferral; "Look again" in the UI drops one.
+- **Deleting a raised scope frees its refs.** Nothing is remembered: a later
+  run may raise the same ref again. Recurring noise the user does not want is
+  handled where it belongs — an exclusion in the agent's instructions, or a
+  filter at the source.
 
 The "1000 Sentry issues every 10 minutes" case: the agent reads only what is
 past its cursor, `check`s the refs in one call and skips everything that is
-not `new`, raises at most `maxScopesPerRun`, and defers the rest with a
-reason. The Deferred list in the UI shows those reasons.
+`open`, raises while it may, and when `propose_scope` refuses it finishes
+with the cursor left before the rest. While the user's inbox stays full the
+host skips the runs outright, so a busy source costs no sessions.
 
 ## 7. UI
 
 A fifth activity-bar item, "Proactive agents".
 
-- Sidebar: the workspace's agents — dot (running / on / off) and interval;
-  "+" creates one.
-- Agent pane: Turn on/off, Run now, delete; schedule and limits; the
-  instructions; the template's Config tab (role locked to `proactive`); runs
-  (outcome, counts, summary; a kept run opens its session); raised scopes
-  (waiting for you / taken up); deferrals; dismissed refs.
+- Sidebar: the workspace's agents, each a container like a scope — dot
+  (running / on / off) and interval — with its kept runs nested under it,
+  newest first (outcome dot, start time, scopes raised). "+" creates one.
+- Clicking an agent opens its pane; clicking a run opens its chat **inside
+  the Proactive mode**, in the ordinary session view (the mode does not
+  switch to Sessions, whose sidebar does not list the agent). Notifications
+  and the Runs list open a run in the same place. The composer stays: talking
+  to a finished run is how the user tunes the instructions. Above the
+  composer of an ended run one line says its gurt tools are closed (it can
+  talk, not raise scopes).
+- Agent pane: Turn on/off, Run now, delete; the settings as a phrase —
+  "Run every [60] min · at most [10] waiting scopes (now 3/10)" — with run
+  timeout and runs kept under a collapsed "Advanced"; the instructions; the
+  template's Config tab (role locked to `proactive`); the run history
+  (outcome, counts, summary; a kept run opens its chat); the raised scopes
+  that still exist, each "waiting for you" or "in progress", paged with "show
+  more". Explanations sit behind "i" marks, not caption lines.
 - A raised scope's pane starts with "RAISED BY <agent>": title, summary,
   refs, notes.
 - Notifications: a run that raised scopes notifies like a proposal; a run that
   timed out or skipped `finish_run` notifies as an error; a run's own turn
-  never notifies as `turn-ended`.
+  never notifies as `turn-ended`; a skipped slot never notifies.
 
 ## 8. Open questions
 
 - Reusing a warm container per agent (one Gurt session, a new ACP session per
   tick) instead of a fresh session per run.
 - Cron expressions beside the interval.
-- Should deferrals of the same ref back off (1 h → 1 d → 1 w)?
 - Host-side pollers and events (§3.1): shape, and whether they share the ref
   format.
-- How the user's overrides ("this deferral was wrong") reach the next run.
+- Whether exclusions deserve structure beyond the instructions' prose (a
+  per-agent list of refs or patterns the user can edit) if prose proves too
+  loose for recurring noise.
 - The operator: creating and configuring agents needs the template's draft
   config on the admin surface, which the operator does not edit today
   (`requirements-session-operator.md` §2.4); the `proactive*` methods are
@@ -180,5 +206,5 @@ A fifth activity-bar item, "Proactive agents".
 
 1. **Done:** the agent scope and template, the interval clock, the
    `proactive` role with the §4 tools, drafts only, the mode.
-2. Operator access, deferral backoff, overrides as feedback, cron.
+2. Operator access, structured exclusions (if needed), cron.
 3. Host-side pollers and event triggers; container reuse.

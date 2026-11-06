@@ -110,6 +110,10 @@ export default function App() {
   /** The proactive agent open in the Proactive mode, by name within the
    *  current workspace. */
   const [proactiveAgent, setProactiveAgent] = usePreference<string | null>('proactiveAgent', null, z.string().nullable())
+  /** The run of that agent whose chat is open in the Proactive mode — null
+   *  while the agent's own pane is. Kept apart from `selection`: a run's scope
+   *  is the agent, which the scopes sidebar does not list. */
+  const [proactiveRun, setProactiveRun] = usePreference<string | null>('proactiveRun', null, z.string().nullable())
   const [newProactive, setNewProactive] = useState(false)
   const [diffFile, setDiffFile] = usePreference<DiffFileSelection | null>('diffFile', null, diffFileSchema)
   const [settingsSection, setSettingsSection] = usePreference<SettingsSection>('settingsSection', 'environments', z.enum(SETTINGS_SECTIONS))
@@ -461,40 +465,55 @@ export default function App() {
   const selectSession = useCallback((id: string) => {
     setPopups((prev) => prev.filter((n) => n.sessionId !== id))
     setView('work')
-    setWorkMode('sessions')
     setForceWelcome(false)
-    setSelection({ type: 'session', id })
-    // Opening a session is what "reviewed" means on the dashboard — the same
-    // act that clears its notifications (§4.2) clears it from the review list.
-    markSeen(id)
     // Keep curWs in step with whatever workspace actually owns this session —
     // otherwise a cross-workspace jump (e.g. via the palette) leaves curWs
     // pointing at the old workspace, and the next ⌘N/⌘⇧N silently targets it.
     const owner = treeRef.current?.workspaces.find(
       (w) =>
         w.tasks.some((t) => t.sessions.some((s) => s.id === id)) ||
-        // A proactive agent's run, opened from its Runs list or a notification.
         w.proactive.some((a) => a.sessions.some((s) => s.id === id))
     )
     if (owner) setCurWs(owner.name)
+    const agent = owner?.proactive.find((a) => a.sessions.some((s) => s.id === id))
+    if (agent) {
+      // A proactive agent's run (from its sidebar, its Runs list or a
+      // notification) opens inside the Proactive mode, under its agent; the
+      // template is the agent's own pane.
+      setWorkMode('proactive')
+      setProactiveAgent(agent.name)
+      setProactiveRun(agent.config.templateId === id ? null : id)
+    } else {
+      setWorkMode('sessions')
+      setSelection({ type: 'session', id })
+    }
+    // Opening a session is what "reviewed" means on the dashboard — the same
+    // act that clears its notifications (§4.2) clears it from the review list.
+    markSeen(id)
     // The IPC call marks this session's pending notifications read server-side
     // (§4.2 — opening a session another way, not just a panel click); mirror
     // that locally so the bell badge updates without waiting on a push event.
     setNotifications((prev) =>
       prev.map((n) => (n.sessionId === id && !n.read ? { ...n, read: true } : n))
     )
-  }, [setView, setWorkMode, setSelection, setCurWs])
+  }, [setView, setWorkMode, setSelection, setCurWs, setProactiveAgent, setProactiveRun])
 
-  // Reload the selected session on restore as well as explicit navigation.
-  const selectedSessionId = selection?.type === 'session' ? selection.id : null
+  // Reload the open session (the selected one, or the run open in the
+  // Proactive mode) on restore as well as explicit navigation.
+  const openSessionId =
+    view !== 'work'
+      ? null
+      : workMode === 'sessions'
+        ? selection?.type === 'session' ? selection.id : null
+        : workMode === 'proactive' ? proactiveRun : null
   useEffect(() => {
-    if (!selectedSessionId || view !== 'work' || workMode !== 'sessions') return
+    if (!openSessionId) return
     let cancelled = false
-    window.gurt.sessionSnapshot(selectedSessionId).then((snap) => {
-      if (!cancelled && snap) setSnapshots((prev) => ({ ...prev, [selectedSessionId]: snap }))
+    window.gurt.sessionSnapshot(openSessionId).then((snap) => {
+      if (!cancelled && snap) setSnapshots((prev) => ({ ...prev, [openSessionId]: snap }))
     }).catch(logErr('sessionSnapshot'))
     return () => { cancelled = true }
-  }, [selectedSessionId, view, workMode])
+  }, [openSessionId])
 
   const selectTask = useCallback((tws: string, task: string) => {
     setView('work')
@@ -843,8 +862,13 @@ export default function App() {
   // selectTask already keep curWs in step with whatever's open (see the note
   // in selectSession about cross-workspace jumps), so the button's label is
   // always in sync.
-  const openProactive =
-    proactiveAgent && ws?.proactive.some((a) => a.name === proactiveAgent) ? proactiveAgent : null
+  const openAgent = proactiveAgent ? ws?.proactive.find((a) => a.name === proactiveAgent) : undefined
+  const openProactive = openAgent ? openAgent.name : null
+  // A run still kept (not collected, not deleted); otherwise the agent's pane.
+  const openRun =
+    proactiveRun && openAgent?.sessions.some((s) => s.id === proactiveRun && !s.template)
+      ? openAgent.sessions.find((s) => s.id === proactiveRun)
+      : undefined
   const crumbRest =
     view === 'settings'
       ? 'settings'
@@ -855,7 +879,7 @@ export default function App() {
           : workMode === 'files'
             ? `${fileScope?.task ? `${fileScope.task} · ` : ''}files`
           : workMode === 'proactive'
-            ? `${openProactive ? `${openProactive} · ` : ''}proactive`
+            ? `${openProactive ? `${openProactive} · ` : ''}${openRun ? `${openRun.title} · ` : ''}proactive`
           : activeInfo
             ? `${activeInfo.task} · ${activeInfo.title}`
             : selection?.type === 'task'
@@ -1102,7 +1126,12 @@ export default function App() {
                   ws={ws?.name ?? null}
                   width={sidebarWidth}
                   selected={openProactive}
-                  onSelect={setProactiveAgent}
+                  selectedRun={openRun?.id ?? null}
+                  onSelect={(name) => {
+                    setProactiveAgent(name)
+                    setProactiveRun(null)
+                  }}
+                  onSelectRun={selectSession}
                   onNew={() => setNewProactive(true)}
                 />
               )}
@@ -1139,8 +1168,30 @@ export default function App() {
                   changes={diffTask ? changes[`${diffTask.ws}/${diffTask.task}`] : undefined}
                 />
               )}
-              {workMode === 'proactive' && ws && openProactive && (
+              {workMode === 'proactive' && openAgent && openRun && (
+                <SessionPane
+                  tree={tree}
+                  snapshot={snapshots[openRun.id]}
+                  sessionId={openRun.id}
+                  seen={activity[openRun.id]?.seen}
+                  log={logs[openRun.id] ?? []}
+                  composerNote={
+                    openAgent.activeRun === openRun.id
+                      ? undefined
+                      : {
+                          text: 'this run has ended — its gurt tools are closed',
+                          hint:
+                            'You can still talk to it (to tune the instructions, say), but it can no longer ' +
+                            'raise or attach scopes, or move the cursor. Only a run in progress can.'
+                        }
+                  }
+                  onSelect={selectSession}
+                  onDeleted={() => setProactiveRun(null)}
+                />
+              )}
+              {workMode === 'proactive' && ws && openProactive && !openRun && (
                 <ProactivePane
+                  key={`${ws.name}/${openProactive}`}
                   tree={tree}
                   ws={ws.name}
                   name={openProactive}

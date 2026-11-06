@@ -10,7 +10,7 @@ import { SESSION_DOT } from '../status'
 import { Dot } from './icons'
 import { AgentMark, EnvRepoMarks, hasNetMark, McpFailBanner, McpMarks, NetMark, RoleMark } from './tags'
 import { TrafficPanel } from './Network'
-import { Chat, ImageThumbs, pastedImages, readImages } from './Chat'
+import { Chat, ImageThumbs, pastedImages, readImages, type ComposerNote } from './Chat'
 import { ConfigTab } from './ConfigTab'
 import { SessionMenu, deleteSession, duplicateSession } from './SessionActions'
 import { TabBar, useSessionTab, type SessionTab } from './SessionTabs'
@@ -24,6 +24,7 @@ export function SessionPane({
   queuePosition,
   seen,
   log,
+  composerNote,
   onSelect,
   onDeleted
 }: {
@@ -36,6 +37,8 @@ export function SessionPane({
    *  assume that being on screen means seen. */
   seen?: boolean | undefined
   log: string[]
+  /** A line above a started session's composer — see `Chat`. */
+  composerNote?: ComposerNote | undefined
   /** Select another session — where a duplicate's fresh draft is handed to. */
   onSelect: (id: string) => void
   onDeleted: () => void
@@ -49,6 +52,7 @@ export function SessionPane({
         sessionId={sessionId}
         seen={seen}
         log={log}
+        composerNote={composerNote}
         onSelect={onSelect}
         onDeleted={onDeleted}
       />

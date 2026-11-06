@@ -1354,16 +1354,15 @@ const proactiveStateFile = (ws: string, agent: string) =>
   path.join(taskDir(ws, agent), 'proactive-state.json')
 
 /** What a proactive agent remembers between runs (docs/design-proactive-agents.md
- *  §6). Missing or partial reads fill in empty lists. */
+ *  §6). Missing or partial reads fill in an empty history; what an older build
+ *  also kept there (deferrals, tombstones) is dropped. */
 export async function readProactiveState(ws: string, agent: string): Promise<ProactiveState> {
   const raw = await readJson<Partial<ProactiveState>>(proactiveStateFile(ws, agent), {})
-  return {
-    ...emptyProactiveState(),
-    ...raw,
-    runs: Array.isArray(raw.runs) ? raw.runs : [],
-    deferrals: Array.isArray(raw.deferrals) ? raw.deferrals : [],
-    tombstones: Array.isArray(raw.tombstones) ? raw.tombstones : []
-  }
+  const state = emptyProactiveState()
+  if (typeof raw.cursor === 'string') state.cursor = raw.cursor
+  if (typeof raw.lastRunAt === 'string') state.lastRunAt = raw.lastRunAt
+  if (Array.isArray(raw.runs)) state.runs = raw.runs
+  return state
 }
 
 export function writeProactiveState(ws: string, agent: string, state: ProactiveState): Promise<void> {

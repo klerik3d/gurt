@@ -1,7 +1,8 @@
 // Proactive agents (docs/design-proactive-agents.md), headless: the template
 // that never runs, a run's tools (identity by ref, idempotent proposals,
-// concurrent proposals, limits, deferrals, tombstones), the end of a run, the
-// schedule clock, crash recovery, and the role's `gurt` tool set.
+// concurrent proposals, the waiting-scopes limit, a deleted scope freeing its
+// refs), the end of a run, the schedule clock (a run skipped at the limit),
+// crash recovery, state migration, and the role's `gurt` tool set.
 //
 // No docker, no agent: a run's session is created as a draft (spawnRun is
 // swapped for a copy that does not enqueue), so nothing ever starts — the
@@ -89,11 +90,12 @@ test('refs, slugs, config, schedule', () => {
   assert.throws(() => m.normalizeRefs(['Sentry:1']), /not a ref/, 'the source is lowercase')
   assert.equal(m.scopeSlug('Checkout crash: NPE in Cart!'), 'checkout-crash-npe-in-cart')
   assert.equal(m.scopeSlug('???'), 'proactive')
-  const c = m.sanitizeProactiveConfig({ everyMinutes: 1, maxScopesPerRun: 999, enabled: 'yes', bogus: 1 })
+  const c = m.sanitizeProactiveConfig({ everyMinutes: 1, maxPendingScopes: 999, maxScopesPerRun: 5, enabled: 'yes', bogus: 1 })
   assert.equal(c.everyMinutes, 5, 'clamped to the bound')
-  assert.equal(c.maxScopesPerRun, 50)
+  assert.equal(c.maxPendingScopes, 200)
   assert.equal(c.enabled, false, 'a non-boolean keeps the fallback')
   assert.equal('bogus' in c, false)
+  assert.equal('maxScopesPerRun' in c, false, "an older build's per-run limit is dropped")
   assert.equal(m.nextRunDue(c, {}), 0, 'never ran: due now')
   assert.equal(m.nextRunDue(c, { lastRunAt: '2026-01-01T00:00:00.000Z' }), Date.parse('2026-01-01T00:05:00.000Z'))
   assert.equal(m.isPendingScope([]), false)
@@ -147,7 +149,7 @@ test('create: a scope with a template that never runs', async () => {
 // --- a run's tools ------------------------------------------------------------
 let run1
 let crashScope
-test('a run: list, propose, idempotency, attach, defer', async () => {
+test('a run: list, propose, idempotency, attach', async () => {
   run1 = await kernel.proactive.runNow(ws, 'triage')
   assert.equal(view().activeRun, run1)
   await assert.rejects(kernel.proactive.runNow(ws, 'triage'), /already running/, 'runs never overlap')
@@ -156,6 +158,7 @@ test('a run: list, propose, idempotency, attach, defer', async () => {
   const first = await p.listOpen(['sentry:1', 'sentry:2'])
   assert.equal(first.cursor, null)
   assert.deepEqual(first.check, { 'sentry:1': { status: 'new' }, 'sentry:2': { status: 'new' } })
+  assert.deepEqual(first.limits, { waitingScopes: 0, maxWaitingScopes: 10, canRaise: 10 })
 
   const made = await p.proposeScope({
     title: 'Checkout crash',
@@ -201,20 +204,14 @@ test('a run: list, propose, idempotency, attach, defer', async () => {
   assert.equal(after.origin.notes.length, 1)
   await assert.rejects(p.attach({ scope: 'nope', refs: ['sentry:5'] }), /not a scope raised/)
 
-  // defer: hidden until its time; a raised ref is skipped, not deferred.
-  const d = await p.defer({ refs: ['sentry:2', 'sentry:1'], forHours: 24, reason: 'low impact' })
-  assert.equal(d.deferred, 1)
-  assert.match(d.skipped['sentry:1'], /already raised/)
   const checked = (await p.listOpen(['sentry:1', 'sentry:2', 'mail:<m1@x>'])).check
   assert.equal(checked['sentry:1'].status, 'open')
-  assert.equal(checked['sentry:2'].status, 'deferred')
-  assert.equal(checked['sentry:2'].reason, 'low impact')
+  assert.equal(checked['sentry:1'].scope, 'checkout-crash')
+  assert.equal(checked['sentry:2'].status, 'new')
   assert.equal(checked['mail:<m1@x>'].status, 'open')
 
-  // Raising a deferred ref after all clears its deferral.
   const later = await p.proposeScope({ title: 'Slow search', summary: 'x', refs: ['sentry:2'], sessions: [executor()] })
   assert.equal(later.created, true)
-  assert.equal(view().state.deferrals.some((x) => x.ref === 'sentry:2'), false)
   crashScope = later.scope
 })
 
@@ -226,59 +223,66 @@ test('concurrent proposals of one ref create one scope', async () => {
   assert.equal(results[0].scope, results[1].scope, 'both answer with the same scope')
 })
 
-test('limits: per run, then waiting scopes', async () => {
-  // Three proposed so far in this run.
-  await kernel.proactive.update(ws, 'triage', { maxScopesPerRun: 3 })
+test('propose_scope is refused at the waiting-scopes limit', async () => {
+  // Three scopes wait for the user now, every session still a draft.
+  const p = tools(run1)
+  await kernel.proactive.update(ws, 'triage', { maxPendingScopes: 3 })
+  assert.deepEqual((await p.listOpen()).limits, { waitingScopes: 3, maxWaitingScopes: 3, canRaise: 0 })
   await assert.rejects(
-    tools(run1).proposeScope({ title: 'Fourth', summary: 'x', refs: ['sentry:4'], sessions: [executor()] }),
-    /this run already proposed 3 scopes/
+    p.proposeScope({ title: 'Fourth', summary: 'x', refs: ['sentry:4'], sessions: [executor()] }),
+    /3 scopes are waiting for the user already \(the limit is 3\) — raise nothing more this run: call finish_run/
   )
+  assert.equal(fs.existsSync(path.join(GURT_ROOT, ws, 'fourth')), false, 'nothing landed')
+  // A ref already raised still answers with its scope: that creates nothing.
+  assert.equal((await p.proposeScope({ title: 'x', summary: 'x', refs: ['sentry:1'], sessions: [executor()] })).scope, 'checkout-crash')
+  // Attaching to a raised scope is not limited.
+  assert.deepEqual((await p.attach({ scope: 'checkout-crash', refs: ['sentry:5'] })).attached, ['sentry:5'])
+  // A scope the user takes up no longer waits: there is room again.
+  const draft = kernel.sessions.listForTask(ws, 'slow-search')[0]
+  kernel.sessions.sessionInfo(draft.id).state = 'started'
+  assert.equal((await p.listOpen()).limits.canRaise, 1)
+  kernel.sessions.sessionInfo(draft.id).state = 'draft'
+  await kernel.proactive.update(ws, 'triage', { maxPendingScopes: 10 })
 })
 
 test('the end of a run', async () => {
-  const r = await tools(run1).finishRun({ summary: 'raised 3, deferred 1', cursor: '2026-11-03T10:00:00Z' })
+  const r = await tools(run1).finishRun({ summary: 'raised 3', cursor: '2026-11-03T10:00:00Z' })
   assert.equal(r.ok, true)
   endTurn(run1)
   const a = view()
   assert.equal(a.activeRun, undefined)
   const rec = a.state.runs.find((x) => x.id === run1)
   assert.equal(rec.outcome, 'finished')
-  assert.equal(rec.summary, 'raised 3, deferred 1')
+  assert.equal(rec.summary, 'raised 3')
   assert.equal(rec.proposed.length, 3)
-  assert.equal(rec.deferred, 1)
+  assert.equal('deferred' in rec, false)
   await assert.rejects(tools(run1).listOpen(), /run has ended/, "an ended run's tools are closed")
   await new Promise((r) => setTimeout(r, 50))
   const disk = await m.readProactiveState(ws, 'triage')
   assert.equal(disk.cursor, '2026-11-03T10:00:00Z', 'the cursor is on disk')
 
-  // The next run reads it back, and the waiting-scope cap applies.
+  // The next run reads it back.
   const run2 = await kernel.proactive.runNow(ws, 'triage')
   assert.equal((await tools(run2).listOpen()).cursor, '2026-11-03T10:00:00Z')
-  await kernel.proactive.update(ws, 'triage', { maxPendingScopes: 3 })
-  await assert.rejects(
-    tools(run2).proposeScope({ title: 'Fourth', summary: 'x', refs: ['sentry:4'], sessions: [executor()] }),
-    /3 scopes are waiting for the user/
-  )
   // A run that ends without finish_run is incomplete.
   endTurn(run2)
   assert.equal(view().state.runs.find((x) => x.id === run2).outcome, 'incomplete')
 })
 
-test('a deleted scope leaves its refs dismissed', async () => {
+test("a deleted scope frees its refs: they may be raised again", async () => {
   await kernel.deleteTask(ws, 'checkout-crash')
   const run3 = await kernel.proactive.runNow(ws, 'triage')
   const p = tools(run3)
-  const checked = (await p.listOpen(['sentry:1', 'mail:<m1@x>'])).check
-  assert.deepEqual(checked['sentry:1'], { status: 'dismissed', scope: 'checkout-crash' })
-  assert.equal(checked['mail:<m1@x>'].status, 'dismissed')
-  await kernel.proactive.update(ws, 'triage', { maxPendingScopes: 50 })
-  await assert.rejects(
-    p.proposeScope({ title: 'Checkout crash', summary: 'x', refs: ['sentry:1'], sessions: [executor()] }),
-    /which the user deleted/
-  )
-  // The user may let it come back.
-  await kernel.proactive.forget(ws, 'triage', 'sentry:1')
-  assert.equal((await p.listOpen(['sentry:1'])).check['sentry:1'].status, 'new')
+  const checked = (await p.listOpen(['sentry:1', 'mail:<m1@x>', 'sentry:5'])).check
+  assert.deepEqual(checked, { 'sentry:1': { status: 'new' }, 'mail:<m1@x>': { status: 'new' }, 'sentry:5': { status: 'new' } })
+  const again = await p.proposeScope({ title: 'Checkout crash', summary: 'back', refs: ['sentry:1'], sessions: [executor()] })
+  assert.equal(again.created, true)
+  assert.equal((await m.getTask(ws, again.scope)).origin.run, run3)
+  // While it exists, the ref is bound to it alone again.
+  const dup = await p.proposeScope({ title: 'Other', summary: 'x', refs: ['sentry:1'], sessions: [executor()] })
+  assert.equal(dup.created, false)
+  assert.equal(dup.scope, again.scope)
+  await kernel.deleteTask(ws, again.scope)
   endTurn(run3)
 })
 
@@ -294,6 +298,31 @@ test('crash recovery: a scope whose drafts never landed is finished', async () =
   assert.equal(r.drafted.length, 1)
   assert.equal(kernel.sessions.listForTask(ws, 'orphan').length, 1)
   endTurn(run4)
+})
+
+test('the clock: a due run is skipped at the waiting-scopes limit', async () => {
+  const before = view().state.runs.length
+  // slow-search, the race scope and orphan wait for the user: three.
+  await kernel.proactive.update(ws, 'triage', { maxPendingScopes: 3, enabled: true, everyMinutes: 5 })
+  view().state.lastRunAt = new Date(Date.now() - 6 * 60_000).toISOString()
+  const notified = []
+  const off = kernel.bus.on('proactive.run', (e) => notified.push(e))
+  kernel.proactive.tick()
+  assert.equal(view().activeRun, undefined, 'no session was started')
+  const rec = view().state.runs[0]
+  assert.equal(rec.outcome, 'skipped')
+  assert.equal(rec.summary, '3 scopes waiting for you')
+  assert.equal(view().state.runs.length, before + 1)
+  assert.ok(Date.now() - Date.parse(view().state.lastRunAt) < 5_000, 'the slot counts: the next try is an interval away')
+  kernel.proactive.tick()
+  assert.equal(view().state.runs.length, before + 1, 'not due again on the next tick')
+  // The next due slot, still full: folded into the same entry.
+  view().state.lastRunAt = new Date(Date.now() - 6 * 60_000).toISOString()
+  kernel.proactive.tick()
+  assert.equal(view().state.runs.length, before + 1, 'skips in a row are one history entry')
+  assert.equal(notified.length, 0, 'a skip notifies nobody')
+  off()
+  await kernel.proactive.update(ws, 'triage', { maxPendingScopes: 10, enabled: false })
 })
 
 test('the clock: due, overlap, timeout, run collection', async () => {
@@ -317,6 +346,27 @@ test('the clock: due, overlap, timeout, run collection', async () => {
   assert.ok(kept.length <= 2, `kept ${kept.length} run sessions`)
   assert.ok(view().sessions.some((s) => s.template), 'the template is never collected')
   await kernel.proactive.update(ws, 'triage', { enabled: false })
+})
+
+test("an older build's state and config load without deferrals, tombstones or the per-run limit", async () => {
+  const dir = path.join(GURT_ROOT, ws, 'legacy')
+  fs.mkdirSync(dir, { recursive: true })
+  fs.writeFileSync(
+    path.join(dir, 'proactive-state.json'),
+    JSON.stringify({
+      cursor: 'c1',
+      lastRunAt: '2026-11-01T00:00:00.000Z',
+      runs: [{ id: 'r', startedAt: '2026-11-01T00:00:00.000Z', outcome: 'finished', proposed: [], attached: [], deferred: 4 }],
+      deferrals: [{ ref: 'sentry:9', until: '2099-01-01T00:00:00.000Z', reason: 'low', run: 'r', at: 'x' }],
+      tombstones: [{ ref: 'sentry:8', scope: 'gone', at: 'x' }]
+    })
+  )
+  const state = await m.readProactiveState(ws, 'legacy')
+  assert.deepEqual(Object.keys(state).sort(), ['cursor', 'lastRunAt', 'runs'])
+  assert.equal(state.runs.length, 1)
+  const config = m.sanitizeProactiveConfig({ enabled: true, everyMinutes: 30, maxScopesPerRun: 5, maxPendingScopes: 7, templateId: 't' })
+  assert.deepEqual(config, { ...m.PROACTIVE_DEFAULTS, enabled: true, everyMinutes: 30, maxPendingScopes: 7, templateId: 't' })
+  fs.rmSync(dir, { recursive: true, force: true })
 })
 
 test('a run from a previous app life is not offered for recovery', () => {
@@ -362,7 +412,6 @@ test('the proactive tool set', async () => {
       listOpen: hook('listOpen'),
       proposeScope: hook('proposeScope'),
       attach: hook('attach'),
-      defer: hook('defer'),
       finishRun: hook('finishRun')
     }
   })
@@ -378,7 +427,7 @@ test('the proactive tool set', async () => {
       return (await res.json()).result
     }
     const listed = (await post('tools/list', {})).tools.map((t) => t.name).sort()
-    assert.deepEqual(listed, ['attach', 'defer', 'finish_run', 'list_open', 'propose_scope'], 'no complete, no create_session')
+    assert.deepEqual(listed, ['attach', 'finish_run', 'list_open', 'propose_scope'], 'no complete, no create_session, no defer')
     const ok = await post('tools/call', {
       name: 'propose_scope',
       arguments: { title: 't', summary: 's', refs: ['sentry:1'], sessions: [{ role: 'executor', repos: ['alpha'], prompt: 'p' }] }

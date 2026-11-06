@@ -495,11 +495,6 @@ export interface GurtApi {
   /** Start a run now, whatever the schedule says; answers its session id.
    *  Refused while a run is going. */
   proactiveRunNow(ws: string, name: string): Promise<string>
-  /** Drop a deferral, so the next run sees the ref as new. */
-  proactiveUndefer(ws: string, name: string, ref: string): Promise<void>
-  /** Drop a tombstone (a ref whose scope the user deleted), so the agent may
-   *  raise it again. */
-  proactiveForget(ws: string, name: string, ref: string): Promise<void>
 }
 
 /**
@@ -674,9 +669,7 @@ const METHODS = {
   // operator doc); docs/design-proactive-agents.md §9 phase 2.
   proactiveCreate: 'none',
   proactiveUpdate: 'none',
-  proactiveRunNow: 'none',
-  proactiveUndefer: 'none',
-  proactiveForget: 'none'
+  proactiveRunNow: 'none'
 } as const satisfies Record<keyof GurtApi, Exposure>
 
 /** Runtime method list; `api:<method>` is the IPC channel per entry. */

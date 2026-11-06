@@ -13,10 +13,9 @@ export interface ProactiveConfig {
   enabled: boolean
   /** One run every this many minutes, counted from the last run's start. */
   everyMinutes: number
-  /** Scopes one run may propose (§5). */
-  maxScopesPerRun: number
   /** Scopes of this agent still waiting for the user — every session still an
-   *  untouched draft. At the cap `propose_scope` refuses (§5, backpressure). */
+   *  untouched draft. At the limit a due run is skipped, and a run in progress
+   *  may raise no more (§5). */
   maxPendingScopes: number
   /** A run still going after this long is cancelled. */
   maxRunMinutes: number
@@ -30,7 +29,6 @@ export interface ProactiveConfig {
 export const PROACTIVE_DEFAULTS: Omit<ProactiveConfig, 'templateId'> = {
   enabled: false,
   everyMinutes: 60,
-  maxScopesPerRun: 5,
   maxPendingScopes: 10,
   maxRunMinutes: 30,
   keepRuns: 5
@@ -42,14 +40,14 @@ export const PROACTIVE_BOUNDS: Record<
   [number, number]
 > = {
   everyMinutes: [5, 7 * 24 * 60],
-  maxScopesPerRun: [1, 50],
   maxPendingScopes: [1, 200],
   maxRunMinutes: [5, 240],
   keepRuns: [1, 50]
 }
 
 /** Coerce untrusted input (the renderer, a hand-edited task.json) into a valid
- *  config; anything missing or malformed keeps `fallback`'s value. */
+ *  config; anything missing or malformed keeps `fallback`'s value, and unknown
+ *  keys (an older build's `maxScopesPerRun`) are dropped. */
 export function sanitizeProactiveConfig(
   raw: unknown,
   fallback: ProactiveConfig = PROACTIVE_DEFAULTS
@@ -58,7 +56,6 @@ export function sanitizeProactiveConfig(
   const out: ProactiveConfig = {
     enabled: typeof r['enabled'] === 'boolean' ? r['enabled'] : fallback.enabled,
     everyMinutes: fallback.everyMinutes,
-    maxScopesPerRun: fallback.maxScopesPerRun,
     maxPendingScopes: fallback.maxPendingScopes,
     maxRunMinutes: fallback.maxRunMinutes,
     keepRuns: fallback.keepRuns
@@ -102,6 +99,7 @@ export interface ProactiveOrigin {
 
 export type ProactiveRunOutcome =
   | 'running'
+  | 'skipped'
   | 'finished'
   | 'incomplete'
   | 'failed'
@@ -110,7 +108,8 @@ export type ProactiveRunOutcome =
   | 'interrupted'
 
 /** One run in the agent's history. `id` is the run session's id — the session
- *  itself may have been collected since (`keepRuns`). */
+ *  itself may have been collected since (`keepRuns`). A `skipped` or `failed`
+ *  slot never had a session. */
 export interface ProactiveRun {
   id: string
   startedAt: string
@@ -120,25 +119,8 @@ export interface ProactiveRun {
   proposed: string[]
   /** Scopes this run attached refs or notes to. */
   attached: string[]
-  deferred: number
   summary?: string
   error?: string
-}
-
-export interface ProactiveDeferral {
-  ref: string
-  until: string
-  reason: string
-  run: string
-  at: string
-}
-
-/** A ref whose scope the user deleted. It stays bound: the same ref does not
- *  raise the question again (§8, the leaning recorded there). */
-export interface ProactiveTombstone {
-  ref: string
-  scope: string
-  at: string
 }
 
 /** `<ws>/<agent>/proactive-state.json` — what the agent remembers between runs. */
@@ -148,18 +130,12 @@ export interface ProactiveState {
    *  `everyMinutes` after it. */
   lastRunAt?: string
   runs: ProactiveRun[]
-  deferrals: ProactiveDeferral[]
-  tombstones: ProactiveTombstone[]
 }
 
-export const emptyProactiveState = (): ProactiveState => ({ runs: [], deferrals: [], tombstones: [] })
+export const emptyProactiveState = (): ProactiveState => ({ runs: [] })
 
 /** History kept per agent. */
 export const PROACTIVE_RUNS_KEPT = 50
-/** Deferrals kept per agent; the oldest go first past this. */
-export const PROACTIVE_DEFERRALS_KEPT = 5000
-/** Tombstones kept per agent; the oldest go first past this. */
-export const PROACTIVE_TOMBSTONES_KEPT = 5000
 
 /** What the renderer's mode reads for one agent. */
 export interface ProactiveAgentView {
@@ -217,7 +193,8 @@ export function nextRunDue(config: ProactiveConfig, state: Pick<ProactiveState, 
   return Number.isFinite(last) ? last + config.everyMinutes * 60_000 : 0
 }
 
-/** A scope is pending while the user has not acted on it: it has sessions and
- *  every one of them is still a draft. What `maxPendingScopes` counts. */
+/** A scope is pending ("waiting for you") while the user has not acted on it:
+ *  it has sessions and every one of them is still a draft. What
+ *  `maxPendingScopes` counts; any other raised scope is "in progress". */
 export const isPendingScope = (sessions: readonly Pick<SessionInfo, 'state'>[]): boolean =>
   sessions.length > 0 && sessions.every((s) => s.state === 'draft')

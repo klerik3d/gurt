@@ -479,7 +479,7 @@ export function createKernel(): Kernel {
 
     async deleteTask(ws: string, task: string): Promise<void> {
       // First, while its sessions still exist: an agent's run in progress ends
-      // as cancelled, a raised scope leaves its refs behind as tombstones.
+      // as cancelled, a raised scope frees its refs.
       await proactive.onScopeDeleted(ws, task)
       await terminals.withScopeBlocked(ws, task, async () => {
         await containers.teardownTask(ws, task)
