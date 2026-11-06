@@ -141,8 +141,10 @@ const SAFE_ARGS = new Set([
   'removeSkill',
   'skillUsedBy',
   'setDefaultSkills',
-  // A workspace and an env name — the operator-env pointer, not a config body.
-  'setOperatorEnv',
+  // A workspace and an env name, or an image reference — pointers, not config bodies.
+  'setDefaultEnv',
+  'getBaseImage',
+  'setBaseImage',
   // A workspace and an entry id — the package it reinstalls is read from the
   // registry, not passed in.
   'reinstallMcpServer',

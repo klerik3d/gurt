@@ -121,6 +121,7 @@ export function createAdminSurface(kernel: Kernel): AdminSurface {
     getMcpServers: (w) => store.getMcpServers(w),
     getSkills: (w) => store.getSkills(w),
     getSkillDoc: (w, name) => store.getSkillDoc(w, name),
+    getBaseImage: () => store.getBaseImage(),
     skillUsedBy: (w, name) => store.tasksUsingSkill(w, name),
     // §3.2 narrowing 4 (§6's rule, applied where the schema cannot carry it):
     // an http entry may be probed by value, unsaved — probing one is an HTTP

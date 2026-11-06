@@ -3,7 +3,7 @@
 // domain-shaped lives in kernel.ts and below.
 import { app, BrowserWindow, clipboard, ipcMain, shell } from 'electron'
 import { API_METHODS, type GurtApi } from '../shared/api'
-import { defaultEnvName, isSessionRole, targetKey } from '../shared/types'
+import { defaultEnvName, isSessionRole } from '../shared/types'
 import { MCP_DEFS } from '../shared/mcp'
 import { createKernel } from './kernel'
 import { POLL_INTERVAL_MS } from './planUsage'

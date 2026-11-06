@@ -95,7 +95,7 @@ await openSettings('Environments')
 await page.click('.set-head .btn-primary') // + New environment
 await page.waitForSelector('.modal input[placeholder="web-app"]', { timeout: 5000 })
 await page.fill('.modal input[placeholder="web-app"]', 'dev')
-await page.fill('.modal .jsoned textarea', '{"image":"x"}')
+await page.fill('.modal input[placeholder="node:22-trixie"]', 'x')
 await page.click('.modal-foot .btn-primary') // Save
 await page.waitForSelector('.modal', { state: 'detached', timeout: 5000 })
 await page.waitForSelector('.set-row-label:has-text("dev")', { timeout: 5000 })

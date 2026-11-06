@@ -122,13 +122,13 @@ try {
   assert.match(repoText, /an operator holds none/, 'the disabled row says why')
   console.log('operator: repo picker disabled OK')
 
-  // --- the env defaulted to the bundled operator env ---
+  // --- the env defaulted to the base image env ---
   assert.equal(await envValue(), 'base', 'env defaults to the base image')
   console.log('operator: base env default OK')
 
   // --- zero repos persisted; Run not blocked on a repository ---
   const rec = await persisted(
-    (r) => r.info.role === 'operator' && r.info.env === 'operator',
+    (r) => r.info.role === 'operator' && r.info.env === 'base',
     'the operator draft'
   )
   assert.deepEqual(rec.info.repos, [], 'zero repos on disk — the definition, not a default')
