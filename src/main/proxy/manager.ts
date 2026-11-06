@@ -30,7 +30,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { run, type LogSink } from '../provision'
 import { createLogger } from '../log'
-import { gurtRoot } from '../store'
+import { gurtRoot } from '../paths'
 import {
   PROXY_ALIAS,
   PROXY_CONFIG_TARGET,

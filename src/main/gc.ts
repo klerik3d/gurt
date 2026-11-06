@@ -17,7 +17,7 @@ import type { ContainerManager } from './containers'
 import { envBuildInFlight, run } from './provision'
 import { createLogger } from './log'
 import * as store from './store'
-import { gurtRoot } from './store'
+import { gurtRoot } from './paths'
 import { type GcResult, type GcSettings } from '../shared/gc'
 
 const log = createLogger('gc')

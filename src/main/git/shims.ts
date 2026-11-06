@@ -7,7 +7,7 @@
 // and no launcher to put them on its PATH (docs/requirements-mcp-proxy.md §10).
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
-import { gurtRoot } from '../store'
+import { gurtRoot } from '../paths'
 
 /**
  * Host git credential helper (§8): a pure HTTP forwarder to the host-local

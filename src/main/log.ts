@@ -14,7 +14,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { createRequire } from 'node:module'
-import { gurtRoot } from './root'
+import { gurtRoot } from './paths'
 import { REDACTED, deniedKey, redact } from './redact'
 
 // Redaction itself (the registered-value set, `redact`, the key deny-list)
@@ -843,9 +843,7 @@ function scopeName(scope: string, fallback = 'app'): string {
  * A logger for one subsystem. The level check happens before ctx is touched, so
  * a disabled DBG call costs one comparison and never serializes anything.
  *
- * The scope is resolved once, here. `scopeName`'s `sanitize()` reads state owned
- * by `redact.ts`, which this module imports and which imports nothing itself,
- * so that state is initialized before any caller can reach `createLogger`.
+ * The scope is sanitized and resolved once when the logger is created.
  */
 export function createLogger(scope: string): Logger {
   const s = scopeName(scope)

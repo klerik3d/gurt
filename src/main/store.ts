@@ -46,7 +46,7 @@ import { HOTKEY_DEFAULTS, sanitizeHotkeys } from '../shared/hotkeys'
 import type { ProactiveState } from '../shared/proactive'
 import { emptyProactiveState, sanitizeProactiveConfig } from '../shared/proactive'
 import { createLogger } from './log'
-import { gurtRoot } from './root'
+import { gurtRoot } from './paths'
 
 const pexecFile = promisify(execFile)
 
