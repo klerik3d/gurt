@@ -39,7 +39,7 @@ import path from 'node:path'
 import type { McpLocalEntry, McpNpmEntry } from '../../shared/mcp'
 import { mcpLiteralEnv, npmPackageSpec } from '../../shared/mcp'
 import { hostPath, resolveHostCommand } from '../hostPath'
-import { gurtRoot } from '../store'
+import { gurtRoot } from '../paths'
 import { lineBuffer } from '../provision'
 import { createLogger } from '../log'
 

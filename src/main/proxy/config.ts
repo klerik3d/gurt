@@ -36,7 +36,8 @@ import {
   type McpUpstream,
   type ProxyConfig
 } from '../../shared/proxy'
-import { getMcpServers, gurtRoot } from '../store'
+import { getMcpServers } from '../store'
+import { gurtRoot } from '../paths'
 import { listCredentials } from '../credentials'
 import { freshenOAuthCredentials } from '../oauth'
 
