@@ -39,7 +39,7 @@ const names = (text) => NAMES.test(text) || isPi(text)
  */
 const ALLOWED = [
   {
-    file: 'src/renderer/src/components/SettingsPage.tsx',
+    file: 'src/renderer/src/components/settings/SkillsSection.tsx',
     fragment: "own .claude/skills is the repository",
     reason:
       'UI prose, not a branch: a repository may carry its own skills in the convention SKILL.md comes from, ' +
@@ -48,7 +48,7 @@ const ALLOWED = [
   {
     file: 'src/renderer/src/components/ConfigTab.tsx',
     fragment: "own .claude/skills is the repo",
-    reason: 'The same note as in SettingsPage.tsx, where a session picks its skills.'
+    reason: 'The same note as in settings/SkillsSection.tsx, where a session picks its skills.'
   }
 ]
 
