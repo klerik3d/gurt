@@ -445,3 +445,20 @@ test('the proactive tool set', async () => {
     server.close()
   }
 })
+
+test('cron: validation, calendar slots, weekdays and missed runs', () => {
+  const local = (y, mo, d, h = 0, mi = 0) => new Date(y, mo - 1, d, h, mi).getTime()
+  assert.equal(m.cronError('*/15 9-17 * * 1-5'), undefined)
+  for (const invalid of ['* * *', '60 * * * *', '*/0 * * * *', '0 0 31 2 *', '0 24 * * *'])
+    assert.ok(m.cronError(invalid), invalid)
+  assert.equal(m.nextCronDue('*/15 * * * *', local(2026, 11, 6, 10, 15)), local(2026, 11, 6, 10, 30))
+  assert.equal(m.nextCronDue('0 9 * * 1-5', local(2026, 11, 6, 9)), local(2026, 11, 9, 9))
+  assert.equal(m.nextCronDue('0 0 29 2 *', local(2026, 1, 1)), local(2028, 2, 29))
+  assert.equal(m.nextCronDue('0 0 * * 7', local(2026, 11, 6)), local(2026, 11, 8))
+  assert.equal(m.nextCronDue('0 0 10 * 1', local(2026, 11, 6)), local(2026, 11, 9), 'restricted day fields use OR')
+  assert.equal(m.nextCronDue('0 0 */2 * 1', local(2026, 11, 6)), local(2026, 11, 9), 'wildcard day fields use AND')
+  const config = m.sanitizeProactiveConfig({ cron: ' 0 9 * * 1-5 ' })
+  assert.equal(config.cron, '0 9 * * 1-5')
+  assert.equal(m.sanitizeProactiveConfig({ cron: 'bad' }, config).cron, config.cron)
+  assert.equal(m.nextRunDue(config, { lastRunAt: new Date(local(2026, 11, 5, 9)).toISOString() }), local(2026, 11, 6, 9))
+})

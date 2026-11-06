@@ -523,7 +523,7 @@ export function createProactive(deps: ProactiveDeps): ProactiveManager {
           name: a.name,
           config: a.config,
           state: a.state,
-          ...(a.config.enabled ? { nextRunAt: new Date(Math.max(due, Date.now())).toISOString() } : {}),
+          ...(a.config.enabled && Number.isFinite(due) ? { nextRunAt: new Date(Math.max(due, Date.now())).toISOString() } : {}),
           ...(a.active ? { activeRun: a.active.id } : {}),
           sessions: sessions.listForTask(ws, a.name)
         })
