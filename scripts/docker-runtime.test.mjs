@@ -140,33 +140,48 @@ test('mountArg CSV-quotes a path holding a comma or a quote', () => {
 
 // --- layouts per session shape --------------------------------------------------
 
-const info = (role, repos) => ({ id: 's1', workspace: 'ws', task: 'task', env: 'dev', role, repos })
+const info = (role, repos, repoModes) => ({
+  id: 's1',
+  workspace: 'ws',
+  task: 'task',
+  env: 'dev',
+  role,
+  repos,
+  ...(repoModes ? { repoModes } : {})
+})
 
 test('layout: single read-write clone → /workspaces/<repo>, workdir is the clone', () => {
-  const l = m.containerLayout(info('executor', ['alpha']), [{ name: 'alpha', dir: '/h/alpha' }], false)
+  const l = m.containerLayout(info('executor', ['alpha'], { alpha: 'write' }), [{ name: 'alpha', dir: '/h/alpha' }])
   assert.deepEqual(l.mounts, [{ type: 'bind', source: '/h/alpha', target: '/workspaces/alpha' }])
   assert.equal(l.workdir, '/workspaces/alpha')
 })
 
-test('layout: mounted sessions → /workspaces/<name>, readonly per role', () => {
-  const one = m.containerLayout(info('researcher', ['a']), [{ name: 'a', dir: '/h/a' }], true)
+test('layout: mounted sessions → /workspaces/<name>, readonly per repo mode', () => {
+  const one = m.containerLayout(info('researcher', ['a'], { a: 'read-locked' }), [{ name: 'a', dir: '/h/a' }])
   assert.deepEqual(one.mounts, [{ type: 'bind', source: '/h/a', target: '/workspaces/a', readonly: true }])
   assert.equal(one.workdir, '/workspaces/a')
-  // a reviewer is read-only by role but its mount stays writable (readonly=false)
-  const rev = m.containerLayout(info('reviewer', ['a']), [{ name: 'a', dir: '/h/a' }], false)
-  assert.equal(rev.mounts[0].readonly, undefined)
+  // the role says nothing about the mount: a researcher may write
+  const rw = m.containerLayout(info('researcher', ['a'], { a: 'write' }), [{ name: 'a', dir: '/h/a' }])
+  assert.equal(rw.mounts[0].readonly, undefined)
+  // a mix: each bind carries its own mode
   const multi = m.containerLayout(
-    info('executor', ['a', 'b']),
-    [{ name: 'a', dir: '/h/a' }, { name: 'b', dir: '/h/b' }],
-    false
+    info('executor', ['a', 'b', 'c'], { a: 'write', b: 'read-locked', c: 'read' }),
+    [{ name: 'a', dir: '/h/a' }, { name: 'b', dir: '/h/b' }, { name: 'c', dir: '/h/c' }]
   )
-  assert.deepEqual(multi.mounts.map((x) => x.target), ['/workspaces/a', '/workspaces/b'])
+  assert.deepEqual(multi.mounts.map((x) => [x.target, !!x.readonly]), [
+    ['/workspaces/a', false],
+    ['/workspaces/b', true],
+    ['/workspaces/c', true]
+  ])
   assert.equal(multi.workdir, '/workspaces')
+  // a proactive run reads, whatever its record says
+  const pro = m.containerLayout(info('proactive', ['a'], { a: 'write' }), [{ name: 'a', dir: '/h/a' }])
+  assert.equal(pro.mounts[0].readonly, true)
   // repo-less operator: no repo mounts, workdir is the (created) parent
-  const op = m.containerLayout(info('operator', []), [], false)
+  const op = m.containerLayout(info('operator', []), [])
   assert.deepEqual(op.mounts, [])
   assert.equal(op.workdir, '/workspaces')
-  assert.throws(() => m.containerLayout(info('executor', ['a']), [], false), /no repository/)
+  assert.throws(() => m.containerLayout(info('executor', ['a']), []), /no repository/)
 })
 
 test('layout: skills read-only and history read-write binds land at their own targets', () => {
@@ -175,7 +190,7 @@ test('layout: skills read-only and history read-write binds land at their own ta
     { hostDir: '/h/skills', target: m.SKILLS_MOUNT, readonly: true },
     ...m.historyHostMounts('ws', 'task', 's1', claude.historyPaths)
   ]
-  const l = m.containerLayout(info('executor', ['a']), [{ name: 'a', dir: '/h/a' }], false, extra)
+  const l = m.containerLayout(info('executor', ['a'], { a: 'write' }), [{ name: 'a', dir: '/h/a' }], extra)
   assert.deepEqual(l.mounts.slice(1).map((x) => [x.target, !!x.readonly]), [
     ['/gurt/skills', true],
     ['/gurt/history', false]
@@ -188,9 +203,8 @@ test('a mounted session mounts only its clone dirs — no wrapper dir, no ~/.gur
   const a = bindDir('a')
   const b = bindDir('b')
   const { mounts, workdir } = m.containerLayout(
-    info('executor', ['a', 'b']),
-    [{ name: 'a', dir: a }, { name: 'b', dir: b }],
-    false
+    info('executor', ['a', 'b'], { a: 'write', b: 'write' }),
+    [{ name: 'a', dir: a }, { name: 'b', dir: b }]
   )
   await m.createContainer(spec({ workdir, mounts }), noop)
   const sources = createMounts().map((x) => /source=([^,]+)/.exec(x)[1])

@@ -14,6 +14,12 @@ narrower thing than the multi-repo fan-out sketched in
 `design-orchestration.md` (a parent task spawning N independent per-repo
 sessions): here it is one session, one container, several repos.
 
+> **Superseded in part** by `requirements-repo-mounts.md`: more than one
+> repo is no longer a researcher-only shape, and read/write is no longer
+> decided by repo count or role — every repo carries its own mount mode, and
+> several repos may be written at once (a readers–writer lock per clone,
+> claimed all-or-nothing).
+
 > **Superseded in part** by `requirements-mcp-proxy.md` §10: the
 > container-side git credential broker (`src/main/git/broker.ts`), the
 > container shims, ssh git support and the `gitAccess` session flag are

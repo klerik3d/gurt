@@ -131,7 +131,8 @@ export function createNotifications(
   bus.on('session.proposal', ({ sessionId, ref, proposal }) => {
     if (turnOutcome.get(sessionId) === 'error') return // error already claimed this turn
     if (turnOpen.has(sessionId)) turnOutcome.set(sessionId, 'proposal')
-    const subject = proposal.commit?.subject
+    // A session writing several repos may carry only per-repo commits.
+    const subject = proposal.commit?.subject ?? proposal.repos?.[0]?.commit.subject
     push('proposal', sessionId, ref, subject ? `ready to review — ${subject}` : 'ready to review')
   })
 

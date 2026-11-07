@@ -115,15 +115,16 @@ try {
   await shot('01-operator')
   console.log('operator: selectable in the role picker OK')
 
-  // --- the repository picker is disabled and holds nothing ---
-  const repoRow = `.ns-body .seclabel-row:has(.seclabel:text-is("REPOSITORY")) + .pick-row`
-  await page.waitForSelector(`${repoRow}[disabled]`, { timeout: 5000 })
-  const repoText = (await page.locator(repoRow).innerText()).trim()
-  assert.match(repoText, /an operator holds none/, 'the disabled row says why')
-  console.log('operator: repo picker disabled OK')
+  // --- the repository picker stays offered: an operator may hold repos, it
+  // just needs none (docs/requirements-repo-mounts.md §4) ---
+  const repoRow = `.ns-body .seclabel-row:has(.seclabel:text-is("REPOSITORIES")) + .pick-wrap .pick-row`
+  await page.waitForSelector(repoRow, { timeout: 5000 })
+  assert.equal(await page.locator(repoRow).isDisabled(), false, 'the picker is live for an operator')
+  assert.equal(await page.locator('.ns-body .repo-mode-row').count(), 0, 'and holds nothing yet')
+  console.log('operator: repo picker offered, empty OK')
 
-  // --- the env defaulted to the base image env ---
-  assert.equal(await envValue(), 'base', 'env defaults to the base image')
+  // --- a fresh draft sits on the base image env; the role pick left it alone ---
+  assert.equal(await envValue(), 'base', 'env is the base image')
   console.log('operator: base env default OK')
 
   // --- zero repos persisted; Run not blocked on a repository ---
@@ -131,7 +132,7 @@ try {
     (r) => r.info.role === 'operator' && r.info.env === 'base',
     'the operator draft'
   )
-  assert.deepEqual(rec.info.repos, [], 'zero repos on disk — the definition, not a default')
+  assert.deepEqual(rec.info.repos, [], 'zero repos on disk — none picked, none needed')
   await page.click('.tab-btn:has-text("Chat")')
   await page.fill('.draft-prompt', 'why does my env not build?')
   // The draft pane's one launch button ("Run", which goes through the queue).

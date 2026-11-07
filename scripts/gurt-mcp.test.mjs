@@ -1,6 +1,7 @@
 // Pure-node test for the `gurt` host MCP server: the turn contract (§7.1 of
-// docs/requirements-turn-contract.md) and the per-role tool set (§5 of
-// docs/requirements-session-roles.md). No docker, no electron: it bundles the
+// docs/requirements-turn-contract.md), the per-role tool set (§4 of
+// docs/requirements-repo-mounts.md) and the mount table in the instructions.
+// No docker, no electron: it bundles the
 // server with esbuild and drives it over real HTTP with MCP JSON-RPC. Harness
 // style of scripts/session-log.test.mjs.
 //
@@ -19,7 +20,7 @@ const S = (rel) => JSON.stringify(path.join(ROOT, rel))
 
 await bundle({
   stdin: {
-    contents: `export { buildGurtHttpServer } from ${S('src/main/mcp/gurtServer.ts')}`,
+    contents: `export { buildGurtHttpServer, instructionsFor } from ${S('src/main/mcp/gurtServer.ts')}`,
     resolveDir: ROOT,
     loader: 'ts',
     sourcefile: 'entry.ts'
@@ -27,7 +28,7 @@ await bundle({
   outfile
 })
 
-const { buildGurtHttpServer } = await import(pathToFileURL(outfile).href)
+const { buildGurtHttpServer, instructionsFor } = await import(pathToFileURL(outfile).href)
 
 const TOKEN = 'test-token'
 /** Payloads the host callbacks received — the machine-readable outcomes. */
@@ -43,10 +44,15 @@ let draftResult = { sessionId: 'sess-1', title: 'fix review findings' }
  *  each is exactly what one session would be handed. */
 const servers = {}
 const ports = {}
-for (const role of ['executor', 'researcher', 'reviewer']) {
+for (const role of ['executor', 'researcher', 'inspector']) {
   const server = buildGurtHttpServer(TOKEN, {
     role,
-    onComplete: (p) => received.push(p),
+    // Stands in for the session manager's host-side rule: a repo it does not
+    // write is refused by throwing, which the tool turns into `isError`.
+    onComplete: (p) => {
+      if (p.repos?.some((r) => r.repo === 'nope')) throw new Error('repo "nope" is not mounted for write')
+      received.push(p)
+    },
     onCreateSession: async (req) => {
       drafted.push({ role, req })
       if (draftResult instanceof Error) throw draftResult
@@ -109,7 +115,7 @@ test('tools/list', async () => {
   assert.equal(schema.additionalProperties, false, 'input schema rejects unknown keys')
   assert.deepEqual(
     Object.keys(schema.properties).sort(),
-    ['commit', 'notes', 'outcome', 'pr', 'reason', 'version'],
+    ['commit', 'notes', 'outcome', 'pr', 'reason', 'repos', 'version'],
     'input schema advertises the proposal fields'
   )
 })
@@ -147,6 +153,37 @@ test('valid no_changes / blocked / changes+pr', async () => {
   )
 })
 
+// --- per-repo proposals (repo-mounts §3) ------------------------------------
+test('per-repo proposals', async () => {
+  const before = received.length
+  const ok = await complete({
+    version: 1,
+    outcome: 'changes',
+    repos: [
+      { repo: 'alpha', commit: { subject: 'alpha: do it' } },
+      { repo: 'beta', commit: { subject: 'beta: follow' }, pr: { title: 'beta pr' } }
+    ]
+  })
+  assert.equal(ok.isError, false, 'repos alone satisfy "changes"')
+  assert.equal(received.length, before + 1)
+  assert.deepEqual(received.at(-1).repos.map((r) => r.repo), ['alpha', 'beta'])
+  const both = await complete({
+    version: 1,
+    outcome: 'changes',
+    commit: { subject: 'shared' },
+    repos: [{ repo: 'alpha', commit: { subject: 'own' } }]
+  })
+  assert.equal(both.isError, false, 'a shared commit and per-repo entries may go together')
+  const refused = await complete({
+    version: 1,
+    outcome: 'changes',
+    repos: [{ repo: 'nope', commit: { subject: 's' } }]
+  })
+  assert.equal(refused.isError, true, 'a host-side refusal is an isError result')
+  assert.match(refused.text, /not mounted for write/, 'carrying the host message')
+  assert.equal(received.length, before + 2, 'the refused call recorded nothing')
+})
+
 // --- invalid calls: isError, and the callback never fires -------------------
 test('invalid calls rejected, callback untouched', async () => {
   const guard = received.length
@@ -158,7 +195,10 @@ test('invalid calls rejected, callback untouched', async () => {
     ['unknown top-level key', { version: 1, outcome: 'no_changes', bogus: 1 }],
     ['wrong version literal', { version: 2, outcome: 'no_changes' }],
     ['multi-line subject', { version: 1, outcome: 'changes', commit: { subject: 'a\nb' } }],
-    ['over-long subject', { version: 1, outcome: 'changes', commit: { subject: 'x'.repeat(121) } }]
+    ['over-long subject', { version: 1, outcome: 'changes', commit: { subject: 'x'.repeat(121) } }],
+    ['repos outside changes', { version: 1, outcome: 'no_changes', repos: [{ repo: 'a', commit: { subject: 's' } }] }],
+    ['empty repos', { version: 1, outcome: 'changes', repos: [] }],
+    ['repo entry without commit', { version: 1, outcome: 'changes', repos: [{ repo: 'a' }] }]
   ]
   for (const [label, args] of rejects) {
     const r = await complete(args)
@@ -167,7 +207,7 @@ test('invalid calls rejected, callback untouched', async () => {
   assert.equal(received.length, guard, 'no rejected call reached the host callback')
 })
 
-// --- per-role tool sets (roles doc §5) --------------------------------------
+// --- per-role tool sets (repo-mounts §4) ------------------------------------
 test('per-role tool sets', async () => {
   const researcherTools = await tools('researcher')
   assert.deepEqual(
@@ -175,57 +215,62 @@ test('per-role tool sets', async () => {
     ['create_session'],
     'a researcher gets create_session and NO complete'
   )
-  const reviewerTools = await tools('reviewer')
-  assert.deepEqual(
-    Object.keys(reviewerTools),
-    ['create_session'],
-    'a reviewer gets create_session and NO complete'
-  )
-  // The offered `role` is narrowed per spawner: a reviewer may only draft the
-  // executor that fixes its findings, so the schema itself says so.
+  // No admin hooks wired here: an inspector's server is create_session alone.
+  const inspectorTools = await tools('inspector')
+  assert.deepEqual(Object.keys(inspectorTools), ['create_session'], 'an inspector gets create_session and NO complete')
+  // The offered `role` is narrowed per spawner, in the schema itself.
   assert.deepEqual(
     researcherTools.create_session.inputSchema.properties.role.enum,
-    ['executor', 'reviewer'],
-    'a researcher may draft executors and reviewers'
+    ['executor', 'researcher'],
+    'a researcher may draft executors and researchers'
   )
   assert.deepEqual(
-    reviewerTools.create_session.inputSchema.properties.role.enum,
-    ['executor'],
-    'a reviewer may draft executors only'
+    inspectorTools.create_session.inputSchema.properties.role.enum,
+    ['operator'],
+    'an inspector may draft the operator only'
   )
-  // Cross-task drafting is researcher-only, and the schema itself says so: a
-  // reviewer's tool cannot even express a `task`.
-  assert.ok(
-    'task' in researcherTools.create_session.inputSchema.properties,
-    'a researcher may aim a draft at another task'
-  )
-  assert.ok(
-    !('task' in reviewerTools.create_session.inputSchema.properties),
-    'a reviewer has no `task` field at all'
-  )
-  // The env rule is carried by the schema, not by a warning the agent has to
-  // remember: `env` says out loud that omitting it takes the *repo's* default,
-  // and the only way to name another container is a second, explicit field.
-  for (const [role, tools] of Object.entries({
-    researcher: researcherTools,
-    reviewer: reviewerTools
-  })) {
-    const props = tools.create_session.inputSchema.properties
+  for (const [role, t] of Object.entries({ researcher: researcherTools, inspector: inspectorTools })) {
+    const props = t.create_session.inputSchema.properties
+    assert.ok('task' in props, `${role} may aim a draft at another task`)
+    // Repos come with their mode, and the mode is required: the agent states
+    // how each repo is mounted, the way a user does.
+    const item = props.repos.items
+    assert.deepEqual(Object.keys(item.properties).sort(), ['mode', 'name'], `${role}: repos are { name, mode }`)
+    assert.deepEqual(item.required.sort(), ['mode', 'name'], `${role}: both required`)
+    assert.deepEqual(item.properties.mode.enum, ['write', 'read-locked', 'read'], `${role}: the three modes`)
+    // The env rule is carried by the schema, not by a warning the agent has
+    // to remember.
     assert.match(
       props.env.description,
       /target repo's own default environment/,
       `${role}: \`env\` documents the repo-based default, not the caller's env`
     )
-    assert.equal(
-      props.confirmNonDefaultEnv.type,
-      'boolean',
-      `${role}: a non-default container takes an explicit confirmation`
-    )
+    assert.equal(props.confirmNonDefaultEnv.type, 'boolean', `${role}: a non-default container takes an explicit confirmation`)
     assert.ok(
-      !(tools.create_session.inputSchema.required ?? []).includes('confirmNonDefaultEnv'),
+      !(t.create_session.inputSchema.required ?? []).includes('confirmNonDefaultEnv'),
       `${role}: which is optional — the common case names no env at all`
     )
   }
+})
+
+// --- the mount table rides the instructions ---------------------------------
+test('instructions state each repo and its mode', () => {
+  const text = instructionsFor('executor', [
+    { repo: 'alpha', mode: 'write' },
+    { repo: 'beta', mode: 'read-locked' },
+    { repo: 'gamma', mode: 'read' }
+  ])
+  assert.match(text, /\/workspaces\/alpha — writable/)
+  assert.match(text, /\/workspaces\/beta — read-only — the working tree does not move/)
+  assert.match(text, /\/workspaces\/gamma — read-only — other sessions may change it/)
+  assert.doesNotMatch(text, /`repos`/, 'one writable repo: no per-repo rule to explain')
+  const multi = instructionsFor('executor', [
+    { repo: 'alpha', mode: 'write' },
+    { repo: 'beta', mode: 'write' }
+  ])
+  assert.match(multi, /its own commit in\n`complete`'s `repos`/, 'several writable repos: the per-repo rule is stated')
+  assert.match(instructionsFor('researcher', []), /No repository is mounted/)
+  assert.doesNotMatch(instructionsFor('researcher', []), /mounted read-only and you/, 'the role text claims nothing about mounts')
 })
 
 // --- create_session: valid call reaches the host, result names the draft ----
@@ -233,37 +278,32 @@ test('create_session', async () => {
   const draftedBefore = drafted.length
   const spawn = await call(
     'create_session',
-    { role: 'executor', repos: ['alpha'], prompt: 'fix the findings below', title: 'fixer' },
-    'reviewer'
+    { role: 'researcher', repos: [{ name: 'alpha', mode: 'read-locked' }], prompt: 'review the changes', title: 'review' },
+    'researcher'
   )
   assert.equal(spawn.isError, false, 'valid create_session is not an error')
   assert.equal(drafted.length, draftedBefore + 1, 'it reached the host exactly once')
   assert.deepEqual(drafted[drafted.length - 1].req, {
-    role: 'executor',
+    role: 'researcher',
     repos: ['alpha'],
-    prompt: 'fix the findings below',
-    title: 'fixer'
-  })
+    repoModes: { alpha: 'read-locked' },
+    prompt: 'review the changes',
+    title: 'review'
+  }, 'the { name, mode } list reaches the host as names + modes')
   assert.match(spawn.text, /sess-1/, 'the result carries the draft id')
   assert.match(spawn.text, /launch/, 'the result says the user still has to launch it')
 
-  // A researcher aiming the draft at another task: the name reaches the host
-  // verbatim and the result names the destination.
   const crossSpawn = await call(
     'create_session',
-    { role: 'executor', repos: ['alpha'], prompt: 'p', task: 'spinoff' },
+    { role: 'executor', repos: [{ name: 'alpha', mode: 'write' }, { name: 'beta', mode: 'write' }], prompt: 'p', task: 'spinoff' },
     'researcher'
   )
-  assert.equal(crossSpawn.isError, false, 'a researcher cross-task spawn is not an error')
+  assert.equal(crossSpawn.isError, false, 'a cross-task spawn of several repos is not an error')
   assert.equal(drafted[drafted.length - 1].req.task, 'spinoff', 'the task name reaches the host')
   assert.match(crossSpawn.text, /in task "spinoff"/, 'the result names the target task')
-  // The reviewer's schema has no `task`, so the same call is a schema error.
-  const reviewerCross = await call(
-    'create_session',
-    { role: 'executor', repos: ['alpha'], prompt: 'p', task: 'spinoff' },
-    'reviewer'
-  )
-  assert.equal(reviewerCross.isError, true, 'a reviewer cannot express a cross-task draft')
+
+  const op = await call('create_session', { role: 'operator', repos: [], prompt: 'add the env' }, 'inspector')
+  assert.equal(op.isError, false, 'an inspector drafts a repo-less operator')
 })
 
 // --- create_session rejections ---------------------------------------------
@@ -271,12 +311,14 @@ test('tool gating per role', async () => {
   const spawnGuard = drafted.length
   /** @type {[label: string, args: object, role: string][]} */
   const badSpawns = [
-    ['role a reviewer may not draft', { role: 'reviewer', repos: ['a'], prompt: 'p' }, 'reviewer'],
-    ['role no one may draft', { role: 'researcher', repos: ['a'], prompt: 'p' }, 'researcher'],
-    ['no repo', { role: 'executor', repos: [], prompt: 'p' }, 'researcher'],
-    ['two repos', { role: 'executor', repos: ['a', 'b'], prompt: 'p' }, 'researcher'],
-    ['empty prompt', { role: 'executor', repos: ['a'], prompt: '' }, 'researcher'],
-    ['unknown key', { role: 'executor', repos: ['a'], prompt: 'p', bogus: 1 }, 'researcher']
+    ['role an inspector may not draft', { role: 'executor', repos: [], prompt: 'p' }, 'inspector'],
+    ['role a researcher may not draft', { role: 'operator', repos: [], prompt: 'p' }, 'researcher'],
+    ['the reviewer is gone', { role: 'reviewer', repos: [], prompt: 'p' }, 'researcher'],
+    ['a repo without a mode', { role: 'executor', repos: [{ name: 'a' }], prompt: 'p' }, 'researcher'],
+    ['a bare repo name', { role: 'executor', repos: ['a'], prompt: 'p' }, 'researcher'],
+    ['an unknown mode', { role: 'executor', repos: [{ name: 'a', mode: 'rw' }], prompt: 'p' }, 'researcher'],
+    ['empty prompt', { role: 'executor', repos: [], prompt: '' }, 'researcher'],
+    ['unknown key', { role: 'executor', repos: [], prompt: 'p', bogus: 1 }, 'researcher']
   ]
   for (const [label, args, role] of badSpawns) {
     const r = await call('create_session', args, role)
@@ -289,7 +331,7 @@ test('tool gating per role', async () => {
   draftResult = new Error('repo "nope" is not registered in "w"')
   const hostReject = await call(
     'create_session',
-    { role: 'executor', repos: ['nope'], prompt: 'p' },
+    { role: 'executor', repos: [{ name: 'nope', mode: 'write' }], prompt: 'p' },
     'researcher'
   )
   assert.equal(hostReject.isError, true, 'a host-side rejection is an isError result')
@@ -298,7 +340,7 @@ test('tool gating per role', async () => {
 
   // The executor has no create_session at all — calling it is an error, and it
   // never reaches the host.
-  const notOffered = await call('create_session', { role: 'executor', repos: ['a'], prompt: 'p' })
+  const notOffered = await call('create_session', { role: 'executor', repos: [], prompt: 'p' })
   assert.equal(notOffered.isError, true, 'an executor cannot spawn')
   // …and neither role without the contract can report a proposal.
   const noComplete = await call('complete', { version: 1, outcome: 'no_changes' }, 'researcher')

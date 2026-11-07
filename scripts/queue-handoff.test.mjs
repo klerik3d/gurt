@@ -116,7 +116,7 @@ kernel.containers.stop = async (id, reason) => {
 // --- 1. a queue item arriving behind an idle environment frees it now ---
 test('enqueue frees an idle environment and the queue advances', async () => {
   up()
-  const first = kernel.sessions.createSession(ref, ['alpha'], 'a1', 'hi', 'queue')
+  const first = kernel.sessions.createSession(ref, ['alpha'], 'a1', 'hi', 'queue', [], true, {}, 'executor', undefined, undefined, Object.fromEntries(['alpha'].map((r) => [r, 'write'])))
   await tick()
   assert.deepEqual(
     stops,
@@ -143,7 +143,7 @@ test('turn end frees an idle environment and the queue advances', async () => {
     remoteWorkspaceFolder: '/app',
     repos: ['alpha']
   })
-  const second = kernel.sessions.createSession(ref, ['alpha'], 'a1', 'hi', 'queue')
+  const second = kernel.sessions.createSession(ref, ['alpha'], 'a1', 'hi', 'queue', [], true, {}, 'executor', undefined, undefined, Object.fromEntries(['alpha'].map((r) => [r, 'write'])))
   await tick()
   assert.equal(stops.length, 0, 'a container mid-provision is never reaped')
   assert.equal(
@@ -186,7 +186,7 @@ test('a failed handoff falls back to the idle policy', async () => {
     throw new Error('docker daemon is not running')
   }
   up()
-  const third = kernel.sessions.createSession(ref, ['alpha'], 'a1', 'hi', 'queue')
+  const third = kernel.sessions.createSession(ref, ['alpha'], 'a1', 'hi', 'queue', [], true, {}, 'executor', undefined, undefined, Object.fromEntries(['alpha'].map((r) => [r, 'write'])))
   await tick()
   assert.deepEqual(stops, [{ id: holder, reason: 'queue' }], 'the handoff tried to stop it')
   assert.equal(containerStatus(), 'running', 'a failed stop leaves the container up')

@@ -25,20 +25,24 @@ import type {
   SessionLogRecord,
   SessionMode,
   SessionModes,
+  RepoMode,
   SessionRole,
   SessionSnapshot,
   StoredProposal
 } from '../shared/types'
 import {
+  anchorRepo,
   applyLog,
-  roleAllowsMultiRepo,
-  roleForbidsRepo,
+  missingRepoReason,
+  normalizeRepoModes,
+  repoMode,
+  roleDraftsCrossTask,
   roleHasTurnContract,
-  roleLocksClone,
-  roleNeedsRepo,
+  roleReadsAdmin,
   sanitizeSessionNetwork,
   sessionRole,
-  spawnableRoles
+  spawnableRoles,
+  writeRepos
 } from '../shared/types'
 import { defaultAgentConfig } from '../shared/agentConfig'
 import type { AgentManifest } from '../shared/agentPlugin'
@@ -321,6 +325,15 @@ export function limitBackoffMs(strikes: number): number {
  * undefined` when the adapter goes away, `s.startError = undefined` at the next
  * start. "Present and unset" is the state being modelled here, not "missing".
  */
+/** One clone a session claims (see `SessionManager.claims`). */
+interface Claim {
+  /** `<ws>/<task>/<repo>` — the clone, shared by the task's sessions. */
+  key: string
+  repo: string
+  /** A `write` mount; a `read-locked` one claims shared. */
+  exclusive: boolean
+}
+
 interface Session {
   info: SessionInfo
   ref: EnvRef
@@ -421,16 +434,19 @@ export interface SessionEvents {
   /** Ensure the per-session `gurt` server is up; return its ACP descriptor.
    *  Attached to every session unconditionally — its tool set follows the
    *  session's role (`complete` for an executor, `create_session` for the
-   *  roles that fan out; see docs/requirements-session-roles.md §5). */
+   *  roles that fan out; see docs/requirements-repo-mounts.md §4), and its
+   *  instructions carry the session's mount table. */
   resolveGurtServer: (
     ref: EnvRef,
     sessionId: string,
     hooks: {
       role: SessionRole
+      mounts: { repo: string; mode: RepoMode }[]
       onComplete: (p: ChangeProposal) => void
       onCreateSession: (req: AgentSessionRequest) => Promise<{ sessionId: string; title: string }>
-      /** Present only for an operator session — routes its admin tools into
-       *  the ws-bound admin surface (docs/requirements-session-operator.md §3). */
+      /** Present only for an inspector or operator session — routes its admin
+       *  tools into the ws-bound admin surface
+       *  (docs/requirements-session-operator.md §3). */
       admin?: AdminHooks
       /** Present only for a proactive run (docs/design-proactive-agents.md §4). */
       proactive?: ProactiveHooks
@@ -459,6 +475,9 @@ export interface SessionEvents {
   /** Workspace's default agent (an `AgentsFile` key), used to resolve a
    *  `create_session` request that names none — see `createAgentDraft`. */
   defaultAgentForWorkspace: (ws: string) => Promise<string | undefined>
+  /** Workspace's default env (`defaultEnvName`) — where a drafted session with
+   *  no repo to follow runs (`resolveDraftEnv`). */
+  defaultEnvForWorkspace: (ws: string) => Promise<string>
   /** Is the plan these agent instances share at its limit (`planHold` over
    *  their cached usage, at the configured threshold)? Synchronous: the
    *  scheduler asks on every pass. */
@@ -551,22 +570,32 @@ export interface PreparedDraft {
 }
 
 /**
- * The structural rules a role puts on the repo list: more than one repo is a
- * researcher-only shape (docs/requirements-session-roles.md §2 — the former
- * discovery session *is* that role), and an operator holds exactly zero
- * (docs/requirements-session-operator.md §2.1 — zero is its definition, not a
- * default). Pure and unit-tested; the messages it throws are what the modal,
- * the IPC boundary and the `create_session` tool all surface.
+ * The host-side rules of a `complete` call that its schema cannot carry
+ * (docs/requirements-repo-mounts.md §3): every per-repo entry names one of the
+ * session's `write` repos, at most once. Pure and unit-tested; the message is
+ * what the agent gets back as an `isError` result.
  */
-export function assertRoleFitsRepos(role: SessionRole, repos: string[]): void {
-  if (repos.length > 1 && !roleAllowsMultiRepo(role))
-    throw new Error(
-      `a ${role} session takes a single repository — only a researcher may hold more than one`
-    )
-  if (repos.length > 0 && roleForbidsRepo(role))
-    throw new Error(
-      `an ${role} session holds no repository at all — its subject is gurt's configuration, not a clone`
-    )
+export function assertProposalFits(writes: readonly string[], p: ChangeProposal): void {
+  const seen = new Set<string>()
+  for (const { repo } of p.repos ?? []) {
+    if (!writes.includes(repo))
+      throw new Error(
+        writes.length
+          ? `repo "${repo}" is not mounted for write in this session — propose only for: ${writes.join(', ')}`
+          : `repo "${repo}" is not mounted for write in this session — it writes no repository`
+      )
+    if (seen.has(repo)) throw new Error(`repo "${repo}" is named twice in \`repos\``)
+    seen.add(repo)
+  }
+}
+
+/** One repo's view of a stored proposal: its own `repos` entry when it has one,
+ *  else the shared commit/pr; undefined when neither applies. */
+export function proposalForRepo(p: StoredProposal, repo: string): StoredProposal | undefined {
+  const own = p.repos?.find((r) => r.repo === repo)
+  const { repos: _repos, ...shared } = p
+  if (own) return { ...shared, commit: own.commit, pr: own.pr }
+  return shared.commit ? shared : undefined
 }
 
 /** True when `title` is still the auto-generated default for `role` — the
@@ -604,7 +633,7 @@ interface TurnResult {
  * non-`end_turn` stop never nudges.
  *
  * `hasContract` is false for the roles that are not offered `complete` at all
- * (researcher, reviewer): nudging them would demand a tool their `gurt` server
+ * (researcher, inspector, operator): nudging them would demand a tool their `gurt` server
  * does not expose, so their turns simply end.
  */
 export function postTurnDecision(o: {
@@ -877,9 +906,9 @@ export class SessionManager {
     if (!s.pending.length || s.busy) return undefined
     const hold = s.info.state === 'started' ? this.limitHold(s) : undefined
     if (hold) return this.holdText(hold)
-    const holder = this.repoHolder(s)
-    if (!holder) return undefined
-    return `session "${holder.info.title}" has "${s.info.repos[0]}" — this sends as soon as it lets go`
+    const conflict = this.repoConflict(s)
+    if (!conflict) return undefined
+    return `session "${conflict.holder.info.title}" has "${conflict.repo}" — this sends as soon as it lets go`
   }
 
   /** What a queued session is waiting for, when the answer is not the generic
@@ -937,16 +966,19 @@ export class SessionManager {
      *  seeding keys on; `[]` = chosen to be none, which it must not overwrite
      *  (docs/requirements-skills.md §4.3). */
     skills: SkillSelection[] | undefined = undefined,
-    network?: SessionNetwork
+    network?: SessionNetwork,
+    /** How each repo is mounted; anything missing or invalid takes the default
+     *  (docs/requirements-repo-mounts.md §2). */
+    repoModes?: Partial<Record<string, unknown>>
   ): SessionInfo {
     const clean = sanitizeSessionNetwork(network)
-    // Gate 1 of four (docs/requirements-session-operator.md §2.1): a session
-    // cannot run or enqueue without a repo (the UI disables those, but the IPC
-    // boundary enforces it too) — unless its role never holds one. A draft
-    // with no repo is allowed for every role.
-    if ((action === 'run' || action === 'queue') && roleNeedsRepo(role) && !repos.length)
-      throw new Error('session has no repository')
-    assertRoleFitsRepos(role, repos)
+    const modes = normalizeRepoModes(repos, repoModes)
+    // Gate 1 of four (docs/requirements-repo-mounts.md §4): a session cannot
+    // run or enqueue without the repo its role needs — a `write` one for an
+    // executor (the UI disables those, but the IPC boundary enforces it too).
+    // A draft is allowed whatever it holds.
+    const missing = missingRepoReason({ role, repos, repoModes: modes })
+    if ((action === 'run' || action === 'queue') && missing) throw new Error(missing)
     // Named after the role, not a flat "session N" — the role is the one thing
     // every session now declares. First of its role in the task carries no
     // index; each further one counts up from there.
@@ -956,6 +988,7 @@ export class SessionManager {
       env: ref.env,
       role,
       repos,
+      repoModes: modes,
       task: ref.task,
       workspace: ref.workspace,
       title,
@@ -1036,8 +1069,8 @@ export class SessionManager {
     if (!s || s.info.state === 'starting' || s.info.state === 'started') return
     assertNotTemplate(s.info)
     // Gate 2 (see createSession's gate 1 for the rule).
-    if (roleNeedsRepo(sessionRole(s.info)) && !s.info.repos.length)
-      throw new Error('session has no repository')
+    const missing = missingRepoReason(s.info)
+    if (missing) throw new Error(missing)
     this.startNowOrQueue(sessionId)
   }
 
@@ -1046,8 +1079,8 @@ export class SessionManager {
     if (!s || s.info.state === 'starting' || s.info.state === 'started') return
     assertNotTemplate(s.info)
     // Gate 3 (see createSession's gate 1 for the rule).
-    if (roleNeedsRepo(sessionRole(s.info)) && !s.info.repos.length)
-      throw new Error('session has no repository')
+    const missing = missingRepoReason(s.info)
+    if (missing) throw new Error(missing)
     s.info.state = 'queued'
     s.info.queuedAt = new Date().toISOString()
     s.startError = undefined
@@ -1082,7 +1115,7 @@ export class SessionManager {
   /**
    * Edit a draft's settings before it starts. A draft has no env or connection
    * yet, so re-pointing its repo/agent/role is safe — the (env, agent) adapter
-   * is resolved only at start, and so are the role's mounts and locks. Only
+   * is resolved only at start, and so are the repos' mounts and locks. Only
    * supplied keys change; unknown ids and non-draft sessions are ignored (which
    * is what makes the role immutable for everything that has run).
    */
@@ -1093,6 +1126,7 @@ export class SessionManager {
       env?: string
       role?: SessionRole
       repos?: string[]
+      repoModes?: Record<string, RepoMode>
       autoAllow?: boolean
       mcp?: McpSelection[]
       skills?: SkillSelection[]
@@ -1103,10 +1137,6 @@ export class SessionManager {
   ): void {
     const s = this.sessions.get(sessionId)
     if (!s || s.info.state !== 'draft') return
-    // Validate the (role, repos) pair against whichever half the patch changes,
-    // before anything is written — a rejected edit must leave the draft intact.
-    const role = patch.role ?? sessionRole(s.info)
-    assertRoleFitsRepos(role, patch.repos ?? s.info.repos)
     if (patch.agent !== undefined) {
       // The agent pick is structural, full stop: the mount list depends on the
       // kind even with no skill selected, now that every kind carries its own
@@ -1138,18 +1168,29 @@ export class SessionManager {
     if (patch.configValues !== undefined)
       s.info.configValues = Object.keys(patch.configValues).length ? patch.configValues : undefined
     // absent leaves repos unchanged; never touches the env. Re-pointing repos,
-    // env or role releases the draft's container if a failed start left one —
-    // it was provisioned for the old target (the role decides whether the repos
-    // are mounted read-only, so it is as structural as the repo set itself).
-    if (
-      patch.repos !== undefined &&
-      (patch.repos.length !== s.info.repos.length ||
-        patch.repos.some((r, i) => r !== s.info.repos[i]))
-    ) {
-      void this.events.releaseContainer(s.info.id, 'user')
-      s.info.repos = patch.repos
+    // their modes, env or role releases the draft's container if a failed
+    // start left one — it was provisioned for the old target (a mode decides
+    // whether its bind is read-only, so it is as structural as the repo set
+    // itself, docs/requirements-repo-mounts.md §2). A repo the patch keeps
+    // keeps its mode unless the patch names a new one; a new repo without one
+    // takes the default.
+    if (patch.repos !== undefined || patch.repoModes !== undefined) {
+      const repos = patch.repos ?? s.info.repos
+      const modes = normalizeRepoModes(repos, {
+        ...Object.fromEntries(s.info.repos.map((r) => [r, repoMode(s.info, r)])),
+        ...patch.repoModes
+      })
+      const changed =
+        repos.length !== s.info.repos.length ||
+        repos.some((r, i) => r !== s.info.repos[i] || modes[r] !== repoMode(s.info, r))
+      if (changed) void this.events.releaseContainer(s.info.id, 'user')
+      s.info.repos = repos
+      s.info.repoModes = modes
     }
     if (patch.role !== undefined) {
+      // The role governs the tool set alone — never the repos, their modes or
+      // the env (§4) — but the proactive role reads every repo as `read`, so
+      // a change can still re-mount: release whatever a failed start left.
       const prevRole = sessionRole(s.info)
       if (patch.role !== prevRole) void this.events.releaseContainer(s.info.id, 'user')
       // The title still reads as the auto-generated default (e.g. "executor",
@@ -1265,7 +1306,8 @@ export class SessionManager {
       source.skills?.map((k) => ({ ...k })),
       // Through the sanitizer, which is also the deep copy: the two sessions
       // must not share a policy's domain array.
-      sanitizeSessionNetwork(source.network)
+      sanitizeSessionNetwork(source.network),
+      Object.fromEntries(source.repos.map((r) => [r, repoMode(source, r)]))
     )
   }
 
@@ -1320,9 +1362,15 @@ export class SessionManager {
     const queued = [...this.sessions.values()]
       .filter((s) => s.info.state === 'queued')
       .sort((a, b) => (a.info.queuedAt ?? '').localeCompare(b.info.queuedAt ?? ''))
-    // A pass may start several items; claim each started item's repo so a later
-    // item over the same clone stays queued.
-    const claimed = new Set<string>()
+    // A pass may start several items; record each started item's clone claims
+    // (key → exclusive?) so a later item over the same clone stays queued. A
+    // blocked item reserves its claims here too: FIFO by clone, so nothing
+    // behind it overtakes it on any of them (docs/requirements-repo-mounts.md
+    // §2.1) — a stream of readers cannot starve a waiting writer.
+    const claimed = new Map<string, boolean>()
+    const reserve = (claims: Claim[]): void => {
+      for (const c of claims) claimed.set(c.key, c.exclusive || claimed.get(c.key) === true)
+    }
     // Same idea, per task: a pass may start several items of a capped task, so
     // each start counts against the cap for the rest of this same pass rather
     // than only against `activeSessionCount`'s (pre-pass) snapshot.
@@ -1354,37 +1402,31 @@ export class SessionManager {
         this.queuedReasons.delete(s.info.id)
         void this.startSession(s.info.id, 'scheduler')
       }
-      // A researcher claims no clone (read-only, locks nothing) — start it
-      // unconditionally, same pass, no FIFO contention to resolve. It still
-      // needs a repo to read, so a repo-less one falls through to `no-repo`.
-      // An operator claims no clone either AND needs no repo — it can always
-      // run, which matters for the session whose job is to fix the reason the
-      // other sessions cannot (docs/requirements-session-operator.md §2.1).
-      const role = sessionRole(s.info)
-      if (!roleLocksClone(role) && (s.info.repos.length || !roleNeedsRepo(role))) {
-        start()
-        continue
-      }
-      const rkey = this.repoKey(s)
-      if (!rkey) {
+      if (missingRepoReason(s.info)) {
         // Still waiting too — kept in `still` so the cleanup below doesn't
         // erase the reason and re-log it on every schedule() pass.
         still.add(s.info.id)
         this.noteQueued(s, 'no-repo')
         continue
       }
-      if (claimed.has(rkey)) {
+      // A session whose repos are all `read` (or that holds none) claims no
+      // clone — start it unconditionally, same pass, no FIFO contention to
+      // resolve. Anything else takes all of its claims or none.
+      const claims = this.claims(s)
+      if (claims.some((c) => claimed.has(c.key) && (c.exclusive || claimed.get(c.key) === true))) {
         still.add(s.info.id)
+        reserve(claims)
         this.noteQueued(s, 'repo-claimed-this-pass')
         continue
       }
-      const holder = this.repoHolder(s)
-      if (holder) {
+      const conflict = this.repoConflict(s)
+      if (conflict) {
         still.add(s.info.id)
-        this.noteQueued(s, 'repo-held', holder.info.id)
+        reserve(claims)
+        this.noteQueued(s, 'repo-held', conflict.holder.info.id)
         continue
       }
-      claimed.add(rkey)
+      reserve(claims)
       start()
     }
     // Forget the reason of anything no longer waiting, so a session that queues
@@ -1422,40 +1464,51 @@ export class SessionManager {
     this.bus.emit('session.changed', { sessionId: s.info.id })
   }
 
-  /** The clone a session exclusively holds — `(task, repo)`, shared by every
-   *  session of the task that picked that repo. Null for a repo-less draft, and
-   *  for a researcher: it mounts every repo read-only and never writes, so no
-   *  clone needs exclusive access and none is claimed. A reviewer *is* keyed
-   *  here — read-only but exclusive, so the tree it judges cannot move under it
-   *  (docs/requirements-session-roles.md §4). */
-  private repoKey(s: Session): string | null {
-    if (!roleLocksClone(sessionRole(s.info))) return null
-    return s.info.repos.length === 1
-      ? `${taskKey(s.ref.workspace, s.ref.task)}/${s.info.repos[0]}`
-      : null
+  /** The clones a session claims — `(task, repo)`, shared by every session of
+   *  the task that picked that repo: exclusive for a `write` mount, shared for a
+   *  `read-locked` one, none for `read` (docs/requirements-repo-mounts.md §2.1).
+   *  Empty for a session that holds no repo or only reads live trees. */
+  private claims(s: Session): Claim[] {
+    const out: Claim[] = []
+    for (const repo of s.info.repos) {
+      const mode = repoMode(s.info, repo)
+      if (mode === 'read') continue
+      out.push({ key: `${taskKey(s.ref.workspace, s.ref.task)}/${repo}`, repo, exclusive: mode === 'write' })
+    }
+    return out
   }
 
   /**
-   * The other session currently holding this session's clone, if any.
+   * The other session currently holding one of this session's clones in a way
+   * that excludes it, and which clone — readers–writer per clone: two claims
+   * conflict when at least one of them is exclusive.
    *
    * A clone is one working tree shared by every session of the task that picked
-   * that repo, so only one of them may be able to touch it at a time. "Able to
-   * touch it" means mid-start, or owning a container that is up: an idle session
-   * whose container has been auto-stopped holds nothing and releases the repo
-   * for the next one — which is how a task runs a series of sessions against the
-   * same repo without deleting the finished ones.
+   * that repo. "Holding it" means mid-start, or owning a container that is up:
+   * an idle session whose container has been auto-stopped holds nothing and
+   * releases the repo for the next one — which is how a task runs a series of
+   * sessions against the same repo without deleting the finished ones.
    *
    * The env is *not* a constraint. Each session owns its container, so any
    * number of sessions may run the same env definition at once.
    */
-  private repoHolder(s: Session): Session | undefined {
-    const rkey = this.repoKey(s)
-    if (!rkey) return undefined
+  private repoConflict(s: Session): { holder: Session; repo: string } | undefined {
+    const mine = this.claims(s)
+    if (!mine.length) return undefined
     for (const o of this.sessions.values()) {
-      if (o.info.id === s.info.id || this.repoKey(o) !== rkey) continue
-      if (this.isActive(o)) return o
+      if (o.info.id === s.info.id || !this.isActive(o)) continue
+      for (const theirs of this.claims(o)) {
+        const c = mine.find((m) => m.key === theirs.key)
+        if (c && (c.exclusive || theirs.exclusive)) return { holder: o, repo: c.repo }
+      }
     }
     return undefined
+  }
+
+  /** {@link repoConflict}'s holder alone — for the callers that only ask "may
+   *  this session touch its clones right now". */
+  private repoHolder(s: Session): Session | undefined {
+    return this.repoConflict(s)?.holder
   }
 
   /** "Able to touch its clone / count against its task's cap": mid-start, or
@@ -1496,17 +1549,21 @@ export class SessionManager {
   }
 
   /**
-   * The session currently holding this clone, addressed by (task, repo) rather
-   * than by another session. Same "able to touch it" rule as {@link repoHolder}: an idle
-   * session whose container is down holds nothing and is not reported.
+   * The session currently claiming this clone, addressed by (task, repo) rather
+   * than by another session — a writer before any reader. Same "able to touch
+   * it" rule as {@link repoConflict}: an idle session whose container is down
+   * holds nothing and is not reported.
    */
   repoHolderFor(ws: string, task: string, repo: string): SessionInfo | undefined {
     const want = `${taskKey(ws, task)}/${repo}`
+    let reader: SessionInfo | undefined
     for (const o of this.sessions.values()) {
-      if (this.repoKey(o) !== want) continue
-      if (this.isActive(o)) return o.info
+      if (!this.isActive(o)) continue
+      const c = this.claims(o).find((k) => k.key === want)
+      if (c?.exclusive) return o.info
+      if (c) reader ??= o.info
     }
-    return undefined
+    return reader
   }
 
   /**
@@ -1529,7 +1586,12 @@ export class SessionManager {
    * costs anything.
    */
   holdersBlockingQueue(): string[] {
-    const wantedRepos = new Set<string>()
+    // clone key → wanted exclusively? A holder blocks only a claim it conflicts
+    // with: a reader is never reaped for another reader.
+    const wantedRepos = new Map<string, boolean>()
+    const want = (s: Session): void => {
+      for (const c of this.claims(s)) wantedRepos.set(c.key, c.exclusive || wantedRepos.get(c.key) === true)
+    }
     const wantedTasks = new Set<string>()
     for (const s of this.sessions.values()) {
       if (s.info.state !== 'queued') {
@@ -1537,14 +1599,10 @@ export class SessionManager {
         // sitting on is queueing in everything but the state: it wants exactly
         // what a queued draft wants, and the same handoff is what gives it.
         // Without this its message waits out the idle grace period instead.
-        if (s.pending.length && !s.busy && this.repoHolder(s)) {
-          const rkey = this.repoKey(s)
-          if (rkey) wantedRepos.add(rkey)
-        }
+        if (s.pending.length && !s.busy && this.repoHolder(s)) want(s)
         continue
       }
-      const rkey = this.repoKey(s)
-      if (rkey) wantedRepos.add(rkey)
+      want(s)
       const tkey = taskKey(s.ref.workspace, s.ref.task)
       if (this.taskCaps.has(tkey)) wantedTasks.add(tkey)
     }
@@ -1557,9 +1615,11 @@ export class SessionManager {
       // Only a fully-up container is stoppable — one still building/post is
       // mid-provision, and `starting` above already covers its session.
       if (o.info.container?.status !== 'running') continue
-      const rkey = this.repoKey(o)
       const tkey = taskKey(o.ref.workspace, o.ref.task)
-      if ((rkey && wantedRepos.has(rkey)) || wantedTasks.has(tkey)) out.push(o.info.id)
+      const blocks = this.claims(o).some(
+        (c) => wantedRepos.has(c.key) && (c.exclusive || wantedRepos.get(c.key) === true)
+      )
+      if (blocks || wantedTasks.has(tkey)) out.push(o.info.id)
     }
     return out
   }
@@ -1606,7 +1666,7 @@ export class SessionManager {
    */
   private async attachMcp(s: Session, ctx: LaunchContext): Promise<AcpHttpMcpServer[]> {
     const hosted = [
-      ...(await this.events.resolveMcpServers(s.ref, s.info.id, s.info.repos[0], s.info.mcp)),
+      ...(await this.events.resolveMcpServers(s.ref, s.info.id, anchorRepo(s.info), s.info.mcp)),
       await this.events.resolveGurtServer(s.ref, s.info.id, this.gurtHooks(s))
     ]
     // A masking session's MCP traffic is rewritten at the proxy (§9.2) through
@@ -1669,14 +1729,14 @@ export class SessionManager {
     try {
       // Gate 4: every start path funnels here, so the gate is checked once,
       // here — the scheduler pre-checks it to pick queue items, "Run now"
-      // doesn't need to. An operator legally starts with zero repos.
-      if (roleNeedsRepo(sessionRole(s.info)) && !s.info.repos.length)
-        throw new Error('session has no repository')
+      // doesn't need to. Only the roles that need a repo are refused one-less.
+      const missing = missingRepoReason(s.info)
+      if (missing) throw new Error(missing)
       assertNotTemplate(s.info)
-      const holder = this.repoHolder(s)
-      if (holder)
+      const conflict = this.repoConflict(s)
+      if (conflict)
         throw new Error(
-          `repository "${s.info.repos[0]}" is in use by session "${holder.info.title}" — queue this one instead`
+          `repository "${conflict.repo}" is in use by session "${conflict.holder.info.title}" — queue this one instead`
         )
       // Before the container is resolved: `resolveLaunch` provisions it, and
       // the read-only bind it adds points at the directory this call fills
@@ -2211,10 +2271,10 @@ export class SessionManager {
       // Waking a session brings its container back up on the shared clone, so it
       // is gated exactly like a start — otherwise a resume could put two live
       // containers on one working tree.
-      const holder = this.repoHolder(s)
-      if (holder)
+      const conflict = this.repoConflict(s)
+      if (conflict)
         throw new Error(
-          `repository "${s.info.repos[0]}" is in use by session "${holder.info.title}" — wait for it to go idle`
+          `repository "${conflict.repo}" is in use by session "${conflict.holder.info.title}" — wait for it to go idle`
         )
       const ctx = await this.events.resolveLaunch(s.info.id)
       s.remoteCwd = ctx.remoteWorkspaceFolder
@@ -2441,7 +2501,7 @@ export class SessionManager {
   }
 
   /** Post-turn decision for this session: `postTurnDecision` with the role's
-   *  contract folded in — a researcher/reviewer is never offered `complete`, so
+   *  contract folded in — a researcher or inspector is never offered `complete`, so
    *  it is never nudged for skipping it. */
   private decideTurn(s: Session, outcome: TurnResult, isNudge: boolean): PostTurnAction {
     return postTurnDecision({
@@ -2540,7 +2600,7 @@ export class SessionManager {
    * still alive, one automatic follow-up (`NUDGE_PROMPT`) costs seconds and usually
    * heals it. A nudge turn that still skips `complete` marks the session
    * `incomplete` and gives up — no second nudge. Roles without the contract
-   * (researcher, reviewer) skip all of this: their turns just end.
+   * (researcher, inspector, operator) skip all of this: their turns just end.
    */
   private async runPrompt(
     s: Session,
@@ -2582,11 +2642,18 @@ export class SessionManager {
   private onComplete(sessionId: string, p: ChangeProposal): void {
     const s = this.sessions.get(sessionId)
     if (!s) return
+    // Before anything is recorded: a refused call is the agent's to correct
+    // (an `isError` tool result), not a turn that completed.
+    assertProposalFits(writeRepos(s.info), p)
     s.turnComplete = true
     let text: string
     if (p.outcome === 'changes') {
       s.proposal = { ...p, at: new Date().toISOString() }
-      text = `complete: changes — ${p.commit?.subject ?? ''}`
+      const subjects = [
+        ...(p.commit ? [p.commit.subject] : []),
+        ...(p.repos ?? []).map((r) => `${r.repo}: ${r.commit.subject}`)
+      ]
+      text = `complete: changes — ${subjects.join('; ')}`
     } else if (p.outcome === 'blocked') {
       text = `complete: blocked — ${p.reason ?? ''}`
     } else {
@@ -2604,6 +2671,7 @@ export class SessionManager {
    *  talks to the live session record. */
   private gurtHooks(s: Session): {
     role: SessionRole
+    mounts: { repo: string; mode: RepoMode }[]
     onComplete: (p: ChangeProposal) => void
     onCreateSession: (req: AgentSessionRequest) => Promise<{ sessionId: string; title: string }>
     admin?: AdminHooks
@@ -2612,12 +2680,15 @@ export class SessionManager {
     const role = sessionRole(s.info)
     return {
       role,
+      mounts: s.info.repos.map((repo) => ({ repo, mode: repoMode(s.info, repo) })),
       onComplete: (p) => this.onComplete(s.info.id, p),
       onCreateSession: (req) => this.createAgentDraft(s.info.id, req),
       // The workspace is bound here, from the session's own record — the one
       // parameter the agent can never express (§3.2 of
       // docs/requirements-session-operator.md).
-      ...(role === 'operator' ? { admin: this.events.adminFor(s.ref.workspace, s.info.id) } : {}),
+      // Which half of the surface it gets is the server's to apply, from the
+      // role (`roleWritesAdmin`).
+      ...(roleReadsAdmin(role) ? { admin: this.events.adminFor(s.ref.workspace, s.info.id) } : {}),
       // Same binding for a proactive run: the agent is the scope the run lives
       // in, never a name the run supplies.
       ...(role === 'proactive' ? { proactive: this.proactiveHooks(s) } : {})
@@ -2689,15 +2760,11 @@ export class SessionManager {
           ? `a ${from} session may only draft: ${allowed.join(', ')}`
           : `a ${from} session may not draft sessions`
       )
-    assertRoleFitsRepos(req.role, req.repos)
     const task = req.task?.trim() || spawner.ref.task
-    if (task !== spawner.ref.task) {
-      // Only a researcher fans out across tasks — it holds no clone lock, so
-      // "elsewhere" costs nothing. A reviewer's draft exists to fix the clone
-      // the reviewer holds, and that clone lives in the reviewer's own task.
-      if (from !== 'researcher')
-        throw new Error(`a ${from} session may only draft into its own task`)
-    }
+    // Belt and braces with the tool schema, which offers `task` only to the
+    // roles allowed to use it.
+    if (task !== spawner.ref.task && !roleDraftsCrossTask(from))
+      throw new Error(`a ${from} session may only draft into its own task`)
     const inherit = this.inheritanceOf(spawner.info)
     const prepared = await this.prepareDraft(spawner.ref.workspace, req, inherit)
     // The task name is agent-input too: `ensureTask` validates it and creates
@@ -2733,7 +2800,9 @@ export class SessionManager {
    * before the first one lands (a proactive agent's `propose_scope`).
    */
   async prepareDraft(ws: string, req: AgentSessionRequest, inherit: DraftInheritance): Promise<PreparedDraft> {
-    assertRoleFitsRepos(req.role, req.repos)
+    // Normalized before anything reads it: the env follows the anchor, and the
+    // anchor follows the modes.
+    req = { ...req, repoModes: normalizeRepoModes(req.repos, req.repoModes) }
     // Explicit request wins; absent that, the workspace's own default (if any)
     // beats inheriting the spawner's — a workspace that configured a default
     // has made a choice for everything drafted into it, not just for sessions
@@ -2775,7 +2844,8 @@ export class SessionManager {
       // Inherited, never chosen: a session running internal cannot draft one
       // with open egress (§6.2), and `AgentSessionRequest` has no field to ask
       // with — a rule the agent cannot express is one it cannot argue about.
-      sanitizeSessionNetwork(inherit.network)
+      sanitizeSessionNetwork(inherit.network),
+      req.repoModes
     )
     // `renameSession` mutates the same info object createSession stored.
     if (req.title?.trim()) this.renameSession(info.id, req.title)
@@ -2809,12 +2879,12 @@ export class SessionManager {
    *    cannot survive. Anything outside the set still needs the flag.
    */
   private async resolveDraftEnv(ws: string, req: AgentSessionRequest): Promise<string> {
-    // `repos` is exactly one entry: the tool's schema says so and
-    // `assertRoleFitsRepos` has already refused a second one for every role
-    // that can be drafted at all. The empty case only the type system believes
-    // in, but the env hangs off this repo now — better a sentence than a crash.
-    const repo = req.repos[0]
-    if (!repo) throw new Error('a drafted session needs exactly one repo')
+    // The repo the env follows is the draft's anchor — its first `write` repo,
+    // else its first (docs/requirements-repo-mounts.md §2.2). A draft with no
+    // repo has nothing to follow: it takes what it names, else the workspace's
+    // default env, the way a fresh draft in the UI does.
+    const repo = anchorRepo({ role: req.role, repos: req.repos, ...(req.repoModes ? { repoModes: req.repoModes } : {}) })
+    if (!repo) return req.env ?? (await this.events.defaultEnvForWorkspace(ws))
     const defaults = await this.events.defaultEnvsForRepo(ws, repo)
     if (!req.env) {
       const [only, ...rest] = defaults
@@ -2839,13 +2909,18 @@ export class SessionManager {
     )
   }
 
-  /** Newest stored proposal among this (task, repo)'s sessions (all outcome=changes). */
+  /** Newest stored proposal for this (task, repo) among the sessions that
+   *  *write* it (all outcome=changes), resolved to that repo — its own entry
+   *  when it has one, else the shared commit/pr (docs/requirements-repo-mounts.md
+   *  §3). A proposal with neither for this repo does not count. */
   latestProposal(ws: string, task: string, repo: string): StoredProposal | undefined {
     let best: StoredProposal | undefined
     for (const s of this.sessions.values()) {
-      if (s.ref.workspace !== ws || s.ref.task !== task || !s.info.repos.includes(repo)) continue
-      if (!s.proposal) continue
-      if (!best || s.proposal.at > best.at) best = s.proposal
+      if (s.ref.workspace !== ws || s.ref.task !== task) continue
+      if (!s.info.repos.includes(repo) || repoMode(s.info, repo) !== 'write') continue
+      const p = s.proposal && proposalForRepo(s.proposal, repo)
+      if (!p) continue
+      if (!best || p.at > best.at) best = p
     }
     return best
   }

@@ -88,7 +88,7 @@ function newRef() {
 }
 
 const mk = (ref, repo, title) => {
-  const info = kernel.sessions.createSession(ref, [repo], 'a1', 'hi', 'draft')
+  const info = kernel.sessions.createSession(ref, [repo], 'a1', 'hi', 'draft', [], true, {}, 'executor', undefined, undefined, Object.fromEntries([repo].map((r) => [r, 'write'])))
   kernel.sessions.renameSession(info.id, title)
   return info.id
 }
@@ -196,7 +196,7 @@ test('createSession(..., "run") respects the cap the same way run() does', async
   markActive(a, 'alpha')
   await kernel.setTaskMaxConcurrentSessions(ref.workspace, ref.task, 1)
 
-  const info = kernel.sessions.createSession(ref, ['beta'], 'a1', 'hi', 'run')
+  const info = kernel.sessions.createSession(ref, ['beta'], 'a1', 'hi', 'run', [], true, {}, 'executor', undefined, undefined, Object.fromEntries(['beta'].map((r) => [r, 'write'])))
   const queued = kernel.sessions.snapshot(info.id)
   assert.equal(queued.info.state, 'queued', 'action "run" queues too once the task is at its cap')
 })

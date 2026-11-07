@@ -12,6 +12,11 @@ and per-role tool sets is the mechanism reused here), then
 `src/shared/api.ts` (the surface this is *derived from*, not a parallel
 one).
 
+> **Superseded in part** by `requirements-repo-mounts.md` §4: "exactly zero
+> repos" (§2.1) is lifted — an operator needs no repository but may hold
+> some, in any mode — and the operator gained a read-only twin, the
+> **inspector** (admin read tools, `create_session` for an operator draft).
+
 > **Superseded in part** by `requirements-env-docker.md` §8: the env held
 > fields (`ENV_HELD`: `initializeCommand`, `mounts`, `runArgs`, …) are gone —
 > the env format has no field that executes on the host or widens container

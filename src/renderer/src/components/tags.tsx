@@ -7,10 +7,13 @@ import { Fragment } from 'react'
 import type { JSX } from 'react'
 import type {
   McpSelection,
+  RepoMode,
+  SessionInfo,
   SessionNetwork,
   SessionRole,
   SkillSelection
 } from '../../../shared/types'
+import { repoMode } from '../../../shared/types'
 import type { DomainPolicy } from '../../../shared/proxy'
 import { explicitAllows } from '../../../shared/proxy'
 import type { McpFailure, ResolvedMcpSelection } from '../../../shared/mcp'
@@ -45,28 +48,52 @@ export function RepoTag({ name, title }: { name: string; title?: string }): JSX.
 export const ROLE_INFO: Record<SessionRole, { label: string; hint: string; icon: IconName }> = {
   executor: {
     label: 'executor',
-    hint: 'writes code: read-write clone, locked while it runs, proposes a commit when done',
+    hint: 'makes changes and proposes a commit when done — needs a repository mounted for write',
     icon: 'play'
   },
   researcher: {
     label: 'researcher',
-    hint: 'reads only: any number of repos, locks nothing, answers in chat, can draft other sessions',
+    hint: 'answers in chat, ships nothing, can draft other sessions',
     icon: 'search'
   },
-  reviewer: {
-    label: 'reviewer',
-    hint: "judges one clone's uncommitted changes: writable, so it can install deps and run tests, but holds the lock so nothing moves under it",
+  inspector: {
+    label: 'inspector',
+    hint: 'reads gurt itself: this workspace’s config and session diagnostics through the admin read tools; drafts an operator to change something',
     icon: 'eye'
   },
   operator: {
     label: 'operator',
-    hint: 'configures gurt itself: holds no repository, reads this workspace’s config and session diagnostics through admin tools (read-only for now)',
+    hint: 'configures gurt itself: reads and changes this workspace’s config through the admin tools',
     icon: 'sliders'
   },
   proactive: {
     label: 'proactive',
     hint: 'a proactive agent’s run: starts on schedule, reads its sources (and any repos, read-only), and raises scopes with draft sessions — it does no work itself',
     icon: 'history'
+  }
+}
+
+/** How a repo is mounted, in the words the mode control and the marks share
+ *  (docs/requirements-repo-mounts.md §2). `locked` puts the lock glyph beside
+ *  the label — an icon, not an emoji, so it renders in every font. */
+export const REPO_MODE_INFO: Record<RepoMode, { label: string; locked: boolean; text: string; hint: string }> = {
+  write: {
+    label: 'write',
+    locked: false,
+    text: 'write',
+    hint: 'read-write; holds the clone exclusively — every other session that locks it waits'
+  },
+  'read-locked': {
+    label: 'read',
+    locked: true,
+    text: 'read, locked',
+    hint: 'read-only; the tree does not move while this session runs — only writers wait'
+  },
+  read: {
+    label: 'read',
+    locked: false,
+    text: 'read',
+    hint: 'read-only; sees the live tree — blocks nobody, may see it change'
   }
 }
 
@@ -257,31 +284,42 @@ const MARK_NAMES_SHOWN = 2
  *  them already carries the frame, and both lay their children out with a gap.
  *  `task`, when given alongside `repos`, appends the task's branch name — every
  *  clone's task branch is named `<task>` (see `branchFor` in changes.ts).
- *  More than one repo (a discovery session) shows a branch mark per repo, up to
- *  `MARK_NAMES_SHOWN` — the rest become "+N", with the whole list in the
- *  tooltip. */
+ *  More than one repo shows a branch mark per repo, up to `MARK_NAMES_SHOWN` —
+ *  the rest become "+N", with the whole list in the tooltip. `session`, when
+ *  given, adds each repo's mount mode: a pen for `write`, a lock for
+ *  `read-locked`, nothing for a plain `read` (docs/requirements-repo-mounts.md
+ *  §6). */
 export function EnvRepoMarks({
   env,
   repos,
-  task
+  task,
+  session
 }: {
   env: string
   repos?: string[]
   task?: string
+  session?: Pick<SessionInfo, 'role' | 'repos' | 'repoModes'>
 }): JSX.Element {
   const list = repos ?? []
   const shown = list.slice(0, MARK_NAMES_SHOWN)
   const rest = list.length - shown.length
+  const modeOf = (r: string): RepoMode | undefined => (session ? repoMode(session, r) : undefined)
+  const line = (r: string): string => {
+    const m = modeOf(r)
+    return m ? `${r} — ${REPO_MODE_INFO[m].text}` : r
+  }
   return (
     <>
       <Icon name="box" size={11} className="faint" />
       {env || 'no env'}
       {list.length > 0 && (
-        <span className="repo-marks" title={`repositories\n${list.join('\n')}`}>
+        <span className="repo-marks" title={`repositories\n${list.map(line).join('\n')}`}>
           {shown.map((r) => (
             <Fragment key={r}>
               <Icon name="branch" size={11} className="faint" />
               {r}
+              {modeOf(r) === 'write' && <Icon name="edit" size={10} className="faint" />}
+              {modeOf(r) === 'read-locked' && <Icon name="lock" size={10} className="faint" />}
             </Fragment>
           ))}
           {rest > 0 && <span className="dim">+{rest}</span>}

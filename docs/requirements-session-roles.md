@@ -17,6 +17,13 @@ sketch; this document is the simpler path actually taken — roles are session
 configuration, verdicts are plain chat text, and the only orchestration
 primitive is "an agent drafts another session, the user launches it".
 
+> **Superseded in part** by `requirements-repo-mounts.md`: the mounts,
+> clone-lock and multi-repo columns of §2's table, §4, the reviewer role and
+> the (role, repos) rule are gone — how each repo is mounted and locked is
+> per-repo session configuration (`write` / `read-locked` / `read`), any
+> session may hold any number of repos, and the role decides only the tool
+> set. Drafts as approval (§3) and the turn contract by role (§5) stand.
+
 > **Superseded in part** by `requirements-mcp-proxy.md` §10: the
 > container-side git credential broker (`src/main/git/broker.ts`), the
 > container shims, ssh git support and the `gitAccess` session flag are

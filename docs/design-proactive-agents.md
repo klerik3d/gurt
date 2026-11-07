@@ -98,7 +98,7 @@ the identity rules of §5 cannot be bypassed. Its turn contract is
 | tool | does |
 |---|---|
 | `list_open({ check? })` | open scopes it raised (title, summary, refs, whether the user has acted), its cursor, how many more scopes it may raise (`limits.canRaise`); with `check`, the status of each ref: `new` or `open` (with its scope) |
-| `propose_scope({ title, summary, refs, sessions })` | a scope plus draft sessions (executor / researcher / reviewer, `create_session`'s fields). A ref already bound answers with that scope and creates nothing. Refused at the limit (§5) |
+| `propose_scope({ title, summary, refs, sessions })` | a scope plus draft sessions (executor / researcher, `create_session`'s fields — repos as `{ name, mode }`). A ref already bound answers with that scope and creates nothing. Refused at the limit (§5) |
 | `attach({ scope, refs, note? })` | binds more refs to a raised scope and appends a note |
 | `finish_run({ summary, cursor? })` | closes the run, stores the cursor |
 

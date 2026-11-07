@@ -192,6 +192,35 @@ test('tools/list offers exactly the read+write tools + the three host-only tools
   )
 })
 
+test("an inspector's tools/list is the read half, plus create_session", async () => {
+  // The read half of the operator (docs/requirements-repo-mounts.md §4): same
+  // surface, same binding, no write tool and nothing that only serves writes.
+  const insp = m.buildGurtHttpServer(TOKEN, {
+    role: 'inspector',
+    onComplete: () => {},
+    onCreateSession: async () => ({ sessionId: 'x', title: 'x' }),
+    admin: admin.bind('w', 'insp-session')
+  })
+  await new Promise((r) => insp.listen(0, '127.0.0.1', r))
+  try {
+    const res = await fetch(`http://127.0.0.1:${insp.address().port}/mcp/${TOKEN}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: ++id, method: 'tools/list', params: {} })
+    })
+    const names = (await res.json()).result.tools.map((t) => t.name)
+    const reads = m.ADMIN_TOOLS.filter((d) => d.exposure === 'read').map((d) => d.name)
+    assert.deepEqual(
+      names.sort(),
+      [...reads, 'get_provisioning_log', 'create_session'].sort(),
+      'reads + the provisioning log + create_session; no write, no get_revisions, no apply_held'
+    )
+  } finally {
+    insp.close()
+    insp.closeAllConnections()
+  }
+})
+
 test('every write tool requires a rev', async () => {
   const { body } = await post({ jsonrpc: '2.0', id: ++id, method: 'tools/list', params: {} })
   for (const t of body.result.tools) {

@@ -39,19 +39,22 @@ back to `draft` with `startError`.
 
 ## 3. Roles — the building blocks of any workflow
 
-Role is chosen at creation and drives mounts, locks and the MCP tool set
-(`src/shared/types.ts` `SessionRole`; full spec in
-[requirements-session-roles.md](requirements-session-roles.md)).
+Role is chosen at creation and drives the MCP tool set only
+(`src/shared/types.ts` `SessionRole`; spec in
+[requirements-repo-mounts.md](requirements-repo-mounts.md) §4). Mounts and
+locks are per repo, not per role: every repo of any session is `write`
+(exclusive lock), `read-locked` (shared lock, excludes writers) or `read`
+(no lock), and any session may hold any number of repos.
 
-| role | mounts | clone lock | `complete` (turn contract) | `create_session` | repos |
-|---|---|---|---|---|---|
-| **executor** | read-write | holds | **yes, every turn** | no | exactly 1 |
-| **researcher** | read-only | none | no | yes (incl. other tasks) | 1..N |
-| **reviewer** | read-only by intent | holds | no | yes (fixer executor only) | exactly 1 |
-| **operator** | none | none | no | no | exactly 0 |
+| role | `complete` (turn contract) | `create_session` | admin tools | needs to start |
+|---|---|---|---|---|
+| **executor** | **yes, every turn** (per repo when it writes several) | no | no | ≥ 1 `write` repo |
+| **researcher** | no | executor, researcher (incl. other tasks) | no | ≥ 1 repo |
+| **inspector** | no | operator only (incl. other tasks) | read | nothing |
+| **operator** | no | no | read + write | nothing |
 
-Read-only = real Docker `readonly` bind mounts, not a convention.
-Operator configures gurt itself through a read-only admin surface (see §6).
+Read-only = real Docker `readonly` bind mounts, not a convention. The former
+reviewer is a researcher with a `read-locked` clone and a review prompt.
 
 ## 4. Primitives that already exist
 
@@ -59,7 +62,8 @@ These are what you compose. Do not reinvent them.
 
 1. **Queue / serialization** (`src/main/sessions.ts`). A global FIFO; an item
    starts when its (task, repo) clone is free. Two queued sessions on one repo
-   run strictly back to back; the holder's container is stopped the moment
+   run strictly back to back (readers–writer per clone: `read-locked` readers
+   share, a `write` excludes everyone); the holder's container is stopped the moment
    its turn ends if something waits behind it. Optional per-task cap:
    `setTaskMaxConcurrentSessions`. Survives restart.
 2. **Turn contract — the only typed artifact today.** Every executor turn
@@ -68,7 +72,7 @@ These are what you compose. Do not reinvent them.
    reason (zod-strict). A turn that ends without it gets one automatic nudge
    (`postTurnDecision`). The host stores it and emits **`session.proposal`**.
    Spec: [requirements-turn-contract.md](requirements-turn-contract.md).
-3. **`create_session` (agent-driven fan-out).** Researcher/reviewer can
+3. **`create_session` (agent-driven fan-out).** Researcher/inspector can
    *draft* a fully configured session. A draft **never runs by itself** —
    the user launching it is the approval step, and nothing flows back to the
    spawner. Shape: `AgentSessionRequest` in `src/shared/types.ts`.

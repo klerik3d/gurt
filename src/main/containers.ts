@@ -11,7 +11,7 @@ import { clientConfigFile } from '../shared/clientConfig'
 // record keyed by it cannot survive the thing it describes. That is what makes
 // stale-cache reuse unrepresentable rather than merely avoided.
 import type { EnvRef, RepoConfig, SessionContainer, SessionInfo } from '../shared/types'
-import { roleNeedsRepo, sessionRole } from '../shared/types'
+import { anchorRepo, missingRepoReason, repoMode, repoModeIsReadOnly, sessionRole } from '../shared/types'
 import type { ContainerStatusReason } from '../shared/events'
 import type { AgentManifest } from '../shared/agentPlugin'
 import { agentDef } from '../shared/agents'
@@ -114,17 +114,16 @@ export function historyHostMounts(
  * The container-side layout of a session (§3.3) — a pure function of the
  * session shape, so the contract is testable without a container.
  *
- * - every repo → `/workspaces/<name>` (read-only per role), whether the
- *   session has one repo or several, so file paths never depend on the count;
- *   the workdir is that repo's directory when there is exactly one, else
- *   `/workspaces`. A repo-less operator has no repo mounts and works in
- *   `/workspaces`;
+ * - every repo → `/workspaces/<name>`, read-only unless its mode is `write`
+ *   (docs/requirements-repo-mounts.md §2.3), whether the session has one repo
+ *   or several, so file paths never depend on the count; the workdir is that
+ *   repo's directory when there is exactly one, else `/workspaces`. A repo-less
+ *   session (an operator, say) has no repo mounts and works in `/workspaces`;
  * - `extra` binds (skills, history) land at their own absolute targets.
  */
 export function containerLayout(
   info: SessionInfo,
   clones: { name: string; dir: string }[],
-  readonly: boolean,
   extra: { hostDir: string; target: string; readonly?: boolean }[] = []
 ): { mounts: ContainerMount[]; workdir: string } {
   const bind = (source: string, target: string, ro?: boolean): ContainerMount => ({
@@ -133,8 +132,12 @@ export function containerLayout(
     target,
     ...(ro ? { readonly: true } : {})
   })
-  if (!clones.length && sessionRole(info) !== 'operator') throw new Error('session has no repository')
-  const mounts = clones.map((c) => bind(c.dir, `/workspaces/${c.name}`, readonly))
+  // Judged on the clones actually handed over, not on the record's list.
+  const missing = clones.length ? undefined : missingRepoReason({ ...info, repos: [] })
+  if (missing) throw new Error(missing)
+  const mounts = clones.map((c) =>
+    bind(c.dir, `/workspaces/${c.name}`, repoModeIsReadOnly(repoMode(info, c.name)))
+  )
   const [only] = clones
   const workdir = clones.length === 1 && only ? `/workspaces/${only.name}` : '/workspaces'
   for (const m of extra) mounts.push(bind(m.hostDir, m.target, m.readonly))
@@ -304,11 +307,10 @@ export class ContainerManager {
   private async ensureUncoalesced(sessionId: string): Promise<SessionContainer> {
     const info = this.deps.session(sessionId)
     if (!info) throw new Error('session no longer exists')
-    // The guard the doc calls "the anchor guard": every role but the operator
-    // needs a clone to build against (docs/requirements-session-operator.md
-    // §2.1 — repo-less start is that role's definition, not a missing pick).
-    if (roleNeedsRepo(sessionRole(info)) && !info.repos.length)
-      throw new Error('session has no repository')
+    // The guard the doc calls "the anchor guard": the roles that need a repo
+    // (docs/requirements-repo-mounts.md §4) cannot build without one.
+    const missing = missingRepoReason(info)
+    if (missing) throw new Error(missing)
     // Before anything else: no docker, no container, and every probe below
     // would report its absence as "the daemon says no" (they swallow spawn
     // errors on purpose) until some later `run` failed with a raw ENOENT.
@@ -411,23 +413,15 @@ export class ContainerManager {
           dir: await ensureClone(this.refOf(info), cfg, provisionLog, sessionRole(info) === 'proactive')
         }))
       )
-      // repos[0] is the build anchor, same role a normal session's only repo
-      // plays today — every other repo (if any) is a sibling mount only. Absent
-      // only for the operator (zero repos is that role's definition); for every
-      // other role the start gate has already rejected an empty list, so this
-      // stays a guard on that invariant.
-      const [anchor] = clones
-      if (!anchor && roleNeedsRepo(sessionRole(info)))
-        throw new Error('session has no repository')
-      // Stopgap (2026-08-24, see requirements-session-roles.md §2/§4): a
-      // reviewer needs a writable clone to install dependencies and run
-      // typecheck/tests against the diff it is judging, so only researcher
-      // keeps the filesystem-level read-only bind. Everything else about a
-      // read-only role (no `complete`, mounts under /workspaces) is
-      // unchanged — read-only roles are governed by role, not this flag.
-      // A proactive run reads its repos as context and writes nothing, the way
-      // a researcher does (docs/design-proactive-agents.md §2).
-      const readonly = sessionRole(info) === 'researcher' || sessionRole(info) === 'proactive'
+      // The anchor builds the image: the first `write` repo, else the first
+      // repo (docs/requirements-repo-mounts.md §2.2) — every other repo is a
+      // sibling mount only. Absent only for a repo-less session of a role that
+      // may start with none; the gate above already refused the rest.
+      const anchorName = anchorRepo(info)
+      const anchor = clones.find((c) => c.cfg.name === anchorName)
+      // The env's setup hooks prepare a writable checkout of the anchor; against
+      // a read-only one they would fail deterministically (§2.3).
+      const skipSetup = !!anchor && repoModeIsReadOnly(repoMode(info, anchor.cfg.name))
       // Whether the selection is *deliverable* is the agent kind's to say
       // (`AgentManifest.skillsDir`): resolve the draft's instance to its kind,
       // falling back to the workspace default the way the create path does
@@ -469,7 +463,6 @@ export class ContainerManager {
       const { mounts, workdir } = containerLayout(
         info,
         clones.map(({ cfg, dir }) => ({ name: cfg.name, dir })),
-        readonly,
         [...skillMounts, ...historyMounts]
       )
       const bindSources = mounts.filter((m) => m.type === 'bind').map((m) => m.source)
@@ -503,7 +496,7 @@ export class ContainerManager {
         )
         enter('up')
         const created = await createContainer(
-          { session: sessionId, image, env: envCfg, workdir, mounts, skipSetup: readonly },
+          { session: sessionId, image, env: envCfg, workdir, mounts, skipSetup },
           provisionLog,
           {
             // The container exists and its setup script starts: flip to `post`.
@@ -737,15 +730,15 @@ export class ContainerManager {
       cfg.credentialId
     )
     if (credError) throw new Error(`agent "${cfg.label}": ${credError}`)
-    const [anchorRepo] = info.repos
-    // Same rule as `ensure`'s gate: only the operator legally launches with no
-    // repo — and then there is no repo config to resolve an identity from.
-    if (!anchorRepo && roleNeedsRepo(sessionRole(info)))
-      throw new Error('session has no repository')
+    const anchor = anchorRepo(info)
+    // Same rule as `ensure`'s gate: a role that may start repo-less has no repo
+    // config to resolve an identity from, and needs none.
+    const missing = missingRepoReason(info)
+    if (missing) throw new Error(missing)
     const ws = await store.getWorkspace(info.workspace)
-    const repoCfg = anchorRepo ? ws.repos.find((r) => r.name === anchorRepo) : undefined
-    if (anchorRepo && !repoCfg)
-      throw new Error(`repo "${anchorRepo}" is not registered in "${info.workspace}"`)
+    const repoCfg = anchor ? ws.repos.find((r) => r.name === anchor) : undefined
+    if (anchor && !repoCfg)
+      throw new Error(`repo "${anchor}" is not registered in "${info.workspace}"`)
 
     const c = await this.ensure(sessionId)
     if (c.status !== 'running' || !c.id || !c.remoteWorkspaceFolder)
