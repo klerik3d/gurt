@@ -1,3 +1,4 @@
+import { taskKey } from '../../../shared/keys'
 import { usePreference, z } from '../persisted'
 // The dashboard: what the agents have spent, what is running, and what finished
 // while you were elsewhere. Read-only over state the rest of the app already
@@ -576,7 +577,7 @@ function WorkspaceBoardView({
                     turn={r.status === 'idle' ? lastTurn.get(r.info.id) : undefined}
                     changes={
                       r.status === 'idle'
-                        ? changes[`${r.info.workspace}/${r.info.task}`]
+                        ? changes[taskKey(r.info.workspace, r.info.task)]
                         : undefined
                     }
                     onOpen={() => onSelectSession(r.info.id)}

@@ -1,3 +1,4 @@
+import { taskKey } from '../../shared/keys'
 import { usePreference, readPreference, selectionSchema, diffFileSchema, z } from './persisted'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
@@ -266,7 +267,7 @@ export default function App() {
 
   /** `fetch` reaches the network — only the panel's own triggers pass it. */
   const loadChanges = useCallback((ws: string, task: string, fetch = false) => {
-    const key = `${ws}/${task}`
+    const key = taskKey(ws, task)
     changesRequested.current.add(key)
     const seq = (changesSeq.current.get(key) ?? 0) + 1
     changesSeq.current.set(key, seq)
@@ -364,7 +365,7 @@ export default function App() {
   useEffect(() => {
     for (const ws of tree?.workspaces ?? [])
       for (const task of ws.tasks)
-        if (!changesRequested.current.has(`${ws.name}/${task.name}`))
+        if (!changesRequested.current.has(taskKey(ws.name, task.name)))
           refreshChanges(ws.name, task.name)
   }, [tree, refreshChanges])
 
@@ -417,19 +418,19 @@ export default function App() {
   // Only what the tree has already shown is pruned: creating a task or session
   // selects it right after the IPC returns, one tree refresh *before* it shows
   // up in `tree` — pruning on absence alone would wipe every fresh selection.
-  const treeKnown = useRef<Set<string>>(new Set(selection ? [selection.type === 'session' ? `session:${selection.id}` : `task:${selection.ws}/${selection.task}`] : []))
+  const treeKnown = useRef<Set<string>>(new Set(selection ? [selection.type === 'session' ? `session:${selection.id}` : `task:${taskKey(selection.ws, selection.task)}`] : []))
   useEffect(() => {
     if (!tree) return
     const alive = new Set<string>()
     for (const w of tree.workspaces)
       for (const t of w.tasks) {
-        alive.add(`task:${w.name}/${t.name}`)
+        alive.add(`task:${taskKey(w.name, t.name)}`)
         for (const s of t.sessions) alive.add(`session:${s.id}`)
       }
     const key = selection
       ? selection.type === 'session'
         ? `session:${selection.id}`
-        : `task:${selection.ws}/${selection.task}`
+        : `task:${taskKey(selection.ws, selection.task)}`
       : null
     if (key && treeKnown.current.has(key) && !alive.has(key)) setSelection(null)
     treeKnown.current = alive
@@ -526,8 +527,8 @@ export default function App() {
     sidebarSeeded.current.add(workspace)
     setSidebarCollapsed((previous) => {
       const next = new Set(previous)
-      if (on) next.add(`${workspace}/${task}`)
-      else next.delete(`${workspace}/${task}`)
+      if (on) next.add(taskKey(workspace, task))
+      else next.delete(taskKey(workspace, task))
       return next
     })
     // A collapsed scope must not leave its selected session hidden in Agents.
@@ -1165,7 +1166,7 @@ export default function App() {
                 <DiffPane
                   file={activeDiffFile}
                   task={diffTask?.task}
-                  changes={diffTask ? changes[`${diffTask.ws}/${diffTask.task}`] : undefined}
+                  changes={diffTask ? changes[taskKey(diffTask.ws, diffTask.task)] : undefined}
                 />
               )}
               {workMode === 'proactive' && openAgent && openRun && (

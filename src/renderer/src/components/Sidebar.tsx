@@ -1,3 +1,4 @@
+import { taskKey } from '../../../shared/keys'
 import { useEffect, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react'
 import type { ChangedFile, DiffTarget, RepoChanges, SessionActivity, Tree } from '../../../shared/types'
@@ -39,12 +40,12 @@ type Row =
   | { kind: 'task'; ws: string; task: string }
   | { kind: 'session'; id: string; ws: string; task: string }
 
-const rowKey = (r: Row) => (r.kind === 'task' ? `t:${r.ws}/${r.task}` : `s:${r.id}`)
+const rowKey = (r: Row) => (r.kind === 'task' ? `t:${taskKey(r.ws, r.task)}` : `s:${r.id}`)
 
 /** Rows arrow keys walk: diff mode adds a task's repos, folders and files. */
 type NavRow = Row | { kind: 'diff'; ws: string; task: string; row: DiffRow }
 
-const navKey = (r: NavRow) => (r.kind === 'diff' ? `d:${r.ws}/${r.task}/${diffRowKey(r.row)}` : rowKey(r))
+const navKey = (r: NavRow) => (r.kind === 'diff' ? `d:${taskKey(r.ws, r.task)}/${diffRowKey(r.row)}` : rowKey(r))
 
 /** Nesting level — Left walks to the nearest row above with a smaller one. */
 const navDepth = (r: NavRow) =>
@@ -194,11 +195,11 @@ export function Sidebar({
       t !== open &&
       t.sessions.length > 0 &&
       t.sessions.every((s) => sessionStatus({ ...s, ...activity[s.id] }) === 'idle-read')
-    setCollapsed((prev) => new Set([...prev, ...allTasks.filter(read).map((t) => `${wsName}/${t.name}`)]))
+    setCollapsed((prev) => new Set([...prev, ...allTasks.filter(read).map((t) => taskKey(wsName, t.name))]))
   }, [seedKey, allTasks, activity, wsName, selection, mode, seeded, setCollapsed])
 
   /** Every task's collapse key, for the header's fold-all toggle. */
-  const allTaskKeys = tasks.map((t) => `${wsName}/${t.name}`)
+  const allTaskKeys = tasks.map((t) => taskKey(wsName, t.name))
   const allCollapsed = allTaskKeys.length > 0 && allTaskKeys.every((k) => collapsed.has(k))
   const toggleCollapseAll = () => {
     if (!wsData || !allTaskKeys.length) return
@@ -392,12 +393,12 @@ export function Sidebar({
   const rows: NavRow[] = []
   for (const task of tasks) {
     rows.push({ kind: 'task', ws: wsName, task: task.name })
-    if (collapsed.has(`${wsName}/${task.name}`)) continue
+    if (collapsed.has(taskKey(wsName, task.name))) continue
     if (mode === 'sessions')
       for (const s of task.sessions)
         rows.push({ kind: 'session', id: s.id, ws: wsName, task: task.name })
     else
-      for (const row of diffRows(changes[`${wsName}/${task.name}`] ?? [], fileLayout, folding(task.name)))
+      for (const row of diffRows(changes[taskKey(wsName, task.name)] ?? [], fileLayout, folding(task.name)))
         rows.push({ kind: 'diff', ws: wsName, task: task.name, row })
   }
   const isSelected = (r: Row) =>
@@ -445,7 +446,7 @@ export function Sidebar({
 
   /** Open (true), closed (false), or a leaf with nothing to fold (undefined). */
   const isExpanded = (r: NavRow): boolean | undefined => {
-    if (r.kind === 'task') return !collapsed.has(`${r.ws}/${r.task}`)
+    if (r.kind === 'task') return !collapsed.has(taskKey(r.ws, r.task))
     if (r.kind === 'session' || r.row.kind === 'file') return undefined
     const f = folding(r.task)
     return r.row.kind === 'repo' ? f.repoOpen(r.row.repo) : r.row.kind === 'group' ? f.groupOpen(r.row.repo, r.row.target) : f.folderOpen(r.row.repo, r.row.path, r.row.target)
@@ -489,7 +490,7 @@ export function Sidebar({
   }
 
   const commitRepo = mode === 'diff' && cursorRow?.kind === 'diff'
-    ? changes[`${cursorRow.ws}/${cursorRow.task}`]?.find((r) => r.repo === cursorRow.row.repo && r.dirty)
+    ? changes[taskKey(cursorRow.ws, cursorRow.task)]?.find((r) => r.repo === cursorRow.row.repo && r.dirty)
     : undefined
   const commitScope = commitRepo && cursorRow?.kind === 'diff' ? cursorRow : undefined
   const commitKey = commitScope ? JSON.stringify([commitScope.ws, commitScope.task, commitScope.row.repo]) : ''
@@ -550,7 +551,7 @@ export function Sidebar({
           return
         // Only the local branch follows the rename. One already on the remote
         // stays there under the old name, with any pull request opened from it.
-        const pushed = (changes[`${r.ws}/${r.task}`] ?? []).filter(
+        const pushed = (changes[taskKey(r.ws, r.task)] ?? []).filter(
           (c) => !c.integrated && c.commits.some((k) => k.pushed)
         )
         if (
@@ -740,7 +741,7 @@ export function Sidebar({
       {mode === 'diff' && refreshError && <div className="error diff-refresh-error">{refreshError}</div>}
       <div className="sb-tree" ref={treeRef} tabIndex={0} role="tree" onKeyDown={onTreeKey}>
         {tasks.map((task) => {
-          const tkey = `${wsName}/${task.name}`
+          const tkey = taskKey(wsName, task.name)
           const isCollapsed = collapsed.has(tkey)
           const row: Row = { kind: 'task', ws: wsName, task: task.name }
           const taskSelected = isSelected(row)
