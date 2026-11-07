@@ -1,3 +1,4 @@
+import { taskKey } from '../../../shared/keys'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { SessionActivity, SessionStatus, Tree } from '../../../shared/types'
 import { sessionStatus } from '../../../shared/types'
@@ -202,7 +203,7 @@ export function CommandPalette({
       )
     }
     return (
-      <div key={`${item.ws}/${item.task}`} {...common}>
+      <div key={taskKey(item.ws, item.task)} {...common}>
         <Icon name="branch" size={15} className="dim" />
         <span className={`pal-title ${active ? 'strong' : ''}`}>{item.task}</span>
         <span className="pal-meta mono">

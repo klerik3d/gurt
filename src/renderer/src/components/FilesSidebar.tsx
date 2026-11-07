@@ -1,3 +1,4 @@
+import { taskKey } from '../../../shared/keys'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FileEntry, ScopeFile } from '../../../shared/files'
 import type { RepoChanges, Tree } from '../../../shared/types'
@@ -55,9 +56,9 @@ export function FilesSidebar({ controller, tree, collapsed, setCollapse, changes
   const openFolders = useMemo(() => [
     ...expanded.filter((key) => {
       const [workspace, task, path] = JSON.parse(key) as [string, string, string]
-      return workspace === name && path !== '' && !collapsed.has(`${workspace}/${task}`)
+      return workspace === name && path !== '' && !collapsed.has(taskKey(workspace, task))
     }),
-    ...tasks.filter((task) => !collapsed.has(`${name}/${task.name}`)).map((task) => folderKey(name, task.name, ''))
+    ...tasks.filter((task) => !collapsed.has(taskKey(name, task.name))).map((task) => folderKey(name, task.name, ''))
   ], [expanded, tasks, collapsed, name])
 
   useEffect(() => {
@@ -96,7 +97,7 @@ export function FilesSidebar({ controller, tree, collapsed, setCollapse, changes
 
   const rows: TreeRow[] = []
   const append = (task: string, path: string, depth: number): void => {
-    if (path ? !expanded.includes(folderKey(name, task, path)) : collapsed.has(`${name}/${task}`)) return
+    if (path ? !expanded.includes(folderKey(name, task, path)) : collapsed.has(taskKey(name, task))) return
     for (const entry of folders[folderKey(name, task, path)]?.entries ?? []) {
       rows.push({ task, ...entry, depth })
       if (entry.kind === 'directory') append(task, entry.path, depth + 1)
@@ -110,7 +111,7 @@ export function FilesSidebar({ controller, tree, collapsed, setCollapse, changes
   const keyOf = (row: TreeRow): string => folderKey(name, row.task, row.path)
   const expandable = (row: TreeRow): boolean => row.kind === 'directory' || row.kind === 'scope'
   const isOpen = (row: TreeRow): boolean => row.kind === 'scope'
-    ? !collapsed.has(`${name}/${row.task}`) : row.kind === 'directory' && expanded.includes(keyOf(row))
+    ? !collapsed.has(taskKey(name, row.task)) : row.kind === 'directory' && expanded.includes(keyOf(row))
   const toggle = (row: TreeRow, open: boolean) => {
     const key = keyOf(row)
     if (row.kind === 'scope') setCollapse(name, row.task, !open)
@@ -159,7 +160,7 @@ export function FilesSidebar({ controller, tree, collapsed, setCollapse, changes
   }
 
   useEffect(() => { treeRef.current?.querySelector('.cursor')?.scrollIntoView({ block: 'nearest' }) }, [cursor])
-  const allCollapsed = visibleTasks.length > 0 && visibleTasks.every((task) => collapsed.has(`${name}/${task.name}`))
+  const allCollapsed = visibleTasks.length > 0 && visibleTasks.every((task) => collapsed.has(taskKey(name, task.name)))
 
   return <aside className="sidebar files-sidebar" style={{ width }}>
     <div className="sb-head">
@@ -202,7 +203,7 @@ export function FilesSidebar({ controller, tree, collapsed, setCollapse, changes
         const folder = folders[key]
         return <div key={key} className={row.kind === 'scope' ? 'file-scope-group' : undefined}>
           {row.kind === 'scope' ? <ScopeRow name={row.name} open={open} selected={false} cursor={cursor === key}
-            repos={changes[`${name}/${row.task}`] ?? []} id={`file-tree-row-${index}`} title={row.task} aria-level={1}
+            repos={changes[taskKey(name, row.task)] ?? []} id={`file-tree-row-${index}`} title={row.task} aria-level={1}
             onSelect={() => { setCursor(key); treeRef.current?.focus(); onSelectTask(name, row.task) }}
             onToggle={() => { setCursor(key); treeRef.current?.focus(); toggle(row, !open) }} /> : <FileTreeRow
             label={row.name} depth={row.depth} icon={expandable(row) ? 'folder' : 'file'}
