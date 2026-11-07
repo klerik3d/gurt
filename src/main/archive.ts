@@ -43,16 +43,37 @@ async function syncDirectory(directory: string): Promise<void> {
 }
 
 export class ArchiveManager {
+  private progress: import('../shared/archive').ArchiveProgress | undefined
+
+  private report(stage: string, bytes?: number): void {
+    if (!this.progress) return
+    this.progress = { ...this.progress, stage, bytes }
+    this.kernel.bus.emit('archive.progress', this.progress)
+  }
+
   busy = false
   private activeScope: { workspace: string; task: string; sessions: Set<string> } | undefined
-  private policyInFlight: Promise<{ archived: number; deleted: number }> | undefined
+  private policyInFlight: Promise<{ archived: number; deleted: number; errors: string[] }> | undefined
 
   constructor(private kernel: Kernel) {}
 
-  private async exclusive<T>(action: () => Promise<T>): Promise<T> {
+  private async exclusive<T>(action: () => Promise<T>, label?: string): Promise<T> {
     if (this.busy) throw new Error('An archive operation is already in progress')
     this.busy = true
-    try { return await action() } finally { this.busy = false; this.activeScope = undefined }
+    if (label) {
+      this.progress = { id: randomUUID(), label, stage: 'Preparing archive…', done: false }
+      this.kernel.bus.emit('archive.progress', this.progress)
+    }
+    try {
+      const result = await action()
+      if (this.progress) this.kernel.bus.emit('archive.progress', { ...this.progress, stage: 'Archived', done: true })
+      return result
+    } catch (e) {
+      if (this.progress) this.kernel.bus.emit('archive.progress', {
+        ...this.progress, stage: 'Archiving failed', done: true, error: e instanceof Error ? e.message : String(e)
+      })
+      throw e
+    } finally { this.busy = false; this.activeScope = undefined; this.progress = undefined }
   }
 
   blocksCall(method: string, args: unknown[]): boolean {
@@ -155,6 +176,7 @@ export class ArchiveManager {
             throw new Error('Finish or cancel queued/running work and remove unsent draft images before archiving this scope')
           if (automatic && !(await this.eligible(ws, task))) throw new Error('Scope is no longer eligible for auto-archive')
           this.kernel.terminals.dropScope(ws, task)
+          this.report('Stopping containers…')
           await this.kernel.containers.teardownTask(ws, task)
           await this.kernel.sessions.flushTask(ws, task)
           const sessions = this.kernel.sessions.listForTask(ws, task)
@@ -170,9 +192,12 @@ export class ArchiveManager {
           await fs.mkdir(root(), { recursive: true, mode: 0o700 })
           const temp = `${dataFile(meta.id)}.tmp`
           try {
+            this.report('Saving chats…')
             await this.savePreviews(meta)
-            meta.originalBytes = await packScope(store.taskDir(ws, task), temp)
+            this.report('Compressing files…', 0)
+            meta.originalBytes = await packScope(store.taskDir(ws, task), temp, (bytes) => this.report('Compressing files…', bytes))
             // Validate the full archive before retiring any source data.
+            this.report('Verifying archive…')
             await unpackScope(temp)
             const handle = await fs.open(temp, 'r')
             try { await handle.sync() } finally { await handle.close() }
@@ -182,6 +207,7 @@ export class ArchiveManager {
             await atomicJson(metaFile(meta.id), meta)
             // A crash before this rename leaves a harmless archive copy beside
             // the live scope. A crash after it leaves a complete usable archive.
+            this.report('Finishing archive…')
             const retired = path.join(root(), `${meta.id}.source`)
             await fs.rename(store.taskDir(ws, task), retired)
             this.kernel.sessions.dropTaskSessions(ws, task)
@@ -195,7 +221,7 @@ export class ArchiveManager {
           } finally { await this.cleanUncommitted(meta) }
         }))
       )
-    })
+    }, `${ws} / ${task}`)
   }
 
   async readSession(id: string, sessionId: string): Promise<ChatEntry[]> {
@@ -221,6 +247,7 @@ export class ArchiveManager {
       return this.kernel.sessions.withTaskFrozen(ws, task, async () => {
         if (this.kernel.sessions.taskHasPendingWork(ws, task))
           throw new Error('Finish or cancel queued and running work in this scope before archiving')
+        this.report('Stopping container…')
         await this.kernel.containers.release(sessionId, 'archived')
         await this.kernel.sessions.flushTask(ws, task)
         const record = (await store.readSessions(ws, task)).find((r) => r.info.id === sessionId)
@@ -235,6 +262,7 @@ export class ArchiveManager {
         }
         const temp = `${dataFile(meta.id)}.tmp`
         try {
+          this.report('Saving chats…')
           await this.savePreviews(meta)
           await atomicJson(path.join(staging, 'task.json'), await store.getTask(ws, task))
           await atomicJson(path.join(staging, 'sessions.json'), [record])
@@ -245,7 +273,9 @@ export class ArchiveManager {
           if (existsSync(history)) await fs.cp(history, path.join(staging, '.multirepo', sessionId, 'history'), { recursive: true, verbatimSymlinks: true })
           await fs.mkdir(path.join(staging, '.multirepo', sessionId), { recursive: true })
           await fs.copyFile(path.join(store.sessionScratchDir(ws, task, sessionId), 'archive-pii.json'), path.join(staging, '.multirepo', sessionId, 'archive-pii.json'))
-          meta.originalBytes = await packScope(staging, temp)
+          this.report('Compressing files…', 0)
+          meta.originalBytes = await packScope(staging, temp, (bytes) => this.report('Compressing files…', bytes))
+          this.report('Verifying archive…')
           await unpackScope(temp)
           const handle = await fs.open(temp, 'r')
           try { await handle.sync() } finally { await handle.close() }
@@ -253,6 +283,7 @@ export class ArchiveManager {
           for (const file of await fs.readdir(previewDir(meta.id))) meta.compressedBytes += (await fs.stat(path.join(previewDir(meta.id), file))).size
           await fs.rename(temp, dataFile(meta.id))
           await atomicJson(metaFile(meta.id), meta)
+          this.report('Finishing archive…')
           this.kernel.sessions.dropArchivedSession(sessionId)
           dropSessionLog(sessionId)
           await this.kernel.sessions.flushTask(ws, task)
@@ -266,7 +297,7 @@ export class ArchiveManager {
           await store.rmTree(staging)
         }
       })
-    })
+    }, this.kernel.sessions.sessionInfo(sessionId)?.title ?? 'Session')
   }
 
   async pin(id: string, pinned: boolean): Promise<void> {
@@ -375,14 +406,14 @@ export class ArchiveManager {
     return repos.length === clones.length && repos.every((r) => !isActionable(r) && !r.conflicted)
   }
 
-  runPolicy(): Promise<{ archived: number; deleted: number }> {
+  runPolicy(): Promise<{ archived: number; deleted: number; errors: string[] }> {
     this.policyInFlight ??= this.policy().finally(() => { this.policyInFlight = undefined })
     return this.policyInFlight
   }
 
-  private async policy(): Promise<{ archived: number; deleted: number }> {
+  private async policy(): Promise<{ archived: number; deleted: number; errors: string[] }> {
     await this.kernel.ready
-    const result = { archived: 0, deleted: 0 }
+    const result = { archived: 0, deleted: 0, errors: [] as string[] }
     const settings = await this.settings()
     if (settings.autoArchive) {
       for (const ws of (await this.kernel.tree()).workspaces) for (const task of ws.tasks) {
@@ -391,7 +422,10 @@ export class ArchiveManager {
             await this.archive(ws.name, task.name, true)
             result.archived++
           }
-        } catch (e) { log.warn('archive.auto.fail', { ws: ws.name, task: task.name, err: e }) }
+        } catch (e) {
+          result.errors.push(`${ws.name} / ${task.name}: ${e instanceof Error ? e.message : String(e)}`)
+          log.warn('archive.auto.fail', { ws: ws.name, task: task.name, err: e })
+        }
       }
     }
     for (const archive of await this.list()) {
@@ -401,7 +435,10 @@ export class ArchiveManager {
       if (!latest.autoDelete) break
       if (!archive.pinned && Date.parse(archive.archivedAt) < Date.now() - latest.retentionDays * 86_400_000) {
         try { await this.delete(archive.id); result.deleted++ }
-        catch (e) { log.warn('archive.retention.fail', { id: archive.id, err: e }) }
+        catch (e) {
+          result.errors.push(`${archive.workspace} / ${archive.task}: ${e instanceof Error ? e.message : String(e)}`)
+          log.warn('archive.retention.fail', { id: archive.id, err: e })
+        }
       }
     }
     return result

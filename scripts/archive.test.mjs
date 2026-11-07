@@ -53,17 +53,17 @@ test('streamed format preserves binary data, executable bits, symlinks and opaqu
   fs.writeFileSync(path.join(input, '.multirepo', 'session', 'skills', 'copy'), 'regenerated')
   fs.writeFileSync(path.join(input, '.multirepo', 'session', 'history', 'private.jsonl'), 'history')
   const bytes = Buffer.alloc(200000, 113)
-  fs.writeFileSync(path.join(input, 'run'), bytes, { mode: 0o755 })
-  fs.symlinkSync('run', path.join(input, 'link'))
+  fs.writeFileSync(path.join(input, '.multirepo', 'session', 'history', 'run'), bytes, { mode: 0o755 })
+  fs.symlinkSync('run', path.join(input, '.multirepo', 'session', 'history', 'link'))
   const archive = path.join(root, 'format.gz')
   await packScope(input, archive)
   assert.ok(fs.statSync(archive).size < bytes.length / 10)
-  assert.deepEqual(await unpackScope(archive, undefined, 'run'), bytes)
+  assert.deepEqual(await unpackScope(archive, undefined, '.multirepo/session/history/run'), bytes)
   fs.mkdirSync(output)
   await unpackScope(archive, output)
-  assert.deepEqual(fs.readFileSync(path.join(output, 'run')), bytes)
-  assert.equal(fs.statSync(path.join(output, 'run')).mode & 0o777, 0o755)
-  assert.equal(fs.readlinkSync(path.join(output, 'link')), 'run')
+  assert.deepEqual(fs.readFileSync(path.join(output, '.multirepo', 'session', 'history', 'run')), bytes)
+  assert.equal(fs.statSync(path.join(output, '.multirepo', 'session', 'history', 'run')).mode & 0o777, 0o755)
+  assert.equal(fs.readlinkSync(path.join(output, '.multirepo', 'session', 'history', 'link')), 'run')
   assert.equal(fs.readFileSync(path.join(output, '.multirepo', 'session', 'history', 'private.jsonl'), 'utf8'), 'history')
   assert.equal(fs.existsSync(path.join(output, '.multirepo', 'session', 'skills')), false)
 })
@@ -87,7 +87,7 @@ test('rejects traversal, writes through symlinks, truncated streams and bad chec
   await assert.rejects(unpackScope(file))
 })
 
-test('scope archive hides live scope, previews chat without extracting and restores repos and agent history', async () => {
+test('scope archive hides live scope, previews chat without extracting and restores only Gurt state and agent history', async () => {
   const info = await scope('feature/archived')
   const dir = store.taskDir('work', info.task)
   const log = [{ seq: 1, type: 'entry', entry: { id: 1, kind: 'user', text: 'Important chat' } },
@@ -98,11 +98,25 @@ test('scope archive hides live scope, previews chat without extracting and resto
   fs.mkdirSync(path.join(dir, 'repo', '.git'), { recursive: true })
   fs.writeFileSync(path.join(dir, 'repo', '.git', 'local-ref'), 'unpushed commit')
   fs.writeFileSync(path.join(dir, 'repo', '.env'), 'local ignored data')
+  for (const relative of ['repo/node_modules/pkg', 'node_modules/pkg', 'dist', '.multirepo/' + info.id + '/repos/repo', '.multirepo/' + info.id + '/history/node_modules/pkg']) {
+    fs.mkdirSync(path.join(dir, relative), { recursive: true })
+    fs.writeFileSync(path.join(dir, relative, 'large.bin'), Buffer.alloc(100000, 42))
+  }
+  fs.writeFileSync(path.join(dir, 'unrelated.bin'), 'not Gurt state')
   const history = store.sessionHistoryDir('work', info.task, info.id)
   fs.mkdirSync(history, { recursive: true })
   fs.writeFileSync(path.join(history, 'native.jsonl'), 'agent state')
   const archive = await kernel.archive.archive('work', info.task)
   assert.equal(archive.kind, 'scope')
+  const packed = path.join(process.env.GURT_ROOT, '.archives', `${archive.id}.jsonl.gz`)
+  const records = (await import('node:zlib')).gunzipSync(fs.readFileSync(packed)).toString().trim().split('\n').map((line) => JSON.parse(line))
+  const paths = records.filter((record) => record.path).map((record) => record.path)
+  assert.ok(paths.includes('task.json'))
+  assert.ok(paths.includes('sessions.json'))
+  assert.ok(paths.includes(`sessions/${info.id}.jsonl`))
+  assert.ok(paths.includes(`.multirepo/${info.id}/history/native.jsonl`))
+  assert.equal(paths.some((name) => /(^|\/)(repo|repos|node_modules|dist|unrelated.bin)(\/|$)/.test(name)), false)
+  assert.ok(archive.originalBytes < 100000, 'excluded dependencies never reach compression')
   assert.equal(store.taskExists('work', info.task), false)
   assert.equal(kernel.sessions.sessionInfo(info.id), undefined)
   assert.ok(removals.some(([ws, task]) => ws === 'work' && task === info.task))
@@ -111,8 +125,7 @@ test('scope archive hides live scope, previews chat without extracting and resto
   assert.equal((await kernel.archive.readSession(archive.id, info.id))[2].text, 'saved@example.test')
   assert.equal(store.taskExists('work', info.task), false, 'preview never restores the scope')
   await kernel.archive.restore(archive.id)
-  assert.equal(fs.readFileSync(path.join(dir, 'repo', '.env'), 'utf8'), 'local ignored data')
-  assert.equal(fs.readFileSync(path.join(dir, 'repo', '.git', 'local-ref'), 'utf8'), 'unpushed commit')
+  assert.equal(fs.existsSync(path.join(dir, 'repo')), false)
   assert.equal(fs.readFileSync(path.join(history, 'native.jsonl'), 'utf8'), 'agent state')
   assert.equal(kernel.sessions.snapshot(info.id).entries[1].text, 'Saved answer')
   assert.equal(kernel.pii.decode(info.id, '[email:1]'), 'saved@example.test')
@@ -227,7 +240,9 @@ test('real Git: dirty and unpushed work survives auto policy; clean pushed scope
 
 test('failed compression keeps the live scope and removes uncommitted archive files', async () => {
   const info = await scope('archive-failure')
-  const file = path.join(store.taskDir('work', info.task), 'C:unsafe')
+  const history = store.sessionHistoryDir('work', info.task, info.id)
+  fs.mkdirSync(history, { recursive: true })
+  const file = path.join(history, 'C:unsafe')
   fs.writeFileSync(file, 'must survive')
   const before = (await kernel.archive.list()).map((a) => a.id)
   await assert.rejects(kernel.archive.archive('work', info.task), /Unsafe path/)
@@ -271,4 +286,38 @@ test('corrupt archives never publish a partial restored scope, while chat previe
   assert.equal(store.taskExists('work', info.task), false)
   assert.equal((await kernel.archive.readSession(archive.id, info.id))[0].text, 'saved preview')
   assert.ok((await kernel.archive.list()).some((a) => a.id === archive.id))
+})
+
+
+test('policy reports scope failures to the caller instead of silently returning zero', async () => {
+  await scope('policy-error')
+  await kernel.archive.setSettings({ autoArchive: true, inactiveHours: 24, autoDelete: false, retentionDays: 90 })
+  const eligible = kernel.archive.eligible
+  kernel.archive.eligible = async () => { throw new Error('Repository inspection failed') }
+  try {
+    const result = await kernel.archive.runPolicy()
+    assert.equal(result.archived, 0)
+    assert.ok(result.errors.some((message) => message.includes('policy-error: Repository inspection failed')))
+  } finally { kernel.archive.eligible = eligible }
+})
+
+
+test('archiving emits preparation, byte progress, verification and completion; failures also finish', async () => {
+  await scope('visible-progress')
+  const events = []
+  const off = kernel.bus.on('archive.progress', (event) => events.push(event))
+  try {
+    await kernel.archive.archive('work', 'visible-progress')
+    assert.equal(events[0].stage, 'Preparing archive…')
+    assert.equal(events[0].done, false)
+    assert.ok(events.some((event) => event.stage === 'Compressing files…' && event.bytes > 0))
+    assert.ok(events.some((event) => event.stage === 'Verifying archive…'))
+    assert.equal(events.at(-1).done, true)
+    assert.equal(events.at(-1).stage, 'Archived')
+    assert.equal(new Set(events.map((event) => event.id)).size, 1)
+    events.length = 0
+    await assert.rejects(kernel.archive.archive('work', 'visible-progress'), /no longer exists/)
+    assert.equal(events.at(-1).done, true)
+    assert.match(events.at(-1).error, /no longer exists/)
+  } finally { off() }
 })

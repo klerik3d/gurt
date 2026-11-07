@@ -120,7 +120,7 @@ export interface GurtApi {
   deleteArchive(id: string): Promise<void>
   getArchiveSettings(): Promise<ArchiveSettings>
   setArchiveSettings(settings: ArchiveSettings): Promise<void>
-  runArchivePolicy(): Promise<{ archived: number; deleted: number }>
+  runArchivePolicy(): Promise<{ archived: number; deleted: number; errors: string[] }>
   syncArchiveRead(marks: Record<string, string>): Promise<void>
   taskFilePath(ws: string, task: string, path: string): Promise<string>
   renameTaskFile(ws: string, task: string, path: string, name: string): Promise<string>
@@ -724,6 +724,7 @@ export type WriteMethod = {
 
 /** Push channels main broadcasts to the renderer, with their payloads. */
 export interface GurtEvents {
+  'archive-progress': DomainEvents['archive.progress']
   'terminal-changed': DomainEvents['terminal.changed']
   'terminal-output': DomainEvents['terminal.output']
   'tree-changed': void
