@@ -225,6 +225,7 @@ test('preload exposes nothing beyond API_METHODS + the known event hooks', () =>
     'onNotificationRead',
     'onUsageChanged',
     'onBootProgress',
+    'onArchiveProgress',
     'onUpdateReady',
     'onProxyTraffic',
     'onPiiTable',

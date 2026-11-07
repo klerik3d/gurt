@@ -243,9 +243,15 @@ try {
   await every.press('Enter')
   await until(() => read(`${ws}/triage/task.json`).proactive.cron === '*/15 * * * *', 'cron persisted')
   assert.equal('maxScopesPerRun' in read(`${ws}/triage/task.json`).proactive, false, 'the old per-run limit is dropped')
+  // Keep the on/off check independent of the wall clock: */15 can already
+  // be due since the seeded last run, making the header say 'running now'.
+  const futureCron = `0 0 1 ${(new Date().getMonth() + 1) % 12 + 1} *`
+  await every.fill(futureCron)
+  await every.press('Enter')
+  await until(() => read(`${ws}/triage/task.json`).proactive.cron === futureCron, 'future cron persisted')
   await page.click('button:has-text("Turn on")')
   await until(() => read(`${ws}/triage/task.json`).proactive.enabled === true, 'enabled')
-  await page.waitForSelector('.pa-head-status:has-text("*/15 * * * *")', { timeout: 5000 })
+  await page.locator('.pa-head-status').filter({ hasText: futureCron }).waitFor({ timeout: 5000 })
   await page.click('button:has-text("Turn off")')
   await until(() => read(`${ws}/triage/task.json`).proactive.enabled === false, 'disabled')
   assert.equal(read(`${ws}/triage/task.json`).proactive.templateId, 'tpl-1', 'the template id survives an update')
