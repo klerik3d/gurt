@@ -160,7 +160,7 @@ export async function ensureSessionHistory(
  *  named `sessions` would collide with the task's session-log dir, etc.
  *  Compared case-insensitively (macOS default FS is case-insensitive). */
 const RESERVED_NAMES: Record<string, string[]> = {
-  workspace: ['agents.json', 'credentials.json', 'agent-config-cache.json'],
+  workspace: ['agents.json', 'credentials.json', 'agent-config-cache.json', '.archives', 'archive-settings.json'],
   task: ['workspace.json', 'skills', 'repos'],
   repo: ['task.json', 'sessions.json', 'review.json', 'sessions', '.multirepo', 'proactive-state.json'],
   // The base image's virtual env shares the env name space, so a workspace env may not take its name.

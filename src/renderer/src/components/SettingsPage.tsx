@@ -14,6 +14,7 @@ import { NotificationsSection } from './settings/NotificationsSection'
 import { MaskingSection } from './settings/MaskingSection'
 import { HotkeysSection } from './settings/HotkeysSection'
 import { CredentialsSection } from './settings/CredentialsSection'
+import { ArchiveSection } from './settings/ArchiveSection'
 
 export const SETTINGS_SECTIONS = [
   'environments',
@@ -28,6 +29,7 @@ export const SETTINGS_SECTIONS = [
   'hotkeys',
   'machine',
   'docker',
+  'archive',
 ] as const
 
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number]
@@ -53,7 +55,8 @@ const SECTION_ICON: Record<SettingsSection, IconName> = {
   notifications: 'bell',
   hotkeys: 'grid',
   machine: 'info',
-  docker: 'trash'
+  docker: 'trash',
+  archive: 'box'
 }
 
 /** Registry group — the sections that define *what the workspace has*: the
@@ -82,6 +85,7 @@ const REGISTRY_SECTIONS = [
 const GENERAL_SECTIONS = [
   'machine',
   'docker',
+  'archive',
   'notifications',
   'hotkeys'
 ] as const satisfies readonly SettingsSection[]
@@ -199,6 +203,7 @@ export function SettingsPage({
         {section === 'hotkeys' && <HotkeysSection />}
         {section === 'machine' && <MachineSection />}
         {section === 'docker' && <DockerCleanupSection />}
+        {section === 'archive' && <ArchiveSection />}
       </div>
     </div>
   )

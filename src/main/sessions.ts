@@ -729,6 +729,14 @@ export class SessionManager {
         r.info.limitedUntil = undefined
       }
       const entries = applyLog([], r.log)
+      if (!r.info.lastActivityAt) {
+        const at = entries.reduce((n, e) => Math.max(n, e.endAt ?? e.at ?? 0), 0)
+        if (at) r.info.lastActivityAt = new Date(at).toISOString()
+      }
+      if (!r.info.lastContentAt) {
+        const at = entries.reduce((n, e) => Math.max(n, e.endAt ?? e.at ?? 0), 0)
+        if (at) r.info.lastContentAt = new Date(at).toISOString()
+      }
       const lastSeq = r.log[r.log.length - 1]?.seq ?? 0
       this.sessions.set(r.info.id, {
         info: r.info,
@@ -971,6 +979,7 @@ export class SessionManager {
      *  (docs/requirements-repo-mounts.md §2). */
     repoModes?: Partial<Record<string, unknown>>
   ): SessionInfo {
+    this.assertTaskWritable(ref.workspace, ref.task)
     const clean = sanitizeSessionNetwork(network)
     const modes = normalizeRepoModes(repos, repoModes)
     // Gate 1 of four (docs/requirements-repo-mounts.md §4): a session cannot
@@ -985,6 +994,7 @@ export class SessionManager {
     const title = this.defaultTitleForRole(ref, role)
     const info: SessionInfo = {
       id: randomUUID(),
+      lastActivityAt: new Date().toISOString(),
       env: ref.env,
       role,
       repos,
@@ -1065,6 +1075,7 @@ export class SessionManager {
   /** Run now — bypass the queue and start immediately (see {@link startNowOrQueue}
    *  for the one exception: a task already at its concurrency cap). */
   run(sessionId: string): void {
+    this.assertSessionWritable(sessionId)
     const s = this.sessions.get(sessionId)
     if (!s || s.info.state === 'starting' || s.info.state === 'started') return
     assertNotTemplate(s.info)
@@ -1075,6 +1086,7 @@ export class SessionManager {
   }
 
   enqueue(sessionId: string): void {
+    this.assertSessionWritable(sessionId)
     const s = this.sessions.get(sessionId)
     if (!s || s.info.state === 'starting' || s.info.state === 'started') return
     assertNotTemplate(s.info)
@@ -1102,6 +1114,7 @@ export class SessionManager {
   }
 
   editPrompt(sessionId: string, text: string, images?: PromptImage[]): void {
+    this.assertSessionWritable(sessionId)
     const s = this.sessions.get(sessionId)
     if (!s || s.info.state !== 'draft') return
     s.info.startPrompt = text
@@ -1135,6 +1148,7 @@ export class SessionManager {
       configValues?: Record<string, string | boolean>
     }
   ): void {
+    this.assertSessionWritable(sessionId)
     const s = this.sessions.get(sessionId)
     if (!s || s.info.state !== 'draft') return
     if (patch.agent !== undefined) {
@@ -1265,6 +1279,7 @@ export class SessionManager {
    * would only lose the draft's in-memory start images.
    */
   recreateSession(sessionId: string): SessionInfo {
+    this.assertSessionWritable(sessionId)
     const s = this.sessions.get(sessionId)
     if (!s) throw new Error('unknown session')
     if (s.info.state === 'draft') throw new Error('session is already a draft')
@@ -1320,6 +1335,7 @@ export class SessionManager {
    * outlives every session of its task.
    */
   deleteSession(sessionId: string): void {
+    this.assertSessionWritable(sessionId)
     const s = this.sessions.get(sessionId)
     if (!s) return
     for (const resolve of s.pendingPermissions.values())
@@ -1378,6 +1394,7 @@ export class SessionManager {
     const still = new Set<string>()
     const holds: PlanHold[] = []
     for (const s of queued) {
+      if (this.frozenTasks.has(taskKey(s.ref.workspace, s.ref.task))) continue
       // Before the task cap and the clone: a held item claims neither, so the
       // items behind it on other accounts move on, and it keeps its place.
       const hold = this.limitHold(s)
@@ -1919,12 +1936,77 @@ export class SessionManager {
 
   /** Wait for buffered state and history before an intentional update restart. */
   async flushForRestart(): Promise<void> {
-    for (const s of this.sessions.values()) {
+    await this.flushSessions([...this.sessions.values()])
+  }
+
+  async flushTask(ws: string, task: string): Promise<void> {
+    const key = taskKey(ws, task)
+    clearTimeout(this.persistTimers.get(key))
+    this.persistTimers.delete(key)
+    await this.flushSessions(this.sessionsFor(ws, task))
+  }
+
+  private async flushSessions(sessions: Session[]): Promise<void> {
+    for (const s of sessions) {
       await this.persistNow(s)
       while (s.flushInFlight) await new Promise((resolve) => setTimeout(resolve, 10))
       this.flushLog(s)
       while (s.flushInFlight) await new Promise((resolve) => setTimeout(resolve, 10))
       if (s.flushedSeq < s.lastSeq) throw new Error('Could not save session history before restart')
+    }
+  }
+
+  private frozenTasks = new Set<string>()
+
+  assertTaskWritable(ws: string, task: string): void {
+    if (this.frozenTasks.has(taskKey(ws, task))) throw new Error('Scope is being archived')
+  }
+
+  private assertSessionWritable(id: string): void {
+    const s = this.sessions.get(id)
+    if (s) this.assertTaskWritable(s.ref.workspace, s.ref.task)
+  }
+
+  async withTaskFrozen<T>(ws: string, task: string, action: () => Promise<T>): Promise<T> {
+    this.assertTaskWritable(ws, task)
+    this.frozenTasks.add(taskKey(ws, task))
+    try { return await action() } finally { this.frozenTasks.delete(taskKey(ws, task)) }
+  }
+
+  noteTaskActivity(ws: string, task: string): void {
+    const sessions = this.sessionsFor(ws, task)
+    if (!sessions.length) return
+    for (const s of sessions) s.info.lastActivityAt = new Date().toISOString()
+    this.schedulePersist(sessions[0]!.ref)
+  }
+
+  taskHasPendingWork(ws: string, task: string): boolean {
+    return this.sessionsFor(ws, task).some((s) => s.busy || s.draining || s.loading || s.promptRunning ||
+      s.pendingPermissions.size > 0 || s.pending.length > 0 || s.recovering ||
+      s.info.state === 'starting' || s.info.state === 'queued' || !!s.info.limitedUntil || !!s.startImages?.length)
+  }
+
+  /** Archive retirement preserves the log/history until the archive is verified. */
+  dropArchivedSession(id: string): void {
+    const s = this.sessions.get(id)
+    if (!s) return
+    this.detach(id)
+    this.events.stopGurtServer(id)
+    this.mask.drop(id)
+    stopPiiRewrite(id)
+    this.sessions.delete(id)
+    this.schedulePersist(s.ref)
+    this.bus.emit('session.deleted', { sessionId: id })
+    this.bus.emit('tree.changed', undefined)
+  }
+
+  setArchiveRead(marks: Record<string, string>): void {
+    for (const [id, stamp] of Object.entries(marks)) {
+      const s = this.sessions.get(id)
+      if (!s || this.frozenTasks.has(taskKey(s.ref.workspace, s.ref.task))) continue
+      s.info.archiveSeenAt = stamp === 'unread' ? undefined :
+        Number.isFinite(Date.parse(stamp)) ? stamp : s.info.archiveSeenAt
+      this.schedulePersist(s.ref)
     }
   }
 
@@ -1999,6 +2081,7 @@ export class SessionManager {
       if (s.ref.workspace !== ws || s.ref.task !== oldTask) continue
       s.ref = { ...s.ref, task: newTask }
       s.info.task = newTask
+      s.info.lastActivityAt = new Date().toISOString()
       s.attached = false
     }
     void Promise.resolve(this.events.persist(ws, newTask, this.recordsFor(ws, newTask)))
@@ -2008,10 +2091,12 @@ export class SessionManager {
 
   /** Rename a session's display title (sidebar/pane header) — cosmetic only. */
   renameSession(sessionId: string, title: string): void {
+    this.assertSessionWritable(sessionId)
     const s = this.sessions.get(sessionId)
     const trimmed = title.trim()
     if (!s || !trimmed || trimmed === s.info.title) return
     s.info.title = trimmed
+    s.info.lastActivityAt = new Date().toISOString()
     this.bus.emit('tree.changed', undefined)
     this.bus.emit('session.changed', { sessionId })
     this.schedulePersist(s.ref)
@@ -2936,6 +3021,9 @@ export class SessionManager {
   activity(sessionId: string): void {
     const s = this.sessions.get(sessionId)
     if (!s) return
+    if (this.frozenTasks.has(taskKey(s.ref.workspace, s.ref.task))) return
+    s.info.lastActivityAt = new Date().toISOString()
+    this.schedulePersist(s.ref)
     this.bus.emit('session.activity', { sessionId: s.info.id })
   }
 
@@ -2945,6 +3033,7 @@ export class SessionManager {
     context?: PromptContext[],
     images?: PromptImage[]
   ): Promise<void> {
+    this.assertSessionWritable(sessionId)
     const s = this.sessions.get(sessionId)
     if (!s) throw new Error('unknown session')
     if (s.info.state !== 'started') throw new Error('session is not started')
@@ -3077,6 +3166,7 @@ export class SessionManager {
   }
 
   async setMode(sessionId: string, modeId: string): Promise<void> {
+    this.assertSessionWritable(sessionId)
     const s = this.sessions.get(sessionId)
     if (!s) throw new Error('unknown session')
     const conn = this.connections.get(s.info.id)
@@ -3149,6 +3239,8 @@ export class SessionManager {
 
   /** The ONE writer of the session log: assigns seq, applies, announces, persists. */
   private append(s: Session, record: NewLogRecord): void {
+    s.info.lastActivityAt = new Date().toISOString()
+    s.info.lastContentAt = s.info.lastActivityAt
     const rec = { ...record, seq: ++s.lastSeq }
     s.records.push(rec)
     s.entries = applyLog(s.entries, [rec])
@@ -3224,6 +3316,7 @@ export class SessionManager {
    *  `configValues` so it survives a detach and re-applies on the next start, and
    *  refreshes the agent cache with the new option set. */
   async setConfigOption(sessionId: string, configId: string, value: string | boolean): Promise<void> {
+    this.assertSessionWritable(sessionId)
     const s = this.sessions.get(sessionId)
     if (!s) throw new Error('unknown session')
     // A sleeping session is woken first — attach brings the container up and

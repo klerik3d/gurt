@@ -593,6 +593,10 @@ export type InterruptedSession = Pick<SessionInfo, 'id' | 'title' | 'workspace' 
  * the overlays when a turn ends). Everything else is absent-or-set.
  */
 export interface SessionInfo {
+  /** Durable activity/read stamps used by the archive policy. */
+  lastActivityAt?: string | undefined
+  lastContentAt?: string | undefined
+  archiveSeenAt?: string | undefined
   id: string
   /** The env this session runs on — an `EnvConfig.name`. */
   env: string

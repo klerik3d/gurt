@@ -570,12 +570,26 @@ function CodeBlock({ node: _node, ...rest }: React.ComponentPropsWithoutRef<'pre
   )
 }
 
+export function ArchiveChat({ entries, sessionId }: { entries: ChatEntry[]; sessionId: string }) {
+  return <div className="chat archive-chat"><div className="feed"><div className="feed-inner">
+    {feedBlocks(entries.filter((e) => !isCompleteEcho(e))).map((block) => block.kind === 'strip'
+      ? <div className="msg msg-tool" key={`s${block.entries[0]!.id}`}>
+        <MsgTime at={stripTime(block.entries)} />
+        <ToolStrip entries={block.entries} busy={false} />
+      </div>
+      : <Msg key={block.entry.id} entry={block.entry} sessionId={sessionId} readOnly />)}
+    {!entries.length && <div className="placeholder">No messages in this session.</div>}
+  </div></div></div>
+}
+
 function Msg({
   entry,
-  sessionId
+  sessionId,
+  readOnly = false
 }: {
   entry: ChatEntry
   sessionId: string
+  readOnly?: boolean
 }) {
   switch (entry.kind) {
     case 'user':
@@ -604,6 +618,9 @@ function Msg({
       // Grouped into a `ToolStrip` by the feed; never rendered on their own.
       return null
     case 'permission':
+      if (readOnly) return <div className="msg msg-tool"><MsgTime at={entry.at} />
+        <div className="msg-sys mono">{entry.title}{entry.chosen ? ` · ${entry.chosen}` : ' · unanswered'}</div>
+      </div>
       return <PermissionMsg entry={entry} sessionId={sessionId} />
     case 'system':
       return (

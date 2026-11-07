@@ -3,6 +3,7 @@
 // both. Importable without an Electron app (headless runs, orchestrator,
 // tests).
 import { startGc } from './gc'
+import { ArchiveManager } from './archive'
 import type { Tree } from '../shared/types'
 import { defaultEnvName, isBundledEnv, isRepoMode, isSessionRole } from '../shared/types'
 import type { BootProgress, SessionDraftPatch } from '../shared/api'
@@ -41,6 +42,7 @@ const sessionLog = createLogger('sessions')
 const containerLog = createLogger('containers')
 
 export interface Kernel {
+  archive: ArchiveManager
   bus: Bus
   terminals: TerminalManager
   containers: ContainerManager
@@ -467,6 +469,7 @@ export function createKernel(): Kernel {
   startGc(containers)
 
   const kernel: Kernel = {
+    get archive() { return archive },
     bus,
     terminals,
     containers,
@@ -489,6 +492,7 @@ export function createKernel(): Kernel {
     },
 
     async deleteTask(ws: string, task: string): Promise<void> {
+      sessions.assertTaskWritable(ws, task)
       // First, while its sessions still exist: an agent's run in progress ends
       // as cancelled, a raised scope frees its refs.
       await proactive.onScopeDeleted(ws, task)
@@ -502,6 +506,7 @@ export function createKernel(): Kernel {
     },
 
     async deleteWorkspace(ws: string): Promise<void> {
+      for (const task of await store.listTasks(ws)) sessions.assertTaskWritable(ws, task)
       await terminals.withScopeBlocked(ws, undefined, async () => {
         await containers.teardownWorkspace(ws)
         terminals.dropScope(ws)
@@ -513,6 +518,7 @@ export function createKernel(): Kernel {
     },
 
     async renameTask(ws: string, task: string, newName: string): Promise<void> {
+      sessions.assertTaskWritable(ws, task)
       if (newName === task) return
       // Its name is what every scope it raised records as `origin.agent`.
       if (proactive.isAgent(ws, task)) throw new Error('a proactive agent cannot be renamed')
@@ -567,10 +573,12 @@ export function createKernel(): Kernel {
     },
 
     async setTaskMaxConcurrentSessions(ws: string, task: string, max: number | undefined): Promise<void> {
+      sessions.assertTaskWritable(ws, task)
       const clean = max !== undefined && Number.isFinite(max) && max > 0 ? Math.floor(max) : undefined
       const { maxConcurrentSessions: _prev, ...rest } = await store.getTask(ws, task)
       await store.saveTask(ws, task, clean === undefined ? rest : { ...rest, maxConcurrentSessions: clean })
       sessions.setTaskCap(ws, task, clean)
+      sessions.noteTaskActivity(ws, task)
       bus.emit('tree.changed', undefined)
     },
 
@@ -591,6 +599,9 @@ export function createKernel(): Kernel {
   // sessions and diagnostics everything else does. The session manager's
   // adminFor closure above resolves it lazily.
   const admin: AdminSurface = createAdminSurface(kernel)
+
+  const archive = new ArchiveManager(kernel)
+  archive.start()
 
   return kernel
 }

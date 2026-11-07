@@ -296,6 +296,14 @@ export function Sidebar({
               <Icon name="copy" size={13} className="faint" />
               <span>Copy path</span>
             </div>
+            <div className="menu-item" onMouseDown={(e) => {
+              e.preventDefault()
+              close()
+              fire(() => window.gurt.archiveTask(row.ws, row.task))
+            }}>
+              <Icon name="box" size={13} className="faint" />
+              <span>Archive scope</span>
+            </div>
             <div className="menu-sep" />
             <div
               className="menu-item danger"
@@ -348,6 +356,14 @@ export function Sidebar({
                 <span>Mark unread</span>
               </div>
             )}
+            <div className="menu-item" onMouseDown={(e) => {
+              e.preventDefault()
+              close()
+              fire(() => window.gurt.archiveSession(row.id))
+            }}>
+              <Icon name="box" size={13} className="faint" />
+              <span>Archive session</span>
+            </div>
             <div className="menu-sep" />
             <div
               className="menu-item danger"

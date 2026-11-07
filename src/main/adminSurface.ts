@@ -178,6 +178,8 @@ export function createAdminSurface(kernel: Kernel): AdminSurface {
       const { ws } = ctx
       const def = ADMIN_TOOLS.find((d) => d.method === method)
       if (!def) throw new Error(`unknown admin method "${method}"`)
+      if (def.exposure === 'write' && kernel.archive.blocksCall(method,
+        [ctx.ws, ...def.params.map((p) => args[p])])) throw new Error('This scope is being archived or restored')
       // Every write goes through the one filter (§4.4(c)); its result is
       // scrubbed like any read, since it echoes the method's own return.
       if (def.exposure === 'write')
