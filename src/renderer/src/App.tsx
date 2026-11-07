@@ -31,6 +31,7 @@ import { useScopeList } from './useScopeList'
 import type { DiffFileSelection } from './components/DiffSidebar'
 import { SettingsPage, SETTINGS_SECTIONS, type SettingsSection } from './components/SettingsPage'
 import { Dashboard } from './components/Dashboard'
+import { ArchivePane } from './components/ArchivePane'
 import { CommandPalette } from './components/CommandPalette'
 import { Welcome } from './components/Welcome'
 import { SessionRecoveryModal } from './components/SessionRecoveryModal'
@@ -53,7 +54,7 @@ export type Selection =
   | { type: 'task'; ws: string; task: string }
   | null
 
-export const VIEWS = ['work', 'dashboard', 'settings'] as const
+export const VIEWS = ['work', 'dashboard', 'archive', 'settings'] as const
 export type View = (typeof VIEWS)[number]
 
 export const WORK_MODES = ['sessions', 'diff', 'files', 'proactive'] as const
@@ -875,6 +876,8 @@ export default function App() {
       ? 'settings'
       : view === 'dashboard'
         ? 'dashboard'
+        : view === 'archive'
+          ? 'archive'
         : workMode === 'diff'
           ? `${diffTask?.task ? `${diffTask.task} · ` : ''}diff`
           : workMode === 'files'
@@ -1061,6 +1064,10 @@ export default function App() {
           >
             <Icon name="history" size={18} />
           </button>
+          <button className={`ab-item ${view === 'archive' ? 'active' : ''}`} title="Archive"
+            aria-label="Archive" aria-pressed={view === 'archive'} onClick={() => setView('archive')}>
+            <Icon name="box" size={18} />
+          </button>
           <span className="spacer" />
           <button
             className={`ab-item ${view === 'settings' ? 'active' : ''}`}
@@ -1227,6 +1234,7 @@ export default function App() {
           </>
         )}
 
+        {view === 'archive' && <ArchivePane workspace={ws?.name ?? null} width={sidebarWidth} />}
         {view === 'dashboard' && (
           <main className="main">
             <Dashboard

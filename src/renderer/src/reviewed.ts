@@ -31,6 +31,8 @@ let seen: Seen = read()
 const subscribers = new Set<(s: Seen) => void>()
 
 function commit(next: Seen): void {
+  const changed = Object.fromEntries(Object.entries(next).filter(([id, at]) => seen[id] !== at))
+  void window.gurt.syncArchiveRead(changed).catch(logErr('syncArchiveRead'))
   // Trim oldest-first so a long-lived install can't grow the entry unbounded.
   const ids = Object.keys(next)
   if (ids.length > CAP) {
@@ -76,6 +78,9 @@ export function markAllSeen(ids: string[]): void {
 export function useSeen(): Seen {
   const [state, setState] = useState<Seen>(seen)
   useEffect(() => {
+    // Migrate marks made before archive policy existed. Keep module import
+    // safe for headless rendering; only a mounted window talks to the host.
+    void window.gurt.syncArchiveRead(seen).catch(logErr('syncArchiveRead'))
     subscribers.add(setState)
     setState(seen)
     return () => {

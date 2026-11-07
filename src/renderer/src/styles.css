@@ -4815,3 +4815,19 @@ button { user-select: none; }
 .sb-rename.invalid {
   border-color: var(--red);
 }
+
+.archive-sidebar { flex: none; }
+.archive-sidebar .input { width: 100%; }
+.archive-tree { overflow: auto; flex: 1; }
+.archive-scope { width: 100%; text-align: left; border: 0; color: inherit; font: inherit; background: transparent; gap: 6px; }
+.archive-scope.selected, .archive-session.selected { background: var(--hover); }
+.archive-stamp { padding: 0 12px 8px 28px; color: var(--faint); font-size: 10px; }
+.archive-session { display: flex; align-items: center; gap: 7px; width: 100%; padding: 7px 12px 7px 30px; border: 0; background: transparent; color: inherit; text-align: left; font: inherit; cursor: pointer; }
+.archive-session span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.archive-pinned { color: var(--accent); font-size: 10px; }
+.archive-main { display: flex; flex-direction: column; min-width: 0; }
+.archive-head { flex-wrap: wrap; gap: 8px; }
+.archive-meta { padding: 8px 14px; color: var(--dim); font-size: 11px; border-bottom: 1px solid var(--border); }
+.archive-chat { flex: 1; min-height: 0; }
+.archive-main > .error { padding: 10px 14px; }
+.archive-workspaces { display: flex; align-items: center; gap: 6px; padding: 4px 12px 10px; color: var(--dim); font-size: 11px; }

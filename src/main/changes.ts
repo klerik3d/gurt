@@ -30,8 +30,11 @@ const PUSH_TIMEOUT_MS = 120_000
  *  `commit` runs `add -A` in the middle of `updateFromMain`'s merge and stages
  *  its conflict markers. Reads stay unchained — git serves them concurrently. */
 const cloneChains = new Map<string, Promise<unknown>>()
+const frozenScopes = new Set<string>()
 
 function serialized<T>(dir: string, fn: () => Promise<T>): Promise<T> {
+  if ([...frozenScopes].some((prefix) => dir.startsWith(prefix)))
+    return Promise.reject(new Error('Scope repositories are being archived'))
   const next = Promise.resolve(cloneChains.get(dir))
     .catch(() => {})
     .then(fn)
@@ -40,6 +43,17 @@ function serialized<T>(dir: string, fn: () => Promise<T>): Promise<T> {
     next.catch(() => {})
   )
   return next
+}
+
+/** Let already queued Git writes finish before a scope snapshot is taken. */
+export async function withTaskChangesPaused<T>(ws: string, task: string, action: () => Promise<T>): Promise<T> {
+  const prefix = taskDir(ws, task) + path.sep
+  if (frozenScopes.has(prefix)) throw new Error('Scope repositories are already being archived')
+  frozenScopes.add(prefix)
+  try {
+    await Promise.all([...cloneChains].filter(([dir]) => dir.startsWith(prefix)).map(([, pending]) => pending))
+    return await action()
+  } finally { frozenScopes.delete(prefix) }
 }
 
 interface GitOpts {

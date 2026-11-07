@@ -33,6 +33,7 @@ export type ContainerStatusReason =
   | 'error'
   | 'reconcile'
   | 'gc'
+  | 'archived'
 
 /** Why a session reached its new state. `user` covers both a user action and
  *  the scheduler acting on one; `start-failed` rides with `err`. */

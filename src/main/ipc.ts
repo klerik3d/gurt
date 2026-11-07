@@ -128,6 +128,17 @@ export function registerIpc(): void {
   setInterval(() => void kernel.planUsage.get(), POLL_INTERVAL_MS)
 
   const impl: GurtApi = {
+    archiveTask: (ws, task) => kernel.archive.archive(ws, task),
+    archiveSession: (id) => kernel.archive.archiveSession(id),
+    listArchives: () => kernel.archive.list(),
+    readArchiveSession: (id, sessionId) => kernel.archive.readSession(id, sessionId),
+    restoreArchive: (id) => kernel.archive.restore(id),
+    pinArchive: (id, pinned) => kernel.archive.pin(id, pinned),
+    deleteArchive: (id) => kernel.archive.delete(id),
+    getArchiveSettings: () => kernel.archive.settings(),
+    setArchiveSettings: (settings) => kernel.archive.setSettings(settings),
+    runArchivePolicy: () => kernel.archive.runPolicy(),
+    syncArchiveRead: async (marks) => { await kernel.ready; kernel.sessions.setArchiveRead(marks) },
     terminalList: async () => kernel.terminals.list(),
     terminalEnsure: (ws, task) => kernel.terminals.ensure(ws, task),
     terminalCreate: (ws, task) => kernel.terminals.create(ws, task),
@@ -548,7 +559,13 @@ export function registerIpc(): void {
     ipcMain.handle(`api:${m}`, async (_e, ...args: unknown[]) => {
       const started = Date.now()
       try {
+        if (kernel.archive.blocksCall(m, args))
+          throw new Error('This scope is being archived or restored; wait for it to finish')
         const result = await (impl[m] as (...a: unknown[]) => unknown)(...args)
+        if (['changesCommit', 'changesPush', 'changesUpdateFromMain', 'changesMergeToMain',
+          'writeTaskFile', 'renameTaskFile', 'deleteTaskFile'].includes(m) &&
+          typeof args[0] === 'string' && typeof args[1] === 'string')
+          kernel.sessions.noteTaskActivity(args[0], args[1])
         log.debug('ipc.call', { method: m, ms: Date.now() - started, args: argCtx(m, args) })
         return result
       } catch (e) {

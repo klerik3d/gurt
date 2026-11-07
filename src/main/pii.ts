@@ -66,6 +66,7 @@ export interface PiiMask {
 
 /** The masker plus the settings surface the IPC layer drives. */
 export interface PiiManager extends PiiMask {
+  restoreTable(sessionId: string, table: PiiTable): Promise<void>
   /** Read settings + pattern caches off disk. Awaited once, during boot restore. */
   load(): Promise<void>
   status(): PiiStatus
@@ -272,6 +273,11 @@ export function createPiiMask(deps: PiiDeps): PiiManager {
   }
 
   const manager: PiiManager = {
+    async restoreTable(sessionId, table): Promise<void> {
+      await persist(sessionId, table)
+      sessions.delete(sessionId)
+      for (const listener of listeners) listener(sessionId, table)
+    },
     async load(): Promise<void> {
       settings = await store.getPiiSettings()
       caches = await store.readPiiPatterns()
@@ -463,9 +469,10 @@ export function createPiiMask(deps: PiiDeps): PiiManager {
     drop(sessionId: string): void {
       sessions.delete(sessionId)
       const pending = writes.get(sessionId) ?? Promise.resolve()
-      writes.delete(sessionId)
       // After any in-flight write, or the file would be recreated behind us.
-      void pending.then(() => fsp.rm(tableFile(sessionId), { force: true })).catch(() => {})
+      const retired = pending.then(() => fsp.rm(tableFile(sessionId), { force: true })).catch(() => {})
+      writes.set(sessionId, retired)
+      void retired.then(() => { if (writes.get(sessionId) === retired) writes.delete(sessionId) })
     }
   }
   return manager

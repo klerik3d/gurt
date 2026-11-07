@@ -133,6 +133,14 @@ export function SessionMenu({
               <span>Recreate…</span>
             </div>
           )}
+          <div className="menu-item" onMouseDown={(e) => {
+            e.preventDefault()
+            setOpen(false)
+            void window.gurt.archiveSession(info.id).then(onDeleted).catch((error: unknown) => alertDialog(String(error)))
+          }}>
+            <Icon name="box" size={13} className="faint" />
+            <span>Archive session</span>
+          </div>
           <div className="menu-sep" />
           <div
             className="menu-item danger"

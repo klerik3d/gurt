@@ -39,6 +39,8 @@ import type { LimitSettings, PlanUsage } from './planUsage'
 import type { NotificationPrefs, NotificationRecord } from './notifications'
 import type { HotkeyMap } from './hotkeys'
 import type { GcResult, GcSettings } from './gc'
+import type { ArchiveSettings, ScopeArchive } from './archive'
+import type { ChatEntry } from './types'
 import type { DoctorReport, DoctorRow, FirstRunResult, WelcomeMode } from './doctor'
 
 import type { TerminalInfo, TerminalSnapshot } from './terminal'
@@ -109,6 +111,17 @@ export interface SessionDraftPatch {
 }
 
 export interface GurtApi {
+  archiveTask(ws: string, task: string): Promise<ScopeArchive>
+  archiveSession(sessionId: string): Promise<ScopeArchive>
+  listArchives(): Promise<ScopeArchive[]>
+  readArchiveSession(id: string, sessionId: string): Promise<ChatEntry[]>
+  restoreArchive(id: string): Promise<void>
+  pinArchive(id: string, pinned: boolean): Promise<void>
+  deleteArchive(id: string): Promise<void>
+  getArchiveSettings(): Promise<ArchiveSettings>
+  setArchiveSettings(settings: ArchiveSettings): Promise<void>
+  runArchivePolicy(): Promise<{ archived: number; deleted: number }>
+  syncArchiveRead(marks: Record<string, string>): Promise<void>
   taskFilePath(ws: string, task: string, path: string): Promise<string>
   renameTaskFile(ws: string, task: string, path: string, name: string): Promise<string>
   deleteTaskFile(ws: string, task: string, path: string): Promise<void>
@@ -656,6 +669,17 @@ const METHODS = {
   getLimitSettings: 'none', //  host policy, like the Docker cleanup below
   setLimitSettings: 'none', //  a user gesture: it decides what gets to run
   getGcSettings: 'none', //   host resource policy, not an operator's
+  archiveTask: 'none',
+  archiveSession: 'none',
+  listArchives: 'none',
+  readArchiveSession: 'none',
+  restoreArchive: 'none',
+  pinArchive: 'none',
+  deleteArchive: 'none',
+  getArchiveSettings: 'none',
+  setArchiveSettings: 'none',
+  runArchivePolicy: 'none',
+  syncArchiveRead: 'none',
   setGcSettings: 'none', //     host resource policy: a user gesture
   gcRunNow: 'none', //          removes containers and images on the host
   getWelcomeMode: 'read', //    a UI preference, like the hotkeys below
