@@ -9,6 +9,7 @@ import type { AgentManifest } from '../shared/agentPlugin'
 import { envImageTag, insideRoot, validateEnvConfig } from '../shared/envConfig'
 import type { EnvImageStatus } from '../shared/api'
 import { cloneDir, getWorkspace, historySlug, taskDir } from './store'
+import { scopeBranch } from '../shared/scopeName'
 import { gurtRoot } from './paths'
 import { listCredentials } from './credentials'
 import { hostGitAccess } from './git/env'
@@ -217,6 +218,18 @@ async function currentBranch(
   return out.trim()
 }
 
+/** Short name of the clone's default branch (`origin/HEAD`), or '' when the
+ *  remote names none (an empty remote). */
+async function originHead(dir: string, gitArgs: string[], env: NodeJS.ProcessEnv): Promise<string> {
+  const out = await run(
+    'git',
+    ['-C', dir, ...gitArgs, 'symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'],
+    () => {},
+    { env, okCodes: [0, 1] }
+  )
+  return out.trim().replace(/^origin\//, '')
+}
+
 /** Files under the git dir that mark an operation git left half-finished. A
  *  rebase/cherry-pick that stopped on conflicts also detaches HEAD, so the
  *  branch check alone would not recognise it. */
@@ -295,7 +308,16 @@ async function provisionClone(
     await run('git', ['-C', dir, ...gitArgs, 'merge', '--ff-only', 'FETCH_HEAD'], log, { env })
     return dir
   }
-  const branch = ref.task
+  const branch = scopeBranch(ref.task)
+  // A scope named after the default branch would work on it directly, and push
+  // to it. `main`/`master` are refused as scope names already; this catches a
+  // repo whose default is something else (`develop`, `trunk`). Ahead of the
+  // early return below: a fresh clone already sits on that branch, and so does
+  // a scope created before this check — renaming it moves its work off.
+  if ((await originHead(dir, gitArgs, env)) === branch)
+    throw new Error(
+      `Scope "${ref.task}" has the name of ${repo.name}'s default branch — rename the scope to work on its own branch`
+    )
   // Nothing to check out when we are already on the task branch — and skipping
   // that no-op is what keeps a conflicted clone startable: with unmerged index
   // entries git refuses even a same-branch checkout ("you need to resolve your

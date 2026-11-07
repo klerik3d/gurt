@@ -11,6 +11,7 @@ import { run } from './provision'
 import { cloneDir, taskDir } from './store'
 import { hostGitAccessForRepo, type HostGitAccess } from './git/env'
 import { canonicalRepoId } from '../shared/repoId'
+import { scopeBranch } from '../shared/scopeName'
 import { createLogger } from './log'
 import { openInTerminal } from './terminal'
 
@@ -62,7 +63,7 @@ function git(dir: string, access: HostGitAccess, args: string[], opts: GitOpts =
   })
 }
 
-const branchFor = (task: string) => task
+const branchFor = scopeBranch
 
 /** SHA of `ref`, or '' when it does not exist. */
 async function revParse(dir: string, access: HostGitAccess, ref: string): Promise<string> {
@@ -113,6 +114,10 @@ function parseOrigin(url: string): Origin | null {
   return { host: id.host, owner: segs[0], repo: segs[1] }
 }
 
+/** A branch name as a URL path: `/` stays the separator it reads as, the rest
+ *  of what git allows in a branch (`#`, `&`, `+`, non-ASCII) is escaped. */
+const branchPath = (branch: string): string => branch.split('/').map(encodeURIComponent).join('/')
+
 /** Origin host → PR compare URL. MVP scope: one entry; an unknown host gets no button. */
 const FORGES: {
   match: (host: string) => boolean
@@ -122,7 +127,7 @@ const FORGES: {
     // SSH host aliases like github.com-personal count.
     match: (host) => host.includes('github'),
     compareUrl: (o, def, branch) =>
-      `https://github.com/${o.owner}/${o.repo}/compare/${def}...${branch}?expand=1`
+      `https://github.com/${o.owner}/${o.repo}/compare/${branchPath(def)}...${branchPath(branch)}?expand=1`
   }
 ]
 
@@ -551,6 +556,24 @@ export async function renameTaskBranches(ws: string, task: string, oldTask: stri
       log.warn('branch rename failed', { dir: repoDir, err: e })
     )
   }
+}
+
+/**
+ * Clones of the task where a local branch named `newName` already exists, so
+ * `renameTaskBranches` could not move the task branch onto it. Checked before
+ * a rename starts rather than discovered half-way through it.
+ */
+export async function taskBranchClashes(ws: string, task: string, newName: string): Promise<string[]> {
+  const clashes: string[] = []
+  const dir = taskDir(ws, task)
+  for (const entry of await fs.readdir(dir, { withFileTypes: true }).catch(() => [])) {
+    if (!entry.isDirectory()) continue
+    const repoDir = path.join(dir, entry.name)
+    if (!existsSync(path.join(repoDir, '.git'))) continue
+    const access = await hostGitAccessForRepo(ws, entry.name)
+    if (await revParse(repoDir, access, `refs/heads/${branchFor(newName)}`)) clashes.push(entry.name)
+  }
+  return clashes
 }
 
 export function openTaskInTerminal(ws: string, task: string): Promise<void> {

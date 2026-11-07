@@ -16,7 +16,7 @@ import { NOTIFICATION_RING_CAP } from '../../shared/notifications'
 import { SESSION_DOT, containerDot } from './status'
 import { Icon, Logo } from './components/icons'
 import { EnvRepoMarks } from './components/tags'
-import { Sidebar, NameModal, DeleteWorkspaceModal } from './components/Sidebar'
+import { Sidebar, NameModal, DeleteWorkspaceModal, scopeNamesOf } from './components/Sidebar'
 import { SessionPane } from './components/SessionPane'
 import { TerminalSidebar } from './components/TerminalSidebar'
 import { TaskPane } from './components/TaskPane'
@@ -1345,6 +1345,7 @@ export default function App() {
         <NameModal
           title={`New scope in ${newTask}`}
           placeholder="scope name"
+          scopeNames={scopeNamesOf(workspaces.find((w) => w.name === newTask))}
           onClose={() => setNewTask(null)}
           onSubmit={run(async (name) => {
             try {
