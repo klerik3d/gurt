@@ -44,6 +44,7 @@ import { isReviewed, lastTurnEnds, markSeen, useSeen, useUsage } from './reviewe
 import { useAgents } from './useAgents'
 import { DialogHost, alertDialog, confirmDialog } from './dialog'
 import { ToastHost } from './toast'
+import { ArchiveProgress } from './components/ArchiveProgress'
 import { logErr } from './log'
 import { run } from './async'
 import { bindingLabel, bindingMatchesEvent, bindingRestLabel } from '../../shared/hotkeys'
@@ -1066,7 +1067,7 @@ export default function App() {
           </button>
           <button className={`ab-item ${view === 'archive' ? 'active' : ''}`} title="Archive"
             aria-label="Archive" aria-pressed={view === 'archive'} onClick={() => setView('archive')}>
-            <Icon name="box" size={18} />
+            <Icon name="archive" size={18} />
           </button>
           <span className="spacer" />
           <button
@@ -1420,6 +1421,7 @@ export default function App() {
           }}
         />
         <ToastHost />
+        <ArchiveProgress />
       </div>
       {recoveryOpen && <SessionRecoveryModal sessions={interrupted}
         onResumed={(id) => setInterrupted((items) => items.filter((s) => s.id !== id))}

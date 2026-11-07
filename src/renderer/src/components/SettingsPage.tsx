@@ -56,7 +56,7 @@ const SECTION_ICON: Record<SettingsSection, IconName> = {
   hotkeys: 'grid',
   machine: 'info',
   docker: 'trash',
-  archive: 'box'
+  archive: 'archive'
 }
 
 /** Registry group — the sections that define *what the workspace has*: the

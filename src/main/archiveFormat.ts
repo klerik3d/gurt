@@ -27,19 +27,28 @@ function safePath(name: string): string {
   return name
 }
 
-export async function packScope(source: string, destination: string): Promise<number> {
+export async function packScope(source: string, destination: string, onProgress?: (bytes: number) => void): Promise<number> {
   let bytes = 0
+  let lastReport = 0
   const stamps = new Map<string, string>()
   const stamp = (stat: Awaited<ReturnType<typeof fs.lstat>>): string =>
     `${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}:${stat.mode}`
-  const generated = (name: string): boolean => /^\.multirepo\/[^/]+\/(skills|repos|devcontainer\.json)$/.test(name)
+  // Archive only Gurt-owned state. Repository directories and arbitrary scope
+  // files must never enter the compressed stream (even when Git ignores them).
+  const included = (name: string): boolean => {
+    const parts = name.split('/')
+    if (parts.some((part) => ['.git', 'node_modules', '.cache'].includes(part))) return false
+    if (parts.length === 1) return ['task.json', 'sessions.json', 'review.json', 'proactive-state.json', 'sessions', '.multirepo'].includes(name)
+    if (parts[0] === 'sessions') return parts.length === 2 && parts[1]!.endsWith('.jsonl')
+    if (parts[0] !== '.multirepo') return false
+    if (parts.length === 2) return true
+    return parts[2] === 'history' || (parts.length === 3 && parts[2] === 'archive-pii.json')
+  }
   async function* walk(relative = ''): AsyncGenerator<Record> {
     for (const entry of await fs.readdir(path.join(source, relative), { withFileTypes: true })) {
       const name = relative ? `${relative}/${entry.name}` : entry.name
+      if (!included(name)) continue
       safePath(name)
-      // These mounts/configs are regenerated from the session configuration.
-      // Keep opaque agent history and any unknown files; never prune repo files.
-      if (generated(name)) continue
       const file = path.join(source, name)
       const stat = await fs.lstat(file)
       stamps.set(name, stamp(stat))
@@ -56,6 +65,10 @@ export async function packScope(source: string, destination: string): Promise<nu
           const data = chunk as Buffer
           hash.update(data)
           read += data.length
+          if (Date.now() - lastReport >= 200) {
+            onProgress?.(bytes + read)
+            lastReport = Date.now()
+          }
           yield { type: 'chunk', data: data.toString('base64') }
         }
         if (read !== stat.size) throw new Error('Scope changed during archiving; try again')
@@ -74,7 +87,7 @@ export async function packScope(source: string, destination: string): Promise<nu
     async function verify(relative = ''): Promise<void> {
       for (const entry of await fs.readdir(path.join(source, relative), { withFileTypes: true })) {
         const name = relative ? `${relative}/${entry.name}` : entry.name
-        if (generated(name)) continue
+        if (!included(name)) continue
         const stat = await fs.lstat(path.join(source, name))
         if (stamps.get(name) !== stamp(stat)) throw new Error('Scope changed during archiving; try again')
         stamps.delete(name)
@@ -86,6 +99,7 @@ export async function packScope(source: string, destination: string): Promise<nu
     yield JSON.stringify({ type: 'complete' }) + '\n'
   }
   await pipeline(Readable.from(records()), createGzip({ level: 9 }), createWriteStream(destination, { flags: 'wx', mode: 0o600 }))
+  onProgress?.(bytes)
   return bytes
 }
 

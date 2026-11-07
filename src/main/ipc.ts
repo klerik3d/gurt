@@ -108,6 +108,7 @@ export function registerIpc(): void {
   kernel.bus.on('terminal.changed', (sessions) => broadcast('terminal-changed', sessions))
   kernel.bus.on('terminal.output', (event) => broadcast('terminal-output', event))
 
+  kernel.bus.on('archive.progress', (event) => broadcast('archive-progress', event))
   kernel.bus.on('tree.changed', () => broadcast('tree-changed'))
   kernel.bus.on('hotkeys.changed', (map) => initAppMenu(map))
   kernel.bus.on('session.changed', ({ sessionId }) => {
