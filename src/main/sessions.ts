@@ -1311,6 +1311,7 @@ export class SessionManager {
     return {
       info: this.infoWithRuntime(s),
       entries: s.entries,
+      logSeq: s.lastSeq,
       busy: s.busy,
       resuming: s.loading || undefined,
       modes: s.modes ?? cached?.modes,

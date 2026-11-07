@@ -3,8 +3,12 @@ import { StringDecoder } from 'node:string_decoder'
 import { z } from 'zod'
 import { createLogger, enabled } from './log'
 
-// Minimal JSON-RPC 2.0 peer over newline-delimited JSON on child stdio,
-// which is what ACP (Agent Client Protocol) speaks.
+// Minimal JSON-RPC 2.0 peer. The envelope handling (ids, pending requests,
+// dispatch, the trace) is `JsonRpcEndpoint`; a transport is a subclass:
+// `JsonRpcPeer` speaks newline-delimited JSON on a child's stdio, which is what
+// ACP (Agent Client Protocol) speaks, and `JsonRpcMessagePeer` takes whole
+// messages from something that already frames them — the remote-access channel
+// (docs/requirements-remote-access.md §6.4).
 
 /** Our own requests are numbered; an agent may address us with either form. */
 const RPC_ID = z.union([z.number(), z.string()])
@@ -114,7 +118,12 @@ export class RpcError extends Error {
 
 const rpcCode = (e: unknown): number => (e instanceof RpcError ? e.code : -32603)
 
-export class JsonRpcPeer {
+/**
+ * The JSON-RPC envelope over some transport: request ids, pending requests,
+ * handler dispatch and the frame trace. A subclass delivers each inbound
+ * message to `receive` and puts each outbound one on the wire in `write`.
+ */
+export abstract class JsonRpcEndpoint {
   private nextId = 1
   private pending = new Map<
     number,
@@ -122,38 +131,15 @@ export class JsonRpcPeer {
   >()
   private requestHandlers = new Map<string, Handler>()
   private notificationHandlers = new Map<string, (params: unknown) => void>()
-  /** A chunk boundary can land mid multi-byte UTF-8 sequence; decoding each
-   *  chunk on its own turns both halves into U+FFFD — silently, because the
-   *  frame still parses as JSON and the corruption only shows up in the payload
-   *  the app then acts on. The decoder carries the partial sequence into the
-   *  next chunk, the same way `buffer` carries the partial line, and for the
-   *  same reason `lineBuffer()` in provision.ts uses one. */
-  private utf8 = new StringDecoder('utf8')
-  private buffer = ''
-  /** Set while the tail of an over-cap frame is being discarded: everything up
-   *  to the next '\n' belongs to a frame that was already dropped and
-   *  reported, so it must not be parsed and must not be reported twice. */
-  private discarding = false
 
-  constructor(
-    private child: ChildProcessWithoutNullStreams,
-    private onFatal: (err: Error) => void,
-    /** Owning session, for the frame trace. */
-    private sessionId?: string
-  ) {
-    child.stdout.on('data', (d: Buffer) => this.onData(this.utf8.write(d)))
-    child.on('close', () => {
-      const err = new Error('agent process exited')
-      for (const p of this.pending.values()) p.reject(err)
-      this.pending.clear()
-    })
-    child.on('error', (e) => this.onFatal(e))
-    // A write into a dead adapter's pipe (EPIPE — e.g. a cancel sent right
-    // after the process crashed) surfaces as an 'error' on the *stream*, not on
-    // the process; without a listener it throws as an uncaught exception and
-    // takes the whole app down.
-    child.stdin.on('error', (e) => this.onFatal(e))
-  }
+  protected constructor(
+    /** Owner of this peer (a session, a remote stream), for the frame trace. */
+    protected readonly traceId?: string
+  ) {}
+
+  /** Put one serialized message on the wire, framed as the transport needs.
+   *  Returns the frame actually written, whose byte size the trace reports. */
+  protected abstract write(json: string): string
 
   onRequest(method: string, handler: Handler): void {
     this.requestHandlers.set(method, handler)
@@ -218,87 +204,46 @@ export class JsonRpcPeer {
     this.send({ jsonrpc: '2.0', method, params })
   }
 
-  private send(msg: unknown): void {
-    const line = JSON.stringify(msg) + '\n'
-    // Byte length, not code units — the trace's `bytes` is what went down the pipe.
-    if (trace) this.traceFrame('out', msg as Record<string, unknown>, Buffer.byteLength(line, 'utf8'))
-    this.child.stdin.write(line)
+  /** Reject every request still waiting for an answer — the far end is gone. */
+  protected failPending(err: Error): void {
+    for (const p of this.pending.values()) p.reject(err)
+    this.pending.clear()
+  }
+
+  /**
+   * One whole inbound message, without its framing. Returns false when it is
+   * not a JSON-RPC frame at all (unparsable, or JSON that is not one), which
+   * each transport treats its own way.
+   */
+  protected receive(text: string): boolean {
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(text)
+    } catch {
+      return false
+    }
+    const frame = RPC_FRAME.safeParse(parsed)
+    if (!frame.success) return false
+    if (trace) this.traceFrame('in', frame.data, Buffer.byteLength(text, 'utf8'))
+    void this.dispatch(frame.data)
+    return true
+  }
+
+  protected send(msg: unknown): void {
+    const json = JSON.stringify(msg)
+    // Byte length, not code units — the trace's `bytes` is what went on the wire.
+    const frame = this.write(json)
+    if (trace) this.traceFrame('out', msg as Record<string, unknown>, Buffer.byteLength(frame, 'utf8'))
   }
 
   private traceFrame(dir: 'in' | 'out', msg: RpcFrame | Record<string, unknown>, bytes: number): void {
     log.debug('rpc.msg', {
-      s: this.sessionId,
+      s: this.traceId,
       dir,
       method: typeof msg?.method === 'string' ? msg.method : undefined,
       id: typeof msg?.id === 'number' || typeof msg?.id === 'string' ? msg.id : undefined,
       bytes
     })
-  }
-
-  /**
-   * An over-cap frame is dropped whole, never truncated: a cut-off line is
-   * invalid JSON at best and — if the cut lands somewhere JSON still closes —
-   * a *valid* frame with a silently shortened payload at worst, which is the
-   * same class of quiet corruption the decoder above exists to prevent.
-   *
-   * Reported, not swallowed. `onFatal` is the module's channel to the owner,
-   * and the owner (sessions.ts) logs it and leaves the peer running — which is
-   * what this case wants: the pipe itself is intact and the stream resumes at
-   * the next newline. But the loss is real and asymmetric — a dropped
-   * `session/update` costs a timeline entry, while a dropped *response* leaves
-   * its request pending until its timeout, and `session/prompt` has none by
-   * design. A record is the only thing that tells those apart from an agent
-   * that simply went quiet. Size only, never the frame: same rule as the trace.
-   */
-  private reportOversize(chars: number): void {
-    log.warn('rpc.oversize', { s: this.sessionId, chars, cap: MAX_FRAME })
-    this.onFatal(
-      new Error(`agent frame exceeded the ${MAX_FRAME / (1024 * 1024)} MiB cap and was dropped`)
-    )
-  }
-
-  private onData(chunk: string): void {
-    this.buffer += chunk
-    let nl: number
-    while ((nl = this.buffer.indexOf('\n')) >= 0) {
-      const raw = this.buffer.slice(0, nl)
-      this.buffer = this.buffer.slice(nl + 1)
-      // The tail of a frame already dropped below: it ends at this newline.
-      if (this.discarding) {
-        this.discarding = false
-        continue
-      }
-      // A whole over-cap frame delivered inside one chunk never passed through
-      // the remainder check, so it is caught here.
-      if (raw.length > MAX_FRAME) {
-        this.reportOversize(raw.length)
-        continue
-      }
-      const line = raw.trim()
-      if (!line) continue
-      let parsed: unknown
-      try {
-        parsed = JSON.parse(line)
-      } catch {
-        continue // stray log line on stdout — ignore
-      }
-      const frame = RPC_FRAME.safeParse(parsed)
-      // Same treatment as unparsable JSON: an adapter that prints something
-      // JSON-shaped but not a frame is noise on stdout, not a message.
-      if (!frame.success) continue
-      if (trace) this.traceFrame('in', frame.data, Buffer.byteLength(line, 'utf8'))
-      void this.dispatch(frame.data)
-    }
-    // What is left holds no newline, so it is one frame still arriving. Past
-    // the cap it can only get worse: drop it, remember that its tail is still
-    // coming, and resynchronize at the next newline.
-    if (this.buffer.length > MAX_FRAME) {
-      if (!this.discarding) {
-        this.discarding = true
-        this.reportOversize(this.buffer.length)
-      }
-      this.buffer = ''
-    }
   }
 
   private async dispatch(msg: RpcFrame): Promise<void> {
@@ -333,5 +278,150 @@ export class JsonRpcPeer {
       if (msg.error) p.reject(formatRpcError(msg.error))
       else p.resolve(msg.result)
     }
+  }
+}
+
+/** The peer over a child's stdio: newline-delimited JSON, as ACP speaks it. */
+export class JsonRpcPeer extends JsonRpcEndpoint {
+  /** A chunk boundary can land mid multi-byte UTF-8 sequence; decoding each
+   *  chunk on its own turns both halves into U+FFFD — silently, because the
+   *  frame still parses as JSON and the corruption only shows up in the payload
+   *  the app then acts on. The decoder carries the partial sequence into the
+   *  next chunk, the same way `buffer` carries the partial line, and for the
+   *  same reason `lineBuffer()` in provision.ts uses one. */
+  private utf8 = new StringDecoder('utf8')
+  private buffer = ''
+  /** Set while the tail of an over-cap frame is being discarded: everything up
+   *  to the next '\n' belongs to a frame that was already dropped and
+   *  reported, so it must not be parsed and must not be reported twice. */
+  private discarding = false
+
+  constructor(
+    private child: ChildProcessWithoutNullStreams,
+    private onFatal: (err: Error) => void,
+    /** Owning session, for the frame trace. */
+    sessionId?: string
+  ) {
+    super(sessionId)
+    child.stdout.on('data', (d: Buffer) => this.onData(this.utf8.write(d)))
+    child.on('close', () => this.failPending(new Error('agent process exited')))
+    child.on('error', (e) => this.onFatal(e))
+    // A write into a dead adapter's pipe (EPIPE — e.g. a cancel sent right
+    // after the process crashed) surfaces as an 'error' on the *stream*, not on
+    // the process; without a listener it throws as an uncaught exception and
+    // takes the whole app down.
+    child.stdin.on('error', (e) => this.onFatal(e))
+  }
+
+  protected write(json: string): string {
+    const line = json + '\n'
+    this.child.stdin.write(line)
+    return line
+  }
+
+  /**
+   * An over-cap frame is dropped whole, never truncated: a cut-off line is
+   * invalid JSON at best and — if the cut lands somewhere JSON still closes —
+   * a *valid* frame with a silently shortened payload at worst, which is the
+   * same class of quiet corruption the decoder above exists to prevent.
+   *
+   * Reported, not swallowed. `onFatal` is the module's channel to the owner,
+   * and the owner (sessions.ts) logs it and leaves the peer running — which is
+   * what this case wants: the pipe itself is intact and the stream resumes at
+   * the next newline. But the loss is real and asymmetric — a dropped
+   * `session/update` costs a timeline entry, while a dropped *response* leaves
+   * its request pending until its timeout, and `session/prompt` has none by
+   * design. A record is the only thing that tells those apart from an agent
+   * that simply went quiet. Size only, never the frame: same rule as the trace.
+   */
+  private reportOversize(chars: number): void {
+    log.warn('rpc.oversize', { s: this.traceId, chars, cap: MAX_FRAME })
+    this.onFatal(
+      new Error(`agent frame exceeded the ${MAX_FRAME / (1024 * 1024)} MiB cap and was dropped`)
+    )
+  }
+
+  private onData(chunk: string): void {
+    this.buffer += chunk
+    let nl: number
+    while ((nl = this.buffer.indexOf('\n')) >= 0) {
+      const raw = this.buffer.slice(0, nl)
+      this.buffer = this.buffer.slice(nl + 1)
+      // The tail of a frame already dropped below: it ends at this newline.
+      if (this.discarding) {
+        this.discarding = false
+        continue
+      }
+      // A whole over-cap frame delivered inside one chunk never passed through
+      // the remainder check, so it is caught here.
+      if (raw.length > MAX_FRAME) {
+        this.reportOversize(raw.length)
+        continue
+      }
+      const line = raw.trim()
+      if (!line) continue
+      // Unparsable, or JSON-shaped but not a frame: a stray log line on
+      // stdout, or an adapter printing something that is not a message. Noise,
+      // skipped either way.
+      this.receive(line)
+    }
+    // What is left holds no newline, so it is one frame still arriving. Past
+    // the cap it can only get worse: drop it, remember that its tail is still
+    // coming, and resynchronize at the next newline.
+    if (this.buffer.length > MAX_FRAME) {
+      if (!this.discarding) {
+        this.discarding = true
+        this.reportOversize(this.buffer.length)
+      }
+      this.buffer = ''
+    }
+  }
+}
+
+/** Something that carries whole messages, framed already (the remote channel's
+ *  reassembled application messages, docs/requirements-remote-protocol.md §6.4). */
+export interface MessageTransport {
+  send(message: string): void
+}
+
+/**
+ * The peer over a message transport. The transport frames and sizes the
+ * messages, so there is no line splitting and no decoder here: the owner hands
+ * each whole message to `deliver` and calls `close` when the transport is gone.
+ *
+ * Unlike a child's stdout, nothing legitimate on such a transport is noise —
+ * a message that is not a JSON-RPC frame is answered with -32600 (invalid
+ * request), id `null`, as JSON-RPC 2.0 asks.
+ */
+export class JsonRpcMessagePeer extends JsonRpcEndpoint {
+  private closed = false
+
+  constructor(
+    private transport: MessageTransport,
+    /** Owner of this peer, for the frame trace. */
+    traceId?: string
+  ) {
+    super(traceId)
+  }
+
+  protected write(json: string): string {
+    if (!this.closed) this.transport.send(json)
+    return json
+  }
+
+  /** One whole inbound message. Ignored after `close`. */
+  deliver(message: string): void {
+    if (this.closed) return
+    if (!this.receive(message)) {
+      this.send({ jsonrpc: '2.0', id: null, error: { code: -32600, message: 'invalid request' } })
+    }
+  }
+
+  /** The transport is gone: every pending request rejects with `err`, and
+   *  nothing more is sent or dispatched. Idempotent. */
+  close(err: Error = new Error('transport closed')): void {
+    if (this.closed) return
+    this.closed = true
+    this.failPending(err)
   }
 }
