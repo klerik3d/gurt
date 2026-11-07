@@ -1,12 +1,13 @@
 // The whole Electron-facing surface: broadcast bridge, the `GurtApi`
 // implementation over the kernel, and handler registration. Everything
 // domain-shaped lives in kernel.ts and below.
-import { app, clipboard, ipcMain, shell } from 'electron'
+import { app, clipboard, dialog, ipcMain, shell } from 'electron'
 import { API_METHODS, type GurtApi } from '../shared/api'
 import { defaultEnvName, isSessionRole } from '../shared/types'
 import { MCP_DEFS } from '../shared/mcp'
 import { broadcast } from './broadcast'
 import { assertRepoModes, createKernel } from './kernel'
+import { saveBeforeQuit } from './shutdown'
 import { POLL_INTERVAL_MS } from './planUsage'
 import { createLogger, dropSessionLog, enabled, logDir, logLevel, logRenderer } from './log'
 import {
@@ -97,6 +98,13 @@ function argCtx(method: keyof GurtApi, args: unknown[]): unknown {
 export function registerIpc(): void {
   const kernel = createKernel()
   app.on('before-quit', () => kernel.terminals.dispose())
+  saveBeforeQuit(app, async () => {
+    await kernel.ready
+    await kernel.sessions.flushForRestart()
+  }, (error) => {
+    log.error('shutdown.persist.fail', { err: error })
+    dialog.showErrorBox('Could not save sessions', 'Session history could not be saved. The app has not quit. Check available disk space and permissions, then try quitting again.')
+  })
   kernel.bus.on('terminal.changed', (sessions) => broadcast('terminal-changed', sessions))
   kernel.bus.on('terminal.output', (event) => broadcast('terminal-output', event))
 
@@ -147,7 +155,9 @@ export function registerIpc(): void {
     terminalResize: async (id, cols, rows) => kernel.terminals.resize(id, cols, rows),
     terminalClose: async (id) => kernel.terminals.close(id),
     terminalRename: async (id, title) => kernel.terminals.rename(id, title),
-    getTree: () => kernel.tree(),
+    // Selection pruning treats a missing session as deletion. Never expose a
+    // partial boot overlay to the renderer as an authoritative tree.
+    getTree: async () => { await kernel.ready; return kernel.tree() },
     getMcpDefs: async () => MCP_DEFS,
     getAgents: () => store.getAgents(),
     setAgents: async (agents) => {
@@ -421,6 +431,8 @@ export function registerIpc(): void {
     sessionRecreate: async (id) => kernel.sessions.recreateSession(id),
     sessionDelete: async (id) => kernel.sessions.deleteSession(id),
     sessionSnapshot: async (id) => {
+      // A restored selection asks once, before boot may have loaded its session.
+      await kernel.ready
       // Opening a session (sidebar click, palette jump, a notification row)
       // reads its own awaiting/turn state directly — clears its pending
       // notifications the same way (§4.2), not just an explicit panel dismiss.
