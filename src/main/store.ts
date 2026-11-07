@@ -1,6 +1,6 @@
 import { clientConfigFile } from '../shared/clientConfig'
 import { promises as fs } from 'node:fs'
-import { existsSync } from 'node:fs'
+import { existsSync, readdirSync, type Dirent } from 'node:fs'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import path from 'node:path'
@@ -26,6 +26,7 @@ import { sanitizeWelcomeMode, type WelcomeMode } from '../shared/doctor'
 import { agentDef } from '../shared/agents'
 import { defaultAgentConfig } from '../shared/agentConfig'
 import { validateEnvConfig } from '../shared/envConfig'
+import { scopeDirName, scopeFromDirName, scopeNameConflict, scopeNameProblem } from '../shared/scopeName'
 import { normalizeMcpEntry, validateMcpEntry } from '../shared/mcp'
 import type { SkillEntry } from '../shared/skills'
 import {
@@ -75,9 +76,11 @@ export async function rmTree(dir: string): Promise<void> {
 export { gurtRoot }
 
 export const wsDir = (ws: string) => path.join(gurtRoot, ws)
-export const taskDir = (ws: string, task: string) => path.join(gurtRoot, ws, task)
+/** A scope name may hold `/` (it is a branch name); its directory is one
+ *  segment all the same — see `scopeDirName`. */
+export const taskDir = (ws: string, task: string) => path.join(gurtRoot, ws, scopeDirName(task))
 export const cloneDir = (ws: string, task: string, repo: string) =>
-  path.join(gurtRoot, ws, task, repo)
+  path.join(taskDir(ws, task), repo)
 /** Host directory used as `--workspace-folder` by a session whose repos are
  *  bind-mounted individually — more than one repo, or a read-only role, see
  *  `usesRepoMounts` in containers.ts. Empty except for those mount points, and
@@ -108,7 +111,7 @@ export const localRepoDir = (ws: string, name: string) =>
  *  the materialized skills and the agent history. The `.multirepo` segment
  *  predates them and is kept so existing sessions keep their paths. */
 export const sessionScratchDir = (ws: string, task: string, sessionId: string) =>
-  path.join(gurtRoot, ws, task, '.multirepo', sessionId)
+  path.join(taskDir(ws, task), '.multirepo', sessionId)
 
 /** Where a session's selected skills are copied before its container comes up,
  *  and the source of the read-only bind that delivers them
@@ -164,9 +167,12 @@ const RESERVED_NAMES: Record<string, string[]> = {
   env: [BASE_ENV_NAME]
 }
 
-/** Names become path segments on disk, so reject anything that isn't a single, safe segment. */
+/** Names become path segments on disk, so reject anything that isn't a single,
+ *  safe segment. A task name is checked as the segment it is written to — `/`
+ *  in it is encoded there — and must also pass {@link validateNewTaskName}
+ *  when it is created or renamed to. */
 export function validateName(kind: string, name: string): void {
-  const n = name.trim()
+  const n = (kind === 'task' ? scopeDirName(name) : name).trim()
   if (!n) throw new Error(`${kind} name must not be empty`)
   if (n === '.' || n === '..' || /[/\\]/.test(n))
     throw new Error(`${kind} name must not contain "/", "\\", "." or ".."`)
@@ -1272,6 +1278,18 @@ export function taskExists(ws: string, task: string): boolean {
   return existsSync(path.join(taskDir(ws, task), 'task.json'))
 }
 
+/** Everything a task name being created (or renamed to) must pass: a safe
+ *  path segment, a valid branch name, and no clash with the workspace's other
+ *  scopes as branches. `renaming` is the task's current name. Synchronous so a
+ *  caller probing candidate names (proactive's `taken`) can loop over it. */
+export function validateNewTaskName(ws: string, task: string, renaming?: string): void {
+  validateName('task', task)
+  const problem = scopeNameProblem(task)
+  if (problem) throw new Error(problem)
+  const conflict = scopeNameConflict(task, listTasksSync(ws), renaming)
+  if (conflict) throw new Error(conflict)
+}
+
 /** `extra` rides the marker's first write: a proactive agent's config, or the
  *  origin of a scope one raised — so the scope never exists without it
  *  (docs/design-proactive-agents.md §5). */
@@ -1282,6 +1300,7 @@ export async function createTask(
 ): Promise<void> {
   validateName('task', task)
   if (taskExists(ws, task)) throw new Error(`task "${task}" already exists in "${ws}"`)
+  validateNewTaskName(ws, task)
   await writeJson(path.join(taskDir(ws, task), 'task.json'), {
     createdAt: new Date().toISOString(),
     ...extra
@@ -1302,12 +1321,15 @@ async function taskBirthTime(ws: string, task: string): Promise<string> {
  *  is pinned to the old path and would be orphaned by the move — and re-persists
  *  `sessions.json` under the new name afterwards. */
 export async function renameTask(ws: string, task: string, newName: string): Promise<void> {
-  validateName('task', newName)
   if (newName === task) return
   const from = taskDir(ws, task)
   if (!taskExists(ws, task)) throw new Error(`task "${task}" not found in "${ws}"`)
+  validateNewTaskName(ws, newName, task)
   const to = taskDir(ws, newName)
-  if (existsSync(to)) throw new Error(`task "${newName}" already exists in "${ws}"`)
+  // Same directory on a case-insensitive filesystem when only the case
+  // changed — the conflict check above already let that through as itself.
+  if (existsSync(to) && newName.toLowerCase() !== task.toLowerCase())
+    throw new Error(`task "${newName}" already exists in "${ws}"`)
   // An append landing mid-rename would recreate the old directory and take the
   // records with it, so let the in-flight ones finish first. Their chain keys
   // are the old paths — drop them; the next append rebuilds them under the new.
@@ -1318,9 +1340,23 @@ export async function renameTask(ws: string, task: string, newName: string): Pro
 export async function listTasks(ws: string): Promise<string[]> {
   const tasks: string[] = []
   for (const entry of await fs.readdir(wsDir(ws), { withFileTypes: true }).catch(() => [])) {
-    if (entry.isDirectory() && taskExists(ws, entry.name)) tasks.push(entry.name)
+    const task = scopeFromDirName(entry.name)
+    if (entry.isDirectory() && taskExists(ws, task)) tasks.push(task)
   }
   return tasks
+}
+
+function listTasksSync(ws: string): string[] {
+  let entries: Dirent[]
+  try {
+    entries = readdirSync(wsDir(ws), { withFileTypes: true })
+  } catch {
+    return []
+  }
+  return entries
+    .filter((e) => e.isDirectory())
+    .map((e) => scopeFromDirName(e.name))
+    .filter((task) => taskExists(ws, task))
 }
 
 /** Read task.json. Legacy `envs` entries are returned as-is; `readSessions`

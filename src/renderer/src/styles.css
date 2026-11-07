@@ -4745,3 +4745,18 @@ button { user-select: none; }
 .pa-cron[aria-invalid="true"] {
   border-color: var(--red);
 }
+
+/* Under a scope-name field: what git would refuse, or the branch it becomes. */
+.scope-name-hint {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--dim);
+  overflow-wrap: anywhere;
+}
+.scope-name-hint.error {
+  color: var(--red);
+  font-size: 11px;
+}
+.sb-rename.invalid {
+  border-color: var(--red);
+}

@@ -445,10 +445,10 @@ export function createProactive(deps: ProactiveDeps): ProactiveManager {
     const taken = (n: string): boolean => {
       if (store.taskExists(ws, n) || agents.has(key(ws, n))) return true
       try {
-        store.validateName('task', n)
+        store.validateNewTaskName(ws, n)
         return false
       } catch {
-        return true // a reserved name ("skills", "repos", …)
+        return true // a reserved name ("skills", "repos", "main", …) or a branch clash
       }
     }
     let scope = base

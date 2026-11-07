@@ -116,7 +116,11 @@ tree is never polluted with Gurt files.
   maps to its secret by linking an `agent-token` or `oauth` credential (never storing it
   inline, like a repo's credential link); env var name + extra env are per-agent
 - **task** — unit of work, `~/.gurt/<ws>/<task>/`, holds repo clones; deletable.
-  The UI calls it a **scope**
+  The UI calls it a **scope**. Its name is its branch, so a new name must be a
+  valid git branch name (`src/shared/scopeName.ts`): `feat/login` is fine and
+  lives on disk as one directory, `feat%2Flogin`; `main`/`master`, a repo's
+  default branch, and names git cannot hold beside an existing scope (`feat`
+  next to `feat/login`, `Fix` next to `fix`) are refused
 - **env** — a workspace entity and purely a *definition*, in Gurt's own format
   ([requirements-env-docker.md](requirements-env-docker.md)): an `image` or a
   `dockerfile` (+ build context/args/target), container `env`, and a `setup` and

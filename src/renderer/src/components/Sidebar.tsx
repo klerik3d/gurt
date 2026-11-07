@@ -21,6 +21,7 @@ import { RowContextMenu } from './RowContextMenu'
 import { sortTasks, type ScopeListController } from '../useScopeList'
 import { ScopeFilter, ScopeSort } from './ScopeControls'
 import { ScopeRow } from './ScopeRow'
+import { scopeNameInput } from '../../../shared/scopeName'
 import {
   TaskRepositories,
   diffRowKey,
@@ -169,6 +170,8 @@ export function Sidebar({
   /** Owner of every task in `tasks`. Empty only when there is no workspace, and
    *  then `tasks` is empty too, so nothing below ever reads the empty string. */
   const wsName = wsData?.name ?? ''
+  const scopeNames = scopeNamesOf(wsData)
+  const taskDraft = scopeNameInput(taskDraftName, scopeNames)
 
   // ⌘2: focus the tree so arrow keys work immediately, no click first. Fires
   // on mount too (App bumps the signal before the work view has mounted this
@@ -365,8 +368,8 @@ export function Sidebar({
   // Creates the task right from the header "+", no modal round-trip — click,
   // type, Enter. Selects it immediately so the flow lands somewhere useful.
   const submitNewTask = async () => {
-    const name = taskDraftName.trim()
-    if (!name || !ws) return
+    const { name, error } = taskDraft
+    if (!name || error || !ws) return
     setCreatingTask(false)
     setTaskDraftName('')
     try {
@@ -524,7 +527,8 @@ export function Sidebar({
     if (renameSettled.current) return
     renameSettled.current = true
     const r = renaming
-    const name = renameDraft.trim()
+    // A scope's name is its branch: committed as the branch it would become.
+    const name = r?.kind === 'task' ? renameTaskDraft(r.task).name : renameDraft.trim()
     setRenaming(null)
     if (refocus) treeRef.current?.focus()
     if (!r || !name) return
@@ -544,6 +548,20 @@ export function Sidebar({
           ))
         )
           return
+        // Only the local branch follows the rename. One already on the remote
+        // stays there under the old name, with any pull request opened from it.
+        const pushed = (changes[`${r.ws}/${r.task}`] ?? []).filter(
+          (c) => !c.integrated && c.commits.some((k) => k.pushed)
+        )
+        if (
+          pushed.length &&
+          !(await confirmDialog(
+            `Branch "${r.task}" is already pushed in: ${pushed.map((c) => c.repo).join(', ')}. ` +
+              `The remote branch and its pull request keep the old name; the next push creates "${name}".`,
+            { title: 'Rename scope', confirmText: 'Rename' }
+          ))
+        )
+          return
         await window.gurt.renameTask(r.ws, r.task, name)
         // The selection holds the old name — re-point it at the renamed task.
         if (selection?.type === 'task' && selection.ws === r.ws && selection.task === r.task)
@@ -555,6 +573,8 @@ export function Sidebar({
       await alertDialog(e instanceof Error ? e.message : String(e))
     }
   }
+
+  const renameTaskDraft = (task: string) => scopeNameInput(renameDraft, scopeNames, task)
 
   const cancelRename = () => {
     renameSettled.current = true
@@ -709,6 +729,7 @@ export function Sidebar({
                   onChange={(e) => setTaskDraftName(e.target.value)}
                   onKeyDown={run((e) => e.key === 'Enter' && submitNewTask())}
                 />
+                <ScopeNameHint draft={taskDraft} typed={taskDraftName} />
               </div>
             </div>
           )}
@@ -741,6 +762,7 @@ export function Sidebar({
                 {editing ? (
                   <RenameInput
                     value={renameDraft}
+                    error={renameTaskDraft(task.name).error}
                     onChange={setRenameDraft}
                     onCommit={run(commitRename)}
                     onCancel={cancelRename}
@@ -826,13 +848,31 @@ export function Sidebar({
 
 /** Inline name editor for a tree row: commits on Enter or blur, drops on Escape.
  *  Its keys stop at the input so the tree's own arrow/Enter handling stays out. */
+/** Every name a new scope must not clash with — agents included: a proactive
+ *  agent is a scope on disk, and its name a branch like any other. */
+export function scopeNamesOf(ws: Tree['workspaces'][number] | undefined): string[] {
+  return [...(ws?.tasks ?? []), ...(ws?.proactive ?? [])].map((t) => t.name)
+}
+
+/** Under a scope-name field: why the name cannot be a branch, or — when typing
+ *  changed it (spaces → `-`) — the branch it will be. */
+function ScopeNameHint({ draft, typed }: { draft: { name: string; error: string | null }; typed: string }) {
+  if (draft.error) return <div className="error scope-name-hint">{draft.error}</div>
+  if (draft.name && draft.name !== typed.trim())
+    return <div className="scope-name-hint">Branch: {draft.name}</div>
+  return null
+}
+
 function RenameInput({
   value,
+  error,
   onChange,
   onCommit,
   onCancel
 }: {
   value: string
+  /** Shown on the field, and Enter does nothing while it stands. */
+  error?: string | null
   onChange: (v: string) => void
   onCommit: (refocus: boolean) => void
   onCancel: () => void
@@ -840,7 +880,9 @@ function RenameInput({
   return (
     <input
       autoFocus
-      className="sb-rename"
+      className={`sb-rename${error ? ' invalid' : ''}`}
+      title={error ?? undefined}
+      aria-invalid={!!error}
       value={value}
       onFocus={(e) => e.currentTarget.select()}
       onChange={(e) => onChange(e.target.value)}
@@ -849,8 +891,9 @@ function RenameInput({
       onBlur={() => onCommit(false)}
       onKeyDown={(e) => {
         e.stopPropagation()
-        if (e.key === 'Enter') onCommit(true)
-        else if (e.key === 'Escape') onCancel()
+        if (e.key === 'Enter') {
+          if (!error) onCommit(true)
+        } else if (e.key === 'Escape') onCancel()
       }}
     />
   )
@@ -859,15 +902,23 @@ function RenameInput({
 export function NameModal({
   title,
   placeholder,
+  scopeNames,
   onClose,
   onSubmit
 }: {
   title: string
   placeholder?: string
+  /** Set when the name is a new scope's — and so a branch: the scopes it must
+   *  not clash with. The field then explains what git would refuse. */
+  scopeNames?: string[]
   onClose: () => void
   onSubmit: (name: string) => void
 }) {
-  const [name, setName] = useState('')
+  const [typed, setTyped] = useState('')
+  const draft = scopeNames ? scopeNameInput(typed, scopeNames) : { name: typed.trim(), error: null }
+  const submit = () => {
+    if (draft.name && !draft.error) onSubmit(draft.name)
+  }
   return (
     <Modal title={title} onClose={onClose}>
       <div className="modal-body">
@@ -875,17 +926,18 @@ export function NameModal({
           autoFocus
           className="input"
           placeholder={placeholder ?? 'name'}
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && name.trim() && onSubmit(name.trim())}
+          value={typed}
+          onChange={(e) => setTyped(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && submit()}
         />
+        {scopeNames && <ScopeNameHint draft={draft} typed={typed} />}
       </div>
       <div className="modal-foot">
         <span className="spacer" />
         <button className="btn" onClick={onClose}>
           Cancel
         </button>
-        <button className="btn btn-primary" disabled={!name.trim()} onClick={() => onSubmit(name.trim())}>
+        <button className="btn btn-primary" disabled={!draft.name || !!draft.error} onClick={submit}>
           Create
         </button>
       </div>

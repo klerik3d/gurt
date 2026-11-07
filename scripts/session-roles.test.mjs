@@ -343,7 +343,7 @@ test('create_session across tasks', async () => {
     'a reviewer never drafts across tasks — its fixer must hold this task’s clone'
   )
   await rejects(
-    () => kernel.sessions.createAgentDraft(spawner.id, { role: 'executor', repos: ['alpha'], prompt: 'p', task: 'a/b' }),
+    () => kernel.sessions.createAgentDraft(spawner.id, { role: 'executor', repos: ['alpha'], prompt: 'p', task: 'a..b' }),
     /must not contain/,
     'an invalid task name is rejected, not written to disk'
   )
