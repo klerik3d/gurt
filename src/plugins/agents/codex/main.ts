@@ -1,11 +1,12 @@
 // codex, main half: the ChatGPT sign-in it borrows, the native auth file that
 // sign-in is delivered through, the token probe and the plan usage ChatGPT
 // reports.
-import type {
-  AgentMainPlugin,
-  OAuthTools,
-  PlanWindow,
-  TokenSet
+import {
+  isRecord,
+  type AgentMainPlugin,
+  type OAuthTools,
+  type PlanWindow,
+  type TokenSet
 } from '../../../shared/agentPlugin'
 import { manifest } from './manifest'
 
@@ -58,9 +59,6 @@ export const openaiExtraData = (
 // --- plan usage ----------------------------------------------------------------
 
 const USAGE_ENDPOINT = 'https://chatgpt.com/backend-api/wham/usage'
-
-const isRecord = (v: unknown): v is Record<string, unknown> =>
-  !!v && typeof v === 'object' && !Array.isArray(v)
 
 /** Codex CLI's /backend-api/wham/usage response (backend-client, v0.160.1).
  * Only the main quota is shown; code-review and model-specific pools are separate.

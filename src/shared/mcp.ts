@@ -26,6 +26,8 @@
 // token — but the trust decision they carry is real, and the UI has to say so
 // ({@link LOCAL_MCP_NOTICE}).
 
+import { isRecord } from './json'
+
 export interface McpToolInfo {
   name: string
   /** Mutates the repo or its remote — omitted from the agent in read-only mode. */
@@ -750,9 +752,6 @@ export interface McpSnippetResult {
  *  follows them. Anything else before the spec means gurt cannot read the
  *  invocation, and it says so rather than guessing (see {@link parseMcpSnippet}). */
 const NPX_VALUELESS_FLAGS = new Set(['-y', '--yes', '-q', '--quiet', '--silent', '--no-install'])
-
-const isRecord = (v: unknown): v is Record<string, unknown> =>
-  typeof v === 'object' && v !== null && !Array.isArray(v)
 
 /**
  * Squeeze any name into an id: lowercased, an npm scope's leading `@` dropped,

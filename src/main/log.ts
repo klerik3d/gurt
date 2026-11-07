@@ -14,6 +14,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { createRequire } from 'node:module'
+import { isRecord } from '../shared/json'
 import { gurtRoot } from './paths'
 import { REDACTED, deniedKey, redact } from './redact'
 
@@ -954,10 +955,7 @@ export function logRenderer(level: unknown, scope: unknown, msg: unknown, ctx?: 
       appSink.noteDropped(1)
       return
     }
-    const safeCtx =
-      ctx && typeof ctx === 'object' && !Array.isArray(ctx)
-        ? truncateCtxStrings(ctx)
-        : undefined
+    const safeCtx = isRecord(ctx) ? truncateCtxStrings(ctx) : undefined
     const safeMsg = truncateForSanitize(wireText(msg), RECORD_MAX)
     emit('r', lvl, scopeName(wireText(scope), 'renderer'), safeMsg, safeCtx, rendererTs(ts))
   } catch (e) {

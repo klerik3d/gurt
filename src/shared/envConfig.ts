@@ -2,11 +2,10 @@
 // identity helper used by the editor, the store and the provisioning pipeline,
 // so every path agrees on what a valid env is.
 import { parse, printParseErrorCode, type ParseError } from 'jsonc-parser'
+import { isRecord } from './json'
 import type { EnvConfig } from './types'
 
 type Json = Record<string, unknown>
-
-const isObject = (v: unknown): v is Json => !!v && typeof v === 'object' && !Array.isArray(v)
 
 /** Parse JSONC (comments and trailing commas ok) into an object. */
 function parseJsoncObject(text: string, what: string): { value: Json } | { error: string } {
@@ -14,7 +13,7 @@ function parseJsoncObject(text: string, what: string): { value: Json } | { error
   const value = parse(text, errors, { allowTrailingComma: true }) as unknown
   const [first] = errors
   if (first) return { error: `${what}: ${printParseErrorCode(first.error)} at offset ${first.offset}` }
-  if (!isObject(value)) return { error: `${what} must be a JSON object` }
+  if (!isRecord(value)) return { error: `${what} must be a JSON object` }
   return { value }
 }
 
