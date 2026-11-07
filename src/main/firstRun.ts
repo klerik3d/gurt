@@ -244,7 +244,7 @@ async function createAndStart(
   // 4. task
   if (!store.taskExists(ws, FIRST_RUN_TASK)) await store.createTask(ws, FIRST_RUN_TASK)
 
-  // 5. session — an operator holds no repo, so `roleNeedsRepo` lets it through
+  // 5. session — an operator needs no repo, so `missingRepoReason` lets it through
   //    all four start gates with `repos: []`. `internal: true` matches what
   //    App.tsx gives every other new draft; the default domain policy is
   //    `allow`, so the agent reaches its provider while the proxy still

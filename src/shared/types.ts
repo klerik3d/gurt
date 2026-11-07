@@ -66,13 +66,26 @@ export interface ChangeProposal {
   /** changes — working tree holds work to ship; no_changes — nothing to ship
    *  (answer, analysis, no-op); blocked — cannot finish, see reason. */
   outcome: 'changes' | 'no_changes' | 'blocked'
-  /** Only with outcome=changes (required then). */
+  /** Only with outcome=changes: the shared proposal, for every `write` repo
+   *  without an entry of its own in `repos`. Then required unless `repos` is
+   *  given. */
   commit?: { subject: string; body?: string | undefined } | undefined
   /** Only with outcome=changes (optional). */
   pr?: { title: string; body?: string | undefined } | undefined
+  /** Only with outcome=changes: a proposal per repo, for a session that writes
+   *  several (docs/requirements-repo-mounts.md §3). Each names one of the
+   *  session's `write` repos, at most once. */
+  repos?: RepoProposal[] | undefined
   /** Only with outcome=blocked (required then). */
   reason?: string | undefined
   notes?: string | undefined
+}
+
+/** One repo's own commit (and optional PR) texts inside a {@link ChangeProposal}. */
+export interface RepoProposal {
+  repo: string
+  commit: { subject: string; body?: string | undefined }
+  pr?: { title: string; body?: string | undefined } | undefined
 }
 
 /** Stored proposal: the artifact + host receipt time (ISO). */
@@ -270,8 +283,8 @@ export interface SessionContainer {
   /** The PATH every exec carries — probed once per container id after setup. */
   path?: string
   /** Repos it was provisioned with (stamped at `up`), in the same order as
-   *  `SessionInfo.repos`. `repos[0]` drives the build + git access; the rest
-   *  are additional read/write mounts alongside it. */
+   *  `SessionInfo.repos`. The anchor drives the build + git identity; every
+   *  repo is a sibling mount, read-only or not per its mode. */
   repos: string[]
   /** Last provisioning failure. Cleared by assignment on the next transition —
    *  every status change either sets it or resets it. */
@@ -325,37 +338,38 @@ export interface LegacyEnvState {
 export type SessionState = 'draft' | 'queued' | 'starting' | 'started'
 
 /**
- * What a session is *for* — see docs/requirements-session-roles.md and, for the
- * operator, docs/requirements-session-operator.md. Chosen at creation
- * (changeable while it is still a draft, like its repos and env, never after it
- * has started); mounts, clone locking and the `gurt` tool set follow from it
- * instead of from the repo count they used to be inferred from.
+ * What a session is *for* — see docs/requirements-repo-mounts.md §4 (the table
+ * this replaces lived in docs/requirements-session-roles.md §2). Chosen at
+ * creation (changeable while it is still a draft, never after it has started).
+ * A role decides what the agent delivers and which `gurt` tools it gets —
+ * never how its repos are mounted or locked, and never how many it holds:
+ * that is per-repo session configuration ({@link RepoMode}).
  *
- * executor   — today's worker: one repo, read-write, holds the exclusive clone
- *              lock, ends every turn with `complete`.
- * researcher — read-only, locks nothing, has no deliverable and no turn
- *              contract; the only role that may carry more than one repo (the
- *              former "discovery session"). Fans work out by drafting sessions.
- * reviewer   — read-only *and* holding the clone lock: it judges one clone's
- *              uncommitted changes while nothing may mutate that working tree.
- *              Its verdict is plain chat text and gates nothing.
- * operator   — configures gurt itself: holds exactly ZERO repos (a researcher's
- *              N taken to 0), mounts nothing, locks nothing, and reads the
- *              workspace configuration through the admin tools of its `gurt`
- *              MCP server instead of through a clone.
+ * executor   — makes changes; ends every turn with `complete`. Needs at least
+ *              one repo mounted `write` to start.
+ * researcher — answers in chat, no deliverable and no turn contract; fans work
+ *              out by drafting executors and researchers.
+ * inspector  — the read half of the operator: reads gurt's configuration and
+ *              the sessions' diagnostics through the admin *read* tools, and
+ *              drafts an operator when something has to change.
+ * operator   — configures gurt itself through the admin read *and write*
+ *              tools of its `gurt` MCP server.
  * proactive  — one run of a proactive agent (docs/design-proactive-agents.md):
- *              zero or more repos, read-only, locks nothing. Does no work of its
+ *              its repos are always read-only context. Does no work of its
  *              own — it turns what it finds into scopes with draft sessions
  *              through its `gurt` tools, and ends every turn with `finish_run`.
  *              Never picked for an ordinary session: it exists only as a
  *              proactive agent's template and the runs copied from it.
+ *
+ * The former `reviewer` is gone for now (§4): its records migrate to a
+ * researcher whose repos are mounted `write`, exactly as they were.
  */
-export type SessionRole = 'executor' | 'researcher' | 'reviewer' | 'operator' | 'proactive'
+export type SessionRole = 'executor' | 'researcher' | 'inspector' | 'operator' | 'proactive'
 
 export const SESSION_ROLES: readonly SessionRole[] = [
   'executor',
   'researcher',
-  'reviewer',
+  'inspector',
   'operator',
   'proactive'
 ]
@@ -365,9 +379,7 @@ export const SESSION_ROLES: readonly SessionRole[] = [
 export const USER_SESSION_ROLES: readonly SessionRole[] = SESSION_ROLES.filter((r) => r !== 'proactive')
 
 /** Guard for a role arriving from outside the kernel (the renderer over IPC).
- *  An unknown string must be rejected, not silently treated as some role: every
- *  predicate below is written as "all but one", so garbage would pass as the
- *  most restrictive combination instead of failing loudly. */
+ *  An unknown string must be rejected, not silently treated as some role. */
 export const isSessionRole = (v: unknown): v is SessionRole =>
   typeof v === 'string' && (SESSION_ROLES as readonly string[]).includes(v)
 
@@ -378,27 +390,92 @@ export const isSessionRole = (v: unknown): v is SessionRole =>
 export const sessionRole = (s: Pick<SessionInfo, 'role' | 'repos'>): SessionRole =>
   s.role ?? (s.repos.length > 1 ? 'researcher' : 'executor')
 
-/** Repos are bind-mounted `readonly` (Docker level, not by convention). */
-export const roleIsReadOnly = (role: SessionRole): boolean => role !== 'executor'
+/**
+ * How one repo of a session is mounted (docs/requirements-repo-mounts.md §2):
+ *
+ * write       — read-write bind, **exclusive** claim on the clone: every other
+ *               claim on it waits.
+ * read-locked — read-only bind, **shared** claim: excludes writers only, so the
+ *               tree does not move while the session is active.
+ * read        — read-only bind, no claim: sees the live tree, blocks nobody.
+ */
+export type RepoMode = 'write' | 'read-locked' | 'read'
 
-/** Takes the scheduler's exclusive clone lock. A researcher never blocks (and
- *  is never blocked by) another session; a reviewer excludes writers exactly
- *  the way an executor does. An operator holds no clone at all, so there is
- *  nothing for a lock to protect. */
-export const roleLocksClone = (role: SessionRole): boolean =>
-  role === 'executor' || role === 'reviewer'
+export const REPO_MODES: readonly RepoMode[] = ['write', 'read-locked', 'read']
 
-/** Needs at least one repository to start. Every role but the operator and a
- *  proactive run does; the operator's zero repos is its definition, not a
- *  missing pick, and a proactive run reads repos only when its author gave it
- *  some — the four start gates and the container manager's anchor guard all
- *  read this instead of assuming a repo (docs/requirements-session-operator.md
- *  §2.1). */
-export const roleNeedsRepo = (role: SessionRole): boolean => role !== 'operator' && role !== 'proactive'
+export const isRepoMode = (v: unknown): v is RepoMode =>
+  typeof v === 'string' && (REPO_MODES as readonly string[]).includes(v)
 
-/** Holds no repository at all — zero is the role's definition, not a missing
- *  pick. Only the operator; a proactive run may hold none, or several. */
-export const roleForbidsRepo = (role: SessionRole): boolean => role === 'operator'
+/** The mode of a newly picked repo, for every role: reading is the usual case
+ *  and usually wants a stable tree; writing is always an explicit pick. */
+export const DEFAULT_REPO_MODE: RepoMode = 'read-locked'
+
+/** The mode a record older than per-repo modes had through its role — the
+ *  fold `readSessions` writes back to disk once (docs/requirements-repo-mounts.md
+ *  §5): an executor wrote its clone, every other role read. */
+export const legacyRepoMode = (role: SessionRole): RepoMode => (role === 'executor' ? 'write' : 'read')
+
+/** How `repo` is mounted in this session. A proactive run's repos are always
+ *  `read` — read-only context, whatever the record says. A record with no mode
+ *  map at all predates per-repo modes and reads through {@link legacyRepoMode},
+ *  the way {@link sessionRole} folds a missing role; within a map, a repo
+ *  without an entry takes the default. Everything mount-dependent reads through
+ *  this, never `info.repoModes`. */
+export const repoMode = (
+  s: Pick<SessionInfo, 'role' | 'repos' | 'repoModes'>,
+  repo: string
+): RepoMode => {
+  const role = sessionRole(s)
+  if (role === 'proactive') return 'read'
+  if (!s.repoModes) return legacyRepoMode(role)
+  return s.repoModes[repo] ?? DEFAULT_REPO_MODE
+}
+
+/** The bind is read-only. */
+export const repoModeIsReadOnly = (mode: RepoMode): boolean => mode !== 'write'
+
+/** The session's repos mounted `write`, in list order. */
+export const writeRepos = (s: Pick<SessionInfo, 'role' | 'repos' | 'repoModes'>): string[] =>
+  s.repos.filter((r) => repoMode(s, r) === 'write')
+
+/** The repo that builds the image and names the git identity: the first
+ *  `write` repo, else the first repo; absent with no repos at all
+ *  (docs/requirements-repo-mounts.md §2.2). */
+export const anchorRepo = (s: Pick<SessionInfo, 'role' | 'repos' | 'repoModes'>): string | undefined =>
+  writeRepos(s)[0] ?? s.repos[0]
+
+/** Exactly one mode per repo of `repos` — the picked one when there is a valid
+ *  pick, else the default. Every entrance stores this shape, so a stale key for
+ *  a removed repo never lingers and a new repo never goes without a mode. */
+export function normalizeRepoModes(
+  repos: readonly string[],
+  modes: Partial<Record<string, unknown>> | undefined
+): Record<string, RepoMode> {
+  const out: Record<string, RepoMode> = {}
+  for (const r of repos) {
+    const m = modes?.[r]
+    out[r] = isRepoMode(m) ? m : DEFAULT_REPO_MODE
+  }
+  return out
+}
+
+/** Needs at least one repository to start at all: a researcher reads one. An
+ *  executor needs more — a `write` one (see {@link missingRepoReason}); every
+ *  other role may start with none. */
+export const roleNeedsRepo = (role: SessionRole): boolean => role === 'executor' || role === 'researcher'
+
+/** Why this session cannot start for lack of a repo, or undefined when it can.
+ *  The one predicate behind every start gate and the container manager's anchor
+ *  guard (docs/requirements-repo-mounts.md §4). */
+export function missingRepoReason(s: Pick<SessionInfo, 'role' | 'repos' | 'repoModes'>): string | undefined {
+  const role = sessionRole(s)
+  if (role === 'executor' && !writeRepos(s).length)
+    return s.repos.length
+      ? 'an executor needs a repository mounted for write'
+      : 'session has no repository'
+  if (roleNeedsRepo(role) && !s.repos.length) return 'session has no repository'
+  return undefined
+}
 
 /** Bound by a turn contract — offered a terminal tool and nudged when a turn
  *  ends without it: `complete` for an executor
@@ -406,15 +483,21 @@ export const roleForbidsRepo = (role: SessionRole): boolean => role === 'operato
 export const roleHasTurnContract = (role: SessionRole): boolean =>
   role === 'executor' || role === 'proactive'
 
-/** May carry more than one repo. */
-export const roleAllowsMultiRepo = (role: SessionRole): boolean =>
-  role === 'researcher' || role === 'proactive'
+/** Gets the admin surface's read tools: the inspector and the operator. */
+export const roleReadsAdmin = (role: SessionRole): boolean => role === 'inspector' || role === 'operator'
+
+/** Gets the admin surface's write tools too: the operator only. */
+export const roleWritesAdmin = (role: SessionRole): boolean => role === 'operator'
 
 /** Roles this one may draft through `create_session`: a researcher fans out to
- *  workers and reviewers, a reviewer only to the executor that fixes its
- *  findings, an executor to nothing (empty = the tool is not offered at all). */
+ *  workers and further research, an inspector only to the operator that makes
+ *  the change it diagnosed, everyone else to nothing (empty = the tool is not
+ *  offered at all). */
 export const spawnableRoles = (role: SessionRole): SessionRole[] =>
-  role === 'researcher' ? ['executor', 'reviewer'] : role === 'reviewer' ? ['executor'] : []
+  role === 'researcher' ? ['executor', 'researcher'] : role === 'inspector' ? ['operator'] : []
+
+/** May aim a draft at another task (`create_session`'s `task`). */
+export const roleDraftsCrossTask = (role: SessionRole): boolean => role === 'researcher' || role === 'inspector'
 
 /**
  * A draft one session's agent asked for via the `gurt` MCP server's
@@ -425,19 +508,21 @@ export const spawnableRoles = (role: SessionRole): SessionRole[] =>
  */
 export interface AgentSessionRequest {
   role: SessionRole
-  /** Repo names; exactly one, since only a researcher may hold several and no
-   *  role may draft a researcher. */
+  /** Repo names, any number; their order is the session's. */
   repos: string[]
+  /** How each of `repos` is mounted — normalized like
+   *  {@link SessionInfo.repoModes} (docs/requirements-repo-mounts.md §4). */
+  repoModes?: Record<string, RepoMode>
   /** The drafted session's start prompt — its whole input. */
   prompt: string
   /** Task to draft into, created if missing; defaults to the spawner's own.
-   *  Researcher-only: a reviewer's draft must fix the clone it holds, and that
-   *  clone lives in the reviewer's task. */
+   *  Only for the roles {@link roleDraftsCrossTask} allows. */
   task?: string
   /** Display title; defaults to the usual `session N`. */
   title?: string
   /** Env definition name. Omitted, it resolves to the **target repo's own**
-   *  default environment — the env whose `EnvConfig.repo` names `repos[0]` —
+   *  default environment — the env whose `EnvConfig.repo` names the draft's
+   *  {@link anchorRepo} (the workspace default when it has no repo) —
    *  not the spawner's. A session drafted for a repo belongs in that repo's
    *  container even when the spawner happens to run in an ad-hoc one, and
    *  inheriting the spawner's env was silent drift nobody could see. */
@@ -511,15 +596,18 @@ export interface SessionInfo {
   id: string
   /** The env this session runs on — an `EnvConfig.name`. */
   env: string
-  /** What this session is for: executor / researcher / reviewer. Absent on
-   *  pre-roles records — read it through {@link sessionRole}, never directly. */
+  /** What this session is for (see {@link SessionRole}). Absent on pre-roles
+   *  records — read it through {@link sessionRole}, never directly. */
   role?: SessionRole
   /** The session's repos (first entry seeded from the env's default,
-   *  changeable while a draft, fixed at start). Empty on a repo-less draft —
-   *  it cannot start. `repos[0]` is the build anchor. Only a researcher may
-   *  hold more than one; then every repo is mounted as a sibling and no repo
-   *  is exclusively locked. */
+   *  changeable while a draft, fixed at start), any number of them, each
+   *  mounted at `/workspaces/<name>`. The build anchor is {@link anchorRepo}. */
   repos: string[]
+  /** How each of `repos` is mounted (docs/requirements-repo-mounts.md §2):
+   *  exactly the keys of `repos`, kept so at every entrance. Absent only on
+   *  records older than per-repo modes, which `readSessions` folds once — read
+   *  it through {@link repoMode}, never directly. */
+  repoModes?: Record<string, RepoMode>
   task: string
   workspace: string
   title: string

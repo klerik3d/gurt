@@ -4,7 +4,7 @@
 // tests).
 import { startGc } from './gc'
 import type { Tree } from '../shared/types'
-import { isBundledEnv, isSessionRole } from '../shared/types'
+import { defaultEnvName, isBundledEnv, isRepoMode, isSessionRole } from '../shared/types'
 import type { BootProgress, SessionDraftPatch } from '../shared/api'
 import { NOTIFICATION_DEFAULTS } from '../shared/notifications'
 import { sanitizeSkillSelection } from '../shared/skills'
@@ -118,6 +118,16 @@ async function assertDraftTarget(
     throw new Error(`agent "${agent}" is not allowed in workspace "${ws}"`)
 }
 
+/** Reject a mode map arriving over IPC that is not one — an unknown mode
+ *  must fail loudly, not quietly fall back to the default. */
+export function assertRepoModes(modes: unknown): void {
+  if (modes === undefined) return
+  if (typeof modes !== 'object' || modes === null || Array.isArray(modes))
+    throw new Error('repo modes must be an object of repo name → mode')
+  for (const [repo, mode] of Object.entries(modes))
+    if (!isRepoMode(mode)) throw new Error(`unknown mode "${String(mode)}" for repo "${repo}"`)
+}
+
 /** Env definitions that claim this repo as their default — the reverse of
  *  `EnvConfig.repo`, read straight off the registry. `create_session` resolves
  *  a drafted session's container through it (sessions.ts `resolveDraftEnv`), so
@@ -197,6 +207,7 @@ export function createKernel(): Kernel {
       checkDraftTarget: assertDraftTarget,
       defaultEnvsForRepo,
       defaultAgentForWorkspace: async (ws) => (await store.getWorkspace(ws)).defaultAgent,
+      defaultEnvForWorkspace: async (ws) => defaultEnvName(await store.getWorkspace(ws)),
       // `planUsage` is built further down; this closure reads it at call time,
       // and the first call is the boot restore's scheduler pass.
       planHold: (agents) => planHold(planUsage.peek(agents), limitSettings.thresholdPercent, Date.now()),
@@ -533,6 +544,7 @@ export function createKernel(): Kernel {
     async editDraft(sessionId: string, patch: SessionDraftPatch): Promise<void> {
       if (patch.role !== undefined && !isSessionRole(patch.role))
         throw new Error(`unknown session role "${String(patch.role)}"`)
+      assertRepoModes(patch.repoModes)
       const info = sessions.snapshot(sessionId)?.info
       if (info) await assertDraftTarget(info.workspace, patch.repos ?? [], patch.env, patch.agent)
       // Names become directories under the session's scratch dir, so the shape

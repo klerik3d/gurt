@@ -89,7 +89,7 @@ test('a kind with empty historyPaths mounts nothing and links nothing', async ()
   assert.deepEqual(m.historyHostMounts(ws, task, sessionId, opencode.historyPaths), [])
 
   const clone = [{ name: 'alpha', dir: '/h/alpha' }]
-  const layout = m.containerLayout(info('executor', ['alpha']), clone, false, m.historyHostMounts(ws, task, sessionId, opencode.historyPaths))
+  const layout = m.containerLayout(info('executor', ['alpha']), clone, m.historyHostMounts(ws, task, sessionId, opencode.historyPaths))
   assert.deepEqual(layout.mounts.map((x) => x.target), ['/workspaces/alpha'], 'the clone, nothing else')
 
   const log = []
@@ -153,13 +153,13 @@ test('a plain single-repo executor on claude-code gets the history bind beside i
   const claude = m.agentDef('claude-code')
   const clone = [{ name: 'alpha', dir: '/h/alpha' }]
   const plain = info('executor', ['alpha'])
-  const withHistory = m.containerLayout(plain, clone, false, m.historyHostMounts(ws, task, sessionId, claude.historyPaths))
+  const withHistory = m.containerLayout(plain, clone, m.historyHostMounts(ws, task, sessionId, claude.historyPaths))
   assert.deepEqual(withHistory.mounts, [
     { type: 'bind', source: '/h/alpha', target: '/workspaces/alpha' },
     { type: 'bind', source: m.sessionHistoryDir(ws, task, sessionId), target: m.HISTORY_MOUNT }
   ])
   const opencode = m.agentDef('opencode')
-  const without = m.containerLayout(plain, clone, false, m.historyHostMounts(ws, task, sessionId, opencode.historyPaths))
+  const without = m.containerLayout(plain, clone, m.historyHostMounts(ws, task, sessionId, opencode.historyPaths))
   assert.equal(without.mounts.length, 1)
 })
 

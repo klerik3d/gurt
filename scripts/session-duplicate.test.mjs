@@ -75,7 +75,10 @@ test('the copy carries every configured field', () => {
     [{ id: 'github', mode: 'read-only' }],
     false,
     { model: 'opus' },
-    'executor'
+    'executor',
+    undefined,
+    undefined,
+    { alpha: 'write' }
   )
   kernel.sessions.renameSession(source.id, 'login')
 
@@ -86,6 +89,7 @@ test('the copy carries every configured field', () => {
   assert.equal(copy.startPrompt, 'fix the login bug')
   assert.equal(copy.env, 'dev')
   assert.deepEqual(copy.repos, ['alpha'])
+  assert.deepEqual(copy.repoModes, { alpha: 'write' }, 'the mount modes come along')
   assert.equal(copy.agent, 'a1')
   assert.equal(copy.role, 'executor')
   assert.equal(copy.autoAllow, false)

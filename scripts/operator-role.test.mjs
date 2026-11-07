@@ -1,8 +1,9 @@
 // The operator role's table row (docs/requirements-session-operator.md §2,
-// acceptance §12 item 2), without docker or an agent: zero repos enforced at
-// every entrance, the repo-less start path through all four gates, no clone
-// lock taken and none waited for, no `complete` and no nudge, no
-// `create_session`, the image-only refusal, and the default env resolution.
+// acceptance §12 item 2, as amended by docs/requirements-repo-mounts.md §4),
+// without docker or an agent: repos allowed but never needed, the repo-less
+// start path through all four gates, no clone lock taken and none waited for
+// when it holds none, no `complete` and no nudge, no `create_session`, the
+// image-only refusal, and the default env resolution.
 //
 // Container state is staged through `sessions.patchContainer` where a holder
 // is needed — same trick as session-roles.test.mjs, so no daemon is involved.
@@ -54,11 +55,11 @@ await bundle({
   stdin: {
     contents:
       `export { createKernel } from ${S('src/main/kernel.ts')}\n` +
-      `export { assertRoleFitsRepos, postTurnDecision } from ${S('src/main/sessions.ts')}\n` +
+      `export { postTurnDecision } from ${S('src/main/sessions.ts')}\n` +
       `export { addEnv, getWorkspace, setDefaultEnv } from ${S('src/main/store.ts')}\n` +
       `export { bundledEnv } from ${S('src/main/baseEnv.ts')}\n` +
       `export { containerLayout } from ${S('src/main/containers.ts')}\n` +
-      `export { BASE_ENV_NAME, defaultEnvName, roleHasTurnContract, roleIsReadOnly, roleLocksClone, roleNeedsRepo, spawnableRoles } from ${S('src/shared/types.ts')}`,
+      `export { BASE_ENV_NAME, defaultEnvName, missingRepoReason, roleHasTurnContract, roleNeedsRepo, roleReadsAdmin, roleWritesAdmin, spawnableRoles } from ${S('src/shared/types.ts')}`,
     resolveDir: ROOT,
     loader: 'ts',
     sourcefile: 'entry.ts'
@@ -113,49 +114,45 @@ const ref = { workspace: ws, task, env: m.BASE_ENV_NAME }
 test('operator row of the role table', () => {
   assert.deepEqual(
     [
-      m.roleIsReadOnly('operator'),
-      m.roleLocksClone('operator'),
       m.roleHasTurnContract('operator'),
       m.spawnableRoles('operator'),
-      m.roleNeedsRepo('operator')
+      m.roleNeedsRepo('operator'),
+      m.roleReadsAdmin('operator'),
+      m.roleWritesAdmin('operator')
     ],
-    [true, false, false, [], false],
-    'mounts(none via wrapper) / lock / complete / create_session / needs-repo'
+    [false, [], false, true, true],
+    'complete / create_session / needs-repo / admin reads / admin writes'
   )
-  // Every existing role still needs a repo, and none may draft an operator.
-  for (const role of ['executor', 'researcher', 'reviewer']) {
+  // Its read half, the inspector: the same surface minus the writes, and the
+  // operator is the one thing it drafts.
+  assert.deepEqual(
+    [m.roleNeedsRepo('inspector'), m.roleReadsAdmin('inspector'), m.roleWritesAdmin('inspector')],
+    [false, true, false]
+  )
+  assert.deepEqual(m.spawnableRoles('inspector'), ['operator'])
+  for (const role of ['executor', 'researcher']) {
     assert.equal(m.roleNeedsRepo(role), true, `${role} needs a repo`)
     assert.ok(!m.spawnableRoles(role).includes('operator'), `${role} cannot draft an operator`)
   }
 })
 
-// --- zero repos enforced at every entrance (§2.1) ---------------------------
+// --- repos are allowed, never required (repo-mounts §4) ---------------------
 
-test('exactly zero repos: create, draft edit, IPC', async () => {
-  assert.throws(
-    () => m.assertRoleFitsRepos('operator', ['alpha']),
-    /holds no repository/,
-    'the pure rule refuses a repo-carrying operator'
+test('an operator may hold repos, in any mode', async () => {
+  const op = kernel.sessions.createSession(
+    ref, ['alpha'], 'a1', 'hi', 'draft', [], true, {}, 'operator', undefined, undefined, { alpha: 'write' }
   )
-  assert.throws(
-    () => kernel.sessions.createSession(ref, ['alpha'], 'a1', 'hi', 'draft', [], true, {}, 'operator'),
-    /holds no repository/,
-    'create refuses'
-  )
-  // Draft edit, through the IPC-boundary path (kernel.editDraft): re-pointing
-  // an executor that holds a repo to operator without dropping the repo fails,
-  // and the draft is left intact.
+  assert.deepEqual(op.repos, ['alpha'], 'create accepts a repo-carrying operator')
+  assert.deepEqual(op.repoModes, { alpha: 'write' })
+  assert.equal(m.missingRepoReason(op), undefined, 'and it may start')
+  // Re-pointing an executor to operator keeps its repo: the role touches no repo.
   const draft = kernel.sessions.createSession(ref, ['alpha'], 'a1', 'hi', 'draft', [], true, {}, 'executor')
-  await assert.rejects(
-    kernel.editDraft(draft.id, { role: 'operator' }),
-    /holds no repository/,
-    'draft edit refuses role=operator while a repo is held'
-  )
-  assert.equal(kernel.sessions.snapshot(draft.id).info.role, 'executor', 'rejected edit changed nothing')
-  // With the repos dropped in the same patch the edit lands.
-  await kernel.editDraft(draft.id, { role: 'operator', repos: [], env: m.BASE_ENV_NAME })
-  assert.equal(kernel.sessions.snapshot(draft.id).info.role, 'operator')
+  await kernel.editDraft(draft.id, { role: 'operator' })
+  const info = kernel.sessions.snapshot(draft.id).info
+  assert.equal(info.role, 'operator')
+  assert.deepEqual(info.repos, ['alpha'], 'the repo stays')
   kernel.sessions.deleteSession(draft.id)
+  kernel.sessions.deleteSession(op.id)
 })
 
 // --- the repo-less start path through all four gates (§2.1) -----------------
@@ -178,7 +175,12 @@ test('a repo-less operator passes all four repo gates; other roles still refuse'
 
   // Every other role still refuses a repo-less run/queue with the gate's own
   // sentence.
-  for (const role of ['executor', 'researcher', 'reviewer']) {
+  // The inspector passes them the same way.
+  const insp = kernel.sessions.createSession(ref, [], 'a1', 'hi', 'run', [], true, {}, 'inspector')
+  const is = await settle(kernel, insp.id)
+  assert.ok(!/no repository/.test(is.startError ?? ''), 'a repo-less inspector passes the gates too')
+  kernel.sessions.deleteSession(insp.id)
+  for (const role of ['executor', 'researcher']) {
     assert.throws(
       () => kernel.sessions.createSession(ref, [], 'a1', 'hi', 'run', [], true, {}, role),
       /session has no repository/,
@@ -215,7 +217,9 @@ test('the empty wrapper workspace-folder and the skills staging are repo-indepen
 
 test('an operator neither waits for a holder nor is one', async () => {
   // An executor sits on alpha with a running container…
-  const holder = kernel.sessions.createSession(ref2('dev'), ['alpha'], 'a1', 'hi', 'draft', [], true, {}, 'executor')
+  const holder = kernel.sessions.createSession(
+    ref2('dev'), ['alpha'], 'a1', 'hi', 'draft', [], true, {}, 'executor', undefined, undefined, { alpha: 'write' }
+  )
   kernel.sessions.patchContainer(holder.id, {
     status: 'running',
     id: 'c-holder',
@@ -329,22 +333,22 @@ test('a repo-less operator mounts no repos and works in /workspaces', () => {
   })
   // Zero repos is the mounted case with ZERO repo mounts: nothing to bind, a
   // workdir docker creates at container start (docs/requirements-env-docker.md §3.3).
-  assert.deepEqual(m.containerLayout(info('operator', []), [], false), {
+  assert.deepEqual(m.containerLayout(info('operator', []), []), {
     mounts: [],
     workdir: '/workspaces'
   })
   // …and the gurt binds (skills, history) still ride beside it.
   const bind = { hostDir: '/h/skills', target: '/gurt/skills', readonly: true }
-  assert.deepEqual(m.containerLayout(info('operator', []), [], false, [bind]).mounts, [
+  assert.deepEqual(m.containerLayout(info('operator', []), [], [bind]).mounts, [
     { type: 'bind', source: '/h/skills', target: '/gurt/skills', readonly: true }
   ])
   // The other shapes keep today's container paths.
   const clone = { name: 'alpha', dir: '/h/alpha' }
-  assert.deepEqual(m.containerLayout(info('researcher', ['alpha']), [clone], true), {
+  assert.deepEqual(m.containerLayout(info('researcher', ['alpha']), [clone]), {
     mounts: [{ type: 'bind', source: '/h/alpha', target: '/workspaces/alpha', readonly: true }],
     workdir: '/workspaces/alpha'
   })
-  assert.deepEqual(m.containerLayout(info('executor', ['alpha']), [clone], false), {
+  assert.deepEqual(m.containerLayout(info('executor', ['alpha']), [clone]), {
     mounts: [{ type: 'bind', source: '/h/alpha', target: '/workspaces/alpha' }],
     workdir: '/workspaces/alpha'
   })

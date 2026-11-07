@@ -1,7 +1,9 @@
-// Session roles (docs/requirements-session-roles.md), without docker or an
-// agent: what a role changes about locking, about the (role, repos) pair, and
-// who may draft whom through `create_session`. Plus the on-disk migration that
-// turns a pre-roles record into an explicit role.
+// Session roles (docs/requirements-repo-mounts.md §4, extending
+// docs/requirements-session-roles.md), without docker or an agent: what a role
+// still decides (its tool set and who it may draft), what it no longer decides
+// (mounts, locks, the repo count), and the on-disk migrations that turn a
+// pre-roles record into an explicit role and a reviewer into a researcher.
+// The mount modes themselves are repo-mounts.test.mjs's.
 //
 // Container state is staged through `sessions.patchContainer`, the seam the
 // container manager writes through — same trick as session-repo-gate.test.mjs,
@@ -30,7 +32,7 @@ await bundle({
     contents:
       `export { createKernel } from ${S('src/main/kernel.ts')}\n` +
       `export { readSessions } from ${S('src/main/store.ts')}\n` +
-      `export { sessionRole, roleIsReadOnly, roleLocksClone, roleHasTurnContract, spawnableRoles } from ${S('src/shared/types.ts')}`,
+      `export { sessionRole, repoMode, roleHasTurnContract, roleReadsAdmin, roleWritesAdmin, roleDraftsCrossTask, spawnableRoles, missingRepoReason } from ${S('src/shared/types.ts')}`,
     resolveDir: ROOT,
     loader: 'ts',
     sourcefile: 'entry.ts'
@@ -80,7 +82,7 @@ const kernel = m.createKernel()
 // finish before staging any (see queue-handoff.test.mjs).
 await kernel.ready
 const ref = { workspace: ws, task, env: 'dev' }
-const mk = (repos, role, title) => {
+const mk = (repos, role, title, repoModes) => {
   const info = kernel.sessions.createSession(
     ref,
     repos,
@@ -90,11 +92,15 @@ const mk = (repos, role, title) => {
     [],
     true,
     {},
-    role
+    role,
+    undefined,
+    undefined,
+    repoModes
   )
   kernel.sessions.renameSession(info.id, title)
   return info
 }
+const W = (repos) => Object.fromEntries(repos.map((r) => [r, 'write']))
 const hold = (id, repos) =>
   kernel.sessions.patchContainer(id, {
     status: 'running',
@@ -103,186 +109,180 @@ const hold = (id, repos) =>
     repos
   })
 
-// --- the role predicates: the table of §2 -----------------------------------
+// --- the role predicates: the table of §4 -----------------------------------
 test('role table', () => {
+  const roles = ['executor', 'researcher', 'inspector', 'operator', 'proactive']
   assert.deepEqual(
-    ['executor', 'researcher', 'reviewer'].map((r) => [
-      m.roleIsReadOnly(r),
-      m.roleLocksClone(r),
+    roles.map((r) => [
       m.roleHasTurnContract(r),
-      m.spawnableRoles(r)
+      m.roleReadsAdmin(r),
+      m.roleWritesAdmin(r),
+      m.spawnableRoles(r),
+      m.roleDraftsCrossTask(r)
     ]),
     [
-      [false, true, true, []],
-      [true, false, false, ['executor', 'reviewer']],
-      [true, true, false, ['executor']]
+      [true, false, false, [], false],
+      [false, false, false, ['executor', 'researcher'], true],
+      [false, true, false, ['operator'], true],
+      [false, true, true, [], false],
+      [true, false, false, [], false]
     ],
-    'mounts / lock / complete / create_session per role'
+    'complete / admin reads / admin writes / create_session / task per role'
   )
 })
 
-let multi
+// --- the role puts no rule on the repos -------------------------------------
+test('any role holds any repos, in any mode', () => {
+  for (const role of ['executor', 'researcher', 'inspector', 'operator']) {
+    const s = mk(['alpha', 'beta'], role, `multi-${role}`, { alpha: 'write', beta: 'read' })
+    assert.deepEqual(s.repos, ['alpha', 'beta'], `${role} may hold several repos`)
+    assert.deepEqual(s.repoModes, { alpha: 'write', beta: 'read' }, `${role} keeps the modes it was given`)
+  }
+  const none = mk([], 'operator', 'op-none')
+  assert.deepEqual(none.repos, [], 'and none at all')
+})
 
-// --- (role, repos) pairs ----------------------------------------------------
-test('(role, repos) rules', () => {
-  assert.throws(
-    () => mk(['alpha', 'beta'], 'executor', 'X'),
-    /single repository/,
-    'an executor may not hold two repos'
-  )
-  assert.throws(
-    () => mk(['alpha', 'beta'], 'reviewer', 'X'),
-    /single repository/,
-    'a reviewer may not hold two repos'
-  )
-  multi = mk(['alpha', 'beta'], 'researcher', 'R-multi')
-  assert.equal(m.sessionRole(multi), 'researcher', 'a researcher may hold several')
+// --- what a role needs to start ---------------------------------------------
+test('start needs: a write repo for an executor, a repo for a researcher, nothing else', () => {
+  const need = (role, repos, repoModes) => m.missingRepoReason({ role, repos, repoModes })
+  assert.match(need('executor', [], {}), /no repository/)
+  assert.match(need('executor', ['alpha'], { alpha: 'read-locked' }), /mounted for write/)
+  assert.equal(need('executor', ['alpha', 'beta'], { alpha: 'read', beta: 'write' }), undefined)
+  assert.match(need('researcher', [], {}), /no repository/)
+  assert.equal(need('researcher', ['alpha'], { alpha: 'read' }), undefined)
+  for (const role of ['inspector', 'operator', 'proactive']) assert.equal(need(role, [], {}), undefined, role)
+  const e = mk(['alpha'], 'executor', 'E-ro', { alpha: 'read-locked' })
+  assert.throws(() => kernel.sessions.run(e.id), /mounted for write/, 'the run gate says why')
+  assert.throws(() => kernel.sessions.enqueue(e.id), /mounted for write/, 'and so does the queue')
 })
 
 // --- no session carries a native-git toggle any more (§10.2) ----------------
 test('no role carries a git-access flag', () => {
   // The container broker is gone: authenticated git is the host-side github MCP
   // for every role, so there is nothing per-session left to switch on.
-  for (const s of [mk(['alpha'], 'executor', 'E-git'), multi, mk(['alpha'], 'reviewer', 'V-git')])
-    assert.equal('gitAccess' in s, false, `${m.sessionRole(s)} carries no gitAccess flag`)
+  for (const role of ['executor', 'researcher', 'inspector'])
+    assert.equal('gitAccess' in mk(['alpha'], role, `${role}-git`), false, `${role} carries no gitAccess flag`)
 })
 
-let reviewer
+let researcher
 let executor
+let inspector
 
-// --- locking: a reviewer holds the clone, a researcher never does -----------
-test('read-only + locked (reviewer) vs. unlocked (researcher)', async () => {
-  reviewer = mk(['alpha'], 'reviewer', 'V')
-  hold(reviewer.id, ['alpha'])
+// --- locking follows the modes, not the role --------------------------------
+test('a read-locked researcher excludes a writer; a read researcher does not', async () => {
+  researcher = mk(['alpha'], 'researcher', 'V', { alpha: 'read-locked' })
+  hold(researcher.id, ['alpha'])
 
-  executor = mk(['alpha'], 'executor', 'E')
+  executor = mk(['alpha'], 'executor', 'E', W(['alpha']))
   kernel.sessions.run(executor.id)
   const blocked = await settle(kernel, executor.id)
   assert.match(
     blocked.startError ?? '',
     /repository "alpha" is in use by session "V"/,
-    'a running reviewer excludes a writer on the same clone'
-  )
-
-  // The reviewer blocks writers, but not a researcher: it claims no clone at all.
-  const researcher = mk(['alpha'], 'researcher', 'R')
-  kernel.sessions.run(researcher.id)
-  const notBlocked = await settle(kernel, researcher.id)
-  assert.doesNotMatch(
-    notBlocked.startError ?? '',
-    /is in use by session/,
-    'a researcher is never gated by a holder'
-  )
-
-  // …and a researcher holding a live container blocks nobody either.
-  kernel.sessions.patchContainer(reviewer.id, undefined)
-  hold(researcher.id, ['alpha'])
-  kernel.sessions.run(executor.id)
-  const afterResearcher = await settle(kernel, executor.id)
-  assert.doesNotMatch(
-    afterResearcher.startError ?? '',
-    /is in use by session/,
-    'a researcher holds nothing, so it blocks nothing'
+    'a running read-locked session excludes a writer on the same clone'
   )
   kernel.sessions.patchContainer(researcher.id, undefined)
 
-  // A queued writer waits for a reviewer exactly as it waits for another writer.
-  hold(reviewer.id, ['alpha'])
-  const queued = mk(['alpha'], 'executor', 'Q')
-  kernel.sessions.enqueue(queued.id)
-  await new Promise((r) => setTimeout(r, 100))
-  assert.equal(
-    kernel.sessions.snapshot(queued.id).info.state,
-    'queued',
-    'the queue waits for the reviewer to release the clone'
-  )
-  // A queued researcher, by contrast, is started by the same pass.
-  const queuedResearcher = mk(['alpha'], 'researcher', 'QR')
-  kernel.sessions.enqueue(queuedResearcher.id)
-  const started = await settle(kernel, queuedResearcher.id)
-  assert.doesNotMatch(
-    started.startError ?? '',
-    /is in use by session/,
-    'a queued researcher is not held back by the lock'
-  )
-  kernel.sessions.patchContainer(reviewer.id, undefined)
+  const reader = mk(['alpha'], 'researcher', 'R', { alpha: 'read' })
+  hold(reader.id, ['alpha'])
+  kernel.sessions.run(executor.id)
+  const free = await settle(kernel, executor.id)
+  assert.doesNotMatch(free.startError ?? '', /is in use by session/, 'a plain reader holds nothing')
+  kernel.sessions.patchContainer(reader.id, undefined)
 })
 
-// --- role is editable while a draft, ignored afterwards ---------------------
-test('draft role edits', async () => {
-  const draft = mk(['alpha', 'beta'], 'researcher', 'D')
-  await kernel.editDraft(draft.id, { role: 'executor', repos: ['alpha'] })
-  assert.equal(
-    m.sessionRole(kernel.sessions.snapshot(draft.id).info),
-    'executor',
-    'a draft may change role'
-  )
-  await rejects(
-    () => kernel.editDraft(draft.id, { role: 'executor', repos: ['alpha', 'beta'] }),
-    /single repository/,
-    '…but not into an invalid (role, repos) pair'
-  )
-  assert.deepEqual(
-    kernel.sessions.snapshot(draft.id).info.repos,
-    ['alpha'],
-    'a rejected edit leaves the draft untouched'
-  )
+// --- role is editable while a draft, and touches nothing else ---------------
+test('draft role edits leave repos, modes and env alone', async () => {
+  const draft = mk(['alpha', 'beta'], 'researcher', 'D', { alpha: 'read', beta: 'write' })
+  await kernel.editDraft(draft.id, { role: 'executor' })
+  let info = kernel.sessions.snapshot(draft.id).info
+  assert.equal(m.sessionRole(info), 'executor', 'a draft may change role')
+  assert.deepEqual(info.repos, ['alpha', 'beta'], 'the repos stay')
+  assert.deepEqual(info.repoModes, { alpha: 'read', beta: 'write' }, 'the modes stay')
+  assert.equal(info.env, 'dev', 'the env stays')
+  await kernel.editDraft(draft.id, { role: 'operator' })
+  info = kernel.sessions.snapshot(draft.id).info
+  assert.deepEqual(info.repos, ['alpha', 'beta'], 'an operator keeps them too')
   await rejects(
     () => kernel.editDraft(draft.id, { role: 'boss' }),
     /unknown session role/,
     'an unknown role is rejected at the boundary'
   )
+  await rejects(
+    () => kernel.editDraft(draft.id, { role: 'reviewer' }),
+    /unknown session role/,
+    'the reviewer is gone'
+  )
 })
 
 let spawner
 
-// --- create_session: who may draft whom (§3) --------------------------------
+// --- create_session: who may draft whom (§4) --------------------------------
 test('create_session gating', async () => {
-  spawner = mk(['alpha'], 'researcher', 'S')
+  spawner = mk(['alpha'], 'researcher', 'S', { alpha: 'read' })
   const made = await kernel.sessions.createAgentDraft(spawner.id, {
-    role: 'reviewer',
+    role: 'researcher',
     repos: ['alpha'],
+    repoModes: { alpha: 'read-locked' },
     prompt: 'review the uncommitted changes against the requirements',
     title: 'review alpha'
   })
   const madeInfo = kernel.sessions.snapshot(made.sessionId).info
   assert.equal(madeInfo.state, 'draft', 'a spawned session is a draft — the user launches it')
-  assert.equal(m.sessionRole(madeInfo), 'reviewer', 'with the requested role')
+  assert.equal(m.sessionRole(madeInfo), 'researcher', 'with the requested role')
+  assert.deepEqual(madeInfo.repoModes, { alpha: 'read-locked' }, 'and the requested modes')
   assert.equal(madeInfo.title, 'review alpha', 'and the requested title')
   assert.equal(madeInfo.task, task, 'in the spawner’s own task')
   assert.equal(madeInfo.env, 'dev', 'inheriting the env it did not name')
   assert.equal(madeInfo.agent, 'a1', 'inheriting the agent it did not name')
-  assert.equal(madeInfo.startPrompt, 'review the uncommitted changes against the requirements')
 
   // The spawner's timeline says what it did — the draft is the user's to-do.
   const feed = kernel.sessions.snapshot(spawner.id).entries
   assert.ok(
-    feed.some((e) => e.kind === 'system' && /create_session: drafted reviewer/.test(e.text)),
+    feed.some((e) => e.kind === 'system' && /create_session: drafted researcher/.test(e.text)),
     'the spawn is recorded in the spawning session’s timeline'
   )
 
+  const two = await kernel.sessions.createAgentDraft(spawner.id, {
+    role: 'executor',
+    repos: ['alpha', 'beta'],
+    repoModes: { alpha: 'write', beta: 'write' },
+    prompt: 'change both'
+  })
+  assert.deepEqual(
+    kernel.sessions.snapshot(two.sessionId).info.repos,
+    ['alpha', 'beta'],
+    'a draft may hold several repos'
+  )
+
   await rejects(
-    () => kernel.sessions.createAgentDraft(spawner.id, { role: 'researcher', repos: ['alpha'], prompt: 'p' }),
-    /may only draft: executor, reviewer/,
-    'nobody drafts a researcher'
+    () => kernel.sessions.createAgentDraft(spawner.id, { role: 'operator', repos: [], prompt: 'p' }),
+    /may only draft: executor, researcher/,
+    'a researcher drafts no operator'
   )
+  inspector = mk([], 'inspector', 'I')
   await rejects(
-    () => kernel.sessions.createAgentDraft(reviewer.id, { role: 'reviewer', repos: ['alpha'], prompt: 'p' }),
-    /may only draft: executor/,
-    'a reviewer only drafts the fixer'
+    () => kernel.sessions.createAgentDraft(inspector.id, { role: 'executor', repos: ['alpha'], prompt: 'p' }),
+    /may only draft: operator/,
+    'an inspector only drafts the operator'
   )
-  assert.ok(
-    (await kernel.sessions.createAgentDraft(reviewer.id, {
-      role: 'executor',
-      repos: ['alpha'],
-      prompt: 'fix the findings'
-    })).sessionId,
-    'a reviewer drafts a fixer executor'
-  )
+  const op = await kernel.sessions.createAgentDraft(inspector.id, {
+    role: 'operator',
+    repos: [],
+    prompt: 'add the missing env'
+  })
+  const opInfo = kernel.sessions.snapshot(op.sessionId).info
+  assert.equal(m.sessionRole(opInfo), 'operator', 'an inspector drafts an operator')
+  assert.equal(opInfo.env, 'base', 'with no repo to follow, the workspace default env (here: the base image)')
   await rejects(
     () => kernel.sessions.createAgentDraft(executor.id, { role: 'executor', repos: ['alpha'], prompt: 'p' }),
     /may not draft sessions/,
     'an executor drafts nothing'
+  )
+  await rejects(
+    () => kernel.sessions.createAgentDraft(op.sessionId, { role: 'operator', repos: [], prompt: 'p' }),
+    /may not draft sessions/,
+    'an operator drafts nothing'
   )
   await rejects(
     () => kernel.sessions.createAgentDraft(spawner.id, { role: 'executor', repos: ['nope'], prompt: 'p' }),
@@ -301,11 +301,12 @@ test('create_session gating', async () => {
   )
 })
 
-// --- create_session across tasks: researcher-only, task created if missing --
+// --- create_session across tasks, task created if missing -------------------
 test('create_session across tasks', async () => {
   const spun = await kernel.sessions.createAgentDraft(spawner.id, {
     role: 'executor',
     repos: ['alpha'],
+    repoModes: { alpha: 'write' },
     prompt: 'the out-of-scope work, spelled out',
     task: 'spinoff'
   })
@@ -337,10 +338,22 @@ test('create_session across tasks', async () => {
     'spinoff',
     'an existing task is drafted into as-is'
   )
+  const opElsewhere = await kernel.sessions.createAgentDraft(inspector.id, {
+    role: 'operator',
+    repos: [],
+    prompt: 'p',
+    task: 'config-fix'
+  })
+  assert.equal(
+    kernel.sessions.snapshot(opElsewhere.sessionId).info.task,
+    'config-fix',
+    'an inspector may draft its operator into a task of its own'
+  )
+  const plain = mk(['alpha'], 'executor', 'E-x', W(['alpha']))
   await rejects(
-    () => kernel.sessions.createAgentDraft(reviewer.id, { role: 'executor', repos: ['alpha'], prompt: 'p', task: 'spinoff' }),
-    /may only draft into its own task/,
-    'a reviewer never drafts across tasks — its fixer must hold this task’s clone'
+    () => kernel.sessions.createAgentDraft(plain.id, { role: 'executor', repos: ['alpha'], prompt: 'p', task: 'spinoff' }),
+    /may not draft sessions/,
+    'a role that drafts nothing drafts nowhere'
   )
   await rejects(
     () => kernel.sessions.createAgentDraft(spawner.id, { role: 'executor', repos: ['alpha'], prompt: 'p', task: 'a..b' }),
@@ -372,11 +385,12 @@ test('pre-roles migration', async () => {
   const task2 = 'legacy'
   fs.mkdirSync(path.join(GURT_ROOT, ws, task2), { recursive: true })
   const sessPath = path.join(GURT_ROOT, ws, task2, 'sessions.json')
-  const legacy = (id, repos) => ({
+  const legacy = (id, repos, role) => ({
     info: {
       id,
       env: 'dev',
       repos,
+      ...(role ? { role } : {}),
       task: task2,
       workspace: ws,
       title: id,
@@ -385,12 +399,29 @@ test('pre-roles migration', async () => {
       startPrompt: 'hi'
     }
   })
-  fs.writeFileSync(sessPath, JSON.stringify([legacy('one', ['alpha']), legacy('two', ['alpha', 'beta'])]))
-  const [one, two] = await m.readSessions(ws, task2)
+  fs.writeFileSync(
+    sessPath,
+    JSON.stringify([
+      legacy('one', ['alpha']),
+      legacy('two', ['alpha', 'beta']),
+      legacy('three', ['alpha'], 'reviewer'),
+      legacy('four', [], 'operator'),
+      legacy('five', ['beta'], 'proactive')
+    ])
+  )
+  const [one, two, three, four, five] = await m.readSessions(ws, task2)
   assert.equal(one.info.role, 'executor', 'a single-repo record was a read-write worker')
+  assert.deepEqual(one.info.repoModes, { alpha: 'write' }, '…and keeps writing its clone')
   assert.equal(two.info.role, 'researcher', 'a discovery session becomes a researcher')
+  assert.deepEqual(two.info.repoModes, { alpha: 'read', beta: 'read' }, '…reading both, locking nothing')
+  assert.equal(three.info.role, 'researcher', 'a reviewer becomes a researcher')
+  assert.deepEqual(three.info.repoModes, { alpha: 'write' }, '…with the writable, locked clone it had')
+  assert.deepEqual(four.info.repoModes, {}, 'an operator held nothing')
+  assert.deepEqual(five.info.repoModes, { beta: 'read' }, 'a proactive run read its repos')
   const migrated = fs.readFileSync(sessPath, 'utf8')
   assert.ok(migrated.includes('"role": "researcher"'), 'the role is written back to disk')
+  assert.ok(migrated.includes('"repoModes"'), 'and so are the modes')
+  assert.ok(!migrated.includes('reviewer'), 'no reviewer is left on disk')
   await m.readSessions(ws, task2)
   assert.equal(
     fs.readFileSync(sessPath, 'utf8'),

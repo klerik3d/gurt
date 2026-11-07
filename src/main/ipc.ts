@@ -6,7 +6,7 @@ import { API_METHODS, type GurtApi } from '../shared/api'
 import { defaultEnvName, isSessionRole } from '../shared/types'
 import { MCP_DEFS } from '../shared/mcp'
 import { broadcast } from './broadcast'
-import { createKernel } from './kernel'
+import { assertRepoModes, createKernel } from './kernel'
 import { POLL_INTERVAL_MS } from './planUsage'
 import { createLogger, dropSessionLog, enabled, logDir, logLevel, logRenderer } from './log'
 import {
@@ -337,7 +337,8 @@ export function registerIpc(): void {
       configValues,
       role,
       skills,
-      network
+      network,
+      repoModes
     ) => {
       // Anything that can bring a container up waits out the boot restore: the
       // reconcile rewrites container records from a pre-start snapshot, and a
@@ -353,6 +354,7 @@ export function registerIpc(): void {
         throw new Error(`task "${ref.task}" not found in "${ref.workspace}"`)
       if (role !== undefined && !isSessionRole(role))
         throw new Error(`unknown session role "${String(role)}"`)
+      assertRepoModes(repoModes)
       // A fresh draft (App.tsx) names no agent up front — it falls back to the
       // workspace's default, same as an agent's own `create_session` request
       // that leaves `agent` out. An explicit pick (a re-post, a duplicate) is
@@ -368,7 +370,7 @@ export function registerIpc(): void {
       const defaultRepo = wsData.envs.find((e) => e.name === envName)?.repo
       return kernel.sessions.createSession(
         { ...ref, env: envName },
-        repos.length || role === 'operator' || !defaultRepo ? repos : [defaultRepo],
+        repos.length || !defaultRepo ? repos : [defaultRepo],
         agentId,
         prompt,
         action,
@@ -387,7 +389,8 @@ export function registerIpc(): void {
         // Not validated here: `SessionManager.createSession` sanitizes it, and
         // it has to — the agent-drafted and duplicate paths never pass this
         // boundary at all.
-        network
+        network,
+        repoModes
       )
     },
     // Same boot gate as createSession — see the comment there.

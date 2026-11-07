@@ -109,7 +109,7 @@ let afterIt
 let draft
 
 test('a launched session comes back as a draft with the same configuration', async () => {
-  before = kernel.sessions.createSession(ref, ['beta'], 'a1', 'first', 'draft')
+  before = kernel.sessions.createSession(ref, ['beta'], 'a1', 'first', 'draft', [], true, {}, 'executor', undefined, undefined, Object.fromEntries(['beta'].map((r) => [r, 'write'])))
   target = kernel.sessions.createSession(
     ref,
     ['alpha'],
@@ -121,10 +121,11 @@ test('a launched session comes back as a draft with the same configuration', asy
     { model: 'opus' },
     'executor',
     [{ name: 'tdd' }],
-    { internal: true }
+    { internal: true },
+    { alpha: 'write' }
   )
   kernel.sessions.renameSession(target.id, 'login')
-  afterIt = kernel.sessions.createSession(ref, ['beta'], 'a1', 'last', 'draft')
+  afterIt = kernel.sessions.createSession(ref, ['beta'], 'a1', 'last', 'draft', [], true, {}, 'executor', undefined, undefined, Object.fromEntries(['beta'].map((r) => [r, 'write'])))
 
   // Stage a live container the way the container manager would, and a mount
   // scratch / history dir, then launch.

@@ -358,7 +358,7 @@ export function Chat({
         <span className="chat-pill">{sizeLabel}</span>
         <span className="chat-pill">
           <RoleMark role={sessionRole(info)} />
-          <EnvRepoMarks env={info.env} repos={info.repos} task={info.task} />
+          <EnvRepoMarks env={info.env} repos={info.repos} task={info.task} session={info} />
           {info.agent && (
             <span>
               · <AgentMark kind={agentKind(agents, info.agent)} name={agentName(agents, info.agent)} />

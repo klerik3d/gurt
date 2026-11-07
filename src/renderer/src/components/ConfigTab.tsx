@@ -4,6 +4,7 @@ import type {
   AgentConfig,
   McpMode,
   RepoConfig,
+  RepoMode,
   SessionConfigOption,
   SessionInfo,
   SessionModes,
@@ -13,11 +14,10 @@ import type {
 } from '../../../shared/types'
 import {
   BASE_ENV_NAME,
+  REPO_MODES,
   USER_SESSION_ROLES,
-  defaultEnvName,
-  roleAllowsMultiRepo,
-  roleForbidsRepo,
-  roleNeedsRepo,
+  missingRepoReason,
+  repoMode,
   sessionRole
 } from '../../../shared/types'
 import type { SessionDraftPatch } from '../../../shared/api'
@@ -41,6 +41,7 @@ import {
   EnvTag,
   McpTag,
   NetTag,
+  REPO_MODE_INFO,
   ROLE_INFO,
   RepoTag,
   RoleTag,
@@ -317,11 +318,12 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
   }, [info.skills, wsData?.defaultSkills?.join('\u0000')])
 
   // Picking a (different) env re-seeds the session repo from that env's
-  // default — except for an operator, which holds no repo to seed.
+  // default while the draft holds at most one — a hand-built list of several
+  // is the user's, and an env pick never throws it away.
   const pickEnv = (name: string) => {
     // A proactive agent's template keeps its repos whatever env it runs on:
     // they are context it reads, not the clone an env is built from.
-    if (role === 'operator' || role === 'proactive') {
+    if (role === 'proactive' || repos.length > 1) {
       patch({ env: name })
       setPicker(null)
       return
@@ -334,23 +336,21 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
       return
     }
     const def = envs.find((e) => e.name === name)?.repo
-    patch({ env: name, repos: def ? [def] : [] })
+    // The repo it replaces hands over its mode, so swapping the env of a
+    // `write` draft keeps it writable.
+    const [prev] = repos
+    patch({
+      env: name,
+      repos: def ? [def] : [],
+      ...(def && prev ? { repoModes: { [def]: repoMode(info, prev) } } : {})
+    })
     setPicker(null)
   }
 
-  // Only a researcher may hold several repos, so leaving that role drops the
-  // extras rather than letting an invalid pair reach the IPC boundary. An
-  // operator holds exactly zero — the pick clears the repos and points the
-  // draft at the workspace default env (its own, or the base image).
+  // The role decides the tool set alone — it never touches the repos, their
+  // modes or the env (docs/requirements-repo-mounts.md §4).
   const pickRole = (next: SessionRole) => {
-    const p: SessionDraftPatch = { role: next }
-    if (roleForbidsRepo(next)) {
-      p.repos = []
-      p.env = defaultEnvName(wsData ?? {})
-    } else if (!roleAllowsMultiRepo(next) && repos.length > 1) {
-      p.repos = repos.slice(0, 1)
-    }
-    patch(p)
+    patch({ role: next })
     setPicker(null)
   }
 
@@ -363,16 +363,13 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
       )
     : allRepos
 
-  // Multi-select for a researcher, plain single pick for the roles that work in
-  // exactly one clone.
+  // Always multi-select: any session may hold any number of repos. A new pick
+  // takes the default mode; the host fills it in.
   const toggleRepo = (name: string) => {
-    const next = repos.includes(name)
-      ? repos.filter((n) => n !== name)
-      : roleAllowsMultiRepo(role)
-        ? [...repos, name]
-        : [name]
-    patch({ repos: next })
+    patch({ repos: repos.includes(name) ? repos.filter((n) => n !== name) : [...repos, name] })
   }
+  const setMode = (name: string, mode: RepoMode) => patch({ repoModes: { [name]: mode } })
+  const repoGap = missingRepoReason(info)
 
   // A new local repo, made right here and picked at once — and, being new, it
   // has no env, so a draft with no env yet gets the base image. It is a workspace repo from then
@@ -383,7 +380,7 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
     try {
       const created = await window.gurt.createLocalRepo(info.workspace, name)
       patch({
-        repos: roleAllowsMultiRepo(role) ? [...repos, created.name] : [created.name],
+        repos: [...repos, created.name],
         ...(info.env ? {} : { env: BASE_ENV_NAME })
       })
       setNewRepo(null)
@@ -640,24 +637,14 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
         </div>
 
         {/* session repositories — seeded from the env's default, changeable
-            here. Multi-select for a researcher only. The two notes stay
-            visible rather than moving behind the info dot: one blocks
-            Run/Queue and the other changes what the session may write. */}
+            here, any number of them, each with its own mount mode
+            (docs/requirements-repo-mounts.md §6). The notes stay visible
+            rather than moving behind the info dot: they block Run/Queue. */}
         <div className="cfg-cell">
           <div className="seclabel-row">
-            <span className="seclabel">REPOSITORY</span>
-            {role === 'operator' && (
-              <InfoDot text="an operator session holds no repository at all — its subject is gurt's configuration, not a clone" />
-            )}
+            <span className="seclabel">REPOSITORIES</span>
+            <InfoDot text="each repository is mounted the way its row says: write — read-write, holds the clone exclusively; read with a lock — read-only, the tree does not move while this session runs; read — read-only, blocks nobody" />
           </div>
-          {role === 'operator' ? (
-            // Disabled, not hidden: the row saying *why* there is nothing to
-            // pick beats a layout that quietly lost a field.
-            <button type="button" className="pick-row" disabled aria-disabled="true">
-              <span className="chip-dashed">no repository — an operator holds none</span>
-              <span className="spacer" />
-            </button>
-          ) : (
           <PickRow
             open={picker === 'repo'}
             onToggle={() => setPicker(picker === 'repo' ? null : 'repo')}
@@ -745,63 +732,70 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
               </>
             }
           >
-            {roleAllowsMultiRepo(role) ? (
-              <>
-                <Icon name="branch" size={14} className="dim" style={{ flex: 'none' }} />
-                <span className="pick-value">{repos.length ? 'add another repository' : 'pick a repository'}</span>
-                {repos.length > 0 && <span className="pick-meta">{repos.length} selected</span>}
-              </>
-            ) : repos.length ? (
-              repos.map((name) => {
-                const cfg = allRepos.find((r) => r.name === name)
-                return (
-                  <span className="chip-tag" key={name}>
-                    <Icon name="branch" size={11} className="faint" style={{ flex: 'none' }} />
-                    {cfg ? repoChipLabel(cfg) : name}
-                  </span>
-                )
-              })
-            ) : (
-              <span className="chip-dashed">no repository</span>
-            )}
+            <Icon name="branch" size={14} className="dim" style={{ flex: 'none' }} />
+            <span className="pick-value">{repos.length ? 'add another repository' : 'pick a repository'}</span>
+            {repos.length > 0 && <span className="pick-meta">{repos.length} selected</span>}
             <span className="spacer" />
           </PickRow>
-          )}
-          {/* Selected repos move here instead of packing the pick-row itself:
-              a researcher can rack up enough of them that inline chips would
-              overrun the row and hang off the edge of the screen. Below the
-              row they wrap, and each carries its own remove — the familiar
-              tag-input shape. */}
-          {roleAllowsMultiRepo(role) && repos.length > 0 && (
-            <div className="chip-row">
+          {/* One row per picked repo: its name, its mode, its remove. Below the
+              pick-row rather than inside it, so any number of them wraps
+              instead of overrunning the row. A proactive run's repos are
+              always read — the control says so instead of offering a choice. */}
+          {repos.length > 0 && (
+            <div className="repo-mode-list">
               {repos.map((name) => {
                 const cfg = allRepos.find((r) => r.name === name)
+                const mode = repoMode(info, name)
                 return (
-                  <span className="chip-tag" key={name}>
-                    <Icon name="branch" size={11} className="faint" style={{ flex: 'none' }} />
-                    {cfg ? repoChipLabel(cfg) : name}
-                    <span
-                      className="chip-x"
-                      title="remove"
-                      onMouseDown={(e) => {
-                        e.preventDefault()
-                        toggleRepo(name)
-                      }}
-                    >
-                      ×
-                    </span>
-                  </span>
+                  <div className="repo-mode-row" key={name}>
+                    <div className="repo-mode-head">
+                      <Icon name="branch" size={11} className="faint" style={{ flex: 'none' }} />
+                      <span className="repo-mode-name">{cfg ? repoChipLabel(cfg) : name}</span>
+                      <span className="spacer" />
+                      <span
+                        className="chip-x"
+                        title="remove"
+                        onMouseDown={(e) => {
+                          e.preventDefault()
+                          toggleRepo(name)
+                        }}
+                      >
+                        ×
+                      </span>
+                    </div>
+                    <div className="repo-mode-seg" role="radiogroup" aria-label={`${name} mount mode`}>
+                      {REPO_MODES.map((m) => (
+                        <button
+                          type="button"
+                          key={m}
+                          role="radio"
+                          data-mode={m}
+                          aria-checked={mode === m}
+                          className={`chip-btn ${mode === m ? 'on' : ''}`}
+                          title={REPO_MODE_INFO[m].hint}
+                          disabled={role === 'proactive'}
+                          onClick={() => mode !== m && setMode(name, m)}
+                        >
+                          {REPO_MODE_INFO[m].locked && <Icon name="lock" size={10} style={{ flex: 'none' }} />}
+                          {REPO_MODE_INFO[m].label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                 )
               })}
             </div>
           )}
-          {roleNeedsRepo(role) && !repos.length && (
-            <div className="hc-note">no repository — Run/Queue disabled until you pick one</div>
+          {repoGap && (
+            <div className="hc-note">
+              {repos.length
+                ? 'no repository mounted for write — an executor cannot Run/Queue until one is'
+                : 'no repository — Run/Queue disabled until you pick one'}
+            </div>
           )}
           {role === 'proactive' && (
             <div className="hc-note">optional — repos are read-only context for each run</div>
           )}
-          {repos.length > 1 && <div className="hc-note">{repos.length} repos — mounted read-only</div>}
         </div>
       </div>
 

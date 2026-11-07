@@ -21,6 +21,7 @@ import type {
   PendingPromptInfo,
   SessionInfo,
   SessionNetwork,
+  RepoMode,
   SessionRole,
   SessionSnapshot,
   SkillSelection,
@@ -86,9 +87,12 @@ export interface SessionDraftPatch {
   /** What the session is for. Editable only while it is a draft — nothing has
    *  been mounted or locked yet (see `SessionRole`). */
   role?: SessionRole
-  /** The session's repos (repo names, `repos[0]` is the build anchor); absent
-   *  to leave them unchanged. */
+  /** The session's repos (repo names, in order); absent to leave them
+   *  unchanged. */
   repos?: string[]
+  /** How repos are mounted (docs/requirements-repo-mounts.md §2), merged over
+   *  the current modes; a repo without one takes the default. */
+  repoModes?: Record<string, RepoMode>
   autoAllow?: boolean
   mcp?: McpSelection[]
   /** Skills to mount when the session starts. Absent leaves them unchanged;
@@ -306,8 +310,7 @@ export interface GurtApi {
   taskCopyPath(ws: string, task: string): Promise<void>
   createSession(
     ref: EnvRef,
-    /** The session's repos (repo names); empty for a repo-less draft. More than
-     *  one is researcher-only (see `SessionInfo.repos`). */
+    /** The session's repos (repo names); empty for a repo-less draft. */
     repos: string[],
     agent: string,
     prompt: string,
@@ -321,7 +324,10 @@ export interface GurtApi {
     skills: SkillSelection[],
     /** Egress settings (`internal` + the allow list). Omitted = the defaults:
      *  a normal bridge, everything allowed and logged. */
-    network?: SessionNetwork
+    network?: SessionNetwork,
+    /** How each repo is mounted; omitted ones take the default
+     *  (docs/requirements-repo-mounts.md §2). */
+    repoModes?: Record<string, RepoMode>
   ): Promise<SessionInfo>
   sessionRun(id: string): Promise<void>
   sessionEnqueue(id: string): Promise<void>

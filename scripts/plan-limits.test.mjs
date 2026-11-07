@@ -135,14 +135,14 @@ const tick = () => new Promise((r) => setTimeout(r, 50))
 test('a queued draft on a held account waits, says why, and starts once the hold lifts', async () => {
   live('a1', 97)
   // a2 has no numbers of its own: it is held through a1, its account-mate.
-  const d = kernel.sessions.createSession(ref, ['alpha'], 'a2', 'hi', 'queue')
+  const d = kernel.sessions.createSession(ref, ['alpha'], 'a2', 'hi', 'queue', [], true, {}, 'executor', undefined, undefined, Object.fromEntries(['alpha'].map((r) => [r, 'write'])))
   await tick()
   let snap = kernel.sessions.snapshot(d.id)
   assert.equal(snap.info.state, 'queued', 'the start would only be refused — it waits')
   assert.match(snap.waiting ?? '', /plan limit: Current session 97% — waits for the reset at/)
 
   // Another account is not held by this one.
-  const other = kernel.sessions.createSession(ref, ['beta'], 'a3', 'hi', 'queue')
+  const other = kernel.sessions.createSession(ref, ['beta'], 'a3', 'hi', 'queue', [], true, {}, 'executor', undefined, undefined, Object.fromEntries(['beta'].map((r) => [r, 'write'])))
   const otherSnap = await settle(other.id)
   assert.equal(otherSnap.waiting, undefined)
   assert.doesNotMatch(otherSnap.startError ?? '', /limit/, 'it went past the gate (and failed at provisioning)')
@@ -157,7 +157,7 @@ test('a queued draft on a held account waits, says why, and starts once the hold
 test('the threshold is the configured one', async () => {
   live('a1', 70)
   await kernel.setLimitSettings({ thresholdPercent: 60 })
-  const d = kernel.sessions.createSession(ref, ['alpha'], 'a1', 'hi', 'queue')
+  const d = kernel.sessions.createSession(ref, ['alpha'], 'a1', 'hi', 'queue', [], true, {}, 'executor', undefined, undefined, Object.fromEntries(['alpha'].map((r) => [r, 'write'])))
   await tick()
   assert.equal(kernel.sessions.snapshot(d.id).info.state, 'queued')
   // Raising it re-decides at once.
@@ -169,7 +169,7 @@ test('the threshold is the configured one', async () => {
 
 test('"Run now" on a held account queues instead of starting into the refusal', async () => {
   live('a1', 100)
-  const d = kernel.sessions.createSession(ref, ['alpha'], 'a1', 'hi', 'draft')
+  const d = kernel.sessions.createSession(ref, ['alpha'], 'a1', 'hi', 'draft', [], true, {}, 'executor', undefined, undefined, Object.fromEntries(['alpha'].map((r) => [r, 'write'])))
   kernel.sessions.run(d.id)
   await tick()
   assert.equal(kernel.sessions.snapshot(d.id).info.state, 'queued')
@@ -226,7 +226,7 @@ test('a limit hit holds the session and its whole account, and queues the resume
     'the timeline says what will happen'
   )
   // The account learned of it: a draft on a3 now waits instead of starting.
-  const d = kernel.sessions.createSession(ref, ['beta'], 'a3', 'hi', 'queue')
+  const d = kernel.sessions.createSession(ref, ['beta'], 'a3', 'hi', 'queue', [], true, {}, 'executor', undefined, undefined, Object.fromEntries(['beta'].map((r) => [r, 'write'])))
   await tick()
   assert.equal(kernel.sessions.snapshot(d.id).info.state, 'queued')
   // No reset named and none known: a backoff, never "now".

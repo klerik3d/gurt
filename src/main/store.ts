@@ -21,7 +21,7 @@ import type {
 } from '../shared/types'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import type { McpRegistryEntry } from '../shared/mcp'
-import { BASE_ENV_NAME, DEFAULT_BASE_IMAGE } from '../shared/types'
+import { BASE_ENV_NAME, DEFAULT_BASE_IMAGE, legacyRepoMode } from '../shared/types'
 import { sanitizeWelcomeMode, type WelcomeMode } from '../shared/doctor'
 import { agentDef } from '../shared/agents'
 import { defaultAgentConfig } from '../shared/agentConfig'
@@ -1495,6 +1495,21 @@ export async function readSessions(ws: string, task: string): Promise<PersistedS
     // so the role stops being derived from repo count anywhere.
     if (!r.info.role) {
       r.info.role = r.info.repos.length > 1 ? 'researcher' : 'executor'
+      migrated = true
+    }
+    // Pre-mount-modes records left the mounts to the role
+    // (docs/requirements-repo-mounts.md §5): fold that table into a mode per
+    // repo, once, so every mount and lock stays exactly what it was. The
+    // reviewer is gone; its records become researchers with the read-write,
+    // locked clone the 2026-08-24 stopgap gave them.
+    const legacyRole = info['role'] as string | undefined
+    if (legacyRole === 'reviewer') {
+      r.info.role = 'researcher'
+      r.info.repoModes = Object.fromEntries(r.info.repos.map((n) => [n, 'write' as const]))
+      migrated = true
+    } else if (!r.info.repoModes) {
+      const mode = legacyRepoMode(r.info.role)
+      r.info.repoModes = Object.fromEntries(r.info.repos.map((n) => [n, mode]))
       migrated = true
     }
     if (!r.info.state) r.info.state = 'started'

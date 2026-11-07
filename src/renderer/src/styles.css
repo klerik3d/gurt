@@ -433,6 +433,61 @@ textarea.input {
 .chip-tag .chip-x:hover {
   color: var(--red);
 }
+/* The draft's repo list: one row per repo, its mount mode picked in place
+   (docs/requirements-repo-mounts.md §6). */
+.repo-mode-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 7px;
+}
+.repo-mode-row {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--dim);
+  border: 1px solid var(--border2);
+  border-radius: 4px;
+  padding: 5px 6px 6px 9px;
+  background: var(--app);
+}
+.repo-mode-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+.repo-mode-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.repo-mode-seg {
+  display: flex;
+  gap: 4px;
+}
+.repo-mode-seg .chip-btn {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 2px 6px;
+  font-size: 11px;
+}
+.repo-mode-seg .chip-btn:disabled {
+  cursor: default;
+}
+.repo-mode-row .chip-x {
+  color: var(--faint);
+  cursor: pointer;
+  padding: 0 3px;
+}
+.repo-mode-row .chip-x:hover {
+  color: var(--red);
+}
 .chip-dashed {
   display: inline-flex;
   align-items: center;

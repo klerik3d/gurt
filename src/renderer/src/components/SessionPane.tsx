@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { PromptImage, SessionSnapshot, Tree } from '../../../shared/types'
-import { roleLocksClone, roleNeedsRepo, sessionRole, sessionStatus } from '../../../shared/types'
+import { missingRepoReason, repoMode, sessionRole, sessionStatus } from '../../../shared/types'
 import { agentKind, agentName, useAgents } from '../useAgents'
 import { useMcpEntries, useMcpFailures } from '../useMcp'
 import { resolveMcpSelection } from '../../../shared/mcp'
@@ -106,7 +106,7 @@ function Header({
       <span className="tag">{info.state}</span>
       <span className="chat-pill">
         <RoleMark role={sessionRole(info)} />
-        <EnvRepoMarks env={info.env} repos={info.repos} task={info.task} />
+        <EnvRepoMarks env={info.env} repos={info.repos} task={info.task} session={info} />
         {/* Own element, not a bare string: adjacent text nodes collapse into one
             flex item and lose the row's gap. */}
         {info.agent && (
@@ -194,12 +194,14 @@ function NonStartedPane({
 
   // A start needs an environment, a repository and an agent — a bare draft
   // (created with none of these picked) has all three blank until the Config
-  // tab fills them in. An operator never holds a repository, so only the
-  // other two gate it (docs/requirements-session-operator.md §2.1).
+  // tab fills them in. Which repository is needed is the role's to say — a
+  // `write` one for an executor, none at all for an operator
+  // (docs/requirements-repo-mounts.md §4).
+  const repoGap = missingRepoReason(info)
   const missing = !info.env
     ? 'an environment'
-    : roleNeedsRepo(sessionRole(info)) && !info.repos.length
-      ? 'a repository'
+    : repoGap
+      ? repoGap.startsWith('an executor') ? 'a repository mounted for write' : 'a repository'
       : !info.agent
         ? 'an agent'
         : null
@@ -291,9 +293,9 @@ function NonStartedPane({
             <div className="queue-badge">
               queued — position #{queuePosition}
               <div className="dim">
-                {snapshot.waiting ?? (roleLocksClone(sessionRole(info))
-                  ? 'starts when its repository is free — the session holding it releases it as soon as its turn ends'
-                  : 'starts as soon as the queue reaches it — a researcher mounts its repos read-only and waits for no one')}
+                {snapshot.waiting ?? (info.repos.some((r) => repoMode(info, r) !== 'read')
+                  ? 'starts when its repositories are free — the session holding one releases it as soon as its turn ends'
+                  : 'starts as soon as the queue reaches it — it only reads live trees and waits for no one')}
               </div>
             </div>
           )}

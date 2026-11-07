@@ -1,14 +1,15 @@
-// The role picker on a draft's Config tab (docs/requirements-session-roles.md
-// §7): picking a role, what it does to the repository picker, and that the role
-// survives into `sessions.json` and back into the pane after a reload.
+// The role picker and the per-repo mount modes on a draft's Config tab
+// (docs/requirements-repo-mounts.md §6): repos are always multi-select, each
+// with its own mode; picking a role touches neither; and role, repos and modes
+// survive into `sessions.json` and back into the pane after a reload.
 //
 // A session is created as a bare draft and configured afterwards on its own
 // Config tab (there is no New Session modal, and no Save button — every pick is
 // written straight through `sessionEditDraft`).
 //
 // Drives the real app (Electron + the renderer), because what is under test is
-// the wiring: the picker, the single/multi-select switch it drives, the IPC
-// payload, and what the Config tab reads back. No agent, no clone, no
+// the wiring: the pickers, the mode control, the IPC payload, and what the
+// Config tab reads back. No agent, no clone, no
 // container, so nothing here needs docker.
 //
 //   npm run build && node scripts/smoke-roles.mjs
@@ -89,16 +90,15 @@ const shownRole = async () => (await page.locator(`${ROLE_ROW} .pick-value`).inn
 // race that a loaded CI runner loses. These wait for the value instead.
 const untilRole = (role) =>
   page.waitForSelector(`${ROLE_ROW} .pick-value:text-is("${role}")`, { timeout: 5000 })
-/** The repo chips, once they read exactly `want` — same round-trip, same wait.
- *  A researcher's chips now live below the pick row with a remove "×" on each
- *  (too many overran the row); strip it so the label comparison doesn't care
- *  which role rendered the chip. */
-const stripChipX = (s) => s.replace(/\s*×\s*$/, '').trim()
-const untilChips = (want) =>
+/** The repo rows, once they read exactly `want` (`name:mode` each, the mode
+ *  as its `data-mode`) — same round-trip, same wait. */
+const untilRows = (want) =>
   page.waitForFunction(
     (expected) => {
-      const got = [...document.querySelectorAll('.ns-body .chip-tag')].map((e) =>
-        (e.innerText ?? '').replace(/\s*×\s*$/, '').trim()
+      const got = [...document.querySelectorAll('.ns-body .repo-mode-row')].map(
+        (r) =>
+          `${(r.querySelector('.repo-mode-name')?.innerText ?? '').trim()}:` +
+          `${r.querySelector('.chip-btn.on')?.getAttribute('data-mode') ?? ''}`
       )
       return got.length === expected.length && got.every((g, i) => g === expected[i])
     },
@@ -112,18 +112,16 @@ const pickRole = async (role) => {
   await page.waitForSelector('.ns-body .pick-menu', { state: 'detached', timeout: 5000 })
   await untilRole(role)
 }
-const repoChips = () =>
-  page
-    .locator('.ns-body .chip-tag')
-    .allInnerTexts()
-    .then((ts) => ts.map(stripChipX))
 const pickRepo = async (name) => {
-  await page.click(row('REPOSITORY'))
+  await page.click(row('REPOSITORIES'))
   await page.click(`.ns-body .pick-menu .menu-item:has-text("${name}")`)
   // Close the still-open multi-select menu.
   await page.keyboard.press('Escape')
   await page.waitForSelector('.ns-body .pick-menu', { state: 'detached', timeout: 5000 })
 }
+const setMode = (repo, mode) =>
+  page.click(`.ns-body .repo-mode-row:has(.repo-mode-name:text-is("${repo}")) .chip-btn[data-mode="${mode}"]`)
+const WRITE_NOTE = '.ns-body .hc-note:has-text("no repository mounted for write")'
 const pickEnv = async (name) => {
   await page.click(row('ENVIRONMENT'))
   await page.click(`.ns-body .pick-menu .menu-item:has-text("${name}")`)
@@ -162,16 +160,22 @@ try {
   assert.equal(await shownRole(), 'executor', 'a new session defaults to executor')
   await shot('01-executor')
 
-  // A bare draft has no environment yet; picking one seeds the session repo
-  // from that env's default. An executor works in exactly one clone, so a
-  // second pick replaces the first.
-  assert.deepEqual(await repoChips(), [], 'a bare draft starts with no repository')
+  // A bare draft has no repository; picking an env seeds it from that env's
+  // default, mounted read-locked — the default for every role.
+  assert.equal(await page.locator('.ns-body .repo-mode-row').count(), 0, 'a bare draft starts with no repository')
   await pickEnv('dev')
-  await untilChips(['o/alpha'])
-  assert.deepEqual(await repoChips(), ['o/alpha'], 'seeded from the env default')
+  await untilRows(['o/alpha:read-locked'])
+  await page.waitForSelector(WRITE_NOTE, { timeout: 5000 })
+  console.log('executor: seeded read-locked, Run blocked until something is writable OK')
+
+  // Writing is an explicit pick, per repo.
+  await setMode('o/alpha', 'write')
+  await untilRows(['o/alpha:write'])
+  await page.waitForSelector(WRITE_NOTE, { state: 'detached', timeout: 5000 })
+  // Any role holds any number of repos: a second pick adds, it does not replace.
   await pickRepo('beta')
-  await untilChips(['o/beta'])
-  assert.deepEqual(await repoChips(), ['o/beta'], 'an executor pick replaces the repo')
+  await untilRows(['o/alpha:write', 'o/beta:read-locked'])
+  await shot('01-modes')
   // The advanced panel opens, and offers no git-access toggle for any role —
   // the container broker is gone (docs/requirements-mcp-proxy.md §10.2).
   await page.click('.ns-body .subfold:has-text("advanced")')
@@ -182,53 +186,50 @@ try {
     'no role is offered a native git toggle any more'
   )
   await page.click('.ns-body .subfold:has-text("advanced")') // collapse again
-  console.log('executor: single-select repo OK, no git-access toggle')
+  console.log('executor: multi-repo with per-repo modes OK, no git-access toggle')
 
-  // --- researcher: multi-select ---
+  // --- the role touches neither the repos nor their modes ---
   await pickRole('researcher')
   assert.equal(await shownRole(), 'researcher')
-  await pickRepo('alpha')
-  await untilChips(['o/beta', 'o/alpha'])
-  assert.deepEqual(await repoChips(), ['o/beta', 'o/alpha'], 'a researcher accumulates repos')
+  await untilRows(['o/alpha:write', 'o/beta:read-locked'])
+  await setMode('o/beta', 'read')
+  await untilRows(['o/alpha:write', 'o/beta:read'])
   await shot('02-researcher')
-  console.log('researcher: multi-select OK')
-
-  // --- leaving the researcher role drops the extra repos ---
-  await pickRole('reviewer')
-  await untilChips(['o/beta'])
-  assert.deepEqual(await repoChips(), ['o/beta'], 'a reviewer keeps a single clone')
-  await shot('03-reviewer')
+  console.log('researcher: repos and modes kept across the role pick OK')
 
   // --- every pick went straight to disk; no Save button was involved ---
   await page.click('.tab-btn:has-text("Chat")')
   await page.fill('.draft-prompt', 'review the uncommitted changes')
   await page.click('.chat-title') // blur -> sessionEditPrompt
   const rec = await persisted(
-    (r) => r.info.role === 'reviewer' && r.info.startPrompt === 'review the uncommitted changes',
-    'the reviewer draft'
+    (r) => r.info.role === 'researcher' && r.info.startPrompt === 'review the uncommitted changes',
+    'the researcher draft'
   )
-  assert.equal(rec.info.role, 'reviewer', 'the role is persisted on the session')
-  assert.deepEqual(rec.info.repos, ['beta'], 'with its single repo')
-  assert.equal(rec.info.env, 'dev', 'as is the environment picked alongside it')
-  await shot('04-draft')
-  console.log('role persisted without a save step OK')
+  assert.deepEqual(rec.info.repos, ['alpha', 'beta'], 'both repos are persisted, in order')
+  assert.deepEqual(rec.info.repoModes, { alpha: 'write', beta: 'read' }, 'with their modes')
+  assert.equal(rec.info.env, 'dev', 'as is the environment picked alongside them')
+  await shot('03-draft')
+  console.log('role, repos and modes persisted without a save step OK')
 
-  // --- and comes back on the Config tab after a reload ---
+  // --- and come back on the Config tab after a reload ---
   await page.reload()
   await page.waitForSelector('.sb-session', { timeout: 15000 })
   await page.click('.sb-session >> nth=0')
   await openConfig()
-  await untilRole('reviewer')
-  assert.equal(await shownRole(), 'reviewer', 'the Config tab reopens on the saved role')
-  await untilChips(['o/beta'])
-  assert.deepEqual(await repoChips(), ['o/beta'], 'and on the saved repo')
+  await untilRole('researcher')
+  await untilRows(['o/alpha:write', 'o/beta:read'])
 
-  // --- editing the draft can still change the role (nothing has run) ---
-  await pickRole('executor')
-  assert.equal(await shownRole(), 'executor')
-  await persisted((r) => r.info.role === 'executor', 'the edited role')
-  await shot('05-edited')
-  console.log('draft role edit OK')
+  // --- an operator may hold repos too; removing one is its row's × ---
+  await pickRole('operator')
+  await untilRows(['o/alpha:write', 'o/beta:read'])
+  await page.click('.ns-body .repo-mode-row:has(.repo-mode-name:text-is("o/beta")) .chip-x')
+  await untilRows(['o/alpha:write'])
+  await persisted(
+    (r) => r.info.role === 'operator' && r.info.repos.length === 1 && r.info.repoModes?.alpha === 'write',
+    'the edited operator draft'
+  )
+  await shot('04-edited')
+  console.log('draft role edit + repo removal OK')
 
   console.log('SMOKE PASS')
 } catch (e) {

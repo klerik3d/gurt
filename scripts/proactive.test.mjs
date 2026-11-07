@@ -31,10 +31,10 @@ await bundle({
     contents: [
       `export { createKernel } from ${S('src/main/kernel.ts')}`,
       `export { createTask, getTask, readProactiveState } from ${S('src/main/store.ts')}`,
-      `export { assertRoleFitsRepos, nudgePromptFor, postTurnDecision } from ${S('src/main/sessions.ts')}`,
+      `export { nudgePromptFor, postTurnDecision } from ${S('src/main/sessions.ts')}`,
       `export { buildGurtHttpServer } from ${S('src/main/mcp/gurtServer.ts')}`,
       `export * from ${S('src/shared/proactive.ts')}`,
-      `export { roleHasTurnContract, roleLocksClone, roleNeedsRepo, roleForbidsRepo, roleAllowsMultiRepo, USER_SESSION_ROLES } from ${S('src/shared/types.ts')}`
+      `export { roleHasTurnContract, roleNeedsRepo, repoMode, USER_SESSION_ROLES } from ${S('src/shared/types.ts')}`
     ].join('\n'),
     resolveDir: ROOT,
     loader: 'ts',
@@ -105,14 +105,12 @@ test('refs, slugs, config, schedule', () => {
 
 test('the role', () => {
   assert.equal(m.roleHasTurnContract('proactive'), true)
-  assert.equal(m.roleLocksClone('proactive'), false)
   assert.equal(m.roleNeedsRepo('proactive'), false)
-  assert.equal(m.roleAllowsMultiRepo('proactive'), true)
-  assert.equal(m.roleForbidsRepo('operator'), true)
+  // Its repos are read-only context, whatever the record says — and `read`
+  // claims no clone, so a run locks nothing (docs/requirements-repo-mounts.md §2).
+  const run = { role: 'proactive', repos: ['alpha', 'beta'], repoModes: { alpha: 'write', beta: 'read-locked' } }
+  assert.deepEqual(['alpha', 'beta'].map((r) => m.repoMode(run, r)), ['read', 'read'])
   assert.equal(m.USER_SESSION_ROLES.includes('proactive'), false, 'never offered for an ordinary session')
-  m.assertRoleFitsRepos('proactive', [])
-  m.assertRoleFitsRepos('proactive', ['alpha', 'beta'])
-  assert.throws(() => m.assertRoleFitsRepos('operator', ['alpha']), /holds no repository/)
   assert.match(m.nudgePromptFor('proactive'), /finish_run/)
   assert.match(m.nudgePromptFor('executor'), /`complete`/)
   assert.equal(
@@ -430,15 +428,27 @@ test('the proactive tool set', async () => {
     assert.deepEqual(listed, ['attach', 'finish_run', 'list_open', 'propose_scope'], 'no complete, no create_session, no defer')
     const ok = await post('tools/call', {
       name: 'propose_scope',
-      arguments: { title: 't', summary: 's', refs: ['sentry:1'], sessions: [{ role: 'executor', repos: ['alpha'], prompt: 'p' }] }
+      arguments: {
+        title: 't',
+        summary: 's',
+        refs: ['sentry:1'],
+        sessions: [{ role: 'executor', repos: [{ name: 'alpha', mode: 'write' }], prompt: 'p' }]
+      }
     })
     assert.equal(ok.isError, undefined)
     assert.equal(calls.at(-1)[0], 'proposeScope')
+    const [proposed] = calls.at(-1)[1].sessions
+    assert.deepEqual([proposed.repos, proposed.repoModes], [['alpha'], { alpha: 'write' }], 'repos reach the host as names + modes')
+    const bare = await post('tools/call', {
+      name: 'propose_scope',
+      arguments: { title: 't', summary: 's', refs: ['sentry:1'], sessions: [{ role: 'executor', repos: ['alpha'], prompt: 'p' }] }
+    })
+    assert.equal(bare.isError, true, 'a repo without its mode is refused')
     const bad = await post('tools/call', {
       name: 'propose_scope',
       arguments: { title: 't', summary: 's', refs: ['sentry:1'], sessions: [{ role: 'operator', repos: [], prompt: 'p' }] }
     })
-    assert.equal(bad.isError, true, 'a proactive run proposes only executor / researcher / reviewer')
+    assert.equal(bad.isError, true, 'a proactive run proposes only executor / researcher')
     const done = await post('tools/call', { name: 'finish_run', arguments: { summary: 'done' } })
     assert.equal(done.isError, undefined)
   } finally {

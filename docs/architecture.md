@@ -142,50 +142,52 @@ tree is never polluted with Gurt files.
 - **clone** — `~/.gurt/<ws>/<task>/<repo>/` on a branch named after the task
   (`<task>`), shared by
   every session of the task that picked that repo, and outliving all of them
-  (it holds their uncommitted work). Because it is one working tree, a repo is
-  **exclusive**: only one session of the task may hold it at a time — where
-  "hold" means mid-start or owning a live container, and only for the roles
-  that take the lock (an executor and a reviewer; a researcher mounts the repo
-  read-only and holds nothing). An idle session whose
+  (it holds their uncommitted work). Because it is one working tree, it is
+  claimed per **mount mode**, a readers–writer lock: a `write` mount holds it
+  exclusively, a `read-locked` one shares it with other readers and excludes
+  writers, a plain `read` one claims nothing — where "hold" means mid-start or
+  owning a live container. A session with several repos takes all of its
+  claims or none, and the queue is FIFO per clone. An idle session whose
   container has stopped releases it for the next one — and while something is
   queued for that repo, the stop happens the moment the holder's turn ends
   instead of after the idle grace period.
-- **session** — the primary entity: (workspace, task, env, role, repo, agent,
-  startPrompt, state) + its container + chat history + optional ACP session id.
+- **session** — the primary entity: (workspace, task, env, role, repos with a
+  mount mode each, agent, startPrompt, state) + its container + chat history +
+  optional ACP session id. Any session may hold any number of repos; each is
+  mounted `write` / `read-locked` / `read` as its row in the Config tab says
+  (default `read-locked`) — see
+  [requirements-repo-mounts.md](requirements-repo-mounts.md).
   States: `draft → queued → starting → started`.
 - **role** — what a session is *for*, chosen at creation (editable while it is
-  still a draft) and driving its mounts, its clone lock and its tool set
-  instead of being inferred from repo count. See
-  [requirements-session-roles.md](requirements-session-roles.md):
-  - **executor** — today's worker: one repo, read-write, holds the clone
-    exclusively, ends every turn with `complete` (the turn contract below).
-  - **researcher** — read-only, locks nothing (so it never blocks and is never
-    blocked), no deliverable and no turn contract; the only role that may hold
-    several repos at once. Answers in chat.
-  - **reviewer** — judges one clone's *uncommitted* changes, holding the
-    clone lock so nothing can move under it. Its verdict is plain chat text and
-    gates nothing. Its clone is currently mounted **writable** — a stopgap so
-    it can install dependencies and run tests against the diff (see the comment
-    at the `readonly` flag in `src/main/containers.ts`); it is still offered no
-    `complete`.
-  - **operator** — configures Gurt itself: holds no repository, mounts
-    nothing, locks nothing, and reads and edits the workspace configuration through
-    admin tools on its `gurt` MCP server (`src/main/adminSurface.ts`,
-    `src/main/adminWrites.ts`): every write carries the entity's revision,
-    credential re-links are refused, and fields that would run code on the host
-    are held until the user confirms. It runs in the workspace's default env
+  still a draft): what the agent delivers and which `gurt` tools it gets —
+  never its mounts, locks or repo count, which are per-repo configuration.
+  See [requirements-repo-mounts.md](requirements-repo-mounts.md) §4 (and
+  [requirements-session-roles.md](requirements-session-roles.md) for the
+  rest of the model):
+  - **executor** — makes changes and ends every turn with `complete` (the turn
+    contract below), per repo when it writes several. Needs at least one repo
+    mounted `write` to start.
+  - **researcher** — no deliverable and no turn contract; answers in chat and
+    drafts executors and researchers via `create_session` (also into other
+    tasks).
+  - **inspector** — the read half of the operator: the admin read tools, and
+    `create_session` restricted to drafting an operator.
+  - **operator** — configures Gurt itself: reads and edits the workspace
+    configuration through admin tools on its `gurt` MCP server
+    (`src/main/adminSurface.ts`, `src/main/adminWrites.ts`): every write
+    carries the entity's revision, credential re-links are refused, and fields
+    that would run code on the host are held until the user confirms. It needs
+    no repository (it may hold some); it runs in the workspace's default env
     (by default the base image); the first-run screen starts one. See
     [requirements-session-operator.md](requirements-session-operator.md).
-  - **proactive** — one run of a proactive agent: zero or more repos,
+  - **proactive** — one run of a proactive agent: zero or more repos, always
     read-only, locks nothing. It does no work itself; its `gurt` tools raise
     scopes with draft sessions, and it ends every turn with `finish_run`. Never
     picked for an ordinary session (see Proactive agents below).
 
-  Read-only means Docker `readonly` bind mounts, not a convention — and today
-  only the researcher gets them. A researcher
-  and a reviewer are also offered `create_session` instead of `complete`: it
-  **drafts** another session in the same task (a fixer executor, a reviewer),
-  fully configured. A draft never runs by itself — the user reviewing and
+  The former reviewer is gone for now; its records migrated to researchers
+  with a `write` clone. Read-only means Docker `readonly` bind mounts, not a
+  convention. A drafted session never runs by itself — the user reviewing and
   launching it is the approval step — and nothing flows back to the spawner.
 
 Sidebar: task → session, for the workspace chosen in the title-bar switcher. A
@@ -421,7 +423,7 @@ masking below); otherwise they are declared unsupported and agents use their
 own tools inside the container.
 
 A turn that ends without `complete` gets one automatic nudge, then the session
-is marked `incomplete` (researcher and reviewer have no turn contract). MCP
+is marked `incomplete` (researcher, inspector and operator have no turn contract). MCP
 does not reach the `pi` kind yet — pi-acp ignores ACP `mcpServers` — so `gurt`
 and `complete` never arrive there and its turns end `incomplete`
 (`src/plugins/agents/pi/manifest.ts`).
