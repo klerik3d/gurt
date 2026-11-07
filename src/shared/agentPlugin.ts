@@ -27,13 +27,17 @@
 //     no session, store or bus. What it needs from the core (fetch, the clock,
 //     the session id) arrives as a parameter.
 //
-// Types only, on purpose: the renderer bundles the shared halves, so nothing
+// Types and one dependency-free helper, on purpose: the renderer bundles the shared halves, so nothing
 // here may pull Node or the DOM in at runtime.
 
 import type { AgentConfig, ConfigSelectOption, SessionConfigOption } from './types'
 import type { PlanWindow } from './planUsage'
 
 export type { AgentConfig, ConfigSelectOption, SessionConfigOption, PlanWindow }
+
+/** The neutral JSON-object guard, re-exported because a plugin imports only this
+ *  contract (docs/requirements-agent-plugins.md §4.2). */
+export { isRecord } from './json'
 
 /** Anything `JSON.stringify` round-trips — the only values a manifest holds. */
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue }

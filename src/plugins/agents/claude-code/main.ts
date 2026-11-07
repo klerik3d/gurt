@@ -2,13 +2,14 @@
 // run as code — the sign-in it borrows, the token probe, the `_meta` its
 // adapter reads and writes, and the plan usage only Anthropic reports.
 import { z } from 'zod'
-import type {
-  AgentLink,
-  AgentMainPlugin,
-  ConfigSelectOption,
-  LivePlanState,
-  PlanWindow,
-  SessionConfigOption
+import {
+  isRecord,
+  type AgentLink,
+  type AgentMainPlugin,
+  type ConfigSelectOption,
+  type LivePlanState,
+  type PlanWindow,
+  type SessionConfigOption
 } from '../../../shared/agentPlugin'
 import { manifest } from './manifest'
 
@@ -103,9 +104,6 @@ const usageHeaders = (token: string): Record<string, string> => ({
 /** Order the meters render in; anything else — the model-scoped weeks among
  *  them, whose ids are dynamic — follows in reported order. */
 const ORDER = ['five_hour', 'seven_day', 'seven_day_opus', 'seven_day_sonnet']
-
-const isRecord = (v: unknown): v is Record<string, unknown> =>
-  !!v && typeof v === 'object' && !Array.isArray(v)
 
 /**
  * One node of the response, read through the field spellings this endpoint is
