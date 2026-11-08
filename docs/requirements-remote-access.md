@@ -269,6 +269,7 @@ the host to do the same.
 binds the `read`/`write`-annotated ones for the operator. The remote surface
 (`src/main/remoteSurface.ts`) is **not** a third binding of that list. It
 implements a separate, small, versioned interface, `RemoteApi`, declared in
+the shared protocol package (§13 Q8) and taken by Gurt through
 `src/shared/remoteApi.ts`, whose methods exist because a screen of the app
 needs them (`design-mobile-app.md` §7). A `GurtApi` method the app does not
 need is not "annotated `local`"; it is simply absent, so a new `GurtApi`
@@ -597,7 +598,10 @@ comments on a diff (`design-mobile-app.md` §3.2).
 
 ## 15. Touchpoints
 
-- `src/shared/remoteApi.ts` (new) — `RemoteApi`, the forwarded event set.
+- `packages/remote-protocol` (new) — frames, Noise channel, pairing payload,
+  JSON-RPC envelope, `RemoteApi` and the forwarded event set.
+- `src/shared/remoteApi.ts` (new) — Gurt's import of `RemoteApi`, checked
+  against Gurt's own types.
 - `src/shared/types.ts` — `SessionSnapshot.logSeq`
   (`requirements-remote-protocol.md` §7.5).
 - `src/main/jsonrpc.ts` — `JsonRpcPeer` split from its transport (§6.4).

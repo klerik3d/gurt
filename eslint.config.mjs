@@ -14,7 +14,7 @@ export default tseslint.config(
   // shared, web config for the renderer), which is what the type-aware rules
   // below need.
   {
-    files: ['src/**/*.{ts,tsx}', 'electron.vite.config.ts'],
+    files: ['src/**/*.{ts,tsx}', 'packages/*/src/**/*.ts', 'electron.vite.config.ts'],
     extends: [tseslint.configs.recommendedTypeChecked],
     languageOptions: {
       parserOptions: { projectService: true, tsconfigRootDir: import.meta.dirname }
@@ -71,7 +71,7 @@ export default tseslint.config(
   // tsconfig, so the type-aware rules cannot apply. Playwright smoke drivers
   // pass browser-context callbacks to page.evaluate(), hence the DOM globals.
   {
-    files: ['scripts/**/*.mjs'],
+    files: ['scripts/**/*.mjs', 'packages/*/test/**/*.mjs', 'packages/*/scripts/**/*.mjs'],
     extends: [tseslint.configs.disableTypeChecked],
     languageOptions: { globals: { ...globals.node, ...globals.browser } }
   }

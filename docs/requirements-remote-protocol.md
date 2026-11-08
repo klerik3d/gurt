@@ -97,8 +97,10 @@ it (§3.5).
 ### 3.3 Streams
 
 - `OPEN(stream)` — a client connected for this host. Stream ids are chosen
-  by the relay, unique per host socket, never reused while the socket
-  lives.
+  by the relay, from 1 (stream `0` is the connection itself), unique per host
+  socket, never reused while the socket lives. `OPEN`, `DATA` and `CLOSE` on
+  stream `0`, or a connection frame on any other stream, are protocol
+  errors.
 - `DATA(stream, bytes)` — forwarded unchanged in both directions, in
   order.
 - `CLOSE(stream, reason)` — either side ends a stream. The relay sends it
@@ -147,7 +149,8 @@ and whenever a device is added, removed, or its token changes:
               { "d": "<deviceId>", "p": "fcm",  "t": "<token>" } ] }
 ```
 
-`p` is `apns` or `fcm`; an unknown value is a protocol error. The relay
+`p` is `apns` or `fcm`; an unknown value makes the frame malformed
+(`PUSH_ERR` 1, like any push payload that does not parse). The relay
 holds the set in memory only; nothing is written to disk, so a restart
 empties it until the hosts register again. At most 32 tokens per host.
 
@@ -347,9 +350,11 @@ served on a pairing stream.
 
 Each reassembled message (§6.4) is one JSON-RPC 2.0 object, UTF-8. Both
 sides may send requests and notifications; ids are per sender. The method
-names, params and results below are declared once, as TypeScript, in
-`src/shared/remoteApi.ts` and shared with the app (remote-access §13 Q8);
-the tables here are the scope, the types are the detail.
+names, params and results below are declared once, as TypeScript, in the
+shared package (`packages/remote-protocol/src/remoteApi.ts`, remote-access
+§13 Q8), which Gurt takes through `src/shared/remoteApi.ts` and the app as a
+dependency; the tables here are the scope, the types are the detail. In the
+tables, params shown as — are `{}` and a result shown as — is `null`.
 
 ### 7.1 Hello
 
@@ -547,7 +552,10 @@ Two languages implement §3, so the frame codec is pinned by shared vectors:
   triples.
 - The shared TypeScript package's `testdata/` — Noise vectors for both
   patterns with the §6.1 prologue, the §6.3 SAS, and §5 payload parse
-  cases. Gurt and the app share one implementation, so one suite covers
+  cases (`channel.json`, `pairing.json`, the Noise specification's own
+  vectors in `noise-spec.json`), and the package's own `frames.json` in the
+  same format as the relay's, to be reconciled with it
+  (`packages/remote-protocol/testdata/README.md`). Gurt and the app share one implementation, so one suite covers
   both; the app's CI also runs it under Hermes.
 
 ## 11. Open questions

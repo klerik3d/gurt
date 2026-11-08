@@ -1,0 +1,25 @@
+{
+  "name": "@gurt/remote-protocol",
+  "version": "0.1.0",
+  "description": "Wire contracts of Gurt remote access: host-socket frames, the Noise channel, pairing payloads, the JSON-RPC envelope and the RemoteApi types",
+  "license": "Apache-2.0",
+  "type": "module",
+  "private": true,
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "testdata"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@noble/ciphers": "^2.4.0",
+    "@noble/curves": "^2.4.0",
+    "@noble/hashes": "^2.4.0"
+  }
+}
