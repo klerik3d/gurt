@@ -41,6 +41,7 @@ import type { NotificationPrefs } from '../shared/notifications'
 import { normalizeGcSettings, type GcSettings } from '../shared/gc'
 import { normalizeLimitSettings, type LimitSettings } from '../shared/planUsage'
 import type { PiiPatternCache, PiiSettings } from '../shared/pii'
+import { normalizeRemoteSettings, type RemoteSettings } from '../shared/remote'
 import type { TurnRecord } from '../shared/usage'
 import { NOTIFICATION_DEFAULTS } from '../shared/notifications'
 import type { HotkeyMap } from '../shared/hotkeys'
@@ -644,6 +645,18 @@ export async function getLimitSettings(): Promise<LimitSettings> {
 
 export async function setLimitSettings(settings: LimitSettings): Promise<void> {
   await writeJson(limitsFile(), settings)
+}
+
+const remoteFile = () => path.join(gurtRoot, 'remote.json')
+
+/** Remote access (docs/requirements-remote-access.md §10); a missing file is
+ *  the defaults — off. */
+export async function getRemoteSettings(): Promise<RemoteSettings> {
+  return normalizeRemoteSettings(await readJson<unknown>(remoteFile(), {}))
+}
+
+export async function setRemoteSettings(settings: RemoteSettings): Promise<void> {
+  await writeJson(remoteFile(), normalizeRemoteSettings(settings))
 }
 
 const hotkeysFile = () => path.join(gurtRoot, 'hotkeys.json')

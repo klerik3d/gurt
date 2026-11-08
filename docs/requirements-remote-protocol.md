@@ -1,6 +1,8 @@
 # Requirements: remote access — the wire contracts
 
-Status: proposed — nothing implemented · Companion to
+Status: partial — the TypeScript side of §3, §5, §6 and §7's types is
+`packages/remote-protocol`; Gurt's host-socket client is in
+`src/main/remote/` · Companion to
 `requirements-remote-access.md`
 
 That document says *why* and *what*; this one is the contract each party
@@ -533,7 +535,7 @@ answers anything.
 | Party | Persistent state |
 |---|---|
 | Relay | nothing on disk. In memory: registered host sockets and, per host, the last `PUSH_SET` token set |
-| Gurt | relay-identity Ed25519 key and Noise static key (in the credential store, `safeStorage`); the device list `{deviceId, name, publicKey, pairedAt, lastSeen, push?}`; the relay URL |
+| Gurt | relay-identity Ed25519 key and Noise static key (sealed with `safeStorage` like credential secrets, in `~/.gurt/remote/identity.json`, 0600); the device list `{deviceId, name, publicKey, pairedAt, lastSeen, push?}`; the relay URL |
 | App | per host, in secure storage: `{hostId, hostKey, relayUrl, name, deviceKey}`; the push token is not stored (the OS owns it and the app re-sends it each connection); the `lastSeq` map is in memory only |
 
 Revoking a device deletes its entry and its token. "Revoke all" also

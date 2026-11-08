@@ -273,6 +273,32 @@ async function write(data: CredentialsFile): Promise<void> {
   await writeJsonDurable(credentialsFile(), out, { mode: 0o600 })
 }
 
+/**
+ * A host secret that is not a user credential (the remote-access keys,
+ * docs/requirements-remote-protocol.md §9), sealed the same way a
+ * secret-flagged credential field is: `{ sealed }` (base64 safeStorage
+ * ciphertext) when the keystore is available, `{ plain }` otherwise — the same
+ * honest plaintext fallback. The value is handed to the log redactor either
+ * way.
+ */
+export type SealedHostSecret = { sealed: string } | { plain: string }
+
+export function sealHostSecret(value: string): SealedHostSecret {
+  addSecrets([value])
+  const electron = sealingAvailable() ? getElectron() : null
+  return electron ? { sealed: electron.safeStorage.encryptString(value).toString('base64') } : { plain: value }
+}
+
+/** `undefined` when a sealed value cannot be decrypted (keystore locked, a
+ *  file copied from another machine) — the caller decides whether that means
+ *  "make a new one". */
+export function unsealHostSecret(stored: SealedHostSecret, id: string): string | undefined {
+  const value = 'plain' in stored ? stored.plain : decryptField(getElectron(), id, stored.sealed)
+  if (!value) return undefined
+  addSecrets([value])
+  return value
+}
+
 /** Every mask starts with this — and no real token can (U+2022 is not in any
  *  token alphabet), which is what lets resolveSentinels recognize a served
  *  mask by shape alone, without needing the stored value it was made from. */

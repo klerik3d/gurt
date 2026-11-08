@@ -1,6 +1,9 @@
 # Requirements: remote access through an end-to-end encrypted relay
 
-Status: proposed — nothing implemented · Target: gurt Electron app (this repo),
+Status: partial — phase 0 (§11), the shared protocol package and the relay
+client (registration, backoff, push frames; `src/main/remote/`) are
+implemented; the channel on the host, pairing, the remote surface and the
+Settings page are not · Target: gurt Electron app (this repo),
 a relay and push gateway (`gurt-relay`), a React Native app (`gurt-mobile`)
 
 This document is a work order for an implementing agent. Read
