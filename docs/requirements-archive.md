@@ -11,8 +11,8 @@ its scope and sibling sessions in place.
 The activity bar's **Archive** view shows archived scopes and sessions with
 creation/archive dates, compressed size, chat preview, **Restore**, **Pin**
 and deletion. Chat preview reuses the normal message/tool display without a
-composer, queue controls, configuration editing or permission actions. Enable
-**All workspaces** to see archives from other or deleted workspaces.
+composer, queue controls, configuration editing or permission actions.
+The list shows archives for the selected workspace.
 
 ## Storage and recovery
 
@@ -25,13 +25,19 @@ Archives live outside workspace trees, under `~/.gurt/.archives/`:
   Preview reads only the selected chat, without extracting the scope or reading
   repository contents.
 
-Scope archives preserve repository contents, including `.git`, local commits,
-untracked and ignored files. A remote URL alone is insufficient proof that
-local data can be recovered. Session archives preserve the session's chat,
-configuration, native agent history and masking table; repositories remain
-with the parent scope. Both remove containers and omit generated session
-skills/mount staging. Shared Docker images/caches remain governed by Docker
-cleanup settings.
+Archives contain only Gurt-owned configuration and conversation state:
+`task.json`, `sessions.json`, session chat logs, review/proactive state,
+native agent history and masking tables. Packing uses an explicit allow-list;
+repository clones, `.git`, dependencies, build output, caches and generated
+session mounts/skills are excluded before compression. A session archive
+contains only that session's state; sibling sessions and the parent scope stay.
+Containers are removed before packing. Shared Docker images/caches remain
+governed by Docker cleanup settings.
+
+Restore recovers configuration and chats, not local repository files or commits.
+Repositories and generated session mounts are recreated through the normal
+session startup flow. Existing archives from earlier versions keep their original
+contents until explicitly replaced.
 
 Compression is lossless. The archive is completely validated before source
 retirement. Failed compression leaves the live scope/session available.

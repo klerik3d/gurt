@@ -29,6 +29,7 @@ const api: Record<string, unknown> = {
     ipcRenderer.send('log', level, scope, msg, ctx, ts),
   logLevel,
   onTreeChanged: subscribe('tree-changed'),
+  onArchiveProgress: subscribe('archive-progress'),
   onTerminalChanged: subscribe('terminal-changed'),
   onTerminalOutput: subscribe('terminal-output'),
   onSessionChanged: subscribe('session-changed'),

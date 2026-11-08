@@ -301,7 +301,7 @@ export function Sidebar({
               close()
               fire(() => window.gurt.archiveTask(row.ws, row.task))
             }}>
-              <Icon name="box" size={13} className="faint" />
+              <Icon name="archive" size={13} className="faint" />
               <span>Archive scope</span>
             </div>
             <div className="menu-sep" />
@@ -361,7 +361,7 @@ export function Sidebar({
               close()
               fire(() => window.gurt.archiveSession(row.id))
             }}>
-              <Icon name="box" size={13} className="faint" />
+              <Icon name="archive" size={13} className="faint" />
               <span>Archive session</span>
             </div>
             <div className="menu-sep" />

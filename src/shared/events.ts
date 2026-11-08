@@ -47,6 +47,7 @@ export interface EventError {
 }
 
 export interface DomainEvents {
+  'archive.progress': import('./archive').ArchiveProgress
   'terminal.changed': TerminalInfo[]
   'terminal.output': TerminalOutput
   /** Boot restore progress (settings, session restore, container reconcile).

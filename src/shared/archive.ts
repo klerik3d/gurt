@@ -47,3 +47,12 @@ export function canAutoArchive(sessions: SessionInfo[], cutoff: number): boolean
       (!s.lastContentAt || (Number.isFinite(content) && seen >= content))
   })
 }
+
+export interface ArchiveProgress {
+  id: string
+  label: string
+  stage: string
+  bytes?: number | undefined
+  done: boolean
+  error?: string
+}
