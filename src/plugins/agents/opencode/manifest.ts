@@ -15,7 +15,7 @@ export const manifest: AgentManifest = {
   // project's trademark, per that project's README). No colour: opencode has
   // no signature colour in its own branding, so the mark takes the text's.
   icon: { path: 'M16 6H8v12h8V6zm4 16H4V2h16v20z', fillRule: 'evenodd' },
-  adapterPackages: ['opencode-ai@1.19.3'],
+  adapterPackages: ['opencode-ai@1.19.5'],
   bin: 'opencode',
   binArgs: ['acp'],
   secretEnv: 'ANTHROPIC_API_KEY',

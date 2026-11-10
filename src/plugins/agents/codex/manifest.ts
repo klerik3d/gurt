@@ -19,7 +19,7 @@ export const manifest: AgentManifest = {
     color: '#7A9DFF'
   },
   // the adapter package bundles a compatible @openai/codex
-  adapterPackages: ['@agentclientprotocol/codex-acp@2.2.2'],
+  adapterPackages: ['@agentclientprotocol/codex-acp@2.5.0'],
   bin: 'codex-acp',
   binArgs: [],
   secretEnv: 'OPENAI_API_KEY',
