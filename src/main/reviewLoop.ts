@@ -109,6 +109,7 @@ export interface ReviewLoopController {
    *  reviewer's start bound. */
   tick(): void
   /** The executor's loop, as a copy; undefined = no loop. */
+  storageFault(sessionId: string): void
   state(executorId: string): LoopState | undefined
   /** "Stop loop" (§5.6): ends a live loop `cancelled`. Throws when it cannot. */
   stopLoop(executorId: string): Promise<void>
@@ -143,9 +144,9 @@ interface Runtime {
   /** When the current round's reviewer was created, and whether it has run. */
   reviewerSince?: number | undefined
   reviewerStarted?: boolean | undefined
-  /** The commit texts the delivery uses, kept while the executor exists: a
-   *  delivery outlives a deleted executor (§5.6) and its proposal goes with it. */
-  proposals?: Map<string, NonNullable<ReturnType<SessionManager['latestProposal']>>> | undefined
+  cleanupRunning?: boolean | undefined
+  cleanupAttempts?: number | undefined
+  cleanupAfter?: number | undefined
 }
 
 const iso = (ms: number): string => new Date(ms).toISOString()
@@ -170,6 +171,7 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
   let scopesLoaded: { ws: string; task: string }[] = []
   /** Intents being reconciled after a restart (see `executeDeliver`). */
   const recovering = new Set<string>()
+  const announcedEnds = new Set<string>()
   let timer: NodeJS.Timeout | undefined
 
   const rt = (id: string): Runtime => {
@@ -218,13 +220,13 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
   // --- the loop of a session ------------------------------------------------------
 
   /** A loop-enabled executor's loop, created on first sight ("when a loop-enabled
-   *  executor starts", §8) and kept until the executor is deleted. */
+   *  executor starts", §8); cleanup and delivery may outlive its deletion. */
   function ensureLoop(id: string): LoopState | undefined {
     const have = loops.get(id)
     if (have) return have
     const info = sessions.sessionInfo(id)
     if (!info?.review || sessionRole(info) !== 'executor') return undefined
-    const st = initialLoopState(info.review, id)
+    const st = { ...initialLoopState(info.review, id), heldRepos: writeRepos(info) }
     loops.set(id, st)
     where.set(id, { ws: info.workspace, task: info.task })
     void track(persist(id).catch((e: unknown) => log.error('internal.fail', { site: 'loop-create', s: id, err: errCtx(e) })))
@@ -259,6 +261,15 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
     if (!before) return false
     const r = loopStep(before, event)
     if (r.state === before) return false
+    // §5.6/§8: snapshot delivery inputs in the same durable decision as its
+    // first intent; deleting the executor must not discard its approved texts.
+    if (r.state.phase === 'delivering' && !r.state.proposals) {
+      const w = where.get(id)!
+      r.state.proposals = Object.fromEntries(Object.keys(r.state.base).flatMap((repo) => {
+        const p = sessions.latestProposal(w.ws, w.task, repo)
+        return p ? [[repo, { commit: p.commit, pr: p.pr }]] : []
+      }))
+    }
     loops.set(id, r.state)
     afterStep(id, before, r.state, r.actions)
     return true
@@ -305,6 +316,7 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
         // An `end` that fails to run is already recorded; anything else is a
         // controller fault (§5.2).
         if (a.kind !== 'end') fault(id, `${a.kind}: ${errText(e)}`)
+        else await cleanupFailed(id, e)
       }
     }
   }
@@ -313,7 +325,10 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
 
   function hold(id: string, keepAlive = true): void {
     try {
-      sessions.holdForLoop(id)
+      const st = loops.get(id)
+      const info = sessions.sessionInfo(id)
+      const repos = st?.heldRepos ?? (info ? writeRepos(info) : Object.keys(st?.base ?? {}))
+      sessions.holdForLoop(id, where.has(id) ? { ...where.get(id)!, repos } : undefined)
     } catch (e) {
       log.warn('loop hold failed', { s: id, err: errCtx(e) })
       return
@@ -471,7 +486,7 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
       }
       if (run.status === 'unconfirmed') {
         // The container could not be confirmed stopped, so the check may still
-        // run (§5.3). The hold-and-retry is fix round 3; until then: `failed`.
+        // run (§5.3). The outstanding check intent keeps end cleanup retryable.
         fault(id, `the check could not be stopped: ${run.detail}`)
         return
       }
@@ -555,19 +570,6 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
     await confirm(id, a.id)
   }
 
-  /** Remember the commit texts while the executor still has them (§5.6: it may
-   *  be deleted while the delivery finishes). */
-  function snapshotProposals(id: string, st: LoopState): void {
-    const w = where.get(id)
-    if (!w) return
-    const r = rt(id)
-    r.proposals ??= new Map()
-    for (const repo of Object.keys(st.base)) {
-      const p = sessions.latestProposal(w.ws, w.task, repo)
-      if (p) r.proposals.set(repo, p)
-    }
-  }
-
   function deliveryContext(id: string, st: LoopState): DeliveryContext {
     const w = where.get(id)!
     const notes: ReviewFinding[] = st.open.filter((f) => f.severity === 'minor' || f.severity === 'nit')
@@ -577,14 +579,13 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
       reviewedHash: st.reviewedHash ?? '',
       draftPr: st.config.draftPr,
       notes,
-      proposalFor: (repo) => sessions.latestProposal(w.ws, w.task, repo) ?? runtimes.get(id)?.proposals?.get(repo)
+      proposalFor: (repo) => st.proposals?.[repo] ?? sessions.latestProposal(w.ws, w.task, repo)
     }
   }
 
   async function executeDeliver(id: string, a: Extract<LoopIntent, { kind: 'deliver' }>): Promise<void> {
     const st = loops.get(id)
     if (!st || st.phase !== 'delivering') return
-    snapshotProposals(id, st)
     const ctx = deliveryContext(id, st)
     try {
       // Before the first step: the hash is still the reviewed one and every
@@ -613,45 +614,74 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
     }
   }
 
+  // §5.2/§5.3: ended is terminal for decisions, not for cleanup. Keep the
+  // reservation and expose the fault while bounded backoff retries the tail.
+  async function cleanupFailed(id: string, error: unknown): Promise<void> {
+    const r = rt(id)
+    r.cleanupAfter = clock.now() + Math.min(300_000, 1000 * 2 ** Math.min(r.cleanupAttempts ?? 0, 9))
+    r.cleanupAttempts = (r.cleanupAttempts ?? 0) + 1
+    const s = loops.get(id)
+    if (s?.end) loops.set(id, { ...s, end: { ...s.end, cleanupPending: errText(error) } })
+    bus.emit('session.changed', { sessionId: id })
+    await persist(id).catch((e: unknown) => log.error('internal.fail', { site: 'cleanup-persist', s: id, err: errCtx(e) }))
+  }
+
   async function executeEnd(id: string, a: Extract<LoopIntent, { kind: 'end' }>): Promise<void> {
+    const r = rt(id)
+    if (r.cleanupRunning) return
+    r.cleanupRunning = true
+    try { await finishEnd(id, a) } finally { r.cleanupRunning = false }
+  }
+
+  async function finishEnd(id: string, a: Extract<LoopIntent, { kind: 'end' }>): Promise<void> {
     const st = loops.get(id)
     stopKeepAlive(id)
-    // A running check is killed by stopping the executor's container, confirmed
-    // by an inspect, before anything else is released (§5.3). Unconfirmed is
-    // logged here; holding and retrying is fix round 3.
+    // §5.3, §8: an outstanding check intent survives its runner and a restart.
+    // Only confirmed containment permits releasing the controller's reservation.
     const running = runtimes.get(id)?.check
-    if (running) {
+    if (running && !rt(id).cleanupAttempts) {
       const t = await running.runner.cancel(running.intent)
-      if (!t.ok) log.error('internal.fail', { site: 'check-stop', s: id, detail: t.detail })
+      if (!t.ok) throw new Error(t.detail)
+    } else if (st?.intents.some((i) => i.kind === 'check')) {
+      const t = await runnerFor(id).stopContainer()
+      if (!t.ok) throw new Error(t.detail)
     }
+    if (st?.end?.cleanupPending) await mutate(id, (s) => ({ ...s, end: { ...s.end!, cleanupPending: undefined } }))
     // The loop's queued message must not run after the loop (§5.6).
     sessions.dropHostPrompts(id)
-    // Idempotent, so a restart can run it again (§8, the `end` row): the
-    // notification goes out once. `notified` is written BEFORE the event — a
-    // crash between the two loses the notification rather than repeating it
-    // (at-most-once-observable); the end itself is on disk and in the UI.
+    // §8: the ring is process-local. Emit before marking durable; retries in
+    // this life dedupe by intent, but a crash before the mark re-announces.
     if (!st?.notified) {
-      await mutate(id, (s) => ({ ...s, notified: true }))
+      if (!announcedEnds.has(a.id)) {
       const ref = refOf(id) ?? (where.get(id) && { workspace: where.get(id)!.ws, task: where.get(id)!.task, env: '' })
       const w = where.get(id)
       const subject = w
         ? (
             sessions.latestProposal(w.ws, w.task, Object.keys(st?.base ?? {})[0] ?? '') ??
-            runtimes.get(id)?.proposals?.get(Object.keys(st?.base ?? {})[0] ?? '')
+            st?.proposals?.[Object.keys(st?.base ?? {})[0] ?? '']
           )?.commit?.subject
         : undefined
       if (ref)
         bus.emit('review.loop', {
           sessionId: id,
           ref,
-          notice: { kind: 'end', end: a.end, rounds: st?.round ?? 0, ...(subject ? { subject } : {}) }
+          notice: { kind: 'end', end: loops.get(id)?.end ?? a.end, rounds: st?.round ?? 0, ...(subject ? { subject } : {}) }
         })
+        announcedEnds.add(a.id)
+      }
+      try { await mutate(id, (s) => ({ ...s, notified: true })) } catch (e) {
+        loops.set(id, { ...loops.get(id)!, notified: false })
+        throw e
+      }
     }
-    // Release: the hold goes, the executor runs through the idle handling and
-    // the scheduler re-runs (which also lifts the delivery gate). Only then is
-    // the intent done.
+    // §5.1/§8: lost durable inputs require inspection, never release clones.
+    if (st?.end?.outcome === 'failed' && ['store', 'state-unreadable'].includes(st.end.error)) return
+    // §8: persist the completed tail before making the clone available. Release
+    // re-runs idle handling and scheduling, lifting the delivery gate.
+    const done = loops.get(id)!
+    loops.set(id, { ...done, intents: [] })
+    try { await persist(id) } catch (e) { loops.set(id, done); throw e }
     deps.release(id)
-    await confirm(id, a.id)
     if (!sessions.sessionInfo(id)) await forget(id)
     bus.emit('session.changed', { sessionId: id })
   }
@@ -702,7 +732,7 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
     if (st) {
       // An ended loop's entry goes with its executor; a delivering one finishes
       // first on the clone, which outlives the session (§5.6).
-      if (st.phase === 'ended' && st.notified) void track(forget(sessionId))
+      if (st.phase === 'ended' && st.notified && !st.intents.length) void track(forget(sessionId))
       else if (st.phase !== 'delivering') human(sessionId, 'delete')
       return
     }
@@ -745,6 +775,11 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
   function tick(): void {
     const now = clock.now()
     for (const [id, st] of [...loops]) {
+      if (st.phase === 'ended') {
+        const a = st.intents.find((i) => i.kind === 'end')
+        if (a && !rt(id).cleanupRunning && now >= (rt(id).cleanupAfter ?? 0)) void track(runActions(id, [a]))
+        continue
+      }
       if (!loopIsLive(st)) continue
       reviewerBound(id, st, now)
       const cur = loops.get(id)
@@ -812,7 +847,8 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
         // The leftover check's container was stopped by `stopLeftoverCheck`
         // (never "done": the check reruns, §5.3). A phase past `checking`
         // already consumed its result.
-        if (ended || st.phase !== 'checking') return confirm(id, a.id)
+        if (ended) return // §5.3: only successful end cleanup may clear this termination obligation.
+        if (st.phase !== 'checking') return confirm(id, a.id)
         void track(runActions(id, [a]))
         return
       case 'message':
@@ -852,7 +888,7 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
         void track(runActions(id, [a]).finally(() => recovering.delete(a.id)))
         return
       case 'end':
-        return executeEnd(id, a)
+        return runActions(id, [a])
     }
   }
 
@@ -860,10 +896,10 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
    *  process may still run in the executor's container, so the container is
    *  stopped and confirmed before anything reruns (§5.3, §8). It restarts
    *  through the attach path when the next host message needs it. Unconfirmed:
-   *  a live loop ends `failed` (holding and retrying is fix round 3). */
+   *  a live loop ends `failed`; its end retries while keeping the reservation. */
   async function stopLeftoverCheck(id: string): Promise<void> {
     const st = loops.get(id)
-    if (!st || !st.intents.some((i) => i.kind === 'check') || !deps.containerUp(id)) return
+    if (!st || !st.intents.some((i) => i.kind === 'check')) return
     const t = await runnerFor(id).stopContainer()
     if (!t.ok) fault(id, `a check left over from before the restart could not be stopped: ${t.detail}`)
   }
@@ -935,7 +971,7 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
       for (const { ws, task } of scopes) {
         const file = await store.readReviewLoops(ws, task)
         for (const [id, st] of Object.entries(file)) {
-          if (!sessions.sessionInfo(id)) continue // its executor is gone: the entry goes with the next write
+          if (!sessions.sessionInfo(id) && st.phase !== 'delivering' && !st.intents.length) continue
           loops.set(id, st)
           where.set(id, { ws, task })
         }
@@ -946,10 +982,14 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
       // yet keeps them until the end has run (no keep-alive pings for that).
       for (const [id, st] of loops) {
         if (loopIsLive(st)) hold(id)
-        else if (st.phase === 'ended' && !st.notified) hold(id, false)
+        else if (st.phase === 'ended' && (!st.notified || st.intents.length > 0)) hold(id, false)
       }
     },
     recover,
+    storageFault(sessionId) {
+      const t = roleIn(sessionId) ?? adopt(sessionId)
+      if (t) fault(t.executor, 'store')
+    },
     start() {
       if (timer) return
       timer = setInterval(tick, clock.tickMs)
@@ -995,7 +1035,7 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
     live(ws, task) {
       for (const [id, st] of loops) {
         const w = where.get(id)
-        if (w?.ws === ws && w.task === task && (loopIsLive(st) || (st.phase === 'ended' && !st.notified))) return true
+        if (w?.ws === ws && w.task === task && (loopIsLive(st) || (st.phase === 'ended' && (!st.notified || st.intents.length > 0)))) return true
       }
       return false
     },

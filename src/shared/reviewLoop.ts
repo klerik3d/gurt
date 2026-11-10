@@ -14,6 +14,7 @@ import type {
   ReviewLoopConfig,
   ReviewVerdict,
   ShipRung,
+  StoredProposal,
   StoredVerdict
 } from './types'
 import { REVIEW_MAX_ROUNDS, findingRef } from './types'
@@ -131,7 +132,7 @@ export interface DeliveredStep {
   note?: string | undefined
 }
 
-export type LoopEnd =
+export type LoopEnd = { cleanupPending?: string | undefined } & (
   /** `notes`: the final verdict's minor/nit findings. */
   | { outcome: 'ready'; delivered: DeliveredStep[]; notes: ReviewFinding[] }
   | { outcome: 'exhausted'; open: ReviewFinding[] }
@@ -143,6 +144,7 @@ export type LoopEnd =
       delivered: DeliveredStep[]
     }
   | { outcome: 'failed'; error: string; delivered: DeliveredStep[] }
+)
 
 export interface CheckResult {
   repo: string
@@ -183,6 +185,9 @@ export interface LoopState {
   executor: string
   /** Frozen copy; `maxRounds` clamped by {@link initialLoopState}. */
   config: ReviewLoopConfig
+  /** §5.5, §8: reservation and delivery inputs outlive the executor record. */
+  heldRepos?: string[] | undefined
+  proposals?: Record<string, Pick<StoredProposal, 'commit' | 'pr'>> | undefined
   phase: LoopPhase
   /** Reviewers created; check retries and proposal repairs consume none. */
   round: number

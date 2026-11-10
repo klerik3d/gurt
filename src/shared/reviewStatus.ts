@@ -110,6 +110,8 @@ function endLine(s: LoopState, end: LoopEnd): Omit<LoopLine, 'live' | 'stoppable
 export function loopLine(s: LoopState): LoopLine {
   const live = loopIsLive(s)
   const max = s.config.maxRounds
+  if (s.phase === 'ended' && s.end?.cleanupPending)
+    return { live: false, stoppable: false, tone: 'red', headline: 'ended — cleanup pending', detail: s.end.cleanupPending, findings: [] }
   if (s.phase === 'ended' && s.end) return { live, stoppable: false, ...endLine(s, s.end) }
   if (s.phase === 'ended') return { live, stoppable: false, tone: 'faint', headline: 'ended', findings: [] }
   if (s.phase === 'dormant' && !live)

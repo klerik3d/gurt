@@ -325,6 +325,7 @@ interface PendingPrompt {
  * asks, without a second source of truth to keep in step.
  */
 export interface LoopHooks {
+  storageFault?(sessionId: string): void
   /** The session belongs to a loop that has not ended — its executor or its
    *  reviewer. The controller resumes these by itself after a restart, so they
    *  stay out of the Resume-sessions modal and of the update-deferral. */
@@ -870,7 +871,7 @@ export class SessionManager {
   /** Executors the review loop holds (docs/requirements-review-loop.md §5.5):
    *  runtime only — the controller places them again at boot, before the
    *  scheduler's first pass. */
-  private loopHolds = new Set<string>()
+  private loopHolds = new Map<string, { info: Pick<SessionInfo, 'id' | 'title'>; claims: Claim[] }>()
 
   constructor(
     private events: SessionEvents,
@@ -1033,7 +1034,7 @@ export class SessionManager {
     return delivering.some((id) => {
       if (id === s.info.id) return true
       const ex = this.sessions.get(id)
-      return !!ex && this.claims(ex).some((c) => mine.some((m) => m.key === c.key))
+      return (this.loopHolds.get(id)?.claims ?? (ex ? this.claims(ex) : [])).some((c) => mine.some((m) => m.key === c.key))
     })
   }
 
@@ -1051,9 +1052,15 @@ export class SessionManager {
    * ahead of any `ended`, and the nudge turn's own `ended` is covered by the
    * same hold — it is never dropped between a turn and its nudge.
    */
-  holdForLoop(sessionId: string): void {
-    if (!this.sessions.has(sessionId)) throw new Error('unknown session')
-    this.loopHolds.add(sessionId)
+  holdForLoop(sessionId: string, stored?: { ws: string; task: string; repos: string[] }): void {
+    if (this.loopHolds.has(sessionId)) return
+    const s = this.sessions.get(sessionId)
+    if (!s && !stored) throw new Error('unknown session')
+    // §5.5–§5.6: the controller owns the reservation, independent of session deletion.
+    this.loopHolds.set(sessionId, {
+      info: { id: sessionId, title: s?.info.title ?? 'review loop' },
+      claims: stored ? stored.repos.map((repo) => ({ key: `${taskKey(stored.ws, stored.task)}/${repo}`, repo, exclusive: true })) : this.claims(s!)
+    })
   }
 
   /** Drop the hold; true when there was one. Dropping it only stops the
@@ -1711,7 +1718,6 @@ export class SessionManager {
       // directory, so removing it any earlier races the daemon.
       .then(() => this.events.deleteScratch(workspace, task, sessionId))
     this.sessions.delete(sessionId)
-    this.loopHolds.delete(sessionId)
     // Its correspondence table goes with it — the tokens it produced end here.
     this.mask.drop(sessionId)
     stopPiiRewrite(sessionId)
@@ -1864,9 +1870,16 @@ export class SessionManager {
    * The env is *not* a constraint. Each session owns its container, so any
    * number of sessions may run the same env definition at once.
    */
-  private repoConflict(s: Session): { holder: Session; repo: string } | undefined {
+  private repoConflict(s: Session): { holder: { info: Pick<SessionInfo, 'id' | 'title'> }; repo: string } | undefined {
     const mine = this.claims(s)
     if (!mine.length) return undefined
+    for (const [id, held] of this.loopHolds) {
+      if (id === s.info.id) continue
+      for (const theirs of held.claims) {
+        const c = mine.find((m) => m.key === theirs.key)
+        if (c && (c.exclusive || theirs.exclusive)) return { holder: held, repo: c.repo }
+      }
+    }
     for (const o of this.sessions.values()) {
       if (o.info.id === s.info.id || !this.holdsClone(o)) continue
       for (const theirs of this.claims(o)) {
@@ -1879,7 +1892,7 @@ export class SessionManager {
 
   /** {@link repoConflict}'s holder alone — for the callers that only ask "may
    *  this session touch its clones right now". */
-  private repoHolder(s: Session): Session | undefined {
+  private repoHolder(s: Session): { info: Pick<SessionInfo, 'id' | 'title'> } | undefined {
     return this.repoConflict(s)?.holder
   }
 
@@ -3159,13 +3172,26 @@ export class SessionManager {
       ...(turn.verdict ? { verdict: turn.verdict } : {}),
       ...how
     }
+    const previous = s.lastSettled
     s.lastSettled = settled
-    try {
-      await this.persistNow(s)
-    } catch (err) {
-      log.error('session.persist.fail', { err })
+    // §5.1/§8: never hand the controller an input absent from durable storage.
+    // Bounded retries absorb transient writes; exhaustion faults with the hold.
+    let durable = false
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        await this.persistNow(s)
+        durable = true
+        break
+      } catch (err) {
+        log.error('session.persist.fail', { err })
+      }
     }
     s.promptRunning = false
+    if (!durable) {
+      s.lastSettled = previous
+      this.loopHooks?.storageFault?.(s.info.id)
+      return
+    }
     if (this.sessions.get(s.info.id) === s)
       this.bus.emit('session.settled', { sessionId: s.info.id, ref: s.ref, turn: settled })
   }

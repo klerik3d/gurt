@@ -289,12 +289,17 @@ export class ContainerManager {
   /**
    * Whether the session's container runs *now*, asked of the daemon, not read
    * from the record: the confirmation after a check's container was stopped
-   * (§5.3). `false` also when the record names no container; `null` when the
+   * (§5.3). `false` only after the daemon confirms none running; `null` when the
    * daemon could not answer.
    */
   async isRunning(sessionId: string): Promise<boolean | null> {
     const id = this.container(sessionId)?.id
-    return id ? dockerInspectRunning(id) : false
+    if (id) return dockerInspectRunning(id)
+    // Review §5.3/§5.6: deletion of the record is not proof of termination.
+    const ids = await dockerSessionContainerIds(sessionId)
+    if (ids === null) return null
+    const running = await Promise.all(ids.map(dockerInspectRunning))
+    return running.includes(true) ? true : running.includes(null) ? null : false
   }
 
   /** Open a human shell in the running container, without starting an agent. */
@@ -1029,8 +1034,14 @@ export class ContainerManager {
   }
 
   /** Stop the session's container; it keeps its filesystem and can resume. */
-  async stop(sessionId: string, reason: ContainerStatusReason = 'user'): Promise<void> {
+  async stop(sessionId: string, reason: ContainerStatusReason = 'user', findDeleted = false): Promise<void> {
     await this.teardown(sessionId, 'stop', reason)
+    // Review §5.3/§8: cleanup still owns a deleted executor's labelled containers.
+    if (findDeleted && !this.container(sessionId)?.id) {
+      const ids = await dockerSessionContainerIds(sessionId)
+      if (ids === null) throw new Error('cannot locate the deleted executor’s containers')
+      for (const id of ids) await dockerStop(id, this.logFor(sessionId))
+    }
   }
 
   /**

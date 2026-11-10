@@ -670,3 +670,35 @@ test('a resume that cannot load the agent’s session ends `executor-error` (a r
   assert.equal(end.reason, 'executor-error')
   assert.equal(L.enq.length, 0)
 })
+
+for (const rung of ['push', 'pr']) test(`deleted executor after commit recovers ${rung} exactly once`, async () => {
+  const shim = path.join(scratch, 'bin')
+  fs.mkdirSync(shim, { recursive: true })
+  const prLog = path.join(scratch, `pr-${rung}.log`)
+  fs.writeFileSync(path.join(shim, 'gh'), `#!/bin/sh
+if [ "$2" = view ]; then echo 'no pull requests found' >&2; exit 1; fi
+echo create >> '${prLog}'
+echo https://github.com/o/alpha/pull/1
+`, { mode: 0o755 })
+  process.env.PATH = `${shim}:${process.env.PATH}`
+  const c = start({ whenClean: rung, gated: ['post-commit'] })
+  c.begin()
+  try {
+    await frozenAt(c, 'post-commit')
+    A.kernel.sessions.deleteSession(c.id)
+    await until(() => !JSON.parse(fs.readFileSync(path.join(h.GURT_ROOT, ws, c.task, 'sessions.json'), 'utf8')).some((r) => r.info.id === c.id), 'executor deletion persisted')
+    const image = h.image()
+    const file = path.join(image, ws, c.task, 'sessions.json')
+    assert.ok(!JSON.parse(fs.readFileSync(file, 'utf8')).some((r) => r.info.id === c.id))
+    const L = await reboot(c, image)
+    await L.kernel.reviewLoop.idle()
+    assert.equal(endNotices(L, c).length, 1, 'deleted executor recovery notifies')
+    const end = endNotices(L, c)[0].notice.end
+    assert.equal(end.outcome, 'ready', JSON.stringify(end))
+    assert.deepEqual(end.delivered.map((d) => d.step), rung === 'pr' ? ['commit', 'push', 'pr'] : ['commit', 'push'])
+    assert.equal(commitsOver(L, c), 1)
+    assert.equal(received(c.fx.remotes.alpha), 1)
+    assert.equal(endNotices(L, c).length, 1)
+    if (rung === 'pr') assert.equal(fs.readFileSync(prLog, 'utf8').trim(), 'create')
+  } finally { release(c) }
+})

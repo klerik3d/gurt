@@ -298,11 +298,12 @@ export function createKernel(options: KernelOptions = {}): Kernel {
     containerUp: (sessionId) => containers.status(sessionId) === 'running',
     containerRunning: (sessionId) => containers.isRunning(sessionId),
     // `idle`, not `user`: only the scope pane's stop is a human's (§5.6).
-    stopContainer: (sessionId) => containers.stop(sessionId, 'idle'),
+    stopContainer: (sessionId) => containers.stop(sessionId, 'idle', true),
     release: (sessionId) => kernel.releaseLoopHold(sessionId),
     ...(options.reviewLoop?.clock ? { clock: options.reviewLoop.clock } : {})
   })
   sessions.setLoopHooks({
+    storageFault: (id) => reviewLoop.storageFault(id),
     owns: (sessionId) => reviewLoop.owns(sessionId),
     delivering: (ws, task) => reviewLoop.delivering(ws, task),
     live: (ws, task) => reviewLoop.live(ws, task)

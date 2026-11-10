@@ -373,3 +373,12 @@ test('the block is prefilled from the anchor repo in the UI’s own terms (defau
   const seeded = B.seedReviewBlock(alpha.review, pick(), B.ladderOfRepos(['alpha'], ws.repos))
   assert.deepEqual(seeded, { agent: 'a2', maxRounds: 3, whenClean: 'push', draftPr: true })
 })
+
+test('ended cleanup failure is visible in the status line', () => {
+  const line = B.loopLine(loop({ phase: 'ended', end: {
+    outcome: 'failed', error: 'check stop failed', delivered: [], cleanupPending: 'daemon unavailable'
+  } }))
+  assert.equal(line.headline, 'ended — cleanup pending')
+  assert.equal(line.detail, 'daemon unavailable')
+  assert.equal(line.tone, 'red')
+})

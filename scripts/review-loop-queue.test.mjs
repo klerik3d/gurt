@@ -237,10 +237,14 @@ test('releasing the hold re-arms the idle timer and lets the writer start', asyn
   assert.equal(kernel.releaseLoopHold('e2'), false, 'a second release is a no-op')
 })
 
-test('a deleted executor drops its hold', async () => {
+test('a deleted executor retains its reservation until the controller releases it', async () => {
   started('e3', ['beta'])
   kernel.sessions.holdForLoop('e3')
+  const w = queueWriter('beta')
   kernel.sessions.deleteSession('e3')
-  assert.equal(kernel.sessions.isLoopHeld('e3'), false)
-  assert.throws(() => kernel.sessions.holdForLoop('e3'), /unknown session/)
+  await tick()
+  assert.equal(kernel.sessions.isLoopHeld('e3'), true)
+  assert.equal(state(w.id), 'queued')
+  kernel.releaseLoopHold('e3')
+  await until(() => state(w.id) !== 'queued', 'writer after controller release')
 })

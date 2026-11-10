@@ -121,6 +121,7 @@ kernel.sessions.schedule = () => {}
 const realEnqueue = kernel.sessions.enqueue.bind(kernel.sessions)
 kernel.sessions.enqueue = (rid) => {
   const s = kernel.sessions['sessions'].get(rid)
+  if (!s.info.reviewOf) return realEnqueue(rid)
   const ex = s.info.reviewOf.executor
   onDisk.enqueue.push({ ex, intent: s.info.reviewOf.intent, file: loopFile(ex)[ex] })
   realEnqueue(rid) // state -> queued (schedule is stubbed: nothing starts it)
@@ -973,8 +974,15 @@ test('during delivery nothing a human does ends the loop: a typed message waits 
 test('deleting the executor during delivery removes the session; the delivery finishes on the clone', async () => {
   const gated = {}
   const c = await deliveringOn(gated)
+  const schedule = kernel.sessions.schedule
+  const w = kernel.sessions.createSession({ workspace: ws, task: c.task, env: 'dev' }, ['alpha'], 'a1', 'writer', 'queue', [], true, {}, 'executor', undefined, undefined, { alpha: 'write', slow: 'write' })
+  kernel.sessions.schedule = Object.getPrototypeOf(kernel.sessions).schedule.bind(kernel.sessions)
   kernel.sessions.deleteSession(c.id)
   await tick(100)
+  const writerState = kernel.sessions.sessionInfo(w.id).state
+  kernel.sessions.schedule = schedule
+  gated.g.open()
+  assert.equal(writerState, 'queued', 'reservation survives executor deletion during delivery')
   assert.equal(c.st().phase, 'delivering', 'not cut short')
   gated.g.open()
   await until(() => !c.st() && notices.some((n) => n.sessionId === c.id && n.notice.kind === 'end'), 'delivered, ended, forgotten')
@@ -1094,4 +1102,103 @@ test('a permission request open 15 minutes on either session ends `permission-wa
   a.g.open()
   await kernel.reviewLoop.idle()
   await tick(150)
+})
+
+// §5.3/§5.5: deletion and a failed stop cannot hand a check's clone to a writer.
+test('deleted checking executor retains reservation through unconfirmed stop and retries cleanup', async () => {
+  const c = await run({ repos: ['slow'], wait: false, exec: (n, t, c) => {
+    write(c.dir(), 'a.txt', 'x\n')
+    c.changes('feat: slow')
+  } })
+  await until(() => fs.existsSync(path.join(c.dir(), 'started.flag')), 'check running')
+  const stop = kernel.containers.stop
+  const inspect = kernel.containers.isRunning
+  const schedule = kernel.sessions.schedule
+  let attempts = 0
+  kernel.containers.stop = async () => { attempts++; throw new Error('daemon unavailable') }
+  kernel.containers.isRunning = async () => true
+  const w = kernel.sessions.createSession({ workspace: ws, task: c.task, env: 'dev' }, ['slow'], 'a1', 'writer', 'queue', [], true, {}, 'executor', undefined, undefined, { alpha: 'write', slow: 'write' })
+  kernel.sessions.schedule = Object.getPrototypeOf(kernel.sessions).schedule.bind(kernel.sessions)
+  try {
+    kernel.sessions.deleteSession(c.id)
+    await until(() => c.st()?.phase === 'ended', 'loop ended')
+    await kernel.reviewLoop.idle()
+    assert.ok(c.st()?.end?.cleanupPending, 'unconfirmed stop is visibly pending')
+    assert.equal(kernel.sessions.isLoopHeld(c.id), true)
+    assert.equal(kernel.sessions.sessionInfo(w.id).state, 'queued')
+    const before = attempts
+    kernel.reviewLoop.tick()
+    await tick(50)
+    assert.equal(attempts, before, 'backoff prevents immediate retries')
+    kernel.containers.stop = stop
+    kernel.containers.isRunning = async () => false
+    nowMs += 300_001
+    kernel.reviewLoop.tick()
+    await kernel.reviewLoop.idle()
+    assert.equal(kernel.sessions.isLoopHeld(c.id), false)
+    assert.equal(endNotices(c).length, 1)
+    await until(() => kernel.sessions.sessionInfo(w.id).state !== 'queued', 'writer after confirmed cleanup')
+  } finally {
+    kernel.containers.stop = stop
+    kernel.containers.isRunning = inspect
+    kernel.sessions.schedule = schedule
+    await stop(c.id, 'idle')
+  }
+})
+
+test('end cleanup throwing retains hold and retries on tick without duplicate notification', async () => {
+  const drop = kernel.sessions.dropHostPrompts
+  let fail = true
+  kernel.sessions.dropHostPrompts = (id) => {
+    if (fail) throw new Error('cleanup unavailable')
+    return drop.call(kernel.sessions, id)
+  }
+  try {
+    const c = await run({ wait: false, exec: (n, t, c) => kernel.sessions['onComplete'](c.id, { version: 1, outcome: 'blocked', reason: 'blocked' }) })
+    await until(() => c.st()?.phase === 'ended', 'loop ended')
+    await kernel.reviewLoop.idle()
+    assert.ok(c.st()?.end?.cleanupPending, 'cleanup failure is visibly pending')
+    assert.equal(kernel.sessions.isLoopHeld(c.id), true)
+    assert.equal(endNotices(c).length, 0)
+    fail = false
+    nowMs += 300_001
+    kernel.reviewLoop.tick()
+    await finished(c)
+    assert.equal(c.st().end.cleanupPending, undefined)
+    assert.equal(kernel.sessions.isLoopHeld(c.id), false)
+    assert.equal(endNotices(c).length, 1)
+  } finally { kernel.sessions.dropHostPrompts = drop }
+})
+
+test('end persistence failure keeps reservation and retries notification after storage recovers', async () => {
+  const drop = kernel.sessions.dropHostPrompts
+  let file
+  kernel.sessions.dropHostPrompts = (id) => {
+    drop.call(kernel.sessions, id)
+    if (file) return
+    file = path.join(h.GURT_ROOT, ws, kernel.sessions.sessionInfo(id).task, 'review-loop.json')
+    fs.renameSync(file, `${file}.saved`)
+    fs.mkdirSync(file)
+  }
+  try {
+    const c = await run({ wait: false, exec: (n, t, c) => c.complete({ version: 1, outcome: 'blocked', reason: 'blocked' }) })
+    await until(() => c.st()?.phase === 'ended', 'loop ended')
+    await kernel.reviewLoop.idle()
+    assert.ok(c.st()?.end?.cleanupPending, 'persistence failure is visibly pending')
+    assert.equal(kernel.sessions.isLoopHeld(c.id), true)
+    assert.equal(c.st().notified, false)
+    fs.rmdirSync(file)
+    fs.renameSync(`${file}.saved`, file)
+    nowMs += 300_001
+    kernel.reviewLoop.tick()
+    await finished(c)
+    assert.equal(kernel.sessions.isLoopHeld(c.id), false)
+    assert.equal(endNotices(c).length, 1)
+  } finally {
+    kernel.sessions.dropHostPrompts = drop
+    if (file && fs.existsSync(`${file}.saved`)) {
+      fs.rmdirSync(file)
+      fs.renameSync(`${file}.saved`, file)
+    }
+  }
 })

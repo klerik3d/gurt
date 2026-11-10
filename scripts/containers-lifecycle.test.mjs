@@ -755,3 +755,15 @@ test('container terminal refuses anything but a fully-up container', () => {
   }
   assert.deepEqual(calls(), [], 'and nothing was spawned')
 })
+
+
+test('review cleanup stops and inspects containers after executor record deletion', async () => {
+  scenario([{ id: 'c-deleted', session: 'deleted', running: true }])
+  assert.equal(await manager.isRunning('deleted'), true)
+  await manager.stop('deleted', 'idle', true)
+  assert.equal(await manager.isRunning('deleted'), false)
+  assert.deepEqual(mutations(), [['stop', 'c-deleted']])
+  scenario([], { psExit: 1 })
+  assert.equal(await manager.isRunning('deleted'), null, 'unreachable is not stopped')
+  await assert.rejects(manager.stop('deleted', 'idle', true), /cannot locate/)
+})
