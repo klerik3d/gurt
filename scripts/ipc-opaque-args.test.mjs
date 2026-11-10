@@ -179,6 +179,8 @@ const SAFE_ARGS = new Set([
   'sessionRecreate',
   'sessionDelete',
   'sessionCancel',
+  'reviewLoopState', // an executor id
+  'reviewLoopStop', //  an executor id
   // Session id and a queued-prompt id. The prompt text these *return* is
   // another matter, and the trace never logs return values.
   'sessionClearPending',

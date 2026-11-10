@@ -1,16 +1,13 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
 import { z } from 'zod'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import type { EnvRef, McpMode } from '../../shared/types'
-import { hostGitAccessForRepo, type HostGitAccess } from '../git/env'
-import { providerForHost } from '../git/providers'
+import type { HostGitAccess } from '../git/env'
+import { openPullRequest, requireForgeAccess, runHost } from '../git/pullRequest'
 import { createLogger } from '../log'
 
-const pexec = promisify(execFile)
 const log = createLogger('mcp')
 
 /** A tool result the SDK understands. */
@@ -21,47 +18,17 @@ const errorResult = (text: string): ToolResult => ({
   isError: true
 })
 
-/**
- * gurt's main process is launched from the GUI, whose PATH often lacks the
- * Homebrew/usr-local dirs where `git`/`gh` live. Augment the resolved git env
- * so the tools resolve.
- */
-function withHostPath(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const extra = ['/opt/homebrew/bin', '/usr/local/bin']
-  const path = [env['PATH'], ...extra].filter(Boolean).join(':')
-  return { ...env, PATH: path }
-}
-
-/** Bounds every tool subprocess: `GIT_TERMINAL_PROMPT=0` stops a *prompt*, not
- *  a TCP stall against an unreachable forge — without this the MCP call (and
- *  the agent's turn behind it) would hang forever. Generous, matching the push
- *  bound in changes.ts. */
-const TOOL_TIMEOUT_MS = 120_000
-
-/** Run a host command in the clone and flatten stdout+stderr into a tool result. */
+/** Run a host command in the clone and flatten stdout+stderr into a tool result
+ *  (the shared runner lives in git/pullRequest.ts: the review loop's delivery
+ *  runs the same code). */
 async function runTool(
   cmd: string,
   args: string[],
   cwd: string,
   env: NodeJS.ProcessEnv
 ): Promise<ToolResult> {
-  try {
-    const { stdout, stderr } = await pexec(cmd, args, {
-      cwd,
-      env: withHostPath(env),
-      maxBuffer: 10 * 1024 * 1024,
-      timeout: TOOL_TIMEOUT_MS,
-      killSignal: 'SIGKILL'
-    })
-    const text = [stdout, stderr].map((s) => s.trim()).filter(Boolean).join('\n') || `${cmd} ok`
-    return { content: [{ type: 'text', text }] }
-  } catch (e) {
-    const err = e as { stdout?: string; stderr?: string; message?: string }
-    const text =
-      [err.stdout, err.stderr, err.message].map((s) => s?.trim()).filter(Boolean).join('\n') ||
-      'command failed'
-    return { content: [{ type: 'text', text }], isError: true }
-  }
+  const r = await runHost(cmd, args, cwd, env)
+  return { content: [{ type: 'text', text: r.text }], ...(r.ok ? {} : { isError: true }) }
 }
 
 /**
@@ -71,35 +38,11 @@ async function runTool(
  * explicit `git-host` credential says so — never as a silent fallback.
  */
 async function requireGitAccess(ref: EnvRef, repo: string): Promise<HostGitAccess | ToolResult> {
-  const access = await hostGitAccessForRepo(ref.workspace, repo)
-  if (access.mode === 'blocked')
-    return errorResult(`git access is blocked: ${access.reason ?? 'no credential resolves'}`)
-  return access
+  const got = await requireForgeAccess(ref.workspace, repo)
+  return 'error' in got ? errorResult(got.error) : got.access
 }
 
 const isToolResult = (v: HostGitAccess | ToolResult): v is ToolResult => 'content' in v
-
-/**
- * Env for the `gh` CLI under `access`: managed → the provider's forge env
- * (e.g. GH_TOKEN/GH_HOST) on top of the git env, so the embedded push and the
- * API call use the same credential; ambient → the host env as-is (explicit
- * `git-host`). `error` set when the credential cannot serve the forge API.
- */
-async function forgeCliEnv(
-  access: HostGitAccess
-): Promise<{ env?: NodeJS.ProcessEnv; error?: ToolResult }> {
-  if (access.mode === 'ambient') return { env: access.env }
-  const provider = access.host ? providerForHost(access.host) : null
-  if (!provider)
-    return { error: errorResult(`no forge provider matches host "${access.host ?? '?'}"`) }
-  const entry = access.resolution?.entry
-  const forge = entry ? await provider.forgeEnv(entry, access.host!) : null
-  if (!forge)
-    return {
-      error: errorResult(`credential "${entry?.label ?? '?'}" cannot serve the ${provider.id} API`)
-    }
-  return { env: { ...access.env, ...forge } }
-}
 
 /**
  * Server-level guidance the client surfaces to the model. It steers the agent
@@ -175,28 +118,10 @@ function makeMcpServer(ref: EnvRef, repo: string, dir: string, mode: McpMode): M
         }
       },
       async ({ title, body }) => {
-        const access = await requireGitAccess(ref, repo)
-        if (isToolResult(access)) return access
-        // Refused before the push, so the call does not half-succeed: a local
-        // repo's origin is a bare repo on this machine, with no forge to open
-        // a pull request on (docs/requirements-new-projects.md §4).
-        if (access.mode === 'local')
-          return errorResult(
-            `repo "${repo}" is local to gurt and not published to a forge yet, so there is ` +
-              'nothing to open a pull request on — use git_push to push to its local origin; ' +
-              'the user can publish it from Settings → Repos'
-          )
-        const push = await runTool(
-          'git',
-          ['-C', dir, ...access.gitArgs, 'push', '-u', 'origin', 'HEAD'],
-          dir,
-          access.env
-        )
-        if (push.isError) return push
-        const gh = await forgeCliEnv(access)
-        if (gh.error) return gh.error
-        // `gh` infers head from the current branch and base from the repo default.
-        return runTool('gh', ['pr', 'create', '--title', title, '--body', body ?? ''], dir, gh.env!)
+        // Push, then `gh pr create`; a local repo is refused before the push
+        // (git/pullRequest.ts) — the review loop's delivery calls the same function.
+        const r = await openPullRequest(ref.workspace, repo, dir, { title, body })
+        return r.ok ? { content: [{ type: 'text', text: r.text }] } : errorResult(r.text)
       }
     )
   }

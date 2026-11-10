@@ -7,6 +7,12 @@ turns a piece of it into a `requirements-*.md`. The only implemented seam
 so far is the turn contract (`requirements-turn-contract.md`) and its
 `session.proposal` event.
 
+> **Superseded in part** by `requirements-review-loop.md`: the review → fix
+> retry edge with a round limit, the `ReviewVerdict` shape, review gating
+> (advisory) and "No auto-ship" (now an opt-in per executor draft) are
+> decided there; see also the notes at the session-reuse and multi-repo
+> rules below.
+
 ## Agreed direction (still revisable)
 
 - **Agents never talk to each other.** All inter-stage communication is
@@ -37,9 +43,16 @@ so far is the turn contract (`requirements-turn-contract.md`) and its
   fresh session to avoid anchoring; configurable for cost). A dead session
   is replaced by a new one rehydrated from artifacts + session log — one
   more reason artifacts live in the store, not in agent context.
+  > **Superseded in part** by `requirements-review-loop.md`: the loop's
+  > re-review is always a fresh session (not configurable), and a loop
+  > session that dies ends the loop (`reviewer-unavailable` /
+  > `executor-error`) instead of being replaced.
 - **Multi-repo:** a preparatory step is a parent task; its output spawns N
   independent per-repo pipelines linked only by a parent id. No
   cross-pipeline logic in the kernel.
+  > **Superseded in part** by `requirements-review-loop.md`: a review loop
+  > covers every write repo of one executor session — one check per repo, one
+  > reviewer over all of them — with no parent task and no per-repo pipelines.
 - **No auto-ship.** Ship stages (commit / push / PR) always sit behind an
   explicit user action — today's Changes panel is exactly that. If
   automation is ever wanted it is a deliberate per-repo opt-in, never a

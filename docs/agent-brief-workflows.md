@@ -113,8 +113,14 @@ order:
   conditionals.
 - **Session reuse:** continuity → same session (fix rounds); independence →
   fresh session (re-review, to avoid anchoring).
+  > **Superseded in part** by [requirements-review-loop.md](requirements-review-loop.md):
+  > in a review loop the re-review is always a fresh session, never
+  > configurable.
 - **No auto-ship.** Commit / push / PR always sit behind an explicit user
   action. Approval gates are explicit stages.
+  > **Superseded in part** by [requirements-review-loop.md](requirements-review-loop.md):
+  > an executor draft's Review block may opt in to commit / push / a draft PR
+  > after a clean review loop.
 - **Drafts are approval.** Anything an agent spawns is a draft until a human
   runs it. Do not add a path that auto-runs agent-authored sessions.
 - **Fail closed.** New `GurtApi` methods must be annotated `read | write |

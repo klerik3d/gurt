@@ -39,6 +39,7 @@ export const manifest: AgentManifest = {
   // `projects.json` registry file that assigns the shortId — the first
   // kind that needs §3.1's file-entry case. Empty until that phase.
   historyPaths: [],
+  instructionPaths: ['GEMINI.md', '.gemini/'],
 
   // Verified in the @google/gemini-cli@0.65.0 bundle: its ACP modes are
   // `default`, `autoEdit` ("Auto Edit"), `yolo` ("YOLO") and, with plan mode

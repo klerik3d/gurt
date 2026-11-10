@@ -2,8 +2,9 @@
 // docs/requirements-session-roles.md), without docker or an agent: what a role
 // still decides (its tool set and who it may draft), what it no longer decides
 // (mounts, locks, the repo count), and the on-disk migrations that turn a
-// pre-roles record into an explicit role and a reviewer into a researcher.
-// The mount modes themselves are repo-mounts.test.mjs's.
+// pre-roles record into an explicit role and a legacy reviewer into a
+// researcher — while a review loop's reviewer (docs/requirements-review-loop.md
+// §4) stays one. The mount modes themselves are repo-mounts.test.mjs's.
 //
 // Container state is staged through `sessions.patchContainer`, the seam the
 // container manager writes through — same trick as session-repo-gate.test.mjs,
@@ -32,7 +33,7 @@ await bundle({
     contents:
       `export { createKernel } from ${S('src/main/kernel.ts')}\n` +
       `export { readSessions } from ${S('src/main/store.ts')}\n` +
-      `export { sessionRole, repoMode, roleHasTurnContract, roleReadsAdmin, roleWritesAdmin, roleDraftsCrossTask, spawnableRoles, missingRepoReason } from ${S('src/shared/types.ts')}`,
+      `export { sessionRole, repoMode, roleHasTurnContract, roleReadsAdmin, roleWritesAdmin, roleDraftsCrossTask, spawnableRoles, missingRepoReason, SESSION_ROLES, USER_SESSION_ROLES, roleIsLoopOwned, roleNeedsRepo } from ${S('src/shared/types.ts')}`,
     resolveDir: ROOT,
     loader: 'ts',
     sourcefile: 'entry.ts'
@@ -111,7 +112,8 @@ const hold = (id, repos) =>
 
 // --- the role predicates: the table of §4 -----------------------------------
 test('role table', () => {
-  const roles = ['executor', 'researcher', 'inspector', 'operator', 'proactive']
+  const roles = ['executor', 'researcher', 'inspector', 'operator', 'proactive', 'reviewer']
+  assert.deepEqual(m.SESSION_ROLES, roles, 'every role is known')
   assert.deepEqual(
     roles.map((r) => [
       m.roleHasTurnContract(r),
@@ -125,6 +127,7 @@ test('role table', () => {
       [false, false, false, ['executor', 'researcher'], true],
       [false, true, false, ['operator'], true],
       [false, true, true, [], false],
+      [true, false, false, [], false],
       [true, false, false, [], false]
     ],
     'complete / admin reads / admin writes / create_session / task per role'
@@ -151,6 +154,10 @@ test('start needs: a write repo for an executor, a repo for a researcher, nothin
   assert.match(need('researcher', [], {}), /no repository/)
   assert.equal(need('researcher', ['alpha'], { alpha: 'read' }), undefined)
   for (const role of ['inspector', 'operator', 'proactive']) assert.equal(need(role, [], {}), undefined, role)
+  // A reviewer needs a repo to review — any mode: its mounts are `read` anyway.
+  assert.match(need('reviewer', [], {}), /no repository/)
+  assert.equal(need('reviewer', ['alpha'], { alpha: 'write' }), undefined)
+  assert.equal(m.roleNeedsRepo('reviewer'), true)
   const e = mk(['alpha'], 'executor', 'E-ro', { alpha: 'read-locked' })
   assert.throws(() => kernel.sessions.run(e.id), /mounted for write/, 'the run gate says why')
   assert.throws(() => kernel.sessions.enqueue(e.id), /mounted for write/, 'and so does the queue')
@@ -210,9 +217,39 @@ test('draft role edits leave repos, modes and env alone', async () => {
   )
   await rejects(
     () => kernel.editDraft(draft.id, { role: 'reviewer' }),
-    /unknown session role/,
-    'the reviewer is gone'
+    /created only by the review loop/,
+    'no edit makes a session a reviewer'
   )
+})
+
+// --- the review loop's reviewer: the loop's alone ---------------------------
+test('a reviewer is never picked, drafted, duplicated or recreated', async () => {
+  assert.ok(!m.USER_SESSION_ROLES.includes('reviewer'), 'not offered to the user')
+  assert.ok(!m.USER_SESSION_ROLES.includes('proactive'), 'like the proactive role')
+  assert.deepEqual(m.SESSION_ROLES.filter(m.roleIsLoopOwned), ['reviewer'])
+  for (const role of m.SESSION_ROLES)
+    assert.ok(!m.spawnableRoles(role).includes('reviewer'), `${role} never drafts a reviewer`)
+  const asker = mk(['alpha'], 'researcher', 'S-rv', { alpha: 'read' })
+  await rejects(
+    () => kernel.sessions.createAgentDraft(asker.id, { role: 'reviewer', repos: ['alpha'], prompt: 'p' }),
+    /may only draft: executor, researcher/,
+    'not even when an agent asks past the schema'
+  )
+
+  // Only the loop creates one — straight through the session manager.
+  const rv = mk(['alpha'], 'reviewer', 'review 1 — E')
+  kernel.sessions['sessions'].get(rv.id).info.reviewOf = { executor: executor.id, round: 1, intent: 'i1' }
+  assert.throws(() => kernel.sessions.duplicateSession(rv.id), /only the loop creates one/, 'duplicate refuses it')
+  kernel.sessions['sessions'].get(rv.id).info.state = 'started'
+  assert.throws(() => kernel.sessions.recreateSession(rv.id), /only the loop creates one/, 'and so does recreate')
+  assert.ok(kernel.sessions.snapshot(rv.id), 'the refused recreate deleted nothing')
+  kernel.sessions['sessions'].get(rv.id).info.state = 'draft'
+  await rejects(
+    () => kernel.editDraft(rv.id, { role: 'executor' }),
+    /keeps its role/,
+    'a reviewer is not turned into something else either'
+  )
+  kernel.sessions.deleteSession(rv.id)
 })
 
 let spawner
@@ -406,10 +443,18 @@ test('pre-roles migration', async () => {
       legacy('two', ['alpha', 'beta']),
       legacy('three', ['alpha'], 'reviewer'),
       legacy('four', [], 'operator'),
-      legacy('five', ['beta'], 'proactive')
+      legacy('five', ['beta'], 'proactive'),
+      // A review loop's reviewer is no legacy record: `reviewOf` says so.
+      {
+        info: {
+          ...legacy('six', ['alpha'], 'reviewer').info,
+          repoModes: { alpha: 'read' },
+          reviewOf: { executor: 'one', round: 1, intent: 'i1' }
+        }
+      }
     ])
   )
-  const [one, two, three, four, five] = await m.readSessions(ws, task2)
+  const [one, two, three, four, five, six] = await m.readSessions(ws, task2)
   assert.equal(one.info.role, 'executor', 'a single-repo record was a read-write worker')
   assert.deepEqual(one.info.repoModes, { alpha: 'write' }, '…and keeps writing its clone')
   assert.equal(two.info.role, 'researcher', 'a discovery session becomes a researcher')
@@ -418,10 +463,17 @@ test('pre-roles migration', async () => {
   assert.deepEqual(three.info.repoModes, { alpha: 'write' }, '…with the writable, locked clone it had')
   assert.deepEqual(four.info.repoModes, {}, 'an operator held nothing')
   assert.deepEqual(five.info.repoModes, { beta: 'read' }, 'a proactive run read its repos')
+  assert.equal(six.info.role, 'reviewer', 'a loop reviewer stays a reviewer')
+  assert.deepEqual(six.info.repoModes, { alpha: 'read' }, '…its modes untouched')
+  assert.deepEqual(six.info.reviewOf, { executor: 'one', round: 1, intent: 'i1' }, '…and its loop link kept')
   const migrated = fs.readFileSync(sessPath, 'utf8')
   assert.ok(migrated.includes('"role": "researcher"'), 'the role is written back to disk')
   assert.ok(migrated.includes('"repoModes"'), 'and so are the modes')
-  assert.ok(!migrated.includes('reviewer'), 'no reviewer is left on disk')
+  assert.deepEqual(
+    JSON.parse(migrated).filter((r) => r.info.role === 'reviewer').map((r) => r.info.id),
+    ['six'],
+    'no legacy reviewer is left on disk — only the loop’s'
+  )
   await m.readSessions(ws, task2)
   assert.equal(
     fs.readFileSync(sessPath, 'utf8'),

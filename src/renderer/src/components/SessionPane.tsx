@@ -3,6 +3,7 @@ import type { PromptImage, SessionSnapshot, Tree } from '../../../shared/types'
 import { missingRepoReason, repoMode, sessionRole, sessionStatus } from '../../../shared/types'
 import { agentKind, agentName, useAgents } from '../useAgents'
 import { useMcpEntries, useMcpFailures } from '../useMcp'
+import { useReviewBlock } from '../useReviewBlock'
 import { resolveMcpSelection } from '../../../shared/mcp'
 import { alertDialog } from '../dialog'
 import { logErr } from '../log'
@@ -205,7 +206,10 @@ function NonStartedPane({
       : !info.agent
         ? 'an agent'
         : null
-  const canRun = !!text.trim() && !missing
+  // An executor draft's Review block must be able to start (§3): the same
+  // verdict the Config tab shows, and main refuses the start for it too.
+  const reviewProblem = useReviewBlock(tree, info).problem
+  const canRun = !!text.trim() && !missing && !reviewProblem
 
   return (
     <div className="session-pane">
@@ -260,7 +264,13 @@ function NonStartedPane({
             <button
               className="btn btn-primary"
               disabled={!canRun || submitting}
-              title={missing ? `pick ${missing} first (Config tab)` : undefined}
+              title={
+                missing
+                  ? `pick ${missing} first (Config tab)`
+                  : reviewProblem
+                    ? `review loop: ${reviewProblem} (Config tab)`
+                    : undefined
+              }
               onClick={run(async () => {
                 setSubmitting(true)
                 try {
@@ -276,6 +286,11 @@ function NonStartedPane({
             >
               {submitting ? 'Starting…' : 'Run'}
             </button>
+            {!missing && reviewProblem && (
+              <span className="hc-note hc-warn" data-testid="run-blocked">
+                review loop: {reviewProblem}
+              </span>
+            )}
             <span className="spacer" />
             <button className="btn" onClick={run(copy)} title="copy these settings and prompt into a new draft">
               Duplicate

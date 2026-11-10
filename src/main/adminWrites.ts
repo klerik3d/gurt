@@ -180,6 +180,31 @@ function refuse(what: string): never {
 
 const sameLink = (a: string | undefined, b: string | undefined): boolean => (a ?? '') === (b ?? '')
 
+/** A repo's review-loop fields (docs/requirements-review-loop.md §3, §10):
+ *  `check` is a shell command gurt runs in the session container, and `review`
+ *  arms the loop that commits, pushes and opens a PR with no human in between.
+ *  The operator is not their author — refused whole, not held: unlike a held
+ *  field there is no confirmation diff that conveys "this repo now ships on its
+ *  own", and the conservative reading of §4.1's rule is that nothing that
+ *  leads to unattended shipping is landed by an agent's write. The user sets
+ *  them in Settings → Repos. A write that leaves them as they are passes, so
+ *  an operator can still edit the rest of a repo it read back whole. */
+function checkRepoLoopFields(next: RepoConfig, prev: RepoConfig | undefined): void {
+  const check = (v: string | undefined): string => (v ?? '').trim()
+  if (check(next.check) !== check(prev?.check))
+    refuseLoopField(`the check command of repo "${next.name}"`)
+  if (canonicalJson(next.review ?? null) !== canonicalJson(prev?.review ?? null))
+    refuseLoopField(`the review defaults of repo "${next.name}"`)
+}
+
+function refuseLoopField(what: string): never {
+  throw new Error(
+    `${what} may not be written by the operator — refused, not held: it decides what runs in ` +
+      'the session container and whether finished work ships without a human. Ask the user to ' +
+      'set it in Settings → Repos.'
+  )
+}
+
 function checkRepoLinks(next: RepoConfig, prev: RepoConfig | undefined): void {
   if (!prev) {
     if (next.credentialId) refuse(`repo "${next.name}" may not be created with a credential link`)
@@ -476,6 +501,7 @@ export function createAdminWrites(kernel: Kernel): AdminWrites {
       case 'addRepo':
       case 'updateRepo':
         checkRepoLinks(args['repo'] as RepoConfig, before as RepoConfig | undefined)
+        checkRepoLoopFields(args['repo'] as RepoConfig, before as RepoConfig | undefined)
         return { args: positional }
       case 'setAgents':
         checkAgentLinks(

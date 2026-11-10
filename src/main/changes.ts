@@ -18,7 +18,7 @@ import { openInTerminal } from './terminal'
 const log = createLogger('changes')
 
 /** Bounds a fetch against an unreachable origin; failure is non-fatal anyway. */
-const FETCH_TIMEOUT_MS = 30_000
+export const FETCH_TIMEOUT_MS = 30_000
 
 /** Bounds a push — fatal (unlike a fetch) and legitimately slower on a thin
  *  uplink, so generous; a dead network must still surface as an error rather
@@ -32,7 +32,9 @@ const PUSH_TIMEOUT_MS = 120_000
 const cloneChains = new Map<string, Promise<unknown>>()
 const frozenScopes = new Set<string>()
 
-function serialized<T>(dir: string, fn: () => Promise<T>): Promise<T> {
+/** Exported for the review loop's host git (treeHash.ts, delivery.ts), which
+ *  joins the same per-clone chain. Not re-entrant: never nest a call inside `fn`. */
+export function serialized<T>(dir: string, fn: () => Promise<T>): Promise<T> {
   if ([...frozenScopes].some((prefix) => dir.startsWith(prefix)))
     return Promise.reject(new Error('Scope repositories are being archived'))
   const next = Promise.resolve(cloneChains.get(dir))
@@ -56,7 +58,7 @@ export async function withTaskChangesPaused<T>(ws: string, task: string, action:
   } finally { frozenScopes.delete(prefix) }
 }
 
-interface GitOpts {
+export interface GitOpts {
   /** Exit codes to treat as success (default [0]). */
   okCodes?: number[]
   timeoutMs?: number
@@ -70,24 +72,24 @@ interface GitOpts {
  * under the repo's resolved access (§8) — env plus `-c` config args — so no
  * operation can silently reach ambient credentials.
  */
-function git(dir: string, access: HostGitAccess, args: string[], opts: GitOpts = {}): Promise<string> {
+export function git(dir: string, access: HostGitAccess, args: string[], opts: GitOpts = {}): Promise<string> {
   return run('git', ['-C', dir, ...access.gitArgs, ...args], () => {}, {
     env: access.env,
     ...opts
   })
 }
 
-const branchFor = scopeBranch
+export const branchFor = scopeBranch
 
 /** SHA of `ref`, or '' when it does not exist. */
-async function revParse(dir: string, access: HostGitAccess, ref: string): Promise<string> {
+export async function revParse(dir: string, access: HostGitAccess, ref: string): Promise<string> {
   return (
     await git(dir, access, ['rev-parse', '--verify', '--quiet', ref], { okCodes: [0, 1] })
   ).trim()
 }
 
 /** Short name of the default branch: `origin/HEAD`, fallback `main`. */
-async function defaultBranch(dir: string, access: HostGitAccess): Promise<string> {
+export async function defaultBranch(dir: string, access: HostGitAccess): Promise<string> {
   const ref = (
     await git(dir, access, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']).catch(() => '')
   ).trim()

@@ -25,6 +25,9 @@ export const manifest: AgentManifest = {
   // own `~/.pi/agent/mcp.json` instead). So the gurt server — and with it
   // `complete` — is invisible to pi, and every turn ends in the nudge and
   // then `incomplete` (docs/requirements-turn-contract.md §4).
+  // The same fact as the paragraph above, as data: a review loop reads it to
+  // refuse pi as executor and not offer it as reviewer.
+  acpMcp: false,
   adapterPackages: ['pi-acp@0.0.34', '@earendil-works/pi-coding-agent@1.5.0'],
   bin: 'pi-acp',
   binArgs: [],

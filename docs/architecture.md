@@ -294,6 +294,32 @@ caps it: at the limit a due run is skipped and `propose_scope` refuses. Runs
 happen only while Gurt is open, never overlap, and are cancelled past their
 timeout.
 
+### Review loop
+
+An executor draft can opt in to a review loop
+([requirements-review-loop.md](requirements-review-loop.md)). The **Review
+block** (Config tab, executor drafts only; prefilled from the first write repo's
+`RepoConfig.review`, frozen at start, carried by duplicate/recreate and never
+part of `AgentSessionRequest`) names the reviewer agent and its model/effort,
+the rounds (1–5) and what a clean result does (notify / commit / push / draft PR,
+or merge for local repos). The rules live in `src/shared/reviewBlock.ts` and are
+enforced by the UI (Run disabled) and by main at the start: the reviewer must
+exist, be allowed in the workspace and receive gurt's MCP server
+(`AgentManifest.acpMcp`; pi does not), and differ from the executor in agent
+instance or model. The default reviewer is another kind with a usable credential,
+else the same kind.
+
+After the executor's first `complete` with changes a host controller
+(`src/main/reviewLoop.ts`, a bus subscriber like the proactive manager) runs the
+repo's `check` in the executor's container, then creates a fresh `reviewer`
+session per round (repos read-only, `submit_review` as its turn contract), and
+sends the findings back to the executor as an ordinary queued message, answered
+through `complete`'s `replies`. Nothing waits inside a tool call. Its pure brain
+is `loopStep`; its state is `<scope>/review-loop.json`. The session pane shows
+the loop's phase, round and findings and a "Stop loop" button; the operator
+cannot write `check` or `review` (Settings only). A clean result is delivered on
+the host (`src/main/delivery.ts`); nothing is ever merged on a forge.
+
 ## How a session starts
 
 Provisioning drives the docker CLI directly; there is no wrapper in between.

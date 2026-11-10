@@ -18,6 +18,9 @@ for it, here are the sessions I would run".
   without a click. This is the one, explicit exception to "drafts are
   approval" (`agent-brief-workflows.md` §5), and it covers only the agent's
   own runs.
+  > **Superseded in part** by `requirements-review-loop.md`: a review loop's
+  > reviewer sessions are a second exception — enabling an executor draft's
+  > Review block is the standing approval for them.
 - **Everything it creates is a draft.** Scopes and their sessions wait for the
   user to launch them, as with `create_session`. The agent has no other
   powers: it does not run, prompt or ship anything.

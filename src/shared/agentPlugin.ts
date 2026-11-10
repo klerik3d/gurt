@@ -126,6 +126,23 @@ export interface AgentManifest {
    *  today — a pin bump re-checks this field, same rule as `skillsDir`.
    *  (docs/requirements-agent-history.md §3) */
   historyPaths: readonly string[]
+  /** Repo paths this kind's CLI loads as instructions or settings when it
+   *  works in a checkout: a name matches that file at any depth, a name
+   *  ending in `/` that directory at any depth (case-insensitive). A review
+   *  loop's diff touching one is a mandatory review item
+   *  (docs/requirements-review-loop.md §4.3) — the core knows only the
+   *  cross-vendor `AGENTS.md`. Over-listing costs a reviewer a line; missing
+   *  one lets a change steer the next agent unremarked. Absent: none. */
+  instructionPaths?: readonly string[]
+
+  /** Whether the adapter hands the ACP `session/new` `mcpServers` on to its
+   *  agent, so gurt's own per-session MCP server (`complete`, `submit_review`)
+   *  reaches it. Absent = it does. `false` is a kind that never sees gurt's
+   *  tools: its turns end in the nudge and then `incomplete`, so a review loop
+   *  — whose executor and reviewer both deliver through gurt MCP tools, with no
+   *  text-parsing fallback — can use it as neither
+   *  (docs/requirements-review-loop.md §3). */
+  acpMcp?: boolean
 
   /** The CLI's native settings file, written from an instance's config JSON
    *  on every adapter launch. Absent: the kind takes no config JSON, and

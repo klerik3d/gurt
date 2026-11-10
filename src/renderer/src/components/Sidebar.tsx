@@ -14,7 +14,7 @@ import { GitCommitPanel, type CommitDraft } from './GitActions'
 import { SESSION_DOT } from '../status'
 import { markUnread } from '../reviewed'
 import { Icon, Dot } from './icons'
-import { AgentMark } from './tags'
+import { AgentMark, ROLE_INFO } from './tags'
 import { deleteSession, duplicateSession, recreateSession } from './SessionActions'
 import { Modal } from './Modal'
 import { fire, run } from '../async'
@@ -824,6 +824,13 @@ export function Sidebar({
                         />
                       ) : (
                         <>
+                          {/* A loop's reviewer is no session the user made: its
+                              role mark says so (docs/requirements-review-loop.md §4). */}
+                          {s.reviewOf && (
+                            <span title={`${ROLE_INFO.reviewer.label} — ${ROLE_INFO.reviewer.hint}`} data-role="reviewer">
+                              <Icon name={ROLE_INFO.reviewer.icon} size={11} className="faint" />
+                            </span>
+                          )}
                           <span className="sb-session-name">{s.title}</span>
                           <span className="sb-session-client">
                             {s.agent && (

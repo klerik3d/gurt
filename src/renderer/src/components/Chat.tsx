@@ -30,6 +30,7 @@ import { Icon, Dot, InfoDot } from './icons'
 import { AgentMark, EnvRepoMarks, hasNetMark, McpFailBanner, McpMarks, NetMark, RoleMark } from './tags'
 import { NetButton } from './Network'
 import { ConfigTab } from './ConfigTab'
+import { ReviewLoopLine } from './ReviewLoopLine'
 import { SessionMenu } from './SessionActions'
 import { ToolStrip, type StripEntry } from './ToolStrip'
 import { TabBar, useSessionTab } from './SessionTabs'
@@ -387,6 +388,10 @@ export function Chat({
           (§6): without this the agent would simply be missing tools, and the
           reason would be in ~/.gurt/logs. */}
       <McpFailBanner failures={mcpFailures} />
+
+      {/* The review loop this session is part of (docs/requirements-review-loop.md
+          §5): an executor's own, or the executor's that a reviewer serves. */}
+      <ReviewLoopLine info={info} version={snapshot} />
 
       {activeTab === 'config' && <ConfigTab tree={tree} snapshot={snapshot} />}
 

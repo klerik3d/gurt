@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import type { PublishResult, RepoConfig, Tree } from '../../../../shared/types'
+import type { PublishResult, RepoConfig, ReviewLoopConfig, ShipRung, Tree } from '../../../../shared/types'
+import { REVIEW_LOOP_DEFAULTS, REVIEW_MAX_ROUNDS } from '../../../../shared/types'
+import { RUNG_LABEL, clampRounds, ladderFor, reviewerCandidates, validateReviewBlock } from '../../../../shared/reviewBlock'
+import { useAgents } from '../../useAgents'
 import type { CredentialEntry } from '../../../../shared/credentials'
 import { credentialKindLabel, isGitKind, resolveForRepo } from '../../../../shared/credentials'
 import { canonicalRepoId } from '../../../../shared/repoId'
@@ -15,7 +18,8 @@ import { stripProtocol } from './shared'
 export function ReposSection({ tree, ws }: { tree: Tree | null; ws: string | null }) {
   const [editing, setEditing] = useState<RepoConfig | null>(null)
   const [adding, setAdding] = useState(false)
-  const repos = tree?.workspaces.find((w) => w.name === ws)?.repos ?? []
+  const wsData = tree?.workspaces.find((w) => w.name === ws)
+  const repos = wsData?.repos ?? []
 
   return (
     <>
@@ -53,6 +57,7 @@ export function ReposSection({ tree, ws }: { tree: Tree | null; ws: string | nul
           key={editing?.name ?? '__new'}
           ws={ws}
           initial={editing ?? undefined}
+          deniedAgents={wsData?.deniedAgents ?? []}
           onClose={() => {
             setEditing(null)
             setAdding(false)
@@ -66,10 +71,12 @@ export function ReposSection({ tree, ws }: { tree: Tree | null; ws: string | nul
 function RepoModal({
   ws,
   initial,
+  deniedAgents,
   onClose
 }: {
   ws: string
   initial?: RepoConfig | undefined
+  deniedAgents: string[]
   onClose: () => void
 }) {
   const editing = !!initial
@@ -84,6 +91,13 @@ function RepoModal({
   const [credentials, setCredentials] = useState<CredentialEntry[]>([])
   const [credMenu, setCredMenu] = useState(false)
   const [error, setError] = useState('')
+  // The review loop's per-repo settings (docs/requirements-review-loop.md §3):
+  // the check command, and the defaults a new executor draft's Review block
+  // starts from when this repo is its anchor. The user's alone to write — the
+  // operator's repo writes are refused for them (§10).
+  const agents = useAgents()
+  const [check, setCheck] = useState(initial?.check ?? '')
+  const [rv, setRv] = useState<NonNullable<RepoConfig['review']>>(initial?.review ?? {})
   const credRef = useRef<HTMLDivElement>(null)
   useOutsideClose(credMenu, credRef, () => setCredMenu(false))
 
@@ -91,11 +105,40 @@ function RepoModal({
     window.gurt.getCredentials().then((f) => setCredentials(f.credentials)).catch(() => {})
   }, [])
 
-  const valid = name.trim() && (local || url.trim())
+  // A local repo's rungs are commit / merge, a forge repo's commit / push / PR.
+  const ladder = ladderFor([local ? { local: true } : {}])
+  const rung = rv.whenClean ?? REVIEW_LOOP_DEFAULTS.whenClean
+  // The same rules as the draft's block, minus the executor (unknown here): a
+  // reviewer named as the default must exist, be allowed and receive gurt's tools.
+  const reviewProblem = rv.agent
+    ? validateReviewBlock(
+        {
+          agent: rv.agent,
+          maxRounds: rv.maxRounds ?? REVIEW_LOOP_DEFAULTS.maxRounds,
+          whenClean: rung,
+          draftPr: rv.draftPr ?? REVIEW_LOOP_DEFAULTS.draftPr
+        },
+        undefined,
+        { agents, deniedAgents, configs: {} },
+        ladder
+      )
+    : ladder.includes(rung)
+      ? null
+      : `“${RUNG_LABEL[rung]}” is not available for this repository`
+  const setRvField = (next: Partial<ReviewLoopConfig> & { enabled?: boolean }): void =>
+    setRv((prev) => {
+      const merged = { ...prev, ...next }
+      // The reviewer's config picks belong to that reviewer.
+      if ('agent' in next && next.agent !== prev.agent) delete merged.configValues
+      return merged
+    })
+  const valid = name.trim() && (local || url.trim()) && !reviewProblem
   const draft: RepoConfig = {
     name: name.trim(),
     url: url.trim(),
-    ...(credentialId ? { credentialId } : {})
+    ...(credentialId ? { credentialId } : {}),
+    ...(check.trim() ? { check: check.trim() } : {}),
+    ...(Object.keys(rv).length ? { review: rv } : {})
   }
 
   const linked = credentials.find((c) => c.id === credentialId)
@@ -250,6 +293,119 @@ function RepoModal({
             </div>
           </div>
         )}
+
+        <label className="fld">
+          <span className="seclabel">CHECK</span>
+          <input
+            className="input mono"
+            placeholder="npm run lint && npm test"
+            value={check}
+            onChange={(e) => setCheck(e.target.value)}
+          />
+          <div className="env-access-note">
+            run by the review loop in the session container, from /workspaces/{name.trim() || '<repo>'}, after each
+            round of changes; empty = no check for this repo
+          </div>
+        </label>
+
+        <div className="fld" data-section="review-defaults">
+          <span className="seclabel">REVIEW LOOP DEFAULTS</span>
+          <div className="env-access-note">what a new executor draft's Review block starts from when this is its first write repo</div>
+          <div className="chip-row" role="radiogroup" aria-label="review loop on by default">
+            <button
+              type="button"
+              role="radio"
+              aria-checked={!rv.enabled}
+              className={`chip-btn ${!rv.enabled ? 'on' : ''}`}
+              onClick={() => setRvField({ enabled: false })}
+            >
+              off by default
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={!!rv.enabled}
+              className={`chip-btn ${rv.enabled ? 'on' : ''}`}
+              onClick={() => setRvField({ enabled: true })}
+            >
+              on by default
+            </button>
+          </div>
+          <span className="seclabel">REVIEWER</span>
+          <div className="chip-row" role="radiogroup" aria-label="default reviewer">
+            <button
+              type="button"
+              role="radio"
+              aria-checked={!rv.agent}
+              className={`chip-btn ${!rv.agent ? 'on' : ''}`}
+              title="the first agent of another kind with a usable credential, else one of the same kind"
+              onClick={() => setRvField({ agent: '' })}
+            >
+              automatic
+            </button>
+            {reviewerCandidates(agents, deniedAgents).map((id) => (
+              <button
+                key={id}
+                type="button"
+                role="radio"
+                aria-checked={rv.agent === id}
+                className={`chip-btn ${rv.agent === id ? 'on' : ''}`}
+                onClick={() => setRvField({ agent: id })}
+              >
+                {agents[id]?.label ?? id}
+              </button>
+            ))}
+            {rv.agent && !reviewerCandidates(agents, deniedAgents).includes(rv.agent) && (
+              <button type="button" className="chip-btn on" title="no longer offered">
+                {agents[rv.agent]?.label ?? rv.agent}
+              </button>
+            )}
+          </div>
+          <span className="seclabel">ROUNDS</span>
+          <div className="chip-row" role="radiogroup" aria-label="default review rounds">
+            {Array.from(
+              { length: REVIEW_MAX_ROUNDS.max - REVIEW_MAX_ROUNDS.min + 1 },
+              (_, i) => REVIEW_MAX_ROUNDS.min + i
+            ).map((n) => (
+              <button
+                key={n}
+                type="button"
+                role="radio"
+                aria-checked={clampRounds(rv.maxRounds ?? REVIEW_LOOP_DEFAULTS.maxRounds) === n}
+                className={`chip-btn ${clampRounds(rv.maxRounds ?? REVIEW_LOOP_DEFAULTS.maxRounds) === n ? 'on' : ''}`}
+                onClick={() => setRvField({ maxRounds: n })}
+              >
+                {n}
+              </button>
+            ))}
+          </div>
+          <span className="seclabel">WHEN CLEAN</span>
+          <div className="chip-row" role="radiogroup" aria-label="default when clean">
+            {ladder.map((r: ShipRung) => (
+              <button
+                key={r}
+                type="button"
+                role="radio"
+                aria-checked={rung === r}
+                className={`chip-btn ${rung === r ? 'on' : ''}`}
+                onClick={() => setRvField({ whenClean: r })}
+              >
+                {RUNG_LABEL[r]}
+              </button>
+            ))}
+          </div>
+          {rung === 'pr' && (
+            <label className="rv-check">
+              <input
+                type="checkbox"
+                checked={rv.draftPr ?? REVIEW_LOOP_DEFAULTS.draftPr}
+                onChange={(e) => setRvField({ draftPr: e.target.checked })}
+              />
+              <span>open the PR as a draft</span>
+            </label>
+          )}
+          {reviewProblem && <div className="error">{reviewProblem}</div>}
+        </div>
 
         {error && <div className="error">{error}</div>}
       </div>

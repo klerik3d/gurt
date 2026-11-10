@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import type {
   AgentConfig,
   McpMode,
+  ReviewLoopConfig,
   RepoConfig,
   RepoMode,
   SessionConfigOption,
@@ -18,6 +19,7 @@ import {
   USER_SESSION_ROLES,
   missingRepoReason,
   repoMode,
+  roleForcesRead,
   sessionRole
 } from '../../../shared/types'
 import type { SessionDraftPatch } from '../../../shared/api'
@@ -25,12 +27,22 @@ import type { McpEntry } from '../../../shared/mcp'
 import { LOCAL_MCP_NOTICE, isLocalMcpEntry, mcpHasModes, resolveMcpSelection } from '../../../shared/mcp'
 import type { SkillEntry } from '../../../shared/skills'
 import { resolveSkillSelection } from '../../../shared/skills'
+import type { CredentialEntry } from '../../../shared/credentials'
+import {
+  RUNG_LABEL,
+  defaultReviewer,
+  reviewEnabledByDefault,
+  reviewerCandidates,
+  seedReviewBlock
+} from '../../../shared/reviewBlock'
+import { REVIEW_MAX_ROUNDS } from '../../../shared/types'
 import { agentOptionView } from '../../../shared/agentConfig'
 import { agentVocabulary, isBlanketMode } from '../../../shared/agentVocabulary'
 import { agentDef } from '../../../shared/agents'
 import { agentKind, agentName, useAgents } from '../useAgents'
 import { useMcpEntries } from '../useMcp'
 import { useSkillEntries } from '../useSkills'
+import { useReviewBlock } from '../useReviewBlock'
 import { NetworkPicker } from './Network'
 import { useOutsideClose } from '../hooks'
 import { alertDialog } from '../dialog'
@@ -231,6 +243,77 @@ function shortRepoUrl(url: string): string {
  *  needs to see, so it goes by its name (docs/requirements-new-projects.md §2). */
 const repoChipLabel = (r: RepoConfig): string => (r.local ? r.name : shortRepoUrl(r.url))
 
+/** One agent option as chips — model, effort, a toggle — the same block for
+ *  the session's own picks and for the Review block's reviewer. `values` are
+ *  the picks over what the agent reports; `kind` decides how the kind presents
+ *  its options (`AgentOptionView`). */
+function OptionBlock({
+  opt,
+  values,
+  kind,
+  onPick
+}: {
+  opt: SessionConfigOption
+  values: Record<string, string | boolean>
+  kind: string | undefined
+  onPick: (opt: SessionConfigOption, value: string | boolean) => void
+}) {
+  const view = agentOptionView(kind)
+  const effective = view.activeValue({ ...opt, currentValue: values[opt.id] ?? opt.currentValue })
+  const label =
+    opt.category === 'model' ? 'MODEL' : opt.category === 'thought_level' ? 'EFFORT' : opt.name.toUpperCase()
+  if (opt.type === 'select') {
+    // The picked option's description rides the label's info dot, not a note
+    // row — the hint is a hover away and the block stays one line of chips.
+    const description = opt.options?.find((o) => o.value === effective)?.description ?? undefined
+    return (
+      <div className="hc-block">
+        <div className="seclabel-row">
+          <span className="seclabel">{label}</span>
+          {description && <InfoDot text={description} />}
+        </div>
+        <div className="chip-row">
+          {view.selectOptions(opt).map((o) => (
+            <button
+              key={o.value}
+              type="button"
+              className={`chip-btn ${effective === o.value ? 'on' : ''}`}
+              title={o.description ?? undefined}
+              onClick={() => onPick(opt, o.value)}
+            >
+              {o.name}
+            </button>
+          ))}
+        </div>
+      </div>
+    )
+  }
+  return (
+    <div className="hc-block">
+      <div className="seclabel-row">
+        <span className="seclabel">{label}</span>
+        {opt.description && <InfoDot text={opt.description} />}
+      </div>
+      <div className="chip-row">
+        <button
+          type="button"
+          className={`chip-btn ${effective === true ? 'on' : ''}`}
+          onClick={() => onPick(opt, true)}
+        >
+          on
+        </button>
+        <button
+          type="button"
+          className={`chip-btn ${effective === false ? 'on' : ''}`}
+          onClick={() => onPick(opt, false)}
+        >
+          off
+        </button>
+      </div>
+    </div>
+  )
+}
+
 export function ConfigTab({ tree, snapshot }: { tree: Tree | null; snapshot: SessionSnapshot }) {
   if (snapshot.info.state === 'draft' && tree) return <DraftConfig tree={tree} info={snapshot.info} />
   return <LiveConfig snapshot={snapshot} />
@@ -260,6 +343,11 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
   // The name being typed for a new local repo; null = not creating one.
   const [newRepo, setNewRepo] = useState<string | null>(null)
   const [error, setError] = useState('')
+  // Credentials decide the default reviewer (a usable sign-in or key,
+  // docs/requirements-review-loop.md §3); null until read.
+  const [credentials, setCredentials] = useState<CredentialEntry[] | null>(null)
+  const [reviewerMenu, setReviewerMenu] = useState(false)
+  const rv = useReviewBlock(tree, info)
 
   const wsData = tree.workspaces.find((w) => w.name === info.workspace)
   const envs = wsData?.envs ?? []
@@ -291,6 +379,47 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
       .sessionEditDraft(info.id, p)
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
   }
+
+  // --- the Review block (docs/requirements-review-loop.md §3) --------------
+  // An executor's alone. Prefilled from the anchor repo's defaults — the first
+  // `write` repo, which builds the session's image — once per draft: a user who
+  // switched it off (`reviewOff`) or edited it is not overruled by a later pick.
+  const isExecutor = role === 'executor'
+  const review = isExecutor ? info.review : undefined
+  const anchor = rv.writeConfigs[0]
+  useEffect(() => {
+    if (!isExecutor) return
+    window.gurt.getCredentials().then((f) => setCredentials(f.credentials)).catch(() => setCredentials([]))
+  }, [isExecutor])
+  const pickDefaultReviewer = (): string | undefined =>
+    defaultReviewer({
+      executorAgent: info.agent,
+      agents,
+      deniedAgents,
+      credentials: credentials ?? []
+    })
+  const seed = (): ReviewLoopConfig => seedReviewBlock(anchor?.review, pickDefaultReviewer(), rv.ladder)
+  useEffect(() => {
+    // Wait for what the default depends on: the executor's own agent, the
+    // credentials, and an anchor to take the defaults from.
+    if (!isExecutor || info.review || info.reviewOff) return
+    if (!info.agent || !credentials || !anchor || !reviewEnabledByDefault(anchor.review)) return
+    patch({ review: seed() })
+    // patch/seed are fresh closures every render; what they read is listed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isExecutor, info.review, info.reviewOff, info.agent, credentials, anchor?.name, Object.keys(agents).join('\u0000')])
+  const patchReview = (next: Partial<ReviewLoopConfig>): void => {
+    if (review) patch({ review: { ...review, ...next } })
+  }
+  const pickReviewer = (id: string): void => {
+    // The new reviewer reports its own options: the old picks do not carry.
+    patchReview({ agent: id, configValues: undefined })
+    setReviewerMenu(false)
+  }
+  const reviewerKind = agentKind(agents, review?.agent)
+  const reviewerOptions = (rv.reviewerConfig?.configOptions ?? []).filter((o) => o.category !== 'mode')
+  const rungs = rv.ladder
+  const rungShown = review ? (rungs.includes(review.whenClean) ? review.whenClean : undefined) : undefined
 
   // A bare draft (App.tsx) names no agent up front — fill in the workspace's
   // default the first time one is offered, so the picker doesn't sit empty for
@@ -423,14 +552,7 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
 
   const setConfig = (opt: SessionConfigOption, value: string | boolean) =>
     patch({ configValues: { ...configValues, [opt.id]: value } })
-  const optionView = agentOptionView(agentKind(agents, info.agent))
-  const effective = (opt: SessionConfigOption): string | boolean =>
-    optionView.activeValue({ ...opt, currentValue: configValues[opt.id] ?? opt.currentValue })
   const cfgOptions = (agentConfig?.configOptions ?? []).filter((o) => o.category !== 'mode')
-  const cfgLabel = (o: SessionConfigOption) =>
-    o.category === 'model' ? 'MODEL' : o.category === 'thought_level' ? 'EFFORT' : o.name.toUpperCase()
-  const selectedDescription = (opt: SessionConfigOption): string | undefined =>
-    opt.options?.find((o) => o.value === effective(opt))?.description ?? undefined
 
   // MODEL/EFFORT are pulled out of `cfgOptions` into the always-visible
   // BEHAVIOR section below; whatever else an agent reports (rare) stays in
@@ -447,53 +569,15 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
       .filter(Boolean)
       .join(' · ') || 'no mcp, no skills'
 
-  // The picked option's description rides the label's info dot, not a note
-  // row — the hint is a hover away and the block stays one line of chips.
-  const configBlock = (opt: SessionConfigOption): ReactNode =>
-    opt.type === 'select' ? (
-      <div key={opt.id} className="hc-block">
-        <div className="seclabel-row">
-          <span className="seclabel">{cfgLabel(opt)}</span>
-          {selectedDescription(opt) && <InfoDot text={selectedDescription(opt)!} />}
-        </div>
-        <div className="chip-row">
-          {optionView.selectOptions(opt).map((o) => (
-            <button
-              key={o.value}
-              type="button"
-              className={`chip-btn ${effective(opt) === o.value ? 'on' : ''}`}
-              title={o.description ?? undefined}
-              onClick={() => setConfig(opt, o.value)}
-            >
-              {o.name}
-            </button>
-          ))}
-        </div>
-      </div>
-    ) : (
-      <div key={opt.id} className="hc-block">
-        <div className="seclabel-row">
-          <span className="seclabel">{cfgLabel(opt)}</span>
-          {opt.description && <InfoDot text={opt.description} />}
-        </div>
-        <div className="chip-row">
-          <button
-            type="button"
-            className={`chip-btn ${effective(opt) === true ? 'on' : ''}`}
-            onClick={() => setConfig(opt, true)}
-          >
-            on
-          </button>
-          <button
-            type="button"
-            className={`chip-btn ${effective(opt) === false ? 'on' : ''}`}
-            onClick={() => setConfig(opt, false)}
-          >
-            off
-          </button>
-        </div>
-      </div>
-    )
+  const configBlock = (opt: SessionConfigOption): ReactNode => (
+    <OptionBlock
+      key={opt.id}
+      opt={opt}
+      values={configValues}
+      kind={agentKind(agents, info.agent)}
+      onPick={setConfig}
+    />
+  )
 
   return (
     <div className="ns-body">
@@ -507,9 +591,11 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
             <span className="seclabel">ROLE</span>
             <InfoDot text={ROLE_INFO[role].hint} />
           </div>
-          {role === 'proactive' ? (
+          {!USER_SESSION_ROLES.includes(role) ? (
             // A proactive agent's template is that role for good: the agent
             // exists to copy it into runs (docs/design-proactive-agents.md §2).
+            // So is a loop's reviewer: only the loop creates one
+            // (docs/requirements-review-loop.md §4).
             <button type="button" className="pick-row" disabled aria-disabled="true">
               <Icon name={ROLE_INFO[role].icon} size={14} className="dim" style={{ flex: 'none' }} />
               <span className="pick-value strong">{ROLE_INFO[role].label}</span>
@@ -773,7 +859,7 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
                           aria-checked={mode === m}
                           className={`chip-btn ${mode === m ? 'on' : ''}`}
                           title={REPO_MODE_INFO[m].hint}
-                          disabled={role === 'proactive'}
+                          disabled={roleForcesRead(role)}
                           onClick={() => mode !== m && setMode(name, m)}
                         >
                           {REPO_MODE_INFO[m].locked && <Icon name="lock" size={10} style={{ flex: 'none' }} />}
@@ -836,6 +922,168 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
       <div className="ns-section">
         <NetworkPicker network={network} onChange={(next) => patch({ network: next })} />
       </div>
+
+      {/* review loop — an executor's alone (docs/requirements-review-loop.md §3):
+          the standing approval for the reviewer sessions and for what a clean
+          result ships. Frozen when the session starts, so it lives here and
+          not in the live knobs; never part of an agent's request. */}
+      {isExecutor && (
+        <div className="ns-section review-block">
+          <div className="hc-block">
+            <div className="seclabel-row">
+              <span className="seclabel">REVIEW LOOP</span>
+              <InfoDot text="after the executor finishes, gurt runs the repo's check and has a read-only reviewer on another agent or model read the change; the executor fixes what it agrees with, for up to the rounds below. On a clean review gurt does what “when clean” says. Fixed when the session starts." />
+            </div>
+            <div className="chip-row" role="radiogroup" aria-label="review loop">
+              <button
+                type="button"
+                role="radio"
+                aria-checked={!review}
+                className={`chip-btn ${!review ? 'on' : ''}`}
+                onClick={() => review && patch({ review: null })}
+              >
+                off
+              </button>
+              <button
+                type="button"
+                role="radio"
+                aria-checked={!!review}
+                className={`chip-btn ${review ? 'on' : ''}`}
+                onClick={() => !review && patch({ review: seed() })}
+              >
+                on
+              </button>
+            </div>
+          </div>
+          {review && (
+            <>
+              <div className="hc-block">
+                <div className="seclabel-row">
+                  <span className="seclabel">REVIEWER</span>
+                  <InfoDot text="another agent than the executor by default — a reviewer from the same family tends to favour its own output. Only agents that receive gurt's tools can review." />
+                </div>
+                <PickRow
+                  open={reviewerMenu}
+                  onToggle={() => setReviewerMenu((o) => !o)}
+                  onClose={() => setReviewerMenu(false)}
+                  menu={
+                    reviewerCandidates(agents, deniedAgents).length ? (
+                      reviewerCandidates(agents, deniedAgents).map((id) => (
+                        <div
+                          key={id}
+                          className={`menu-item ${id === review.agent ? 'active' : ''}`}
+                          onMouseDown={(e) => {
+                            e.preventDefault()
+                            pickReviewer(id)
+                          }}
+                        >
+                          <Dot tone="green" size={7} />
+                          <AgentIcon kind={agents[id]?.kind} size={12} className="faint" />
+                          {agents[id]?.label ?? id}
+                        </div>
+                      ))
+                    ) : (
+                      <div className="menu-empty">no agent can review — add one in Settings → Clients</div>
+                    )
+                  }
+                >
+                  {review.agent ? (
+                    <>
+                      <Dot tone={agents[review.agent] && !deniedAgents.includes(review.agent) ? 'green' : 'red'} size={7} />
+                      <span className="pick-value strong">
+                        <AgentMark kind={reviewerKind} name={agentName(agents, review.agent)} />
+                      </span>
+                    </>
+                  ) : (
+                    <span className="pick-value faint">pick a reviewer</span>
+                  )}
+                  <span className="spacer" />
+                </PickRow>
+              </div>
+              {reviewerOptions.map((opt) => (
+                <OptionBlock
+                  key={opt.id}
+                  opt={opt}
+                  values={review.configValues ?? {}}
+                  kind={reviewerKind}
+                  onPick={(o, value) => patchReview({ configValues: { ...(review.configValues ?? {}), [o.id]: value } })}
+                />
+              ))}
+              <div className="hc-block">
+                <div className="seclabel-row">
+                  <span className="seclabel">ROUNDS</span>
+                  <InfoDot text="reviewers the loop may start — each reads the work fresh. If the last one still asks for changes, the loop ends and shows what is open." />
+                </div>
+                <div className="chip-row" role="radiogroup" aria-label="review rounds">
+                  {Array.from(
+                    { length: REVIEW_MAX_ROUNDS.max - REVIEW_MAX_ROUNDS.min + 1 },
+                    (_, i) => REVIEW_MAX_ROUNDS.min + i
+                  ).map((n) => (
+                    <button
+                      key={n}
+                      type="button"
+                      role="radio"
+                      aria-checked={review.maxRounds === n}
+                      data-rounds={n}
+                      className={`chip-btn ${review.maxRounds === n ? 'on' : ''}`}
+                      onClick={() => patchReview({ maxRounds: n })}
+                    >
+                      {n}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="hc-block">
+                <div className="seclabel-row">
+                  <span className="seclabel">WHEN CLEAN</span>
+                  <InfoDot text="what gurt does after an approving review and a green check. Each step includes the ones before it. Nothing is ever merged on a forge; a review that is not clean commits nothing." />
+                </div>
+                <div className="chip-row" role="radiogroup" aria-label="when clean">
+                  {rungs.map((r) => (
+                    <button
+                      key={r}
+                      type="button"
+                      role="radio"
+                      aria-checked={rungShown === r}
+                      data-rung={r}
+                      className={`chip-btn ${rungShown === r ? 'on' : ''}`}
+                      onClick={() => patchReview({ whenClean: r })}
+                    >
+                      {RUNG_LABEL[r]}
+                    </button>
+                  ))}
+                </div>
+                {review.whenClean === 'pr' && rungs.includes('pr') && (
+                  <label className="rv-check">
+                    <input
+                      type="checkbox"
+                      checked={review.draftPr}
+                      onChange={(e) => patchReview({ draftPr: e.target.checked })}
+                    />
+                    <span>open the PR as a draft</span>
+                  </label>
+                )}
+                {rv.writeRepos.length === 0 && (
+                  <div className="hc-note">no repository mounted for write yet — the steps offered depend on it</div>
+                )}
+                {rv.writeRepos.length > 0 && !rungs.includes('push') && !rungs.includes('merge') && rv.writeRepos.length > 1 && (
+                  <div className="hc-note">repositories on a forge and local ones together can be committed, not shipped further</div>
+                )}
+              </div>
+              {rv.writeRepos.length > 0 && rv.checkless.length > 0 && (
+                <div className="hc-note">
+                  no check configured for {rv.checkless.join(', ')} — the check is skipped (set one in Settings → Repos)
+                </div>
+              )}
+              {rv.problem && (
+                <div className="hc-note hc-warn" data-testid="review-problem">
+                  {rv.problem} — Run is disabled until this is fixed
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
 
       {/* advanced — everything left: rare agent-reported options, MCP
           servers, the skills stub, and reset. Same fold shape as the network

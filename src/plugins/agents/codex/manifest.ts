@@ -40,6 +40,9 @@ export const manifest: AgentManifest = {
   // `auth.json`, and stores an absolute `rollout_path` — binding those
   // files individually needs a live resume check first. Empty until then.
   historyPaths: [],
+  // Instructions come from the cross-vendor AGENTS.md (the core's); project
+  // config from `.codex/`.
+  instructionPaths: ['.codex/'],
 
   // An MCP tool call titled `Tool: <server>/<tool>` — the form gurt has read
   // for codex. Stale: codex-acp@2.2.2 titles one `mcp.<server>.<tool>`, and
