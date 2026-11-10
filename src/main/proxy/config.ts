@@ -40,6 +40,7 @@ import { getMcpServers } from '../store'
 import { gurtRoot } from '../paths'
 import { listCredentials } from '../credentials'
 import { freshenOAuthCredentials } from '../oauth'
+import { writeJsonDurable } from '../durableWrite'
 
 /** The turn-contract server: never user-selectable, always routed, because the
  *  session is over when the agent cannot report that it is (§3.3). */
@@ -332,12 +333,10 @@ export async function writeProxyConfig(sessionId: string, config: ProxyConfig): 
   await ensureProxyConfigDir(sessionId)
   // Same directory as the target, because the rename has to be atomic — and
   // that directory is the proxy's bind-mount source, so the temp file is
-  // momentarily visible inside the container. It is 0600 from birth and the
-  // proxy only ever opens `proxy.json`.
-  const tmp = `${file}.${process.pid}.tmp`
-  await fs.writeFile(tmp, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 })
-  await fs.chmod(tmp, 0o600).catch(() => {})
-  await fs.rename(tmp, file)
+  // momentarily visible inside the container. The hidden, uniquely named temp
+  // file is 0600 from birth and fsync'd before rename; the directory is fsync'd
+  // afterwards. The proxy only ever opens `proxy.json`.
+  await writeJsonDurable(file, config, { mode: 0o600 })
   return file
 }
 
