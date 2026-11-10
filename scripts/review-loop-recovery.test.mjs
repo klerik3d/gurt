@@ -16,7 +16,7 @@
 //                   that was `starting` (restored as a draft) is enqueued again
 //                   with its start bound restarted; a finished reviewer is not
 //                   waited on again;
-//   - `check`     : a leftover process group is terminated, then the check reruns;
+//   - `check`     : the executor's container is stopped (§5.3), then the check reruns;
 //   - `deliver`   : commit / push found done by looking (HEAD, the remote); a
 //                   remote that advanced after our push is reported, not pushed to;
 //   - `end`       : notified exactly once, never again after a restart;
@@ -44,7 +44,7 @@ fs.mkdirSync(origins)
 const gates = []
 after(async () => {
   // The dead kernel's loops are still running in their own roots: end them, which
-  // also terminates a check still sleeping in the background.
+  // also stops (kills) a check still sleeping in the background.
   for (const id of started) await A.kernel.reviewLoop.stopLoop(id).catch(() => {})
 })
 after(() => {
@@ -145,7 +145,7 @@ const reviewerScript = {}
 
 /**
  * Wire one kernel instance: the scheduler stubbed (unless `realSchedule`), the
- * reviewer's start simulated, the check's exec run by the real wrapper under host
+ * reviewer's start simulated, the check's exec run as the login shell under host
  * node in this life's clone, recorders — and the hook points the scenarios take
  * their images at (`L.hooks[executorId].<name>`).
  */
@@ -189,16 +189,14 @@ function life(inst, tag, { realSchedule = false } = {}) {
   kernel.sessions.dropHostPrompts = (sid) => (hook(sid, 'atEnd'), dropHostPrompts(sid))
   kernel.sessions.ensureContainerUp = async (sid) => inst.container(sid, 'running')
 
-  kernel.containers.spawnExec = (sid, argv) => {
-    const payload = JSON.parse(argv[3])
-    if (payload.cwd) {
-      const info = kernel.sessions.sessionInfo(sid)
-      L.execs.push(sid)
-      hook(sid, 'onExec')
-      payload.cwd = path.join(inst.GURT_ROOT, ws, info.task, path.basename(payload.cwd))
-    }
-    const child = spawn(process.execPath, ['-e', argv[2], JSON.stringify(payload)], { stdio: ['ignore', 'pipe', 'pipe'] })
-    if (payload.cwd) child.once('exit', () => hook(sid, 'onExecExit'))
+  kernel.containers.spawnExec = (sid, argv, cwd) => {
+    const info = kernel.sessions.sessionInfo(sid)
+    L.execs.push(sid)
+    hook(sid, 'onExec')
+    const child = inst.inContainer(sid, spawn(argv[0], argv.slice(1), {
+      cwd: path.join(inst.GURT_ROOT, ws, info.task, path.basename(cwd)), detached: true, stdio: ['ignore', 'pipe', 'pipe']
+    }))
+    child.once('exit', () => hook(sid, 'onExecExit'))
     return child
   }
   kernel.bus.on('session.settled', ({ sessionId, turn }) => hook(sessionId, 'onSettled', sessionId, turn))
@@ -459,24 +457,18 @@ for (const [point, hookName] of [['before its effect', 'onExec'], ['before its o
   })
 }
 
-test('check — a leftover process group is terminated at boot, then the check reruns', async () => {
+test('check — a leftover check (intent `check` at boot) stops the executor\'s container, then the check reruns', async () => {
   const c = start({ repos: ['slow'] })
   const got = imageAt(c, 'onExec')
   c.begin()
-  const pidFile = () => fs.readdirSync('/tmp').find((f) => f.startsWith('gurt-check-') && f.includes(c.id))
-  await until(() => got.image && pidFile() && fs.existsSync(path.join(dirOf(A, c), 'runs.log')), 'the first check is running')
-  const pgid = Number(fs.readFileSync(path.join('/tmp', pidFile()), 'utf8').split(/\s+/)[0])
-  assert.doesNotThrow(() => process.kill(-pgid, 0), 'alive before the boot')
-  const L = await reboot(c, got.image)
+  await until(() => got.image && fs.existsSync(path.join(dirOf(A, c), 'runs.log')), 'the first check is running')
+  // What was stopped when the second life's check started: its container, first (§5.3).
+  const stopsAtRerun = []
+  const L = await reboot(c, got.image, {
+    prepare: (L) => (L.hooks[c.id] = { onExec: (L) => stopsAtRerun.push(L.inst.stops.map((x) => x.id)) })
+  })
   await until(() => fs.existsSync(path.join(dirOf(L, c), 'runs.log')), 'the rerun started')
-  await until(() => {
-    try {
-      process.kill(-pgid, 0)
-      return false
-    } catch {
-      return true
-    }
-  }, 'the old group is gone')
+  assert.deepEqual(stopsAtRerun, [[c.id]], 'the executor\'s container was stopped before the rerun, once')
   assert.equal(fs.readFileSync(path.join(dirOf(L, c), 'runs.log'), 'utf8').split('\n').filter(Boolean).length, 1, 'one run in the second life’s clone')
   assert.equal(stateOf(L, c).phase, 'checking')
   await L.kernel.reviewLoop.stopLoop(c.id)

@@ -32,6 +32,7 @@ import {
   createContainer,
   dockerContainerExists,
   dockerRemove,
+  dockerInspectRunning,
   dockerRunning,
   dockerSessionContainerIds,
   dockerSessionContainersDetailed,
@@ -271,17 +272,29 @@ export class ContainerManager {
   }
 
   /**
-   * Spawn `argv` in the session's container as the container user, with no tty
-   * and no stdin — the review loop's check runner (docs/requirements-review-loop.md
-   * §5.3). The target is read from the record per call: the container may have
-   * been recreated since the caller was built. Throws when there is no container
-   * to exec into (setup never succeeded); the caller maps that to "cannot run".
+   * Spawn `argv` in the session's container as the container user, in `cwd`
+   * (default: the record's), with no tty and no stdin — the review loop's check
+   * runner (docs/requirements-review-loop.md §5.3). The target is read from the
+   * record per call: the container may have been recreated since the caller was
+   * built. Throws when there is no container to exec into (setup never
+   * succeeded); the caller maps that to "cannot run".
    */
-  spawnExec(sessionId: string, argv: string[]): ReturnType<typeof spawnDockerExec> {
+  spawnExec(sessionId: string, argv: string[], cwd?: string): ReturnType<typeof spawnDockerExec> {
     const c = this.container(sessionId)
     const t = c && this.execTarget(c)
     if (!t) throw new Error('the session has no container to run in')
-    return spawnDockerExec(t, argv, {}, { interactive: false })
+    return spawnDockerExec(cwd ? { ...t, cwd } : t, argv, {}, { interactive: false })
+  }
+
+  /**
+   * Whether the session's container runs *now*, asked of the daemon, not read
+   * from the record: the confirmation after a check's container was stopped
+   * (§5.3). `false` also when the record names no container; `null` when the
+   * daemon could not answer.
+   */
+  async isRunning(sessionId: string): Promise<boolean | null> {
+    const id = this.container(sessionId)?.id
+    return id ? dockerInspectRunning(id) : false
   }
 
   /** Open a human shell in the running container, without starting an agent. */

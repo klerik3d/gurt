@@ -1,6 +1,6 @@
 // The review loop's controller (src/main/reviewLoop.ts, docs/requirements-review-loop.md
 // §5.1–§5.6, §6, §8; acceptance §12 item 3): real bus events, a real kernel, real
-// host git on local bare origins, the real check wrapper under host node — and a
+// host git on local bare origins, the check's login shell under host node — and a
 // scripted fake agent (scripts/lib/loop-harness.mjs) in place of every agent
 // process, so no docker and no network. Pinned here:
 //   - the happy path at rung notify: check -> reviewer -> approve -> `ready`,
@@ -18,7 +18,7 @@
 //     the end and by a dormant `no_changes`; the queue handoff never fires;
 //   - delivery at each rung only on a clean result with a matching hash;
 //     `tree-moved` otherwise; a failing hook -> `delivery-failed`;
-//   - "stop loop" ends `cancelled` and terminates a running check's group.
+//   - "stop loop" ends `cancelled` and stops the executor's container (the check dies with it).
 //   - takeover (§5.6): every human act of the table, the delivery boundary (what
 //     waits behind the first step: a typed message, Esc, a container stop, a
 //     delete), "stop loop" refused while delivering; the scope is not archived
@@ -153,17 +153,15 @@ kernel.sessions.hostPrompt = (sid, text, intent) => {
   return hostPrompt(sid, text, intent)
 }
 
-// --- the check's exec: the real wrapper under host node, in the host clone ---------
-kernel.containers.spawnExec = (sid, argv) => {
-  assert.match(argv[0], /\/bin\/node$/, 'the gurt node in the container')
-  assert.equal(argv[1], '-e')
-  const payload = JSON.parse(argv[3])
-  if (payload.cwd) {
-    const info = kernel.sessions.sessionInfo(sid)
-    onDisk.exec.push({ sid, file: loopFile(sid)[sid] })
-    payload.cwd = path.join(h.GURT_ROOT, ws, info.task, path.basename(payload.cwd))
-  }
-  return spawn(process.execPath, ['-e', argv[2], JSON.stringify(payload)], { stdio: ['ignore', 'pipe', 'pipe'] })
+// --- the check's exec: the login shell under host node, in the host clone -----------
+// `docker exec` is the real argv minus docker: the shell runs detached (its own
+// group) so a stopped "container" can kill the whole tree (`inContainer`).
+kernel.containers.spawnExec = (sid, argv, cwd) => {
+  const info = kernel.sessions.sessionInfo(sid)
+  onDisk.exec.push({ sid, file: loopFile(sid)[sid] })
+  return h.inContainer(sid, spawn(argv[0], argv.slice(1), {
+    cwd: path.join(h.GURT_ROOT, ws, info.task, path.basename(cwd)), detached: true, stdio: ['ignore', 'pipe', 'pipe']
+  }))
 }
 
 // --- recorders --------------------------------------------------------------------------
@@ -710,6 +708,23 @@ test('stop loop ends `cancelled`, terminates the running check’s group and can
   assert.equal(c.reviewers.length, 0)
   await kernel.reviewLoop.stopLoop(c.id) // an ended loop: nothing to stop
   await assert.rejects(kernel.reviewLoop.stopLoop('nope'), /no review loop/)
+})
+
+test('stopping a running check = stopping the executor\'s container (§5.3)', async () => {
+  const c = await run({
+    repos: ['slow'],
+    wait: false,
+    exec: (n, t, c) => {
+      write(c.dir(), 'a.txt', 'x\n')
+      c.changes('feat: slow')
+    }
+  })
+  await until(() => fs.existsSync(path.join(c.dir(), 'started.flag')), 'the check is running')
+  const before = stops.filter((x) => x.id === c.id).length
+  await kernel.reviewLoop.stopLoop(c.id)
+  await finished(c)
+  assert.equal(stops.filter((x) => x.id === c.id).length, before + 1, 'the executor\'s container was stopped, once')
+  assert.equal(kernel.sessions.isLoopHeld(c.id), false)
 })
 
 // ================================================================ the rest ===

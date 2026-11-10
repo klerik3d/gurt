@@ -64,6 +64,18 @@ export async function loopHarness(name, opts = {}) {
   fs.writeFileSync(path.join(GURT_ROOT, ws, task, 'task.json'), JSON.stringify({}))
   fs.writeFileSync(path.join(GURT_ROOT, 'agents.json'), JSON.stringify(opts.agents ?? {}))
 
+  /** What runs "in" each container: host processes the test's `spawnExec` fake
+   *  registers with `inContainer`. Shared by every kernel life of this harness (a
+   *  rebooted kernel's session ids, and so its container, are the dead one's).
+   *  Stopping the container kills their groups — the only way a check dies (§5.3). */
+  const inside = new Map()
+  const inContainer = (id, child) => {
+    if (!inside.has(id)) inside.set(id, new Set())
+    inside.get(id).add(child)
+    child.once('exit', () => inside.get(id)?.delete(child))
+    return child
+  }
+
   /** The helpers of one kernel instance. A rebooted instance (see `boot`) is
    *  wired BEFORE its `ready`, so the recovery of §8 runs against the stubs. */
   function wire(kernel, root, mod, { reboot }) {
@@ -73,9 +85,16 @@ export async function loopHarness(name, opts = {}) {
     const stops = []
     kernel.containers.stop = async (id, reason) => {
       stops.push({ id, reason })
+      for (const child of inside.get(id) ?? []) {
+        for (const target of [-child.pid, child.pid]) {
+          try { process.kill(target, 'SIGKILL') } catch { /* gone */ }
+        }
+      }
       const c = kernel.sessions.snapshot(id)?.info.container
       if (c) kernel.sessions.patchContainer(id, { ...c, status: 'stopped' })
     }
+    /** The daemon's answer, from the record the stub above writes. */
+    kernel.containers.isRunning = async (id) => kernel.sessions.snapshot(id)?.info.container?.status === 'running'
 
     /** Restore a started session (executor by default) and, when `up`, give it a
      *  running container. */
@@ -142,7 +161,7 @@ export async function loopHarness(name, opts = {}) {
     }
 
     return {
-      kernel, reviewLoop: mod.reviewLoop, store: mod.store, api: mod.api, ws, task, ref, stops,
+      kernel, reviewLoop: mod.reviewLoop, store: mod.store, api: mod.api, ws, task, ref, stops, inContainer,
       started, container, agent, tick, until, GURT_ROOT: root
     }
   }

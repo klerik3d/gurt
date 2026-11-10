@@ -18,7 +18,7 @@
 //  - Execution never blocks a transition. A check runs for minutes and a
 //    delivery step for seconds; both run as background tasks that report back
 //    with an event (`check-pass`, `delivered`), so a human act, the deadline or
-//    "stop loop" is applied while they run (and terminates the check).
+//    "stop loop" is applied while they run (and stops the check's container).
 //
 // After a restart (§8's boot) the same machinery runs again from the files:
 // `load` reads them and registers the loop holds, `recover` replays the settled
@@ -77,11 +77,14 @@ export interface ReviewLoopClock {
 export interface ReviewLoopDeps {
   bus: Bus
   sessions: SessionManager
-  /** Spawn `argv` in the executor's container (`ContainerManager.spawnExec`). */
-  exec(sessionId: string, argv: string[]): ExecChild
+  /** Spawn `argv` in the executor's container, in `cwd` (`ContainerManager.spawnExec`). */
+  exec(sessionId: string, argv: string[], cwd: string): ExecChild
   /** The session's container record says `running` now. */
   containerUp(sessionId: string): boolean
-  /** Stop a session's container (a settled reviewer; an unconfirmable check). */
+  /** Whether the container runs now, from the daemon (`docker inspect`):
+   *  `null` = could not say. Confirms a check's container stop (§5.3). */
+  containerRunning(sessionId: string): Promise<boolean | null>
+  /** Stop a session's container (a settled reviewer; a check — §5.3). */
   stopContainer(sessionId: string): Promise<void>
   /** Drop the loop hold and run the idle handling (`Kernel.releaseLoopHold`). */
   release(sessionId: string): void
@@ -135,7 +138,7 @@ interface Runtime {
   /** Facts for settled turns are gathered and applied one at a time. */
   serial: Promise<void>
   runner?: CheckRunner | undefined
-  /** The check now running, so an end can terminate it. */
+  /** The check now running, so an end can stop its container. */
   check?: { intent: string; runner: CheckRunner } | undefined
   /** When the current round's reviewer was created, and whether it has run. */
   reviewerSince?: number | undefined
@@ -436,13 +439,15 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
   function runnerFor(id: string): CheckRunner {
     const r = rt(id)
     r.runner ??= new CheckRunner({
-      exec: (argv) => deps.exec(id, argv),
+      exec: (argv, cwd) => deps.exec(id, argv, cwd),
       // A container that is down at check time is woken through the gated path
       // a resume uses, without attaching the agent (§5.3).
       ensureContainerUp: async () => {
         if (!deps.containerUp(id)) await sessions.ensureContainerUp(id)
       },
-      isContainerUp: async () => deps.containerUp(id)
+      // Killing a check = stopping the container, confirmed by an inspect (§5.3).
+      stopContainer: () => deps.stopContainer(id),
+      containerRunning: () => deps.containerRunning(id)
     })
     return r.runner
   }
@@ -465,10 +470,9 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
         return
       }
       if (run.status === 'unconfirmed') {
-        // Something may still run in the container: stop it, ending every
-        // process in it, and end `failed` (§5.3).
-        await deps.stopContainer(id).catch((e: unknown) => log.error('internal.fail', { site: 'check-stop', s: id, err: errCtx(e) }))
-        fault(id, `the check could not be stopped (${run.detail}); the container was stopped`)
+        // The container could not be confirmed stopped, so the check may still
+        // run (§5.3). The hold-and-retry is fix round 3; until then: `failed`.
+        fault(id, `the check could not be stopped: ${run.detail}`)
         return
       }
       // A cancel is the loop ending (nothing to report); a timeout is a red.
@@ -612,15 +616,13 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
   async function executeEnd(id: string, a: Extract<LoopIntent, { kind: 'end' }>): Promise<void> {
     const st = loops.get(id)
     stopKeepAlive(id)
-    // A running check is terminated and confirmed gone before anything else is
-    // released (§5.3). Unconfirmable: the container is stopped, which ends it.
+    // A running check is killed by stopping the executor's container, confirmed
+    // by an inspect, before anything else is released (§5.3). Unconfirmed is
+    // logged here; holding and retrying is fix round 3.
     const running = runtimes.get(id)?.check
     if (running) {
-      const t = await running.runner.terminate(running.intent)
-      if (!t.ok) {
-        log.error('internal.fail', { site: 'check-terminate', s: id, detail: t.detail })
-        await deps.stopContainer(id).catch(() => {})
-      }
+      const t = await running.runner.cancel(running.intent)
+      if (!t.ok) log.error('internal.fail', { site: 'check-stop', s: id, detail: t.detail })
     }
     // The loop's queued message must not run after the loop (§5.6).
     sessions.dropHostPrompts(id)
@@ -807,7 +809,7 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
     const ended = st.phase === 'ended'
     switch (a.kind) {
       case 'check':
-        // The leftover process group is gone or terminated by the boot scan
+        // The leftover check's container was stopped by `stopLeftoverCheck`
         // (never "done": the check reruns, §5.3). A phase past `checking`
         // already consumed its result.
         if (ended || st.phase !== 'checking') return confirm(id, a.id)
@@ -854,16 +856,16 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
     }
   }
 
-  /** Check process groups left in the executor's container by the app's last
-   *  life are terminated before anything reruns (§5.3). Unconfirmable: the
-   *  container is stopped and a live loop ends `failed`. */
-  async function scanLeftovers(id: string): Promise<void> {
+  /** An intent `check` found at boot was running when the app died: its
+   *  process may still run in the executor's container, so the container is
+   *  stopped and confirmed before anything reruns (§5.3, §8). It restarts
+   *  through the attach path when the next host message needs it. Unconfirmed:
+   *  a live loop ends `failed` (holding and retrying is fix round 3). */
+  async function stopLeftoverCheck(id: string): Promise<void> {
     const st = loops.get(id)
-    if (!st || !deps.containerUp(id) || (!loopIsLive(st) && st.intents.length === 0)) return
-    const scan = await runnerFor(id).scanLeftovers()
-    if (!scan.unconfirmed.length) return
-    await deps.stopContainer(id).catch((e: unknown) => log.error('internal.fail', { site: 'check-stop', s: id, err: errCtx(e) }))
-    fault(id, `a check left over from before the restart could not be stopped (${scan.unconfirmed[0]?.detail}); the container was stopped`)
+    if (!st || !st.intents.some((i) => i.kind === 'check') || !deps.containerUp(id)) return
+    const t = await runnerFor(id).stopContainer()
+    if (!t.ok) fault(id, `a check left over from before the restart could not be stopped: ${t.detail}`)
   }
 
   /** Loop-owned work resumes without a human (§8): enabling the loop was the
@@ -913,7 +915,7 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
       await Promise.all(
         [...loaded].map(async ([id, intents]) => {
           try {
-            await scanLeftovers(id)
+            await stopLeftoverCheck(id)
             for (const a of intents) if (loops.get(id)?.intents.some((i) => i.id === a.id)) await reconcileOne(id, a)
             resume(id)
           } catch (e) {

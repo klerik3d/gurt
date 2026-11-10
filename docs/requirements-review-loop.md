@@ -331,7 +331,7 @@ back to the user and clears it. Every wait counts, app-down time included;
 plan holds that stop the loop's own sessions extend it, by 24 h at most in
 total. While it runs, a permission request open on a loop session for 15 min
 also ends the loop. Either expiry first cancels the executor's running turn
-(`cancel`), terminates a check (§5.3) and deletes a running reviewer.
+(`cancel`), stops the check's container (§5.3) and deletes a running reviewer.
 
 "Live" = every phase but `ended` and an idle `dormant`. Ends are **needs-you**
 with the reason shown unless marked otherwise.
@@ -383,17 +383,27 @@ env's `setup` (`runScript` ~1106). Not through `dockerExec` as it stands: it
 accumulates all of stdout (~759–769), and its timeout kills only the host's
 docker CLI, which is not relied on to stop anything in the container.
 
-- **Process group**: a small wrapper on gurt's own node
-  (`/opt/gurt/node/bin/node`, in every container) starts the shell `detached`,
-  writes the group id to `/tmp/gurt-check-<intent>.pid`, relays the output and
-  exits with the shell's code.
+- **Execution**: a plain `docker exec` of the login shell as the container
+  user, in `/workspaces/<repo>`. Nothing else runs in the container and nothing
+  is written there: no wrapper, no pid file, no process group.
 - **Bounded capture**: the host keeps a ring of the last 60 lines, each cut at
-  500 chars, ≤ 8 KB, and nothing else.
-- **Termination** — on the 20 min timeout, any end of the loop, or a leftover
-  found at boot: SIGTERM to the group, 10 s, SIGKILL, then a separate exec
-  confirms the group is gone. Only then does the loop send a message, start a
-  reviewer or release its hold. Unconfirmable → the executor's container is
-  stopped (ending every process in it) and the loop ends `failed`.
+  500 chars, ≤ 8 KB, and nothing else; stdout is never accumulated.
+- **Killing a check = stopping the executor's container.** Nothing inside a
+  container the agent controls can be trusted to supervise a process there (a
+  pid file, a process group or a probe can be forged, raced or escaped with
+  `setsid`). So on the 20 min timeout, on a cancel, on any end of the loop
+  while a check runs, and for a leftover found at boot (an intent `check` that
+  was running when the app died): `docker stop`, then confirm with a separate
+  `docker inspect` that it is not running. Only then does the loop send a
+  message, start a reviewer or release its hold. The container restarts through
+  the existing attach path when the next host message needs it. A check that
+  finishes by itself needs no termination. A stop that cannot be confirmed is a
+  distinct outcome (`unconfirmed`): the controller keeps the hold and retries
+  (not the same as ending the loop).
+- **The residual boundary**: a descendant that detaches (`setsid`, a detached
+  node child) and outlives a *normally finished* check is not contained — gurt
+  does not look for it. What catches it modifying the clone is the `tree-moved`
+  rule (§5.2, §6): the tree hash at the verdict must equal the reviewed hash.
 - A container that is down at check time is woken through the gated path a
   resume uses; the loop hold keeps the clone free for it (to verify: a wake
   that runs `resolveLaunch` without attaching the agent).
@@ -494,8 +504,8 @@ dormant `no_changes` settle or the loop's end:
 
 No auto-resume; nothing is committed (the owner's rule). The reviewer's chat is
 this document's addition: a steered reviewer is no longer independent. The
-end is written at once; a running check is terminated (confirmed, §5.3) and a
-running reviewer deleted. Archiving the scope or either session is refused
+end is written at once; a running check is killed by stopping the executor's
+container (confirmed, §5.3) and a running reviewer deleted. Archiving the scope or either session is refused
 while the loop is live; autoarchive skips the scope. Detection: a new
 `session.human` event from `prompt`, `cancel` (~3155) and `cancelPending` —
 called today only from IPC (`ipc.ts` ~448–454) and, for `cancel`, by a
@@ -621,7 +631,7 @@ repeat:
 | --- | --- | --- | --- |
 | `message` | its id on the pending prompt, on an in-flight marker `sessions.json` writes beside `interrupted` together with the prompt's removal from the queue, or on the `system` entry | any of the three | enqueue it |
 | `reviewer` | `reviewOf.intent`, persisted before the enqueue | a session has it — adopt it | create it |
-| `check` | `/tmp/gurt-check-<id>.pid` | never: a leftover group is terminated (§5.3), then the check reruns | run it |
+| `check` | the intent itself (a `check` still unconfirmed at boot was running when the app died) | never: the executor's container is stopped and confirmed not running (§5.3), then the check reruns | run it |
 | `deliver` commit | HEAD vs the intent's `head` | HEAD moved and its tree is the reviewed tree | commit |
 | `deliver` push / merge | a fetch | `origin/<branch>` (merge: the default branch) contains HEAD — equal, or advanced since by someone else (reported) | push / merge; a diverged remote is rejected as non-fast-forward → `delivery-failed` |
 | `deliver` pr | `gh pr view <branch>` | an open PR exists | open it (`gh` refuses a second PR for a branch) |
@@ -655,6 +665,11 @@ Gurt's proxy does not cut long calls (`gurt-proxy.mjs` ~805).
 - **The delivery boundary** (§5.6) is this document's proposal: a takeover
   after the first delivery step is applied after delivery. The owner to
   confirm, or to choose stopping between steps and accept a partial delivery.
+- **A check's descendants are not contained once the check finished
+  normally** (§5.3): killing a check is stopping the container, and a normal
+  exit stops nothing. A detached process that outlives it keeps running; only
+  `tree-moved` (the verdict's hash against the reviewed one) catches it
+  changing the clone, and a process that leaves the clone alone goes unnoticed.
 - **The check runs repo code** in the sandboxed container from trusted
   config, but `npm test` is defined in the diff — hence the mandatory items.
   May an operator write `check` / `review`? Its held fields
@@ -715,9 +730,10 @@ ones easy to get wrong.
    no handoff; the reviewer starts while the executor holds `write` and under a
    scope cap of 1; after the end the idle timer is re-armed and the writer
    starts.
-5. `review-loop-check.test.mjs` — the wrapper, plain node on the host:
-   unbounded output stays bounded; timeout and cancel end the whole group (a
-   backgrounded grandchild included) and confirm it.
+5. `review-loop-check.test.mjs` — the runner, plain node on the host behind a
+   fake exec: unbounded output stays bounded; timeout and cancel stop the
+   container and confirm it with an inspect; an unconfirmable stop is the
+   distinct `unconfirmed`.
 6. `notifications.test.mjs` (extended) — §7, including the dormant
    `turn-ended` and a single `proposal` at `ready`.
 7. `review-loop-delivery.test.mjs` — local bare origins: each rung (a recording
@@ -741,17 +757,17 @@ ones easy to get wrong.
     the ladder for forge and local repos, persistence across reload.
 13. The rest of `scripts/*.test.mjs` passes unmodified.
 14. **Not verified here** (no Docker daemon): a cross-family loop with real
-    agents, the reviewer unable to write its clone, and the wrapper's group
-    termination inside a real container.
+    agents, the reviewer unable to write its clone, and a check stopped by
+    `docker stop` inside a real container.
 
 ## 13. As built
 
 **Deviations from the spec, all slices** (details under each slice):
 
-- **Slice 7 is not in the tree.** Recovery (replaying `lastSettled`, reconciling intents, the check-leftover scan, resuming `recovering` loop sessions), the `review.loop` → notification mapping in `notifications.ts`, refusing to archive a live loop and `review-loop-recovery.test.mjs` / the `notifications.test.mjs` extension do not exist. `load` still ends a loop found running `failed` (`orphan`), a loop's notifications are still the ordinary `proposal` / `turn-ended` ones, and §12 items 6 and 8 are open. Slice 8 does not do them.
+- **Slice 7 is not in the tree.** Recovery (replaying `lastSettled`, reconciling intents, the leftover-check stop, resuming `recovering` loop sessions), the `review.loop` → notification mapping in `notifications.ts`, refusing to archive a live loop and `review-loop-recovery.test.mjs` / the `notifications.test.mjs` extension do not exist. `load` still ends a loop found running `failed` (`orphan`), a loop's notifications are still the ordinary `proposal` / `turn-ended` ones, and §12 items 6 and 8 are open. Slice 8 does not do them.
 - Settled turns carry a `turnId` of their own (a per-session logical-turn counter), not slice 1's `s.turns`; `LoopEvent` gained `now` / `heads` / `changed` and a `fault` event; `LoopState` gained `nextIntent` and `plan` (slice 2, 3).
 - The loop hold is owned by the session manager and taken on `session.turn` `started`; there is no hold intent and no "is held" hook (slice 2, 3).
-- The check's pid file holds `<pgid> <start time of /proc/1>`, and leftovers after a normal exit are terminated too (slice 4). `deliverAll`'s `push` rung pushes `origin <task branch>` where the MCP tool pushes `HEAD`; host git hooks on the clone are not neutralised (slice 5).
+- (Slice 4's check pid file and leftover probe are gone: Fix 2.) `deliverAll`'s `push` rung pushes `origin <task branch>` where the MCP tool pushes `HEAD`; host git hooks on the clone are not neutralised (slice 5).
 - Slice 1 left `store.getWorkspace` dropping `check` / `review`; slice 6 fixed it. The generated admin tools accepted both fields from slice 1 on; slice 8 makes the operator's writes of them a refusal.
 - Pre-existing failures, unrelated: `env-image-build.test.mjs` (no docker binary) and one `proxy-server.test.mjs` test.
 
@@ -787,12 +803,12 @@ ones easy to get wrong.
 
 ### Slice 4
 
-- Surface (`src/main/reviewCheck.ts`, no electron or session imports; the container is injected): `new CheckRunner(deps)` / `createCheckRunner(deps)` with `deps = { exec(argv): ExecChild, ensureContainerUp(): Promise<void>, isContainerUp?(): Promise<boolean>, options? }`. `exec` = `spawnDockerExec(target, argv, {}, { interactive: false })` with the executor container's *current* target (`ContainerManager.execTarget` is private; slice 6 needs an accessor). `run({ intent, repo, command }): Promise<CheckRun>` never rejects; `terminate(intent): Promise<{ ok } | { ok: false, detail }>` (also exported as `terminateCheck(runner, id)`) cancels a running check or clears a leftover of that intent; `scanLeftovers(): Promise<{ found, cleared, unconfirmed }>` is the boot scan. `CheckRun` = `finished` (`result`, `leftover?`) | `stopped` (`reason` `timeout` / `cancel`, `result`; a timeout has `timedOut: true`, code −1) | `unconfirmed` (`detail`, `result`: the controller stops the executor's container and ends `failed`) | `failed-to-run` (`error`: a controller fault). Only `finished` and `stopped` mean the group is confirmed gone; the controller maps a `CheckRun[]` to `check-pass` results itself (a `stopped`/`cancel` is not a result).
+- Surface (`src/main/reviewCheck.ts`, no electron or session imports; the container is injected) — as of Fix 2, §5.3's rule: `new CheckRunner(deps)` with `deps = { exec(argv, cwd): ExecChild, ensureContainerUp(), stopContainer(), containerRunning(): Promise<boolean | null>, options? }` (real wiring: `ContainerManager.spawnExec(id, argv, cwd)` / `isRunning(id)`, `containers.stop`). `run({ intent, repo, command }): Promise<CheckRun>` never rejects; `cancel(intent)` stops the container and confirms it (a no-op `ok` when that intent is not running); `stopContainer()` is the same stop for a leftover at boot. `CheckRun` = `finished` | `stopped` (`reason` `timeout` / `cancel`; a timeout has `timedOut: true`, code −1) | `unconfirmed` (`reason`, `detail`, `result`: the container could not be confirmed stopped) | `failed-to-run` (`error`: a controller fault). A `stopped`/`cancel` is not a result.
 - Wake without the agent: possible. `ContainerManager.resolveLaunch(id)` (public) = `ensure` + adapter install + proxy scope/network convergence + credential files, and never connects the agent (`attachUncoalesced` is what calls `connection` / `session/load`). The bare `containers.ensure(id)` is lighter but skips the proxy network convergence (an `internal` session would run the check on the open network) and leaves the skills-link debt for `installAdapter`, so use `resolveLaunch`. Neither applies the `repoConflict` gate (`ensure`'s own comment says the scheduler's gate is separate), so `ensureContainerUp` must be a new `SessionManager` method: the gate with `holdsClone` (the held executor is its own holder), then `resolveLaunch`. Slice 6 adds it. `isContainerUp` = the record's `container.status === 'running'`: a stopped container needs no exec to be "confirmed gone".
-- Two scripts run as `node -e <source> <json>` (`WRAPPER_SOURCE`, `CTL_SOURCE`; nothing is written anywhere), node builtins only, so tests run them under host node. The wrapper gets `{ file, cwd: /workspaces/<repo>, argv: loginShell(command) }` — `loginShell` from provision.ts, i.e. the `runScript` shell. Exit code = the shell's, 128 + n for a signal, 127 when it cannot start; it returns 200 ms after the shell exits even if a backgrounded child holds the pipes. A command that is simply not found is likewise 127: the host cannot tell it from "no shell".
-- Deviations: the pid file holds `<pgid> <start time of /proc/1>`, not the bare id. A container's init restarts with it, so a file left by an earlier instance (whose pids may be reused) is recognised as stale and never signalled; the boot scan only clears it. Liveness counts the group's non-zombie members from `/proc` (fallback `kill(-pgid, 0)`). During the 10 s grace the group is probed every 500 ms and the SIGKILL is skipped when it is already gone; the confirming probe after SIGKILL is a separate exec and retries for up to 10 s. After a normal exit one more probe runs (leftover background processes are terminated; `finished.leftover`), which the spec did not ask for but a surviving server would outlive the hold. A cancel that arrives before the exec exists (container waking) wins; one that arrives before the pid file is written waits for it (3 s).
+- The check is the login shell (`loginShell` from provision.ts, i.e. the `runScript` shell) run by `docker exec` as the container user; its exit code is the exec's (a command not found is 127: the host cannot tell it from "no shell"). Originally a node wrapper and a process-group control script ran in the container; both, the pid file and the boot scan are gone (Fix 2).
+- Deviations: none left of slice 4's (the pid-file record, `/proc` liveness, the post-exit probe and `finished.leftover` went with the machinery, Fix 2). A cancel that arrives before the exec exists (container waking) wins and stops nothing.
 - Capture is `LineRing` (60 lines × 500 chars, ≤ 8 KB by UTF-8 bytes; ANSI codes and C0 controls stripped, `\r` redraws keep the last). stdout and stderr share one ring, so lines of the two streams interleave by arrival, not strictly in order. Constants: `CHECK_TAIL`; timeout `REVIEW_LOOP.checkTimeoutMs`; all other timings in `CheckOptions` (grace 10 s, poll 500 ms, confirm 10 s, control exec 15 s).
-- Not verified here: a real `docker exec` (client death vs the wrapper, `--init` reaping, `/proc` visibility under the user's namespace, the `node -e` argv size limit with long commands), only host node. Spec errors: §5.3's "writes the group id" is under-specified for reuse, as above; `dockerExec`'s timeout "kills only the host's docker CLI" is right, and so is it for this module: the wrapper's group is deliberately outside the docker client's lifetime.
+- Not verified here: a real `docker stop` / `docker inspect` of the executor's container, and that the restart through the attach path resumes the agent afterwards (only host node and stubs).
 
 ### Slice 5
 
@@ -808,8 +824,8 @@ ones easy to get wrong.
 - Surface. `src/main/reviewLoop.ts`: `createReviewLoop(deps)` → `ReviewLoopController` (`load`, `start`/`stop`, `tick`, `state`, `stopLoop`, `openFindings`, `owns`, `delivering`, `dropScope`/`dropWorkspace`, `idle` for tests); the kernel builds it beside the proactive manager (`Kernel.reviewLoop`), registers `LoopHooks`, wires `SessionEvents.openFindings`, and takes `createKernel({ reviewLoop: { clock } })` as the one test seam for time. New: `review.loop` (`{ sessionId, ref, notice }`, `ReviewLoopNotice` = `turn-ended` | `end` with `LoopEnd`, `rounds`, `subject`), `GurtApi.reviewLoopState` / `reviewLoopStop` (both `none`: the state quotes the diff, which the operator cannot read), `SessionManager.ensureContainerUp` (the gate with `holdsClone`, then `resolveLaunch`) and `dropHostPrompts`, `ContainerManager.spawnExec`, `store.readReviewLoops` / `writeReviewLoops` (`review-loop.json` reserved).
 - Shape. A transition is synchronous (`apply` = `loopStep` + swap in memory), so the hold is taken inside the `session.turn` `started` handler; only the facts of a settled turn (diff hash, heads, `changed`, `uncovered`) are gathered asynchronously, per loop in order. Intents run as background tasks that report back with an event, so a human act, "stop loop" or the tick lands while a check runs; the state with the intents is persisted before the first effect, an intent is confirmed (removed) after its outcome, and `check-pass` / `delivered` are applied before their intent is confirmed (at-least-once, for slice 7 to reconcile).
 - Gap in slice 1 found and fixed: `store.getWorkspace` rebuilt every repo from a whitelist and silently dropped `check` and `review`, so nothing could ever be read back. Both are read now (`review` through a small sanitiser).
-- Readings taken. The reviewer's diff is `git diff <base> <tree>` with the tree `diffHash` hashed (temporary index), so it holds exactly what a commit would record; untracked files are relabelled from that diff for §4.3 item 4; hooks, textconv and external diff drivers are off; cut at 150 000 characters per repo with a note (the reviewer's mount is readable). The user's earlier messages are the `user` entries of the log after the first (the start prompt; tokenised when masking is on). The reviewer is matched to its round by `reviewOf` if its settle beats the controller's own record of it (`adopt`). Stopping a settled reviewer's container uses reason `idle`, an unconfirmable check stops the executor's with `idle` too: only `user` reads as a human. "Stop loop" ends first, then cancels the running turn (host), and refuses while delivering; the end also drops the loop's queued messages.
-- For slice 7. Wired already, because a live loop without them is unsafe: `session.human` / `container.status` `user` / `session.deleted` → `human` events, and `tick` (deadline, 15 min permission wait, the reviewer's start bound: 15 min, a plan hold past it, or a fall back to draft). `tick()` is public and the clock injectable. Not done: replay of `lastSettled`, intent reconciliation, the boot scan for check leftovers, resuming `recovering` loop sessions, the notifications mapping of `review.loop`, refusing to archive a live loop. `load` is the seam: it reads the files and ends a loop found running `failed` (`orphan`), because nothing can resume it yet; recovery replaces that. `end` emits `review.loop`, sets `notified`, then releases the hold; a deleted executor's ended loop is forgotten, a delivering one when its delivery ends.
+- Readings taken. The reviewer's diff is `git diff <base> <tree>` with the tree `diffHash` hashed (temporary index), so it holds exactly what a commit would record; untracked files are relabelled from that diff for §4.3 item 4; hooks, textconv and external diff drivers are off; cut at 150 000 characters per repo with a note (the reviewer's mount is readable). The user's earlier messages are the `user` entries of the log after the first (the start prompt; tokenised when masking is on). The reviewer is matched to its round by `reviewOf` if its settle beats the controller's own record of it (`adopt`). Stopping a settled reviewer's container uses reason `idle`, a check's container stop (§5.3) uses `idle` too: only `user` reads as a human. "Stop loop" ends first, then cancels the running turn (host), and refuses while delivering; the end also drops the loop's queued messages.
+- For slice 7. Wired already, because a live loop without them is unsafe: `session.human` / `container.status` `user` / `session.deleted` → `human` events, and `tick` (deadline, 15 min permission wait, the reviewer's start bound: 15 min, a plan hold past it, or a fall back to draft). `tick()` is public and the clock injectable. Not done: replay of `lastSettled`, intent reconciliation, the stop of a leftover check's container, resuming `recovering` loop sessions, the notifications mapping of `review.loop`, refusing to archive a live loop. `load` is the seam: it reads the files and ends a loop found running `failed` (`orphan`), because nothing can resume it yet; recovery replaces that. `end` emits `review.loop`, sets `notified`, then releases the hold; a deleted executor's ended loop is forgotten, a delivering one when its delivery ends.
 - Earlier tests touched: `loop-harness.mjs` takes `workspace`, `credentials` and `kernel` options and exports `store` / `api`; `review-loop-queue.test.mjs` sets the Review block only where it creates the reviewer (the real controller now takes any loop-enabled executor into a loop by itself); `ipc-opaque-args.test.mjs` lists the two new id-only methods.
 
 ### Slice 8
@@ -824,7 +840,7 @@ ones easy to get wrong.
 
 ### Slice 7
 
-- Boot is two calls in `restoreSessions`: `reviewLoop.load` (read the files, take the loop holds of live loops and of ended-not-notified ones, before anything else) and `reviewLoop.recover()` (replay unconsumed settles → deadline `tick` → reconcile the intents that were on disk at load → resume), both before the first `schedule()`, so a reviewer of an expired loop is never started to be deleted. `recover` awaits the quick part; a re-run check and a delivery step carry on in the background (`idle()` waits). The slice-6 `orphan` end is gone. A reviewer created but not recorded is adopted by `reviewOf.intent`/round before the replay; a loop-enabled executor with `lastSettled` and no loop file gets its loop created. Reconciliation per kind is `reconcileOne`; the check leftover scan (`scanLeftovers`) runs per loop with a container up. In tests the pid files are on the host `/tmp`, so a scan sees other tests' groups; in a container they are its own.
+- Boot is two calls in `restoreSessions`: `reviewLoop.load` (read the files, take the loop holds of live loops and of ended-not-notified ones, before anything else) and `reviewLoop.recover()` (replay unconsumed settles → deadline `tick` → reconcile the intents that were on disk at load → resume), both before the first `schedule()`, so a reviewer of an expired loop is never started to be deleted. `recover` awaits the quick part; a re-run check and a delivery step carry on in the background (`idle()` waits). The slice-6 `orphan` end is gone. A reviewer created but not recorded is adopted by `reviewOf.intent`/round before the replay; a loop-enabled executor with `lastSettled` and no loop file gets its loop created. Reconciliation per kind is `reconcileOne`; the leftover-check stop (`stopLeftoverCheck`, Fix 2) runs per loop holding a `check` intent with a container up.
 - The `message` row's in-flight marker did not exist: `PersistedSession.loopRan` is the intent whose prompt the drain last took off the queue, written with the removal and `interrupted`. It is replaced by the next prompt taken (not cleared at the settle, since the log flushes separately from `sessions.json`). Found = pending, marker or `system` entry (`hostPromptSeen`). A message so found is not resent; its interrupted turn is resumed by the controller with the restart prompt.
 - Deviations. (1) `end` writes `notified` BEFORE emitting `review.loop` (the §8 table notifies first): a crash between loses one notification instead of repeating it; the intent is confirmed last, after the release, so a restart reruns the idempotent tail. (2) Recovering the first delivery commit skips the §6 hash precondition when HEAD already moved (the hash includes HEAD, so it can never match after the commit); `deliverStep`'s own probe then says found or `tree-moved`. (3) The commit texts are kept in memory once delivery starts, so deleting the executor mid-delivery (§5.6) still commits with its text; after a restart with the executor gone the loop is dropped at `load` as before. (4) `DeliveredStep.note` (only when a recovery found the step done: "already committed", "origin/… advanced to … after our …") rides the end and the notification. (5) `LoopHooks.live` makes `taskHasPendingWork` true while a loop is live or ended-not-notified (archive/auto-archive refuse; `archive.ts` names the loop).
 - Notifications: `createNotifications(bus, prefs, info, loopSpeaksFor)`; the kernel passes `reviewLoop.notifiesThrough` (Review block, executor, loop not ended-and-notified). `loopEndNotification` is the §7 mapping (exported, tested). An end that lands while a turn is open claims that turn, so no extra `turn-ended`. Slice 8: `review.loop` / `reviewLoopState` already carry everything; `LoopState.intents` non-empty on an ended loop means its tail is still running.
@@ -838,3 +854,9 @@ ones easy to get wrong.
 - **Ordinary sessions are unchanged.** A session with neither `review` nor `reviewOf` (`isLoopSession`) has no logical-turn record, no `lastSettled` write, no `session.settled` and no `session.human`: `runPrompt` drops `promptRunning` in its `finally` exactly as on main (no extra awaited write, so the drain, the update deferral and queued follow-ups wait as before) and `prompt` / `clearPending` / `cancelPending` / a user `cancel` add no bus event. Loop sessions keep §5.1 / §8 / §5.6 as written; the tests that watched settles and `session.human` on bare sessions (`session-settled`, `host-prompt`) now give them an inert `reviewOf` mark. `ordinary-session-unchanged.test.mjs` pins main's event list and write count for a normal, nudged, plan-held, thrown and incomplete turn (captured from main's `sessions.ts`).
 - **The delivery gate is per clone.** `LoopHooks.delivering(ws, task)` returns the delivering executors' ids; `deliveryActive` holds those sessions and any whose clone claims overlap theirs (`claims`, the scheduler's notion), so a repo-free inspector or a session on another repo drains its queue meanwhile.
 - **A contract call belongs to a turn only inside a busy round-trip** (§5.1). `onComplete` / `onSubmitReview` of a loop session file the artifact — and count the turn complete — only while `busy`; the logical turn (prompt + nudge) still spans both round-trips, but a call landing while the next prompt is masked, between the first round-trip and its nudge, or during the round-trip's closing write is stored as before and filed nowhere, so a stale approval cannot outlive an omitted tool. A call outside a turn is stamped with the id before the turn in flight.
+
+#### Fix 2
+
+- **Check containment = stopping the container** (reviewer C; (a) a missing pid file read as "gone", (b) a `setsid` descendant outliving the group, (c) the unauthenticated pid record, (d) `writeFileSync` following a symlink in `/tmp` — all confirmed against the old code; the whole class is gone because nothing in the container supervises anything now). `reviewCheck.ts` runs the login shell by plain `docker exec` (`exec(argv, cwd)`); timeout, cancel, any end of the loop during a check and an intent `check` found at boot go through `stopContainer()` + `containerRunning()` (a real `docker inspect`: `ContainerManager.isRunning`, `dockerInspectRunning`, tri-state — an unanswered inspect is not "stopped"). The wrapper, `CTL_SOURCE`, pid files, the post-exit probe/`leftover` and the boot scan were deleted; the module and its test went from 1093 to 662 lines.
+- `CheckRun.unconfirmed` (now with `reason`) is the typed outcome for an unconfirmable stop; the controller still ends `failed` on it (`executeCheck`) or logs it (`executeEnd`) — hold-and-retry is fix round 3. `spawnExec` takes the `cwd`; the leftover-at-boot stop is `stopLeftoverCheck` (gated on the container record saying running, as before).
+- Residual boundary documented in §5.3 and §10; `tree-moved` between "check passed" and the verdict was already tested (`a reviewed tree that moves before the verdict …`, controller test). Tests: the check test rewritten; the controller and recovery tests' exec fakes are now the login shell under host node, killed by the harness's `containers.stop` stub (`inContainer`), plus new "stopping a running check = stopping the executor's container" and the boot "stops the executor's container, then the check reruns".

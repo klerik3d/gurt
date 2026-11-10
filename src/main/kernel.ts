@@ -294,8 +294,9 @@ export function createKernel(options: KernelOptions = {}): Kernel {
   const reviewLoop = createReviewLoop({
     bus,
     sessions,
-    exec: (sessionId, argv) => containers.spawnExec(sessionId, argv),
+    exec: (sessionId, argv, cwd) => containers.spawnExec(sessionId, argv, cwd),
     containerUp: (sessionId) => containers.status(sessionId) === 'running',
+    containerRunning: (sessionId) => containers.isRunning(sessionId),
     // `idle`, not `user`: only the scope pane's stop is a human's (§5.6).
     stopContainer: (sessionId) => containers.stop(sessionId, 'idle'),
     release: (sessionId) => kernel.releaseLoopHold(sessionId),
