@@ -48,6 +48,7 @@ import type { ProactiveState } from '../shared/proactive'
 import { emptyProactiveState, sanitizeProactiveConfig } from '../shared/proactive'
 import { createLogger } from './log'
 import { gurtRoot } from './paths'
+import { writeJsonDurable } from './durableWrite'
 
 const pexecFile = promisify(execFile)
 
@@ -225,39 +226,12 @@ async function readJson<T>(file: string, fallback: T): Promise<T> {
   }
 }
 
-/** Per-file write chain, so overlapping writes never race on the temp file. */
+/** Per-file write chain, so overlapping writes finish in order. */
 const writeChains = new Map<string, Promise<void>>()
 
-/**
- * Write JSON durably: a complete temp file, fsync'd, renamed over the target
- * (atomic on POSIX), then the directory fsync'd so the rename itself survives a
- * power loss. `fs.writeFile` truncates in place and never fsyncs — a crash
- * between the truncate and the flush leaves a 0-byte file, which is how one
- * task lost every session record on 2026-08-27.
- */
 function writeJson(file: string, data: unknown): Promise<void> {
   const prev = writeChains.get(file) ?? Promise.resolve()
-  const next = prev.then(async () => {
-    const dir = path.dirname(file)
-    await fs.mkdir(dir, { recursive: true })
-    const tmp = path.join(dir, `.${path.basename(file)}.tmp`)
-    const fh = await fs.open(tmp, 'w')
-    try {
-      await fh.writeFile(JSON.stringify(data, null, 2) + '\n')
-      await fh.sync()
-    } finally {
-      await fh.close()
-    }
-    await fs.rename(tmp, file)
-    if (process.platform !== 'win32') {
-      const dh = await fs.open(dir, 'r')
-      try {
-        await dh.sync()
-      } finally {
-        await dh.close()
-      }
-    }
-  })
+  const next = prev.then(() => writeJsonDurable(file, data))
   writeChains.set(
     file,
     next.catch(() => {})

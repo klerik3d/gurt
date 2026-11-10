@@ -11,6 +11,7 @@
 // the resolved MCP header pushed to a session's proxy, and the masked view
 // served to the renderer (getCredentials()).
 import { promises as fs } from 'node:fs'
+import { writeJsonDurable } from './durableWrite'
 import { randomUUID } from 'node:crypto'
 import { createRequire } from 'node:module'
 import path from 'node:path'
@@ -269,8 +270,7 @@ async function write(data: CredentialsFile): Promise<void> {
     version: 2,
     credentials: data.credentials.map((entry) => seal(entry, electron, priorSealed))
   }
-  await fs.mkdir(path.dirname(credentialsFile()), { recursive: true })
-  await fs.writeFile(credentialsFile(), JSON.stringify(out, null, 2) + '\n')
+  await writeJsonDurable(credentialsFile(), out, { mode: 0o600 })
 }
 
 /** Every mask starts with this — and no real token can (U+2022 is not in any
