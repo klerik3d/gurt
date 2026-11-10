@@ -294,6 +294,7 @@ interface Connection {
 
 /** One queued prompt, with the payload the UI never sees (the images). */
 interface PendingPrompt {
+  queuedAt?: string | undefined
   id: string
   text: string
   context?: PromptContext[] | undefined
@@ -404,6 +405,7 @@ interface Session {
 const pendingInfo = (p: PendingPrompt): PendingPromptInfo => ({
   id: p.id,
   text: p.text,
+  ...(p.queuedAt ? { queuedAt: p.queuedAt } : {}),
   ...(p.context?.length ? { context: p.context } : {}),
   ...(p.images?.length ? { images: p.images.length } : {}),
   ...(p.auto ? { auto: true } : {})
@@ -752,7 +754,7 @@ export class SessionManager {
         busy: false,
         pending: (r.pending ?? []).map((p) => ({ ...p, id: `p${++this.pendingSeq}` })),
         interrupted: r.interrupted,
-        recovering: !!r.interrupted || !!r.pending?.length,
+        recovering: !!r.interrupted,
         draining: false,
         turnComplete: false,
         turns: 0,
@@ -764,9 +766,8 @@ export class SessionManager {
       })
       // Legacy records did not persist queued automatic continuations.
       const restored = this.sessions.get(r.info.id)!
-      if (r.info.state === 'started' && r.info.limitedUntil && !restored.pending.some((p) => p.auto)) {
-        restored.pending.push({ id: `p${++this.pendingSeq}`, text: LIMIT_CONTINUE_PROMPT, auto: true })
-        restored.recovering = true
+      if (r.info.state === 'started' && r.info.limitedUntil && !restored.pending.length) {
+        restored.pending.push({ id: `p${++this.pendingSeq}`, queuedAt: r.info.lastActivityAt ?? '', text: LIMIT_CONTINUE_PROMPT, auto: true })
       }
     }
   }
@@ -895,14 +896,35 @@ export class SessionManager {
     return {
       ...s.info,
       busy: s.busy || undefined,
-      awaitingInput: s.pendingPermissions.size > 0 || undefined
+      awaitingInput: s.pendingPermissions.size > 0 || undefined,
+      pending: s.pending.length ? s.pending.map(pendingInfo) : undefined,
+      queueWaiting: s.recovering ? 'waiting for resume' : this.pendingBlocked(s) ?? (s.info.state === 'queued' ? this.queuedWaiting(s) : undefined)
     }
   }
 
+  private queueTime(s: Session): string {
+    return (s.info.state === 'queued' ? s.info.queuedAt : s.pending[0]?.queuedAt) ?? ''
+  }
+
+  private queuedSessions(): Session[] {
+    return [...this.sessions.values()]
+      .filter((s) => s.info.state === 'queued' || (s.info.state === 'started' && s.pending.length > 0))
+      .sort((a, b) => this.queueTime(a).localeCompare(this.queueTime(b)))
+  }
+
+  /** Earlier work keeps its place on shared clones, including during a limit hold. */
+  private earlierQueueItem(s: Session): Session | undefined {
+    const claims = this.claims(s)
+    for (const other of this.queuedSessions()) {
+      if (other === s) break
+      if (this.claims(other).some((a) => claims.some((b) =>
+        a.key === b.key && (a.exclusive || b.exclusive)))) return other
+    }
+    return undefined
+  }
+
   private queuePosition(sessionId: string): number | undefined {
-    const queued = [...this.sessions.values()]
-      .filter((s) => s.info.state === 'queued')
-      .sort((a, b) => (a.info.queuedAt ?? '').localeCompare(b.info.queuedAt ?? ''))
+    const queued = this.queuedSessions()
     const i = queued.findIndex((s) => s.info.id === sessionId)
     return i < 0 ? undefined : i + 1
   }
@@ -914,6 +936,8 @@ export class SessionManager {
     if (!s.pending.length || s.busy) return undefined
     const hold = s.info.state === 'started' ? this.limitHold(s) : undefined
     if (hold) return this.holdText(hold)
+    const earlier = this.earlierQueueItem(s)
+    if (earlier) return `waiting behind session "${earlier.info.title}"`
     const conflict = this.repoConflict(s)
     if (!conflict) return undefined
     return `session "${conflict.holder.info.title}" has "${conflict.repo}" — this sends as soon as it lets go`
@@ -923,7 +947,9 @@ export class SessionManager {
    *  "its turn / its clone": an account at its limit. */
   private queuedWaiting(s: Session): string | undefined {
     const hold = this.limitHold(s)
-    return hold ? this.holdText(hold) : undefined
+    if (hold) return this.holdText(hold)
+    const earlier = this.earlierQueueItem(s)
+    return earlier ? `waiting behind session "${earlier.info.title}"` : undefined
   }
 
   snapshot(sessionId: string): SessionSnapshot | undefined {
@@ -1375,9 +1401,7 @@ export class SessionManager {
   }
 
   private scheduleSync(): void {
-    const queued = [...this.sessions.values()]
-      .filter((s) => s.info.state === 'queued')
-      .sort((a, b) => (a.info.queuedAt ?? '').localeCompare(b.info.queuedAt ?? ''))
+    const queued = this.queuedSessions()
     // A pass may start several items; record each started item's clone claims
     // (key → exclusive?) so a later item over the same clone stays queued. A
     // blocked item reserves its claims here too: FIFO by clone, so nothing
@@ -1395,13 +1419,18 @@ export class SessionManager {
     const holds: PlanHold[] = []
     for (const s of queued) {
       if (this.frozenTasks.has(taskKey(s.ref.workspace, s.ref.task))) continue
-      // Before the task cap and the clone: a held item claims neither, so the
-      // items behind it on other accounts move on, and it keeps its place.
+      // Reserve the shared clones while waiting; independent work can still run.
       const hold = this.limitHold(s)
       if (hold) {
         still.add(s.info.id)
         holds.push(hold)
         this.noteQueued(s, 'agent-limited', hold.until)
+        reserve(this.claims(s))
+        continue
+      }
+      if (s.info.state === 'started') {
+        reserve(this.claims(s))
+        void this.drainPending(s)
         continue
       }
       const tkey = taskKey(s.ref.workspace, s.ref.task)
@@ -1453,16 +1482,6 @@ export class SessionManager {
       this.queuedReasons.delete(id)
       // The pane may be showing a limit wait that just ended.
       this.bus.emit('session.changed', { sessionId: id })
-    }
-    // Prompts waiting on a clone (`drainPending`) are the other thing a freed
-    // repo releases, and this pass is where a repo gets freed. Deliberately
-    // last: a queued draft that has been waiting its turn is never overtaken by
-    // a follow-up to a session that has already had one.
-    for (const s of this.sessions.values()) {
-      if (!s.pending.length) continue
-      const hold = s.info.state === 'started' ? this.limitHold(s) : undefined
-      if (hold) holds.push(hold)
-      void this.drainPending(s)
     }
     this.armLimitTimer(holds)
   }
@@ -2032,6 +2051,7 @@ export class SessionManager {
         s.pending.unshift({
           id: `p${++this.pendingSeq}`,
           auto: true,
+          queuedAt: s.pending[0]?.queuedAt ?? new Date().toISOString(),
           text: 'The application restarted during your previous turn. Resume the unfinished task using the existing conversation. First inspect the current state: actions may already have completed. Do not repeat completed actions. Request any necessary permissions again.'
         })
       }
@@ -2661,7 +2681,7 @@ export class SessionManager {
     }
     s.info.limitedUntil = until
     if (!s.pending.length)
-      s.pending.push({ id: `p${++this.pendingSeq}`, text: LIMIT_CONTINUE_PROMPT, auto: true })
+      s.pending.push({ id: `p${++this.pendingSeq}`, queuedAt: new Date().toISOString(), text: LIMIT_CONTINUE_PROMPT, auto: true })
     this.push(s, {
       kind: 'system',
       text: `limit reached — continues on its own after the reset (${formatResetAt(until, now)})`
@@ -3050,9 +3070,11 @@ export class SessionManager {
     const id = `p${++this.pendingSeq}`
     // What the user types now is the continuation an interrupted session was
     // going to send on its own — it replaces the automatic "continue".
+    const queuedAt = s.pending.find((p) => p.auto)?.queuedAt ?? new Date().toISOString()
     s.pending = s.pending.filter((p) => !p.auto)
     s.pending.push({
       id,
+      queuedAt,
       text,
       ...(context?.length ? { context } : {}),
       ...(images?.length ? { images } : {})
@@ -3087,6 +3109,7 @@ export class SessionManager {
   private async drainPending(s: Session): Promise<void> {
     if (s.draining || s.recovering) return
     s.draining = true
+    let consumed = false
     try {
       // `busy` covers the one turn this loop does not own: the start prompt,
       // which `startSession` runs directly. `repoHolder` is case two — the
@@ -3098,9 +3121,11 @@ export class SessionManager {
         !s.busy &&
         s.info.state === 'started' &&
         !this.repoHolder(s) &&
+        !this.earlierQueueItem(s) &&
         !this.limitHold(s)
       ) {
         const next = s.pending.shift()!
+        consumed = true
         s.interrupted = true
         await this.runPrompt(s, next.text, next.context, next.images)
       }
@@ -3111,6 +3136,7 @@ export class SessionManager {
       // One emit for both endings: the queue is empty, or it is stuck and the
       // pane has to say why.
       this.bus.emit('session.changed', { sessionId: s.info.id })
+      if (consumed) this.schedule()
     }
   }
 
@@ -3127,6 +3153,7 @@ export class SessionManager {
     this.schedulePersist(s.ref)
     this.dropAutoContinue(s)
     this.bus.emit('session.changed', { sessionId })
+    this.schedule()
     return out
   }
 
@@ -3143,6 +3170,7 @@ export class SessionManager {
     // yourself": the session-level hold goes with it (the account's stays).
     if (gone?.auto) this.dropAutoContinue(s)
     this.bus.emit('session.changed', { sessionId })
+    this.schedule()
     return gone && !gone.auto ? pendingInfo(gone) : undefined
   }
 

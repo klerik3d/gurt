@@ -93,8 +93,8 @@ export function queuePositions(tree: Tree | null): Record<string, number> {
   const queued: SessionInfo[] = []
   for (const ws of tree?.workspaces ?? [])
     for (const task of ws.tasks)
-      for (const s of task.sessions) if (s.state === 'queued') queued.push(s)
-  queued.sort((a, b) => (a.queuedAt ?? '').localeCompare(b.queuedAt ?? ''))
+      for (const s of task.sessions) if (s.state === 'queued' || s.pending?.length) queued.push(s)
+  queued.sort((a, b) => (a.queuedAt ?? a.pending?.[0]?.queuedAt ?? '').localeCompare(b.queuedAt ?? b.pending?.[0]?.queuedAt ?? ''))
   const map: Record<string, number> = {}
   queued.forEach((s, i) => (map[s.id] = i + 1))
   return map
@@ -291,6 +291,14 @@ export default function App() {
     // session-changed carries no entries — keep the timeline we already hold;
     // session:snapshot (on select) delivers the full fold.
     const offSession = window.gurt.onSessionChanged((snap) => {
+      setTree((prev) => prev && ({
+        ...prev,
+        workspaces: prev.workspaces.map((w) => ({
+          ...w, tasks: w.tasks.map((t) => ({
+            ...t, sessions: t.sessions.map((s) => s.id === snap.info.id ? snap.info : s)
+          }))
+        }))
+      }))
       setSnapshots((prev) => ({
         ...prev,
         [snap.info.id]: { ...snap, entries: snap.entries ?? prev[snap.info.id]?.entries }

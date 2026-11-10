@@ -42,7 +42,7 @@ export function TaskPane({
   }
 
   const queued = taskData.sessions
-    .filter((s) => s.state === 'queued')
+    .filter((s) => s.state === 'queued' || s.pending?.length)
     .sort((a, b) => (positions[a.id] ?? 0) - (positions[b.id] ?? 0))
   // A container belongs to exactly one session, so the task's infrastructure is
   // just the sessions that have provisioned one.
@@ -148,7 +148,7 @@ export function TaskPane({
         <div className="tp-section">
           <div className="tp-sec-head">
             <span className="seclabel">QUEUE</span>
-            <span className="tp-sec-hint">· starts when its repository is free</span>
+            <span className="tp-sec-hint">· FIFO per repository; independent work may run in parallel</span>
             <span className="spacer" />
             <span className="tp-sec-hint">max concurrent</span>
             <input
@@ -170,6 +170,12 @@ export function TaskPane({
               <span className="queue-pos mono">#{positions[s.id]}</span>
               <span className="queue-title clickable" onClick={() => onSelectSession(s.id)}>
                 {s.title}
+                {s.pending?.map((p, i) => (
+                  <div key={p.id} className="dim">
+                    {i + 1}. {p.auto ? 'Auto: ' : ''}{p.text}{p.images ? ` · ${p.images} image(s)` : ''}
+                  </div>
+                ))}
+                {s.queueWaiting && <div className="dim">{s.queueWaiting}</div>}
               </span>
               <EnvTag name={s.env} />
               {s.repos.map((r) => (
@@ -177,12 +183,12 @@ export function TaskPane({
               ))}
               <AgentTag kind={agentKind(agents, s.agent)} name={agentName(agents, s.agent)} />
               <span className="spacer" />
-              <button
+              {s.state === 'queued' ? <button
                 className="btn btn-xs"
                 onClick={run(() => window.gurt.sessionCancelQueue(s.id).catch((e: unknown) => alertDialog(String(e))))}
               >
                 Cancel
-              </button>
+              </button> : <button className="btn btn-xs" onClick={() => onSelectSession(s.id)}>Open messages</button>}
             </div>
           ))}
         </div>

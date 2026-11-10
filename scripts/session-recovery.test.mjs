@@ -71,3 +71,58 @@ test('idle sessions allow update; queued work and permission waits do not', () =
   s.info.limitedUntil = Date.now() + 10000
   assert.equal(m.hasUnfinishedWork(), true)
 })
+
+test('queued messages restore without a recovery prompt or an extra continue', async () => {
+  const m = manager()
+  const r = record({ pending: [{ id: 'p', text: 'my next step', queuedAt: '2026-01-01T00:00:00Z' }] })
+  r.info.limitedUntil = new Date(Date.now() + 3600000).toISOString()
+  m.restore([r])
+  assert.deepEqual(m.interruptedSessions(), [])
+  assert.deepEqual(m.snapshot('s').pending.map((p) => p.text), ['my next step'])
+  assert.deepEqual(m.snapshot('s').info.pending, m.snapshot('s').pending)
+  assert.match(m.snapshot('s').info.queueWaiting, /limit/)
+  let runs = 0
+  m.runPrompt = async () => { runs++ }
+  await m.resumeInterrupted('s')
+  m.schedule()
+  assert.equal(runs, 0, 'restart and resume cannot bypass the limit')
+  m.sessions.get('s').info.limitedUntil = undefined
+  m.schedule()
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(runs, 1, 'queued work resumes normally when its hold ends')
+  clearTimeout(m.limitTimer)
+})
+
+test('a held message keeps its FIFO place ahead of a draft on the same clone', async () => {
+  const m = manager()
+  const message = record({ pending: [{ id: 'p', text: 'first', queuedAt: '2026-01-01T00:00:00Z' }] })
+  Object.assign(message.info, { repos: ['repo'], repoModes: { repo: 'write' }, limitedUntil: new Date(Date.now() + 3600000).toISOString() })
+  const draft = record({ info: { ...message.info, id: 'draft', title: 'Next', state: 'queued', queuedAt: '2026-01-02T00:00:00Z', limitedUntil: undefined } })
+  const independent = record({ info: { ...draft.info, id: 'other', repos: ['other'], repoModes: { other: 'write' } } })
+  m.restore([message, draft, independent])
+  const starts = []
+  m.startSession = async (id) => { starts.push(id); m.sessions.get(id).info.state = 'started' }
+  m.runPrompt = async (s, text) => { starts.push(text) }
+  assert.equal(m.snapshot('s').queuePosition, 1)
+  assert.equal(m.snapshot('draft').queuePosition, 2)
+  m.schedule()
+  assert.deepEqual(starts, ['other'], 'only independent work can overtake the hold')
+  m.sessions.get('s').info.limitedUntil = undefined
+  m.schedule()
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.deepEqual(starts, ['other', 'first', 'draft'])
+  clearTimeout(m.limitTimer)
+})
+
+test('cancelling a waiting message releases the next queued session', () => {
+  const m = manager()
+  const message = record({ pending: [{ id: 'p', text: 'first' }] })
+  Object.assign(message.info, { repos: ['repo'], repoModes: { repo: 'write' }, limitedUntil: new Date(Date.now() + 3600000).toISOString() })
+  m.restore([message, record({ info: { ...message.info, id: 'next', state: 'queued', limitedUntil: undefined, queuedAt: '2026-01-01T00:00:00Z' } })])
+  const starts = []
+  m.startSession = async (id) => { starts.push(id); m.sessions.get(id).info.state = 'started' }
+  m.schedule()
+  assert.deepEqual(starts, [])
+  m.cancelPending('s', m.snapshot('s').pending[0].id)
+  assert.deepEqual(starts, ['next'])
+})
