@@ -9,6 +9,7 @@
 // is as private as any other file under ~/.gurt.
 import fs from 'node:fs'
 import fsp from 'node:fs/promises'
+import { writeJsonDurable } from './durableWrite'
 import path from 'node:path'
 import {
   PII_DEFAULT_PORT,
@@ -250,9 +251,7 @@ export function createPiiMask(deps: PiiDeps): PiiManager {
     const next = (writes.get(sessionId) ?? Promise.resolve()).then(async () => {
       const file = tableFile(sessionId)
       await fsp.mkdir(path.dirname(file), { recursive: true, mode: 0o700 })
-      const tmp = `${file}.tmp`
-      await fsp.writeFile(tmp, JSON.stringify(table), { mode: 0o600 })
-      await fsp.rename(tmp, file)
+      await writeJsonDurable(file, table, { mode: 0o600, pretty: false })
     })
     writes.set(sessionId, next.catch(() => {}))
     return next

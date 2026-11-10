@@ -3,6 +3,7 @@ import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { gzip, gunzip } from 'node:zlib'
 import { promisify } from 'node:util'
+import { writeJsonDurable, syncDirectory } from './durableWrite'
 import type { Kernel } from './kernel'
 import * as store from './store'
 import { packScope, unpackScope } from './archiveFormat'
@@ -24,23 +25,6 @@ const validId = (id: string): string => {
 const dataFile = (id: string) => path.join(root(), `${validId(id)}.jsonl.gz`)
 const metaFile = (id: string) => path.join(root(), `${validId(id)}.json`)
 const previewDir = (id: string) => path.join(root(), `${validId(id)}.previews`)
-
-async function atomicJson(file: string, data: unknown): Promise<void> {
-  await fs.mkdir(path.dirname(file), { recursive: true })
-  const temp = `${file}.${randomUUID()}.tmp`
-  try {
-    const handle = await fs.open(temp, 'wx', 0o600)
-    try { await handle.writeFile(JSON.stringify(data)); await handle.sync() } finally { await handle.close() }
-    await fs.rename(temp, file)
-    await syncDirectory(path.dirname(file))
-  } finally { await fs.rm(temp, { force: true }) }
-}
-
-async function syncDirectory(directory: string): Promise<void> {
-  if (process.platform === 'win32') return
-  const handle = await fs.open(directory, 'r')
-  try { await handle.sync() } finally { await handle.close() }
-}
 
 export class ArchiveManager {
   private progress: import('../shared/archive').ArchiveProgress | undefined
@@ -98,7 +82,7 @@ export class ArchiveManager {
   }
 
   async setSettings(settings: ArchiveSettings): Promise<void> {
-    await atomicJson(settingsFile(), normalizeArchiveSettings(settings))
+    await writeJsonDurable(settingsFile(), normalizeArchiveSettings(settings), { mode: 0o600, pretty: false })
   }
 
   private async metadata(id: string): Promise<ScopeArchive> {
@@ -131,7 +115,7 @@ export class ArchiveManager {
       const table = this.kernel.pii.table(session.id)
       // Persist this alongside the opaque native history before drop() retires
       // the live table outside the scope directory.
-      await atomicJson(path.join(store.sessionScratchDir(meta.workspace, meta.task, session.id), 'archive-pii.json'), table)
+      await writeJsonDurable(path.join(store.sessionScratchDir(meta.workspace, meta.task, session.id), 'archive-pii.json'), table, { mode: 0o600, pretty: false })
       const entries = applyLog([], await store.readSessionLog(meta.workspace, meta.task, session.id))
       const file = path.join(previewDir(meta.id), `${validId(session.id)}.json.gz`)
       const data = await compress(JSON.stringify({ entries, table }))
@@ -204,7 +188,7 @@ export class ArchiveManager {
             meta.compressedBytes = (await fs.stat(temp)).size
             for (const file of await fs.readdir(previewDir(meta.id))) meta.compressedBytes += (await fs.stat(path.join(previewDir(meta.id), file))).size
             await fs.rename(temp, dataFile(meta.id))
-            await atomicJson(metaFile(meta.id), meta)
+            await writeJsonDurable(metaFile(meta.id), meta, { mode: 0o600, pretty: false })
             // A crash before this rename leaves a harmless archive copy beside
             // the live scope. A crash after it leaves a complete usable archive.
             this.report('Finishing archive…')
@@ -264,8 +248,8 @@ export class ArchiveManager {
         try {
           this.report('Saving chats…')
           await this.savePreviews(meta)
-          await atomicJson(path.join(staging, 'task.json'), await store.getTask(ws, task))
-          await atomicJson(path.join(staging, 'sessions.json'), [record])
+          await writeJsonDurable(path.join(staging, 'task.json'), await store.getTask(ws, task), { mode: 0o600, pretty: false })
+          await writeJsonDurable(path.join(staging, 'sessions.json'), [record], { mode: 0o600, pretty: false })
           await fs.mkdir(path.join(staging, 'sessions'))
           await store.appendSessionLog(ws, task, sessionId, [])
           await fs.copyFile(path.join(store.taskDir(ws, task), 'sessions', `${sessionId}.jsonl`), path.join(staging, 'sessions', `${sessionId}.jsonl`))
@@ -282,7 +266,7 @@ export class ArchiveManager {
           meta.compressedBytes = (await fs.stat(temp)).size
           for (const file of await fs.readdir(previewDir(meta.id))) meta.compressedBytes += (await fs.stat(path.join(previewDir(meta.id), file))).size
           await fs.rename(temp, dataFile(meta.id))
-          await atomicJson(metaFile(meta.id), meta)
+          await writeJsonDurable(metaFile(meta.id), meta, { mode: 0o600, pretty: false })
           this.report('Finishing archive…')
           this.kernel.sessions.dropArchivedSession(sessionId)
           dropSessionLog(sessionId)
@@ -304,7 +288,7 @@ export class ArchiveManager {
     return this.exclusive(async () => {
       const meta = await this.metadata(id)
       meta.pinned = pinned === true
-      await atomicJson(metaFile(id), meta)
+      await writeJsonDurable(metaFile(id), meta, { mode: 0o600, pretty: false })
       this.kernel.bus.emit('tree.changed', undefined)
     })
   }
@@ -350,7 +334,7 @@ export class ArchiveManager {
           r.info.lastActivityAt = new Date().toISOString()
           r.info.archiveSeenAt = undefined
         }
-        await atomicJson(path.join(staging, 'sessions.json'), stored)
+        await writeJsonDurable(path.join(staging, 'sessions.json'), stored, { mode: 0o600, pretty: false })
         await this.restoreTables(ws, task, stored.map((r) => r.info.id), staging)
         await fs.rename(staging, destination)
         const restored = []
