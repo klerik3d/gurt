@@ -13,8 +13,8 @@
 // like the MCP listeners) but cannot call it: without the token every path is a
 // 404, and `reveal` is exactly an oracle for what a token stands for.
 import { createServer, type Server } from 'node:http'
-import type { AddressInfo } from 'node:net'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
+import { listenEphemeral } from './listen'
 import { createLogger } from './log'
 import { readBody } from './httpBody'
 import type { PiiMask } from './pii'
@@ -91,16 +91,9 @@ function start(): Promise<number> {
       }
     })()
   })
-  return new Promise((resolve, reject) => {
-    server!.once('error', reject)
-    // 0.0.0.0, like the MCP listeners: the proxy container reaches it through
-    // host.docker.internal.
-    server!.listen(0, '0.0.0.0', () => {
-      server!.removeListener('error', reject)
-      server!.on('error', (e) => log.error('internal.fail', { site: 'pii-rewrite', err: e }))
-      resolve((server!.address() as AddressInfo).port)
-    })
-  })
+  // 0.0.0.0, like the MCP listeners: the proxy container reaches it through
+  // host.docker.internal.
+  return listenEphemeral(server, '0.0.0.0', 'pii-rewrite', undefined, log)
 }
 
 /**

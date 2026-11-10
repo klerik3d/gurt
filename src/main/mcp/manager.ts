@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto'
-import type { AddressInfo } from 'node:net'
 import type { Server } from 'node:http'
 import type { AcpHttpMcpServer, EnvRef, McpMode, McpSelection } from '../../shared/types'
 import type {
@@ -14,6 +13,7 @@ import { freshenOAuthCredentials } from '../oauth'
 import { mcpServerKey } from '../../shared/keys'
 import { cloneDir, getMcpServers } from '../store'
 import { listCredentials } from '../credentials'
+import { listenEphemeral } from '../listen'
 import { createLogger } from '../log'
 import { buildGithubHttpServer } from './githubServer'
 import { startStdioBridge, type StdioBridge } from './stdioBridge'
@@ -38,20 +38,6 @@ interface Running {
  *  {@link localBridges} and docs/requirements-mcp-stdio.md §6. */
 const running = new Map<string, Running>()
 
-function listen(server: Server): Promise<number> {
-  return new Promise((resolve, reject) => {
-    server.once('error', reject)
-    // 0.0.0.0 (not loopback) so the container can reach it via host.docker.internal.
-    server.listen(0, '0.0.0.0', () => {
-      // The startup reject is done its job; a *runtime* server error after this
-      // would otherwise call a settled promise's reject and vanish.
-      server.removeListener('error', reject)
-      server.on('error', (e) => log.error('internal.fail', { site: 'mcp-server', err: e }))
-      resolve((server.address() as AddressInfo).port)
-    })
-  })
-}
-
 /** Build and start one built-in server. The record is complete before any
  *  await, so the caller can enter it into `running` ahead of the listen — two
  *  concurrent resolves for one key must share one server, not race a second
@@ -69,7 +55,8 @@ function startServer(
   // entry never reaches here (it has no clone — `reconcileLocal`).
   const http = buildGithubHttpServer(ref, repo, dir, mode, token)
   const rec = { id, mode, http } as Running
-  rec.ready = listen(http).then((port): AcpHttpMcpServer => {
+  // 0.0.0.0 (not loopback) so the container can reach it via host.docker.internal.
+  rec.ready = listenEphemeral(http, '0.0.0.0', 'mcp-server', undefined, log).then((port): AcpHttpMcpServer => {
     rec.port = port
     log.info('mcp.start', { id, s: sessionId, mode, port })
     return {

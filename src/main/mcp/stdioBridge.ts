@@ -32,7 +32,6 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import { StringDecoder } from 'node:string_decoder'
-import type { AddressInfo } from 'node:net'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -41,6 +40,7 @@ import { mcpLiteralEnv, npmPackageSpec } from '../../shared/mcp'
 import { hostPath, resolveHostCommand } from '../hostPath'
 import { gurtRoot } from '../paths'
 import { lineBuffer } from '../provision'
+import { listenEphemeral } from '../listen'
 import { createLogger } from '../log'
 import { readBody } from '../httpBody'
 
@@ -729,16 +729,9 @@ export function startStdioBridge(
     }
   }
 
-  bridge.ready = new Promise<number>((resolve, reject) => {
-    http.once('error', reject)
-    // 0.0.0.0 (not loopback) so the session's proxy container can reach it via
-    // host.docker.internal, exactly as the built-in servers are reached.
-    http.listen(0, '0.0.0.0', () => {
-      http.removeListener('error', reject)
-      http.on('error', (e) => log.error('internal.fail', { site: 'mcp-stdio-server', id: entry.id, err: e }))
-      resolve((http.address() as AddressInfo).port)
-    })
-  }).then(async (port) => {
+  // 0.0.0.0 (not loopback) so the session's proxy container can reach it via
+  // host.docker.internal, exactly as the built-in servers are reached.
+  bridge.ready = listenEphemeral(http, '0.0.0.0', 'mcp-stdio-server', { id: entry.id }, log).then(async (port) => {
     bridge.port = port
     // Eager: a package that will not install or a command that is not there
     // must fail here, where the session start can report it — not on the

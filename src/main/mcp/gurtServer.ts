@@ -1,6 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { randomUUID } from 'node:crypto'
-import type { AddressInfo } from 'node:net'
 import { z } from 'zod'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
@@ -21,6 +20,7 @@ import {
   spawnableRoles
 } from '../../shared/types'
 import { ADMIN_TOOLS } from '../../shared/adminTools.generated'
+import { listenEphemeral } from '../listen'
 import { createLogger } from '../log'
 
 const log = createLogger('mcp')
@@ -823,20 +823,6 @@ interface RunningGurt {
  *  session without trusting the agent to name itself. Keyed by sessionId. */
 const running = new Map<string, RunningGurt>()
 
-function listen(server: Server): Promise<number> {
-  return new Promise((resolve, reject) => {
-    server.once('error', reject)
-    // 0.0.0.0 (not loopback) so the container can reach it via host.docker.internal.
-    server.listen(0, '0.0.0.0', () => {
-      // The startup reject is done its job; a *runtime* server error after this
-      // would otherwise call a settled promise's reject and vanish.
-      server.removeListener('error', reject)
-      server.on('error', (e) => log.error('internal.fail', { site: 'gurt-server', err: e }))
-      resolve((server.address() as AddressInfo).port)
-    })
-  })
-}
-
 /** The part of the hooks a running server is built from — its tool set and its
  *  instructions. A change means a fresh server, never a patched one. */
 const shapeOf = (h: GurtHooks): string =>
@@ -894,7 +880,8 @@ export async function ensureGurtServer(
   })
   // The record enters the map before any await, so a concurrent ensure for the
   // same session reuses this server instead of racing a second one into a leak.
-  rec.ready = listen(rec.http).then(
+  // 0.0.0.0 (not loopback) so the container can reach it via host.docker.internal.
+  rec.ready = listenEphemeral(rec.http, '0.0.0.0', 'gurt-server', undefined, log).then(
     (port): AcpHttpMcpServer => {
       rec.port = port
       log.info('mcp.start', { id: 'gurt', s: sessionId, mode: hooks.role, port })
