@@ -20,7 +20,7 @@ export const manifest: AgentManifest = {
   },
   // gemini cli speaks ACP itself (`--experimental-acp`) — no adapter package
   // besides the CLI, so `bin` is the CLI and the flag rides in `binArgs`.
-  adapterPackages: ['@google/gemini-cli@0.65.0'],
+  adapterPackages: ['@google/gemini-cli@0.66.0'],
   bin: 'gemini',
   binArgs: ['--experimental-acp'],
   secretEnv: 'GEMINI_API_KEY',

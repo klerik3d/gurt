@@ -21,7 +21,7 @@ export const manifest: AgentManifest = {
   },
   // @agentclientprotocol/claude-agent-acp bundles the Claude Agent SDK — the
   // claude-code image feature is not needed.
-  adapterPackages: ['@agentclientprotocol/claude-agent-acp@0.94.0'],
+  adapterPackages: ['@agentclientprotocol/claude-agent-acp@0.100.0'],
   bin: 'claude-agent-acp',
   binArgs: [],
   secretEnv: 'CLAUDE_CODE_OAUTH_TOKEN',
