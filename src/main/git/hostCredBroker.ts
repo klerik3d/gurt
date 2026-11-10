@@ -17,28 +17,15 @@
 // it that may be logged.
 import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http'
-import type { AddressInfo } from 'node:net'
 import { z } from 'zod'
 import type { CredentialEntry } from '../../shared/credentials'
 import { credentialIdentity, DEFAULT_TOKEN_USER } from '../../shared/credentials'
 import { canonicalRepoId } from '../../shared/repoId'
 import { listCredentials } from '../credentials'
+import { listenEphemeral } from '../listen'
 import { createLogger } from '../log'
 
 const log = createLogger('hostcredbroker')
-
-function listen(server: Server, host: string): Promise<number> {
-  return new Promise((resolve, reject) => {
-    server.once('error', reject)
-    server.listen(0, host, () => {
-      // The startup reject has done its job; a *runtime* server error after this
-      // would otherwise call a settled promise's reject and vanish.
-      server.removeListener('error', reject)
-      server.on('error', (e) => log.error('internal.fail', { site: 'hostcredbroker-server', err: e }))
-      resolve((server.address() as AddressInfo).port)
-    })
-  })
-}
 
 /** A credential fill is a handful of `key=value` lines — anything bigger, or a
  *  client that never ends its body, is a bad client, and a handler must not be
@@ -169,7 +156,7 @@ export function ensureHostCredBroker(): Promise<{ url: string }> {
     hostBroker = (async () => {
       const token = randomUUID()
       const http = buildHostServer(token)
-      const port = await listen(http, '127.0.0.1')
+      const port = await listenEphemeral(http, '127.0.0.1', 'hostcredbroker-server', undefined, log)
       log.info('hostcredbroker.start', { port })
       return { url: `http://127.0.0.1:${port}/host/${token}` }
     })().catch((e: unknown) => {
