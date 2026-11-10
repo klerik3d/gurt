@@ -593,6 +593,9 @@ export type InterruptedSession = Pick<SessionInfo, 'id' | 'title' | 'workspace' 
  * the overlays when a turn ends). Everything else is absent-or-set.
  */
 export interface SessionInfo {
+  /** Runtime queue summary, including messages to an already started session. */
+  pending?: PendingPromptInfo[] | undefined
+  queueWaiting?: string | undefined
   /** Durable activity/read stamps used by the archive policy. */
   lastActivityAt?: string | undefined
   lastContentAt?: string | undefined
@@ -979,9 +982,10 @@ export interface PromptContext {
  * not errors, so the composer accepts the message and this is where it stands
  * until the session is free.
  *
- * Persisted on main. Restored queues wait for the user to resume the session.
+ * Persisted on main. Only an interrupted turn requires confirmation after restart; queued work keeps its place.
  */
 export interface PendingPromptInfo {
+  queuedAt?: string | undefined
   id: string
   text: string
   /** Context chips attached to it — carried so taking the prompt back out of
@@ -1054,6 +1058,7 @@ export interface SessionSnapshot {
  * The timeline lives in the per-session JSONL log, not here.
  */
 export interface PersistedPrompt {
+  queuedAt?: string | undefined
   id: string
   text: string
   context?: PromptContext[] | undefined
