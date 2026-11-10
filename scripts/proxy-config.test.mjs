@@ -339,6 +339,21 @@ test('the config file is written atomically, 0600, in a 0700 directory', async (
   assert.equal(fs.existsSync(m.proxyConfigMount('s1')), false, 'teardown retires the directory')
 })
 
+test('parallel config writes leave one complete config and no temp files', async () => {
+  const configs = [plan([sel('linear')]).config, plan([sel('docs')]).config]
+  const files = await Promise.all(configs.map((config) => m.writeProxyConfig('sX', config)))
+  assert.deepEqual(files, [m.proxyConfigPath('sX'), m.proxyConfigPath('sX')])
+  const onDisk = JSON.parse(fs.readFileSync(m.proxyConfigPath('sX'), 'utf8'))
+  assert.ok(
+    configs.some((config) => JSON.stringify(onDisk) === JSON.stringify(config)),
+    'the final file contains one of the complete configs'
+  )
+  assert.deepEqual(
+    fs.readdirSync(m.proxyConfigMount('sX')).filter((name) => name.endsWith('.tmp')),
+    []
+  )
+})
+
 test('resolveProxyPlan reads the workspace registry and the credential store', async () => {
   await m.createWorkspace('ws')
   await m.setCredentials({ credentials: CREDENTIALS })
