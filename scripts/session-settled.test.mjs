@@ -106,7 +106,10 @@ test('incomplete: no contract tool even after the nudge is set before the event'
 })
 
 test('a plan hold settles limited — after the hold is recorded, with its end', async () => {
-  started('s5', ['alpha'], { agent: 'a9' }) // its own agent: the limit holds the whole account
+  // Its own agent: the limit holds the whole account. And its own clone: its
+  // queued continuation keeps its FIFO place on it through the hold (main's
+  // d1fb01e), so on `alpha` every later session here would wait behind it.
+  started('s5', ['beta'], { agent: 'a9' })
   agent('s5', async () => {
     throw new Error('429 too many requests — limit will reset in 2 hours')
   })

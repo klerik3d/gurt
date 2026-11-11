@@ -155,7 +155,15 @@ function life(inst, tag, { realSchedule = false } = {}) {
   const L = { inst, tag, kernel, hooks: {}, enq: [], execs: [], notices: [], notifs: [], prompts: {}, startMode: 'run' }
   const exOf = (sid) => kernel.sessions.sessionInfo(sid)?.reviewOf?.executor ?? sid
   const hook = (sid, name, ...a) => L.hooks[exOf(sid)]?.[name]?.(L, ...a)
-  if (!realSchedule) kernel.sessions.schedule = () => {}
+  // The stub keeps the real pass's drain half: since main's FIFO by clone
+  // (d1fb01e) a started session's queue is drained in the scheduler's walk, and
+  // a queued message restored without an interrupted turn is not `recovering`,
+  // so the boot's first pass — not the controller's resume — is what sends it.
+  // Only the starts are simulated.
+  if (!realSchedule)
+    kernel.sessions.schedule = () => {
+      for (const s of kernel.sessions['queuedSessions']()) if (s.info.state === 'started') void kernel.sessions['drainPending'](s)
+    }
 
   const realEnqueue = kernel.sessions.enqueue.bind(kernel.sessions)
   kernel.sessions.enqueue = (rid) => {
@@ -383,6 +391,10 @@ test('message — before its effect (the intent on disk, nothing enqueued): sent
 test('message — before its outcome (queued and persisted): found in the queue, sent once', async () => {
   const { c, L } = await messageScenario('afterMessage')
   assert.equal(findingsMessages(L, c).length, 1)
+  // Main's restart rules (d1fb01e): only an interrupted turn gets the restart
+  // prompt, and a restored queue adds no automatic continuation of its own.
+  assert.equal((L.prompts[c.id] ?? []).filter((t) => /The application restarted/.test(t)).length, 0, 'no restart prompt: no turn was interrupted')
+  assert.ok(!(L.prompts[c.id] ?? []).includes('continue'), 'and no extra continuation')
 })
 
 test('message — already taken off the queue (the in-flight marker): not sent again; the interrupted turn resumes with the restart prompt', async () => {
@@ -401,6 +413,45 @@ test('message — already taken off the queue (the in-flight marker): not sent a
   assert.equal(findingsMessages(L, c).length, 0, 'the message that may have reached the agent is not resent')
   assert.equal((L.prompts[c.id] ?? []).filter((t) => /The application restarted/.test(t)).length, 1, 'resumed by the controller, no human')
   assert.equal(L.kernel.sessions.interruptedSessions().length, 0, 'and left out of the Resume-sessions modal')
+})
+
+test('message in flight at the crash, a writer queued on the clone before it: the interrupted turn resumes, not behind that writer; the writer starts when the loop ends', async () => {
+  const c = start({ needFix: 1 })
+  const got = imageAt(c, 'onPrompt', (text) => text.startsWith('gurt review loop — round'))
+  c.begin()
+  await until(() => got.image, 'the findings message reached the agent')
+  // Queued before the crash, so FIFO by clone (d1fb01e) puts it ahead of the
+  // restart prompt the controller queues at boot; only the loop hold (§5.5)
+  // keeps it from starting.
+  const file = path.join(got.image, ws, c.task, 'sessions.json')
+  const recs = JSON.parse(fs.readFileSync(file, 'utf8'))
+  const rival = `q${process.pid}`
+  recs.push({
+    info: {
+      id: rival, env: 'dev', role: 'executor', repos: ['alpha'], repoModes: { alpha: 'write' }, task: c.task, workspace: ws,
+      title: 'rival', agent: 'a1', state: 'queued', queuedAt: new Date(Date.now() - 60_000).toISOString(), mcp: [], startPrompt: 'x'
+    },
+    acpSessionId: 'acp-rival'
+  })
+  fs.writeFileSync(file, JSON.stringify(recs))
+  const L = await reboot(c, got.image, {
+    realSchedule: true,
+    prepare: (L) => {
+      // The resumed fix answers the finding and leaves the tree as reviewed: the
+      // loop ends `no-progress`, with no second reviewer to start.
+      L.inst.agent(c.id, (n, text) => {
+        ;(L.prompts[c.id] ??= []).push(text)
+        const replies = L.kernel.reviewLoop.openFindings(c.id).map((findingId) => ({ findingId, resolution: 'declined', note: 'as is' }))
+        L.kernel.sessions['onComplete'](c.id, proposal('feat: first', { replies }))
+      })
+    }
+  })
+  await until(() => (L.prompts[c.id] ?? []).some((t) => /The application restarted/.test(t)), 'the interrupted turn resumed')
+  const end = await ended(L, c)
+  assert.equal(end.reason, 'no-progress', JSON.stringify(end))
+  assert.equal(findingsMessages(L, c).length, 0, 'the message in flight is not resent')
+  assert.equal((L.prompts[c.id] ?? []).length, 1, 'one restart prompt, nothing else')
+  await until(() => L.kernel.sessions.sessionInfo(rival)?.state !== 'queued', 'the writer starts once the loop let go')
 })
 
 // ================================================================= reviewer ===

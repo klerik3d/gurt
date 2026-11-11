@@ -237,6 +237,76 @@ test('releasing the hold re-arms the idle timer and lets the writer start', asyn
   assert.equal(kernel.releaseLoopHold('e2'), false, 'a second release is a no-op')
 })
 
+// --- the held executor's own work vs FIFO by clone (main's d1fb01e) -----------
+// §5.5: no other session takes a held clone, so a session queued on it waits for
+// the loop. The executor's own work must then not wait behind that session —
+// its prompt carries a later `queuedAt` than the queued one (a restart prompt,
+// the continuation of a plan-held turn), and FIFO alone would make each wait
+// for the other until the loop's deadline. After the release, FIFO resumes.
+const ownWork = {
+  'the restart prompt of its interrupted turn': async (id) => {
+    const live = kernel.sessions['sessions'].get(id)
+    live.interrupted = true
+    live.recovering = true
+    await kernel.sessions.resumeInterrupted(id)
+  },
+  // What `onLimited` leaves once the account's hold has lifted: the automatic
+  // continuation, stamped when the turn was cut off; the next scheduler pass
+  // drains it.
+  'the continuation of its plan-held turn': async (id) => {
+    kernel.sessions['sessions'].get(id).pending.push({ id: 'p-cont', auto: true, queuedAt: new Date().toISOString(), text: 'continue' })
+    kernel.sessions.schedule()
+  }
+}
+let own = 0
+for (const [what, queueOwn] of Object.entries(ownWork))
+  for (const mode of ['write', 'read-locked'])
+    test(`a held executor's own work (${what}) never waits behind a ${mode} session its hold keeps queued; that one starts at the release`, async () => {
+      for (const i of kernel.sessions.allSessions()) if (i.state === 'queued') kernel.sessions.deleteSession(i.id)
+      stops.length = 0
+      const id = `own${++own}`
+      // No `review`: the hold is taken by hand, the controller stays out.
+      started(id, ['alpha'], { title: `Exec ${id}` })
+      const ran = []
+      agent(id, async (n, text) => {
+        ran.push(text)
+        kernel.sessions['onComplete'](id, { version: 1, outcome: 'no_changes' })
+        return {}
+      })
+      kernel.sessions.holdForLoop(id)
+      const rival = kernel.sessions.createSession(ref, ['alpha'], 'a1', 'rival', 'queue', [], true, {},
+        mode === 'write' ? 'executor' : 'researcher', undefined, undefined, { alpha: mode })
+      // A started reader of the same clone, container down, with a typed message.
+      const reader = started(`${id}r`, ['alpha'], { role: 'researcher', repoModes: { alpha: 'read-locked' }, title: 'reader' }, { up: false })
+      agent(reader, async () => ({}))
+      try {
+        await kernel.sessions.prompt(reader, 'read it')
+        await tick()
+        assert.equal(state(rival.id), 'queued', 'the hold keeps the clone')
+        // Both sides say what they wait for: the loop, not each other.
+        const holds = `the review loop of session "Exec ${id}" holds "alpha"`
+        assert.equal(kernel.sessions.snapshot(rival.id).info.queueWaiting, `${holds} — this starts when the loop lets go`)
+        assert.equal(kernel.sessions.snapshot(reader).pendingBlocked, `${holds} — this sends when the loop lets go`)
+
+        await queueOwn(id)
+        await until(() => ran.length > 0 && !kernel.sessions['sessions'].get(id).promptRunning, `${id}'s own work ran`)
+        assert.match(ran[0], /^(The application restarted|continue$)/)
+        assert.equal((kernel.sessions.snapshot(id).pending ?? []).length, 0)
+        assert.equal(state(rival.id), 'queued', 'still the loop’s clone')
+        assert.deepEqual(stops, [])
+
+        // The release: FIFO again — the rival, queued first, starts; the reader's
+        // message is behind it.
+        assert.equal(kernel.releaseLoopHold(id), true)
+        await until(() => state(rival.id) !== 'queued', 'the rival starts after the release')
+        assert.deepEqual(stops.filter((x) => x.id === id), [{ id, reason: 'queue' }], 'handed off at the release, not before')
+      } finally {
+        // Nothing of this case may hold `alpha` for the next one.
+        kernel.sessions.releaseLoopHold(id)
+        for (const sid of [reader, id]) if (kernel.sessions.sessionInfo(sid)) kernel.sessions.deleteSession(sid)
+      }
+    })
+
 test('a deleted executor retains its reservation until the controller releases it', async () => {
   started('e3', ['beta'])
   kernel.sessions.holdForLoop('e3')

@@ -1017,6 +1017,58 @@ test('deleting the executor during delivery removes the session; the delivery fi
   assert.equal(git(c.remotes.alpha, 'rev-parse', c.task), c.head())
 })
 
+// ================================================ the loop hold vs FIFO by clone ===
+// §5.5 on top of main's FIFO by clone (d1fb01e): a session the user queues on the
+// executor's clone while the loop reviews waits for the loop — and the loop's own
+// work (the findings message) never waits for it. When the loop ends, it starts.
+for (const mode of ['write', 'read-locked'])
+  test(`a ${mode} session queued on the clone while the loop reviews: the findings message runs, and that session starts when the loop ends`, async () => {
+    const g = gate()
+    let rival = ''
+    let rivalAtFix
+    const c = await run({
+      wait: false,
+      exec: (n, t, c) => {
+        if (n === 1) {
+          write(c.dir(), 'status.txt', 'good\nv1\n')
+          return c.changes('feat: v1')
+        }
+        rivalAtFix = kernel.sessions.sessionInfo(rival).state
+        // Answered, the diff left as it was: the loop ends `no-progress`
+        // with no second reviewer to start (§5.2).
+        c.changes('feat: v1', { replies: [{ findingId: 'R1.F1', resolution: 'declined', note: 'keeping it' }] })
+      },
+      rev: async (round, t, c, rid) => {
+        await g
+        c.submit(rid, { verdict: 'request_changes', findings: [blocker()] })
+      }
+    })
+    await until(() => c.reviewers.length === 1 && c.reviewers[0].texts.length === 1, 'the reviewer is running')
+    rival = kernel.sessions.createSession({ workspace: ws, task: c.task, env: 'dev' }, ['alpha'], 'a1', 'rival', 'queue', [], true, {},
+      mode === 'write' ? 'executor' : 'researcher', undefined, undefined, { alpha: mode }).id
+    // No reviewer is created from here on: the real scheduler, so that the
+    // release's own `schedule()` is what starts the rival.
+    const schedule = kernel.sessions.schedule
+    kernel.sessions.schedule = Object.getPrototypeOf(kernel.sessions).schedule.bind(kernel.sessions)
+    try {
+      kernel.sessions.schedule()
+      await tick(50)
+      assert.equal(kernel.sessions.sessionInfo(rival).state, 'queued', 'the loop holds the clone')
+      assert.equal(kernel.sessions.snapshot(rival).info.queueWaiting,
+        `the review loop of session "Exec ${c.id}" holds "alpha" — this starts when the loop lets go`)
+      g.open()
+      await until(() => c.prompts.some((p) => p.startsWith('gurt review loop — round 1 of 2')), 'the findings message ran')
+      assert.equal(rivalAtFix, 'queued', 'it ran while the rival waited for the loop')
+      await finished(c)
+      needsYou(c, 'no-progress')
+      assert.equal(kernel.sessions.isLoopHeld(c.id), false)
+      await until(() => kernel.sessions.sessionInfo(rival).state !== 'queued', 'the rival starts once the loop let go')
+    } finally {
+      kernel.sessions.schedule = schedule
+      g.open() // a failure above must not leave the loop parked in review
+    }
+  })
+
 // ==================================================================== deadline ===
 test('the deadline runs 120 minutes from the start prompt; expiry cancels the turn (as the host) and ends `time-cap`', async () => {
   const g = gate()

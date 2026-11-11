@@ -371,6 +371,11 @@ interface Claim {
   exclusive: boolean
 }
 
+/** Readers–writer per clone: two claim sets collide on a clone they share
+ *  when at least one of the two claims is exclusive. */
+const claimsCollide = (a: readonly Claim[], b: readonly Claim[]): boolean =>
+  a.some((x) => b.some((y) => x.key === y.key && (x.exclusive || y.exclusive)))
+
 interface Session {
   info: SessionInfo
   ref: EnvRef
@@ -1221,13 +1226,24 @@ export class SessionManager {
       .sort((a, b) => this.queueTime(a).localeCompare(this.queueTime(b)))
   }
 
-  /** Earlier work keeps its place on shared clones, including during a limit hold. */
+  /** Earlier work keeps its place on shared clones, including during a limit hold.
+   *
+   *  Except behind the session's own review-loop hold
+   *  (docs/requirements-review-loop.md §5.5): a held executor's own work — the
+   *  loop's host messages, the continuation or restart prompt of its own turns —
+   *  never queues behind a session that cannot start *because of that hold*.
+   *  That session waits for the loop, the loop waits for this prompt, and both
+   *  would sit out the loop's deadline. Once the hold is released, FIFO
+   *  applies again. */
   private earlierQueueItem(s: Session): Session | undefined {
     const claims = this.claims(s)
+    const held = this.loopHolds.get(s.info.id)
     for (const other of this.queuedSessions()) {
       if (other === s) break
-      if (this.claims(other).some((a) => claims.some((b) =>
-        a.key === b.key && (a.exclusive || b.exclusive)))) return other
+      const theirs = this.claims(other)
+      if (!claimsCollide(theirs, claims)) continue
+      if (held && claimsCollide(theirs, held.claims)) continue
+      return other
     }
     return undefined
   }
@@ -1245,21 +1261,40 @@ export class SessionManager {
     if (!s.pending.length || s.busy) return undefined
     const hold = s.info.state === 'started' ? this.limitHold(s) : undefined
     if (hold) return this.holdText(hold)
+    // A review loop's gates before the place in the queue. They hold whatever
+    // position this message has: a delivery runs to its end (§5.6) and a loop
+    // hold lasts until the loop lets go (§5.5). An earlier item on the same
+    // clone is waiting for the same gate, so "waiting behind" it would point at
+    // a session that cannot move either. Once the gate lifts, FIFO decides.
+    if (this.deliveryActive(s)) return 'the review loop is delivering — this sends when it has finished'
+    const loop = this.loopHoldConflict(s)
+    if (loop) return this.loopHoldText(loop, 'sends')
     const earlier = this.earlierQueueItem(s)
     if (earlier) return `waiting behind session "${earlier.info.title}"`
-    if (this.deliveryActive(s)) return 'the review loop is delivering — this sends when it has finished'
     const conflict = this.repoConflict(s)
     if (!conflict) return undefined
     return `session "${conflict.holder.info.title}" has "${conflict.repo}" — this sends as soon as it lets go`
   }
 
   /** What a queued session is waiting for, when the answer is not the generic
-   *  "its turn / its clone": an account at its limit. */
+   *  "its turn / its clone": an account at its limit, a review loop's hold on
+   *  its clone (named: a loop can hold it for up to its deadline), or an
+   *  earlier item on its clone. */
   private queuedWaiting(s: Session): string | undefined {
     const hold = this.limitHold(s)
     if (hold) return this.holdText(hold)
+    const loop = this.loopHoldConflict(s)
+    if (loop) return this.loopHoldText(loop, 'starts')
     const earlier = this.earlierQueueItem(s)
     return earlier ? `waiting behind session "${earlier.info.title}"` : undefined
+  }
+
+  /** "The review loop of session "x" holds "alpha" — …": the wait on a loop
+   *  hold, said as one. A hold kept after its executor was deleted (§5.6) has
+   *  no session to name. */
+  private loopHoldText(c: { holder: { info: Pick<SessionInfo, 'id' | 'title'> }; repo: string }, does: 'sends' | 'starts'): string {
+    const who = this.sessions.has(c.holder.info.id) ? `the review loop of session "${c.holder.info.title}"` : 'a review loop'
+    return `${who} holds "${c.repo}" — this ${does} when the loop lets go`
   }
 
   snapshot(sessionId: string): SessionSnapshot | undefined {
@@ -1873,18 +1908,29 @@ export class SessionManager {
   private repoConflict(s: Session): { holder: { info: Pick<SessionInfo, 'id' | 'title'> }; repo: string } | undefined {
     const mine = this.claims(s)
     if (!mine.length) return undefined
-    for (const [id, held] of this.loopHolds) {
-      if (id === s.info.id) continue
-      for (const theirs of held.claims) {
-        const c = mine.find((m) => m.key === theirs.key)
-        if (c && (c.exclusive || theirs.exclusive)) return { holder: held, repo: c.repo }
-      }
-    }
+    const loop = this.loopHoldConflict(s)
+    if (loop) return loop
     for (const o of this.sessions.values()) {
       if (o.info.id === s.info.id || !this.holdsClone(o)) continue
       for (const theirs of this.claims(o)) {
         const c = mine.find((m) => m.key === theirs.key)
         if (c && (c.exclusive || theirs.exclusive)) return { holder: o, repo: c.repo }
+      }
+    }
+    return undefined
+  }
+
+  /** {@link repoConflict}'s first half: another executor's review-loop hold
+   *  (docs/requirements-review-loop.md §5.5) over one of this session's clones
+   *  — the holder whether or not its container is up, and whether or not the
+   *  session still exists. The session's own hold is never in its way. */
+  private loopHoldConflict(s: Session): { holder: { info: Pick<SessionInfo, 'id' | 'title'> }; repo: string } | undefined {
+    const mine = this.claims(s)
+    for (const [id, held] of this.loopHolds) {
+      if (id === s.info.id) continue
+      for (const theirs of held.claims) {
+        const c = mine.find((m) => m.key === theirs.key)
+        if (c && (c.exclusive || theirs.exclusive)) return { holder: held, repo: c.repo }
       }
     }
     return undefined
@@ -3767,10 +3813,16 @@ export class SessionManager {
     this.schedulePersist(s.ref)
     this.dropAutoContinue(s)
     this.bus.emit('session.changed', { sessionId })
-    this.schedule()
     // The composer's stop with something queued — a loop's message included —
     // is the user withdrawing it (§5.6: "cancels the loop's queued message").
+    // Told before the scheduler acts on what the queue freed, as `prompt` tells
+    // the loop before it drains: the pass starts sessions and drains queues
+    // synchronously, and their `session.state` / `session.turn` events must
+    // reach the controller after the act that came first — whose end it writes
+    // at once (§5.6). Silent for a session without a loop, so this order
+    // changes nothing for one.
     this.human(s, 'cancel')
+    this.schedule()
     return out
   }
 
@@ -3787,8 +3839,9 @@ export class SessionManager {
     // yourself": the session-level hold goes with it (the account's stays).
     if (gone?.auto) this.dropAutoContinue(s)
     this.bus.emit('session.changed', { sessionId })
-    this.schedule()
+    // The loop first, then the scheduler — as in `clearPending`.
     this.human(s, 'cancel')
+    this.schedule()
     return gone && !gone.auto ? pendingInfo(gone) : undefined
   }
 

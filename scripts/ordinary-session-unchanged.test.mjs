@@ -67,7 +67,11 @@ const changes = { version: 1, outcome: 'changes', commit: { subject: 'fix' } }
 // order, in a worktree) and must stay exactly that: `persist` is one write of
 // sessions.json — the one `prompt` makes, the pair every round-trip makes
 // around its prompt, the debounced one at the end. A loop session's extra write
-// and `session.settled` are not among them.
+// and `session.settled` are not among them. Recaptured on the rebase onto main
+// 98ac9fa (d1fb01e's scheduler): the plan-held n3's queue now reports its wait
+// once (`noteQueued`, the extra `session.changed` in its own list) instead of
+// emitting from a drain on every later pass (the `session.changed` that n4's
+// and n5's lists no longer have before their final turn end).
 const RT_START = ['session.activity', 'session.log', 'session.changed', 'session.changed', 'session.turn:started', 'persist']
 
 test('a normal turn: the pre-loop events and writes, nothing more', async () => {
@@ -112,7 +116,7 @@ test('a plan-hold limit', async () => {
     ...RT_START,
     'session.log', 'session.changed', 'persist',
     'session.changed', 'agent.turn', 'usage.changed', 'session.turn:ended:final',
-    'agent.limited', 'usage.changed', 'session.log', 'session.changed', 'session.changed', 'persist'
+    'agent.limited', 'usage.changed', 'session.log', 'session.changed', 'session.changed', 'session.changed', 'persist'
   ])
 })
 
@@ -126,7 +130,7 @@ test('a thrown turn', async () => {
     'persist',
     ...RT_START,
     'session.log', 'session.changed', 'persist',
-    'session.changed', 'agent.turn', 'usage.changed', 'session.changed', 'session.turn:ended:final',
+    'session.changed', 'agent.turn', 'usage.changed', 'session.turn:ended:final',
     'session.changed', 'persist'
   ])
 })
@@ -138,9 +142,9 @@ test('an incomplete turn (no contract tool even after the nudge)', async () => {
   assert.deepEqual(t, [
     'persist',
     ...RT_START, 'persist',
-    'session.changed', 'agent.turn', 'usage.changed', 'session.changed', 'session.turn:ended:nonfinal',
+    'session.changed', 'agent.turn', 'usage.changed', 'session.turn:ended:nonfinal',
     ...RT_START.slice(0, 5), 'persist', 'persist',
-    'session.changed', 'agent.turn', 'usage.changed', 'session.changed', 'session.turn:ended:final',
+    'session.changed', 'agent.turn', 'usage.changed', 'session.turn:ended:final',
     'session.log', 'session.changed', 'session.changed', 'session.changed', 'persist'
   ])
 })

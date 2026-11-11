@@ -134,6 +134,34 @@ test('stop drops a host message without handing it back; cancelling its row too'
   await done('d', 1)
 })
 
+test('withdrawing a queued message tells the loop before the scheduler acts on the freed queue', async () => {
+  // Main's queue cancels end with `schedule()` (d1fb01e); the loop's
+  // `session.human` comes first, as `prompt` announces before it drains.
+  started('o', ['alpha'])
+  const g = slowAgent('o')
+  await sm.prompt('o', 'work')
+  await g.in
+  const order = []
+  const off = kernel.bus.on('session.human', (e) => order.push(`human:${e.did}`))
+  const schedule = sm.schedule
+  sm.schedule = () => (order.push('schedule'), schedule.call(sm))
+  try {
+    await sm.hostPrompt('o', 'loop message', 'o.1')
+    order.length = 0
+    sm.clearPending('o')
+    assert.deepEqual(order, ['human:cancel', 'schedule'], 'clearPending')
+    await sm.hostPrompt('o', 'again', 'o.2')
+    order.length = 0
+    sm.cancelPending('o', sm.snapshot('o').pending[0].id)
+    assert.deepEqual(order, ['human:cancel', 'schedule'], 'cancelPending')
+  } finally {
+    sm.schedule = schedule
+    off()
+    g.out.open()
+  }
+  await done('o', 1)
+})
+
 test('cancel announces a human act; a host-side cancel does not', () => {
   started('e', ['alpha'])
   humans.length = 0
