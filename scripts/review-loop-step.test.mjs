@@ -390,6 +390,19 @@ test('live | deadline passed / permission open 15 min: time-cap / permission-wai
   assert.equal(loopStep(idle, { kind: 'tick', now: at(10_000) }).state, idle, 'an idle dormant loop has no deadline')
 })
 
+test('delivering | the deadline and the permission wait do not apply: delivery is exempt from both expiries (§5.2, §5.6)', () => {
+  const s = reviewing(cfg({ whenClean: 'commit' }))
+  const delivering = run(s, rv(s, verdict('approve', []))).state
+  assert.equal(delivering.phase, 'delivering')
+  // Long past the 120-minute deadline, and with a permission request open for hours: nothing ends it.
+  assert.equal(loopStep(delivering, { kind: 'tick', now: at(100_000) }).state, delivering, 'past the deadline')
+  assert.equal(loopStep(delivering, { kind: 'tick', now: at(100_000), permissionOpenSince: at(30) }).state, delivering, 'permission open')
+  assert.deepEqual(loopStep(delivering, { kind: 'tick', now: at(100_000), permissionOpenSince: at(30) }).actions, [])
+  // The same two ticks end the loop in every other live phase.
+  for (const live of [started(), checking(), reviewing(), fixing()])
+    assert.equal(endOf(run(live, { kind: 'tick', now: at(100_000) })).reason, 'time-cap', live.phase)
+})
+
 test('any | a controller fault: failed', () => {
   for (const s of [initialLoopState(cfg(), EX), started(), checking(), reviewing(), fixing()]) {
     const r = run(s, { kind: 'fault', error: 'check could not be stopped' })

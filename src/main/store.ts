@@ -1417,12 +1417,67 @@ export function writeProactiveState(ws: string, agent: string, state: ProactiveS
 
 const reviewLoopFile = (ws: string, task: string) => path.join(taskDir(ws, task), 'review-loop.json')
 
-/** The task's loops; a missing file is none. A file that does not parse is
- *  quarantined like the other store files (`readJson`), so the controller starts
- *  from none rather than refusing to boot. */
+// §8: validate durable decisions, never turn damaged history into a fresh loop.
+const LOOP_COUNT = z.number().int().nonnegative()
+const LOOP_STRINGS = z.record(z.string(), z.string())
+const LOOP_FINDING = z.object({ id: z.string(), file: z.string(), line: z.number().optional(),
+  severity: z.enum(['blocker', 'major', 'minor', 'nit']), claim: z.string(),
+  evidence: z.string().optional(), suggestion: z.string().optional() })
+const LOOP_DELIVERED = z.object({ repo: z.string(), step: z.enum(['commit', 'push', 'pr', 'merge']), ref: z.string(), note: z.string().optional() })
+const LOOP_END = z.discriminatedUnion('outcome', [
+  z.object({ outcome: z.literal('ready'), delivered: z.array(LOOP_DELIVERED), notes: z.array(LOOP_FINDING) }),
+  z.object({ outcome: z.literal('exhausted'), open: z.array(LOOP_FINDING) }),
+  z.object({ outcome: z.literal('needs-you'), reason: z.string(), detail: z.string().optional(), open: z.array(LOOP_FINDING), delivered: z.array(LOOP_DELIVERED) }),
+  z.object({ outcome: z.literal('failed'), error: z.string(), delivered: z.array(LOOP_DELIVERED) })
+])
+const LOOP_INTENT = z.discriminatedUnion('kind', [
+  z.object({ id: z.string(), kind: z.literal('check'), repos: z.array(z.string()) }),
+  z.object({ id: z.string(), kind: z.literal('message'), text: z.string() }),
+  z.object({ id: z.string(), kind: z.literal('reviewer'), round: LOOP_COUNT }),
+  ...(['stop-reviewer', 'delete-reviewer', 'cancel-turn'] as const).map((kind) => z.object({ id: z.string(), kind: z.literal(kind), sessionId: z.string() })),
+  z.object({ id: z.string(), kind: z.literal('deliver'), repo: z.string(), step: z.enum(['commit', 'push', 'pr', 'merge']), head: z.string() }),
+  z.object({ id: z.string(), kind: z.literal('end'), end: LOOP_END })
+])
+const STORED_LOOP = z.object({
+  version: z.literal(1), executor: z.string(),
+  config: z.object({ agent: z.string(), maxRounds: z.number().int().min(1).max(5), whenClean: z.enum(['notify', 'commit', 'push', 'pr', 'merge']), draftPr: z.boolean(), configValues: z.record(z.string(), z.union([z.string(), z.boolean()])).optional() }),
+  heldRepos: z.array(z.string()).optional(),
+  proposals: z.record(z.string(), z.object({ commit: z.object({ subject: z.string(), body: z.string().optional() }).optional(), pr: z.object({ title: z.string(), body: z.string().optional() }).optional() })).optional(),
+  phase: z.enum(['dormant', 'checking', 'proposing', 'reviewing', 'fixing', 'delivering', 'ended']),
+  round: LOOP_COUNT, redStreak: LOOP_COUNT, repaired: z.boolean(), base: LOOP_STRINGS,
+  lastHash: z.string().optional(), fixFrom: z.string().optional(), reviewedHash: z.string().optional(),
+  open: z.array(LOOP_FINDING), openAnswered: z.boolean(),
+  checks: z.array(z.object({ repo: z.string(), command: z.string(), code: z.number(), ms: z.number(), tail: z.array(z.string()), timedOut: z.boolean().optional() })),
+  reviewer: z.string().optional(),
+  rounds: z.array(z.object({ round: LOOP_COUNT, verdict: z.object({ version: z.literal(1), verdict: z.enum(['approve', 'request_changes']), summary: z.string(), findings: z.array(LOOP_FINDING), at: z.string(), round: LOOP_COUNT, turnId: z.string() }).optional(), replies: z.array(z.object({ findingId: z.string(), resolution: z.enum(['fixed', 'declined', 'refuted']), note: z.string() })).optional() })),
+  fingerprints: z.record(z.string(), z.object({ fixedIn: z.array(LOOP_COUNT), reraisedIn: z.array(LOOP_COUNT), blockerDeclinedIn: z.array(LOOP_COUNT) })),
+  deadline: z.string().datetime().optional(), holdExtensionMs: LOOP_COUNT, consumed: LOOP_STRINGS,
+  intents: z.array(LOOP_INTENT), nextIntent: LOOP_COUNT,
+  plan: z.array(z.object({ repo: z.string(), step: z.enum(['commit', 'push', 'pr', 'merge']) })).optional(),
+  delivered: z.array(LOOP_DELIVERED), turns: z.object({ executor: LOOP_COUNT, reviewer: LOOP_COUNT }),
+  end: LOOP_END.optional(), notified: z.boolean().optional()
+}).refine((s) => (s.phase === 'ended') === !!s.end)
+
+export class UnreadableReviewLoops extends Error {
+  constructor(readonly ids: string[]) { super('state-unreadable') }
+}
+
 export async function readReviewLoops(ws: string, task: string): Promise<Record<string, LoopState>> {
-  const raw = await readJson<Record<string, LoopState>>(reviewLoopFile(ws, task), {})
-  return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}
+  const file = reviewLoopFile(ws, task)
+  let raw: unknown
+  try {
+    raw = JSON.parse(await fs.readFile(file, 'utf8'))
+    const parsed = z.record(z.string(), STORED_LOOP).safeParse(raw)
+    if (!parsed.success || Object.entries(parsed.data).some(([id, s]) => id !== s.executor)) throw new Error('invalid loop state')
+    return raw as Record<string, LoopState>
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return {}
+    degraded = true
+    // Copy, do not rename: until failed tombstones land, the corrupt source
+    // must still block the next boot (§8), including a crash during quarantine.
+    await fs.copyFile(file, `${file}.corrupt-${Date.now()}`).catch(() => {})
+    throw new UnreadableReviewLoops(raw && typeof raw === 'object' && !Array.isArray(raw) ? Object.keys(raw) : [])
+  }
 }
 
 export function writeReviewLoops(ws: string, task: string, loops: Record<string, LoopState>): Promise<void> {

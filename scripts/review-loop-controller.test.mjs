@@ -39,6 +39,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { loopHarness, gate } from './lib/loop-harness.mjs'
+import { installGitGate, gateCommit } from './lib/git-gate.mjs'
+import { makeEvil } from './lib/evil-clone.mjs'
 
 // Host commits take the ambient identity (a git-host credential adds none).
 Object.assign(process.env, {
@@ -46,6 +48,7 @@ Object.assign(process.env, {
   GIT_COMMITTER_NAME: 'Test', GIT_COMMITTER_EMAIL: 'test@example.test'
 })
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'gurt-loop-ctl-'))
+installGitGate(scratch) // holds a host `git commit` where a test asks (hooks never run, §6)
 const origins = path.join(scratch, 'origins')
 fs.mkdirSync(origins)
 
@@ -670,13 +673,13 @@ test('a reviewed tree that moves before the verdict ends `tree-moved`; nothing i
   assert.throws(() => git(c.remotes.alpha, 'rev-parse', '--verify', '--quiet', `refs/heads/${c.task}`), 'nothing pushed')
 })
 
-test('a failing commit hook ends `delivery-failed` with nothing delivered', async () => {
+test('a failing commit ends `delivery-failed` with nothing delivered (git’s own failure: hooks do not run, §6)', async () => {
   const c = await run({
     wait: false,
     block: { whenClean: 'commit' },
     exec: (n, t, c) => {
-      fs.writeFileSync(path.join(c.dir(), '.git', 'hooks', 'pre-commit'), '#!/bin/sh\necho hook says no >&2\nexit 1\n', { mode: 0o755 })
       cleanExec(c, n)
+      if (n === 1) fs.writeFileSync(path.join(c.dir(), '.git', 'index.lock'), '') // a stale lock: `git add` refuses
     },
     rev: (r, t, c, rid) => approve(c, rid)
   })
@@ -686,6 +689,33 @@ test('a failing commit hook ends `delivery-failed` with nothing delivered', asyn
   assert.deepEqual(e.delivered, [])
   assert.equal(c.head(), c.bases.alpha)
 })
+
+// §10 (Fix 5): the clone's `.git` is the agent's; the loop's host git — the hash,
+// the reviewer's diff, every delivery step — runs nothing it names, and the
+// delivery still lands. A pre-commit hook that FAILS no longer ends delivery: no hook runs.
+for (const [repo, rung] of [['alpha', 'push'], ['lib', 'merge']]) {
+  test(`a hostile clone (hooks, fsmonitor, filter, diff driver, uploadpack…) runs nothing on the host through the whole loop — rung ${rung}`, async () => {
+    const hostile = {}
+    const c = await run({
+      repos: [repo],
+      block: { whenClean: rung },
+      exec: (n, t, c) => {
+        if (n !== 1) return
+        hostile.evil = makeEvil(c.dir(), fs.mkdtempSync(path.join(scratch, 'evil-')), { remote: c.remotes[repo] })
+        write(c.dir(), 'status.txt', 'good\ndelivered\n')
+        c.changes('feat: deliver me')
+      },
+      rev: (r, t, c, rid) => approve(c, rid)
+    })
+    // Before any plain git of this test touches the clone.
+    assert.deepEqual(hostile.evil.hits(), [])
+    assert.equal(endOf(c).outcome, 'ready', JSON.stringify(endOf(c)))
+    assert.deepEqual(endOf(c).delivered.map((d) => d.step), rung === 'push' ? ['commit', 'push'] : ['commit', 'merge'])
+    assert.match(c.reviewers[0].prompt, /delivered/, 'the reviewer was given the diff')
+    assert.equal(git(c.dir(), 'show', 'HEAD:status.txt'), 'good\ndelivered')
+    assert.equal(git(c.remotes[repo], 'rev-parse', rung === 'push' ? c.task : 'main'), c.head())
+  })
+}
 
 // ============================================================= stop loop ===
 test('stop loop ends `cancelled`, terminates the running check’s group and cancels nothing else', async () => {
@@ -921,21 +951,16 @@ test('takeover: the scope is not archived, and not auto-archived, while the loop
 })
 
 // ---- the delivery boundary (§5.6, "During delivery") ----------------------------
-/** A pre-commit hook that holds the first delivery step until `open()` — the step
- *  has started, so the cancellation boundary is behind us. */
-function gateCommit(dir) {
-  const flag = path.join(dir, '..', `gate-${path.basename(dir)}`)
-  const reached = `${flag}.reached`
-  fs.writeFileSync(path.join(dir, '.git/hooks/pre-commit'), `#!/bin/sh\ntouch ${JSON.stringify(reached)}\nn=0\nwhile [ ! -f ${JSON.stringify(flag)} ] && [ $n -lt 1200 ]; do sleep 0.05; n=$((n+1)); done\n`, { mode: 0o755 })
-  return { reached: () => fs.existsSync(reached), open: () => fs.writeFileSync(flag, '') }
-}
+/** Holds the first delivery step until `open()` — the step has started, so the
+ *  cancellation boundary is behind us. A `git` shim on PATH (hooks do not run). */
+const gateFirstCommit = () => gateCommit(scratch, 'hold')
 async function deliveringOn(gated = {}) {
   const c = await run({
     wait: false,
     block: { whenClean: 'push' },
     exec: (n, t, c) => {
       if (n === 1) {
-        gated.g = gateCommit(c.dir())
+        gated.g = gateFirstCommit()
         cleanExec(c, n)
       }
     },
@@ -1187,6 +1212,7 @@ test('end persistence failure keeps reservation and retries notification after s
     assert.ok(c.st()?.end?.cleanupPending, 'persistence failure is visibly pending')
     assert.equal(kernel.sessions.isLoopHeld(c.id), true)
     assert.equal(c.st().notified, false)
+    assert.equal(endNotices(c).length, 1, 'emit before marking; retry must not duplicate in this life')
     fs.rmdirSync(file)
     fs.renameSync(`${file}.saved`, file)
     nowMs += 300_001
@@ -1202,3 +1228,38 @@ test('end persistence failure keeps reservation and retries notification after s
     }
   }
 })
+
+for (const failures of [2, 3]) {
+  test(`settled persistence fails ${failures} times: durable retry or store fault with hold`, async () => {
+    const persist = kernel.sessions.persistNow
+    let attempts = 0
+    let target
+    const settles = []
+    const off = kernel.bus.on('session.settled', (e) => settles.push(e.sessionId))
+    kernel.sessions.persistNow = async function (s) {
+      if (s.info.id === target && s.lastSettled && attempts < failures) {
+        attempts++
+        throw new Error('injected settled write failure')
+      }
+      return persist.call(this, s)
+    }
+    try {
+      const c = await run({
+        exec: (n, t, c) => { target = c.id; c.complete({ version: 1, outcome: 'blocked', reason: 'test' }) }
+      })
+      assert.equal(attempts, failures)
+      if (failures === 3) {
+        assert.equal(c.st().end.outcome, 'failed')
+        assert.equal(c.st().end.error, 'store')
+        assert.equal(settles.includes(c.id), false, 'no undurable controller input')
+        assert.equal(kernel.sessions.isLoopHeld(c.id), true)
+        assert.equal(kernel.sessions.lastSettledOf(c.id), undefined)
+      } else {
+        assert.equal(c.st().end.reason, 'executor-blocked')
+        assert.equal(settles.filter((id) => id === c.id).length, 1)
+        assert.equal(kernel.sessions.isLoopHeld(c.id), false)
+      }
+      assert.equal(endNotices(c).length, 1)
+    } finally { kernel.sessions.persistNow = persist; off() }
+  })
+}

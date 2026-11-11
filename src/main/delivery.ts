@@ -3,7 +3,10 @@
 // controller calls one step at a time — all commits, then pushes, then PRs or
 // merges (`deliveryPlan` in shared/reviewLoop.ts orders them). Host side only;
 // no credential ever enters a container (every call runs under the repo's
-// resolved host git access, git/env.ts).
+// resolved host git access, git/env.ts). The clone is the agent's to write, so
+// every git call here is UNATTENDED (§6, §10): the clone's program-running
+// config is pinned and no git hook runs (git/harden.ts) — the repo's `check`
+// command is the quality gate, not its hooks.
 //
 // Each step is safe to look for and to repeat (§8): the controller writes the
 // intent before the effect and the outcome after, and after a crash in between
@@ -12,7 +15,7 @@
 // DeliveredStep instead of doing it twice. Nothing is rolled back and nothing
 // on a forge is ever merged; a failing step throws a typed DeliveryError.
 import { cloneDir } from './store'
-import { hostGitAccessForRepo, type HostGitAccess } from './git/env'
+import { unattendedGitAccessForRepo as hostAccess, type HostGitAccess } from './git/env'
 import { findOpenPullRequest, localRepoNoPr, openPullRequest } from './git/pullRequest'
 import { FETCH_TIMEOUT_MS, branchFor, commit, defaultBranch, git, mergeToMain, push, revParse, serialized } from './changes'
 import { diffHash, parseDiffHash, repoTree } from './treeHash'
@@ -30,7 +33,8 @@ export type DeliveryStepResult = DeliveredStep & { note?: string | undefined; fo
 export type DeliveryErrorKind =
   | 'tree-moved' // the working tree (or HEAD) is no longer what the reviewer saw
   | 'no-commit-text' // a changed write repo has no commit text in any proposal
-  | 'commit-failed' // `git commit` — typically a pre-commit hook
+  | 'wrong-branch' // HEAD is not the task branch (§6): nothing is committed or pushed from it
+  | 'commit-failed' // `git add` / `git commit` failed (hooks are off: never a hook)
   | 'push-failed'
   | 'non-fast-forward' // the remote branch diverged from HEAD; never forced
   | 'pr-failed' // `gh`, or a repo that cannot take a PR
@@ -152,7 +156,7 @@ async function changedRepos(ws: string, task: string, repos: readonly string[]):
   const out: string[] = []
   for (const repo of repos) {
     const dir = cloneDir(ws, task, repo)
-    const access = await hostGitAccessForRepo(ws, repo)
+    const access = await hostAccess(ws, repo)
     const [now, head] = await Promise.all([repoTree(ws, task, repo), headTree(dir, access)])
     if (now.tree !== head) out.push(repo)
   }
@@ -160,17 +164,23 @@ async function changedRepos(ws: string, task: string, repos: readonly string[]):
 }
 
 /**
- * §6's two checks before any step: the hash is still the reviewed one
- * (`tree-moved`), and every changed write repo has a commit text
- * (`no-commit-text`). Throws a {@link DeliveryError} with nothing done.
+ * §6's checks before any step: the hash is still the reviewed one
+ * (`tree-moved`), every changed write repo has a commit text
+ * (`no-commit-text`) and is on the task branch (`wrong-branch`). Throws a
+ * {@link DeliveryError} with nothing done.
  */
 export async function checkDeliveryPreconditions(ctx: DeliveryContext, writeRepos: readonly string[]): Promise<void> {
   const now = await diffHash(ctx.ws, ctx.task, writeRepos)
   if (now !== ctx.reviewedHash)
     throw new DeliveryError('tree-moved', 'the working tree changed after the review; nothing was delivered')
-  const missing = (await changedRepos(ctx.ws, ctx.task, writeRepos)).filter((r) => !commitMessage(ctx.proposalFor(r)))
+  const changed = await changedRepos(ctx.ws, ctx.task, writeRepos)
+  const missing = changed.filter((r) => !commitMessage(ctx.proposalFor(r)))
   if (missing.length)
     throw new DeliveryError('no-commit-text', `no commit text for ${missing.join(', ')}; nothing was delivered`)
+  // Every changed repo is on its task branch, before the first one is committed
+  // (a half delivery is the worse outcome); each step checks again.
+  for (const repo of changed)
+    await expectBranch(cloneDir(ctx.ws, ctx.task, repo), await hostAccess(ctx.ws, repo), ctx.task, repo)
 }
 
 /** Where a recovery probe needs the remote as it is now. A failed fetch is
@@ -181,6 +191,23 @@ async function fetchOrigin(dir: string, access: HostGitAccess): Promise<void> {
   } catch (e) {
     log.warn('fetch before a delivery step failed', { dir, err: e })
   }
+}
+
+/** HEAD must BE the task branch (§6): the push rung pushes `origin <task
+ *  branch>`, the MCP tool pushes `HEAD`, and `gh pr create` takes the head from
+ *  the current branch — all three mean the same only on that branch. A detached
+ *  HEAD or another branch (the agent can `git switch`) fails `wrong-branch`
+ *  before anything is committed or pushed. */
+async function expectBranch(
+  dir: string,
+  access: HostGitAccess,
+  task: string,
+  repo: string,
+  step?: DeliveredStep['step']
+): Promise<void> {
+  const on = (await git(dir, access, ['symbolic-ref', '--short', '--quiet', 'HEAD'], { okCodes: [0, 1] })).trim()
+  if (on !== branchFor(task))
+    throw new DeliveryError('wrong-branch', `${repo}: HEAD is ${on ? `on ${on}` : 'detached'}, not on the task branch ${branchFor(task)}`, repo, step)
 }
 
 /** HEAD must still be the commit the step was decided for ('' = unchecked). */
@@ -196,10 +223,11 @@ const short = (sha: string): string => sha.slice(0, 12)
 /** §8 `deliver` commit. `head` = HEAD before the commit (the intent's). */
 async function deliverCommit(ctx: DeliveryContext, repo: string, head: string): Promise<DeliveryStepResult> {
   const dir = cloneDir(ctx.ws, ctx.task, repo)
-  const access = await hostGitAccessForRepo(ctx.ws, repo)
+  const access = await hostAccess(ctx.ws, repo)
   const step = 'commit'
   const reviewed = parseDiffHash(ctx.reviewedHash)?.[repo]
   if (!reviewed) throw new DeliveryError('tree-moved', `the reviewed hash has no entry for ${repo}`, repo, step)
+  await expectBranch(dir, access, ctx.task, repo, step)
   const now = await repoTree(ctx.ws, ctx.task, repo)
   // Found: HEAD moved since the intent was written and its tree is the
   // reviewed tree — the commit happened and only its record was lost.
@@ -216,8 +244,9 @@ async function deliverCommit(ctx: DeliveryContext, repo: string, head: string): 
   const message = commitMessage(ctx.proposalFor(repo))
   if (!message) throw new DeliveryError('no-commit-text', `no commit text for ${repo}`, repo, step)
   try {
-    // Hooks enabled (§6); the message is prose, never logged (changes.commit).
-    await commit(ctx.ws, ctx.task, repo, message)
+    // Unattended: hardened git, no hooks (§6) — `--no-verify` and an empty
+    // `core.hooksPath`; the message is prose, never logged (changes.commit).
+    await commit(ctx.ws, ctx.task, repo, message, { noVerify: true }, true)
   } catch (e) {
     throw new DeliveryError('commit-failed', tailOf(e), repo, step)
   }
@@ -228,9 +257,10 @@ async function deliverCommit(ctx: DeliveryContext, repo: string, head: string): 
  *  done — equal, or advanced since by someone else (reported). */
 async function deliverPush(ctx: DeliveryContext, repo: string, head: string): Promise<DeliveryStepResult> {
   const dir = cloneDir(ctx.ws, ctx.task, repo)
-  const access = await hostGitAccessForRepo(ctx.ws, repo)
+  const access = await hostAccess(ctx.ws, repo)
   const step = 'push'
   const branch = branchFor(ctx.task)
+  await expectBranch(dir, access, ctx.task, repo, step)
   const at = await expectHead(dir, access, repo, head)
   await fetchOrigin(dir, access)
   const remote = await revParse(dir, access, `refs/remotes/origin/${branch}`)
@@ -244,7 +274,7 @@ async function deliverPush(ctx: DeliveryContext, repo: string, head: string): Pr
       throw new DeliveryError('non-fast-forward', `origin/${branch} (${short(remote)}) has diverged from ${short(at)}; not pushed`, repo, step)
   }
   try {
-    await push(ctx.ws, ctx.task, repo)
+    await push(ctx.ws, ctx.task, repo, { noVerify: true }, true)
   } catch (e) {
     const tail = tailOf(e)
     throw new DeliveryError(/non-fast-forward|\(fetch first\)/i.test(tail) ? 'non-fast-forward' : 'push-failed', tail, repo, step)
@@ -255,8 +285,9 @@ async function deliverPush(ctx: DeliveryContext, repo: string, head: string): Pr
 /** §8 `deliver` merge (local repos): the same probe against the default branch. */
 async function deliverMerge(ctx: DeliveryContext, repo: string, head: string): Promise<DeliveryStepResult> {
   const dir = cloneDir(ctx.ws, ctx.task, repo)
-  const access = await hostGitAccessForRepo(ctx.ws, repo)
+  const access = await hostAccess(ctx.ws, repo)
   const step = 'merge'
+  await expectBranch(dir, access, ctx.task, repo, step)
   const at = await expectHead(dir, access, repo, head)
   await fetchOrigin(dir, access)
   const def = await defaultBranch(dir, access)
@@ -268,7 +299,7 @@ async function deliverMerge(ctx: DeliveryContext, repo: string, head: string): P
   }
   try {
     // Fast-forward only: a branch behind the default is refused (changes.ts).
-    await mergeToMain(ctx.ws, ctx.task, repo)
+    await mergeToMain(ctx.ws, ctx.task, repo, true)
   } catch (e) {
     const tail = tailOf(e)
     throw new DeliveryError(/is behind|non-fast-forward/i.test(tail) ? 'non-fast-forward' : 'merge-failed', tail, repo, step)
@@ -280,7 +311,7 @@ async function deliverMerge(ctx: DeliveryContext, repo: string, head: string): P
  *  (draft per the block). GitHub only today. */
 async function deliverPr(ctx: DeliveryContext, repo: string, head: string): Promise<DeliveryStepResult> {
   const dir = cloneDir(ctx.ws, ctx.task, repo)
-  const access = await hostGitAccessForRepo(ctx.ws, repo)
+  const access = await hostAccess(ctx.ws, repo)
   const step = 'pr'
   const branch = branchFor(ctx.task)
   if (access.mode === 'local') throw new DeliveryError('pr-failed', localRepoNoPr(repo), repo, step)
@@ -288,13 +319,14 @@ async function deliverPr(ctx: DeliveryContext, repo: string, head: string): Prom
     throw new DeliveryError('pr-failed', `git access is blocked: ${access.reason ?? 'no credential resolves'}`, repo, step)
   if (!access.host?.includes('github'))
     throw new DeliveryError('pr-failed', `pull requests are opened on GitHub only (origin host: ${access.host ?? 'unknown'})`, repo, step)
+  await expectBranch(dir, access, ctx.task, repo, step)
   await expectHead(dir, access, repo, head)
   const found = await findOpenPullRequest(ctx.ws, repo, dir, branch)
   if (found && 'error' in found) throw new DeliveryError('pr-failed', tailOf(found.error), repo, step)
   if (found) return { repo, step, ref: found.url, found: true, note: 'a pull request for this branch was already open' }
   const { title, body } = prTexts(repo, ctx.proposalFor(repo), ctx.notes)
   // The push rung has pushed already: the function does not push again.
-  const r = await openPullRequest(ctx.ws, repo, dir, { title, body, draft: ctx.draftPr, push: false })
+  const r = await openPullRequest(ctx.ws, repo, dir, { title, body, draft: ctx.draftPr, push: false, unattended: true })
   if (!r.ok) throw new DeliveryError('pr-failed', tailOf(r.text), repo, step)
   return { repo, step, ref: r.url ?? r.text.trim().split('\n').pop() ?? branch }
 }

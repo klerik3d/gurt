@@ -4,7 +4,7 @@
 // that instant (`h.image()` — what a crash leaves behind), and a SECOND kernel
 // is booted on the copy. The first one is the dead process: it keeps running in
 // its own root and is never looked at again, except for the effects that are
-// shared on purpose (the bare origins) and are therefore gated by hooks.
+// shared on purpose (the bare origins) and are therefore gated by a post-receive hook and a `git` shim.
 //
 // Pinned here, around every intent — before it is written (the settle that
 // decides it), before its effect, before its outcome — and between a settle and
@@ -19,7 +19,7 @@
 //   - `check`     : the executor's container is stopped (§5.3), then the check reruns;
 //   - `deliver`   : commit / push found done by looking (HEAD, the remote); a
 //                   remote that advanced after our push is reported, not pushed to;
-//   - `end`       : notified exactly once, never again after a restart;
+//   - `end`       : notified once per life; an unmarked emission reappears after restart;
 //   - the deadline counts the time the app was down;
 //   - the holds are in place before the scheduler's first pass;
 //   - a resume that fails ends the loop `executor-error`.
@@ -33,6 +33,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { loopHarness } from './lib/loop-harness.mjs'
+import { installGitGate } from './lib/git-gate.mjs'
 
 Object.assign(process.env, {
   GIT_AUTHOR_NAME: 'Test', GIT_AUTHOR_EMAIL: 'test@example.test',
@@ -42,6 +43,7 @@ const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'gurt-loop-rec-'))
 const origins = path.join(scratch, 'origins')
 fs.mkdirSync(origins)
 const gates = []
+installGitGate(scratch) // `GATE_COMMIT=pre|post` holds a host `git commit` (no clone hook runs, §6)
 after(async () => {
   // The dead kernel's loops are still running in their own roots: end them, which
   // also stops (kills) a check still sleeping in the background.
@@ -102,8 +104,8 @@ exit 1
 `
 let seq = 0
 /** A task with a clone per repo on branch `<task>` and its own bare origin. `gated`
- *  installs the blocking hooks the delivery scenarios freeze the dead kernel with
- *  (pre/post-commit in the clone, post-receive in the origin) and a counter of
+ *  installs what the delivery scenarios freeze the dead kernel with (a held
+ *  `git commit` through the PATH shim, post-receive in the origin) and a counter of
  *  pushes the origin received. */
 function fixture(repos, gated = []) {
   const task = `t${++seq}`
@@ -125,10 +127,9 @@ function fixture(repos, gated = []) {
     git(dir, 'push', '-q', 'origin', 'HEAD:main')
     git(dir, 'fetch', '-q', 'origin')
     remotes[name] = remote
-    for (const hook of gated) {
-      const where = hook === 'post-receive' ? path.join(remote, 'hooks') : path.join(dir, '.git/hooks')
-      fs.writeFileSync(path.join(where, hook), GATE, { mode: 0o755 })
-    }
+    // The origin's hook still runs (a push is received by the origin); the clone's
+    // never do, so a commit is held by the `git` shim (`GATE_COMMIT`, in `start`).
+    if (gated.includes('post-receive')) fs.writeFileSync(path.join(remote, 'hooks', 'post-receive'), GATE, { mode: 0o755 })
     // Every origin counts the pushes it receives.
     fs.writeFileSync(path.join(remote, 'hooks/pre-receive'), `#!/bin/sh\necho push >> ${JSON.stringify(path.join(remote, 'received.log'))}\n`, { mode: 0o755 })
   }
@@ -256,6 +257,8 @@ function start({ repos = ['alpha'], needFix = 0, whenClean = 'notify', gated = [
     c.gate = fs.mkdtempSync(path.join(scratch, 'gate-'))
     gates.push(c.gate)
     process.env.GATE_DIR = c.gate
+    if (gated.includes('pre-commit')) process.env.GATE_COMMIT = 'pre'
+    if (gated.includes('post-commit')) process.env.GATE_COMMIT = 'post'
   }
   c.begin = () => void A.kernel.sessions['runPrompt'](A.kernel.sessions['sessions'].get(id), c.startPrompt)
   return c
@@ -264,6 +267,7 @@ function start({ repos = ['alpha'], needFix = 0, whenClean = 'notify', gated = [
 /** Crash life `from` at the image `image` and boot the next life on it. */
 async function reboot(c, image, /** @type {{ tag?: string, realSchedule?: boolean, prepare?: (L: any) => void }} */ { tag = 'B', realSchedule = false, prepare } = {}) {
   delete process.env.GATE_DIR // the second life's git hooks do not block
+  delete process.env.GATE_COMMIT
   // The dead kernel's executor says nothing more (its loop would otherwise carry
   // on in its own root, re-running checks and holding the event loop open).
   h.agent(c.id, () => new Promise(() => {}))
@@ -293,9 +297,10 @@ const findingsMessages = (L, c) => (L.prompts[c.id] ?? []).filter((t) => t.start
 /** Take the image the first time hook `name` fires on this executor (and `when`,
  *  given the hook's arguments after `L`, holds). */
 const imageAt = (c, name, when) => {
-  const got = { image: undefined }
+  const got = { image: undefined, notices: 0 }
   A.hooks[c.id][name] = (L, ...a) => {
     if (got.image || (when && !when(...a))) return
+    got.notices = endNotices(L, c).length
     got.image = h.image()
   }
   return got
@@ -484,10 +489,13 @@ async function frozenAt(c, hookFile) {
 }
 /** Let the dead kernel's blocked hook go (it exits 1, so it commits and pushes nothing more
  *  of consequence) — the runner does not end the file while a child still runs. */
-const release = (c) => fs.writeFileSync(path.join(c.gate, 'go'), '')
+const release = (c) => {
+  fs.writeFileSync(path.join(c.gate, 'go'), '')
+  delete process.env.GATE_COMMIT
+}
 const commitsOver = (L, c) => Number(git(dirOf(L, c), 'rev-list', '--count', `${c.fx.bases.alpha}..HEAD`))
 
-test('deliver commit — before its effect (the commit is held in pre-commit): committed once, then pushed once', async () => {
+test('deliver commit — before its effect (the commit is held before it runs): committed once, then pushed once', async () => {
   const c = start({ whenClean: 'push', gated: ['pre-commit'] })
   c.begin()
   try {
@@ -559,21 +567,24 @@ test('end — before the notification: notified once in the second life, hold re
   assert.equal(disk.intents.at(-1).kind, 'end')
   const L = await reboot(c, got.image)
   await ended(L, c)
-  assert.equal(endNotices(L, c).length, 1)
+  assert.equal(got.notices + endNotices(L, c).length, 1, 'exactly one observed end across the crash boundary')
   assert.deepEqual(notifsOf(L, c).map((n) => n.type), ['proposal'])
   assert.equal(L.kernel.sessions.isLoopHeld(c.id), false)
   assert.deepEqual(stateOf(L, c).intents, [])
 })
 
-test('end — after `notified` was written, before the event: not notified again (at-most-once)', async () => {
+test('end — crash after emission before its mark: re-announced into the fresh ring', async () => {
   const c = start()
   const got = imageAt(c, 'onNotice')
   c.begin()
   await until(() => got.image, 'onNotice')
+  const disk = JSON.parse(fs.readFileSync(path.join(got.image, ws, c.task, 'review-loop.json'), 'utf8'))[c.id]
+  assert.ok(!disk.notified, 'emission precedes the durable mark')
+  assert.equal(got.notices, 1, 'the old ring observed the emission before the crash')
   const L = await reboot(c, got.image)
   await ended(L, c)
-  assert.equal(endNotices(L, c).length, 0)
-  assert.deepEqual(notifsOf(L, c), [])
+  assert.equal(endNotices(L, c).length, 1)
+  assert.equal(notifsOf(L, c).length, 1, 'only one visible entry in the fresh in-memory ring')
   assert.equal(L.kernel.sessions.isLoopHeld(c.id), false, 'the hold is released all the same')
   assert.deepEqual(stateOf(L, c).intents, [])
 })
@@ -702,3 +713,35 @@ echo https://github.com/o/alpha/pull/1
     if (rung === 'pr') assert.equal(fs.readFileSync(prLog, 'utf8').trim(), 'create')
   } finally { release(c) }
 })
+
+for (const damage of ['syntax', 'shape', 'nested', 'orphan-syntax']) {
+  test(`unreadable loop state (${damage}) fails closed and never replays lastSettled`, async () => {
+    const c = start()
+    const got = imageAt(c, 'atEnd')
+    c.begin()
+    await until(() => got.image, 'atEnd')
+    const file = path.join(got.image, ws, c.task, 'review-loop.json')
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'))
+    if (damage === 'nested') raw[c.id].consumed = []
+    const bytes = damage.endsWith('syntax') ? '{broken' : damage === 'shape' ? JSON.stringify({ [c.id]: {} }) : JSON.stringify(raw)
+    fs.writeFileSync(file, bytes)
+    if (damage === 'orphan-syntax') {
+      fs.writeFileSync(path.join(path.dirname(file), 'sessions.json'), '[]')
+      c.id = `unreadable:${ws}:${c.task}`
+    }
+    const L = await reboot(c, got.image)
+    await ended(L, c)
+    assert.equal(stateOf(L, c).end.outcome, 'failed')
+    assert.equal(stateOf(L, c).end.error, 'state-unreadable')
+    assert.equal(L.kernel.sessions.isLoopHeld(c.id), true)
+    assert.equal(L.enq.length, 0, 'no new reviewer or reconstructed round')
+    assert.equal(endNotices(L, c).length, 1)
+    const quarantined = fs.readdirSync(path.dirname(file)).find((n) => n.startsWith('review-loop.json.corrupt-'))
+    assert.ok(quarantined)
+    assert.equal(fs.readFileSync(path.join(path.dirname(file), quarantined), 'utf8'), bytes)
+    L.kernel.reviewLoop.tick()
+    await L.kernel.reviewLoop.idle()
+    assert.equal(endNotices(L, c).length, 1, 'idempotent end tail')
+    assert.equal(L.kernel.sessions.isLoopHeld(c.id), true)
+  })
+}

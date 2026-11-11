@@ -207,8 +207,12 @@ function NonStartedPane({
         ? 'an agent'
         : null
   // An executor draft's Review block must be able to start (§3): the same
-  // verdict the Config tab shows, and main refuses the start for it too.
-  const reviewProblem = useReviewBlock(tree, info).problem
+  // verdict the Config tab shows, and main refuses the start for it too. The
+  // pane is also where the anchor repo's review defaults are written into the
+  // draft (`autoSeed`) — not the Config tab, which is only mounted while it is
+  // selected — and Run waits for them, so a draft that already has its agent,
+  // env and repos cannot start without the loop its repository asks for.
+  const reviewProblem = useReviewBlock(tree, info, true).problem
   const canRun = !!text.trim() && !missing && !reviewProblem
 
   return (

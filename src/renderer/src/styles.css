@@ -2205,6 +2205,12 @@ button.sb-session {
   color: var(--dim);
   cursor: pointer;
 }
+/* A picker menu whose items are buttons (keyboard-reachable) fills its row like
+   the div items of the older pickers. */
+.pick-menu > button.menu-item {
+  width: 100%;
+  text-align: left;
+}
 .rv-line {
   display: flex;
   flex-direction: column;

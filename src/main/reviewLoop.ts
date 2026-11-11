@@ -29,7 +29,7 @@
 // is exactly-once (an intent is confirmed once, a settled turn consumed once);
 // an external effect is looked for before it is repeated, and where it cannot
 // be known whether it happened the loop prefers not to repeat it (a message
-// that may have reached the agent, a notification already marked sent).
+// that may have reached the agent). Notifications retry until marked (§8).
 import type { EnvRef, ReviewFinding, SessionInfo } from '../shared/types'
 import { sessionRole, writeRepos } from '../shared/types'
 import {
@@ -50,7 +50,7 @@ import type { SessionManager } from './sessions'
 import * as store from './store'
 import { cloneDir } from './store'
 import * as changes from './changes'
-import { hostGitAccessForRepo } from './git/env'
+import { unattendedGitAccessForRepo } from './git/env'
 import { diffHash, parseDiffHash, repoTree } from './treeHash'
 import { CheckRunner, type ExecChild } from './reviewCheck'
 import { DeliveryError, checkDeliveryPreconditions, deliverStep, type DeliveryContext } from './delivery'
@@ -353,7 +353,7 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
   async function baseTree(id: string, repo: string, commit: string): Promise<string> {
     if (!commit) return EMPTY_TREE
     const w = where.get(id)!
-    return changes.revParse(cloneDir(w.ws, w.task, repo), await hostGitAccessForRepo(w.ws, repo), `${commit}^{tree}`)
+    return changes.revParse(cloneDir(w.ws, w.task, repo), await unattendedGitAccessForRepo(w.ws, repo), `${commit}^{tree}`)
   }
 
   interface Facts {
@@ -522,11 +522,13 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
 
   /** One write repo against its base: the same tree `diffHash` hashed (all
    *  tracked changes plus untracked, non-ignored files), so what the reviewer
-   *  reads is what a commit would record. Host git, hooks and external diff
-   *  drivers off (§10). */
+   *  reads is what a commit would record. Host git, unattended: the clone's
+   *  config, hooks, filters and external diff / textconv drivers do not run
+   *  (§10; `changes.git` hardens, and `diff` gets `--no-ext-diff --no-textconv`
+   *  from it as well as from the explicit flags here). */
   async function reviewedRepo(w: { ws: string; task: string }, repo: string, base: string): Promise<ReviewedRepo> {
     const dir = cloneDir(w.ws, w.task, repo)
-    const access = await hostGitAccessForRepo(w.ws, repo)
+    const access = await unattendedGitAccessForRepo(w.ws, repo)
     const { tree } = await repoTree(w.ws, w.task, repo)
     const from = base || EMPTY_TREE
     const diffArgs = ['-c', 'core.quotepath=false', 'diff', '--no-color', '--no-ext-diff', '--no-textconv']
@@ -653,20 +655,20 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
     // this life dedupe by intent, but a crash before the mark re-announces.
     if (!st?.notified) {
       if (!announcedEnds.has(a.id)) {
-      const ref = refOf(id) ?? (where.get(id) && { workspace: where.get(id)!.ws, task: where.get(id)!.task, env: '' })
-      const w = where.get(id)
-      const subject = w
-        ? (
-            sessions.latestProposal(w.ws, w.task, Object.keys(st?.base ?? {})[0] ?? '') ??
-            st?.proposals?.[Object.keys(st?.base ?? {})[0] ?? '']
-          )?.commit?.subject
-        : undefined
-      if (ref)
-        bus.emit('review.loop', {
-          sessionId: id,
-          ref,
-          notice: { kind: 'end', end: loops.get(id)?.end ?? a.end, rounds: st?.round ?? 0, ...(subject ? { subject } : {}) }
-        })
+        const ref = refOf(id) ?? (where.get(id) && { workspace: where.get(id)!.ws, task: where.get(id)!.task, env: '' })
+        const w = where.get(id)
+        const subject = w
+          ? (
+              sessions.latestProposal(w.ws, w.task, Object.keys(st?.base ?? {})[0] ?? '') ??
+              st?.proposals?.[Object.keys(st?.base ?? {})[0] ?? '']
+            )?.commit?.subject
+          : undefined
+        if (ref)
+          bus.emit('review.loop', {
+            sessionId: id,
+            ref,
+            notice: { kind: 'end', end: loops.get(id)?.end ?? a.end, rounds: st?.round ?? 0, ...(subject ? { subject } : {}) }
+          })
         announcedEnds.add(a.id)
       }
       try { await mutate(id, (s) => ({ ...s, notified: true })) } catch (e) {
@@ -969,7 +971,27 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
     async load(scopes) {
       scopesLoaded = scopes
       for (const { ws, task } of scopes) {
-        const file = await store.readReviewLoops(ws, task)
+        let file: Record<string, LoopState>
+        try { file = await store.readReviewLoops(ws, task) } catch (e) {
+          if (!(e instanceof store.UnreadableReviewLoops)) throw e
+          // §8: the history cannot be reconstructed from lastSettled. Fence
+          // the scope conservatively, including deleted executors, before boot.
+          file = {}
+          const infos = sessions.listForTask(ws, task).filter((i) => i.review && sessionRole(i) === 'executor')
+          const repos = (await store.getWorkspace(ws))?.repos.map((r) => r.name) ?? []
+          const ids = new Set([...e.ids, ...infos.map((i) => i.id)])
+          // Even the executor ids may be lost (deleted executor + corrupt JSON).
+          // A scope reservation still fences its clones until inspection (§8).
+          if (!ids.size) ids.add(`unreadable:${ws}:${task}`)
+          for (const id of ids) {
+            const info = infos.find((i) => i.id === id)
+            const st = initialLoopState(info?.review ?? { agent: '', maxRounds: 1, whenClean: 'notify', draftPr: true }, id)
+            const ended = loopStep(st, { kind: 'fault', error: 'state-unreadable' }).state
+            file[id] = { ...ended, heldRepos: repos }
+          }
+          await store.writeReviewLoops(ws, task, file).catch((e: unknown) =>
+            log.error('internal.fail', { site: 'unreadable-loop-tombstones', err: errCtx(e) }))
+        }
         for (const [id, st] of Object.entries(file)) {
           if (!sessions.sessionInfo(id) && st.phase !== 'delivering' && !st.intents.length) continue
           loops.set(id, st)

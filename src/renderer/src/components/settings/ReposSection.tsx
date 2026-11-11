@@ -1,7 +1,14 @@
-import { useEffect, useRef, useState } from 'react'
-import type { PublishResult, RepoConfig, ReviewLoopConfig, ShipRung, Tree } from '../../../../shared/types'
-import { REVIEW_LOOP_DEFAULTS, REVIEW_MAX_ROUNDS } from '../../../../shared/types'
-import { RUNG_LABEL, clampRounds, ladderFor, reviewerCandidates, validateReviewBlock } from '../../../../shared/reviewBlock'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { PublishResult, RepoConfig, ReviewLoopConfig, Tree } from '../../../../shared/types'
+import { REVIEW_LOOP_DEFAULTS } from '../../../../shared/types'
+import {
+  REVIEW_ROUNDS,
+  RUNG_LABEL,
+  clampRounds,
+  ladderFor,
+  reviewerCandidates,
+  validateReviewBlock
+} from '../../../../shared/reviewBlock'
 import { useAgents } from '../../useAgents'
 import type { CredentialEntry } from '../../../../shared/credentials'
 import { credentialKindLabel, isGitKind, resolveForRepo } from '../../../../shared/credentials'
@@ -10,6 +17,8 @@ import { useOutsideClose } from '../../hooks'
 import { confirmDialog } from '../../dialog'
 import { Icon } from '../icons'
 import { Modal } from '../Modal'
+import { ChoiceGroup } from '../ChoiceGroup'
+import { saveRepo } from './repoSave'
 import { run } from '../../async'
 import { stripProtocol } from './shared'
 
@@ -79,7 +88,11 @@ function RepoModal({
   deniedAgents: string[]
   onClose: () => void
 }) {
-  const editing = !!initial
+  // A local repo that was created but whose settings did not save stays open as
+  // an edit of that repo: saving again must not create it a second time.
+  const [created, setCreated] = useState<RepoConfig | undefined>(undefined)
+  const current = initial ?? created
+  const editing = !!current
   // A new repo is either registered by URL or created by gurt as a local one
   // (docs/requirements-new-projects.md §2); an existing local repo has no url
   // to edit, only a publish to offer.
@@ -96,6 +109,7 @@ function RepoModal({
   // starts from when this repo is its anchor. The user's alone to write — the
   // operator's repo writes are refused for them (§10).
   const agents = useAgents()
+  const candidates = useMemo(() => reviewerCandidates(agents, deniedAgents), [agents, deniedAgents])
   const [check, setCheck] = useState(initial?.check ?? '')
   const [rv, setRv] = useState<NonNullable<RepoConfig['review']>>(initial?.review ?? {})
   const credRef = useRef<HTMLDivElement>(null)
@@ -158,25 +172,22 @@ function RepoModal({
 
   const save = async () => {
     setError('')
-    try {
-      if (local && !editing) await window.gurt.createLocalRepo(ws, draft.name)
-      else await (editing ? window.gurt.updateRepo(ws, draft) : window.gurt.addRepo(ws, draft))
-      onClose()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    }
+    const result = await saveRepo(window.gurt, ws, draft, editing ? 'update' : local ? 'create-local' : 'add')
+    if (result.ok) return onClose()
+    if (result.created) setCreated(result.created)
+    setError(result.error)
   }
 
   const del = async () => {
     // A local repo's storage goes with it (store.removeRepo) — and it is the
     // only copy of whatever was merged into it, so the prompt says so.
-    const message = initial!.local
-      ? `Delete repo "${initial!.name}"? It is local and unpublished — its history, kept only by gurt on this machine, is deleted with it.`
-      : `Delete repo "${initial!.name}"?`
+    const message = current!.local
+      ? `Delete repo "${current!.name}"? It is local and unpublished — its history, kept only by gurt on this machine, is deleted with it.`
+      : `Delete repo "${current!.name}"?`
     if (!(await confirmDialog(message, { title: 'Delete repo', confirmText: 'Delete', danger: true })))
       return
     try {
-      await window.gurt.removeRepo(ws, initial!.name)
+      await window.gurt.removeRepo(ws, current!.name)
       onClose()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -311,89 +322,46 @@ function RepoModal({
         <div className="fld" data-section="review-defaults">
           <span className="seclabel">REVIEW LOOP DEFAULTS</span>
           <div className="env-access-note">what a new executor draft's Review block starts from when this is its first write repo</div>
-          <div className="chip-row" role="radiogroup" aria-label="review loop on by default">
-            <button
-              type="button"
-              role="radio"
-              aria-checked={!rv.enabled}
-              className={`chip-btn ${!rv.enabled ? 'on' : ''}`}
-              onClick={() => setRvField({ enabled: false })}
-            >
-              off by default
-            </button>
-            <button
-              type="button"
-              role="radio"
-              aria-checked={!!rv.enabled}
-              className={`chip-btn ${rv.enabled ? 'on' : ''}`}
-              onClick={() => setRvField({ enabled: true })}
-            >
-              on by default
-            </button>
-          </div>
+          <ChoiceGroup
+            label="review loop on by default"
+            choices={[
+              { value: false, text: 'off by default' },
+              { value: true, text: 'on by default' }
+            ]}
+            value={!!rv.enabled}
+            onPick={(enabled) => setRvField({ enabled })}
+          />
           <span className="seclabel">REVIEWER</span>
-          <div className="chip-row" role="radiogroup" aria-label="default reviewer">
-            <button
-              type="button"
-              role="radio"
-              aria-checked={!rv.agent}
-              className={`chip-btn ${!rv.agent ? 'on' : ''}`}
-              title="the first agent of another kind with a usable credential, else one of the same kind"
-              onClick={() => setRvField({ agent: '' })}
-            >
-              automatic
-            </button>
-            {reviewerCandidates(agents, deniedAgents).map((id) => (
-              <button
-                key={id}
-                type="button"
-                role="radio"
-                aria-checked={rv.agent === id}
-                className={`chip-btn ${rv.agent === id ? 'on' : ''}`}
-                onClick={() => setRvField({ agent: id })}
-              >
-                {agents[id]?.label ?? id}
-              </button>
-            ))}
-            {rv.agent && !reviewerCandidates(agents, deniedAgents).includes(rv.agent) && (
-              <button type="button" className="chip-btn on" title="no longer offered">
-                {agents[rv.agent]?.label ?? rv.agent}
-              </button>
-            )}
-          </div>
+          <ChoiceGroup
+            label="default reviewer"
+            choices={[
+              {
+                value: '',
+                text: 'automatic',
+                title: 'the first agent of another kind with a usable credential, else one of the same kind'
+              },
+              ...candidates.map((id) => ({ value: id, text: agents[id]?.label ?? id })),
+              ...(rv.agent && !candidates.includes(rv.agent)
+                ? [{ value: rv.agent, text: agents[rv.agent]?.label ?? rv.agent, title: 'no longer offered' }]
+                : [])
+            ]}
+            value={rv.agent ?? ''}
+            onPick={(agent) => setRvField({ agent })}
+          />
           <span className="seclabel">ROUNDS</span>
-          <div className="chip-row" role="radiogroup" aria-label="default review rounds">
-            {Array.from(
-              { length: REVIEW_MAX_ROUNDS.max - REVIEW_MAX_ROUNDS.min + 1 },
-              (_, i) => REVIEW_MAX_ROUNDS.min + i
-            ).map((n) => (
-              <button
-                key={n}
-                type="button"
-                role="radio"
-                aria-checked={clampRounds(rv.maxRounds ?? REVIEW_LOOP_DEFAULTS.maxRounds) === n}
-                className={`chip-btn ${clampRounds(rv.maxRounds ?? REVIEW_LOOP_DEFAULTS.maxRounds) === n ? 'on' : ''}`}
-                onClick={() => setRvField({ maxRounds: n })}
-              >
-                {n}
-              </button>
-            ))}
-          </div>
+          <ChoiceGroup
+            label="default review rounds"
+            choices={REVIEW_ROUNDS.map((n) => ({ value: n, text: n }))}
+            value={clampRounds(rv.maxRounds ?? REVIEW_LOOP_DEFAULTS.maxRounds)}
+            onPick={(maxRounds) => setRvField({ maxRounds })}
+          />
           <span className="seclabel">WHEN CLEAN</span>
-          <div className="chip-row" role="radiogroup" aria-label="default when clean">
-            {ladder.map((r: ShipRung) => (
-              <button
-                key={r}
-                type="button"
-                role="radio"
-                aria-checked={rung === r}
-                className={`chip-btn ${rung === r ? 'on' : ''}`}
-                onClick={() => setRvField({ whenClean: r })}
-              >
-                {RUNG_LABEL[r]}
-              </button>
-            ))}
-          </div>
+          <ChoiceGroup
+            label="default when clean"
+            choices={ladder.map((r) => ({ value: r, text: RUNG_LABEL[r] }))}
+            value={rung}
+            onPick={(whenClean) => setRvField({ whenClean })}
+          />
           {rung === 'pr' && (
             <label className="rv-check">
               <input
@@ -423,10 +391,10 @@ function RepoModal({
           Save
         </button>
       </div>
-      {publishing && initial && (
+      {publishing && current && (
         <PublishRepoModal
           ws={ws}
-          repo={initial}
+          repo={current}
           onClose={() => setPublishing(false)}
           onPublished={onClose}
         />

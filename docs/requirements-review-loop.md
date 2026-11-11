@@ -332,8 +332,12 @@ plan holds that stop the loop's own sessions extend it, by 24 h at most in
 total. While it runs, a permission request open on a loop session for 15 min
 also ends the loop. Either expiry first cancels the executor's running turn
 (`cancel`), stops the check's container (§5.3) and deletes a running reviewer.
+**Delivery is exempt from both expiries, by design**: in phase `delivering` a
+tick past the deadline, or a permission request open for 15 min, does nothing
+— the steps are short and time-bounded (§5.6), and an irreversible half-delivery
+is worse than a late one.
 
-"Live" = every phase but `ended` and an idle `dormant`. Ends are **needs-you**
+"Live" = every phase but `ended` and an idle `dormant` (delivering is live, but exempt from the two expiries). Ends are **needs-you**
 with the reason shown unless marked otherwise.
 
 | phase | event | result |
@@ -352,7 +356,8 @@ with the reason shown unless marked otherwise.
 | reviewing | reviewer failed, incomplete, failed to start, not started in time | end `reviewer-unavailable` |
 | delivering | every step done / a step fails | end `ready` / `delivery-failed` |
 | live, before delivering | a human acts (§5.6) | end `taken-over` / `cancelled` |
-| live | deadline passed / permission open 15 min | end `time-cap` / `permission-wait` |
+| live, not delivering | deadline passed / permission open 15 min | end `time-cap` / `permission-wait` |
+| delivering | deadline passed / permission open 15 min | nothing: delivery is exempt from both expiries (§5.6) |
 | any | controller fault: an exception, a check that cannot run or be stopped, unreadable state | end `failed` |
 
 "No progress" is the owner's rule as decided — an unchanged diff after a fix
@@ -518,7 +523,8 @@ Delivery steps are irreversible, so the cancellation boundary is the start of
 the first step. Before it, the owner's rule holds: nothing is committed. Once
 it has started, delivery runs to its end — every step is short and
 time-bounded (push 120 s, `changes.ts` ~26; `gh` 120 s) — and human acts are
-applied after it: a typed message waits in the queue (a delivery gate in
+applied after it, and the deadline and the permission wait (§5.2) are suspended
+for it the same way: a typed message waits in the queue (a delivery gate in
 `drainPending`, beside `repoHolder`) and runs after the loop has ended; Esc
 and the container stop have nothing to interrupt, since delivery runs on the
 host; deleting the executor removes the session while delivery finishes on the
@@ -534,17 +540,34 @@ commit text (else `delivery-failed` with nothing done). Each rung includes the
 ones below it; all commits first, then pushes, then PRs or merges:
 
 1. **commit** — with the latest proposal's text for that repo (subject, blank
-   line, body) through `changes.commit`, hooks enabled; a clean repo is
+   line, body) through `changes.commit`, `--no-verify`; a clean repo is
    skipped.
-2. **push** — `changes.push` (`push -u origin <task branch>`).
+2. **push** — `changes.push` (`push -u --no-verify origin <task branch>`).
 3. **pr** — a host function extracted from the github MCP tool
    `create_pull_request` (push, then `gh pr create` with the forge env from
    `forgeCliEnv`), with `--draft` per the block; the MCP tool then calls it
    too. Title and body from the proposal's `pr`, else its commit text, plus the
    final minor/nit findings as a short "Review notes" list. GitHub only today.
-4. **merge** — local repos, instead of push / pr: `changes.mergeToMain`.
+4. **merge** — local repos, instead of push / pr: `changes.mergeToMain`
+   (`push --no-verify origin HEAD:<default>`).
 
-A failing step — a pre-commit hook, a rejected push, `gh` — stops delivery and
+**Unattended host git (decided, §10).** The clone's `.git` is the agent's to
+write, so everything the loop runs on the host — the diff hash, the reviewer's
+diff and status, every step above — goes through `changes.git` with an
+`unattended` access (`git/harden.ts`): **no git hook runs in a loop's
+delivery, by design** (`core.hooksPath` is an empty host-owned directory, and
+commit and push pass `--no-verify`), and the clone's program-running config
+(`core.fsmonitor`, `filter.*`, `core.sshCommand`, credential helpers, gpg
+programs, `remote.*.uploadpack` …) is replaced by the host's own value of the
+same key, or an inert one. The repo's `check` command (§5.3) is the quality
+gate, not its hooks; a per-repo opt-in to run them can be a later feature.
+**HEAD must be the task branch**: before the first commit (every changed repo)
+and again in each step, else `delivery-failed` (`wrong-branch`) with nothing
+committed or pushed from the wrong branch — the `push` rung pushes
+`origin <task branch>`, the MCP tool `HEAD`, and `gh pr create` takes its head
+from the current branch, which agree only there.
+
+A failing step — a failed `git commit`, a rejected push, `gh` — stops delivery and
 ends `delivery-failed` (needs-you, the owner's rule). That is a failure after
 a clean review: nothing is rolled back, and the end lists exactly the
 completed steps (commit SHAs, branches, the PR URL) and the failing one with
@@ -636,7 +659,14 @@ repeat:
 | `deliver` push / merge | a fetch | `origin/<branch>` (merge: the default branch) contains HEAD — equal, or advanced since by someone else (reported) | push / merge; a diverged remote is rejected as non-fast-forward → `delivery-failed` |
 | `deliver` pr | `gh pr view <branch>` | an open PR exists | open it (`gh` refuses a second PR for a branch) |
 | `cancel-turn`, stop / delete reviewer | the session | no turn running / container down / session gone | do it |
-| `end` | `notified` | notified | notify, release the hold |
+| `end` | `notified` | notified and cleanup durably confirmed | emit, then mark `notified`; release only after confirmed cleanup (storage faults retain the hold) |
+
+The notification ring is in memory: emit before persisting `notified`, deduping
+by end intent id within one process. A crash before emission re-announces at
+boot; a crash after emission but before marking may re-announce in the new
+ring. Exhausted settled-write retries end `failed` (`store`) without emitting
+an undurable input. Unreadable loop history is quarantined and ends `failed`
+(`state-unreadable`), never reconstructed; both faults retain their holds.
 
 **Boot**, in order: load every loop and register the loop holds before the
 scheduler's first pass; replay unconsumed settled turns; end loops past their
@@ -678,11 +708,33 @@ Gurt's proxy does not cut long calls (`gurt-proxy.mjs` ~805).
   each mandatory item is open. **The reviewer cannot run tests**; a writable
   scratch over a read-only mount (`requirements-repo-mounts.md` §7) would
   change that.
-- **Host git on a container-writable clone**: delivery runs host git with
-  hooks on a clone whose `.git` sits in the executor's read-write bind (to
-  verify), so `.git/hooks`, `core.hooksPath`, `core.fsmonitor` would run on the
-  host — as for the Changes panel today, now without a human. Neutralise, or
-  accept?
+- **Host git on a container-writable clone — decided: neutralise, for
+  everything the loop runs on the host** (§6). The clone's `.git` sits in the
+  executor's read-write bind, so `.git/hooks`, `.git/config` (`core.hooksPath`,
+  `core.fsmonitor`, a `filter.<name>.clean` driver with `.gitattributes`,
+  `diff.external` / textconv, `core.sshCommand`, a credential helper,
+  `remote.<n>.uploadpack`, a gpg program, `protocol.ext.allow`,
+  `core.worktree`) would otherwise run on the host as the desktop user, now
+  without a human. `git/harden.ts` pins them on every call: hooks off (an empty
+  host-owned `core.hooksPath`; `--no-verify` on commit and push — so
+  **delivery runs no hook**), `diff` / `show` / `log` with `--no-ext-diff
+  --no-textconv`, `fetch` / `push` with `--upload-pack` / `--receive-pack`
+  (first-wins keys a `-c` cannot override), `GIT_PROXY_COMMAND` and
+  `GIT_WORK_TREE` for the two the environment must override, and every filter
+  the clone names replaced as a whole — each from the HOST's scopes (system,
+  global, `-c`) when they set the key (a host git-lfs filter, ssh command or
+  credential helper keeps working), else an inert default. The same pairs ride
+  GIT_CONFIG_PARAMETERS so `gh`'s own git calls are held to them. It fails
+  closed: a git without `--show-scope` (< 2.26), or a name containing `=` (it
+  cannot ride in a `-c`), refuses to run. **Residue, accepted**: it is a
+  deny-list; the clone's `remote.origin.url` / `url.*.insteadOf` still choose
+  where a push goes; the config is read just before each call, so an agent
+  still running in the container could write a driver in between (the loop
+  holds the executor, but a container's background process is not stopped);
+  an agent-replaced `.git` (a gitlink to another repository) is not detected.
+  **The Changes panel's host git and the github MCP tools (`git_push`,
+  `create_pull_request`) share the exposure and are NOT changed here** (a human
+  is present at the panel; the tools are the agent's own request).
 - **Agent-instruction files** in the reviewer's cwd are loaded by its harness;
   whether each kind can turn that off is to verify.
 - **Fingerprints are exact**; a fresh reviewer paraphrases, so oscillation and
@@ -738,14 +790,19 @@ ones easy to get wrong.
    `turn-ended` and a single `proposal` at `ready`.
 7. `review-loop-delivery.test.mjs` — local bare origins: each rung (a recording
    `gh` shim for the PR); nothing committed on any end before delivery; a
-   second repo's failing pre-commit hook → `delivery-failed` listing the first
-   commit; a typed message during delivery runs only after it.
+   second repo's failing commit (git's own: a stale `index.lock`; hooks do not
+   run) → `delivery-failed` listing the first commit; a hostile clone (hooks,
+   `core.hooksPath`, fsmonitor, a filter, `diff.external` / textconv, an
+   uploadpack, a gpg program, `core.worktree`, `ext::`) runs nothing on the host
+   through the hash, the reviewer's diff and every rung; HEAD off the task
+   branch → `wrong-branch`; a typed message during delivery runs only after it.
 8. `review-loop-recovery.test.mjs` — the kernel dropped and re-created on the
    same `GURT_ROOT`: around every intent (before it is written, before its
    effect, before its outcome) and between a settle and its consumption — one
    effect, and a finished reviewer is not waited on again; a remote advanced
    after a push is reported, not pushed again; holds in place before the first
-   schedule.
+   schedule. An end emits once per process; an unmarked emission may recur
+   after restart because the old notification ring is gone.
 9. `gurt-mcp.test.mjs` (extended) — the reviewer's tool set and the verdict
    rules; `replies` while an open set is unanswered, and after.
 10. `turn-contract.test.mjs` (extended) — the reviewer's nudge and `incomplete`.
@@ -764,10 +821,9 @@ ones easy to get wrong.
 
 **Deviations from the spec, all slices** (details under each slice):
 
-- **Slice 7 is not in the tree.** Recovery (replaying `lastSettled`, reconciling intents, the leftover-check stop, resuming `recovering` loop sessions), the `review.loop` → notification mapping in `notifications.ts`, refusing to archive a live loop and `review-loop-recovery.test.mjs` / the `notifications.test.mjs` extension do not exist. `load` still ends a loop found running `failed` (`orphan`), a loop's notifications are still the ordinary `proposal` / `turn-ended` ones, and §12 items 6 and 8 are open. Slice 8 does not do them.
 - Settled turns carry a `turnId` of their own (a per-session logical-turn counter), not slice 1's `s.turns`; `LoopEvent` gained `now` / `heads` / `changed` and a `fault` event; `LoopState` gained `nextIntent` and `plan` (slice 2, 3).
 - The loop hold is owned by the session manager and taken on `session.turn` `started`; there is no hold intent and no "is held" hook (slice 2, 3).
-- (Slice 4's check pid file and leftover probe are gone: Fix 2.) `deliverAll`'s `push` rung pushes `origin <task branch>` where the MCP tool pushes `HEAD`; host git hooks on the clone are not neutralised (slice 5).
+- (Slice 4's check pid file and leftover probe are gone: Fix 2.) Delivery's `push` rung pushes `origin <task branch>` where the MCP tool pushes `HEAD`: Fix 5 asserts HEAD is the task branch first. Host git hooks on the clone do not run, and the clone's program-running config is pinned (slice 5, Fix 5).
 - Slice 1 left `store.getWorkspace` dropping `check` / `review`; slice 6 fixed it. The generated admin tools accepted both fields from slice 1 on; slice 8 makes the operator's writes of them a refusal.
 - Pre-existing failures, unrelated: `env-image-build.test.mjs` (no docker binary) and one `proxy-server.test.mjs` test.
 
@@ -814,10 +870,10 @@ ones easy to get wrong.
 
 - Surface. `src/main/treeHash.ts`: `diffHash(ws, task, writeRepos): Promise<string>`, `repoTree(ws, task, repo): {head, tree}`, `parseDiffHash(hash)`. The hash is a sorted JSON list of `[repo, HEAD, tree]` (parseable on purpose: the commit probe needs one repo's reviewed tree; `loopStep` only compares strings), serialized per clone via `changes.serialized`, which `changes.ts` now exports with `git`, `revParse`, `defaultBranch`, `branchFor`, `FETCH_TIMEOUT_MS`. `ladderFor(repos)` is in `src/shared/reviewLoop.ts` (`Pick<RepoConfig,'local'>[]`; `pr` is offered for any forge repo, the PR step itself refuses a non-GitHub host).
 - `src/main/delivery.ts`: `checkDeliveryPreconditions(ctx, writeRepos)` (throws `DeliveryError` `tree-moved` | `no-commit-text`, nothing done; call it first, and map a failure to `delivery-failed` — slice 2 has no event for a tree-moved right before the first step), then `deliverStep(ctx, { repo, step, head })` per `deliver` intent, resolving a `DeliveredStep & { note?, found? }` (`found` = the recovery probe already saw the effect; `note` = "nothing to commit" / "origin/<b> advanced to …", to report at the end). `ctx = { ws, task, reviewedHash, proposalFor(repo), draftPr, notes }`; `proposalFor` is `SessionManager.latestProposal(ws, task, repo)`. `deliverAll(ctx, rung, writeRepos)` runs §6 end to end without persistence (what the test drives; the controller records an intent per step instead). A failing step throws `DeliveryError { kind, repo, step, tail, delivered }`; its `message` is the text for `delivery-failed` and lists the completed steps (`withDelivered` is how a caller adds its own list). Kinds: `tree-moved`, `no-commit-text`, `commit-failed`, `push-failed`, `non-fast-forward`, `pr-failed`, `merge-failed`.
-- `head` is the intent's: a commit's HEAD before it (= `base[repo]`), a later step's the commit it ships. Push, pr and merge fail `tree-moved` when HEAD is no longer `head`; the commit step also fails it when the working tree is not the reviewed tree, or HEAD moved to a commit whose tree is not (found = moved *and* equal tree, §8). A clean repo's commit is skipped (`ref` = HEAD, note); `deliveryPlan` already leaves unchanged repos out. A hook that rewrites files during the commit makes a later recovery probe see a different tree and fail `tree-moved` instead of "found" — the safe side.
+- `head` is the intent's: a commit's HEAD before it (= `base[repo]`), a later step's the commit it ships. Push, pr and merge fail `tree-moved` when HEAD is no longer `head`; the commit step also fails it when the working tree is not the reviewed tree, or HEAD moved to a commit whose tree is not (found = moved *and* equal tree, §8). A clean repo's commit is skipped (`ref` = HEAD, note); `deliveryPlan` already leaves unchanged repos out. (Slice 5 as first built ran the clone's hooks on commit; Fix 5 turned them off, so no hook rewrites files during a delivery commit.)
 - PR: `src/main/git/pullRequest.ts` holds `openPullRequest(ws, repo, dir, { title, body, draft, push })` (push `HEAD` then `gh pr create`; `push: false` for the loop, whose push rung ran), `findOpenPullRequest` (`gh pr view <branch> --json url,state`; only `OPEN` counts, "no pull requests found" is none, any other `gh` failure is an error), and the moved `runHost` / `forgeCliEnv` / `withHostPath`. The MCP tool calls `openPullRequest` with no draft and the same refusals and texts. Title/body per repo: the proposal's `pr`, else its commit text, plus "Review notes" (≤ 10 final minor/nit findings whose `file` starts with `<repo>/` — other repos' PRs do not carry them).
 - Push/merge probes `fetch origin` first (a failed fetch is logged and the push/merge then reports the real problem); "contains HEAD" = `rev-list --count <remote>..HEAD` is 0. A diverged remote branch is refused before pushing (never forced); a merge behind main is `non-fast-forward` from `mergeToMain`'s own check. `DeliveryError.tail` is `run()`'s message, which keeps only the last 3 output lines of the failing command.
-- Spec details: the `push` rung pushes `origin <task branch>` (`changes.push`) while the MCP tool pushes `HEAD`; same branch in a clone on its task branch. Host git hooks on the container-writable clone (§10) are not neutralised. Not verified: a managed (`git-token`) credential path through `gh` (`GH_TOKEN`) and a real GitHub — tests use an ambient `git-host` credential and a recording `gh` shim on PATH.
+- Spec details: the `push` rung pushes `origin <task branch>` (`changes.push`) while the MCP tool pushes `HEAD`; the same only on the task branch, which delivery asserts (Fix 5). Not verified: a managed (`git-token`) credential path through `gh` (`GH_TOKEN`) and a real GitHub — tests use an ambient `git-host` credential and a recording `gh` shim on PATH.
 
 ### Slice 6
 
@@ -825,7 +881,7 @@ ones easy to get wrong.
 - Shape. A transition is synchronous (`apply` = `loopStep` + swap in memory), so the hold is taken inside the `session.turn` `started` handler; only the facts of a settled turn (diff hash, heads, `changed`, `uncovered`) are gathered asynchronously, per loop in order. Intents run as background tasks that report back with an event, so a human act, "stop loop" or the tick lands while a check runs; the state with the intents is persisted before the first effect, an intent is confirmed (removed) after its outcome, and `check-pass` / `delivered` are applied before their intent is confirmed (at-least-once, for slice 7 to reconcile).
 - Gap in slice 1 found and fixed: `store.getWorkspace` rebuilt every repo from a whitelist and silently dropped `check` and `review`, so nothing could ever be read back. Both are read now (`review` through a small sanitiser).
 - Readings taken. The reviewer's diff is `git diff <base> <tree>` with the tree `diffHash` hashed (temporary index), so it holds exactly what a commit would record; untracked files are relabelled from that diff for §4.3 item 4; hooks, textconv and external diff drivers are off; cut at 150 000 characters per repo with a note (the reviewer's mount is readable). The user's earlier messages are the `user` entries of the log after the first (the start prompt; tokenised when masking is on). The reviewer is matched to its round by `reviewOf` if its settle beats the controller's own record of it (`adopt`). Stopping a settled reviewer's container uses reason `idle`, a check's container stop (§5.3) uses `idle` too: only `user` reads as a human. "Stop loop" ends first, then cancels the running turn (host), and refuses while delivering; the end also drops the loop's queued messages.
-- For slice 7. Wired already, because a live loop without them is unsafe: `session.human` / `container.status` `user` / `session.deleted` → `human` events, and `tick` (deadline, 15 min permission wait, the reviewer's start bound: 15 min, a plan hold past it, or a fall back to draft). `tick()` is public and the clock injectable. Not done: replay of `lastSettled`, intent reconciliation, the stop of a leftover check's container, resuming `recovering` loop sessions, the notifications mapping of `review.loop`, refusing to archive a live loop. `load` is the seam: it reads the files and ends a loop found running `failed` (`orphan`), because nothing can resume it yet; recovery replaces that. `end` emits `review.loop`, sets `notified`, then releases the hold; a deleted executor's ended loop is forgotten, a delivering one when its delivery ends.
+- For slice 7. Wired already, because a live loop without them is unsafe: `session.human` / `container.status` `user` / `session.deleted` → `human` events, and `tick` (deadline, 15 min permission wait, the reviewer's start bound: 15 min, a plan hold past it, or a fall back to draft). `tick()` is public and the clock injectable. Left for slice 7, which did them (see its section): replay of `lastSettled`, intent reconciliation, the stop of a leftover check's container, resuming `recovering` loop sessions, the notifications mapping of `review.loop`, refusing to archive a live loop. At the end of slice 6, `load` read the files and ended a loop found running `failed` (`orphan`), because nothing could resume it yet; slice 7's recovery replaced that. `end` emits `review.loop`, sets `notified`, then releases the hold; a deleted executor's ended loop is forgotten, a delivering one when its delivery ends.
 - Earlier tests touched: `loop-harness.mjs` takes `workspace`, `credentials` and `kernel` options and exports `store` / `api`; `review-loop-queue.test.mjs` sets the Review block only where it creates the reviewer (the real controller now takes any loop-enabled executor into a loop by itself); `ipc-opaque-args.test.mjs` lists the two new id-only methods.
 
 ### Slice 8
@@ -835,7 +891,7 @@ ones easy to get wrong.
 - Validation reads (§3): the same instance on the same model is refused; when the agent's config surface reports no model at all (every kind but claude-code has no seed) the same instance is refused too, because the two cannot be told apart — another instance is the way out. The model is the pick, else what the agent reports through its option view. A rung the repos' ladder does not offer is a problem (shown, Run disabled), not silently lowered; only a fresh prefill steps down (`clampRung`). Repo defaults are validated without an executor: only the reviewer's own conditions and the repo kind's ladder.
 - Settings → Repos: the `check` input and the defaults (on by default, reviewer, rounds, when clean, draft PR); the reviewer's model chips are not offered there (a stored `configValues` of a named reviewer is kept). **The open question of §10 is settled conservatively: the operator may not write `check` or `review`.** Not held (no confirmation diff conveys "this repo now ships on its own"): `update_repo` / `add_repo` changing either are refused with a sentence naming Settings → Repos, and a write that leaves them as they are lands (`adminWrites.ts`, `scripts/review-block-operator.test.mjs`). The generated tool schema still lists both fields; a model learns of the refusal from the answer.
 - Session pane: `ReviewLoopLine` above the chat of a started loop executor and of its reviewers (phase, "round r of N", the findings count while a fix is due, the end's reason and the unresolved findings, the delivered steps) with "Stop loop" (confirm, then `reviewLoopStop`; hidden when the loop is not live or is delivering). The executor's pane re-reads when its snapshot is pushed (the controller emits `session.changed` on every transition) and every 4 s; a reviewer's pane only by the poll. The reviewer's role mark is an eye icon in the scope tree's row (`reviewOf` sessions); the titles are the controller's. A queued / starting session has no line.
-- Smoke: `scripts/smoke-review-block.mjs`, in addition to §12 item 12's list: the Run button's reason, a duplicate carrying the block, a named reviewer that is gone, off staying off, an executor-only block, Settings → Repos, and — from a hand-written finished `review-loop.json` — the status line and the reviewer's mark. A *live* loop's line (and Stop loop) is not exercised there: it needs docker and agents, and a loop found running at boot is ended by `load` (slice 7 is absent). It is not in `run-smoke.mjs`'s docker-free list; run it by hand.
+- Smoke: `scripts/smoke-review-block.mjs`, in addition to §12 item 12's list: the Run button's reason, a duplicate carrying the block, a named reviewer that is gone, off staying off, an executor-only block, Settings → Repos, and — from a hand-written finished `review-loop.json` — the status line and the reviewer's mark. A *live* loop's line (and Stop loop) is not exercised there: it needs docker and agents (a loop found running at boot is resumed by `recover`, slice 7). It is not in `run-smoke.mjs`'s docker-free list; run it by hand.
 - Spec errors / readings. §3's "Run is also disabled while the named reviewer is … without MCP" and "no pi offered" are one rule in code (`reviewerCandidates`), plus the executor-side refusal. §3's "draft-PR checkbox" appears only for the `pr` rung. §3's reading of "the executor's own model" for a draft with no pick is the agent's reported default. The spec names no "when clean" step for an executor with no write repo yet: only `notify` is offered and the block says so.
 
 ### Slice 7
@@ -845,7 +901,7 @@ ones easy to get wrong.
 - Deviations. (1) `end` writes `notified` BEFORE emitting `review.loop` (the §8 table notifies first): a crash between loses one notification instead of repeating it; the intent is confirmed last, after the release, so a restart reruns the idempotent tail. (2) Recovering the first delivery commit skips the §6 hash precondition when HEAD already moved (the hash includes HEAD, so it can never match after the commit); `deliverStep`'s own probe then says found or `tree-moved`. (3) The commit texts are kept in memory once delivery starts, so deleting the executor mid-delivery (§5.6) still commits with its text; after a restart with the executor gone the loop is dropped at `load` as before. (4) `DeliveredStep.note` (only when a recovery found the step done: "already committed", "origin/… advanced to … after our …") rides the end and the notification. (5) `LoopHooks.live` makes `taskHasPendingWork` true while a loop is live or ended-not-notified (archive/auto-archive refuse; `archive.ts` names the loop).
 - Notifications: `createNotifications(bus, prefs, info, loopSpeaksFor)`; the kernel passes `reviewLoop.notifiesThrough` (Review block, executor, loop not ended-and-notified). `loopEndNotification` is the §7 mapping (exported, tested). An end that lands while a turn is open claims that turn, so no extra `turn-ended`. Slice 8: `review.loop` / `reviewLoopState` already carry everything; `LoopState.intents` non-empty on an ended loop means its tail is still running.
 - A recreated container: for a kind without `historyPaths` the resume's `session/load` fails (`attachUncoalesced` throws "could not resume"), the turn settles `failed` and the loop ends `executor-error`; only the stub of that failure is tested (the history mount is `usesHistoryMounts`, not verifiable without docker).
-- Spec errors: §12 item 8 and the work order cite `session-recovery.test.mjs` as re-creating a kernel; it only builds a `SessionManager`. The recovery test instead copies the data root at a chosen instant (`h.image()`, a crash image) and boots a second kernel on the copy (`h.boot`, a fresh module instance per boot since `GURT_ROOT` is read at load), with git hooks gating the dead kernel's shared-origin effects. Esc/stop/typing during delivery are ignored by `loopStep` and the typed message runs after the end only because the end's `schedule()` lifts the gate (the controller test restores the real `schedule` for it).
+- Spec errors: §12 item 8 and the work order cite `session-recovery.test.mjs` as re-creating a kernel; it only builds a `SessionManager`. The recovery test instead copies the data root at a chosen instant (`h.image()`, a crash image) and boots a second kernel on the copy (`h.boot`, a fresh module instance per boot since `GURT_ROOT` is read at load), with a post-receive hook in the origin and (since Fix 5, which switched clone hooks off) a `git` shim on PATH (`scripts/lib/git-gate.mjs`) gating the dead kernel's shared-origin effects. Esc/stop/typing during delivery are ignored by `loopStep` and the typed message runs after the end only because the end's `schedule()` lifts the gate (the controller test restores the real `schedule` for it).
 
 ### Fixes
 
@@ -869,3 +925,28 @@ ones easy to get wrong.
 - Finding 4 **confirmed**. §5.6/§8 delivery persists per-repo commit/PR proposals alongside the existing reviewed hash and final findings before effects; load retains delivering or unconfirmed-intent loops without their executor and restores holds from stored repos. Regressions: `review-loop-recovery.test.mjs` “deleted executor after commit recovers push/pr exactly once” (commit, deletion, crash image, fresh kernel, one push/PR and one end). This supersedes Slice 7 deviation (3)'s memory-only proposals and discarded delivery.
 - All regressions were checked with this round's relevant production changes temporarily removed: assertions failed; the changes were restored. No earlier working-tree work was reverted, and nothing was committed, pushed or submitted as a PR.
 - Validation: `npm run typecheck` and `npx eslint .` passed; all 121 touched-file tests passed on the final run (an earlier concurrent run hit the existing keep-alive test's timeout; it passed in the full suite and the isolated rerun). `npm test`: 1,074 passed, one skipped, seven known failures only (six Docker-dependent `env-image-build` cases and the `proxy-server` MCP-routing case).
+
+#### Fix 4
+
+- Finding 1 **confirmed**: §8 now emits before marking `notified`, with process-local dedupe by end intent id; supersedes Slice 7 deviation (1). Recovery tests “before the notification” and “crash after emission before its mark” assert one observation across a pre-emission crash and one entry per lifetime after an unmarked emission. The former at-most-once test codified notification loss and was corrected because the ring is not durable.
+- Finding 2 **confirmed**: loop-only settled writes retry three times; exhaustion suppresses the event, discards the undurable in-memory artifact, and faults `failed: store` with its reservation retained. Controller tests “settled persistence fails 2 times” / “3 times” cover recovery and exhaustion.
+- Finding 3 **confirmed**: store reads distinguish absence from invalid JSON/record shapes (including nested fields), retain a quarantine copy, and fail the affected scope closed with durable `state-unreadable` tombstones and holds before scheduling. Recovery tests “unreadable loop state” cover syntax, record and nested corruption, plus lost executor records (a scope reservation); no reviewer is recreated. Copying preserves the corrupt source until tombstones land, closing the quarantine/restart gap.
+- Finding 4 **confirmed**: §8 end-row notify/release/idempotency expectations were rechecked; controller “end persistence failure” now asserts emission before the failed mark and exactly one notice after retry. Recovery asserts normal release and empty intents; storage-fault tests assert retained holds and no duplicate notice on tick.
+- Regression checks: this round’s production edits were temporarily removed against the saved starting tree; all seven selected regression cases failed, then the edits were restored; the additional deleted-executor/syntax case also failed with its scope-reservation fallback temporarily removed. Earlier rounds were preserved; no commit, push or PR was performed by this agent.
+
+- Validation on the current shared tree: `npm run typecheck`, `npx eslint .`, and all 100 focused tests passed. Full `npm test`: 1,094 passed, one skipped, seven known failures only (six Docker-dependent `env-image-build` cases and the `proxy-server` MCP-routing case).
+
+#### Fix 5
+
+- **Host git hardening — confirmed** (reviewer C): the clone's config and hooks ran on the host in the hash, the reviewer's diff and every step (reproduced: hooks, `core.hooksPath`, fsmonitor, a filter, `diff.external` / textconv, `remote.origin.uploadpack`, a gpg program, `ext::`, `core.worktree`). `src/main/git/harden.ts` (§6, §10) is the one helper: `HostGitAccess.unattended` (`unattendedGitAccessForRepo`) makes `changes.git()` read the clone's config (`config --list --show-scope -z`) and pin its program-running keys to the host's value or an inert one on every call; hooks are off by an empty `core.hooksPath` plus `--no-verify`; `diff` gets `--no-ext-diff --no-textconv`, `fetch` / `push` the `--upload-pack` / `--receive-pack` flags (`-c` cannot override those first-wins keys), `core.gitProxy` / `core.worktree` their env variables; `gh` gets the same pairs in GIT_CONFIG_PARAMETERS. **Delivery now runs no git hook, by design** (§6). Tests: `review-loop-delivery.test.mjs` "hostile clone" (every rung, the worktree, the pins, host values surviving, the `=` refusal), the controller's hostile-clone loop test; the clone-hook gates of the controller and recovery tests became a `git` shim (`scripts/lib/git-gate.mjs`).
+- **`HEAD` is the task branch — confirmed (unverified claim held up)**: `expectBranch` before the first commit (all changed repos) and in each step, `wrong-branch` otherwise. Test: "HEAD must be the task branch" (two cases, delivery test).
+- **Delivery vs the expiries — confirmed, resolved in the spec**: §5.2 / §5.6 now say delivery is exempt from the deadline and the permission wait; `review-loop-step.test.mjs` pins it. §13's stale "Slice 7 is not in the tree" bullet is deleted; §5.3, §6, §10 and §12 item 7 agree with Fix 2 and this fix.
+- Shared exposure, not changed: the Changes panel's host git and the github MCP tools (§10).
+
+#### Fix 6
+
+- **The prefill is the draft's, not the Config tab's — confirmed** (reviewer C2; the old smoke always opened Config). `useReviewBlock(tree, info, true)` in `NonStartedPane` writes the anchor's defaults into any complete executor draft whichever tab shows, and holds Run (`problem`: "applying the repository’s review defaults…", or the failure) until the block is in; `reviewSeedDue` (shared, pure) keeps `reviewOff` and never overwrites an edit, and swaps an untouched block only when the anchor changes (`seeded` remembers what was prefilled). This supersedes Slice 8's "prefilled once per draft". Tests: `review-block.test.mjs` "the prefill is owed from the draft alone…"; smoke 10a (drafts written with agent/env/repo and no block, Config never opened: block saved, Run gated like an explicit block) and the anchor-swap case.
+- **Local create dropped `check` / `review` — confirmed.** `saveRepo` (`settings/repoSave.ts`) makes the second write (`updateRepo` on the entry `createLocalRepo` returned) and the modal closes only after it; if it fails the modal stays open as an edit of the created repo with the error, so a retry updates. Tests: `review-loop-ui.test.mjs` (create + update, failure keeps `created`, retry never re-creates); smoke creates a local repo with defaults in the modal.
+- **Poll order — confirmed in the code** (no ordering guard; the IPC did not reorder in practice, so the test uses deferred reads). `pollLatest` drops an answer older than one already shown. Test: `review-loop-ui.test.mjs`.
+- **Reviewer picker keyboard — confirmed.** Items are `<button onClick>`, the row has `aria-haspopup` / `aria-expanded`, focus returns to it (opt-in `PickRow accessible`); smoke drives Enter / Tab / Enter / Escape. The neighbouring pickers (env, repo, agent, role, repos’ credential menu) keep the same mouse-only gap.
+- **Shared `ChoiceGroup`** replaces the on/off, rounds, rung and repo-default chip rows (ConfigTab −35 lines, ReposSection −32, component +45); `useReviewBlock` also owns the credentials read and the one memoised reviewer list.

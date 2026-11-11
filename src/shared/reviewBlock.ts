@@ -210,6 +210,55 @@ export function seedReviewBlock(
 /** Whether the anchor's defaults turn the loop on for a new draft. */
 export const reviewEnabledByDefault = (defaults: RepoConfig['review']): boolean => defaults?.enabled === true
 
+/** The rounds a picker offers: every integer `maxRounds` allows. */
+export const REVIEW_ROUNDS: readonly number[] = Array.from(
+  { length: REVIEW_MAX_ROUNDS.max - REVIEW_MAX_ROUNDS.min + 1 },
+  (_, i) => REVIEW_MAX_ROUNDS.min + i
+)
+
+/** What the renderer last prefilled into a draft, and from which anchor. */
+export interface SeededReview {
+  anchor: string
+  block: ReviewLoopConfig
+}
+
+/** Field-by-field equality of two blocks (`configValues` by entry, not by key order). */
+export function sameReviewBlock(a: ReviewLoopConfig, b: ReviewLoopConfig): boolean {
+  const av = Object.entries(a.configValues ?? {})
+  return (
+    a.agent === b.agent &&
+    a.maxRounds === b.maxRounds &&
+    a.whenClean === b.whenClean &&
+    a.draftPr === b.draftPr &&
+    av.length === Object.keys(b.configValues ?? {}).length &&
+    av.every(([k, v]) => b.configValues?.[k] === v)
+  )
+}
+
+/**
+ * Whether the anchor's defaults still owe the draft a prefilled block (§3) —
+ * decided from the draft alone, so it holds on whichever tab is showing and
+ * Run can wait for it. Due when the anchor's defaults turn the loop on and
+ *
+ * - the draft has no block and its owner did not switch it off (`reviewOff`), or
+ * - it has one that is still exactly what an *earlier* anchor prefilled
+ *   (`seeded`): the user has not touched it, so swapping the anchor swaps the
+ *   defaults. An edited block, or one the user switched on themselves, is
+ *   never overwritten.
+ */
+export function reviewSeedDue(input: {
+  executor: boolean
+  review: ReviewLoopConfig | undefined
+  reviewOff: boolean
+  anchor: RepoConfig | undefined
+  seeded: SeededReview | undefined
+}): boolean {
+  const { executor, review, reviewOff, anchor, seeded } = input
+  if (!executor || reviewOff || !anchor || !reviewEnabledByDefault(anchor.review)) return false
+  if (!review) return true
+  return !!seeded && seeded.anchor !== anchor.name && sameReviewBlock(seeded.block, review)
+}
+
 /** An untrusted Review block (an IPC patch, a hand-edited file) as a
  *  `ReviewLoopConfig`: wrong-typed fields degrade to the defaults, rounds are
  *  clamped, an unknown rung falls to `notify`. Never throws. */

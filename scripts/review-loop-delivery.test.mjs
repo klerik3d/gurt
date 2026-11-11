@@ -24,6 +24,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { bundle } from './lib/bundle.mjs'
+import { makeEvil } from './lib/evil-clone.mjs'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const S = (rel) => JSON.stringify(path.join(ROOT, rel))
@@ -81,6 +82,8 @@ const { execFileSync } = require('node:child_process')
 const args = process.argv.slice(2)
 const branch = () => execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { encoding: 'utf8' }).trim()
 const repo = require('node:path').basename(process.cwd())
+// What the real gh does in the clone before it opens or looks for a PR (it asks git for the work tree's state).
+try { execFileSync('git', ['status', '--porcelain'], { stdio: 'ignore', env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } }) } catch {}
 fs.appendFileSync(process.env.GH_SHIM_LOG, JSON.stringify({ args, repo, ghHost: process.env.GH_HOST ?? null }) + '\\n')
 const state = fs.existsSync(process.env.GH_SHIM_STATE) ? JSON.parse(fs.readFileSync(process.env.GH_SHIM_STATE, 'utf8')) : {}
 if (args[0] === 'pr' && args[1] === 'view') {
@@ -115,6 +118,9 @@ await bundle({
 export * as delivery from ${S('src/main/delivery.ts')}
 export * as treeHash from ${S('src/main/treeHash.ts')}
 export * as loop from ${S('src/shared/reviewLoop.ts')}
+export * as changes from ${S('src/main/changes.ts')}
+export { hardenGit } from ${S('src/main/git/harden.ts')}
+export { unattendedGitAccessForRepo } from ${S('src/main/git/env.ts')}
 export { buildGithubHttpServer } from ${S('src/main/mcp/githubServer.ts')}
 `,
     resolveDir: ROOT,
@@ -124,7 +130,7 @@ export { buildGithubHttpServer } from ${S('src/main/mcp/githubServer.ts')}
   outfile
 })
 const m = await import(pathToFileURL(outfile).href)
-const { delivery: D, treeHash: T, loop } = m
+const { delivery: D, treeHash: T, loop, changes: C, hardenGit, unattendedGitAccessForRepo } = m
 
 const git = (dir, ...args) =>
   execFileSync('git', ['-C', dir, '-c', 'user.name=Test', '-c', 'user.email=test@example.test', ...args], {
@@ -136,6 +142,9 @@ const write = (dir, rel, text) => {
 }
 const hook = (dir, name, script) =>
   fs.writeFileSync(path.join(dir, '.git', 'hooks', name), `#!/bin/sh\n${script}\n`, { mode: 0o755 })
+/** A hook of the bare ORIGIN: the push's receiving side, which the loop's hook-less git does not switch off. */
+const originHook = (remote, name, script) =>
+  fs.writeFileSync(path.join(remote, 'hooks', name), `#!/bin/sh\n${script}\n`, { mode: 0o755 })
 
 let seq = 0
 /** A task with clones of `names`, each on branch `<task>` with one base commit
@@ -247,7 +256,7 @@ test('diffHash: moves with a content edit and with a new HEAD; multi-repo and or
 
 // ===================================================== the rungs, in order ====
 
-test('commit rung: commit text from the proposal (subject, blank line, body), hooks on; a clean repo is skipped', async () => {
+test('commit rung: commit text from the proposal (subject, blank line, body); a clean repo is skipped', async () => {
   const { task, clones, remotes } = fixture(['api', 'web'])
   write(clones.api, 'file.txt', 'api change\n')
   write(clones.api, 'build/keep.txt', 'ignored-but-tracked change\n')
@@ -390,17 +399,19 @@ test('nothing is committed when a changed repo has no commit text', async () => 
 })
 
 // ================================================================ failures ====
-test('a second repo’s failing pre-commit hook: a typed failure listing the first repo’s commit; nothing rolled back, nothing pushed', async () => {
+test('a second repo’s failing commit: a typed failure listing the first repo’s commit; nothing rolled back, nothing pushed', async () => {
   const { task, clones, remotes } = fixture(['api', 'web'])
   write(clones.api, 'file.txt', 'api\n')
   write(clones.web, 'file.txt', 'web\n')
-  hook(clones.web, 'pre-commit', 'echo "lint: web is not clean" >&2\nexit 1')
+  // Hooks are off for the loop's delivery (§6), so the failure is git's own: a stale index lock.
+  const lock = path.join(clones.web, '.git', 'index.lock')
+  fs.writeFileSync(lock, '')
   const reviewed = await hash(task, ['api', 'web'])
   const webHead = headOf(clones.web)
   await assert.rejects(D.deliverAll(ctxOf(task, reviewed), 'pr', ['api', 'web']), (/** @type {any} */ e) => {
     assert.ok(e instanceof D.DeliveryError)
     assert.deepEqual([e.kind, e.repo, e.step], ['commit-failed', 'web', 'commit'])
-    assert.match(e.tail, /lint: web is not clean/, 'the hook output is the tail')
+    assert.match(e.tail, /remove the file manually/, 'git’s own output is the tail (the last 3 lines)')
     assert.deepEqual(e.delivered, [{ repo: 'api', step: 'commit', ref: headOf(clones.api) }])
     assert.match(e.message, new RegExp(`commit api ${headOf(clones.api)}`))
     assert.match(e.message, /commit of web/)
@@ -408,10 +419,10 @@ test('a second repo’s failing pre-commit hook: a typed failure listing the fir
   })
   assert.notEqual(headOf(clones.api), git(clones.api, 'rev-parse', 'HEAD~1'), 'api stays committed')
   assert.equal(headOf(clones.web), webHead)
+  fs.rmSync(lock)
   assert.ok(git(clones.web, 'status', '--porcelain').includes('file.txt'), 'web’s work is intact')
   assert.equal(git(remotes.api, 'branch', '--list', task), '', 'no push followed')
-  // Recovery of that very delivery, step by step: api's commit is found, web's goes through once the hook passes.
-  fs.rmSync(path.join(clones.web, '.git', 'hooks', 'pre-commit'))
+  // Recovery of that very delivery, step by step: api's commit is found, web's goes through once the lock is gone.
   const heads = T.parseDiffHash(reviewed)
   const a = await D.deliverStep(ctxOf(task, reviewed), { repo: 'api', step: 'commit', head: heads.api.head })
   assert.equal(a.found, true)
@@ -420,14 +431,14 @@ test('a second repo’s failing pre-commit hook: a typed failure listing the fir
   assert.equal(w.ref, headOf(clones.web))
 })
 
-test('a rejected push stops delivery after the commits, with the hook output as the tail', async () => {
+test('a rejected push stops delivery after the commits, with the rejection as the tail', async () => {
   const { task, clones, remotes } = fixture(['api', 'web'])
   write(clones.api, 'file.txt', 'api\n')
   write(clones.web, 'file.txt', 'web\n')
-  hook(clones.api, 'pre-push', 'echo "push policy says no" >&2\nexit 1')
+  originHook(remotes.api, 'pre-receive', 'echo "push policy says no" >&2\nexit 1')
   await assert.rejects(D.deliverAll(ctxOf(task, await hash(task, ['api', 'web'])), 'pr', ['api', 'web']), (/** @type {any} */ e) => {
     assert.deepEqual([e.kind, e.repo, e.step], ['push-failed', 'api', 'push'])
-    assert.match(e.tail, /push policy says no/)
+    assert.match(e.tail, /pre-receive hook declined/)
     assert.deepEqual(e.delivered.map((d) => `${d.step}:${d.repo}`), ['commit:api', 'commit:web'])
     return true
   })
@@ -477,10 +488,10 @@ test('commit repeats safely: the same SHA, no second commit; a moved HEAD with a
   void task
 })
 
-test('push repeats safely: found at boot, the pre-push hook does not run again', async () => {
-  const { task, clones, remotes, ctx, steps } = await committed(['api'])
+test('push repeats safely: found at boot, the origin does not receive a second push', async () => {
+  const { task, remotes, ctx, steps } = await committed(['api'])
   const pushes = path.join(root, `pushes-${task}`)
-  hook(clones.api, 'pre-push', `echo x >> ${pushes}`)
+  originHook(remotes.api, 'pre-receive', `echo x >> ${pushes}`)
   const s = { repo: 'api', step: 'push', head: steps.api.ref }
   const first = await D.deliverStep(ctx, s)
   assert.deepEqual([first.ref, first.found], [task, undefined])
@@ -672,5 +683,156 @@ test('the MCP tool still refuses a local repo before pushing anything', async ()
     assert.equal(ghCalls().length, calls)
   } finally {
     await new Promise((r) => server.close(r))
+  }
+})
+
+// ====================== the clone is the agent's: host git runs none of it ====
+// §10 (as built, Fix 5). The agent writes `.git/config` and `.git/hooks`; the
+// loop's host git must run nothing they name — no hook, `core.fsmonitor`,
+// filter driver, external diff / textconv, ssh command, credential helper,
+// `remote.<n>.uploadpack`, gpg program — and delivery must still succeed.
+let evilSeq = 0
+const scratchFor = () => fs.mkdtempSync(path.join(root, `evil${++evilSeq}-`))
+
+test('positive control: the same clone DOES run its hooks, filters and fsmonitor under plain git', () => {
+  const { clones } = fixture(['api'])
+  const evil = makeEvil(clones.api, scratchFor())
+  write(clones.api, 'file.txt', 'changed\n')
+  // Each of these fails on purpose (the filter process exits 1, the gpg program too): what counts is what ran.
+  for (const args of [['add', '-A'], ['-c', 'core.fsmonitor=false', '-c', 'filter.evil.required=false', '-c', 'filter.evil.process=', 'commit', '-q', '--allow-empty', '-m', 'x'], ['push', '-q', 'evilext', 'HEAD']])
+    try { git(clones.api, ...args) } catch { /* expected */ }
+  const hits = evil.hits()
+  for (const h of ['filter-process', 'fsmonitor', 'hookspath-pre-commit', 'ext']) assert.ok(hits.includes(h), `${h} runs under plain git: ${hits}`)
+})
+
+for (const [rung, repo] of [['commit', 'api'], ['push', 'api'], ['pr', 'api'], ['merge', 'lib']]) {
+  test(`hostile clone, rung ${rung}: the diff hash, the reviewer’s diff and status, and every step run nothing the clone names`, async () => {
+    const { task, clones, remotes } = fixture([repo])
+    const dir = clones[repo]
+    write(dir, 'file.txt', `${repo} change\n`)
+    write(dir, 'brand-new.txt', 'new\n')
+    const evil = makeEvil(dir, scratchFor(), { remote: remotes[repo] })
+    const base = headOf(dir)
+    const reviewed = await hash(task, [repo])
+    assert.deepEqual(evil.hits(), [], 'the diff hash')
+    // What the reviewer's prompt gathers (reviewLoop.ts `reviewedRepo`), without the explicit flags: `changes.git` supplies them.
+    const access = await unattendedGitAccessForRepo(WS, repo)
+    const { tree } = await T.repoTree(WS, task, repo)
+    const diff = await C.git(dir, access, ['-c', 'core.quotepath=false', 'diff', '--no-color', base, tree])
+    assert.match(diff, new RegExp(`\\+${repo} change`))
+    assert.match(diff, /brand-new\.txt/)
+    await C.git(dir, access, ['status', '--porcelain', '-uall'])
+    await C.git(dir, access, ['diff', 'HEAD', '--shortstat'])
+    await C.git(dir, access, ['ls-files', '--others', '--exclude-standard'])
+    assert.deepEqual(evil.hits(), [], 'the reviewer’s diff, status and file lists')
+    const out = await D.deliverAll(ctxOf(task, reviewed), rung, [repo])
+    assert.deepEqual(out.map((s) => s.step), { commit: ['commit'], push: ['commit', 'push'], pr: ['commit', 'push', 'pr'], merge: ['commit', 'merge'] }[rung])
+    assert.deepEqual(evil.hits(), [], `the ${rung} rung`)
+    // …and the delivery is the real one.
+    assert.equal(git(dir, 'rev-parse', 'HEAD^{tree}'), T.parseDiffHash(reviewed)[repo].tree, 'exactly the reviewed tree')
+    assert.equal(git(dir, 'show', 'HEAD:file.txt'), `${repo} change`, 'unfiltered content')
+    if (rung === 'push' || rung === 'pr') assert.equal(git(remotes[repo], 'rev-parse', task), headOf(dir))
+    if (rung === 'merge') assert.equal(git(remotes[repo], 'rev-parse', 'main'), headOf(dir))
+    if (rung === 'pr') assert.equal(ghCreates().filter((c) => c.repo === repo).length >= 1, true)
+  })
+}
+
+test('hostile clone: `core.worktree` cannot point the hash (or a commit) at other host files', async () => {
+  const { task, clones } = fixture(['api'])
+  write(clones.api, 'file.txt', 'api change\n')
+  const before = await hash(task, ['api'])
+  const outside = scratchFor()
+  fs.writeFileSync(path.join(outside, 'secret.txt'), 'host secret\n')
+  git(clones.api, 'config', 'core.worktree', outside)
+  assert.equal(await hash(task, ['api']), before, 'the tree is still the clone’s')
+  const out = await D.deliverAll(ctxOf(task, before), 'commit', ['api'])
+  assert.deepEqual(out.map((s) => s.step), ['commit'])
+  assert.throws(() => git(clones.api, '--work-tree', clones.api, 'show', 'HEAD:secret.txt'), 'the host file was not committed')
+})
+
+test('hostile clone: the pinned settings — the clone’s program-running config is replaced, hooks are off', async () => {
+  const { clones, remotes } = fixture(['api'])
+  const evil = makeEvil(clones.api, scratchFor(), { remote: remotes.api })
+  const access = await unattendedGitAccessForRepo(WS, 'api')
+  const a = await hardenGit(clones.api, access)
+  const cfg = (key) => C.git(clones.api, access, ['config', '--get', key]).then((v) => v.trim())
+  assert.equal(await cfg('core.sshCommand'), 'ssh')
+  assert.equal(await cfg('core.askPass'), '')
+  assert.equal(await cfg('gpg.program'), 'gpg')
+  assert.equal(await cfg('commit.gpgsign'), 'false')
+  assert.equal(await cfg('core.fsmonitor'), 'false')
+  assert.equal(await cfg('protocol.ext.allow'), 'never')
+  assert.equal(await cfg('filter.evil.clean'), 'cat')
+  assert.equal(await cfg('filter.evil.required'), 'false')
+  assert.equal(await cfg('core.hooksPath'), path.join(process.env.GURT_ROOT, 'git-no-hooks'))
+  assert.deepEqual(fs.readdirSync(await cfg('core.hooksPath')), [], 'the hooks directory is empty')
+  const helpers = (await C.git(clones.api, access, ['config', '--get-all', 'credential.helper'])).split('\n').slice(0, -1)
+  assert.deepEqual(helpers.slice(helpers.lastIndexOf('') + 1), [], 'the clone’s credential helper is not in effect')
+  assert.equal(a.env.GIT_PROXY_COMMAND, '', 'core.gitProxy is first-wins: its environment variable outranks it')
+  assert.equal(a.env.GIT_PAGER, 'cat')
+  // ext:: as a remote URL, allowed by the clone: refused, nothing runs.
+  await assert.rejects(C.git(clones.api, access, ['ls-remote', 'evilext']), /ext|not allowed/i)
+  assert.deepEqual(evil.hits(), [])
+})
+
+test('the host’s own filter, ssh command and credential helper survive the pinning; the clone’s overrides of them do not', async () => {
+  const { clones } = fixture(['api'])
+  const globalCfg = path.join(root, 'host-gitconfig')
+  fs.writeFileSync(globalCfg, '[filter "lfsish"]\n\tclean = host-clean\n\trequired = true\n[core]\n\tsshCommand = host-ssh\n[credential]\n\thelper = host-helper\n')
+  const prev = process.env.GIT_CONFIG_GLOBAL
+  process.env.GIT_CONFIG_GLOBAL = globalCfg
+  try {
+    git(clones.api, 'config', 'filter.lfsish.clean', 'evil-clean')
+    git(clones.api, 'config', 'core.sshCommand', 'evil-ssh')
+    git(clones.api, 'config', 'credential.helper', 'evil-helper')
+    const access = await unattendedGitAccessForRepo(WS, 'api')
+    const cfg = (...a) => C.git(clones.api, access, ['config', ...a]).then((v) => v.trim())
+    assert.equal(await cfg('--get', 'filter.lfsish.clean'), 'host-clean')
+    assert.equal(await cfg('--get', 'filter.lfsish.required'), 'true')
+    assert.equal(await cfg('--get', 'core.sshCommand'), 'host-ssh')
+    const helpers = (await cfg('--get-all', 'credential.helper')).split('\n')
+    assert.deepEqual(helpers.slice(helpers.lastIndexOf('') + 1), ['host-helper'])
+  } finally {
+    if (prev === undefined) delete process.env.GIT_CONFIG_GLOBAL
+    else process.env.GIT_CONFIG_GLOBAL = prev
+  }
+})
+
+test('a filter or remote name with "=" cannot be pinned, so host git refuses instead of running unpinned', async () => {
+  const { clones } = fixture(['api'])
+  git(clones.api, 'config', 'filter.a=b.clean', 'touch /tmp/never')
+  const access = await unattendedGitAccessForRepo(WS, 'api')
+  await assert.rejects(C.git(clones.api, access, ['status']), /cannot be pinned/)
+})
+
+// ============================================ HEAD is the task branch (§6) ====
+test('HEAD must be the task branch: another branch or a detached HEAD fails `wrong-branch` before anything is committed', async () => {
+  const { task, clones, remotes } = fixture(['api', 'web'])
+  write(clones.api, 'file.txt', 'api\n')
+  write(clones.web, 'file.txt', 'web\n')
+  const reviewed = await hash(task, ['api', 'web'])
+  const heads = [headOf(clones.api), headOf(clones.web)]
+  git(clones.web, 'switch', '-q', '-c', 'somewhere-else')
+  // The second repo is off its branch: nothing of the FIRST is committed either.
+  await assert.rejects(D.deliverAll(ctxOf(task, await hash(task, ['api', 'web'])), 'push', ['api', 'web']), (/** @type {any} */ e) => {
+    assert.deepEqual([e.kind, e.repo], ['wrong-branch', 'web'])
+    assert.deepEqual(e.delivered, [])
+    assert.match(e.message, /on somewhere-else, not on the task branch/)
+    return true
+  })
+  assert.deepEqual([headOf(clones.api), headOf(clones.web)], heads, 'nothing committed')
+  git(clones.web, 'switch', '-q', '--detach')
+  await assert.rejects(D.deliverStep(ctxOf(task, reviewed), { repo: 'web', step: 'commit', head: heads[1] }), (/** @type {any} */ e) => e.kind === 'wrong-branch' && /detached/.test(e.message))
+  assert.equal(headOf(clones.web), heads[1])
+  assert.equal(git(remotes.api, 'branch', '--list', task), '')
+})
+
+test('HEAD must be the task branch: a push, PR or merge step on another branch is refused, never pushed', async () => {
+  for (const [step, repo] of [['push', 'api'], ['pr', 'api'], ['merge', 'lib']]) {
+    const { task, clones, remotes, ctx, steps } = await committed([repo])
+    git(clones[repo], 'switch', '-q', '-c', 'somewhere-else')
+    await assert.rejects(D.deliverStep(ctx, { repo, step, head: steps[repo].ref }), (/** @type {any} */ e) => e.kind === 'wrong-branch' && e.step === step, step)
+    assert.equal(git(remotes[repo], 'branch', '--list', task), '', `${step}: not pushed`)
+    assert.equal(git(remotes[repo], 'rev-parse', 'main'), git(clones[repo], 'rev-parse', 'HEAD~1'), `${step}: main untouched`)
   }
 })

@@ -13,7 +13,7 @@ import { promises as fs } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { cloneDir } from './store'
-import { hostGitAccessForRepo } from './git/env'
+import { unattendedGitAccessForRepo } from './git/env'
 import { git, serialized } from './changes'
 
 export interface RepoTree {
@@ -27,12 +27,14 @@ export interface RepoTree {
  *  never interleaves with a commit's `add -A` or a fetch on the same clone. */
 export async function repoTree(ws: string, task: string, repo: string): Promise<RepoTree> {
   const dir = cloneDir(ws, task, repo)
-  const base = await hostGitAccessForRepo(ws, repo)
+  const base = await unattendedGitAccessForRepo(ws, repo)
   return serialized(dir, async () => {
     const scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'gurt-index-'))
     try {
-      // Same access (config args, env) as every host git call, plus the
-      // throwaway index; an absolute path, since git resolves it from the cwd.
+      // Same access (config args, env) as every host git call — unattended: the
+      // clone's filters, fsmonitor and hooks never run here (git/harden.ts, §10)
+      // — plus the throwaway index; an absolute path, since git resolves it
+      // from the cwd.
       const access = { ...base, env: { ...base.env, GIT_INDEX_FILE: path.join(scratch, 'index') } }
       const head = (await git(dir, base, ['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], { okCodes: [0, 1] })).trim()
       await git(dir, access, head ? ['read-tree', head] : ['read-tree', '--empty'])

@@ -6,7 +6,11 @@
 // reviewer nor accepted as executor, the "when clean" ladder for forge, local
 // and mixed repos, a copy carrying the block, and everything persisting across a
 // reload. Then Settings → Repos: the check command and the review defaults,
-// validated and saved.
+// validated and saved — for a local repo created in the same modal too. Also:
+// a draft that is complete from the start (as an agent's `create_session`
+// leaves one) gets its repository's review defaults written into it without
+// the Config tab ever opening, and Run waits on them; the reviewer picker
+// works from the keyboard.
 //
 // What is under test is the wiring — the pickers, the IPC payload, what the
 // Config tab reads back — so nothing here needs an agent, a clone or docker.
@@ -95,12 +99,15 @@ const PROBLEM = `${BLOCK} [data-testid="review-problem"]`
 const chips = (aria) => `${BLOCK} [aria-label="${aria}"] .chip-btn`
 const T = { timeout: 5000 }
 
-const sessionsFile = path.join(GURT_ROOT, ws, task, 'sessions.json')
-const records = () => (fs.existsSync(sessionsFile) ? JSON.parse(fs.readFileSync(sessionsFile, 'utf8')) : [])
+const recordsOf = (t) => {
+  const file = path.join(GURT_ROOT, ws, t, 'sessions.json')
+  return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : []
+}
+const records = () => recordsOf(task)
 /** Persistence is debounced — poll the file for the record. */
-async function persisted(id, pred, label) {
+async function persisted(id, pred, label, inTask = task) {
   for (let i = 0; i < 60; i++) {
-    const r = records().find((x) => x.info.id === id)
+    const r = recordsOf(inTask).find((x) => x.info.id === id)
     if (r && pred(r.info)) return r.info
     await new Promise((res) => setTimeout(res, 50))
   }
@@ -296,6 +303,32 @@ try {
   await loop('on')
   await untilRungs(['notify', 'commit', 'commit + merge into main'])
   console.log('local repos: notify / commit / commit + merge into main OK')
+
+  // The reviewer picker from the keyboard alone: Enter opens it, Tab walks its
+  // choices (real buttons), Enter chooses, and focus is back on the picker.
+  const trigger = `${BLOCK} .pick-row`
+  const focusedText = () => page.evaluate(() => (document.activeElement?.textContent ?? '').trim())
+  const pickByKeyboard = async (name, tabs) => {
+    await page.focus(trigger)
+    await page.keyboard.press('Enter')
+    await page.waitForSelector(`${BLOCK} .pick-menu`, T)
+    assert.equal(await page.getAttribute(trigger, 'aria-expanded'), 'true')
+    for (let i = 0; i < tabs; i++) await page.keyboard.press('Tab')
+    assert.equal(await focusedText(), name, 'Tab reaches the choice')
+    await page.keyboard.press('Enter')
+    await page.waitForSelector(`${BLOCK} .pick-menu`, { state: 'detached', timeout: 5000 })
+    await untilReviewer(name)
+    assert.equal(await page.getAttribute(trigger, 'aria-expanded'), 'false')
+    assert.ok(await page.evaluate(() => document.activeElement?.classList.contains('pick-row')), 'focus returns to the picker')
+  }
+  await pickByKeyboard('claude', 1)
+  await pickByKeyboard('codex', 2)
+  await page.focus(trigger)
+  await page.keyboard.press('Enter')
+  await page.waitForSelector(`${BLOCK} .pick-menu`, T)
+  await page.keyboard.press('Escape')
+  await page.waitForSelector(`${BLOCK} .pick-menu`, { state: 'detached', timeout: 5000 })
+  console.log('reviewer picker: open, choose and close from the keyboard, focus kept OK')
   await pickRepo('fx')
   await setMode('o/fx', 'write')
   await untilMode('o/fx', 'write')
@@ -362,6 +395,30 @@ try {
   await page.click('.modal-foot .btn:has-text("Cancel")')
   console.log('Settings → Repos: check and review defaults saved, ladder per kind, pi not offered OK')
 
+  // A new LOCAL repo is created and configured in one go: the check and the
+  // review defaults the modal collected are not dropped with the create call.
+  await page.click('.set-head .btn-primary:has-text("New repo")')
+  await page.waitForSelector('.modal:has-text("New repo")', T)
+  await page.click('.modal .seg-btn:has-text("new, local")')
+  await page.fill('.modal input[placeholder="checkout-web"]', 'fresh')
+  await page.fill('.modal input[placeholder="npm run lint && npm test"]', 'make check')
+  await page.click('.modal [aria-label="review loop on by default"] .chip-btn:has-text("on by default")')
+  await page.click('.modal [aria-label="default reviewer"] .chip-btn:text-is("codex")')
+  await page.click('.modal [aria-label="default review rounds"] .chip-btn:text-is("3")')
+  await page.click('.modal [aria-label="default when clean"] .chip-btn:text-is("commit + merge into main")')
+  await page.click('.modal-foot .btn-primary')
+  await page.waitForSelector('.modal', { state: 'detached', timeout: 10000 })
+  const fresh = JSON.parse(fs.readFileSync(path.join(GURT_ROOT, ws, 'workspace.json'), 'utf8')).repos.find((r) => r.name === 'fresh')
+  assert.ok(fresh?.local, 'the local repo was created')
+  assert.equal(fresh.check, 'make check', 'its check was saved with it')
+  assert.deepEqual(fresh.review, { enabled: true, agent: 'a2', maxRounds: 3, whenClean: 'merge' }, 'and its review defaults')
+  await page.click('.set-row:has(.set-row-label:text-is("fresh")) .btn-link')
+  await page.waitForSelector('.modal:has-text("Edit repo")', T)
+  assert.equal(await page.inputValue('.modal input[placeholder="npm run lint && npm test"]'), 'make check')
+  await page.waitForSelector('.modal [aria-label="default review rounds"] .chip-btn.on:text-is("3")', T)
+  await page.click('.modal-foot .btn:has-text("Cancel")')
+  console.log('Settings → Repos: a new local repo is created with its check and review defaults OK')
+
   // === 10. the same-kind fallback (a second launch over other agents) ===
   await app.close()
   write('agents.json', {
@@ -384,6 +441,22 @@ try {
       { info: { ...base, id: 'rv1', role: 'reviewer', repoModes: { fx: 'read' }, title: 'review 2 — ship it', agent: 'a4', reviewOf: { executor: 'ex1', round: 2, intent: 'ex1.3' } }, acpSessionId: 'acp-rv1', log: [] }
     ])
   )
+  // Complete drafts the way an agent's `create_session` leaves them: agent,
+  // env and a write repo already there, no Review block, and nobody has opened
+  // Config. `pre`'s defaults turn the loop on (the reviewer: automatic); `fx`'s
+  // name a reviewer this registry no longer has.
+  const t3 = path.join(GURT_ROOT, ws, 't3')
+  fs.mkdirSync(t3, { recursive: true })
+  fs.writeFileSync(path.join(t3, 'task.json'), JSON.stringify({}))
+  const draft = { workspace: ws, task: 't3', role: 'executor', agent: 'a1', state: 'draft', mcp: [], startPrompt: 'implement it' }
+  fs.writeFileSync(
+    path.join(t3, 'sessions.json'),
+    JSON.stringify([
+      { info: { ...draft, id: 'dr1', title: 'prefilled draft', env: 'preenv', repos: ['pre'], repoModes: { pre: 'write' } }, log: [] },
+      { info: { ...draft, id: 'dr2', title: 'blocked draft', env: 'dev', repos: ['fx'], repoModes: { fx: 'write' } }, log: [] },
+      { info: { ...draft, id: 'dr3', title: 'plain draft', env: 'dev', repos: ['nochk'], repoModes: { nochk: 'write' } }, log: [] }
+    ])
+  )
   write(`${ws}/t2/review-loop.json`, {
     ex1: {
       version: 1, executor: 'ex1', config: { agent: 'a4', maxRounds: 2, whenClean: 'commit', draftPr: true },
@@ -394,6 +467,39 @@ try {
     }
   })
   await launch()
+
+  // === 10a. a complete draft never shown on Config still gets its defaults ===
+  const t3row = page.locator('.sb-task:has(.sb-task-name:text-is("t3"))')
+  await t3row.waitFor(T)
+  if ((await t3row.getAttribute('aria-expanded')) !== 'true') await t3row.locator('.sb-chev').click()
+  const openDraft = async (title) => {
+    await page.click(`.sb-session:has(.sb-session-name:text-is("${title}"))`)
+    await page.waitForSelector('.draft-body .draft-prompt', T)
+    assert.equal(await page.locator('.ns-body').count(), 0, 'the Config tab is not showing')
+  }
+  await openDraft('prefilled draft')
+  const dr1 = await persisted(
+    'dr1',
+    (i) => i.review?.agent === 'a4' && i.review.maxRounds === 3 && i.review.whenClean === 'commit' && i.review.draftPr === true,
+    'the repository’s review defaults in a draft that never saw Config',
+    't3'
+  )
+  assert.equal(dr1.reviewOff, undefined)
+  await page.waitForFunction((sel) => !document.querySelector(sel).disabled, runBtn, T)
+  assert.equal(await page.locator('[data-testid="run-blocked"]').count(), 0, 'a valid prefilled block lets Run through')
+  await openDraft('blocked draft')
+  await persisted('dr2', (i) => i.review?.agent === 'a2', 'the named (gone) reviewer in a second draft', 't3')
+  await page.waitForSelector('[data-testid="run-blocked"]', T)
+  assert.match(await page.locator('[data-testid="run-blocked"]').innerText(), /the reviewer “a2” no longer exists/)
+  assert.ok(await page.locator(runBtn).isDisabled(), 'Run is gated as for an explicit block')
+  await openDraft('plain draft')
+  await page.waitForTimeout(800)
+  assert.equal(recordsOf('t3').find((r) => r.info.id === 'dr3').info.review, undefined, 'a repo whose defaults are off gets no block')
+  assert.equal(await page.locator('[data-testid="run-blocked"]').count(), 0)
+  assert.ok(!(await page.locator(runBtn).isDisabled()), 'and Run is not held for one')
+  await shot('08-prefilled-without-config')
+  console.log('a complete draft gets its repository’s review defaults without Config, and Run is gated on them OK')
+
   // fx still names the reviewer saved above (codex, a2), which this registry
   // no longer has: the block it prefills says so, and Run stays off.
   await newSession()
@@ -405,6 +511,34 @@ try {
   await pickReviewer('claude two')
   await page.waitForSelector(PROBLEM, { state: 'detached', timeout: 5000 })
   console.log('a named default reviewer that is gone is reported, not silently replaced OK')
+
+  // The anchor changes before the block was touched: the new anchor's defaults
+  // replace it. After an edit, they do not.
+  await newSession()
+  await pickEnv('preenv')
+  await setMode('o/pre', 'write')
+  await untilMode('o/pre', 'write')
+  await untilActive('review rounds', '3')
+  await untilActive('when clean', 'commit')
+  await pickRepo('fx')
+  await setMode('o/fx', 'write')
+  await untilMode('o/fx', 'write')
+  await setMode('o/pre', 'read')
+  await untilMode('o/pre', 'read')
+  await untilActive('review rounds', '4')
+  await untilActive('when clean', 'commit + push + PR')
+  await page.waitForSelector(PROBLEM, T)
+  assert.match(await page.locator(PROBLEM).innerText(), /the reviewer “a2” no longer exists/)
+  await page.click(`${chips('review rounds')}[data-rounds="5"]`)
+  await untilActive('review rounds', '5')
+  await setMode('o/pre', 'write')
+  await untilMode('o/pre', 'write')
+  await setMode('o/fx', 'read')
+  await untilMode('o/fx', 'read')
+  await page.waitForTimeout(800)
+  await untilActive('review rounds', '5')
+  assert.deepEqual(await activeChip('when clean'), ['commit + push + PR'], 'an edited block is not replaced by the new anchor’s defaults')
+  console.log('a new anchor re-seeds an untouched block and leaves an edited one alone OK')
 
   // A repo with no defaults: the default reviewer is chosen by the rule.
   await newSession()

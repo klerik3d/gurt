@@ -7,6 +7,7 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { hostGitAccessForRepo, type HostGitAccess } from './env'
+import { hardenGit } from './harden'
 import { providerForHost } from './providers'
 
 const pexec = promisify(execFile)
@@ -109,6 +110,9 @@ export interface PullRequestOptions {
   /** Push `HEAD` first (default, the MCP tool's contract). The loop's `push`
    *  rung has already pushed, so it passes false. */
   push?: boolean | undefined
+  /** The review loop's call (§6, §10): no human, an agent-writable clone — `gh`
+   *  runs `git status` there, so it gets the hardened git env. */
+  unattended?: boolean | undefined
 }
 
 export type PullRequestResult =
@@ -132,7 +136,7 @@ export async function openPullRequest(
 ): Promise<PullRequestResult> {
   const got = await requireForgeAccess(ws, repo)
   if ('error' in got) return { ok: false, text: got.error }
-  const { access } = got
+  const access = opts.unattended ? await hardenGit(dir, got.access) : got.access
   if (access.mode === 'local') return { ok: false, text: localRepoNoPr(repo) }
   if (opts.push !== false) {
     const push = await runHost(
@@ -167,7 +171,8 @@ export async function findOpenPullRequest(
 ): Promise<{ url: string } | undefined | { error: string }> {
   const got = await requireForgeAccess(ws, repo)
   if ('error' in got) return { error: got.error }
-  const gh = await forgeCliEnv(got.access)
+  // Only the loop probes (unattended, §8): `gh` shells out to git in the clone.
+  const gh = await forgeCliEnv(await hardenGit(dir, got.access))
   if (gh.error) return { error: gh.error }
   const view = await runHost('gh', ['pr', 'view', branch, '--json', 'url,state'], dir, gh.env!)
   if (!view.ok) {

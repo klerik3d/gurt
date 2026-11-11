@@ -6,6 +6,7 @@ import { alertDialog, confirmDialog } from '../dialog'
 import { logErr } from '../log'
 import { Dot } from './icons'
 import { run } from '../async'
+import { pollLatest } from '../pollLatest'
 
 /** How often a pane re-reads the loop while it is live. A transition of the
  *  executor's loop also pushes its snapshot (`session.changed`), which re-reads
@@ -37,19 +38,9 @@ export function ReviewLoopLine({
       setState(undefined)
       return
     }
-    let live = true
-    const read = (): void => {
-      window.gurt
-        .reviewLoopState(executor)
-        .then((s) => live && setState(s))
-        .catch(logErr('reviewLoopState'))
-    }
-    read()
-    const t = setInterval(read, POLL_MS)
-    return () => {
-      live = false
-      clearInterval(t)
-    }
+    // Reads overlap; `pollLatest` keeps a slow earlier answer from putting an
+    // earlier phase (or Stop-loop availability) back over a newer one.
+    return pollLatest(() => window.gurt.reviewLoopState(executor), setState, logErr('reviewLoopState'), POLL_MS)
     // `version` is the push that says the loop may have moved.
   }, [executor, version])
 

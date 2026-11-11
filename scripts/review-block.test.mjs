@@ -225,6 +225,33 @@ test('a new block is prefilled from the anchor’s defaults, then the global one
   assert.equal(B.reviewEnabledByDefault(undefined), false)
 })
 
+test('the prefill is owed from the draft alone: no block, not switched off, an anchor whose defaults say review', () => {
+  const on = { name: 'alpha', url: 'u', review: { enabled: true } }
+  const due = (over) =>
+    B.reviewSeedDue({ executor: true, review: undefined, reviewOff: false, anchor: on, seeded: undefined, ...over })
+  assert.equal(due({}), true, 'a draft that never saw the Config tab still owes it')
+  assert.equal(due({ reviewOff: true }), false, 'off is a choice the default does not undo')
+  assert.equal(due({ executor: false }), false)
+  assert.equal(due({ anchor: undefined }), false, 'no write repo yet')
+  assert.equal(due({ anchor: { name: 'beta', url: 'u' } }), false, 'defaults that are off')
+  assert.equal(due({ anchor: { name: 'beta', url: 'u', review: { maxRounds: 3 } } }), false, 'defaults without `enabled`')
+  // A block that is there is the user’s unless it is still what an earlier anchor prefilled.
+  const mine = block({ agent: 'a4', maxRounds: 3, configValues: { model: 'haiku', effort: 'low' } })
+  assert.equal(due({ review: mine }), false, 'a block nobody here prefilled')
+  assert.equal(due({ review: mine, seeded: { anchor: 'alpha', block: mine } }), false, 'the same anchor again')
+  assert.equal(due({ review: mine, seeded: { anchor: 'older', block: mine } }), true, 'untouched since another anchor: swap')
+  const reordered = { ...mine, configValues: { effort: 'low', model: 'haiku' } }
+  assert.equal(due({ review: reordered, seeded: { anchor: 'older', block: mine } }), true, 'key order is not an edit')
+  for (const edit of [{ maxRounds: 4 }, { whenClean: 'commit' }, { draftPr: false }, { agent: 'a1' }, { configValues: { model: 'sonnet', effort: 'low' } }, { configValues: undefined }])
+    assert.equal(due({ review: { ...mine, ...edit }, seeded: { anchor: 'older', block: mine } }), false, `edited: ${JSON.stringify(edit)}`)
+  assert.equal(due({ review: mine, seeded: { anchor: 'older', block: mine }, reviewOff: true }), false)
+  assert.equal(due({ review: mine, seeded: { anchor: 'older', block: mine }, anchor: { name: 'beta', url: 'u' } }), false, 'a new anchor with review off leaves the block')
+})
+
+test('the rounds a picker offers are every integer the block allows', () => {
+  assert.deepEqual([...B.REVIEW_ROUNDS], [1, 2, 3, 4, 5])
+})
+
 test('an untrusted block is shaped, never thrown on', () => {
   assert.deepEqual(B.sanitizeReviewBlock(undefined), { agent: '', maxRounds: 2, whenClean: 'notify', draftPr: true })
   assert.deepEqual(

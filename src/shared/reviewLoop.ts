@@ -404,8 +404,9 @@ function apply(s: LoopState, e: LoopEvent, out: LoopIntentBody[]): boolean {
       deleteReviewer(s, out)
       return end(s, out, needsYou(s, e.did === 'prompt' ? 'taken-over' : 'cancelled'))
     case 'tick': {
-      // Delivery is short, host-side and bounded (§5.6): the deadline does not
-      // cut it into a partial delivery.
+      // Delivery is short, host-side and bounded (§5.6): neither the deadline
+      // nor the permission wait (§5.2) cuts it into a partial delivery — exempt
+      // from both expiries by design; an irreversible half-delivery is worse.
       if (!live || s.phase === 'delivering') return false
       const now = ms(e.now)
       if (Number.isNaN(now)) return false
