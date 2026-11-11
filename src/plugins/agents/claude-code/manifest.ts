@@ -43,6 +43,9 @@ export const manifest: AgentManifest = {
   // survives a repo-set change too (docs/requirements-agent-history.md
   // §3.2). Phase 1 of that document.
   historyPaths: ['.claude/projects', '.claude/todos'],
+  // Project memory, its local variant, project settings / agents / commands,
+  // and the project MCP servers it offers to load.
+  instructionPaths: ['CLAUDE.md', 'CLAUDE.local.md', '.claude/', '.mcp.json'],
 
   clientConfig: {
     path: '.claude/settings.json',

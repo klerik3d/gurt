@@ -103,6 +103,10 @@ reviews and ships them. (Exception: the user explicitly attached shipping
 tools and asked you to use them.)
 ```
 
+> **Superseded in part** by `requirements-review-loop.md`: for a session with
+> a review loop, the instructions say gurt checks, reviews and ships the work
+> after `complete` — not the user.
+
 `githubServer.ts` instructions: the local-work list drops `commit` —
 "(status, diff, log, branch)" — so the two servers do not contradict.
 

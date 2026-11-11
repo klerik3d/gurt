@@ -46,6 +46,8 @@ Every repo of a session carries one of three modes:
 - A **proactive** run is the one exception: its repos are always `read`
   (`repoMode` answers `read` regardless of the record) — it is gurt's own
   template, not something the user configures per repo.
+  > **Superseded in part** by `requirements-review-loop.md`: a review loop's
+  > `reviewer` is a second such role — its repos are always `read`.
 - Modes are structural, like the repo list: editable while the session is a
   draft (a change releases a container a failed start may have left) and
   fixed once it has run.
@@ -121,6 +123,9 @@ of those. Changing a draft's role leaves its repos, modes and env alone.
   Existing reviewer records migrate to `researcher` with their repos in
   `write` mode: exactly the mounts and lock they had (the 2026-08-24
   stopgap), so a live container stays valid.
+  > **Superseded in part** by `requirements-review-loop.md`: `reviewer`
+  > returns as a tool set (`submit_review`) that only the review loop
+  > creates; the migration above applies only to records without `reviewOf`.
 - **inspector** is the read half of the operator: the same admin surface
   minus every `write`-exposed method and `apply_held`. To change something
   it drafts an `operator` session (the draft is the approval step, as for

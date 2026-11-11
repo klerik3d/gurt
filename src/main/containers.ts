@@ -32,6 +32,7 @@ import {
   createContainer,
   dockerContainerExists,
   dockerRemove,
+  dockerInspectRunning,
   dockerRunning,
   dockerSessionContainerIds,
   dockerSessionContainersDetailed,
@@ -40,6 +41,7 @@ import {
   installAcpAdapter,
   prepareEnvImage,
   restartContainer,
+  spawnDockerExec,
   linkContainerSkills,
   probeAdapterAndLinkSkills,
   linkContainerHistory,
@@ -267,6 +269,37 @@ export class ContainerManager {
 
   status(id: string): SessionContainer['status'] {
     return this.container(id)?.status ?? 'stopped'
+  }
+
+  /**
+   * Spawn `argv` in the session's container as the container user, in `cwd`
+   * (default: the record's), with no tty and no stdin — the review loop's check
+   * runner (docs/requirements-review-loop.md §5.3). The target is read from the
+   * record per call: the container may have been recreated since the caller was
+   * built. Throws when there is no container to exec into (setup never
+   * succeeded); the caller maps that to "cannot run".
+   */
+  spawnExec(sessionId: string, argv: string[], cwd?: string): ReturnType<typeof spawnDockerExec> {
+    const c = this.container(sessionId)
+    const t = c && this.execTarget(c)
+    if (!t) throw new Error('the session has no container to run in')
+    return spawnDockerExec(cwd ? { ...t, cwd } : t, argv, {}, { interactive: false })
+  }
+
+  /**
+   * Whether the session's container runs *now*, asked of the daemon, not read
+   * from the record: the confirmation after a check's container was stopped
+   * (§5.3). `false` only after the daemon confirms none running; `null` when the
+   * daemon could not answer.
+   */
+  async isRunning(sessionId: string): Promise<boolean | null> {
+    const id = this.container(sessionId)?.id
+    if (id) return dockerInspectRunning(id)
+    // Review §5.3/§5.6: deletion of the record is not proof of termination.
+    const ids = await dockerSessionContainerIds(sessionId)
+    if (ids === null) return null
+    const running = await Promise.all(ids.map(dockerInspectRunning))
+    return running.includes(true) ? true : running.includes(null) ? null : false
   }
 
   /** Open a human shell in the running container, without starting an agent. */
@@ -1001,8 +1034,14 @@ export class ContainerManager {
   }
 
   /** Stop the session's container; it keeps its filesystem and can resume. */
-  async stop(sessionId: string, reason: ContainerStatusReason = 'user'): Promise<void> {
+  async stop(sessionId: string, reason: ContainerStatusReason = 'user', findDeleted = false): Promise<void> {
     await this.teardown(sessionId, 'stop', reason)
+    // Review §5.3/§8: cleanup still owns a deleted executor's labelled containers.
+    if (findDeleted && !this.container(sessionId)?.id) {
+      const ids = await dockerSessionContainerIds(sessionId)
+      if (ids === null) throw new Error('cannot locate the deleted executor’s containers')
+      for (const id of ids) await dockerStop(id, this.logFor(sessionId))
+    }
   }
 
   /**

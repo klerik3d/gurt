@@ -10,6 +10,7 @@ import type {
   ChatEntryBase,
   ConfigSelectOption,
   EnvRef,
+  FindingReply,
   McpSelection,
   SkillSelection,
   PendingPromptInfo,
@@ -26,9 +27,12 @@ import type {
   SessionMode,
   SessionModes,
   RepoMode,
+  ReviewLoopConfig,
+  ReviewVerdict,
   SessionRole,
   SessionSnapshot,
-  StoredProposal
+  StoredProposal,
+  StoredVerdict
 } from '../shared/types'
 import {
   anchorRepo,
@@ -38,6 +42,7 @@ import {
   repoMode,
   roleDraftsCrossTask,
   roleHasTurnContract,
+  roleIsLoopOwned,
   roleReadsAdmin,
   sanitizeSessionNetwork,
   sessionRole,
@@ -58,6 +63,8 @@ import {
 import type { CreateAction } from '../shared/api'
 import { taskKey } from '../shared/keys'
 import { sanitizeSkillSelection } from '../shared/skills'
+import { MCP_DEFS } from '../shared/mcp'
+import type { SettledTurn } from '../shared/reviewLoop'
 import { isLimitReply, limitResetAt, turnOutcome, usageFields } from '../shared/usage'
 import { formatResetAt, type PlanHold } from '../shared/planUsage'
 import { agentMain } from './agentPlugins'
@@ -300,8 +307,37 @@ interface PendingPrompt {
   context?: PromptContext[] | undefined
   images?: PromptImage[] | undefined
   /** Put here by the app, not typed: the "continue" a limit-interrupted turn
-   *  sends once its account's hold lifts (see `onLimited`). */
+   *  sends once its account's hold lifts (see `onLimited`), or a review loop's
+   *  host message (`origin`). */
   auto?: boolean | undefined
+  /** Set on the review loop's host messages (`hostPrompt`): the id of the
+   *  intent that decided them (docs/requirements-review-loop.md §5.5). */
+  origin?: { loop: string } | undefined
+}
+
+/**
+ * What the review loop's controller tells the session manager
+ * (docs/requirements-review-loop.md §5.5, §5.6, §8) — registered with
+ * {@link SessionManager.setLoopHooks}. Everything below is inert while none is:
+ * with no hooks the manager behaves exactly as it did before the loop existed.
+ * The loop *hold* is not here: the manager owns it ({@link
+ * SessionManager.holdForLoop}), so it is in place the moment the controller
+ * asks, without a second source of truth to keep in step.
+ */
+export interface LoopHooks {
+  storageFault?(sessionId: string): void
+  /** The session belongs to a loop that has not ended — its executor or its
+   *  reviewer. The controller resumes these by itself after a restart, so they
+   *  stay out of the Resume-sessions modal and of the update-deferral. */
+  owns(sessionId: string): boolean
+  /** The executors of this scope whose loop is delivering (§5.6, "During
+   *  delivery"): the first irreversible step has started, so what is queued on
+   *  one of them — or on a session sharing a clone with one — waits until it
+   *  ends. Empty = none delivering. */
+  delivering(workspace: string, task: string): readonly string[]
+  /** A loop of this scope has not ended, or has ended and not yet notified
+   *  (§5.6): the scope and its sessions are not archived meanwhile. */
+  live(workspace: string, task: string): boolean
 }
 
 /** What an interrupted session sends once its limit resets. */
@@ -334,6 +370,11 @@ interface Claim {
   /** A `write` mount; a `read-locked` one claims shared. */
   exclusive: boolean
 }
+
+/** Readers–writer per clone: two claim sets collide on a clone they share
+ *  when at least one of the two claims is exclusive. */
+const claimsCollide = (a: readonly Claim[], b: readonly Claim[]): boolean =>
+  a.some((x) => b.some((y) => x.key === y.key && (x.exclusive || y.exclusive)))
 
 interface Session {
   info: SessionInfo
@@ -372,6 +413,27 @@ interface Session {
   turnComplete: boolean
   /** Latest change proposal (outcome=changes) from a `complete` call; last wins. */
   proposal?: StoredProposal | undefined
+  /** A reviewer's latest `submit_review` (docs/requirements-review-loop.md
+   *  §4.1); the last call of a turn wins. Runtime only for now. */
+  verdict?: StoredVerdict | undefined
+  /** The logical turn in flight — a prompt plus its nudge — from `runPrompt`'s
+   *  first line to its classification (§5.1). The contract tools file their
+   *  artifacts here; one that lands while it is unset belongs to no turn. */
+  turn?: TurnTrack | undefined
+  /** Logical turns started, for `SettledTurn.turnId` (`<sessionId>:<n>`).
+   *  Unlike `turns` (every `sendTurn`, reset at each container start) it only
+   *  ever grows: seeded at restore from `lastSettled`, so an id is never reused
+   *  across a restart. */
+  turnSeq: number
+  /** The last turn gurt finished classifying; persisted. */
+  lastSettled?: SettledTurn | undefined
+  /** The review-loop intent whose host message the drain last took off the
+   *  queue (docs/requirements-review-loop.md §8, the `message` row): written
+   *  with the prompt's removal from the queue and `interrupted`, in the same
+   *  `sessions.json`, so a message that may already have reached the agent is
+   *  never sent twice. Replaced by the next prompt the drain takes (typed
+   *  ones clear it); persisted. */
+  loopRan?: string | undefined
   modes?: SessionModes | undefined
   plan?: SessionSnapshot['plan'] | undefined
   commands?: SessionSnapshot['commands'] | undefined
@@ -400,6 +462,22 @@ interface Session {
   pendingPermissions: Map<number, (outcome: unknown) => void>
 }
 
+/** The `<n>` of a settled turn's `<sessionId>:<n>` — where a restored session's
+ *  turn counter resumes, so an id is never handed out twice. */
+const turnSeqOf = (turnId: string | undefined): number => {
+  const n = Number(turnId?.slice(turnId.lastIndexOf(':') + 1))
+  return Number.isInteger(n) && n > 0 ? n : 0
+}
+
+/** What the contract tools filed during the logical turn in flight. */
+interface TurnTrack {
+  id: string
+  /** The turn's last `complete`, any outcome. */
+  complete?: StoredProposal | undefined
+  /** The turn's last `submit_review`. */
+  verdict?: StoredVerdict | undefined
+}
+
 /** The wire form of a queued prompt: everything but the images, which stay
  *  here (see {@link PendingPromptInfo}). */
 const pendingInfo = (p: PendingPrompt): PendingPromptInfo => ({
@@ -408,7 +486,8 @@ const pendingInfo = (p: PendingPrompt): PendingPromptInfo => ({
   ...(p.queuedAt ? { queuedAt: p.queuedAt } : {}),
   ...(p.context?.length ? { context: p.context } : {}),
   ...(p.images?.length ? { images: p.images.length } : {}),
-  ...(p.auto ? { auto: true } : {})
+  ...(p.auto ? { auto: true } : {}),
+  ...(p.origin ? { loop: p.origin.loop } : {})
 })
 
 /** Capabilities the session manager needs from the container/mcp/store layers.
@@ -445,7 +524,11 @@ export interface SessionEvents {
       role: SessionRole
       mounts: { repo: string; mode: RepoMode }[]
       onComplete: (p: ChangeProposal) => void
+      onSubmitReview: (v: ReviewVerdict) => void
       onCreateSession: (req: AgentSessionRequest) => Promise<{ sessionId: string; title: string }>
+      /** An executor in a review loop (`SessionInfo.review` present): selects
+       *  its instructions variant (docs/requirements-review-loop.md §5.5). */
+      reviewLoop?: boolean
       /** Present only for an inspector or operator session — routes its admin
        *  tools into the ws-bound admin surface
        *  (docs/requirements-session-operator.md §3). */
@@ -470,6 +553,11 @@ export interface SessionEvents {
    *  reused for the drafts an agent asks for through `create_session` (which
    *  bypasses that boundary). */
   checkDraftTarget: (ws: string, repos: string[], env?: string, agent?: string) => Promise<void>
+  /** A review loop executor's open set (docs/requirements-review-loop.md
+   *  §4.2): the `findingRef` ids ("R1.F2") its next `complete` with
+   *  `changes` must answer, each exactly once. Absent, or an empty list = no
+   *  open set: `replies` is accepted and ignored. */
+  openFindings?: (sessionId: string) => readonly string[] | undefined
   /** Env definition names claiming this repo as their default (`EnvConfig.repo`
    *  read backwards). The source of the env a `create_session` draft runs in
    *  when it names none — see `resolveDraftEnv`. */
@@ -547,9 +635,21 @@ export const PROACTIVE_NUDGE_PROMPT =
   'now with a short summary of this run (and the cursor to resume from, if ' +
   'any) and do nothing else.'
 
+/** The same for a review loop's reviewer, whose terminal tool is
+ *  `submit_review` (docs/requirements-review-loop.md §4). */
+export const REVIEWER_NUDGE_PROMPT =
+  'You ended your turn without calling the `submit_review` tool. Call ' +
+  '`submit_review` now with your verdict (approve / request_changes), a ' +
+  'summary and the findings, and do nothing else.'
+
+/** The terminal tool of a role's turn contract (see `roleHasTurnContract`) —
+ *  what its nudge asks for and its `incomplete` line names. */
+export const contractToolFor = (role: SessionRole): string =>
+  role === 'proactive' ? 'finish_run' : role === 'reviewer' ? 'submit_review' : 'complete'
+
 /** The nudge for a role's turn contract. */
 export const nudgePromptFor = (role: SessionRole): string =>
-  role === 'proactive' ? PROACTIVE_NUDGE_PROMPT : NUDGE_PROMPT
+  role === 'proactive' ? PROACTIVE_NUDGE_PROMPT : role === 'reviewer' ? REVIEWER_NUDGE_PROMPT : NUDGE_PROMPT
 
 /** What a draft takes from whoever asks for it when the request says nothing
  *  — the spawning session for `create_session`, the template for a proactive
@@ -591,6 +691,48 @@ export function assertProposalFits(writes: readonly string[], p: ChangeProposal)
   }
 }
 
+/**
+ * The open-set rule of a `complete` with `changes` (docs/requirements-review-
+ * loop.md §4.2): `replies` answers every open finding exactly once and names
+ * no finding outside the set. Pure and unit-tested; the message — every
+ * offending ref named — is what the agent gets back as an `isError` result.
+ * An empty open set asks for nothing.
+ */
+export function assertRepliesAnswer(open: readonly string[], replies: readonly FindingReply[] | undefined): void {
+  if (!open.length) return
+  const count = new Map<string, number>()
+  for (const r of replies ?? []) count.set(r.findingId, (count.get(r.findingId) ?? 0) + 1)
+  const missing = open.filter((id) => !count.has(id))
+  const unknown = [...count.keys()].filter((id) => !open.includes(id))
+  const twice = [...count].filter(([id, n]) => n > 1 && open.includes(id)).map(([id]) => id)
+  const problems = [
+    ...(missing.length ? [`not answered: ${missing.join(', ')}`] : []),
+    ...(unknown.length ? [`not open: ${unknown.join(', ')}`] : []),
+    ...(twice.length ? [`answered more than once: ${twice.join(', ')}`] : [])
+  ]
+  if (problems.length)
+    throw new Error(
+      `\`replies\` must answer every open review finding (${open.join(', ')}) exactly once — ${problems.join('; ')}`
+    )
+}
+
+/**
+ * The host rule of a `submit_review` call that its schema cannot carry
+ * (docs/requirements-review-loop.md §4.1): every finding's `file` is
+ * `<repo>/<path>` with `<repo>` one of the session's repos — never an absolute
+ * path, never a `..` out of it. Pure, like {@link assertProposalFits}.
+ */
+export function assertVerdictFits(repos: readonly string[], v: ReviewVerdict): void {
+  for (const f of v.findings) {
+    const parts = f.file.split('/')
+    if (!repos.includes(parts[0] ?? '') || parts.includes('..'))
+      throw new Error(
+        `finding "${f.id}": file "${f.file}" names no repository of this session — write it as ` +
+          `<repo>/<path> relative to /workspaces, <repo> one of: ${repos.join(', ') || '(none)'}`
+      )
+  }
+}
+
 /** One repo's view of a stored proposal: its own `repos` entry when it has one,
  *  else the shared commit/pr; undefined when neither applies. */
 export function proposalForRepo(p: StoredProposal, repo: string): StoredProposal | undefined {
@@ -616,6 +758,23 @@ function assertNotTemplate(info: SessionInfo): void {
     throw new Error("this is a proactive agent's template — it never runs itself; use the agent's Run now")
 }
 
+/** A reviewer is the review loop's alone (docs/requirements-review-loop.md
+ *  §4): only the loop creates one, so nothing copies it. */
+function assertNotLoopOwned(info: SessionInfo): void {
+  if (roleIsLoopOwned(sessionRole(info)))
+    throw new Error("this is a review loop's reviewer — only the loop creates one, so it cannot be duplicated or recreated")
+}
+
+/**
+ * A session the review loop's machinery may touch: a loop-enabled executor
+ * (`review`) or a loop's reviewer (`reviewOf`). Everything the loop added to the
+ * session manager's hot paths — the durable settled-turn record, `session.settled`,
+ * `session.human` — is for these alone; every other session behaves exactly as it
+ * did before the loop existed (docs/requirements-review-loop.md §13, "Fixes").
+ */
+export const isLoopSession = (info: Pick<SessionInfo, 'review' | 'reviewOf'>): boolean =>
+  info.review !== undefined || info.reviewOf !== undefined
+
 export type PostTurnAction = 'none' | 'nudge' | 'incomplete'
 
 /** How one `session/prompt` round-trip ended, as `sendTurn` reports it. */
@@ -625,6 +784,21 @@ interface TurnResult {
   /** Set when the limit detector claimed the turn (`withLimit`), with the
    *  reset the refusal named, if it named one. */
   limit?: { resetAt?: string | undefined } | undefined
+}
+
+/** What `runPrompt` knows of a logical turn's ending — the rest of {@link
+ *  SettledTurn} is the artifacts the contract tools filed. */
+type TurnHow = Pick<SettledTurn, 'limited' | 'cancelled' | 'failed' | 'incomplete'>
+
+/** How a logical turn ended, from its last round-trip (its nudge, when it had
+ *  one): threw, the user's Esc, another non-`end_turn` stop, or a clean end with
+ *  or without the contract tool (`incomplete`, §5.1). */
+function turnHow(last: TurnResult, incomplete: boolean): TurnHow {
+  if (last.threw) return { failed: { stopReason: 'error' }, incomplete: false }
+  if (last.stopReason === 'cancelled') return { cancelled: true, incomplete: false }
+  if (last.stopReason && last.stopReason !== 'end_turn')
+    return { failed: { stopReason: last.stopReason }, incomplete: false }
+  return { incomplete }
 }
 
 /**
@@ -697,6 +871,12 @@ export class SessionManager {
   private agentAccounts = new Map<string, string>()
   /** The one re-check armed for the earliest limit hold to lift. */
   private limitTimer: NodeJS.Timeout | undefined
+  /** The review loop's controller, once it registers (`setLoopHooks`). */
+  private loopHooks: LoopHooks | undefined
+  /** Executors the review loop holds (docs/requirements-review-loop.md §5.5):
+   *  runtime only — the controller places them again at boot, before the
+   *  scheduler's first pass. */
+  private loopHolds = new Map<string, { info: Pick<SessionInfo, 'id' | 'title'>; claims: Claim[] }>()
 
   constructor(
     private events: SessionEvents,
@@ -758,6 +938,9 @@ export class SessionManager {
         draining: false,
         turnComplete: false,
         turns: 0,
+        lastSettled: r.lastSettled,
+        loopRan: r.loopRan,
+        turnSeq: turnSeqOf(r.lastSettled?.turnId),
         attached: false,
         loading: false,
         pendingPermissions: new Map(),
@@ -821,6 +1004,137 @@ export class SessionManager {
     // Both hold: the later end is the real one.
     if (!shared.until) return shared
     return Date.parse(shared.until) > Date.parse(own.until) ? shared : own
+  }
+
+  /** The plan hold this session would queue behind, if any — {@link limitHold}'s
+   *  read-only view for the review loop, which must tell a reviewer queued
+   *  `agent-limited` from one that merely waits for a slot (§5.4). */
+  planHoldOf(sessionId: string): PlanHold | undefined {
+    const s = this.sessions.get(sessionId)
+    return s ? this.limitHold(s) : undefined
+  }
+
+  // --- review loop seams (docs/requirements-review-loop.md §5.4–§5.6) -------
+
+  /** Register the loop's controller (or drop it with `undefined`). */
+  setLoopHooks(hooks: LoopHooks | undefined): void {
+    this.loopHooks = hooks
+  }
+
+  /** The loop owns this session (its executor or reviewer, loop not ended). */
+  private loopOwned(s: Session): boolean {
+    return this.loopHooks?.owns(s.info.id) === true
+  }
+
+  /** A loop's delivery is under way on something this session touches (§5.6):
+   *  what is queued here waits. Only the delivering executor itself and the
+   *  sessions whose clone claims overlap its (the scheduler's own notion,
+   *  {@link claims}) are held — a repo-free inspector, or a session reading
+   *  another repo of the same task, is no part of the delivery and must not wait
+   *  on it. */
+  private deliveryActive(s: Session): boolean {
+    const delivering = this.loopHooks?.delivering(s.ref.workspace, s.ref.task)
+    if (!delivering?.length) return false
+    const mine = this.claims(s)
+    return delivering.some((id) => {
+      if (id === s.info.id) return true
+      const ex = this.sessions.get(id)
+      return (this.loopHolds.get(id)?.claims ?? (ex ? this.claims(ex) : [])).some((c) => mine.some((m) => m.key === c.key))
+    })
+  }
+
+  /**
+   * Take the loop hold on an executor: it keeps its clones even with its
+   * container down, nothing queues a handoff against it, and it stops counting
+   * against the task cap while its container is down. Idempotent.
+   *
+   * **Ordering.** The hold must exist before `sendTurn` emits `session.turn`
+   * `ended` for the turn it protects — the kernel's queue handoff runs on that
+   * event, in the same synchronous dispatch, and would stop the container of a
+   * session the loop has not classified yet. The controller therefore takes it
+   * on `session.turn` `started` of the executor's first turn (the start prompt
+   * included): `sendTurn` emits `started` before its first `await`, minutes
+   * ahead of any `ended`, and the nudge turn's own `ended` is covered by the
+   * same hold — it is never dropped between a turn and its nudge.
+   */
+  holdForLoop(sessionId: string, stored?: { ws: string; task: string; repos: string[] }): void {
+    if (this.loopHolds.has(sessionId)) return
+    const s = this.sessions.get(sessionId)
+    if (!s && !stored) throw new Error('unknown session')
+    // §5.5–§5.6: the controller owns the reservation, independent of session deletion.
+    this.loopHolds.set(sessionId, {
+      info: { id: sessionId, title: s?.info.title ?? 'review loop' },
+      claims: stored ? stored.repos.map((repo) => ({ key: `${taskKey(stored.ws, stored.task)}/${repo}`, repo, exclusive: true })) : this.claims(s!)
+    })
+  }
+
+  /** Drop the hold; true when there was one. Dropping it only stops the
+   *  reservation — the executor's turn is over or not, and its container may be
+   *  up with its idle timer cancelled by the keep-alive pings. Whoever releases
+   *  (the kernel's `releaseLoopHold`) re-runs the idle handling and
+   *  `schedule()` afterwards. */
+  releaseLoopHold(sessionId: string): boolean {
+    return this.loopHolds.delete(sessionId)
+  }
+
+  isLoopHeld(sessionId: string): boolean {
+    return this.loopHolds.has(sessionId)
+  }
+
+  /**
+   * Wake a loop executor's container without attaching its agent — the review
+   * loop's check needs the clone's toolchain, not the agent (§5.3). Gated like a
+   * resume (`repoConflict`; the held executor is its own clone's holder, so only
+   * a foreign claim refuses it), then `resolveLaunch`: the container up, the
+   * adapter installed, the proxy scope converged, credentials in place — and no
+   * `session/load`. Rejecting means the check cannot run.
+   */
+  async ensureContainerUp(sessionId: string): Promise<void> {
+    const s = this.sessions.get(sessionId)
+    if (!s) throw new Error('unknown session')
+    const conflict = this.repoConflict(s)
+    if (conflict)
+      throw new Error(
+        `repository "${conflict.repo}" is in use by session "${conflict.holder.info.title}" — wait for it to go idle`
+      )
+    await this.events.resolveLaunch(sessionId)
+  }
+
+  /** The last logical turn gurt finished classifying (persisted before
+   *  `session.settled`): what a booting loop replays (§8). */
+  lastSettledOf(sessionId: string): SettledTurn | undefined {
+    const t = this.sessions.get(sessionId)?.lastSettled
+    return t && structuredClone(t)
+  }
+
+  /** The loop's message `intent` is already in this session: waiting in the
+   *  queue, taken off it (the in-flight marker, {@link Session.loopRan}), or
+   *  on the timeline as its `system` entry — any of the three means it is not
+   *  to be sent again (§8). */
+  hostPromptSeen(sessionId: string, intent: string): boolean {
+    const s = this.sessions.get(sessionId)
+    if (!s) return false
+    return (
+      s.pending.some((p) => p.origin?.loop === intent) ||
+      s.loopRan === intent ||
+      s.entries.some((e) => e.kind === 'system' && e.loop === intent)
+    )
+  }
+
+  /** Drop the review loop's queued host messages (`origin.loop`) from this
+   *  session — the loop ended and must not leave a message to run later (§5.6).
+   *  Typed messages stay. Returns how many went. */
+  dropHostPrompts(sessionId: string): number {
+    const s = this.sessions.get(sessionId)
+    if (!s) return 0
+    const before = s.pending.length
+    s.pending = s.pending.filter((p) => p.origin === undefined)
+    const n = before - s.pending.length
+    if (n) {
+      this.schedulePersist(s.ref)
+      this.bus.emit('session.changed', { sessionId })
+    }
+    return n
   }
 
   /** "plan limit: Current session 97% — waits for the reset at 15:00" — one
@@ -912,13 +1226,24 @@ export class SessionManager {
       .sort((a, b) => this.queueTime(a).localeCompare(this.queueTime(b)))
   }
 
-  /** Earlier work keeps its place on shared clones, including during a limit hold. */
+  /** Earlier work keeps its place on shared clones, including during a limit hold.
+   *
+   *  Except behind the session's own review-loop hold
+   *  (docs/requirements-review-loop.md §5.5): a held executor's own work — the
+   *  loop's host messages, the continuation or restart prompt of its own turns —
+   *  never queues behind a session that cannot start *because of that hold*.
+   *  That session waits for the loop, the loop waits for this prompt, and both
+   *  would sit out the loop's deadline. Once the hold is released, FIFO
+   *  applies again. */
   private earlierQueueItem(s: Session): Session | undefined {
     const claims = this.claims(s)
+    const held = this.loopHolds.get(s.info.id)
     for (const other of this.queuedSessions()) {
       if (other === s) break
-      if (this.claims(other).some((a) => claims.some((b) =>
-        a.key === b.key && (a.exclusive || b.exclusive)))) return other
+      const theirs = this.claims(other)
+      if (!claimsCollide(theirs, claims)) continue
+      if (held && claimsCollide(theirs, held.claims)) continue
+      return other
     }
     return undefined
   }
@@ -936,6 +1261,14 @@ export class SessionManager {
     if (!s.pending.length || s.busy) return undefined
     const hold = s.info.state === 'started' ? this.limitHold(s) : undefined
     if (hold) return this.holdText(hold)
+    // A review loop's gates before the place in the queue. They hold whatever
+    // position this message has: a delivery runs to its end (§5.6) and a loop
+    // hold lasts until the loop lets go (§5.5). An earlier item on the same
+    // clone is waiting for the same gate, so "waiting behind" it would point at
+    // a session that cannot move either. Once the gate lifts, FIFO decides.
+    if (this.deliveryActive(s)) return 'the review loop is delivering — this sends when it has finished'
+    const loop = this.loopHoldConflict(s)
+    if (loop) return this.loopHoldText(loop, 'sends')
     const earlier = this.earlierQueueItem(s)
     if (earlier) return `waiting behind session "${earlier.info.title}"`
     const conflict = this.repoConflict(s)
@@ -944,12 +1277,24 @@ export class SessionManager {
   }
 
   /** What a queued session is waiting for, when the answer is not the generic
-   *  "its turn / its clone": an account at its limit. */
+   *  "its turn / its clone": an account at its limit, a review loop's hold on
+   *  its clone (named: a loop can hold it for up to its deadline), or an
+   *  earlier item on its clone. */
   private queuedWaiting(s: Session): string | undefined {
     const hold = this.limitHold(s)
     if (hold) return this.holdText(hold)
+    const loop = this.loopHoldConflict(s)
+    if (loop) return this.loopHoldText(loop, 'starts')
     const earlier = this.earlierQueueItem(s)
     return earlier ? `waiting behind session "${earlier.info.title}"` : undefined
+  }
+
+  /** "The review loop of session "x" holds "alpha" — …": the wait on a loop
+   *  hold, said as one. A hold kept after its executor was deleted (§5.6) has
+   *  no session to name. */
+  private loopHoldText(c: { holder: { info: Pick<SessionInfo, 'id' | 'title'> }; repo: string }, does: 'sends' | 'starts'): string {
+    const who = this.sessions.has(c.holder.info.id) ? `the review loop of session "${c.holder.info.title}"` : 'a review loop'
+    return `${who} holds "${c.repo}" — this ${does} when the loop lets go`
   }
 
   snapshot(sessionId: string): SessionSnapshot | undefined {
@@ -1061,6 +1406,7 @@ export class SessionManager {
       draining: false,
       turnComplete: false,
       turns: 0,
+      turnSeq: 0,
       attached: false,
       loading: false,
       pendingPermissions: new Map(),
@@ -1085,7 +1431,7 @@ export class SessionManager {
     const s = this.sessions.get(sessionId)
     if (!s) return
     const cap = this.taskCaps.get(taskKey(s.ref.workspace, s.ref.task))
-    if (cap !== undefined && this.activeSessionCount(s.ref.workspace, s.ref.task) >= cap) {
+    if (cap !== undefined && !this.capExempt(s) && this.activeSessionCount(s.ref.workspace, s.ref.task) >= cap) {
       this.enqueue(sessionId)
       return
     }
@@ -1172,6 +1518,7 @@ export class SessionManager {
       network?: SessionNetwork
       startPrompt?: string
       configValues?: Record<string, string | boolean>
+      review?: ReviewLoopConfig | null
     }
   ): void {
     this.assertSessionWritable(sessionId)
@@ -1207,6 +1554,19 @@ export class SessionManager {
     if (patch.startPrompt !== undefined) s.info.startPrompt = patch.startPrompt
     if (patch.configValues !== undefined)
       s.info.configValues = Object.keys(patch.configValues).length ? patch.configValues : undefined
+    // The Review block (docs/requirements-review-loop.md §3): a draft's own,
+    // frozen the moment it leaves draft like every other pick here. A block
+    // turns the loop on; `null` turns it off *on purpose*, which the anchor's
+    // `review.enabled` default must not undo.
+    if (patch.review !== undefined) {
+      if (patch.review === null) {
+        s.info.review = undefined
+        s.info.reviewOff = true
+      } else {
+        s.info.review = { ...patch.review, ...(patch.review.configValues ? { configValues: { ...patch.review.configValues } } : {}) }
+        s.info.reviewOff = undefined
+      }
+    }
     // absent leaves repos unchanged; never touches the env. Re-pointing repos,
     // their modes, env or role releases the draft's container if a failed
     // start left one — it was provisioned for the old target (a mode decides
@@ -1239,6 +1599,14 @@ export class SessionManager {
       if (isDefaultSessionTitle(s.info.title, prevRole))
         s.info.title = this.defaultTitleForRole(s.ref, patch.role, s.info.id)
       s.info.role = patch.role
+      // The Review block is an executor's (docs/requirements-review-loop.md
+      // §3): a draft that stops being one drops it rather than carry a loop
+      // that nothing would run (`Kernel.editDraft` already refuses a block in
+      // a patch that makes the draft something else).
+      if (patch.role !== 'executor') {
+        s.info.review = undefined
+        s.info.reviewOff = undefined
+      }
     }
     // Structural like repos/env/role, not a runtime knob: the skills bind is
     // part of the container's mount list, decided when it is created. A failed
@@ -1275,6 +1643,7 @@ export class SessionManager {
   duplicateSession(sessionId: string): SessionInfo {
     const source = this.sessions.get(sessionId)?.info
     if (!source) throw new Error('unknown session')
+    assertNotLoopOwned(source)
     const info = this.draftFrom(source)
     // The copy is recognisable as one instead of taking the next free
     // role-index name — the source is usually still in the tree right above it.
@@ -1309,6 +1678,7 @@ export class SessionManager {
     const s = this.sessions.get(sessionId)
     if (!s) throw new Error('unknown session')
     if (s.info.state === 'draft') throw new Error('session is already a draft')
+    assertNotLoopOwned(s.info)
     const source = s.info
     const at = [...this.sessions.keys()].indexOf(sessionId)
     const info = this.draftFrom(source)
@@ -1331,7 +1701,7 @@ export class SessionManager {
   /** A fresh draft of the same task carrying everything the user configured on
    *  `source`, and nothing runtime-derived (see {@link duplicateSession}). */
   private draftFrom(source: SessionInfo): SessionInfo {
-    return this.createSession(
+    const copy = this.createSession(
       { workspace: source.workspace, task: source.task, env: source.env },
       [...source.repos],
       source.agent ?? '',
@@ -1350,6 +1720,12 @@ export class SessionManager {
       sanitizeSessionNetwork(source.network),
       Object.fromEntries(source.repos.map((r) => [r, repoMode(source, r)]))
     )
+    // The Review block comes along (docs/requirements-review-loop.md §3), as
+    // a copy of its own; a block switched off on purpose stays off.
+    if (source.review)
+      copy.review = { ...source.review, ...(source.review.configValues ? { configValues: { ...source.review.configValues } } : {}) }
+    if (source.reviewOff) copy.reviewOff = true
+    return copy
   }
 
   /**
@@ -1435,7 +1811,7 @@ export class SessionManager {
       }
       const tkey = taskKey(s.ref.workspace, s.ref.task)
       const cap = this.taskCaps.get(tkey)
-      if (cap !== undefined) {
+      if (cap !== undefined && !this.capExempt(s)) {
         const running = this.activeSessionCount(s.ref.workspace, s.ref.task) + (startedThisPass.get(tkey) ?? 0)
         if (running >= cap) {
           still.add(s.info.id)
@@ -1443,6 +1819,7 @@ export class SessionManager {
           continue
         }
       }
+      // An exempt start still counts for the sessions behind it in this pass.
       const start = (): void => {
         if (cap !== undefined) startedThisPass.set(tkey, (startedThisPass.get(tkey) ?? 0) + 1)
         this.queuedReasons.delete(s.info.id)
@@ -1528,11 +1905,13 @@ export class SessionManager {
    * The env is *not* a constraint. Each session owns its container, so any
    * number of sessions may run the same env definition at once.
    */
-  private repoConflict(s: Session): { holder: Session; repo: string } | undefined {
+  private repoConflict(s: Session): { holder: { info: Pick<SessionInfo, 'id' | 'title'> }; repo: string } | undefined {
     const mine = this.claims(s)
     if (!mine.length) return undefined
+    const loop = this.loopHoldConflict(s)
+    if (loop) return loop
     for (const o of this.sessions.values()) {
-      if (o.info.id === s.info.id || !this.isActive(o)) continue
+      if (o.info.id === s.info.id || !this.holdsClone(o)) continue
       for (const theirs of this.claims(o)) {
         const c = mine.find((m) => m.key === theirs.key)
         if (c && (c.exclusive || theirs.exclusive)) return { holder: o, repo: c.repo }
@@ -1541,20 +1920,45 @@ export class SessionManager {
     return undefined
   }
 
+  /** {@link repoConflict}'s first half: another executor's review-loop hold
+   *  (docs/requirements-review-loop.md §5.5) over one of this session's clones
+   *  — the holder whether or not its container is up, and whether or not the
+   *  session still exists. The session's own hold is never in its way. */
+  private loopHoldConflict(s: Session): { holder: { info: Pick<SessionInfo, 'id' | 'title'> }; repo: string } | undefined {
+    const mine = this.claims(s)
+    for (const [id, held] of this.loopHolds) {
+      if (id === s.info.id) continue
+      for (const theirs of held.claims) {
+        const c = mine.find((m) => m.key === theirs.key)
+        if (c && (c.exclusive || theirs.exclusive)) return { holder: held, repo: c.repo }
+      }
+    }
+    return undefined
+  }
+
   /** {@link repoConflict}'s holder alone — for the callers that only ask "may
    *  this session touch its clones right now". */
-  private repoHolder(s: Session): Session | undefined {
+  private repoHolder(s: Session): { info: Pick<SessionInfo, 'id' | 'title'> } | undefined {
     return this.repoConflict(s)?.holder
   }
 
   /** "Able to touch its clone / count against its task's cap": mid-start, or
    *  owning a container that is up. An idle session whose container has been
-   *  auto-stopped holds nothing — shared by {@link repoHolder}, {@link
-   *  repoHolderFor} and {@link activeSessionCount}. */
+   *  auto-stopped holds nothing — shared by {@link holdsClone} and {@link
+   *  activeSessionCount}. */
   private isActive(s: Session): boolean {
     const live = s.info.container?.status
     const busyContainer = live === 'building' || live === 'post' || live === 'running'
     return s.info.state === 'starting' || busyContainer
+  }
+
+  /** {@link isActive}, or held by the review loop: a held executor keeps its
+   *  claims with its container down (docs/requirements-review-loop.md §5.5), so
+   *  no other session takes the clone out from under a loop that will wake it.
+   *  Deliberately not what the task cap counts — held with its container down
+   *  it costs no slot — nor what the queue handoff may stop. */
+  private holdsClone(s: Session): boolean {
+    return this.isActive(s) || this.loopHolds.has(s.info.id)
   }
 
   /** Sessions of `(ws, task)` currently active (see {@link isActive}) —
@@ -1564,6 +1968,14 @@ export class SessionManager {
     for (const o of this.sessions.values())
       if (o.ref.workspace === ws && o.ref.task === task && this.isActive(o)) n++
     return n
+  }
+
+  /** A review loop's reviewer never waits on its scope's
+   *  `maxConcurrentSessions` (docs/requirements-review-loop.md §5.4): the idle
+   *  executor it reviews still occupies a slot, so at a cap of 1 it would queue
+   *  forever. It still counts as active for every other session. */
+  private capExempt(s: Session): boolean {
+    return roleIsLoopOwned(sessionRole(s.info))
   }
 
   /** Seed the per-task cap cache from disk. Called once at boot, before the
@@ -1588,13 +2000,14 @@ export class SessionManager {
    * The session currently claiming this clone, addressed by (task, repo) rather
    * than by another session — a writer before any reader. Same "able to touch
    * it" rule as {@link repoConflict}: an idle session whose container is down
-   * holds nothing and is not reported.
+   * holds nothing and is not reported — unless the review loop holds it
+   * ({@link holdsClone}).
    */
   repoHolderFor(ws: string, task: string, repo: string): SessionInfo | undefined {
     const want = `${taskKey(ws, task)}/${repo}`
     let reader: SessionInfo | undefined
     for (const o of this.sessions.values()) {
-      if (!this.isActive(o)) continue
+      if (!this.holdsClone(o)) continue
       const c = this.claims(o).find((k) => k.key === want)
       if (c?.exclusive) return o.info
       if (c) reader ??= o.info
@@ -1640,7 +2053,9 @@ export class SessionManager {
       }
       want(s)
       const tkey = taskKey(s.ref.workspace, s.ref.task)
-      if (this.taskCaps.has(tkey)) wantedTasks.add(tkey)
+      // A queued reviewer waits for a plan hold at most, never for a slot, so
+      // it must not make the handoff stop its executor for one.
+      if (this.taskCaps.has(tkey) && !this.capExempt(s)) wantedTasks.add(tkey)
     }
     if (!wantedRepos.size && !wantedTasks.size) return []
     const out: string[] = []
@@ -1648,6 +2063,9 @@ export class SessionManager {
       // A queued holder is the scheduler's business, not the reaper's: it owns
       // a container it is about to start into.
       if (o.info.state === 'queued' || o.info.state === 'starting' || o.busy) continue
+      // The loop's executor keeps its container up for the check and the next
+      // turn (docs/requirements-review-loop.md §5.5) — a handoff would stop it.
+      if (this.loopHolds.has(o.info.id)) continue
       // Only a fully-up container is stoppable — one still building/post is
       // mid-provision, and `starting` above already covers its session.
       if (o.info.container?.status !== 'running') continue
@@ -1897,6 +2315,7 @@ export class SessionManager {
       this.mask.drop(id)
       stopPiiRewrite(id)
       this.sessions.delete(id)
+      this.loopHolds.delete(id)
       this.bus.emit('session.deleted', { sessionId: id })
     }
     this.bus.emit('tree.changed', undefined)
@@ -1918,6 +2337,7 @@ export class SessionManager {
       this.mask.drop(id)
       stopPiiRewrite(id)
       this.sessions.delete(id)
+      this.loopHolds.delete(id)
       this.bus.emit('session.deleted', { sessionId: id })
     }
     this.bus.emit('tree.changed', undefined)
@@ -1938,6 +2358,8 @@ export class SessionManager {
         info,
         acpSessionId: s.acpSessionId,
         proposal: s.proposal,
+        ...(s.lastSettled ? { lastSettled: structuredClone(s.lastSettled) } : {}),
+        ...(s.loopRan ? { loopRan: s.loopRan } : {}),
         interrupted: s.interrupted,
         pending: structuredClone(s.pending)
       }
@@ -2000,6 +2422,9 @@ export class SessionManager {
   }
 
   taskHasPendingWork(ws: string, task: string): boolean {
+    // A live review loop is work too: nothing is queued or running at the
+    // moment of a check, but the loop owns the clones (§5.6).
+    if (this.loopHooks?.live(ws, task) === true) return true
     return this.sessionsFor(ws, task).some((s) => s.busy || s.draining || s.loading || s.promptRunning ||
       s.pendingPermissions.size > 0 || s.pending.length > 0 || s.recovering ||
       s.info.state === 'starting' || s.info.state === 'queued' || !!s.info.limitedUntil || !!s.startImages?.length)
@@ -2014,6 +2439,7 @@ export class SessionManager {
     this.mask.drop(id)
     stopPiiRewrite(id)
     this.sessions.delete(id)
+    this.loopHolds.delete(id)
     this.schedulePersist(s.ref)
     this.bus.emit('session.deleted', { sessionId: id })
     this.bus.emit('tree.changed', undefined)
@@ -2030,14 +2456,18 @@ export class SessionManager {
   }
 
   interruptedSessions(): InterruptedSession[] {
-    return [...this.sessions.values()].filter((s) => s.recovering && s.info.state === 'started')
+    // A loop's sessions are resumed by its controller (docs/requirements-review-
+    // loop.md §8): enabling the loop was the approval, so no modal asks again.
+    return [...this.sessions.values()].filter((s) => s.recovering && s.info.state === 'started' && !this.loopOwned(s))
       .map(({ info }) => ({ id: info.id, title: info.title, workspace: info.workspace, task: info.task }))
   }
 
   hasUnfinishedWork(): boolean {
-    return [...this.sessions.values()].some((s) => s.busy || s.draining || s.loading || s.promptRunning ||
+    // Not a loop's own: an update restart does not wait for a loop, whose
+    // controller resumes it afterwards (§8).
+    return [...this.sessions.values()].some((s) => !this.loopOwned(s) && (s.busy || s.draining || s.loading || s.promptRunning ||
       s.pendingPermissions.size > 0 || s.pending.length > 0 || s.recovering ||
-      s.info.state === 'starting' || s.info.state === 'queued' || !!s.info.limitedUntil)
+      s.info.state === 'starting' || s.info.state === 'queued' || !!s.info.limitedUntil))
   }
 
   async resumeInterrupted(id: string): Promise<void> {
@@ -2488,7 +2918,10 @@ export class SessionManager {
     entryKind: 'user' | 'system',
     isNudge: boolean,
     context?: PromptContext[],
-    images?: PromptImage[]
+    images?: PromptImage[],
+    /** The review loop's intent id, when this turn is one of its host messages
+     *  (shown as a `system` entry that carries it). */
+    loop?: string
   ): Promise<TurnResult> {
     this.bus.emit('session.activity', { sessionId: s.info.id })
     // The one outbound seam (§2.1): from here on the agent only ever sees
@@ -2505,7 +2938,7 @@ export class SessionManager {
         maskError = e instanceof Error ? e : new Error(String(e))
       }
     }
-    this.push(s, { kind: entryKind, text: outbound })
+    this.push(s, loop === undefined ? { kind: entryKind, text: outbound } : { kind: 'system', text: outbound, loop })
     // Prompt start: the turn is incomplete until `complete` fires; clear any
     // prior violation overlay.
     s.turnComplete = false
@@ -2663,7 +3096,7 @@ export class SessionManager {
    * user already queued behind this turn goes instead: it *is* the
    * continuation, and sending both would answer one turn twice.
    */
-  private onLimited(s: Session, limit: { resetAt?: string | undefined }): void {
+  private onLimited(s: Session, limit: { resetAt?: string | undefined }): string {
     s.limitStrikes++
     const now = Date.now()
     const named = limit.resetAt && Date.parse(limit.resetAt) > now ? limit.resetAt : undefined
@@ -2677,7 +3110,7 @@ export class SessionManager {
     // agent's next scheduled run starts once the queue lets it.
     if (sessionRole(s.info) === 'proactive') {
       this.push(s, { kind: 'system', text: `limit reached — this run ends here (resets ${formatResetAt(until, now)})` })
-      return
+      return until
     }
     s.info.limitedUntil = until
     if (!s.pending.length)
@@ -2689,6 +3122,7 @@ export class SessionManager {
     this.schedulePersist(s.ref)
     // Arms the clock for the reset.
     this.schedule()
+    return until
   }
 
   /** A turn the provider accepted: whatever limit was on record is over. */
@@ -2711,30 +3145,101 @@ export class SessionManager {
     s: Session,
     text: string,
     context?: PromptContext[],
-    images?: PromptImage[]
+    images?: PromptImage[],
+    loop?: string
   ): Promise<void> {
     s.promptRunning = true
+    // The logical turn: this prompt and its nudge (docs/requirements-review-
+    // loop.md §5.1). Opened before the first await so the contract tools can
+    // file into it once a round-trip is busy; closed in the `finally`, whatever
+    // happened. Only a loop session has one — the record, its write and its
+    // event are the loop's, and any other session's turn ends as it always did.
+    const turn: TurnTrack | undefined = isLoopSession(s.info)
+      ? { id: `${s.info.id}:${++s.turnSeq}` }
+      : undefined
+    s.turn = turn
+    // Until the body says how it ended, it threw.
+    let how: TurnHow = { failed: { stopReason: 'error' }, incomplete: false }
     try {
-      const first = await this.sendTurn(s, text, 'user', false, context, images)
-      if (first.limit) return this.onLimited(s, first.limit)
+      const first = await this.sendTurn(s, text, 'user', false, context, images, loop)
+      if (first.limit) {
+        how = { limited: { until: this.onLimited(s, first.limit) }, incomplete: false }
+        return
+      }
       if (!first.threw) this.clearLimited(s)
-      if (this.decideTurn(s, first, false) !== 'nudge') return
+      if (this.decideTurn(s, first, false) !== 'nudge') {
+        how = turnHow(first, false)
+        return
+      }
       const second = await this.sendTurn(s, nudgePromptFor(sessionRole(s.info)), 'system', true)
-      if (second.limit) return this.onLimited(s, second.limit)
-      if (this.decideTurn(s, second, true) === 'incomplete') {
-        const tool = sessionRole(s.info) === 'proactive' ? 'finish_run' : 'complete'
-        this.push(s, { kind: 'system', text: `turn ended without ${tool}` })
+      if (second.limit) {
+        how = { limited: { until: this.onLimited(s, second.limit) }, incomplete: false }
+        return
+      }
+      const incomplete = this.decideTurn(s, second, true) === 'incomplete'
+      if (incomplete) {
+        this.push(s, { kind: 'system', text: `turn ended without ${contractToolFor(sessionRole(s.info))}` })
         s.info.incomplete = true
         this.bus.emit('session.changed', { sessionId: s.info.id })
         this.schedulePersist(s.ref)
       }
+      how = turnHow(second, incomplete)
     } finally {
-      s.promptRunning = false
+      // An ordinary session drops `promptRunning` right here, with no write and
+      // no event in between, exactly as before the loop (it is the update
+      // deferral's and the drain's gate); only a loop session pays for the
+      // settled-turn record (`settleTurn` drops it after its write).
+      if (turn) await this.settleTurn(s, turn, how)
+      else s.promptRunning = false
       // Whatever was typed while this turn ran goes next. A no-op when the drain
       // loop is what called this (it owns `draining` and continues on its own) —
       // this is here for the one turn it does not drive, the start prompt.
       void this.drainPending(s)
     }
+  }
+
+  /**
+   * The end of a logical turn, once gurt has classified how it ended
+   * (docs/requirements-review-loop.md §5.1, §8): record it as `lastSettled` and
+   * persist it, *then* emit `session.settled` — the bus replays nothing, so a
+   * loop that misses the event reads the record at boot. A failed write is
+   * logged and the event still goes out: the live loop must not hang on a disk
+   * error, and only the replay after a crash is lost.
+   *
+   * A deleted session settles to nobody (`session.deleted` is its event).
+   * `promptRunning` drops after the write and before the emit, so a subscriber
+   * that queues a host message from the handler finds the session free.
+   */
+  private async settleTurn(s: Session, turn: TurnTrack, how: TurnHow): Promise<void> {
+    if (s.turn === turn) s.turn = undefined
+    const settled: SettledTurn = {
+      turnId: turn.id,
+      ...(turn.complete ? { complete: turn.complete } : {}),
+      ...(turn.verdict ? { verdict: turn.verdict } : {}),
+      ...how
+    }
+    const previous = s.lastSettled
+    s.lastSettled = settled
+    // §5.1/§8: never hand the controller an input absent from durable storage.
+    // Bounded retries absorb transient writes; exhaustion faults with the hold.
+    let durable = false
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        await this.persistNow(s)
+        durable = true
+        break
+      } catch (err) {
+        log.error('session.persist.fail', { err })
+      }
+    }
+    s.promptRunning = false
+    if (!durable) {
+      s.lastSettled = previous
+      this.loopHooks?.storageFault?.(s.info.id)
+      return
+    }
+    if (this.sessions.get(s.info.id) === s)
+      this.bus.emit('session.settled', { sessionId: s.info.id, ref: s.ref, turn: settled })
   }
 
   /**
@@ -2750,10 +3255,26 @@ export class SessionManager {
     // Before anything is recorded: a refused call is the agent's to correct
     // (an `isError` tool result), not a turn that completed.
     assertProposalFits(writeRepos(s.info), p)
-    s.turnComplete = true
+    // §4.2 of docs/requirements-review-loop.md: the first `complete` with
+    // `changes` after a verdict answers its open set. Which set is open — and
+    // when the settled turn carrying the replies closes it — is the loop's to
+    // say; without one, `replies` is accepted and ignored.
+    if (p.outcome === 'changes') assertRepliesAnswer(this.events.openFindings?.(sessionId) ?? [], p.replies)
+    // A loop session's tool call counts only inside a round-trip (§5.1): one
+    // landing outside `busy` — a straggler of the previous turn while the next
+    // prompt is still being masked, or in the gap before the nudge — belongs to
+    // no turn, so it neither completes the turn nor is filed in it. An ordinary
+    // session has no logical turn and keeps counting every call.
+    const inTurn = s.turn !== undefined && s.busy
+    if (!s.turn || inTurn) s.turnComplete = true
+    const stored: StoredProposal = { ...p, at: new Date().toISOString() }
+    // The logical turn's artifact (§5.1): the last call of the turn wins, any
+    // outcome. The turn spans a prompt and its nudge, but only their round-trips
+    // take calls.
+    if (s.turn && inTurn) s.turn.complete = stored
     let text: string
     if (p.outcome === 'changes') {
-      s.proposal = { ...p, at: new Date().toISOString() }
+      s.proposal = stored
       const subjects = [
         ...(p.commit ? [p.commit.subject] : []),
         ...(p.repos ?? []).map((r) => `${r.repo}: ${r.commit.subject}`)
@@ -2770,6 +3291,44 @@ export class SessionManager {
       this.bus.emit('session.proposal', { sessionId, ref: s.ref, proposal: s.proposal })
   }
 
+  /**
+   * A reviewer's `submit_review` landed (docs/requirements-review-loop.md
+   * §4.1): the turn is complete and its verdict stored — the last call of a
+   * turn wins — filed under the round the reviewer is (`reviewOf`) and the
+   * turn it came in. Validates and returns at once (§2): the loop reads the
+   * verdict when the turn settles, never inside this call.
+   */
+  private onSubmitReview(sessionId: string, v: ReviewVerdict): void {
+    const s = this.sessions.get(sessionId)
+    if (!s) return
+    // Before anything is recorded, like `complete`'s repo rule: a refused call
+    // is the agent's to correct.
+    assertVerdictFits(s.info.repos, v)
+    // As in `onComplete`: only a call inside a round-trip belongs to the turn
+    // (§5.1) — a stale approval landing while the next prompt is masked must
+    // not survive a nudge the agent then ignores.
+    const open = s.turn !== undefined && s.busy ? s.turn : undefined
+    if (!s.turn || open) s.turnComplete = true
+    s.verdict = {
+      ...v,
+      at: new Date().toISOString(),
+      round: s.info.reviewOf?.round ?? 0,
+      // The logical turn's id (`SettledTurn.turnId`); a call outside a
+      // round-trip carries the one before the turn in flight (`turnSeq` already
+      // counts that one) and is never filed under it.
+      turnId: open?.id ?? `${sessionId}:${s.turn ? s.turnSeq - 1 : s.turnSeq}`
+    }
+    if (open) open.verdict = s.verdict
+    const n = v.findings.length
+    this.push(s, {
+      kind: 'system',
+      text:
+        v.verdict === 'approve'
+          ? 'submit_review: approve'
+          : `submit_review: request_changes — ${n} finding${n === 1 ? '' : 's'}`
+    })
+  }
+
   /** What the session's `gurt` server may do on its behalf: the role (which
    *  decides its tool set and instructions) plus the callbacks that route into
    *  this manager. Rebuilt on every start/attach, so a re-ensured server always
@@ -2778,7 +3337,9 @@ export class SessionManager {
     role: SessionRole
     mounts: { repo: string; mode: RepoMode }[]
     onComplete: (p: ChangeProposal) => void
+    onSubmitReview: (v: ReviewVerdict) => void
     onCreateSession: (req: AgentSessionRequest) => Promise<{ sessionId: string; title: string }>
+    reviewLoop?: boolean
     admin?: AdminHooks
     proactive?: ProactiveHooks
   } {
@@ -2787,7 +3348,11 @@ export class SessionManager {
       role,
       mounts: s.info.repos.map((repo) => ({ repo, mode: repoMode(s.info, repo) })),
       onComplete: (p) => this.onComplete(s.info.id, p),
+      onSubmitReview: (v) => this.onSubmitReview(s.info.id, v),
       onCreateSession: (req) => this.createAgentDraft(s.info.id, req),
+      // A loop executor's instructions say gurt checks, reviews and ships
+      // (docs/requirements-review-loop.md §5.5); frozen at start like the role.
+      ...(s.info.review ? { reviewLoop: true } : {}),
       // The workspace is bound here, from the session's own record — the one
       // parameter the agent can never express (§3.2 of
       // docs/requirements-session-operator.md).
@@ -2838,6 +3403,52 @@ export class SessionManager {
     if (!t?.info.template) throw new Error('the proactive agent has no template')
     const info = this.draftFrom(t.info)
     this.renameSession(info.id, title)
+    this.enqueue(info.id)
+    return info
+  }
+
+  /**
+   * Create one round's reviewer for a loop executor and enqueue it, as
+   * {@link spawnRun} starts a proactive run (docs/requirements-review-loop.md
+   * §5.4): in the executor's scope, with its env and inheritance
+   * ({@link inheritanceOf}: auto-allow, skills, network, MCP) but the Review
+   * block's agent and config values; the executor's repos, all `read`; every
+   * built-in MCP server capped at `read-only` (no `git_push` /
+   * `create_pull_request`); `reviewOf` naming the intent; the title
+   * `review <round> — <executor title>`; and the caller's prompt, which is the
+   * reviewer's whole input.
+   *
+   * Persisted *before* it is enqueued, so a crash between the two leaves a
+   * draft carrying `reviewOf.intent` that the next boot adopts instead of
+   * creating a second reviewer (§8). Exempt from the scope's cap
+   * ({@link capExempt}); still subject to its account's plan hold.
+   */
+  async createReviewer(
+    executorId: string,
+    req: { round: number; intent: string; prompt: string }
+  ): Promise<SessionInfo> {
+    const ex = this.sessions.get(executorId)
+    if (!ex) throw new Error('unknown session')
+    const block = ex.info.review
+    if (!block) throw new Error('this session is not in a review loop')
+    const inherit = this.inheritanceOf(ex.info)
+    const info = this.createSession(
+      ex.ref,
+      [...ex.info.repos],
+      block.agent,
+      req.prompt,
+      'draft',
+      (inherit.mcp ?? []).map((m) => (MCP_DEFS.some((d) => d.id === m.id) ? { ...m, mode: 'read-only' as const } : { ...m })),
+      inherit.autoAllow ?? true,
+      { ...(block.configValues ?? {}) },
+      'reviewer',
+      inherit.skills?.map((k) => ({ ...k })),
+      sanitizeSessionNetwork(inherit.network),
+      Object.fromEntries(ex.info.repos.map((r) => [r, 'read' as const]))
+    )
+    info.reviewOf = { executor: executorId, round: req.round, intent: req.intent }
+    this.renameSession(info.id, `review ${req.round} — ${ex.info.title}`)
+    await this.persistNow(this.sessions.get(info.id)!)
     this.enqueue(info.id)
     return info
   }
@@ -3081,6 +3692,13 @@ export class SessionManager {
     })
     await this.persistNow(s)
     s.recovering = false
+    // A person typed: the review loop reads it as a takeover
+    // (docs/requirements-review-loop.md §5.6). After the message is accepted
+    // and before it runs, so the loop ends first and the message then runs as
+    // any other. Never from `hostPrompt` — the loop's own messages are not a
+    // human act. Only a loop session says so (`human`): anyone else's prompt
+    // adds no bus event.
+    this.human(s, 'prompt')
     void this.drainPending(s)
     // Still queued after the drain had its synchronous chance at it: nothing
     // else is going to announce it. A drain already in flight returns at its
@@ -3095,6 +3713,41 @@ export class SessionManager {
       // else will fire, and the message sits out the whole grace period.
       this.bus.emit('session.promptQueued', { sessionId: s.info.id })
     }
+  }
+
+  /** A person acted on a loop session (§5.6): tell the controller. Silent for
+   *  every other session — no loop reads it, and an ordinary session's bus
+   *  traffic stays what it was before the loop. */
+  private human(s: Session, did: 'prompt' | 'cancel'): void {
+    if (isLoopSession(s.info)) this.bus.emit('session.human', { sessionId: s.info.id, ref: s.ref, did })
+  }
+
+  /**
+   * The review loop's message to its executor — red checks, findings, the
+   * proposal repair (docs/requirements-review-loop.md §5.5). Queued exactly like
+   * a typed prompt (persisted, run by {@link drainPending} one turn at a time)
+   * with three differences: it is `auto`, so a typed message or a stop drops it
+   * (`prompt`, `clearPending`); its turn shows as a `system` entry carrying
+   * `intent`; and it never clears `recovering` nor emits `session.human` — a
+   * session waiting to be resumed stays so, and the loop's own message is not a
+   * human act. Resolves once persisted, like `prompt`.
+   *
+   * The intent id makes it idempotent: asking again for an id that is already
+   * waiting does nothing.
+   */
+  async hostPrompt(sessionId: string, text: string, intent: string): Promise<void> {
+    this.assertSessionWritable(sessionId)
+    const s = this.sessions.get(sessionId)
+    if (!s) throw new Error('unknown session')
+    if (s.info.state !== 'started') throw new Error('session is not started')
+    if (s.pending.some((p) => p.origin?.loop === intent)) return
+    const id = `p${++this.pendingSeq}`
+    s.pending.push({ id, text, auto: true, origin: { loop: intent } })
+    await this.persistNow(s)
+    void this.drainPending(s)
+    // As in `prompt`: still waiting after the drain's synchronous chance — a
+    // turn in flight, a recovering session, a delivery in progress.
+    if (s.pending.some((p) => p.id === id)) this.bus.emit('session.changed', { sessionId: s.info.id })
   }
 
   /**
@@ -3116,18 +3769,25 @@ export class SessionManager {
       // clone is elsewhere, and attaching would only fail with it.
       // Case three: the account is at its limit — what is waiting would only be
       // refused, so it stays put until the hold lifts (`schedule()` again).
+      // Case four: a review loop is delivering in this scope — its steps are
+      // irreversible, so a typed message waits and runs after the loop has
+      // ended (docs/requirements-review-loop.md §5.6, "During delivery"); the
+      // controller calls `schedule()` when it does.
       while (
         s.pending.length &&
         !s.busy &&
         s.info.state === 'started' &&
         !this.repoHolder(s) &&
         !this.earlierQueueItem(s) &&
-        !this.limitHold(s)
+        !this.limitHold(s) &&
+        !this.deliveryActive(s)
       ) {
         const next = s.pending.shift()!
         consumed = true
         s.interrupted = true
-        await this.runPrompt(s, next.text, next.context, next.images)
+        // Beside `interrupted`, in the same write as the prompt's removal (§8).
+        s.loopRan = next.origin?.loop
+        await this.runPrompt(s, next.text, next.context, next.images, next.origin?.loop)
       }
     } catch (e) {
       log.error('internal.fail', { site: 'pending-drain', s: s.info.id, err: e })
@@ -3153,6 +3813,15 @@ export class SessionManager {
     this.schedulePersist(s.ref)
     this.dropAutoContinue(s)
     this.bus.emit('session.changed', { sessionId })
+    // The composer's stop with something queued — a loop's message included —
+    // is the user withdrawing it (§5.6: "cancels the loop's queued message").
+    // Told before the scheduler acts on what the queue freed, as `prompt` tells
+    // the loop before it drains: the pass starts sessions and drains queues
+    // synchronously, and their `session.state` / `session.turn` events must
+    // reach the controller after the act that came first — whose end it writes
+    // at once (§5.6). Silent for a session without a loop, so this order
+    // changes nothing for one.
+    this.human(s, 'cancel')
     this.schedule()
     return out
   }
@@ -3170,6 +3839,8 @@ export class SessionManager {
     // yourself": the session-level hold goes with it (the account's stays).
     if (gone?.auto) this.dropAutoContinue(s)
     this.bus.emit('session.changed', { sessionId })
+    // The loop first, then the scheduler — as in `clearPending`.
+    this.human(s, 'cancel')
     this.schedule()
     return gone && !gone.auto ? pendingInfo(gone) : undefined
   }
@@ -3180,9 +3851,16 @@ export class SessionManager {
     this.schedulePersist(s.ref)
   }
 
-  cancel(sessionId: string): void {
+  /**
+   * Esc: cancel the running turn and any open permission request. A person's
+   * act by default, announced as `session.human` (docs/requirements-review-loop.md
+   * §5.6); the host cancelling a turn on its own account (a proactive run's
+   * timeout, the review loop's deadline) passes `by: 'host'` and is not.
+   */
+  cancel(sessionId: string, by: 'user' | 'host' = 'user'): void {
     const s = this.sessions.get(sessionId)
     if (!s) return
+    if (by === 'user') this.human(s, 'cancel')
     const conn = this.connections.get(s.info.id)
     if (s.acpSessionId) conn?.peer.notify('session/cancel', { sessionId: s.acpSessionId })
     const wasAwaiting = s.pendingPermissions.size > 0

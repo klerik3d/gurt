@@ -100,7 +100,7 @@ export const ADMIN_TOOLS: readonly AdminToolDef[] = [
     description: "GurtApi.addRepo",
     bindWs: true,
     params: ["repo"],
-    input: { "repo": z.strictObject({ "name": z.string(), "url": z.string(), "credentialId": z.string().optional(), "local": z.literal(true).optional() }) }
+    input: { "repo": z.strictObject({ "name": z.string(), "url": z.string(), "credentialId": z.string().optional(), "local": z.literal(true).optional(), "check": z.string().optional(), "review": z.strictObject({ "agent": z.string().optional(), "configValues": z.record(z.string(), z.union([z.string(), z.boolean()])).optional(), "maxRounds": z.number().optional(), "whenClean": z.enum(["notify", "commit", "push", "pr", "merge"]).optional(), "draftPr": z.boolean().optional(), "enabled": z.boolean().optional() }).optional() }) }
   },
   {
     name: "create_local_repo",
@@ -145,7 +145,7 @@ export const ADMIN_TOOLS: readonly AdminToolDef[] = [
     description: "GurtApi.updateRepo",
     bindWs: true,
     params: ["repo"],
-    input: { "repo": z.strictObject({ "name": z.string(), "url": z.string(), "credentialId": z.string().optional(), "local": z.literal(true).optional() }) }
+    input: { "repo": z.strictObject({ "name": z.string(), "url": z.string(), "credentialId": z.string().optional(), "local": z.literal(true).optional(), "check": z.string().optional(), "review": z.strictObject({ "agent": z.string().optional(), "configValues": z.record(z.string(), z.union([z.string(), z.boolean()])).optional(), "maxRounds": z.number().optional(), "whenClean": z.enum(["notify", "commit", "push", "pr", "merge"]).optional(), "draftPr": z.boolean().optional(), "enabled": z.boolean().optional() }).optional() }) }
   },
   {
     name: "remove_repo",

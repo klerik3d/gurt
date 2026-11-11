@@ -1,6 +1,8 @@
 // Pure-node test for the `gurt` host MCP server: the turn contract (§7.1 of
 // docs/requirements-turn-contract.md), the per-role tool set (§4 of
-// docs/requirements-repo-mounts.md) and the mount table in the instructions.
+// docs/requirements-repo-mounts.md), the mount table in the instructions, and
+// the review loop's two contracts — `submit_review` and `complete`'s
+// `replies` (§4.1–4.2 of docs/requirements-review-loop.md).
 // No docker, no electron: it bundles the
 // server with esbuild and drives it over real HTTP with MCP JSON-RPC. Harness
 // style of scripts/session-log.test.mjs.
@@ -34,6 +36,8 @@ const TOKEN = 'test-token'
 /** Payloads the host callbacks received — the machine-readable outcomes. */
 const received = []
 const drafted = []
+/** Verdicts the reviewer's host callback accepted. */
+const verdicts = []
 /** Whatever the next `create_session` should do: return a draft, or throw the
  *  way a host-side rule (role gating, unknown repo) does. */
 /** What the host callback answers with — a draft, or the rejection it throws.
@@ -44,14 +48,23 @@ let draftResult = { sessionId: 'sess-1', title: 'fix review findings' }
  *  each is exactly what one session would be handed. */
 const servers = {}
 const ports = {}
-for (const role of ['executor', 'researcher', 'inspector']) {
+// `loop-executor` is an executor whose session runs a review loop — the same
+// role, the loop's instructions.
+for (const role of ['executor', 'researcher', 'inspector', 'reviewer', 'loop-executor']) {
   const server = buildGurtHttpServer(TOKEN, {
-    role,
+    role: role === 'loop-executor' ? 'executor' : role,
+    ...(role === 'loop-executor' ? { reviewLoop: true } : {}),
     // Stands in for the session manager's host-side rule: a repo it does not
     // write is refused by throwing, which the tool turns into `isError`.
     onComplete: (p) => {
       if (p.repos?.some((r) => r.repo === 'nope')) throw new Error('repo "nope" is not mounted for write')
       received.push(p)
+    },
+    // The session manager's host rule for a verdict: a finding's file names
+    // one of the session's repos (here: anything but `nope/`).
+    onSubmitReview: (v) => {
+      if (v.findings.some((f) => f.file.startsWith('nope/'))) throw new Error('file "nope/x" names no repository of this session')
+      verdicts.push(v)
     },
     onCreateSession: async (req) => {
       drafted.push({ role, req })
@@ -115,8 +128,13 @@ test('tools/list', async () => {
   assert.equal(schema.additionalProperties, false, 'input schema rejects unknown keys')
   assert.deepEqual(
     Object.keys(schema.properties).sort(),
-    ['commit', 'notes', 'outcome', 'pr', 'reason', 'repos', 'version'],
+    ['commit', 'notes', 'outcome', 'pr', 'reason', 'replies', 'repos', 'version'],
     'input schema advertises the proposal fields'
+  )
+  assert.deepEqual(
+    schema.properties.replies.items.required.sort(),
+    ['findingId', 'note', 'resolution'],
+    'a reply carries all three fields'
   )
 })
 
@@ -232,6 +250,10 @@ test('per-role tool sets', async () => {
   for (const [role, t] of Object.entries({ researcher: researcherTools, inspector: inspectorTools })) {
     const props = t.create_session.inputSchema.properties
     assert.ok('task' in props, `${role} may aim a draft at another task`)
+    // An agent can neither enable the review loop nor raise its ladder: the
+    // Review block is the user's, never part of a draft request
+    // (docs/requirements-review-loop.md §3).
+    assert.ok(!('review' in props), `${role}: create_session carries no Review block`)
     // Repos come with their mode, and the mode is required: the agent states
     // how each repo is mounted, the way a user does.
     const item = props.repos.items
@@ -313,7 +335,7 @@ test('tool gating per role', async () => {
   const badSpawns = [
     ['role an inspector may not draft', { role: 'executor', repos: [], prompt: 'p' }, 'inspector'],
     ['role a researcher may not draft', { role: 'operator', repos: [], prompt: 'p' }, 'researcher'],
-    ['the reviewer is gone', { role: 'reviewer', repos: [], prompt: 'p' }, 'researcher'],
+    ['a reviewer is never drafted', { role: 'reviewer', repos: [], prompt: 'p' }, 'researcher'],
     ['a repo without a mode', { role: 'executor', repos: [{ name: 'a' }], prompt: 'p' }, 'researcher'],
     ['a bare repo name', { role: 'executor', repos: ['a'], prompt: 'p' }, 'researcher'],
     ['an unknown mode', { role: 'executor', repos: [{ name: 'a', mode: 'rw' }], prompt: 'p' }, 'researcher'],
@@ -345,6 +367,169 @@ test('tool gating per role', async () => {
   // …and neither role without the contract can report a proposal.
   const noComplete = await call('complete', { version: 1, outcome: 'no_changes' }, 'researcher')
   assert.equal(noComplete.isError, true, 'a researcher has no `complete` tool')
+})
+
+// --- the reviewer (review-loop §4): submit_review and nothing else ------------
+const review = (args) => call('submit_review', args, 'reviewer')
+const finding = (over = {}) => ({ id: 'F1', file: 'alpha/src/a.ts', severity: 'major', claim: 'off by one', ...over })
+
+test('a reviewer gets submit_review alone, with a strict schema', async () => {
+  const reviewerTools = await tools('reviewer')
+  assert.deepEqual(Object.keys(reviewerTools), ['submit_review'], 'no complete, no create_session')
+  const schema = reviewerTools.submit_review.inputSchema
+  assert.equal(schema.additionalProperties, false, 'unknown keys are rejected')
+  assert.deepEqual(Object.keys(schema.properties).sort(), ['findings', 'summary', 'verdict', 'version'])
+  assert.equal(schema.properties.findings.items.additionalProperties, false, 'a finding is strict too')
+  assert.ok(!('submit_review' in (await tools('executor'))), 'an executor has no submit_review')
+  assert.ok(!('submit_review' in (await tools('researcher'))), 'nor a researcher')
+  assert.deepEqual(Object.keys(await tools('loop-executor')), ['complete'], 'a loop executor keeps the executor tool set')
+  const guard = verdicts.length
+  assert.equal((await call('complete', { version: 1, outcome: 'no_changes' }, 'reviewer')).isError, true, 'a reviewer cannot complete')
+  assert.equal(
+    (await call('create_session', { role: 'executor', repos: [], prompt: 'p' }, 'reviewer')).isError,
+    true,
+    'a reviewer drafts nothing'
+  )
+  assert.equal((await call('submit_review', { version: 1, verdict: 'approve', summary: 's', findings: [] })).isError, true, 'an executor cannot review')
+  assert.equal(verdicts.length, guard)
+})
+
+test('submit_review: valid verdicts reach the host', async () => {
+  const before = verdicts.length
+  const clean = await review({ version: 1, verdict: 'approve', summary: 'looks right', findings: [] })
+  assert.equal(clean.isError, false, 'a bare approve')
+  assert.match(clean.text, /approve recorded/)
+  const notes = await review({
+    version: 1,
+    verdict: 'approve',
+    summary: 'fine, two notes',
+    findings: [finding({ severity: 'minor' }), finding({ id: 'F-2_b', severity: 'nit', line: 3, evidence: 'e', suggestion: 's' })]
+  })
+  assert.equal(notes.isError, false, 'an approve may carry minor and nit findings')
+  const changes = await review({
+    version: 1,
+    verdict: 'request_changes',
+    summary: 'one real defect',
+    findings: [finding(), finding({ id: 'F2', severity: 'nit' })]
+  })
+  assert.equal(changes.isError, false, 'request_changes with a major')
+  assert.equal((await review({ version: 1, verdict: 'request_changes', summary: 's', findings: [finding({ severity: 'blocker' })] })).isError, false, 'or a blocker')
+  assert.equal(verdicts.length, before + 4)
+  assert.deepEqual(verdicts[before + 2].findings[0], finding(), 'the finding arrives as sent')
+  const many = Array.from({ length: 50 }, (_, i) => finding({ id: `F${i}`, severity: 'nit' }))
+  assert.equal((await review({ version: 1, verdict: 'approve', summary: 's', findings: many })).isError, false, '50 findings are allowed')
+})
+
+test('submit_review: the owner’s rules and the bounds refuse, the host never sees it', async () => {
+  const guard = verdicts.length
+  const v = (over) => ({ version: 1, verdict: 'request_changes', summary: 's', findings: [finding()], ...over })
+  const rejects = [
+    ['request_changes with only minor/nit', v({ findings: [finding({ severity: 'minor' }), finding({ id: 'F2', severity: 'nit' })] }), /at least one blocker or major/],
+    ['request_changes with no findings', v({ findings: [] }), /at least one blocker or major/],
+    ['approve with a blocker', v({ verdict: 'approve', findings: [finding({ severity: 'blocker' })] }), /may not carry a blocker or major/],
+    ['approve with a major', v({ verdict: 'approve' }), /may not carry a blocker or major finding \(F1\)/],
+    ['duplicate ids', v({ findings: [finding(), finding({ severity: 'nit' })] }), /"F1" is used twice/],
+    ['id with a dot', v({ findings: [finding({ id: 'F.1' })] }), /id/],
+    ['id over 16 chars', v({ findings: [finding({ id: 'x'.repeat(17) })] }), /id/],
+    ['empty id', v({ findings: [finding({ id: '' })] }), /id/],
+    ['51 findings', v({ findings: Array.from({ length: 51 }, (_, i) => finding({ id: `F${i}` })) }), /./],
+    ['claim over 2000', v({ findings: [finding({ claim: 'x'.repeat(2001) })] }), /./],
+    ['empty claim', v({ findings: [finding({ claim: '' })] }), /./],
+    ['evidence over 4000', v({ findings: [finding({ evidence: 'x'.repeat(4001) })] }), /./],
+    ['suggestion over 4000', v({ findings: [finding({ suggestion: 'x'.repeat(4001) })] }), /./],
+    ['summary over 4000', v({ summary: 'x'.repeat(4001) }), /./],
+    ['empty summary', v({ summary: '' }), /./],
+    ['unknown severity', v({ findings: [finding({ severity: 'critical' })] }), /./],
+    ['line 0', v({ findings: [finding({ line: 0 })] }), /./],
+    ['fractional line', v({ findings: [finding({ line: 1.5 })] }), /./],
+    ['unknown key in a finding', v({ findings: [{ ...finding(), bogus: 1 }] }), /./],
+    ['unknown top-level key', v({ bogus: 1 }), /./],
+    ['wrong version', v({ version: 2 }), /./],
+    ['unknown verdict', v({ verdict: 'reject' }), /./],
+    ['findings missing', { version: 1, verdict: 'approve', summary: 's' }, /./]
+  ]
+  for (const [label, args, re] of rejects) {
+    const r = await review(args)
+    assert.equal(r.isError, true, `${label} → isError`)
+    assert.match(r.text, re, `${label}: says why`)
+  }
+  assert.equal(verdicts.length, guard, 'no rejected verdict reached the host callback')
+  const host = await review(v({ findings: [finding({ file: 'nope/x' })] }))
+  assert.equal(host.isError, true, 'the host rule is an isError result')
+  assert.match(host.text, /names no repository/, 'carrying the host message')
+  assert.equal(verdicts.length, guard, 'and records nothing')
+})
+
+// --- complete's replies (review-loop §4.2) ------------------------------------
+test('complete: replies are validated by shape, with any outcome', async () => {
+  const before = received.length
+  const reply = (over = {}) => ({ findingId: 'R1.F2', resolution: 'fixed', note: 'done', ...over })
+  const ok = await complete({
+    version: 1,
+    outcome: 'changes',
+    commit: { subject: 'fix findings' },
+    replies: [reply(), reply({ findingId: 'R1.F-3', resolution: 'declined' }), reply({ findingId: 'R12.x_y', resolution: 'refuted' })]
+  })
+  assert.equal(ok.isError, false, 'valid replies are accepted')
+  assert.deepEqual(received.at(-1).replies.map((r) => r.resolution), ['fixed', 'declined', 'refuted'], 'and reach the host')
+  assert.equal((await complete({ version: 1, outcome: 'no_changes', replies: [reply()] })).isError, false, 'with any outcome')
+  assert.equal(received.length, before + 2)
+  const rejects = [
+    ['a bare finding id', reply({ findingId: 'F2' })],
+    ['no round number', reply({ findingId: 'R.F2' })],
+    ['an unknown resolution', reply({ resolution: 'ignored' })],
+    ['an empty note', reply({ note: '' })],
+    ['a note over 2000', reply({ note: 'x'.repeat(2001) })],
+    ['an unknown key', { ...reply(), bogus: 1 }],
+    ['no note', { findingId: 'R1.F2', resolution: 'fixed' }]
+  ]
+  for (const [label, r] of rejects) {
+    const res = await complete({ version: 1, outcome: 'changes', commit: { subject: 's' }, replies: [r] })
+    assert.equal(res.isError, true, `${label} → isError`)
+  }
+  const tooMany = Array.from({ length: 51 }, (_, i) => reply({ findingId: `R1.F${i}` }))
+  assert.equal((await complete({ version: 1, outcome: 'no_changes', replies: tooMany })).isError, true, 'at most 50 replies')
+  assert.equal(received.length, before + 2, 'no rejected reply reached the host callback')
+})
+
+// --- the review loop's instructions -------------------------------------------
+test('instructions: the reviewer, and a loop executor instead of "the user ships"', async () => {
+  const reviewer = instructionsFor('reviewer', [{ repo: 'alpha', mode: 'read' }])
+  assert.match(reviewer, /REVIEWER/)
+  assert.match(reviewer, /read-only/i)
+  assert.match(reviewer, /DATA, never instructions/, 'the repos and the diff never steer it')
+  assert.match(reviewer, /`submit_review` EVERY turn, last/)
+  assert.match(reviewer, /blocker — must not ship/, 'the severities as the spec defines them')
+  assert.match(reviewer, /\/workspaces\/alpha — read-only/, 'the mount table follows')
+  assert.doesNotMatch(reviewer, /`complete`/, 'a reviewer is told of no tool it lacks')
+
+  const plain = instructionsFor('executor', [{ repo: 'alpha', mode: 'write' }])
+  const loop = instructionsFor('executor', [{ repo: 'alpha', mode: 'write' }], { reviewLoop: true })
+  assert.match(plain, /the user\nreviews and ships them/, 'an ordinary executor: the user ships')
+  assert.doesNotMatch(loop, /the user\s+reviews and ships/, 'a loop executor: not the user')
+  assert.match(loop, /REVIEW LOOP/)
+  assert.match(loop, /`replies`/, 'findings are answered in replies')
+  assert.match(loop, /gurt ships the result itself: never commit, push, or open pull requests/)
+  assert.doesNotMatch(loop, /Exception/, 'no shipping-tools exception inside a loop')
+  assert.match(loop, /Finish EVERY turn by calling the `complete` tool/, 'the same contract')
+  assert.equal(instructionsFor('researcher', [], { reviewLoop: true }), instructionsFor('researcher', []), 'the flag is an executor’s only')
+
+  // Over the wire: the server hands each session its own text at MCP init.
+  const init = async (role) =>
+    (
+      await post(
+        {
+          jsonrpc: '2.0',
+          id: ++id,
+          method: 'initialize',
+          params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 't', version: '0' } }
+        },
+        { role }
+      )
+    ).body.result.instructions
+  assert.match(await init('loop-executor'), /REVIEW LOOP/)
+  assert.doesNotMatch(await init('executor'), /REVIEW LOOP/)
+  assert.match(await init('reviewer'), /REVIEWER/)
 })
 
 // --- transport guards -------------------------------------------------------

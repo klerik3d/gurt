@@ -156,6 +156,8 @@ export class ArchiveManager {
       if (config.proactive) throw new Error('Proactive agents cannot be archived')
       return this.kernel.sessions.withTaskFrozen(ws, task, () =>
         this.kernel.terminals.withScopeBlocked(ws, task, () => withTaskChangesPaused(ws, task, async () => {
+          if (this.kernel.reviewLoop.live(ws, task))
+            throw new Error('A review loop is running in this scope; stop it or wait for it to end before archiving')
           if (this.kernel.sessions.taskHasPendingWork(ws, task))
             throw new Error('Finish or cancel queued/running work and remove unsent draft images before archiving this scope')
           if (automatic && !(await this.eligible(ws, task))) throw new Error('Scope is no longer eligible for auto-archive')
@@ -229,6 +231,8 @@ export class ArchiveManager {
       this.protect(ws, task)
       if ((await store.getTask(ws, task)).proactive) throw new Error('Proactive runs cannot be archived separately')
       return this.kernel.sessions.withTaskFrozen(ws, task, async () => {
+        if (this.kernel.reviewLoop.live(ws, task))
+          throw new Error('A review loop is running in this scope; stop it or wait for it to end before archiving')
         if (this.kernel.sessions.taskHasPendingWork(ws, task))
           throw new Error('Finish or cancel queued and running work in this scope before archiving')
         this.report('Stopping container…')

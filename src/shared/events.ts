@@ -9,6 +9,7 @@ import type {
 } from './types'
 import type { TerminalInfo, TerminalOutput } from './terminal'
 import type { ProactiveRunOutcome } from './proactive'
+import type { ReviewLoopNotice, SettledTurn } from './reviewLoop'
 import type { DoctorRow } from './doctor'
 import type { PiiTable } from './pii'
 import type { SessionTraffic } from './proxy'
@@ -93,6 +94,25 @@ export interface DomainEvents {
    *  auto-stop policy) can ignore it; consumers that want "the turn the user
    *  started is over" (the notifications subscriber's `turn-ended`) must not. */
   'session.turn': { sessionId: string; ref: EnvRef; phase: 'started' | 'ended'; final?: boolean }
+  /** One logical turn — a prompt plus its automatic nudge — finished and gurt
+   *  has classified how it ended, plan hold and `incomplete` included
+   *  (docs/requirements-review-loop.md §5.1). Emitted once per logical turn,
+   *  the start prompt and a thrown turn too, after `lastSettled` is persisted.
+   *  `session.turn` `ended` cannot carry this: it fires before that
+   *  classification. */
+  'session.settled': { sessionId: string; ref: EnvRef; turn: SettledTurn }
+  /** A person acted on a session: typed into it (`prompt`), or pressed Esc /
+   *  cancelled a queued message (`cancel`). Never from a host message or the
+   *  turn-contract nudge, and not from a host-side `cancel`
+   *  (docs/requirements-review-loop.md §5.6). Stopping a container and deleting
+   *  a session reach a subscriber as `container.status` (reason `user`) and
+   *  `session.deleted`. */
+  'session.human': { sessionId: string; ref: EnvRef; did: 'prompt' | 'cancel' }
+  /** The review loop of this executor has something to say
+   *  (docs/requirements-review-loop.md §5.1, §7): an ordinary `turn-ended` for
+   *  a dormant `no_changes` turn, or the loop's end with its `LoopEnd`.
+   *  `sessionId` is the executor's. Emitted by the controller only. */
+  'review.loop': { sessionId: string; ref: EnvRef; notice: ReviewLoopNotice }
   'session.awaiting': { sessionId: string; ref: EnvRef; awaiting: boolean }
   /** Coarse "snapshot changed" — the UI's re-render trigger. */
   'session.changed': { sessionId: string }

@@ -1,7 +1,10 @@
 // Per-repo mount modes (docs/requirements-repo-mounts.md), without docker or an
 // agent: the clone claims each mode takes (§2.1 — shared readers, exclusive
 // writers, all-or-nothing starts, FIFO by clone, the queue handoff), how modes
-// are normalized and edited (§2, §5), and the per-repo `complete` (§3).
+// are normalized and edited (§2, §5), and the per-repo `complete` (§3). Plus
+// the review loop's reviewer (docs/requirements-review-loop.md §4): `read`
+// whatever its record says, and its `submit_review` / the executor's
+// `replies` as the session manager records and refuses them (§4.1–4.2).
 //
 // Holders are staged through `sessions.patchContainer`, the seam the container
 // manager writes through (session-repo-gate.test.mjs's trick). Every real start
@@ -29,8 +32,8 @@ await bundle({
   stdin: {
     contents:
       `export { createKernel } from ${S('src/main/kernel.ts')}\n` +
-      `export { assertProposalFits, proposalForRepo } from ${S('src/main/sessions.ts')}\n` +
-      `export { anchorRepo, normalizeRepoModes, repoMode } from ${S('src/shared/types.ts')}`,
+      `export { assertProposalFits, proposalForRepo, assertRepliesAnswer, assertVerdictFits } from ${S('src/main/sessions.ts')}\n` +
+      `export { anchorRepo, normalizeRepoModes, repoMode, writeRepos, findingRef } from ${S('src/shared/types.ts')}`,
     resolveDir: ROOT,
     loader: 'ts',
     sourcefile: 'entry.ts'
@@ -139,6 +142,32 @@ test('draft edits: a kept repo keeps its mode, a new one takes the default, a mo
     'an unknown mode is refused at the boundary, not defaulted'
   )
   kernel.sessions.deleteSession(d.id)
+})
+
+// --- the reviewer: `read`, whatever the record says ------------------------------
+
+test('a reviewer mounts every repo read and claims no clone', async () => {
+  const rec = { role: 'reviewer', repos: ['alpha', 'beta'], repoModes: { alpha: 'write', beta: 'read-locked' } }
+  assert.equal(m.repoMode(rec, 'alpha'), 'read', 'a write pick reads as read')
+  assert.equal(m.repoMode(rec, 'beta'), 'read', 'and so does read-locked — never a shared claim (§4: a deadlock)')
+  assert.deepEqual(m.writeRepos(rec), [], 'it writes nothing')
+  assert.equal(m.repoMode({ role: 'reviewer', repos: ['alpha'] }, 'alpha'), 'read', 'a record without modes too')
+
+  // A running reviewer whose record says `write` blocks no writer.
+  const rv = mk({ alpha: 'write' }, 'reviewer')
+  hold(rv)
+  assert.equal(kernel.sessions.repoHolderFor(ws, task, 'alpha'), undefined, 'it holds nothing')
+  const w = mk({ alpha: 'write' })
+  kernel.sessions.run(w.id)
+  assert.doesNotMatch((await settle(kernel, w.id)).startError ?? '', inUse, 'a writer starts beside it')
+  // And it starts beside a writer: the loop's executor keeps its claim.
+  hold(w)
+  const rv2 = mk({ alpha: 'read-locked' }, 'reviewer')
+  kernel.sessions.run(rv2.id)
+  assert.doesNotMatch((await settle(kernel, rv2.id)).startError ?? '', inUse, 'a reviewer never waits on the writer')
+  release(w)
+  release(rv)
+  for (const s of [rv, rv2, w]) kernel.sessions.deleteSession(s.id)
 })
 
 // --- claims: readers share, writers exclude --------------------------------------
@@ -293,4 +322,131 @@ test('latestProposal resolves per repo, from sessions that write it', () => {
     at: '9999-01-01T00:00:00.000Z'
   }
   assert.equal(kernel.sessions.latestProposal(ws, task, 'alpha')?.commit?.subject, 'alpha change')
+})
+
+// --- review loop: the open set and the verdict's host rule (review-loop §4) -------
+
+test('replies answer the open set exactly once, naming nothing else', () => {
+  const r = (findingId, resolution = 'fixed') => ({ findingId, resolution, note: 'n' })
+  const open = [m.findingRef(1, 'F1'), m.findingRef(1, 'F2')]
+  assert.deepEqual(open, ['R1.F1', 'R1.F2'], 'a finding is named by round and id')
+  m.assertRepliesAnswer(open, [r('R1.F1'), r('R1.F2', 'refuted')])
+  m.assertRepliesAnswer(open, [r('R1.F2', 'declined'), r('R1.F1')]) // any order
+  assert.throws(() => m.assertRepliesAnswer(open, undefined), /not answered: R1\.F1, R1\.F2/, 'no replies at all')
+  assert.throws(() => m.assertRepliesAnswer(open, [r('R1.F1')]), /not answered: R1\.F2/, 'a missing answer')
+  assert.throws(
+    () => m.assertRepliesAnswer(open, [r('R1.F1'), r('R1.F2'), r('R1.F9')]),
+    /not open: R1\.F9/,
+    'an unknown id'
+  )
+  assert.throws(
+    () => m.assertRepliesAnswer(open, [r('R1.F1'), r('R1.F1', 'declined'), r('R1.F2')]),
+    /answered more than once: R1\.F1/,
+    'an answer given twice'
+  )
+  assert.throws(
+    () => m.assertRepliesAnswer(open, [r('R0.F1'), r('R1.F1')]),
+    /not answered: R1\.F2; not open: R0\.F1/,
+    'every problem named at once'
+  )
+  // No open set: anything goes, nothing is checked.
+  m.assertRepliesAnswer([], undefined)
+  m.assertRepliesAnswer([], [r('R7.whatever')])
+})
+
+test('a finding names one of the session’s repos', () => {
+  const v = (...files) => ({
+    version: 1,
+    verdict: 'request_changes',
+    summary: 's',
+    findings: files.map((file, i) => ({ id: `F${i}`, file, severity: 'major', claim: 'c' }))
+  })
+  m.assertVerdictFits(['alpha', 'beta'], v('alpha/src/a.ts', 'beta/README.md', 'alpha'))
+  m.assertVerdictFits(['alpha'], { ...v(), verdict: 'approve' })
+  assert.throws(() => m.assertVerdictFits(['alpha'], v('gamma/x.ts')), /"F0": file "gamma\/x\.ts" names no repository .* one of: alpha/)
+  assert.throws(() => m.assertVerdictFits(['alpha'], v('/workspaces/alpha/x.ts')), /names no repository/, 'not an absolute path')
+  assert.throws(() => m.assertVerdictFits(['alpha'], v('alpha/../beta/x')), /names no repository/, 'not out of the repo')
+  assert.throws(() => m.assertVerdictFits(['alpha'], v('alpha/ok', 'src/a.ts')), /"F1"/, 'the offending finding is named')
+})
+
+test('submit_review: the session manager stores the verdict; the last call of a turn wins', () => {
+  const rv = mk({ alpha: 'read', beta: 'read' }, 'reviewer')
+  const live = kernel.sessions['sessions'].get(rv.id)
+  live.info.reviewOf = { executor: 'exec-1', round: 2, intent: 'i-7' }
+  live.turnSeq = 3
+  const submit = (v) => kernel.sessions['onSubmitReview'](rv.id, v)
+  const verdict = (over) => ({ version: 1, verdict: 'approve', summary: 'ok', findings: [], ...over })
+  const changes = verdict({
+    verdict: 'request_changes',
+    summary: 'two problems',
+    findings: [
+      { id: 'F1', file: 'alpha/a.ts', severity: 'major', claim: 'c' },
+      { id: 'F2', file: 'beta/b.ts', severity: 'nit', claim: 'c' }
+    ]
+  })
+  live.turnComplete = false
+  submit(changes)
+  assert.equal(live.turnComplete, true, 'the turn is complete — no nudge follows')
+  assert.equal(live.verdict.verdict, 'request_changes')
+  assert.equal(live.verdict.round, 2, 'filed under the round the reviewer is')
+  assert.equal(live.verdict.turnId, `${rv.id}:3`, 'and the turn it came in')
+  assert.ok(Date.parse(live.verdict.at), 'with its receipt time')
+  assert.deepEqual(live.verdict.findings, changes.findings)
+  submit(verdict({ summary: 'on reflection, fine' }))
+  assert.equal(live.verdict.verdict, 'approve', 'a second call replaces the first')
+  assert.equal(live.verdict.summary, 'on reflection, fine')
+  const lines = kernel.sessions
+    .snapshot(rv.id)
+    .entries.filter((e) => e.kind === 'system' && e.text.startsWith('submit_review'))
+    .map((e) => e.text)
+  assert.deepEqual(lines, ['submit_review: request_changes — 2 findings', 'submit_review: approve'], 'each call on the timeline')
+
+  live.turnComplete = false
+  assert.throws(
+    () => submit({ ...changes, findings: [{ id: 'F1', file: 'gamma/x', severity: 'major', claim: 'c' }] }),
+    /names no repository/,
+    'a refused call throws — the tool layer turns it into isError'
+  )
+  assert.equal(live.turnComplete, false, 'and completes nothing')
+  assert.equal(live.verdict.summary, 'on reflection, fine', 'and records nothing')
+  kernel.sessions.deleteSession(rv.id)
+})
+
+test('complete: the open set, when the loop has one, is answered before anything is recorded', () => {
+  const e = mk({ alpha: 'write' })
+  const live = kernel.sessions['sessions'].get(e.id)
+  const complete = (p) => kernel.sessions['onComplete'](e.id, p)
+  const changes = (replies) => ({ version: 1, outcome: 'changes', commit: { subject: 'fix' }, ...(replies ? { replies } : {}) })
+  const reply = (findingId) => ({ findingId, resolution: 'fixed', note: 'n' })
+
+  // No loop wired (the kernel provides no open set yet): replies pass unchecked.
+  complete(changes([reply('R9.F9')]))
+  assert.equal(live.proposal.commit.subject, 'fix', 'accepted')
+  complete(changes())
+  assert.equal(live.turnComplete, true)
+
+  const events = kernel.sessions['events']
+  let asked
+  events.openFindings = (id) => {
+    asked = id
+    return ['R1.F1', 'R1.F2']
+  }
+  try {
+    live.turnComplete = false
+    live.proposal = undefined
+    assert.throws(() => complete(changes([reply('R1.F1')])), /not answered: R1\.F2/, 'an unanswered finding refuses the call')
+    assert.equal(asked, e.id, 'the hook is asked for this session’s set')
+    assert.equal(live.turnComplete, false, 'nothing completed')
+    assert.equal(live.proposal, undefined, 'nothing recorded')
+    complete(changes([reply('R1.F2'), reply('R1.F1')]))
+    assert.equal(live.turnComplete, true, 'every finding answered once: accepted')
+    assert.deepEqual(live.proposal.replies.map((r) => r.findingId), ['R1.F2', 'R1.F1'], 'the replies ride the proposal')
+    // Only a `complete` with changes answers the set (§4.2).
+    live.turnComplete = false
+    complete({ version: 1, outcome: 'blocked', reason: 'stuck' })
+    assert.equal(live.turnComplete, true, 'blocked needs no replies')
+  } finally {
+    delete events.openFindings
+  }
+  kernel.sessions.deleteSession(e.id)
 })

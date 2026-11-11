@@ -32,6 +32,11 @@ primitive is "an agent drafts another session, the user launches it".
 > host-side github MCP tools. The host credential broker survives as
 > `src/main/git/hostCredBroker.ts`.
 
+> **Superseded in part** by `requirements-review-loop.md`: verdicts are no
+> longer only plain chat text, and §6's "structured verdicts … explicitly not
+> taken" is reversed — a review loop's `reviewer` delivers a typed
+> `ReviewVerdict` through `submit_review`.
+
 ## 1. Motivation
 
 Today a session's behavior is inferred: `repos.length > 1` makes it a

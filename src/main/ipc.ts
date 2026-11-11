@@ -3,7 +3,7 @@
 // domain-shaped lives in kernel.ts and below.
 import { app, clipboard, dialog, ipcMain, shell } from 'electron'
 import { API_METHODS, type GurtApi } from '../shared/api'
-import { defaultEnvName, isSessionRole } from '../shared/types'
+import { defaultEnvName, isSessionRole, roleIsLoopOwned } from '../shared/types'
 import { MCP_DEFS } from '../shared/mcp'
 import { broadcast } from './broadcast'
 import { assertRepoModes, createKernel } from './kernel'
@@ -187,7 +187,7 @@ export function registerIpc(): void {
     },
     removeWorkspace: (name) => kernel.deleteWorkspace(name),
     addRepo: async (ws, repo) => {
-      await store.addRepo(ws, repo)
+      await store.addRepo(ws, await kernel.checkRepoReview(ws, repo))
       kernel.bus.emit('tree.changed', undefined)
     },
     createLocalRepo: async (ws, name) => {
@@ -214,7 +214,7 @@ export function registerIpc(): void {
       }
     },
     updateRepo: async (ws, repo) => {
-      await store.updateRepo(ws, repo)
+      await store.updateRepo(ws, await kernel.checkRepoReview(ws, repo))
       kernel.bus.emit('tree.changed', undefined)
     },
     removeRepo: async (ws, name) => {
@@ -376,6 +376,9 @@ export function registerIpc(): void {
         throw new Error(`task "${ref.task}" not found in "${ref.workspace}"`)
       if (role !== undefined && !isSessionRole(role))
         throw new Error(`unknown session role "${String(role)}"`)
+      // Only the review loop creates a reviewer (docs/requirements-review-loop.md §4).
+      if (role !== undefined && roleIsLoopOwned(role))
+        throw new Error(`a ${role} is created only by the review loop`)
       assertRepoModes(repoModes)
       // A fresh draft (App.tsx) names no agent up front — it falls back to the
       // workspace's default, same as an agent's own `create_session` request
@@ -418,10 +421,14 @@ export function registerIpc(): void {
     // Same boot gate as createSession — see the comment there.
     sessionRun: async (id) => {
       await kernel.ready
+      await kernel.assertReviewBlock(id)
       kernel.sessions.run(id)
     },
     sessionEnqueue: async (id) => {
       await kernel.ready
+      // The Review block's start gate: the Config tab disables Run for the same
+      // reasons (docs/requirements-review-loop.md §3).
+      await kernel.assertReviewBlock(id)
       kernel.sessions.enqueue(id)
     },
     sessionCancelQueue: async (id) => kernel.sessions.cancelQueue(id),
@@ -453,6 +460,14 @@ export function registerIpc(): void {
     sessionClearPending: async (id) => kernel.sessions.clearPending(id),
     sessionCancelPending: async (id, promptId) => kernel.sessions.cancelPending(id, promptId),
     sessionCancel: async (id) => kernel.sessions.cancel(id),
+    reviewLoopState: async (id) => {
+      await kernel.ready
+      return kernel.reviewLoop.state(id)
+    },
+    reviewLoopStop: async (id) => {
+      await kernel.ready
+      return kernel.reviewLoop.stopLoop(id)
+    },
     sessionSetMode: (id, modeId) => kernel.sessions.setMode(id, modeId),
     sessionSetConfigOption: async (id, configId, value) => {
       await kernel.ready

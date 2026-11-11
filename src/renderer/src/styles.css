@@ -2195,6 +2195,76 @@ button.sb-session {
   font-size: 10.5px;
   color: var(--faint);
 }
+/* Review loop (docs/requirements-review-loop.md): the Config tab's checkbox
+   row, and the status line above a loop session's chat. */
+.rv-check {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11.5px;
+  color: var(--dim);
+  cursor: pointer;
+}
+/* A picker menu whose items are buttons (keyboard-reachable) fills its row like
+   the div items of the older pickers. */
+.pick-menu > button.menu-item {
+  width: 100%;
+  text-align: left;
+}
+.rv-line {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 10px 7% 0;
+  padding: 8px 11px;
+  background: var(--app);
+  border: 1px solid var(--border2);
+  border-radius: 6px;
+  font-size: 11.5px;
+}
+.rv-line-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.rv-line-title {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+.rv-line-detail {
+  color: var(--dim);
+  overflow-wrap: anywhere;
+}
+.rv-findings {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.rv-findings li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  color: var(--dim);
+}
+.rv-sev {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--yellow);
+}
+.rv-sev-blocker,
+.rv-sev-major {
+  color: var(--red);
+}
+.rv-sev-nit {
+  color: var(--faint);
+}
 /* Section label plus the round 'i' that carries its explanation. */
 .seclabel-row {
   display: flex;

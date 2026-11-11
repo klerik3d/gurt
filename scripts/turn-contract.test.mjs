@@ -1,6 +1,8 @@
 // Pure-logic test for the turn-contract enforcement decision (§7.2 of
-// docs/requirements-turn-contract.md). No docker, no electron: it bundles the
-// pure `postTurnDecision` out of the session manager and checks the matrix.
+// docs/requirements-turn-contract.md), and the contract each role is held to —
+// a review loop's reviewer included (§4 of docs/requirements-review-loop.md).
+// No docker, no electron: it bundles the pure `postTurnDecision` out of the
+// session manager and checks the matrix.
 //
 //   node scripts/turn-contract.test.mjs
 import { test, after } from 'node:test'
@@ -17,7 +19,9 @@ const S = (rel) => JSON.stringify(path.join(ROOT, rel))
 
 await bundle({
   stdin: {
-    contents: `export { postTurnDecision, NUDGE_PROMPT, adapterExitCode } from ${S('src/main/sessions.ts')}`,
+    contents:
+      `export { postTurnDecision, NUDGE_PROMPT, nudgePromptFor, contractToolFor, adapterExitCode } from ${S('src/main/sessions.ts')}\n` +
+      `export { roleHasTurnContract, SESSION_ROLES } from ${S('src/shared/types.ts')}`,
     resolveDir: ROOT,
     loader: 'ts',
     sourcefile: 'entry.ts'
@@ -25,7 +29,8 @@ await bundle({
   outfile
 })
 
-const { postTurnDecision, NUDGE_PROMPT, adapterExitCode } = await import(pathToFileURL(outfile).href)
+const { postTurnDecision, NUDGE_PROMPT, nudgePromptFor, contractToolFor, adapterExitCode, roleHasTurnContract, SESSION_ROLES } =
+  await import(pathToFileURL(outfile).href)
 
 after(() => fs.rmSync(outfile, { force: true }))
 
@@ -92,6 +97,32 @@ test('post-turn decision', () => {
   )
 
   assert.match(NUDGE_PROMPT, /complete/, 'nudge prompt asks for `complete`')
+})
+
+// --- each contract role names its own tool -----------------------------------
+test('the reviewer is held to submit_review: nudged for it, marked incomplete without it', () => {
+  // `postTurnDecision` is role-blind: the role enters only as `hasContract`,
+  // which the reviewer now has — so it is nudged once, then marked incomplete.
+  const hasContract = roleHasTurnContract('reviewer')
+  assert.equal(hasContract, true)
+  assert.equal(decide({ hasContract }), 'nudge')
+  assert.equal(decide({ hasContract, isNudge: true }), 'incomplete')
+  assert.equal(decide({ hasContract, turnComplete: true }), 'none', 'a submit_review completes the turn')
+
+  // The nudge and the `incomplete` line name the role's own tool, never
+  // `complete` for a role that has none.
+  assert.equal(contractToolFor('reviewer'), 'submit_review')
+  assert.match(nudgePromptFor('reviewer'), /without calling the `submit_review` tool\. Call `submit_review` now/)
+  assert.doesNotMatch(nudgePromptFor('reviewer'), /`complete`/)
+  assert.equal(contractToolFor('proactive'), 'finish_run')
+  assert.match(nudgePromptFor('proactive'), /`finish_run`/)
+  assert.equal(contractToolFor('executor'), 'complete')
+  assert.equal(nudgePromptFor('executor'), NUDGE_PROMPT)
+  // Exactly the contract roles: every other one is never nudged at all.
+  assert.deepEqual(
+    SESSION_ROLES.filter(roleHasTurnContract),
+    ['executor', 'proactive', 'reviewer']
+  )
 })
 
 // --- adapter exit code -----------------------------------------------------

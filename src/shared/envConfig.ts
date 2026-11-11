@@ -121,7 +121,8 @@ export function canonicalJson(value: unknown): string {
 // Pure-JS SHA-256 (FIPS 180-4). This module is shared with the renderer, which
 // has neither node:crypto nor its types — and the tag must be computable
 // synchronously. Content addressing only, not security. Verified against
-// node:crypto in scripts/env-config.test.mjs.
+// node:crypto in scripts/env-config.test.mjs. Also the review loop's finding
+// fingerprint (reviewLoop.ts), for the same two reasons.
 
 // K: first 32 bits of the fractional parts of the cube roots of the first 64 primes.
 // prettier-ignore
@@ -148,7 +149,7 @@ const rotr = (x: number, n: number): number => (x >>> n) | (x << (32 - n))
  */
 const at = (a: ArrayLike<number>, i: number): number => a[i] ?? 0
 
-function sha256Hex(text: string): string {
+export function sha256Hex(text: string): string {
   const bytes = new TextEncoder().encode(text)
   const H: [number, number, number, number, number, number, number, number] = [
     0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19

@@ -4,8 +4,17 @@
 // tests).
 import { startGc } from './gc'
 import { ArchiveManager } from './archive'
-import type { Tree } from '../shared/types'
-import { defaultEnvName, isBundledEnv, isRepoMode, isSessionRole } from '../shared/types'
+import type { AgentConfig, RepoConfig, Tree } from '../shared/types'
+import {
+  defaultEnvName,
+  isBundledEnv,
+  isRepoMode,
+  isSessionRole,
+  repoMode,
+  roleIsLoopOwned,
+  sessionRole
+} from '../shared/types'
+import { ladderOfRepos, sanitizeReviewBlock, validateReviewBlock } from '../shared/reviewBlock'
 import type { BootProgress, SessionDraftPatch } from '../shared/api'
 import { NOTIFICATION_DEFAULTS } from '../shared/notifications'
 import { sanitizeSkillSelection } from '../shared/skills'
@@ -30,6 +39,7 @@ import { resolveOAuthAccess } from './oauth'
 import { createPiiMask, type PiiManager } from './pii'
 import { createLogger, dropSessionLog, sessionLogLine } from './log'
 import { createProactive, type ProactiveManager } from './proactive'
+import { createReviewLoop, type ReviewLoopClock, type ReviewLoopController } from './reviewLoop'
 
 const log = createLogger('kernel')
 // Same scope as sessions.ts/containers.ts's own loggers (`sessions`,
@@ -57,6 +67,11 @@ export interface Kernel {
   /** Where the boot restore currently is — the pull behind `getBootProgress`,
    *  for a window that opened after some `boot.progress` events already fired. */
   bootProgress(): BootProgress
+  /** End a review loop's hold on an executor (docs/requirements-review-loop.md
+   *  §5.5): drop it, then run the executor through the idle handling its pings
+   *  kept from arming — `noteIdle` when idle, then the queue handoff — and
+   *  re-run the scheduler. True when there was a hold. */
+  releaseLoopHold(sessionId: string): boolean
   notifications: Notifications
   /** Per-turn agent accounting — what the dashboard's agent cards read. */
   usage: UsageLedger
@@ -69,6 +84,9 @@ export interface Kernel {
   /** Proactive agents: their schedule, their runs and the tools those runs
    *  use (docs/design-proactive-agents.md). */
   proactive: ProactiveManager
+  /** The review loop's controller (docs/requirements-review-loop.md §5): ties
+   *  the settled turns, the check, the reviewer and the delivery together. */
+  reviewLoop: ReviewLoopController
   /** store.buildTree + session overlay. */
   tree(): Promise<Tree>
   deleteTask(ws: string, task: string): Promise<void>
@@ -90,6 +108,15 @@ export interface Kernel {
   setLimitSettings(settings: LimitSettings): Promise<void>
   /** sessions.editDraft behind a repo check — the UI constrains the choice, IPC must too. */
   editDraft(sessionId: string, patch: SessionDraftPatch): Promise<void>
+  /** The Review block's start gate (docs/requirements-review-loop.md §3): throws
+   *  the reason when the draft's block may not start — the same
+   *  `validateReviewBlock` the Config tab disables Run with. A draft without a
+   *  block, or a session past draft, passes. */
+  assertReviewBlock(sessionId: string): Promise<void>
+  /** Settings → Repos' gate for a repo's `check` and `review` defaults: the
+   *  reviewer must exist, not be denied in the workspace and receive gurt's
+   *  MCP server. Returns the repo with the defaults normalised. */
+  checkRepoReview(ws: string, repo: RepoConfig): Promise<RepoConfig>
   /** Forge compare URL for the task branch; when the latest proposal carries a PR,
    *  its title/body ride along as url-encoded query params (the compare page picks
    *  them up). */
@@ -138,7 +165,12 @@ async function defaultEnvsForRepo(ws: string, repo: string): Promise<string[]> {
   return store.envsDefaultingToRepo(await store.getWorkspace(ws), repo)
 }
 
-export function createKernel(): Kernel {
+/** Seams a test drives time through; the app passes none. */
+export interface KernelOptions {
+  reviewLoop?: { clock?: Partial<ReviewLoopClock> }
+}
+
+export function createKernel(options: KernelOptions = {}): Kernel {
   const bus = createBus()
   const terminals = new TerminalManager(
     (sessions) => bus.emit('terminal.changed', sessions),
@@ -207,6 +239,9 @@ export function createKernel(): Kernel {
       // this session manager.
       proactiveFor: (ws, agent, sessionId) => proactive.hooksFor(ws, agent, sessionId),
       checkDraftTarget: assertDraftTarget,
+      // The findings a loop executor's next `complete` must answer (§4.2) —
+      // the controller owns the loop; read at call time like `admin` above.
+      openFindings: (sessionId) => reviewLoop.openFindings(sessionId),
       defaultEnvsForRepo,
       defaultAgentForWorkspace: async (ws) => (await store.getWorkspace(ws)).defaultAgent,
       defaultEnvForWorkspace: async (ws) => defaultEnvName(await store.getWorkspace(ws)),
@@ -251,6 +286,27 @@ export function createKernel(): Kernel {
     bus,
     sessions,
     stopContainer: (id) => containers.stop(id, 'idle')
+  })
+
+  // The review loop: a bus subscriber like the proactive manager, created over
+  // the same session manager. Its hold, delivery gate and ownership questions
+  // reach the session manager through the hooks (`setLoopHooks`).
+  const reviewLoop = createReviewLoop({
+    bus,
+    sessions,
+    exec: (sessionId, argv, cwd) => containers.spawnExec(sessionId, argv, cwd),
+    containerUp: (sessionId) => containers.status(sessionId) === 'running',
+    containerRunning: (sessionId) => containers.isRunning(sessionId),
+    // `idle`, not `user`: only the scope pane's stop is a human's (§5.6).
+    stopContainer: (sessionId) => containers.stop(sessionId, 'idle', true),
+    release: (sessionId) => kernel.releaseLoopHold(sessionId),
+    ...(options.reviewLoop?.clock ? { clock: options.reviewLoop.clock } : {})
+  })
+  sessions.setLoopHooks({
+    storageFault: (id) => reviewLoop.storageFault(id),
+    owns: (sessionId) => reviewLoop.owns(sessionId),
+    delivering: (ws, task) => reviewLoop.delivering(ws, task),
+    live: (ws, task) => reviewLoop.live(ws, task)
   })
 
   // --- log tap ------------------------------------------------------------
@@ -325,8 +381,13 @@ export function createKernel(): Kernel {
   // docs/requirements-notifications.md). Wired synchronously with the
   // hardcoded defaults so no early event is missed; the persisted matrix
   // (if any) swaps in once restoreSessions() has read it.
-  const notifications = createNotifications(bus, NOTIFICATION_DEFAULTS, (id) =>
-    sessions.sessionInfo(id)
+  const notifications = createNotifications(
+    bus,
+    NOTIFICATION_DEFAULTS,
+    (id) => sessions.sessionInfo(id),
+    // The review loop speaks for its executor until its end is notified (§7);
+    // looked up lazily — the controller is built below.
+    (id) => reviewLoop.notifiesThrough(id)
   )
 
   // Usage ledger: files every finished turn against the agent instance that
@@ -455,10 +516,16 @@ export function createKernel(): Kernel {
     // Before the queue resumes: a run left queued by the previous app life is
     // no run of this one, and must not start with its tools closed.
     await proactive.load(t)
+    // The loops' files, before the scheduler's first pass (§8's boot).
+    await reviewLoop.load(allTasks)
+    // Replay, deadlines, intents, resume (§8) — before the first pass too, so a
+    // reviewer of a loop past its deadline is never started to be deleted.
+    await reviewLoop.recover()
     progress(96, 'resuming queue')
     sessions.schedule()
     reapForQueue()
     proactive.start()
+    reviewLoop.start()
   }
   const ready = restoreSessions()
     .catch((e: unknown) => log.error('internal.fail', { site: 'session-restore', err: e }))
@@ -476,11 +543,18 @@ export function createKernel(): Kernel {
     sessions,
     ready,
     bootProgress: () => lastProgress,
+    releaseLoopHold: (sessionId) => {
+      const had = sessions.releaseLoopHold(sessionId)
+      idle(sessionId)
+      sessions.schedule()
+      return had
+    },
     notifications,
     usage,
     planUsage,
     pii,
     proactive,
+    reviewLoop,
 
     async tree(): Promise<Tree> {
       const t = await store.buildTree()
@@ -496,6 +570,9 @@ export function createKernel(): Kernel {
       // First, while its sessions still exist: an agent's run in progress ends
       // as cancelled, a raised scope frees its refs.
       await proactive.onScopeDeleted(ws, task)
+      // Its loops go with it, before the sessions are dropped: a late write
+      // would recreate the directory.
+      reviewLoop.dropScope(ws, task)
       await terminals.withScopeBlocked(ws, task, async () => {
         await containers.teardownTask(ws, task)
         terminals.dropScope(ws, task)
@@ -507,6 +584,7 @@ export function createKernel(): Kernel {
 
     async deleteWorkspace(ws: string): Promise<void> {
       for (const task of await store.listTasks(ws)) sessions.assertTaskWritable(ws, task)
+      reviewLoop.dropWorkspace(ws)
       await terminals.withScopeBlocked(ws, undefined, async () => {
         await containers.teardownWorkspace(ws)
         terminals.dropScope(ws)
@@ -552,7 +630,19 @@ export function createKernel(): Kernel {
         throw new Error(`unknown session role "${String(patch.role)}"`)
       assertRepoModes(patch.repoModes)
       const info = sessions.snapshot(sessionId)?.info
+      // A reviewer is the review loop's alone (docs/requirements-review-loop.md
+      // §4): no edit makes a session one, or turns one into something else.
+      if (patch.role !== undefined && (roleIsLoopOwned(patch.role) || (info && roleIsLoopOwned(sessionRole(info)))))
+        throw new Error('a reviewer is created only by the review loop, and keeps its role')
       if (info) await assertDraftTarget(info.workspace, patch.repos ?? [], patch.env, patch.agent)
+      // The Review block (§3) belongs to an executor draft and is shaped here;
+      // whether it may *start* is `assertReviewBlock`'s, since a half-made block
+      // is the normal state while it is being filled in.
+      if (patch.review) {
+        if ((patch.role ?? (info && sessionRole(info))) !== 'executor')
+          throw new Error('the Review block is for executor sessions')
+        patch = { ...patch, review: sanitizeReviewBlock(patch.review) }
+      }
       // Names become directories under the session's scratch dir, so the shape
       // is checked here rather than at the copy. Resolvability is not: a name
       // that could exist and does not is the draft's to show
@@ -563,6 +653,55 @@ export function createKernel(): Kernel {
           ? patch
           : { ...patch, skills: sanitizeSkillSelection(patch.skills) }
       )
+    },
+
+    async assertReviewBlock(sessionId: string): Promise<void> {
+      const info = sessions.snapshot(sessionId)?.info
+      if (!info?.review || info.state !== 'draft') return
+      const [wsData, agents] = await Promise.all([store.getWorkspace(info.workspace), store.getAgents()])
+      const configs: Record<string, AgentConfig | null | undefined> = {}
+      for (const id of new Set([info.agent, info.review.agent].filter((a): a is string => !!a)))
+      {
+        // The Config tab's own read (`getAgentConfig`): the live report when a
+        // session has refreshed it this run, else the cache or the kind's seed.
+        const live = sessions.agentConfig(id, agents[id]?.kind)
+        configs[id] = live.updatedAt ? live : await store.getAgentConfig(id)
+      }
+      const ladder = ladderOfRepos(
+        info.repos.filter((r) => repoMode(info, r) === 'write'),
+        wsData.repos
+      )
+      const why = validateReviewBlock(
+        info.review,
+        { role: sessionRole(info), agent: info.agent, configValues: info.configValues },
+        { agents, deniedAgents: wsData.deniedAgents ?? [], configs },
+        ladder
+      )
+      if (why) throw new Error(`review loop: ${why}`)
+    },
+
+    async checkRepoReview(ws: string, repo: RepoConfig): Promise<RepoConfig> {
+      const { check, review, ...rest } = repo
+      const cmd = typeof check === 'string' ? check.trim() : ''
+      if (!review) return { ...rest, ...(cmd ? { check: cmd } : {}) }
+      const { enabled, ...block } = review
+      const clean = sanitizeReviewBlock(block)
+      // Only the fields the user set are defaults; the sanitizer fills the rest
+      // for validation, not for storage.
+      if (clean.agent) {
+        const [wsData, agents] = await Promise.all([store.getWorkspace(ws), store.getAgents()])
+        const why = validateReviewBlock(clean, undefined, { agents, deniedAgents: wsData.deniedAgents ?? [], configs: {} })
+        if (why) throw new Error(`repo "${repo.name}" review defaults: ${why}`)
+      }
+      const out: NonNullable<RepoConfig['review']> = {
+        ...(typeof enabled === 'boolean' ? { enabled } : {}),
+        ...(clean.agent ? { agent: clean.agent } : {}),
+        ...(clean.agent && clean.configValues ? { configValues: clean.configValues } : {}),
+        ...(review.maxRounds !== undefined ? { maxRounds: clean.maxRounds } : {}),
+        ...(review.whenClean !== undefined ? { whenClean: clean.whenClean } : {}),
+        ...(review.draftPr !== undefined ? { draftPr: clean.draftPr } : {})
+      }
+      return { ...rest, ...(cmd ? { check: cmd } : {}), ...(Object.keys(out).length ? { review: out } : {}) }
     },
 
     async setLimitSettings(settings: LimitSettings): Promise<void> {

@@ -18,7 +18,7 @@ const S = (rel) => JSON.stringify(path.join(ROOT, rel))
 await bundle({
   stdin: {
     contents: [
-      `export { createNotifications } from ${S('src/main/notifications.ts')}`,
+      `export { createNotifications, loopEndNotification } from ${S('src/main/notifications.ts')}`,
       `export { createBus } from ${S('src/main/bus.ts')}`,
       `export { NOTIFICATION_DEFAULTS, normalizeNotificationPrefs } from ${S('src/shared/notifications.ts')}`
     ].join('\n'),
@@ -29,7 +29,7 @@ await bundle({
   outfile
 })
 
-const { createNotifications, createBus, NOTIFICATION_DEFAULTS, normalizeNotificationPrefs } =
+const { createNotifications, loopEndNotification, createBus, NOTIFICATION_DEFAULTS, normalizeNotificationPrefs } =
   await import(pathToFileURL(outfile).href)
 
 const ref = { workspace: 'ws', task: 'task', env: 'env' }
@@ -205,4 +205,138 @@ test('normalizeNotificationPrefs: untrusted input never crashes/corrupts', () =>
 
 after(async () => {
   await import('node:fs').then((fs) => fs.promises.rm(outfile, { force: true }))
+})
+
+// --- the review loop's voice (docs/requirements-review-loop.md §7) ------------
+/** A subscriber whose sessions `ex*` have a Review block (their loop speaks until
+ *  `ended` holds them), `rv` is a loop's reviewer, `plain` is neither. */
+function loopSetup() {
+  const ended = new Set()
+  const infos = {
+    ex1: { title: 'executor', review: { agent: 'a2' }, role: 'executor' },
+    rv: { title: 'reviewer', role: 'reviewer', reviewOf: { executor: 'ex1', round: 1, intent: 'ex1.2' } },
+    plain: { title: 'plain', role: 'executor' }
+  }
+  const bus = createBus()
+  const notifications = createNotifications(
+    bus, allOn(), (id) => infos[id],
+    (id) => !!infos[id]?.review && !ended.has(id)
+  )
+  return { bus, notifications, ended }
+}
+const types = (n, id) => n.list().filter((r) => r.sessionId === id).map((r) => r.type)
+const turn = (bus, id) => {
+  bus.emit('session.turn', { sessionId: id, ref, phase: 'started' })
+  bus.emit('session.turn', { sessionId: id, ref, phase: 'ended', final: true })
+}
+
+test('loop: while the loop runs, its executor’s proposals and turn ends are silent', () => {
+  const { bus, notifications } = loopSetup()
+  bus.emit('session.turn', { sessionId: 'ex1', ref, phase: 'started' })
+  bus.emit('session.proposal', { sessionId: 'ex1', ref, proposal: { outcome: 'changes', commit: { subject: 'feat: x' } } })
+  bus.emit('session.turn', { sessionId: 'ex1', ref, phase: 'ended', final: true })
+  turn(bus, 'ex1')
+  bus.emit('session.proposal', { sessionId: 'ex1', ref, proposal: { outcome: 'changes' } })
+  assert.deepEqual(notifications.list(), [])
+})
+
+test('loop: a dormant no_changes turn is an ordinary turn-ended, from the controller’s event', () => {
+  const { bus, notifications } = loopSetup()
+  turn(bus, 'ex1')
+  assert.deepEqual(types(notifications, 'ex1'), [], 'silent until the controller says so')
+  bus.emit('review.loop', { sessionId: 'ex1', ref, notice: { kind: 'turn-ended' } })
+  assert.deepEqual(types(notifications, 'ex1'), ['turn-ended'])
+})
+
+test('loop: ready is the one `proposal`, with the rounds, the subject, what was delivered and the minor/nit count', () => {
+  const { bus, notifications } = loopSetup()
+  for (let i = 0; i < 3; i++) bus.emit('session.proposal', { sessionId: 'ex1', ref, proposal: { outcome: 'changes' } })
+  bus.emit('review.loop', {
+    sessionId: 'ex1', ref,
+    notice: {
+      kind: 'end', rounds: 2, subject: 'feat: x',
+      end: {
+        outcome: 'ready',
+        delivered: [{ repo: 'api', step: 'commit', ref: 'abc' }, { repo: 'api', step: 'push', ref: 'task' }],
+        notes: [{ id: 'F2', file: 'api/a.ts', severity: 'nit', claim: 'name' }]
+      }
+    }
+  })
+  const [n, ...rest] = notifications.list()
+  assert.equal(rest.length, 0, 'exactly one')
+  assert.equal(n.type, 'proposal')
+  assert.match(n.detail, /review loop clean after 2 rounds — feat: x/)
+  assert.match(n.detail, /commit api abc, push api task/)
+  assert.match(n.detail, /1 minor\/nit finding\b/)
+})
+
+test('loop: every end maps onto the four existing types', () => {
+  const open = [
+    { id: 'F1', file: 'api/a.ts', severity: 'blocker', claim: 'breaks login' },
+    { id: 'F2', file: 'api/b.ts', severity: 'major', claim: 'leaks' },
+    { id: 'F3', file: 'api/c.ts', severity: 'major', claim: 'slow' },
+    { id: 'F4', file: 'api/d.ts', severity: 'major', claim: 'late' }
+  ]
+  const needs = (reason, detail) => ({ outcome: 'needs-you', reason, detail, open, delivered: [] })
+  /** @type {any[]} */
+  const cases = [
+    [{ outcome: 'exhausted', open }, 'awaiting', /out of rounds \(2\)/],
+    ...[
+      'no-progress', 'oscillation', 'disagreement', 'executor-blocked', 'executor-incomplete', 'executor-error',
+      'check-red', 'missing-proposal', 'reviewer-unavailable', 'tree-moved', 'time-cap', 'permission-wait',
+      'delivery-failed', 'taken-over', 'cancelled'
+    ].map((r) => [needs(r, r === 'time-cap' ? undefined : 'why'), 'awaiting', new RegExp(`stopped: ${r}`)]),
+    [{ outcome: 'failed', error: 'state unreadable', delivered: [{ repo: 'api', step: 'commit', ref: 'abc' }] }, 'error', /failed: state unreadable.*commit api abc/]
+  ]
+  for (const [end, type, detail] of cases) {
+    const { bus, notifications } = loopSetup()
+    bus.emit('review.loop', { sessionId: 'ex1', ref, notice: { kind: 'end', end, rounds: 2 } })
+    assert.deepEqual(types(notifications, 'ex1'), [type], JSON.stringify(end))
+    assert.match(notifications.list()[0].detail, detail)
+  }
+  const mapped = loopEndNotification({ outcome: 'exhausted', open }, 2)
+  assert.match(mapped.detail, /R2\.F1 \[blocker\] api\/a\.ts: breaks login/, 'the unresolved findings, by their refs')
+  assert.match(mapped.detail, /… and 1 more/)
+})
+
+test('loop: the end arriving while a turn is open does not add that turn’s own turn-ended', () => {
+  const { bus, notifications, ended } = loopSetup()
+  bus.emit('session.turn', { sessionId: 'ex1', ref, phase: 'started' })
+  bus.emit('review.loop', {
+    sessionId: 'ex1', ref,
+    notice: { kind: 'end', rounds: 1, end: { outcome: 'needs-you', reason: 'time-cap', open: [], delivered: [] } }
+  })
+  ended.add('ex1')
+  bus.emit('session.turn', { sessionId: 'ex1', ref, phase: 'ended', final: true }) // the cancelled turn
+  assert.deepEqual(types(notifications, 'ex1'), ['awaiting'])
+})
+
+test('loop: after the end the session notifies as any other', () => {
+  const { bus, notifications, ended } = loopSetup()
+  ended.add('ex1')
+  bus.emit('session.turn', { sessionId: 'ex1', ref, phase: 'started' })
+  bus.emit('session.proposal', { sessionId: 'ex1', ref, proposal: { outcome: 'changes' } })
+  bus.emit('session.turn', { sessionId: 'ex1', ref, phase: 'ended', final: true })
+  turn(bus, 'ex1')
+  assert.deepEqual(types(notifications, 'ex1'), ['proposal', 'turn-ended'])
+})
+
+test('loop: a reviewer never notifies turn-ended; its permission waits and faults notify as today', () => {
+  const { bus, notifications } = loopSetup()
+  turn(bus, 'rv')
+  assert.deepEqual(notifications.list(), [])
+  bus.emit('session.awaiting', { sessionId: 'rv', ref, awaiting: true })
+  bus.emit('session.awaiting', { sessionId: 'ex1', ref, awaiting: true })
+  bus.emit('container.status', { sessionId: 'rv', ref, status: 'error', reason: 'error' })
+  assert.deepEqual(types(notifications, 'rv'), ['awaiting', 'error'])
+  assert.deepEqual(types(notifications, 'ex1'), ['awaiting'])
+})
+
+test('loop: a session without a Review block is untouched by all of it', () => {
+  const { bus, notifications } = loopSetup()
+  bus.emit('session.turn', { sessionId: 'plain', ref, phase: 'started' })
+  bus.emit('session.proposal', { sessionId: 'plain', ref, proposal: { outcome: 'changes' } })
+  bus.emit('session.turn', { sessionId: 'plain', ref, phase: 'ended', final: true })
+  turn(bus, 'plain')
+  assert.deepEqual(types(notifications, 'plain'), ['proposal', 'turn-ended'])
 })

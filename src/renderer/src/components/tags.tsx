@@ -70,6 +70,11 @@ export const ROLE_INFO: Record<SessionRole, { label: string; hint: string; icon:
     label: 'proactive',
     hint: 'a proactive agent’s run: starts on schedule, reads its sources (and any repos, read-only), and raises scopes with draft sessions — it does no work itself',
     icon: 'history'
+  },
+  reviewer: {
+    label: 'reviewer',
+    hint: 'one round of a review loop: reads the executor’s change (repos read-only) and delivers a verdict with findings — only the loop creates one',
+    icon: 'eye'
   }
 }
 

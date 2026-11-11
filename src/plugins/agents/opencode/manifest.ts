@@ -38,6 +38,7 @@ export const manifest: AgentManifest = {
   // same sqlite file. There is no path that separates the transcript from
   // the secret, so this stays `[]` unless upstream splits the store.
   historyPaths: [],
+  instructionPaths: ['opencode.json', 'opencode.jsonc', '.opencode/'],
 
   clientConfig: {
     path: '.config/opencode/opencode.json',

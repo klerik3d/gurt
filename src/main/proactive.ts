@@ -281,7 +281,7 @@ export function createProactive(deps: ProactiveDeps): ProactiveManager {
         finishRun(a, 'timeout', `cancelled after ${a.config.maxRunMinutes} minutes`)
         // A turn in flight is cancelled; a run still starting has nothing to
         // cancel, and is deleted instead of left to come up unwatched.
-        if (info?.state === 'started') sessions.cancel(id)
+        if (info?.state === 'started') sessions.cancel(id, 'host')
         else if (info) sessions.deleteSession(id)
         continue
       }

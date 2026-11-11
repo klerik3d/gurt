@@ -14,6 +14,7 @@ import type {
   PersistedSession,
   RepoConfig,
   SessionInfo,
+  ShipRung,
   SessionLogRecord,
   TaskFile,
   Tree,
@@ -21,7 +22,7 @@ import type {
 } from '../shared/types'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import type { McpRegistryEntry } from '../shared/mcp'
-import { BASE_ENV_NAME, DEFAULT_BASE_IMAGE, legacyRepoMode } from '../shared/types'
+import { BASE_ENV_NAME, DEFAULT_BASE_IMAGE, SHIP_RUNGS, legacyRepoMode } from '../shared/types'
 import { sanitizeWelcomeMode, type WelcomeMode } from '../shared/doctor'
 import { agentDef } from '../shared/agents'
 import { defaultAgentConfig } from '../shared/agentConfig'
@@ -45,6 +46,7 @@ import { NOTIFICATION_DEFAULTS } from '../shared/notifications'
 import type { HotkeyMap } from '../shared/hotkeys'
 import { HOTKEY_DEFAULTS, sanitizeHotkeys } from '../shared/hotkeys'
 import type { ProactiveState } from '../shared/proactive'
+import type { LoopState } from '../shared/reviewLoop'
 import { emptyProactiveState, sanitizeProactiveConfig } from '../shared/proactive'
 import { createLogger } from './log'
 import { gurtRoot } from './paths'
@@ -163,7 +165,7 @@ export async function ensureSessionHistory(
 const RESERVED_NAMES: Record<string, string[]> = {
   workspace: ['agents.json', 'credentials.json', 'agent-config-cache.json', '.archives', 'archive-settings.json'],
   task: ['workspace.json', 'skills', 'repos'],
-  repo: ['task.json', 'sessions.json', 'review.json', 'sessions', '.multirepo', 'proactive-state.json'],
+  repo: ['task.json', 'sessions.json', 'review.json', 'sessions', '.multirepo', 'proactive-state.json', 'review-loop.json'],
   // The base image's virtual env shares the env name space, so a workspace env may not take its name.
   env: [BASE_ENV_NAME]
 }
@@ -719,12 +721,20 @@ export async function getWorkspace(ws: string): Promise<WorkspaceFile> {
   const file = path.join(wsDir(ws), 'workspace.json')
   const raw = await readJson<Partial<WorkspaceFile> | null>(file, null)
   if (!raw) return { repos: [], envs: [] }
-  const repos: RepoConfig[] = (raw.repos ?? []).map(({ name, url, credentialId, local }) => ({
-    name,
-    url,
-    ...(credentialId ? { credentialId } : {}),
-    ...(local === true ? { local } : {})
-  }))
+  const repos: RepoConfig[] = (raw.repos ?? []).map(({ name, url, credentialId, local, check, review }) => {
+    const reviewDefaults = sanitizeRepoReview(review)
+    return {
+      name,
+      url,
+      ...(credentialId ? { credentialId } : {}),
+      ...(local === true ? { local } : {}),
+      // The review loop's per-repo settings (docs/requirements-review-loop.md
+      // §3): read through the same whitelist as every other field, or the next
+      // edit of the workspace would drop them.
+      ...(typeof check === 'string' && check.trim() ? { check: check.trim() } : {}),
+      ...(reviewDefaults ? { review: reviewDefaults } : {})
+    }
+  })
   const envs: EnvConfig[] = Array.isArray(raw.envs) ? raw.envs : []
   const migrated = !Array.isArray(raw.envs)
   // Hand-edited like everything else here: a wrong-typed value degrades to
@@ -763,6 +773,26 @@ export async function listWorkspaces(): Promise<string[]> {
 
 async function saveWorkspace(ws: string, data: WorkspaceFile): Promise<void> {
   await writeJson(path.join(wsDir(ws), 'workspace.json'), data)
+}
+
+/** `RepoConfig.review` as stored: hand-edited like everything else here, so a
+ *  wrong-typed field degrades to "absent". Empty = none. */
+function sanitizeRepoReview(raw: unknown): RepoConfig['review'] {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined
+  const r = raw as Record<string, unknown>
+  const out: NonNullable<RepoConfig['review']> = {}
+  if (typeof r['enabled'] === 'boolean') out.enabled = r['enabled']
+  if (typeof r['agent'] === 'string' && r['agent']) out.agent = r['agent']
+  if (typeof r['maxRounds'] === 'number' && Number.isFinite(r['maxRounds'])) out.maxRounds = r['maxRounds']
+  if (typeof r['whenClean'] === 'string' && (SHIP_RUNGS as readonly string[]).includes(r['whenClean']))
+    out.whenClean = r['whenClean'] as ShipRung
+  if (typeof r['draftPr'] === 'boolean') out.draftPr = r['draftPr']
+  const cv = r['configValues']
+  if (cv && typeof cv === 'object' && !Array.isArray(cv)) {
+    const values = Object.entries(cv).filter(([, v]) => typeof v === 'string' || typeof v === 'boolean')
+    if (values.length) out.configValues = Object.fromEntries(values)
+  }
+  return Object.keys(out).length ? out : undefined
 }
 
 /** Serialize one workspace.json read-modify-write against its siblings — every
@@ -1379,6 +1409,81 @@ export function writeProactiveState(ws: string, agent: string, state: ProactiveS
   return writeJson(proactiveStateFile(ws, agent), state)
 }
 
+// --- review loops: <ws>/<task>/review-loop.json -------------------------------
+// docs/requirements-review-loop.md §8: every loop of the task, keyed by executor
+// id, created when a loop-enabled executor starts and kept until it is deleted.
+// Written like the other store files (temp file, fsync, rename, directory
+// fsync): the controller records an intent here BEFORE it acts on it.
+
+const reviewLoopFile = (ws: string, task: string) => path.join(taskDir(ws, task), 'review-loop.json')
+
+// §8: validate durable decisions, never turn damaged history into a fresh loop.
+const LOOP_COUNT = z.number().int().nonnegative()
+const LOOP_STRINGS = z.record(z.string(), z.string())
+const LOOP_FINDING = z.object({ id: z.string(), file: z.string(), line: z.number().optional(),
+  severity: z.enum(['blocker', 'major', 'minor', 'nit']), claim: z.string(),
+  evidence: z.string().optional(), suggestion: z.string().optional() })
+const LOOP_DELIVERED = z.object({ repo: z.string(), step: z.enum(['commit', 'push', 'pr', 'merge']), ref: z.string(), note: z.string().optional() })
+const LOOP_END = z.discriminatedUnion('outcome', [
+  z.object({ outcome: z.literal('ready'), delivered: z.array(LOOP_DELIVERED), notes: z.array(LOOP_FINDING) }),
+  z.object({ outcome: z.literal('exhausted'), open: z.array(LOOP_FINDING) }),
+  z.object({ outcome: z.literal('needs-you'), reason: z.string(), detail: z.string().optional(), open: z.array(LOOP_FINDING), delivered: z.array(LOOP_DELIVERED) }),
+  z.object({ outcome: z.literal('failed'), error: z.string(), delivered: z.array(LOOP_DELIVERED) })
+])
+const LOOP_INTENT = z.discriminatedUnion('kind', [
+  z.object({ id: z.string(), kind: z.literal('check'), repos: z.array(z.string()) }),
+  z.object({ id: z.string(), kind: z.literal('message'), text: z.string() }),
+  z.object({ id: z.string(), kind: z.literal('reviewer'), round: LOOP_COUNT }),
+  ...(['stop-reviewer', 'delete-reviewer', 'cancel-turn'] as const).map((kind) => z.object({ id: z.string(), kind: z.literal(kind), sessionId: z.string() })),
+  z.object({ id: z.string(), kind: z.literal('deliver'), repo: z.string(), step: z.enum(['commit', 'push', 'pr', 'merge']), head: z.string() }),
+  z.object({ id: z.string(), kind: z.literal('end'), end: LOOP_END })
+])
+const STORED_LOOP = z.object({
+  version: z.literal(1), executor: z.string(),
+  config: z.object({ agent: z.string(), maxRounds: z.number().int().min(1).max(5), whenClean: z.enum(['notify', 'commit', 'push', 'pr', 'merge']), draftPr: z.boolean(), configValues: z.record(z.string(), z.union([z.string(), z.boolean()])).optional() }),
+  heldRepos: z.array(z.string()).optional(),
+  proposals: z.record(z.string(), z.object({ commit: z.object({ subject: z.string(), body: z.string().optional() }).optional(), pr: z.object({ title: z.string(), body: z.string().optional() }).optional() })).optional(),
+  phase: z.enum(['dormant', 'checking', 'proposing', 'reviewing', 'fixing', 'delivering', 'ended']),
+  round: LOOP_COUNT, redStreak: LOOP_COUNT, repaired: z.boolean(), base: LOOP_STRINGS,
+  lastHash: z.string().optional(), fixFrom: z.string().optional(), reviewedHash: z.string().optional(),
+  open: z.array(LOOP_FINDING), openAnswered: z.boolean(),
+  checks: z.array(z.object({ repo: z.string(), command: z.string(), code: z.number(), ms: z.number(), tail: z.array(z.string()), timedOut: z.boolean().optional() })),
+  reviewer: z.string().optional(),
+  rounds: z.array(z.object({ round: LOOP_COUNT, verdict: z.object({ version: z.literal(1), verdict: z.enum(['approve', 'request_changes']), summary: z.string(), findings: z.array(LOOP_FINDING), at: z.string(), round: LOOP_COUNT, turnId: z.string() }).optional(), replies: z.array(z.object({ findingId: z.string(), resolution: z.enum(['fixed', 'declined', 'refuted']), note: z.string() })).optional() })),
+  fingerprints: z.record(z.string(), z.object({ fixedIn: z.array(LOOP_COUNT), reraisedIn: z.array(LOOP_COUNT), blockerDeclinedIn: z.array(LOOP_COUNT) })),
+  deadline: z.string().datetime().optional(), holdExtensionMs: LOOP_COUNT, consumed: LOOP_STRINGS,
+  intents: z.array(LOOP_INTENT), nextIntent: LOOP_COUNT,
+  plan: z.array(z.object({ repo: z.string(), step: z.enum(['commit', 'push', 'pr', 'merge']) })).optional(),
+  delivered: z.array(LOOP_DELIVERED), turns: z.object({ executor: LOOP_COUNT, reviewer: LOOP_COUNT }),
+  end: LOOP_END.optional(), notified: z.boolean().optional()
+}).refine((s) => (s.phase === 'ended') === !!s.end)
+
+export class UnreadableReviewLoops extends Error {
+  constructor(readonly ids: string[]) { super('state-unreadable') }
+}
+
+export async function readReviewLoops(ws: string, task: string): Promise<Record<string, LoopState>> {
+  const file = reviewLoopFile(ws, task)
+  let raw: unknown
+  try {
+    raw = JSON.parse(await fs.readFile(file, 'utf8'))
+    const parsed = z.record(z.string(), STORED_LOOP).safeParse(raw)
+    if (!parsed.success || Object.entries(parsed.data).some(([id, s]) => id !== s.executor)) throw new Error('invalid loop state')
+    return raw as Record<string, LoopState>
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return {}
+    degraded = true
+    // Copy, do not rename: until failed tombstones land, the corrupt source
+    // must still block the next boot (§8), including a crash during quarantine.
+    await fs.copyFile(file, `${file}.corrupt-${Date.now()}`).catch(() => {})
+    throw new UnreadableReviewLoops(raw && typeof raw === 'object' && !Array.isArray(raw) ? Object.keys(raw) : [])
+  }
+}
+
+export function writeReviewLoops(ws: string, task: string, loops: Record<string, LoopState>): Promise<void> {
+  return writeJson(reviewLoopFile(ws, task), loops)
+}
+
 export async function removeTaskDir(ws: string, task: string): Promise<void> {
   // Same reason as the rename: an append that lands after the tree is gone
   // recreates the directory (`appendSessionLog` mkdir -p's its way back in),
@@ -1475,9 +1580,11 @@ export async function readSessions(ws: string, task: string): Promise<PersistedS
     // (docs/requirements-repo-mounts.md §5): fold that table into a mode per
     // repo, once, so every mount and lock stays exactly what it was. The
     // reviewer is gone; its records become researchers with the read-write,
-    // locked clone the 2026-08-24 stopgap gave them.
+    // locked clone the 2026-08-24 stopgap gave them. A review loop's reviewer
+    // carries `reviewOf` and stays what it is
+    // (docs/requirements-review-loop.md §4).
     const legacyRole = info['role'] as string | undefined
-    if (legacyRole === 'reviewer') {
+    if (legacyRole === 'reviewer' && !r.info.reviewOf) {
       r.info.role = 'researcher'
       r.info.repoModes = Object.fromEntries(r.info.repos.map((n) => [n, 'write' as const]))
       migrated = true

@@ -1,5 +1,15 @@
-import { useEffect, useRef, useState } from 'react'
-import type { PublishResult, RepoConfig, Tree } from '../../../../shared/types'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { PublishResult, RepoConfig, ReviewLoopConfig, Tree } from '../../../../shared/types'
+import { REVIEW_LOOP_DEFAULTS } from '../../../../shared/types'
+import {
+  REVIEW_ROUNDS,
+  RUNG_LABEL,
+  clampRounds,
+  ladderFor,
+  reviewerCandidates,
+  validateReviewBlock
+} from '../../../../shared/reviewBlock'
+import { useAgents } from '../../useAgents'
 import type { CredentialEntry } from '../../../../shared/credentials'
 import { credentialKindLabel, isGitKind, resolveForRepo } from '../../../../shared/credentials'
 import { canonicalRepoId } from '../../../../shared/repoId'
@@ -7,6 +17,8 @@ import { useOutsideClose } from '../../hooks'
 import { confirmDialog } from '../../dialog'
 import { Icon } from '../icons'
 import { Modal } from '../Modal'
+import { ChoiceGroup } from '../ChoiceGroup'
+import { saveRepo } from './repoSave'
 import { run } from '../../async'
 import { stripProtocol } from './shared'
 
@@ -15,7 +27,8 @@ import { stripProtocol } from './shared'
 export function ReposSection({ tree, ws }: { tree: Tree | null; ws: string | null }) {
   const [editing, setEditing] = useState<RepoConfig | null>(null)
   const [adding, setAdding] = useState(false)
-  const repos = tree?.workspaces.find((w) => w.name === ws)?.repos ?? []
+  const wsData = tree?.workspaces.find((w) => w.name === ws)
+  const repos = wsData?.repos ?? []
 
   return (
     <>
@@ -53,6 +66,7 @@ export function ReposSection({ tree, ws }: { tree: Tree | null; ws: string | nul
           key={editing?.name ?? '__new'}
           ws={ws}
           initial={editing ?? undefined}
+          deniedAgents={wsData?.deniedAgents ?? []}
           onClose={() => {
             setEditing(null)
             setAdding(false)
@@ -66,13 +80,19 @@ export function ReposSection({ tree, ws }: { tree: Tree | null; ws: string | nul
 function RepoModal({
   ws,
   initial,
+  deniedAgents,
   onClose
 }: {
   ws: string
   initial?: RepoConfig | undefined
+  deniedAgents: string[]
   onClose: () => void
 }) {
-  const editing = !!initial
+  // A local repo that was created but whose settings did not save stays open as
+  // an edit of that repo: saving again must not create it a second time.
+  const [created, setCreated] = useState<RepoConfig | undefined>(undefined)
+  const current = initial ?? created
+  const editing = !!current
   // A new repo is either registered by URL or created by gurt as a local one
   // (docs/requirements-new-projects.md §2); an existing local repo has no url
   // to edit, only a publish to offer.
@@ -84,6 +104,14 @@ function RepoModal({
   const [credentials, setCredentials] = useState<CredentialEntry[]>([])
   const [credMenu, setCredMenu] = useState(false)
   const [error, setError] = useState('')
+  // The review loop's per-repo settings (docs/requirements-review-loop.md §3):
+  // the check command, and the defaults a new executor draft's Review block
+  // starts from when this repo is its anchor. The user's alone to write — the
+  // operator's repo writes are refused for them (§10).
+  const agents = useAgents()
+  const candidates = useMemo(() => reviewerCandidates(agents, deniedAgents), [agents, deniedAgents])
+  const [check, setCheck] = useState(initial?.check ?? '')
+  const [rv, setRv] = useState<NonNullable<RepoConfig['review']>>(initial?.review ?? {})
   const credRef = useRef<HTMLDivElement>(null)
   useOutsideClose(credMenu, credRef, () => setCredMenu(false))
 
@@ -91,11 +119,40 @@ function RepoModal({
     window.gurt.getCredentials().then((f) => setCredentials(f.credentials)).catch(() => {})
   }, [])
 
-  const valid = name.trim() && (local || url.trim())
+  // A local repo's rungs are commit / merge, a forge repo's commit / push / PR.
+  const ladder = ladderFor([local ? { local: true } : {}])
+  const rung = rv.whenClean ?? REVIEW_LOOP_DEFAULTS.whenClean
+  // The same rules as the draft's block, minus the executor (unknown here): a
+  // reviewer named as the default must exist, be allowed and receive gurt's tools.
+  const reviewProblem = rv.agent
+    ? validateReviewBlock(
+        {
+          agent: rv.agent,
+          maxRounds: rv.maxRounds ?? REVIEW_LOOP_DEFAULTS.maxRounds,
+          whenClean: rung,
+          draftPr: rv.draftPr ?? REVIEW_LOOP_DEFAULTS.draftPr
+        },
+        undefined,
+        { agents, deniedAgents, configs: {} },
+        ladder
+      )
+    : ladder.includes(rung)
+      ? null
+      : `“${RUNG_LABEL[rung]}” is not available for this repository`
+  const setRvField = (next: Partial<ReviewLoopConfig> & { enabled?: boolean }): void =>
+    setRv((prev) => {
+      const merged = { ...prev, ...next }
+      // The reviewer's config picks belong to that reviewer.
+      if ('agent' in next && next.agent !== prev.agent) delete merged.configValues
+      return merged
+    })
+  const valid = name.trim() && (local || url.trim()) && !reviewProblem
   const draft: RepoConfig = {
     name: name.trim(),
     url: url.trim(),
-    ...(credentialId ? { credentialId } : {})
+    ...(credentialId ? { credentialId } : {}),
+    ...(check.trim() ? { check: check.trim() } : {}),
+    ...(Object.keys(rv).length ? { review: rv } : {})
   }
 
   const linked = credentials.find((c) => c.id === credentialId)
@@ -115,25 +172,22 @@ function RepoModal({
 
   const save = async () => {
     setError('')
-    try {
-      if (local && !editing) await window.gurt.createLocalRepo(ws, draft.name)
-      else await (editing ? window.gurt.updateRepo(ws, draft) : window.gurt.addRepo(ws, draft))
-      onClose()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    }
+    const result = await saveRepo(window.gurt, ws, draft, editing ? 'update' : local ? 'create-local' : 'add')
+    if (result.ok) return onClose()
+    if (result.created) setCreated(result.created)
+    setError(result.error)
   }
 
   const del = async () => {
     // A local repo's storage goes with it (store.removeRepo) — and it is the
     // only copy of whatever was merged into it, so the prompt says so.
-    const message = initial!.local
-      ? `Delete repo "${initial!.name}"? It is local and unpublished — its history, kept only by gurt on this machine, is deleted with it.`
-      : `Delete repo "${initial!.name}"?`
+    const message = current!.local
+      ? `Delete repo "${current!.name}"? It is local and unpublished — its history, kept only by gurt on this machine, is deleted with it.`
+      : `Delete repo "${current!.name}"?`
     if (!(await confirmDialog(message, { title: 'Delete repo', confirmText: 'Delete', danger: true })))
       return
     try {
-      await window.gurt.removeRepo(ws, initial!.name)
+      await window.gurt.removeRepo(ws, current!.name)
       onClose()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -251,6 +305,76 @@ function RepoModal({
           </div>
         )}
 
+        <label className="fld">
+          <span className="seclabel">CHECK</span>
+          <input
+            className="input mono"
+            placeholder="npm run lint && npm test"
+            value={check}
+            onChange={(e) => setCheck(e.target.value)}
+          />
+          <div className="env-access-note">
+            run by the review loop in the session container, from /workspaces/{name.trim() || '<repo>'}, after each
+            round of changes; empty = no check for this repo
+          </div>
+        </label>
+
+        <div className="fld" data-section="review-defaults">
+          <span className="seclabel">REVIEW LOOP DEFAULTS</span>
+          <div className="env-access-note">what a new executor draft's Review block starts from when this is its first write repo</div>
+          <ChoiceGroup
+            label="review loop on by default"
+            choices={[
+              { value: false, text: 'off by default' },
+              { value: true, text: 'on by default' }
+            ]}
+            value={!!rv.enabled}
+            onPick={(enabled) => setRvField({ enabled })}
+          />
+          <span className="seclabel">REVIEWER</span>
+          <ChoiceGroup
+            label="default reviewer"
+            choices={[
+              {
+                value: '',
+                text: 'automatic',
+                title: 'the first agent of another kind with a usable credential, else one of the same kind'
+              },
+              ...candidates.map((id) => ({ value: id, text: agents[id]?.label ?? id })),
+              ...(rv.agent && !candidates.includes(rv.agent)
+                ? [{ value: rv.agent, text: agents[rv.agent]?.label ?? rv.agent, title: 'no longer offered' }]
+                : [])
+            ]}
+            value={rv.agent ?? ''}
+            onPick={(agent) => setRvField({ agent })}
+          />
+          <span className="seclabel">ROUNDS</span>
+          <ChoiceGroup
+            label="default review rounds"
+            choices={REVIEW_ROUNDS.map((n) => ({ value: n, text: n }))}
+            value={clampRounds(rv.maxRounds ?? REVIEW_LOOP_DEFAULTS.maxRounds)}
+            onPick={(maxRounds) => setRvField({ maxRounds })}
+          />
+          <span className="seclabel">WHEN CLEAN</span>
+          <ChoiceGroup
+            label="default when clean"
+            choices={ladder.map((r) => ({ value: r, text: RUNG_LABEL[r] }))}
+            value={rung}
+            onPick={(whenClean) => setRvField({ whenClean })}
+          />
+          {rung === 'pr' && (
+            <label className="rv-check">
+              <input
+                type="checkbox"
+                checked={rv.draftPr ?? REVIEW_LOOP_DEFAULTS.draftPr}
+                onChange={(e) => setRvField({ draftPr: e.target.checked })}
+              />
+              <span>open the PR as a draft</span>
+            </label>
+          )}
+          {reviewProblem && <div className="error">{reviewProblem}</div>}
+        </div>
+
         {error && <div className="error">{error}</div>}
       </div>
       <div className="modal-foot">
@@ -267,10 +391,10 @@ function RepoModal({
           Save
         </button>
       </div>
-      {publishing && initial && (
+      {publishing && current && (
         <PublishRepoModal
           ws={ws}
-          repo={initial}
+          repo={current}
           onClose={() => setPublishing(false)}
           onPublished={onClose}
         />

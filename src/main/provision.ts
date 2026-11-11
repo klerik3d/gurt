@@ -1747,17 +1747,31 @@ export async function assertDockerDaemon(
   )
 }
 
-/** True only if the container exists and is actually running (survives a Docker
- *  daemon restart, after which a previously-`running` container is left `Exited`). */
-export function dockerRunning(containerId: string): Promise<boolean> {
+/** The daemon's word on whether a container runs: `true`/`false`, and `null`
+ *  when it cannot say (daemon unreachable, timeout) — a "no such container" is
+ *  a plain `false`. The review loop's check termination is confirmed with this
+ *  (docs/requirements-review-loop.md §5.3): an unanswered question must not
+ *  read as "stopped". */
+export function dockerInspectRunning(containerId: string): Promise<boolean | null> {
   return new Promise((resolve) => {
     const child = spawn('docker', ['inspect', '-f', '{{.State.Running}}', containerId])
     killAfter(child, PROBE_TIMEOUT_MS)
     let out = ''
+    let err = ''
     child.stdout.on('data', (d: Buffer) => (out += d.toString()))
-    child.on('error', () => resolve(false))
-    child.on('close', () => resolve(out.trim() === 'true'))
+    child.stderr.on('data', (d: Buffer) => (err += d.toString()))
+    child.on('error', () => resolve(null))
+    child.on('close', (code) => {
+      const v = out.trim()
+      resolve(v === 'true' ? true : v === 'false' ? false : code !== 0 && /no such (object|container)/i.test(err) ? false : null)
+    })
   })
+}
+
+/** True only if the container exists and is actually running (survives a Docker
+ *  daemon restart, after which a previously-`running` container is left `Exited`). */
+export async function dockerRunning(containerId: string): Promise<boolean> {
+  return (await dockerInspectRunning(containerId)) === true
 }
 
 export async function dockerStop(containerId: string, log: LogSink): Promise<void> {
