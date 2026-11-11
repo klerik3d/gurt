@@ -65,7 +65,7 @@ test('control: an unheld executor is reaped for a writer queued during its turn'
   const g = nudgedAgent('e0')
   await kernel.sessions.prompt('e0', 'go')
   await g.inFirst
-  queueWriter('beta')
+  const w = queueWriter('beta')
   await tick()
   assert.deepEqual(stops, [], 'a busy executor is never reaped')
   g.first.open()
@@ -74,6 +74,9 @@ test('control: an unheld executor is reaped for a writer queued during its turn'
   await until(() => ended('e0', true), 'e0 final turn end')
   await tick()
   assert.deepEqual(stops, [{ id: 'e0', reason: 'queue' }], 'the handoff stops it')
+  // The writer now starts and fails at provisioning; until it does it is
+  // 'starting' — active, holding beta — and would leak into the tests below.
+  await until(() => state(w.id) !== 'queued' && state(w.id) !== 'starting', 'the beta writer’s start settled')
   stops.length = 0
 })
 

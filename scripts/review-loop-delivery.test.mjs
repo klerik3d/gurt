@@ -411,7 +411,8 @@ test('a second repo’s failing commit: a typed failure listing the first repo�
   await assert.rejects(D.deliverAll(ctxOf(task, reviewed), 'pr', ['api', 'web']), (/** @type {any} */ e) => {
     assert.ok(e instanceof D.DeliveryError)
     assert.deepEqual([e.kind, e.repo, e.step], ['commit-failed', 'web', 'commit'])
-    assert.match(e.tail, /remove the file manually/, 'git’s own output is the tail (the last 3 lines)')
+    // git ≥ 2.50 shortened this advice; older gits end on "remove the file manually".
+    assert.match(e.tail, /remove the file manually|lock file may be stale/, 'git’s own output is the tail (the last 3 lines)')
     assert.deepEqual(e.delivered, [{ repo: 'api', step: 'commit', ref: headOf(clones.api) }])
     assert.match(e.message, new RegExp(`commit api ${headOf(clones.api)}`))
     assert.match(e.message, /commit of web/)
