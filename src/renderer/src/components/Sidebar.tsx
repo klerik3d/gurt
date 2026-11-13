@@ -837,7 +837,12 @@ export function Sidebar({
                       aria-level={nested ? 3 : 2}
                       {...(reviews > 0 ? { 'aria-expanded': open } : {})}
                       title={dot.label}
-                      onClick={() => onSelectSession(s.id)}
+                      onClick={() => {
+                        if (renamingThis) return
+                        onSelectSession(s.id)
+                        // Like a scope row: a click anywhere on the line folds or unfolds its reviews.
+                        if (reviews > 0) setReviewFold((prev) => new Map(prev).set(s.id, !open))
+                      }}
                       onDoubleClick={() => startRename(srow)}
                       onContextMenu={renamingThis ? undefined : (e) => openContextMenu(e, srow)}
                     >
