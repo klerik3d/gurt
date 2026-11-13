@@ -483,15 +483,20 @@ function executorSettled(s: LoopState, e: Settled, out: LoopIntentBody[]): boole
     s.lastHash = e.hash
     return startCheck(s, out)
   }
-  // fixing
-  if (p.outcome === 'no_changes') return end(s, out, needsYou(s, 'no-progress'))
+  // fixing. A red check (the streak is up: a green pass resets it before any
+  // reviewer exists) can be cured outside the diff — the environment, a flaky
+  // test — so a turn that changes nothing runs the check again instead of
+  // ending. That is bounded by the red streak, not by the rounds: the third red
+  // pass in a row ends `check-red`, and no round is consumed.
+  const redFix = s.redStreak > 0
+  if (p.outcome === 'no_changes') return redFix ? startCheck(s, out) : end(s, out, needsYou(s, 'no-progress'))
   if (!s.openAnswered && s.open.length) recordReplies(s, p.replies ?? [])
   s.openAnswered = true
   const disagreed = Object.values(s.fingerprints).some((h) => h.blockerDeclinedIn.length >= 2)
   if (disagreed) return end(s, out, needsYou(s, 'disagreement', disagreementDetail(s)))
   // The owner's rule: an unchanged diff after a fix round stops the loop,
   // whatever the replies say — a round that only declines ends here.
-  if (e.hash === s.fixFrom) return end(s, out, needsYou(s, 'no-progress'))
+  if (e.hash === s.fixFrom) return redFix ? startCheck(s, out) : end(s, out, needsYou(s, 'no-progress'))
   s.lastHash = e.hash
   return afterChanges(s, e, out)
 }

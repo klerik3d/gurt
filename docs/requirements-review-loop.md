@@ -348,8 +348,8 @@ with the reason shown unless marked otherwise.
 | dormant, fixing, proposing | settles `blocked` / failed / incomplete | end `executor-blocked` / `executor-error` / `executor-incomplete` |
 | checking | green pass, or nothing configured | `round` + 1 → reviewing, `reviewedHash = lastHash` |
 | checking | red pass | `redStreak` < 3 → fixing (red message, `fixFrom = lastHash`); = 3 → end `check-red` |
-| fixing | settles `changes` | disagreement → end; else hash = `fixFrom` → end `no-progress`; else uncovered → proposing; else → checking |
-| fixing | settles `no_changes` | end `no-progress` |
+| fixing | settles `changes` | disagreement → end; else hash = `fixFrom` → end `no-progress` (after a red check: → checking again, see below); else uncovered → proposing; else → checking |
+| fixing | settles `no_changes` | after a red check (`redStreak` > 0): → checking again (the check can be red for reasons outside the diff); after a verdict: end `no-progress` |
 | proposing | settles `changes` | no repo uncovered → checking (no diff-progress test: this turn only supplies commit texts); else end `missing-proposal` |
 | proposing | settles `no_changes` | end `missing-proposal` |
 | reviewing | reviewer settles with a verdict | hash ≠ `reviewedHash` → end `tree-moved`; oscillation → end; `approve` → delivering, or end `ready` at notify; `request_changes` with `round` = maxRounds → end `exhausted`; else → fixing (findings message, `fixFrom = reviewedHash`, a new open set) |
@@ -363,7 +363,11 @@ with the reason shown unless marked otherwise.
 "No progress" is the owner's rule as decided — an unchanged diff after a fix
 round stops the loop whatever the replies say — so a round that only declines
 or refutes ends `no-progress`. A proposal repair is not a fix round: it only
-supplies commit texts, so it is exempt.
+supplies commit texts, so it is exempt. So is a fix turn asked for by a **red
+check** (`redStreak` > 0 — no reviewer exists yet): a check can be red for
+reasons outside the diff (the environment, a flaky test), so a turn that changes
+nothing runs the check again. That is bounded by the same red streak (the third
+red pass in a row ends `check-red`) and consumes no round.
 
 ```ts
 export type EndReason =

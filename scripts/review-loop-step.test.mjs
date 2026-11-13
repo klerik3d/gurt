@@ -245,9 +245,30 @@ test('fixing | settles changes: disagreement > no-progress > proposing > checkin
   assert.equal(end.reason, 'missing-proposal')
 })
 
-test('fixing | settles no_changes: no-progress', () => {
+test('fixing | settles no_changes: no-progress after a review', () => {
   assert.equal(endOf(run(fixing(), ex(noChanges))).reason, 'no-progress')
-  assert.equal(endOf(run(run(checking(), red).state, ex(noChanges))).reason, 'no-progress')
+})
+
+test('fixing after a red check | nothing changed: the check runs again — bounded by the red streak, no round used', () => {
+  // The check can be red for reasons outside the diff (the environment, a
+  // flaky test): a turn that changes nothing earns another run, not an end.
+  const afterRed = run(checking(), red).state
+  assert.equal(afterRed.phase, 'fixing')
+  // no_changes
+  let r = run(afterRed, ex(noChanges))
+  assert.equal(r.state.phase, 'checking')
+  assert.deepEqual(kinds(r.actions), ['check'])
+  assert.equal(r.state.round, 0, 'no round consumed')
+  // The same diff declared as changes behaves the same.
+  r = run(afterRed, ex(changes(), { hash: afterRed.fixFrom }))
+  assert.equal(r.state.phase, 'checking')
+  // Still red, twice more: the third red pass in a row ends check-red.
+  r = run(r.state, red, ex(noChanges), red)
+  assert.equal(endOf(r).reason, 'check-red')
+  // A green pass after a no-change re-run goes on to the review as usual.
+  r = run(afterRed, ex(noChanges), green)
+  assert.equal(r.state.phase, 'reviewing')
+  assert.equal(r.state.round, 1)
 })
 
 test('proposing | settles changes: checking when covered (no diff-progress test), else missing-proposal', () => {
