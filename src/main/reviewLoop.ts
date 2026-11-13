@@ -293,6 +293,14 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
     // The loop hold follows the phase (§5.5): taken the moment the dormant
     // executor's turn starts, here, inside the `started` handler.
     if (loopIsLive(after)) hold(id)
+    // The reviewer's start bound (§5.4) runs from this decision: creating the
+    // session is part of starting it, so a creation that stalls is bounded too,
+    // not only a created session that never starts.
+    if (actions.some((a) => a.kind === 'reviewer')) {
+      const r = rt(id)
+      r.reviewerSince = clock.now()
+      r.reviewerStarted = false
+    }
     if (loopIsLive(before) && !loopIsLive(after) && after.phase === 'dormant') {
       // A dormant `no_changes` settle: the session is the user's again.
       stopKeepAlive(id)
@@ -691,8 +699,12 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
     let created: SessionInfo
     try {
       const prompt = await reviewerPrompt(id, st, a.round)
-      rt(id).reviewerSince = clock.now()
-      rt(id).reviewerStarted = false
+      // The bound was started with the decision; after a restart (the intent
+      // reconciled at boot) it restarts here.
+      rt(id).reviewerSince ??= clock.now()
+      // The bound expired, or the loop ended otherwise, while the prompt was
+      // being built: nothing to create.
+      if (!stillLive(id)) return
       created = await sessions.createReviewer(id, { round: a.round, intent: a.id, prompt })
     } catch (e) {
       // Cannot create or start it: the loop ends, no round is retried (§5.2).
@@ -925,15 +937,18 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
 
   // --- the clock ----------------------------------------------------------------------------
 
-  /** The reviewer's start bound (§5.4): not `started` in 15 min, held by a plan
-   *  whose reset falls after that, or a start failure. */
+  /** The reviewer's start bound (§5.4): not `started` in 15 min — still being
+   *  created (the `reviewer` intent pending) or created and not started — held
+   *  by a plan whose reset falls after that, or a start failure. */
   function reviewerBound(id: string, st: LoopState, now: number): void {
-    if (st.phase !== 'reviewing' || st.reviewer === undefined) return
+    if (st.phase !== 'reviewing') return
+    const creating = st.intents.some((a) => a.kind === 'reviewer')
+    if (st.reviewer === undefined && !creating) return
     const r = rt(id)
     if (r.reviewerStarted) return
     const since = (r.reviewerSince ??= now)
     const limit = since + REVIEW_LOOP.reviewerStartMs
-    const hold = sessions.planHoldOf(st.reviewer)
+    const hold = st.reviewer === undefined ? undefined : sessions.planHoldOf(st.reviewer)
     if (now >= limit)
       apply(id, { kind: 'reviewer-unavailable', detail: 'the reviewer did not start within 15 minutes' })
     else if (hold?.until && Date.parse(hold.until) > limit)

@@ -74,6 +74,17 @@ const ghCreates = () =>
 
 // A fake clock: the loop reads time only through it.
 let nowMs = Date.now()
+/** Move the clock and let the controller see it. Time is faked but the
+ *  controller's work is not: an intent decided before the move (a reviewer being
+ *  created, a message being queued) may still be in flight, and a tick that
+ *  lands inside that window can be a no-op nothing repeats — `tickMs` is an
+ *  hour here. So the in-flight work is drained first, and the tick is the first
+ *  thing the controller does at the new time. Every clock move goes through here. */
+async function advance(ms) {
+  await kernel.reviewLoop.idle()
+  nowMs += ms
+  kernel.reviewLoop.tick()
+}
 
 const h = await loopHarness('review-loop-controller', {
   agents: {
@@ -580,8 +591,7 @@ test('reviewer-unavailable: a reviewer that never starts is deleted after the 15
   assert.equal(kernel.sessions.sessionInfo(rid).state, 'queued')
   kernel.reviewLoop.tick()
   assert.equal(c.st().phase, 'reviewing', 'not yet')
-  nowMs += 16 * 60_000
-  kernel.reviewLoop.tick()
+  await advance(16 * 60_000)
   await finished(c)
   needsYou(c, 'reviewer-unavailable')
   assert.match(endOf(c).detail, /15 minutes/)
@@ -616,8 +626,7 @@ test('the keep-alive pings while the loop is live and stops with it', async () =
   const n0 = activity.filter((x) => x === c.id).length
   await until(() => activity.filter((x) => x === c.id).length >= n0 + 3, 'three more pings')
   assert.equal(kernel.sessions.isLoopHeld(c.id), true)
-  nowMs += 16 * 60_000
-  kernel.reviewLoop.tick()
+  await advance(16 * 60_000)
   await finished(c)
   assert.equal(kernel.sessions.isLoopHeld(c.id), false)
   const n1 = activity.filter((x) => x === c.id).length
@@ -1266,8 +1275,7 @@ test('deleted checking executor retains reservation through unconfirmed stop and
     assert.equal(attempts, before, 'backoff prevents immediate retries')
     kernel.containers.stop = stop
     kernel.containers.isRunning = async () => false
-    nowMs += 300_001
-    kernel.reviewLoop.tick()
+    await advance(300_001)
     await kernel.reviewLoop.idle()
     assert.equal(kernel.sessions.isLoopHeld(c.id), false)
     assert.equal(endNotices(c).length, 1)
@@ -1295,8 +1303,7 @@ test('end cleanup throwing retains hold and retries on tick without duplicate no
     assert.equal(kernel.sessions.isLoopHeld(c.id), true)
     assert.equal(endNotices(c).length, 0)
     fail = false
-    nowMs += 300_001
-    kernel.reviewLoop.tick()
+    await advance(300_001)
     await finished(c)
     assert.equal(c.st().end.cleanupPending, undefined)
     assert.equal(kernel.sessions.isLoopHeld(c.id), false)
@@ -1324,8 +1331,7 @@ test('end persistence failure keeps reservation and retries notification after s
     assert.equal(endNotices(c).length, 1, 'emit before marking; retry must not duplicate in this life')
     fs.rmdirSync(file)
     fs.renameSync(`${file}.saved`, file)
-    nowMs += 300_001
-    kernel.reviewLoop.tick()
+    await advance(300_001)
     await finished(c)
     assert.equal(kernel.sessions.isLoopHeld(c.id), false)
     assert.equal(endNotices(c).length, 1)
