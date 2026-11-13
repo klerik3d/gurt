@@ -247,11 +247,14 @@ test('cancel stops the container and confirms it; the run resolves stopped/cance
 })
 
 test('a timeout and a cancel at once share one stop; cancel with nothing running is a no-op', async () => {
-  const h = harness({ options: { timeoutMs: 200 } })
+  // The timeout must outlast the shell's start on a slow runner: 200 ms could
+  // fire before the pid file was written, and the check was then killed
+  // before `shellPid` could ever see it start.
+  const h = harness({ options: { timeoutMs: 1500 } })
   const id = nextId()
   const run = h.runner.run({ intent: id, repo: 'api', command: sleeper('s.pid') })
   await shellPid('s.pid')
-  const [a, b] = await Promise.all([h.runner.cancel(id), new Promise((r) => setTimeout(r, 220)).then(() => h.runner.cancel(id))])
+  const [a, b] = await Promise.all([h.runner.cancel(id), new Promise((r) => setTimeout(r, 1520)).then(() => h.runner.cancel(id))])
   assert.deepEqual([a, b], [{ ok: true }, { ok: true }])
   assert.equal(h.stops, 1, 'one docker stop')
   await run

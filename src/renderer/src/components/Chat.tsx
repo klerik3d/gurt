@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm'
 import type {
   ChatEntry,
   ChatPermission,
+  LoopNote,
   CommandInfo,
   PendingPromptInfo,
   PlanEntry,
@@ -30,13 +31,12 @@ import { Icon, Dot, InfoDot } from './icons'
 import { AgentMark, EnvRepoMarks, hasNetMark, McpFailBanner, McpMarks, NetMark, RoleMark } from './tags'
 import { NetButton } from './Network'
 import { ConfigTab } from './ConfigTab'
-import { ReviewLoopLine } from './ReviewLoopLine'
 import { SessionMenu } from './SessionActions'
 import { ToolStrip, type StripEntry } from './ToolStrip'
 import { TabBar, useSessionTab } from './SessionTabs'
 import { ContainerTerminalButton } from './ContainerTerminalButton'
 import { run } from '../async'
-import { stamp } from '../time'
+import { durationLabel, stamp } from '../time'
 
 const log = createLogger('chat')
 
@@ -56,6 +56,17 @@ const formatTokens = (n: number): string => (n >= 1000 ? `${(n / 1000).toFixed(1
  *  decide when the real message counts as "scrolled out" and to clear the bar
  *  when jumping back to that message. */
 const PIN_BAR_CLEARANCE = 36
+
+/** Extra room left between the pinned bar and a message the bar's own click
+ *  scrolled to. The message must land clearly *below* the "scrolled out" line:
+ *  landing on it makes the bar flicker on the sub-pixel boundary. */
+const PIN_LAND_GAP = 14
+
+/** Distance from the bottom beyond which the "back to latest" button shows,
+ *  and the (smaller) one within which it hides again — a gap so a feed
+ *  hovering around one value does not make the button blink. */
+const AWAY_SHOW_PX = 120
+const AWAY_HIDE_PX = 48
 
 /** Unsent composer text/context/images, kept outside React state so they survive
  *  the remount `key={sessionId}` forces on every session switch (that key exists
@@ -130,6 +141,11 @@ export function Chat({
   const innerRef = useRef<HTMLDivElement>(null)
   /** Follow-the-tail flag: true until the user scrolls away from the bottom. */
   const stickRef = useRef(true)
+  /** The feed is far enough from its bottom to offer the way back. */
+  const [away, setAway] = useState(false)
+  /** A smooth scroll to the bottom is under way: scroll events it causes must
+   *  not read as the user leaving the tail. */
+  const jumpingRef = useRef(false)
   const [pinnedId, setPinnedId] = useState<number | undefined>(undefined)
   const pinnedTextRef = useRef('')
   const agents = useAgents()
@@ -204,7 +220,27 @@ export function Chat({
   const onFeedScroll = () => {
     const el = feedRef.current
     if (!el) return
-    stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
+    const gap = el.scrollHeight - el.scrollTop - el.clientHeight
+    if (jumpingRef.current) {
+      if (gap < 40) jumpingRef.current = false
+      else return
+    }
+    stickRef.current = gap < 40
+    setAway((was) => (was ? gap > AWAY_HIDE_PX : gap > AWAY_SHOW_PX))
+  }
+
+  /** Back to what is happening now: glide to the bottom and follow the tail again. */
+  const jumpToLatest = () => {
+    const feed = feedRef.current
+    if (!feed) return
+    stickRef.current = true
+    jumpingRef.current = true
+    feed.scrollTo({ top: feed.scrollHeight, behavior: prefersReducedMotion() ? 'auto' : 'smooth' })
+    // The glide may end short (content grew under it) without a scroll event
+    // at the bottom; the next user scroll must not be swallowed.
+    window.setTimeout(() => {
+      jumpingRef.current = false
+    }, 900)
   }
 
   // The "your request" bar tracks whichever user message the current scroll
@@ -262,7 +298,13 @@ export function Chat({
     if (!feed || id === undefined) return
     const node = feed.querySelector<HTMLElement>(`.msg-user[data-eid="${id}"]`)
     if (!node) return
-    feed.scrollTo({ top: node.offsetTop - PIN_BAR_CLEARANCE, behavior: 'smooth' })
+    // The message lands just under the bar, so the bar hands over to the
+    // previous request (or leaves) through its own transition instead of
+    // fighting the message for the same spot.
+    feed.scrollTo({
+      top: Math.max(0, node.offsetTop - PIN_BAR_CLEARANCE - PIN_LAND_GAP),
+      behavior: prefersReducedMotion() ? 'auto' : 'smooth'
+    })
   }
 
   // Esc stops the current turn while the agent is working (replaces the Stop
@@ -380,7 +422,7 @@ export function Chat({
         {/* A session already running is exactly where "this was set up wrong"
             is noticed — duplicate/delete belong on this header, not only on the
             draft pane the session has left behind. */}
-        <SessionMenu info={info} onSelect={onSelect} onDeleted={onDeleted} />
+        <SessionMenu info={info} onSelect={onSelect} onDeleted={onDeleted} version={snapshot} />
         {(busy || pendingCount > 0) && <span className="chat-hint mono">esc to stop</span>}
       </div>
 
@@ -388,10 +430,6 @@ export function Chat({
           (§6): without this the agent would simply be missing tools, and the
           reason would be in ~/.gurt/logs. */}
       <McpFailBanner failures={mcpFailures} />
-
-      {/* The review loop this session is part of (docs/requirements-review-loop.md
-          §5): an executor's own, or the executor's that a reviewer serves. */}
-      <ReviewLoopLine info={info} version={snapshot} />
 
       {activeTab === 'config' && <ConfigTab tree={tree} snapshot={snapshot} />}
 
@@ -409,6 +447,18 @@ export function Chat({
                 onNavigate={scrollToPinned}
               />
             )}
+            <button
+              type="button"
+              className={`jump-latest ${away ? '' : 'off'}`}
+              onClick={jumpToLatest}
+              tabIndex={away ? 0 : -1}
+              aria-hidden={!away}
+              title="back to the latest messages"
+            >
+              <Icon name="chevron" size={13} />
+              <span>Latest</span>
+              {busy && <Dot tone="accent" pulse size={6} />}
+            </button>
             <div className="feed" ref={feedRef} onScroll={onFeedScroll}>
               <div className="feed-inner" ref={innerRef}>
                 {blocks.map((b) =>
@@ -458,6 +508,8 @@ export function Chat({
   )
 }
 
+const prefersReducedMotion = (): boolean => window.matchMedia('(prefers-reduced-motion: reduce)').matches
+
 type FeedBlock = { kind: 'strip'; entries: StripEntry[] } | { kind: 'entry'; entry: ChatEntry }
 
 /** Id of the stand-in "thinking" icon shown while the agent works with nothing live on screen. */
@@ -475,7 +527,7 @@ const stripTime = (es: StripEntry[]): number | undefined => {
  *  so it stays in the log but not in the feed. */
 const isCompleteEcho = (e: ChatEntry): boolean => e.kind === 'system' && e.text.startsWith('complete: ')
 
-const isStripEntry = (e: ChatEntry): e is StripEntry => e.kind === 'tool' || e.kind === 'thought'
+const isStripEntry = (e: ChatEntry): e is StripEntry => (e.kind === 'tool' && !e.host) || e.kind === 'thought'
 
 /** Fold each run of consecutive tool calls / thoughts into one strip, so the
  *  feed reads as texts with a single icon row between them. */
@@ -528,7 +580,7 @@ function PinnedRequest({
       onClick={onNavigate}
     >
       <span className="seclabel">↑ YOUR REQUEST</span>
-      <span className="pinned-req-text" ref={textRef}>
+      <span className="pinned-req-text" ref={textRef} key={text}>
         {text}
       </span>
       {truncated && (
@@ -587,6 +639,91 @@ export function ArchiveChat({ entries, sessionId }: { entries: ChatEntry[]; sess
   </div></div></div>
 }
 
+/** A command or tool gurt ran itself — the review loop's automatic check and
+ *  its reviewer — in the same input/output block as a console command, but
+ *  marked as the system's so it never reads as something the model did. The
+ *  output stays open while it runs or has failed, folded once it passed. */
+function HostTool({ entry }: { entry: ChatEntry & { kind: 'tool' } }) {
+  const [shown, setShown] = useState<boolean | undefined>(undefined)
+  const running = entry.status === 'in_progress' || entry.status === 'pending'
+  const failed = entry.status === 'failed'
+  const open = shown ?? (running || failed)
+  const took = entry.at != null && entry.endAt != null ? durationLabel(entry.endAt - entry.at) : undefined
+  return (
+    <div className="msg msg-tool">
+      <MsgTime at={entry.endAt ?? entry.at} />
+      <span className="msg-dot msg-dot-sm" style={{ background: 'var(--yellow)' }} />
+      <div className="host-block" data-status={failed ? 'failed' : running ? 'running' : 'ok'}>
+        <div className="host-head">
+          <span className="host-badge mono">gurt</span>
+          <span className="host-label mono">{entry.host}</span>
+          <span className="spacer" />
+          {running ? (
+            <Dot tone="yellow" pulse size={6} />
+          ) : (
+            <span className="host-state mono">{failed ? 'failed' : 'done'}{took ? ` · ${took}` : ''}</span>
+          )}
+        </div>
+        <div className="host-cmd mono">
+          {entry.toolKind === 'execute' && <span className="faint">$ </span>}
+          {entry.title}
+        </div>
+        {entry.detail && (
+          <>
+            {open && <pre className="tool-out mono">{entry.detail}</pre>}
+            <button type="button" className="host-toggle mono" onClick={() => setShown(!open)}>
+              {open ? 'hide output ▴' : 'show output ▾'}
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/** The loop's own words in the chat: a verdict, a hand-over to the user, a
+ *  delivery step. Findings are one line until opened — except that a blocker
+ *  is not something to hide. */
+function LoopNoteMsg({ entry, note }: { entry: ChatEntry & { kind: 'system' }; note: LoopNote }) {
+  const findings = note.findings ?? []
+  const [shown, setShown] = useState<boolean | undefined>(undefined)
+  const open = shown ?? findings.some((f) => f.severity === 'blocker')
+  const [head, ...rest] = entry.text.split('\n')
+  return (
+    <div className="msg msg-tool">
+      <MsgTime at={entry.at} />
+      <span className="msg-dot msg-dot-sm" style={{ background: 'var(--yellow)' }} />
+      <div className="host-note" data-tone={note.tone}>
+        <div className="host-head">
+          <span className="host-badge mono">gurt</span>
+          <span className="host-note-text">{head}</span>
+          {findings.length > 0 && (
+            <button type="button" className="host-toggle mono" onClick={() => setShown(!open)}>
+              {open ? 'hide ▴' : 'show ▾'}
+            </button>
+          )}
+        </div>
+        {rest.length > 0 && <div className="host-note-detail">{rest.join('\n')}</div>}
+        {open && findings.length > 0 && (
+          <ul className="rv-findings">
+            {findings.map((f) => (
+              <li key={f.ref}>
+                <span className="mono">{f.ref}</span>
+                <span className={`rv-sev rv-sev-${f.severity}`}>{f.severity}</span>
+                <span className="mono faint">
+                  {f.file}
+                  {f.line ? `:${f.line}` : ''}
+                </span>
+                <span>{f.claim}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function Msg({
   entry,
   sessionId,
@@ -620,14 +757,16 @@ function Msg({
       )
     case 'thought':
     case 'tool':
-      // Grouped into a `ToolStrip` by the feed; never rendered on their own.
-      return null
+      // The model's own are grouped into a `ToolStrip` by the feed; what gurt
+      // ran itself (the review loop's check and reviewer) is a block of its own.
+      return entry.kind === 'tool' && entry.host ? <HostTool entry={entry} /> : null
     case 'permission':
       if (readOnly) return <div className="msg msg-tool"><MsgTime at={entry.at} />
         <div className="msg-sys mono">{entry.title}{entry.chosen ? ` · ${entry.chosen}` : ' · unanswered'}</div>
       </div>
       return <PermissionMsg entry={entry} sessionId={sessionId} />
     case 'system':
+      if (entry.note) return <LoopNoteMsg entry={entry} note={entry.note} />
       return (
         <div className="msg msg-tool">
           <MsgTime at={entry.at} />

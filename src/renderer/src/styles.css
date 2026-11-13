@@ -1074,6 +1074,23 @@ button.sb-session {
   background: var(--hover);
   box-shadow: inset 0 0 0 1px var(--border2);
 }
+.sb-session.nested {
+  padding-left: 54px;
+}
+.sb-session.nested .sb-session-name {
+  font-size: 12.5px;
+}
+.sb-review-chev {
+  margin-left: -16px;
+  margin-right: -4px;
+  cursor: pointer;
+}
+.sb-review-count {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--faint);
+  flex: none;
+}
 .sb-session.selected {
   background: var(--hover);
 }
@@ -1216,6 +1233,22 @@ button.sb-session {
   opacity: 0;
   pointer-events: none;
 }
+.pinned-req-text {
+  animation: pinned-swap 0.2s ease;
+}
+@keyframes pinned-swap {
+  from {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pinned-req,
+  .pinned-req-text,
+  .jump-latest {
+    transition: none;
+    animation: none;
+  }
+}
 .pinned-req .seclabel {
   letter-spacing: 0.08em;
   flex: none;
@@ -1238,6 +1271,37 @@ button.sb-session {
   font-size: 11px;
   color: var(--faint);
   flex: none;
+}
+
+/* Way back to the tail while the feed is scrolled up. */
+.jump-latest {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  z-index: 4;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px 5px 9px;
+  border: 1px solid var(--border2);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--dim);
+  font-size: 12px;
+  cursor: pointer;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+  transform: translateX(-50%);
+  transition:
+    transform 0.2s ease,
+    opacity 0.2s ease;
+}
+.jump-latest:hover {
+  color: var(--text);
+}
+.jump-latest.off {
+  transform: translate(-50%, 12px);
+  opacity: 0;
+  pointer-events: none;
 }
 
 /* Feed with timeline rail. */
@@ -2211,32 +2275,105 @@ button.sb-session {
   width: 100%;
   text-align: left;
 }
-.rv-line {
+.menu-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 7px 12px;
+  font-size: 12px;
+  color: var(--dim);
+  cursor: default;
+}
+.menu-status-text {
   display: flex;
   flex-direction: column;
-  gap: 5px;
-  margin: 10px 7% 0;
-  padding: 8px 11px;
-  background: var(--app);
-  border: 1px solid var(--border2);
-  border-radius: 6px;
-  font-size: 11.5px;
+  gap: 2px;
+  min-width: 0;
 }
-.rv-line-head {
+.session-menu .icon-sq {
+  position: relative;
+}
+.menu-loop-dot {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+}
+
+/* What gurt itself ran — the review loop's check, reviewer, verdicts — set
+   apart from the model's own tool rows by the badge and the yellow rail. */
+.host-block,
+.host-note {
+  border: 1px solid var(--border2);
+  border-left: 2px solid var(--yellow);
+  border-radius: 6px;
+  background: var(--app);
+  font-size: 12px;
+  min-width: 0;
+}
+.host-block[data-status='failed'],
+.host-note[data-tone='error'] {
+  border-left-color: var(--red);
+}
+.host-note[data-tone='ok'] {
+  border-left-color: var(--green);
+}
+.host-note[data-tone='info'] {
+  border-left-color: var(--border2);
+}
+.host-head {
   display: flex;
   align-items: center;
   gap: 8px;
+  padding: 6px 11px;
 }
-.rv-line-title {
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: 0.12em;
+.host-badge {
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
+  color: var(--yellow);
+  border: 1px solid var(--border2);
+  border-radius: 3px;
+  padding: 0 5px;
+  flex: none;
+}
+.host-label,
+.host-state {
+  font-size: 11px;
   color: var(--faint);
 }
-.rv-line-detail {
-  color: var(--dim);
+.host-cmd {
+  padding: 0 11px 7px;
+  font-size: 12px;
+  color: var(--text);
   overflow-wrap: anywhere;
+}
+.host-note-text {
+  color: var(--text);
+  flex: 1;
+  min-width: 0;
+}
+.host-note-detail {
+  padding: 0 11px 7px;
+  color: var(--dim);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.host-note .rv-findings {
+  padding: 2px 11px 8px;
+}
+.host-toggle {
+  border: 0;
+  background: transparent;
+  color: var(--faint);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0 11px 6px;
+}
+.host-head .host-toggle {
+  padding: 0;
+}
+.host-toggle:hover {
+  color: var(--text);
 }
 .rv-findings {
   list-style: none;

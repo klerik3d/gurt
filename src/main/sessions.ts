@@ -3943,6 +3943,25 @@ export class SessionManager {
     return [...this.sessions.values()].find((s) => s.acpSessionId === acpSessionId)
   }
 
+  /** The review loop writes into the executor's chat: a block gurt ran itself
+   *  (`host` tool) or a note. Returns the entry's id, undefined for a session
+   *  that is gone. */
+  loopFeedPush(sessionId: string, entry: ChatEntryBase): number | undefined {
+    const s = this.sessions.get(sessionId)
+    return s ? this.push(s, entry).id : undefined
+  }
+
+  /** Settle or update a block `loopFeedPush` wrote. */
+  loopFeedPatch(
+    sessionId: string,
+    entryId: number,
+    patch: { status?: string; title?: string; detail?: string; endAt?: number }
+  ): void {
+    const s = this.sessions.get(sessionId)
+    if (!s || !s.entries.some((e) => e.id === entryId)) return
+    this.append(s, { type: 'patch', id: entryId, patch })
+  }
+
   /** The ONE writer of the session log: assigns seq, applies, announces, persists. */
   private append(s: Session, record: NewLogRecord): void {
     s.info.lastActivityAt = new Date().toISOString()

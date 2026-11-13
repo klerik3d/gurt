@@ -27,6 +27,29 @@ export function sortTasks<T extends { name: string; createdAt?: string }>(tasks:
   return sort.dir === 'desc' ? out.reverse() : out
 }
 
+/** A task's sessions with each loop reviewer filed under the executor it
+ *  reviews, in round order. Everything else keeps its place. A reviewer whose
+ *  executor is gone (deleted, or in no list) stays at the top level — hiding
+ *  it would hide the only record of that review. */
+export function nestReviews<T extends { id: string; reviewOf?: { executor: string; round: number } | undefined }>(
+  sessions: readonly T[]
+): { session: T; reviews: T[] }[] {
+  const ids = new Set(sessions.map((s) => s.id))
+  const under = new Map<string, T[]>()
+  for (const s of sessions) {
+    const owner = s.reviewOf?.executor
+    if (owner === undefined || owner === s.id || !ids.has(owner)) continue
+    under.set(owner, [...(under.get(owner) ?? []), s])
+  }
+  const nested = new Set([...under.values()].flat().map((s) => s.id))
+  return sessions
+    .filter((s) => !nested.has(s.id))
+    .map((session) => ({
+      session,
+      reviews: (under.get(session.id) ?? []).sort((a, b) => (a.reviewOf?.round ?? 0) - (b.reviewOf?.round ?? 0))
+    }))
+}
+
 export function scopeFilter(query: string): { pattern: RegExp | null; error: string } {
   try {
     return { pattern: query ? new RegExp(query, 'i') : null, error: '' }
