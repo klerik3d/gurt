@@ -912,6 +912,18 @@ export interface ChatToolCall {
   toolKind?: string
   /** Flattened preview of tool output/diff content. */
   detail?: string
+  /** Set when gurt itself ran this, not the model — the review loop's
+   *  automatic check and its reviewer launch. The value says which ("auto-check
+   *  · api"). The chat draws it as its own block, never in the model's tool strip. */
+  host?: string
+}
+
+/** What the review loop reports into the executor's chat besides a tool block:
+ *  a verdict, a hand-over to the user, a delivery step. */
+export interface LoopNote {
+  tone: 'info' | 'ok' | 'warn' | 'error'
+  /** The verdict's findings, when the note is one. */
+  findings?: { ref: string; severity: ReviewFinding['severity']; file: string; line?: number; claim: string }[]
 }
 
 export interface ChatSystem {
@@ -921,6 +933,9 @@ export interface ChatSystem {
    *  (`SessionManager.hostPrompt`, docs/requirements-review-loop.md §5.5, §8)
    *  — how a restart finds a message it already delivered. */
   loop?: string
+  /** Set on the review loop's own notes (docs/requirements-review-loop.md §5):
+   *  the chat draws these as gurt's, apart from the model's words. */
+  note?: LoopNote
 }
 
 export interface PermissionOption {

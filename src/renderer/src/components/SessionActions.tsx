@@ -8,6 +8,8 @@ import type { SessionInfo } from '../../../shared/types'
 import { alertDialog, confirmDialog } from '../dialog'
 import { useOutsideClose } from '../hooks'
 import { Icon } from './icons'
+import { LoopDot, LoopMenuSection, useReviewLoop } from './ReviewLoopLine'
+import type { SessionSnapshot } from '../../../shared/types'
 
 /** What either action needs to know about its target — a tree row carries this
  *  much, so the sidebar doesn't have to hold a snapshot to offer them. */
@@ -88,13 +90,17 @@ export async function recreateSession(
 export function SessionMenu({
   info,
   onSelect,
-  onDeleted
+  onDeleted,
+  version
 }: {
-  info: SessionTarget
+  info: SessionTarget & Partial<Pick<SessionInfo, 'review' | 'reviewOf'>>
   onSelect: (id: string) => void
   onDeleted: () => void
+  /** The open session's snapshot — a new one is a reason to re-read its loop. */
+  version?: SessionSnapshot | undefined
 }): JSX.Element {
   const [open, setOpen] = useState(false)
+  const loop = useReviewLoop(info, version)
   const ref = useRef<HTMLDivElement>(null)
   useOutsideClose(open, ref, () => setOpen(false))
 
@@ -106,9 +112,11 @@ export function SessionMenu({
         onClick={() => setOpen((o) => !o)}
       >
         <Icon name="dots" size={15} />
+        {loop && <LoopDot loop={loop} />}
       </button>
       {open && (
         <div className="menu session-menu-pop">
+          {loop && <LoopMenuSection loop={loop} onDone={() => setOpen(false)} />}
           <div
             className="menu-item"
             onMouseDown={(e) => {

@@ -19,7 +19,7 @@ import { deleteSession, duplicateSession, recreateSession } from './SessionActio
 import { Modal } from './Modal'
 import { fire, run } from '../async'
 import { RowContextMenu } from './RowContextMenu'
-import { sortTasks, type ScopeListController } from '../useScopeList'
+import { nestReviews, sortTasks, type ScopeListController } from '../useScopeList'
 import { ScopeFilter, ScopeSort } from './ScopeControls'
 import { ScopeRow } from './ScopeRow'
 import { scopeNameInput } from '../../../shared/scopeName'
@@ -38,7 +38,7 @@ import {
 /** One visible line of the tree — the unit arrow-key navigation moves over. */
 type Row =
   | { kind: 'task'; ws: string; task: string }
-  | { kind: 'session'; id: string; ws: string; task: string }
+  | { kind: 'session'; id: string; ws: string; task: string; /** A loop reviewer filed under its executor. */ nested?: true }
 
 const rowKey = (r: Row) => (r.kind === 'task' ? `t:${taskKey(r.ws, r.task)}` : `s:${r.id}`)
 
@@ -49,7 +49,7 @@ const navKey = (r: NavRow) => (r.kind === 'diff' ? `d:${taskKey(r.ws, r.task)}/$
 
 /** Nesting level — Left walks to the nearest row above with a smaller one. */
 const navDepth = (r: NavRow) =>
-  r.kind === 'task' ? 0 : r.kind === 'session' || r.row.kind === 'repo' ? 1 : r.row.kind === 'group' ? 2 : 3 + r.row.depth
+  r.kind === 'task' ? 0 : r.kind === 'session' ? (r.nested ? 2 : 1) : r.row.kind === 'repo' ? 1 : r.row.kind === 'group' ? 2 : 3 + r.row.depth
 
 /** Returns the same set when nothing changes, so a no-op fold doesn't re-render. */
 const toggled = (prev: Set<string>, key: string, on: boolean) => {
@@ -128,6 +128,9 @@ export function Sidebar({
   /** The row whose name is currently swapped for a text field, if any. */
   const [renaming, setRenaming] = useState<Row | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
+  /** Executors whose reviewers the user opened (true) or folded (false); an
+   *  executor not here follows `reviewsOpen`'s default. */
+  const [reviewFold, setReviewFold] = useState<Map<string, boolean>>(() => new Map())
   /** Right-click (or two-finger tap) target — a row's actions, at the pointer
    *  instead of behind a dedicated button, so hovering the tree never has to
    *  reserve or reveal space for one and the list holds still under the mouse. */
@@ -404,6 +407,24 @@ export function Sidebar({
     folderOpen: (repo, path, target) => !closedFolders.has(`${groupKey(wsName, task, repo, target)}/${path}`)
   })
 
+  /** A task's session lines, reviewers under their executor. Unfolded by
+   *  default only while something there still wants a look (a live or unread
+   *  review) or holds the selection; a finished, read review folds away. */
+  const sessionLines = (task: (typeof tasks)[number]) =>
+    nestReviews(task.sessions).flatMap(({ session, reviews }) => {
+      const open =
+        reviews.length > 0 &&
+        (reviews.some((r) => selection?.type === 'session' && selection.id === r.id) ||
+          (reviewFold.get(session.id) ??
+            reviews.some((r) => sessionStatus({ ...r, ...activity[r.id] }) !== 'idle-read')))
+      return [
+        { s: session, nested: false, reviews: reviews.length, open },
+        ...(open ? reviews.map((r) => ({ s: r, nested: true, reviews: 0, open: false })) : [])
+      ]
+    })
+  /** Executor id → whether its reviewers show; absent for a session without any. */
+  const reviewsShown = new Map<string, boolean>()
+
   // The tree as the user sees it, top to bottom — collapsed tasks contribute
   // only their own row. Arrow keys walk this list; nothing else needs the shape.
   const rows: NavRow[] = []
@@ -411,8 +432,10 @@ export function Sidebar({
     rows.push({ kind: 'task', ws: wsName, task: task.name })
     if (collapsed.has(taskKey(wsName, task.name))) continue
     if (mode === 'sessions')
-      for (const s of task.sessions)
-        rows.push({ kind: 'session', id: s.id, ws: wsName, task: task.name })
+      for (const { s, nested, reviews, open } of sessionLines(task)) {
+        if (reviews > 0) reviewsShown.set(s.id, open)
+        rows.push({ kind: 'session', id: s.id, ws: wsName, task: task.name, ...(nested ? { nested: true as const } : {}) })
+      }
     else
       for (const row of diffRows(changes[taskKey(wsName, task.name)] ?? [], fileLayout, folding(task.name)))
         rows.push({ kind: 'diff', ws: wsName, task: task.name, row })
@@ -463,7 +486,8 @@ export function Sidebar({
   /** Open (true), closed (false), or a leaf with nothing to fold (undefined). */
   const isExpanded = (r: NavRow): boolean | undefined => {
     if (r.kind === 'task') return !collapsed.has(taskKey(r.ws, r.task))
-    if (r.kind === 'session' || r.row.kind === 'file') return undefined
+    if (r.kind === 'session') return reviewsShown.get(r.id)
+    if (r.row.kind === 'file') return undefined
     const f = folding(r.task)
     return r.row.kind === 'repo' ? f.repoOpen(r.row.repo) : r.row.kind === 'group' ? f.groupOpen(r.row.repo, r.row.target) : f.folderOpen(r.row.repo, r.row.path, r.row.target)
   }
@@ -478,6 +502,7 @@ export function Sidebar({
     setClosedFolders((prev) => toggled(prev, `${groupKey(wsName, task, repo, target)}/${path}`, !on))
   const setExpanded = (r: NavRow, on: boolean) => {
     if (r.kind === 'task') setCollapse(r.ws, r.task, !on)
+    else if (r.kind === 'session') setReviewFold((prev) => new Map(prev).set(r.id, on))
     else if (r.kind === 'diff' && r.row.kind === 'repo') setRepoOpen(r.task, r.row.repo, on)
     else if (r.kind === 'diff' && r.row.kind === 'group') setGroupOpen(r.task, r.row.repo, r.row.target, on)
     else if (r.kind === 'diff' && r.row.kind === 'folder') setFolderOpen(r.task, r.row.repo, r.row.path, r.row.target, on)
@@ -797,7 +822,7 @@ export function Sidebar({
                 />
               )}
               {!isCollapsed && mode === 'sessions' &&
-                task.sessions.map((s) => {
+                sessionLines(task).map(({ s, nested, reviews, open }) => {
                   const status = sessionStatus({ ...s, ...activity[s.id] })
                   const dot = SESSION_DOT[status]
                   const srow: Row = { kind: 'session', id: s.id, ws: wsName, task: task.name }
@@ -806,14 +831,28 @@ export function Sidebar({
                   return (
                     <div
                       key={s.id}
-                      className={`sb-session ${selected ? 'selected' : ''}${cursorKey === rowKey(srow) ? ' cursor' : ''}`}
+                      className={`sb-session ${nested ? 'nested' : ''} ${selected ? 'selected' : ''}${cursorKey === rowKey(srow) ? ' cursor' : ''}`}
                       role="treeitem"
                       aria-selected={selected}
+                      aria-level={nested ? 3 : 2}
+                      {...(reviews > 0 ? { 'aria-expanded': open } : {})}
                       title={dot.label}
                       onClick={() => onSelectSession(s.id)}
                       onDoubleClick={() => startRename(srow)}
                       onContextMenu={renamingThis ? undefined : (e) => openContextMenu(e, srow)}
                     >
+                      {reviews > 0 && (
+                        <span
+                          className="sb-chev sb-review-chev"
+                          title={`${open ? 'Hide' : 'Show'} ${reviews} review${reviews === 1 ? '' : 's'}`}
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            setReviewFold((prev) => new Map(prev).set(s.id, !open))
+                          }}
+                        >
+                          <Icon name="chevron" size={10} style={open ? undefined : { transform: 'rotate(-90deg)' }} />
+                        </span>
+                      )}
                       <Dot tone={dot.tone} pulse={dot.pulse} hollow={dot.hollow} />
                       {renamingThis ? (
                         <RenameInput
@@ -832,6 +871,7 @@ export function Sidebar({
                             </span>
                           )}
                           <span className="sb-session-name">{s.title}</span>
+                          {reviews > 0 && !open && <span className="sb-review-count" title="reviews, folded">⟲ {reviews}</span>}
                           <span className="sb-session-client">
                             {s.agent && (
                               <AgentMark kind={agentKind(agents, s.agent)} name={agentName(agents, s.agent)} />

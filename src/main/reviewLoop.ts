@@ -30,8 +30,8 @@
 // an external effect is looked for before it is repeated, and where it cannot
 // be known whether it happened the loop prefers not to repeat it (a message
 // that may have reached the agent). Notifications retry until marked (§8).
-import type { EnvRef, ReviewFinding, SessionInfo } from '../shared/types'
-import { sessionRole, writeRepos } from '../shared/types'
+import type { EnvRef, LoopNote, ReviewFinding, SessionInfo, StoredVerdict } from '../shared/types'
+import { findingRef, sessionRole, writeRepos } from '../shared/types'
 import {
   REVIEW_LOOP,
   buildReviewerPrompt,
@@ -45,6 +45,7 @@ import {
   type LoopState,
   type ReviewedRepo
 } from '../shared/reviewLoop'
+import { deliveredText, loopLine } from '../shared/reviewStatus'
 import type { Bus } from './bus'
 import type { SessionManager } from './sessions'
 import * as store from './store'
@@ -271,6 +272,7 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
       }))
     }
     loops.set(id, r.state)
+    reportToChat(id, before, r.state)
     afterStep(id, before, r.state, r.actions)
     return true
   }
@@ -413,6 +415,111 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
     void track(r.serial)
   }
 
+
+  // --- the loop in the executor's chat -----------------------------------------------
+  // What the loop does is told where the user is reading: the check as a console
+  // block, the reviewer as a tool block (both marked as gurt's, not the model's),
+  // and what came of it — a verdict, a hand-over, a delivery step — as notes.
+
+  const reviewCall = (round: number): string => `loop-review:${round}`
+
+  const entryByCall = (id: string, toolCallId: string): number | undefined =>
+    sessions.snapshot(id)?.entries?.find((e) => e.kind === 'tool' && e.toolCallId === toolCallId)?.id
+
+  const note = (id: string, text: string, n: LoopNote): void => {
+    sessions.loopFeedPush(id, { kind: 'system', text, note: n })
+  }
+
+  /** The severities of a verdict, most severe first: "1 major · 2 minor". */
+  const severityCounts = (findings: ReviewFinding[]): string =>
+    (['blocker', 'major', 'minor', 'nit'] as const)
+      .flatMap((sev) => {
+        const n = findings.filter((f) => f.severity === sev).length
+        return n ? [`${n} ${sev}`] : []
+      })
+      .join(' · ')
+
+  function reportVerdict(id: string, round: number, v: StoredVerdict): void {
+    const call = entryByCall(id, reviewCall(round))
+    if (call !== undefined)
+      sessions.loopFeedPatch(id, call, {
+        status: 'completed',
+        detail: `${v.verdict === 'approve' ? 'approved' : 'changes requested'} — ${v.summary}`,
+        endAt: Date.now()
+      })
+    const findings = v.findings.map((f) => ({
+      ref: findingRef(round, f.id),
+      severity: f.severity,
+      file: f.file,
+      ...(f.line ? { line: f.line } : {}),
+      claim: f.claim
+    }))
+    note(
+      id,
+      findings.length
+        ? `Review R${round}: ${findings.length} finding${findings.length === 1 ? '' : 's'} (${severityCounts(v.findings)})`
+        : `Review R${round}: clean`,
+      { tone: findings.length ? 'warn' : 'ok', ...(findings.length ? { findings } : {}) }
+    )
+  }
+
+  /** Tell the chat what a transition changed: a verdict that arrived, delivery
+   *  steps done, an end. Best effort — the chat must never break the loop. */
+  function reportToChat(id: string, before: LoopState, after: LoopState): void {
+    try {
+      for (const r of after.rounds) {
+        const was = before.rounds.find((x) => x.round === r.round)
+        if (r.verdict && !was?.verdict) reportVerdict(id, r.round, r.verdict)
+      }
+      for (const d of after.delivered.slice(before.delivered.length))
+        note(id, `gurt ${deliveredText([d])}`, { tone: 'ok' })
+      if (after.end && !before.end) {
+        // A reviewer block still running when the loop ends never got a verdict.
+        const open = after.reviewer ? entryByCall(id, reviewCall(after.round)) : undefined
+        const running = open !== undefined && sessions.snapshot(id)?.entries?.some((e) => e.id === open && e.kind === 'tool' && e.status === 'in_progress')
+        if (open !== undefined && running) sessions.loopFeedPatch(id, open, { status: 'failed', endAt: Date.now() })
+        const line = loopLine(after)
+        const tone = ({ green: 'ok', yellow: 'warn', red: 'error', accent: 'info', faint: 'info' } as const)[line.tone]
+        const done = after.end.outcome === 'ready'
+        const text = done ? `Review loop finished: ${line.headline}` : `Waiting for you — ${line.headline.replace(/^ended — /, '')}`
+        note(id, [text, line.detail].filter(Boolean).join('\n'), {
+          tone,
+          ...(line.findings.length
+            ? {
+                findings: line.findings.map(({ ref, finding: f }) => ({
+                  ref,
+                  severity: f.severity,
+                  file: f.file,
+                  ...(f.line ? { line: f.line } : {}),
+                  claim: f.claim
+                }))
+              }
+            : {})
+        })
+      }
+    } catch (e) {
+      log.warn('loop chat report failed', { s: id, err: errCtx(e) })
+    }
+  }
+
+  /** The check's console block settles with what the run came to. */
+  function settleCheck(id: string, entry: number | undefined, run: Awaited<ReturnType<CheckRunner['run']>>): void {
+    if (entry === undefined) return
+    if (run.status === 'failed-to-run') {
+      sessions.loopFeedPatch(id, entry, { status: 'failed', detail: run.error, endAt: Date.now() })
+      return
+    }
+    const r = run.result
+    const secs = `${(r.ms / 1000).toFixed(1)}s`
+    const tail = r.tail.join('\n')
+    const foot = r.timedOut ? `[timed out after ${secs}]` : run.status === 'finished' ? `[exit ${r.code} · ${secs}]` : `[stopped after ${secs}]`
+    sessions.loopFeedPatch(id, entry, {
+      status: run.status === 'finished' && r.code === 0 && !r.timedOut ? 'completed' : 'failed',
+      detail: tail ? `${tail}\n${foot}` : foot,
+      endAt: Date.now()
+    })
+  }
+
   // --- executing the intents -------------------------------------------------------------
 
   /** Still worth doing: an intent decided in one phase is dropped when the loop
@@ -478,8 +585,17 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
       if (!command) continue // no check configured for this repo
       if (!stillLive(id)) return
       rt(id).check = { intent: a.id, runner }
+      const block = sessions.loopFeedPush(id, {
+        kind: 'tool',
+        toolCallId: `${a.id}:${repo}`,
+        title: command,
+        status: 'in_progress',
+        toolKind: 'execute',
+        host: `auto-check · ${repo}`
+      })
       const run = await runner.run({ intent: a.id, repo, command })
       rt(id).check = undefined
+      settleCheck(id, block, run)
       if (run.status === 'failed-to-run') {
         fault(id, `the check could not run: ${run.error}`)
         return
@@ -568,6 +684,15 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
       sessions.deleteSession(created.id)
       return
     }
+    sessions.loopFeedPush(id, {
+      kind: 'tool',
+      toolCallId: reviewCall(a.round),
+      title: `reviewer · round ${a.round} of ${st.config.maxRounds}`,
+      status: 'in_progress',
+      toolKind: 'review',
+      detail: `session "${created.title}"`,
+      host: `reviewer · R${a.round}`
+    })
     await mutate(id, (s) => (s.reviewer === undefined ? { ...s, reviewer: created.id } : s))
     await confirm(id, a.id)
   }

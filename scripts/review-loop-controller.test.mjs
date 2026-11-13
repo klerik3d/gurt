@@ -416,6 +416,10 @@ test('request_changes -> findings as a system entry (no reviewer chat) -> fix mu
   assert.ok(!p2.includes('feat: v2'))
   assert.deepEqual(c.st().rounds.map((r) => [r.round, r.verdict?.verdict, r.replies?.length]), [[1, 'request_changes', 1], [2, 'approve', undefined]])
   assert.equal(c.head(), c.bases.alpha, 'still nothing committed at rung notify')
+  // Round 1's verdict is told in the chat with its findings.
+  const verdict = kernel.sessions.snapshot(c.id).entries.find((e) => e.kind === 'system' && e.note?.findings)
+  assert.match(verdict.text, /^Review R1: 1 finding \(1 blocker\)/)
+  assert.equal(verdict.note.findings[0].ref, 'R1.F1')
 })
 
 test('a red check sends the red message and consumes no round', async () => {
@@ -438,6 +442,18 @@ test('a red check sends the red message and consumes no round', async () => {
   assert.equal(c.reviewers.length, 1)
   assert.equal(c.st().redStreak, 0, 'a green pass resets the streak')
   assert.ok(c.entries().some((e) => /the check failed/.test(e.text) && e.loop))
+  // The check shows in the chat as gurt's own console block: red, then green.
+  const all = kernel.sessions.snapshot(c.id).entries
+  const checks = all.filter((e) => e.kind === 'tool' && e.host?.startsWith('auto-check'))
+  assert.deepEqual(checks.map((e) => [e.title, e.status, e.host]), [
+    ['grep -q good status.txt', 'failed', 'auto-check · alpha'],
+    ['grep -q good status.txt', 'completed', 'auto-check · alpha']
+  ])
+  assert.match(checks[0].detail, /\[exit 1 · /)
+  const reviewer = all.find((e) => e.kind === 'tool' && e.host?.startsWith('reviewer'))
+  assert.equal(reviewer?.status, 'completed', 'the reviewer block settles with its verdict')
+  assert.ok(all.some((e) => e.kind === 'system' && e.note?.tone === 'ok' && /Review R1: clean/.test(e.text)))
+  assert.ok(all.some((e) => e.kind === 'system' && /Review loop finished/.test(e.text)))
 })
 
 test('three red passes in a row end `check-red`; no reviewer was ever created', async () => {
