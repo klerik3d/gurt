@@ -281,6 +281,33 @@ export function initialLoopState(config: ReviewLoopConfig, executorId: string): 
 export const loopIsLive = (s: LoopState): boolean =>
   s.phase !== 'ended' && !(s.phase === 'dormant' && s.deadline === undefined)
 
+/** An ended loop with nothing left to do — notified, every intent confirmed,
+ *  no cleanup pending — that may start over for the executor's next task. A
+ *  storage fault never does: its holds wait for inspection (§8). */
+export const loopRearmable = (s: LoopState): boolean =>
+  s.phase === 'ended' &&
+  !!s.notified &&
+  s.intents.length === 0 &&
+  !s.end?.cleanupPending &&
+  !(s.end?.outcome === 'failed' && ['store', 'state-unreadable'].includes(s.end.error))
+
+/** A fresh dormant loop for the same executor, after one that ended — as if
+ *  the session had just started. Two things carry over: the intent counter,
+ *  so a new intent never takes the id of an old one (the chat and the
+ *  queue find a host message by it, §8), and the executor's last settled turn
+ *  as consumed (`lastTurn`). That turn belongs to the loop that ended, so a
+ *  restart must not replay it into this one. */
+export function rearmLoop(prev: LoopState, config: ReviewLoopConfig, lastTurn: string | undefined): LoopState {
+  const fresh = initialLoopState(config, prev.executor)
+  const consumed = lastTurn ?? prev.consumed[prev.executor]
+  return {
+    ...fresh,
+    heldRepos: prev.heldRepos,
+    nextIntent: Math.max(fresh.nextIntent, prev.nextIntent),
+    consumed: consumed ? { [prev.executor]: consumed } : {}
+  }
+}
+
 /** The open set as the refs `complete`'s `replies` answer ("R1.F2"); empty
  *  once a settled turn carried the replies (§4.2). */
 export const openRefs = (s: LoopState): string[] =>

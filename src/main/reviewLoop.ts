@@ -37,8 +37,10 @@ import {
   buildReviewerPrompt,
   initialLoopState,
   loopIsLive,
+  loopRearmable,
   loopStep,
   openRefs,
+  rearmLoop,
   type CheckResult,
   type LoopEvent,
   type LoopIntent,
@@ -148,6 +150,9 @@ interface Runtime {
   cleanupRunning?: boolean | undefined
   cleanupAttempts?: number | undefined
   cleanupAfter?: number | undefined
+  /** The user typed into the executor's chat after its loop had ended: the
+   *  turn that message starts begins a new loop. */
+  rearm?: boolean | undefined
 }
 
 const iso = (ms: number): string => new Date(ms).toISOString()
@@ -243,13 +248,20 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
     return undefined
   }
 
+  /** Whether a reviewer session is the one this loop's pending `reviewer`
+   *  intent is creating. The round alone does not tell: a loop that started
+   *  over counts its rounds from 1 again, and the reviewers of the loop before
+   *  it are still in the task. */
+  const ownIntent = (st: LoopState, of: { round: number; intent: string }): boolean =>
+    st.round === of.round && st.intents.some((a) => a.kind === 'reviewer' && a.id === of.intent)
+
   /** A reviewer whose `reviewer` intent has not yet recorded it (the intent is
    *  still creating it, or the bus is ahead of the continuation): matched by
    *  its `reviewOf` and adopted. */
   function adopt(sessionId: string): { executor: string; on: 'reviewer' } | undefined {
     const of = sessions.sessionInfo(sessionId)?.reviewOf
     const st = of && loops.get(of.executor)
-    if (!of || !st || st.phase !== 'reviewing' || st.reviewer !== undefined || st.round !== of.round) return undefined
+    if (!of || !st || st.phase !== 'reviewing' || st.reviewer !== undefined || !ownIntent(st, of)) return undefined
     loops.set(of.executor, { ...st, reviewer: sessionId })
     return { executor: of.executor, on: 'reviewer' }
   }
@@ -423,8 +435,16 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
 
   const reviewCall = (round: number): string => `loop-review:${round}`
 
-  const entryByCall = (id: string, toolCallId: string): number | undefined =>
-    sessions.snapshot(id)?.entries?.find((e) => e.kind === 'tool' && e.toolCallId === toolCallId)?.id
+  /** The latest block with that call id: a loop that started over reuses its
+   *  round numbers, and the earlier loop's blocks stay in the chat above. */
+  const entryByCall = (id: string, toolCallId: string): number | undefined => {
+    const entries = sessions.snapshot(id)?.entries ?? []
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const e = entries[i]!
+      if (e.kind === 'tool' && e.toolCallId === toolCallId) return e.id
+    }
+    return undefined
+  }
 
   const note = (id: string, text: string, n: LoopNote): void => {
     sessions.loopFeedPush(id, { kind: 'system', text, note: n })
@@ -827,11 +847,32 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
 
   const human = (sessionId: string, did: 'prompt' | 'cancel' | 'stop' | 'delete'): void => {
     const t = roleIn(sessionId)
-    if (t) apply(t.executor, { kind: 'human', on: t.on, did })
+    if (!t) return
+    // A message typed while the loop runs takes it over (§5.6) — or, during
+    // delivery, waits behind it — and runs outside it. One typed after the end
+    // is the user's next task, and the loop starts over for it.
+    if (t.on === 'executor' && did === 'prompt' && loops.get(t.executor)?.phase === 'ended') rt(t.executor).rearm = true
+    apply(t.executor, { kind: 'human', on: t.on, did })
+  }
+
+  /** The turn of a message typed after the end starts a fresh loop, as the
+   *  session's first turn started the first one. An end still being cleaned up
+   *  does not: the message then runs outside the loop, like a takeover. */
+  function rearmIfAsked(id: string): void {
+    const r = runtimes.get(id)
+    if (!r?.rearm) return
+    r.rearm = false
+    const st = loops.get(id)
+    const info = sessions.sessionInfo(id)
+    if (!st || !info?.review || sessionRole(info) !== 'executor' || !loopRearmable(st)) return
+    stopKeepAlive(id)
+    runtimes.set(id, { serial: r.serial, ...(r.runner ? { runner: r.runner } : {}) })
+    loops.set(id, rearmLoop(st, info.review, sessions.lastSettledOf(id)?.turnId))
   }
 
   bus.on('session.turn', ({ sessionId, phase }) => {
     if (phase !== 'started') return
+    rearmIfAsked(sessionId)
     if (ensureLoop(sessionId)) {
       apply(sessionId, { kind: 'turn-started', on: 'executor', now: iso(clock.now()) })
       return
@@ -941,7 +982,7 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
     if (!st || !w || st.phase !== 'reviewing' || st.reviewer !== undefined) return
     const found = sessions
       .listForTask(w.ws, w.task)
-      .find((i) => i.reviewOf?.executor === id && i.reviewOf.round === st.round)
+      .find((i) => i.reviewOf?.executor === id && ownIntent(st, i.reviewOf))
     if (found) loops.set(id, { ...st, reviewer: found.id })
   }
 

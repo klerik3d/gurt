@@ -35,6 +35,8 @@ const {
   initialLoopState,
   loopStep,
   loopIsLive,
+  loopRearmable,
+  rearmLoop,
   openRefs,
   normalise,
   fingerprint,
@@ -985,4 +987,44 @@ test('random walk: never throws, round <= maxRounds, <= N reviewers and 3N messa
   // The walk is only worth something if it reaches the table's far rows.
   for (const k of ['ready', 'exhausted', 'failed', 'no-progress', 'check-red', 'time-cap', 'tree-moved', 'missing-proposal', 'delivery-failed', 'executor-blocked', 'cancelled'])
     assert.ok(ends.get(k), `no walk ended ${k}: ${JSON.stringify([...ends])}`)
+})
+
+// --- starting over after an end ---------------------------------------------
+
+test('an ended loop starts over only once nothing is left to do; the fresh one keeps the intent counter and the consumed turn', () => {
+  const ended = {
+    ...initialLoopState(cfg(), EX),
+    phase: 'ended',
+    round: 2,
+    heldRepos: ['alpha'],
+    nextIntent: 9,
+    consumed: { [EX]: `${EX}:4`, rv1: 'rv1:1' },
+    rounds: [{ round: 1 }, { round: 2 }],
+    end: { outcome: 'ready', delivered: [], notes: [] },
+    notified: true
+  }
+  assert.equal(loopRearmable(ended), true)
+  assert.equal(loopRearmable({ ...ended, notified: false }), false, 'not before it has notified')
+  assert.equal(loopRearmable({ ...ended, intents: [{ id: `${EX}.8`, kind: 'end', end: ended.end }] }), false, 'nor while its end still runs')
+  assert.equal(loopRearmable({ ...ended, end: { ...ended.end, cleanupPending: 'docker is down' } }), false)
+  assert.equal(loopRearmable({ ...ended, end: { outcome: 'failed', error: 'store', delivered: [] } }), false, 'a storage fault waits for inspection')
+  assert.equal(loopRearmable({ ...ended, end: { outcome: 'failed', error: 'boom', delivered: [] } }), true)
+  assert.equal(loopRearmable({ ...ended, phase: 'reviewing' }), false)
+
+  const fresh = rearmLoop(ended, cfg({ maxRounds: 3 }), `${EX}:5`)
+  assert.equal(fresh.phase, 'dormant')
+  assert.equal(loopIsLive(fresh), false, 'armed, not running until the turn starts')
+  assert.equal(fresh.round, 0)
+  assert.deepEqual(fresh.rounds, [])
+  assert.equal(fresh.end, undefined)
+  assert.equal(fresh.notified, undefined)
+  assert.equal(fresh.config.maxRounds, 3)
+  assert.deepEqual(fresh.heldRepos, ['alpha'])
+  assert.equal(fresh.nextIntent, 9, 'no old intent id comes back')
+  assert.deepEqual(fresh.consumed, { [EX]: `${EX}:5` }, 'the turn before the restart is the old loop’s')
+  assert.deepEqual(rearmLoop(ended, cfg(), undefined).consumed, { [EX]: `${EX}:4` })
+
+  // The old loop's last settled turn, replayed into the fresh one, is ignored.
+  const replay = loopStep(fresh, { kind: 'settled', on: 'executor', turn: { turnId: `${EX}:5`, complete: changes(), incomplete: false }, now: at(0), hash: 'h', uncovered: [], heads: {}, changed: [] })
+  assert.equal(replay.state, fresh)
 })

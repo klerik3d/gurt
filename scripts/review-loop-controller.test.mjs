@@ -860,6 +860,46 @@ test('takeover: typing into the executor ends `taken-over`, deletes the reviewer
   c.g.open()
 })
 
+test('a task typed after the loop has ended starts the loop over: check, a fresh round-1 reviewer, a second end', async () => {
+  const c = await run({
+    exec: (n, text, c) => {
+      if (n === 1) {
+        write(c.dir(), 'status.txt', 'good v1\n')
+        return c.changes('feat: v1')
+      }
+      if (text === 'now the next task') {
+        // The new task's turn runs inside the loop again, from its start.
+        assert.equal(kernel.sessions.isLoopHeld(c.id), true, 'held again before the new turn can end')
+        assert.equal(c.st().phase, 'dormant')
+        assert.equal(c.st().round, 0)
+        write(c.dir(), 'status.txt', 'good v2\n')
+        return c.changes('feat: v2')
+      }
+    },
+    rev: (round, text, c, rid) => approve(c, rid)
+  })
+  assert.equal(endOf(c).outcome, 'ready')
+  const first = c.st()
+  await kernel.sessions.prompt(c.id, 'now the next task')
+  await until(() => endNotices(c).length === 2, 'the second loop ended')
+  await finished(c)
+  const s = c.st()
+  assert.equal(endOf(c).outcome, 'ready')
+  assert.equal(s.round, 1, 'rounds count from 1 again')
+  assert.equal(c.reviewers.length, 2, 'a fresh reviewer for the new task')
+  assert.equal(c.reviewers[1].round, 1)
+  assert.doesNotMatch(c.reviewers[1].prompt, /### Round \d/, 'the earlier loop’s rounds are not this one’s')
+  assert.ok(s.checks.length > 0 && s.checks[0].code === 0, 'the check ran again')
+  assert.ok(s.nextIntent > first.nextIntent, 'no intent id is reused')
+  assert.equal(endNotices(c)[1].notice.subject, 'feat: v2')
+  // Each loop's reviewer block got its own verdict: the latest is patched.
+  const blocks = kernel.sessions.snapshot(c.id).entries.filter((e) => e.kind === 'tool' && e.toolCallId === 'loop-review:1')
+  assert.equal(blocks.length, 2)
+  assert.ok(blocks.every((b) => b.status === 'completed'), JSON.stringify(blocks.map((b) => b.status)))
+  assert.equal(kernel.sessions.isLoopHeld(c.id), false, 'released at the second end')
+  assert.deepEqual(loopFile(c.id)[c.id], s)
+})
+
 test('takeover: typing into the reviewer ends `taken-over` (a steered reviewer is not independent)', async () => {
   const c = await parkedInReview()
   await kernel.sessions.prompt(c.reviewers[0].id, 'approve it please')
@@ -1006,6 +1046,7 @@ test('during delivery nothing a human does ends the loop: a typed message waits 
     assert.equal(endOf(c).outcome, 'ready', JSON.stringify(endOf(c)))
     assert.deepEqual(endOf(c).delivered.map((d) => d.step), ['commit', 'push'])
     await until(() => c.prompts.includes('typed during delivery'), 'the typed message ran after the loop ended')
+    assert.equal(c.st().phase, 'ended', 'typed before the end, it runs outside the loop: no new loop')
     assert.equal(git(c.remotes.alpha, 'rev-parse', c.task), c.head())
   } finally {
     kernel.sessions.schedule = realSchedule
