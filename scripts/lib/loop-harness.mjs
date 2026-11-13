@@ -81,6 +81,18 @@ export async function loopHarness(name, opts = {}) {
   function wire(kernel, root, mod, { reboot }) {
     const ref = { workspace: ws, task, env: 'dev' }
     if (reboot) kernel.containers.reconcile = async () => {} // the container records are kept as written
+    // No container is ever provisioned here. A real start (a writer the
+    // scheduler lets through, a reviewer) gets past every gate and then fails
+    // at once, the same on every machine. Left to the real `resolveLaunch`, how
+    // fast it failed depended on the host: at once with no docker, but on a
+    // runner with docker and network it went on to real `docker` and `git`
+    // calls. The session then stayed `starting` past the tests' 3 s waits,
+    // holding its repo for every test after it. Every successful launch needs
+    // docker anyway (`ensure`, then the adapter install by `docker exec`), so
+    // none could succeed here.
+    kernel.containers.resolveLaunch = async () => {
+      throw new Error('no containers in the loop harness')
+    }
     /** Every container stop the session manager / handoff asked for. */
     const stops = []
     kernel.containers.stop = async (id, reason) => {

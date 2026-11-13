@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type {
@@ -267,10 +267,17 @@ export function Chat({
     }
 
     const recompute = () => {
-      const threshold = feed.getBoundingClientRect().top + PIN_BAR_CLEARANCE
+      const feedTop = feed.getBoundingClientRect().top
       let active: number | undefined
       for (const { id, node } of nodes) {
-        if (node.getBoundingClientRect().top < threshold) active = id
+        const top = node.getBoundingClientRect().top - feedTop
+        // A message resting closer to the feed's top than the bar is tall
+        // (the opening request, with only the feed's padding above it) sits
+        // "under the bar" even fully scrolled up, so it would never count as
+        // back in view. Its line sits halfway to where it rests instead: at
+        // the top of the feed it is plainly on screen and the bar leaves.
+        const rest = top + feed.scrollTop
+        if (top < Math.min(PIN_BAR_CLEARANCE, rest / 2)) active = id
       }
       setPinnedId(active)
     }
@@ -681,6 +688,29 @@ function HostTool({ entry }: { entry: ChatEntry & { kind: 'tool' } }) {
   )
 }
 
+/** A web address inside plain text, without the punctuation that closes the
+ *  sentence around it ("… see https://x/1." links https://x/1). */
+const URL_RE = /https?:\/\/[^\s<>"']*[^\s<>"'.,;:!?)\]]/g
+
+/** Plain text with its web addresses made clickable — the PR the review loop
+ *  opened, for one. The link leaves the app: `main/index.ts` hands any
+ *  navigation away from the app's own page to the OS browser. */
+function linkify(text: string): ReactNode[] {
+  const out: ReactNode[] = []
+  let at = 0
+  for (const m of text.matchAll(URL_RE)) {
+    if (m.index > at) out.push(text.slice(at, m.index))
+    out.push(
+      <a key={m.index} className="host-link" href={m[0]} target="_blank" rel="noreferrer">
+        {m[0]}
+      </a>
+    )
+    at = m.index + m[0].length
+  }
+  if (at < text.length) out.push(text.slice(at))
+  return out
+}
+
 /** The loop's own words in the chat: a verdict, a hand-over to the user, a
  *  delivery step. Findings are one line until opened — except that a blocker
  *  is not something to hide. */
@@ -696,14 +726,14 @@ function LoopNoteMsg({ entry, note }: { entry: ChatEntry & { kind: 'system' }; n
       <div className="host-note" data-tone={note.tone}>
         <div className="host-head">
           <span className="host-badge mono">gurt</span>
-          <span className="host-note-text">{head}</span>
+          <span className="host-note-text">{linkify(head ?? '')}</span>
           {findings.length > 0 && (
             <button type="button" className="host-toggle mono" onClick={() => setShown(!open)}>
               {open ? 'hide ▴' : 'show ▾'}
             </button>
           )}
         </div>
-        {rest.length > 0 && <div className="host-note-detail">{rest.join('\n')}</div>}
+        {rest.length > 0 && <div className="host-note-detail">{linkify(rest.join('\n'))}</div>}
         {open && findings.length > 0 && (
           <ul className="rv-findings">
             {findings.map((f) => (

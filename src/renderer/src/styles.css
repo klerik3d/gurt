@@ -2358,6 +2358,14 @@ button.sb-session {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.host-link {
+  text-decoration: none;
+  color: var(--accent);
+  overflow-wrap: anywhere;
+}
+.host-link:hover {
+  text-decoration: underline;
+}
 .host-note .rv-findings {
   padding: 2px 11px 8px;
 }

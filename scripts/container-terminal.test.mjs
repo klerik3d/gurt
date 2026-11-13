@@ -62,8 +62,12 @@ test('session terminal launches a system window for single-repo, mounted and rep
   const bin = path.join(root, 'bin')
   const capture = path.join(root, 'terminal-args.json')
   fs.mkdirSync(bin)
+  // Written aside and renamed into place: the test polls for the file to
+  // exist, and a plain write creates it empty before the arguments land in it.
   fs.writeFileSync(path.join(bin, 'gnome-terminal'), `#!${process.execPath}
-require('node:fs').writeFileSync(${JSON.stringify(capture)}, JSON.stringify(process.argv.slice(2)))
+const fs = require('node:fs')
+fs.writeFileSync(${JSON.stringify(capture + '.tmp')}, JSON.stringify(process.argv.slice(2)))
+fs.renameSync(${JSON.stringify(capture + '.tmp')}, ${JSON.stringify(capture)})
 `, { mode: 0o755 })
   const oldPath = process.env.PATH
   process.env.PATH = `${bin}${path.delimiter}${oldPath ?? ''}`

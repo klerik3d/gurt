@@ -760,8 +760,9 @@ Gurt's proxy does not cut long calls (`gurt-proxy.mjs` ~805).
 - Agent-driven orchestration.
 - The manual review removed in a29dda0 (ReviewModal, `review.json`, comments)
   is not resurrected.
-- Also not in this pass: re-arming a loop on the same session, per-repo review
-  instructions, configurable timeouts and caps, forges other than GitHub.
+- Also not in this pass: per-repo review instructions, configurable timeouts
+  and caps, forges other than GitHub. (Re-arming a loop on the same session
+  was here; see §13, "Starting over after the end".)
 
 ## 12. Acceptance
 
@@ -780,7 +781,8 @@ ones easy to get wrong.
    `session.settled` after `incomplete` and the plan hold are set; host
    messages as `system` entries; the findings message without reviewer chat;
    user takeover ends the loop, drops its queued message, deletes the reviewer;
-   no re-arm.
+   no re-arm by the takeover's own message; a task typed after the end starts
+   the loop over (§13).
 4. `review-loop-queue.test.mjs` — the executor is kept alive and its claim not
    lost: a writer queued before the first turn ends — through its nudge — gets
    no handoff; the reviewer starts while the executor holds `write` and under a
@@ -988,3 +990,40 @@ ones easy to get wrong.
   - The full `npm test` with this round's changes: 1,131 tests, 1,123 passed, one skipped, and only the seven known failures (six docker-dependent `env-image-build` cases and the `proxy-server` MCP-routing case).
 
   Nothing was committed, pushed or rebased by this round.
+
+#### Starting over after the end
+
+- **The owner's report:** a loop finished, the user gave a new task in the same chat, and no loop ran for it. §11 had left re-arming out of scope.
+- **Rule.** A message the user types into the executor's chat **after** its loop has ended starts the loop over. When that message's turn starts, the ended state is replaced by a fresh dormant one, as if the session had just started (`rearmLoop`). The turn-start event then takes the hold and sets the deadline as usual. The loop's config is the session's frozen `review`. Only a loop with nothing left to do starts over (`loopRearmable`): its end is notified, every intent is confirmed and no cleanup is pending. A storage fault (`store`, `state-unreadable`) never does, because its holds wait for inspection.
+- **What still runs outside the loop:**
+  - the takeover's own message (typed while the loop was live, §5.6);
+  - a message typed during delivery, which waits behind it (§5.6);
+  - a message whose turn starts while the end is still being cleaned up.
+
+  A message typed after one of these starts the loop over as usual. The request is remembered in memory only, so a message still queued across an app restart runs outside the loop.
+- **Carried over into the fresh state:**
+  - `nextIntent`, so a new intent never takes the id of an old one. Host messages are found by intent id in the queue and on the timeline (§8), and so is the check's console block.
+  - The executor's last settled turn, marked as consumed. It belongs to the loop that ended, so the boot's replay (§8) must not arm the new loop with it.
+- **Two lookups now distinguish loops.**
+  - A reviewer is adopted (`adopt`, `adoptRecovered`) only if its `reviewOf.intent` is the loop's pending `reviewer` intent. The round alone matched a reviewer of the earlier loop, which also has a round 1.
+  - The reviewer's chat block is found by its call id, `loop-review:<round>`, and the latest block with that id wins.
+- **Tests.**
+  - `review-loop-controller.test.mjs` "a task typed after the loop has ended starts the loop over…": the check runs again, a fresh round-1 reviewer is created, there is a second end, and both reviewer blocks are completed.
+  - The delivery-boundary test now asserts that no new loop starts for a message typed during delivery. The takeover test's "no re-arm" still holds.
+  - `review-loop-step.test.mjs` "an ended loop starts over only once nothing is left to do…".
+
+#### The reviewer's start bound covers its creation
+
+- **A CI failure:** `review-loop-controller.test.mjs` "the keep-alive pings while the loop is live and stops with it" timed out ("never: … ended and notified"). Reproduced locally by delaying the reviewer's creation by 500 ms: the test's one `tick()` at +16 min landed while the `reviewer` intent was still being carried out (git in `reviewerPrompt`, then `createReviewer`), and `reviewerBound` returned early because `LoopState.reviewer` was unset. The test's clock has `tickMs` of an hour, so nothing ticked again.
+- **The production gap behind it.** The 15-minute start bound (§5.4) ran from the session's creation, so a creation that stalled — git hanging in `reviewerPrompt`, `createReviewer` stuck — was bounded only by the 120-minute deadline (§5.2).
+- **Rule.** The bound runs from the decision: `afterStep` records `reviewerSince` when a `reviewer` intent is decided, and `reviewerBound` applies while the intent is pending as well as once the session exists (the plan-hold check needs the session and waits for it). `executeReviewer` keeps the recorded start (`??=`, so a restart's reconciled intent restarts the bound there) and creates nothing if the loop has ended meanwhile; a session created anyway is deleted as before.
+- **The tests' rule.** Time is faked; the controller's work is not. A tick that lands inside an in-flight intent's window may be a no-op that nothing repeats. Every clock move in the controller test now goes through `advance(ms)`: drain the controller (`idle()`), move the clock, tick. Three tests already did this by hand; the two 15-minute tests did not, and only one of them happened to wait for the reviewer's record first.
+- Verified with the 500 ms delay in place and both changes applied: the two 15-minute tests pass (before the changes, the keep-alive test failed with the CI message). The delay was removed afterwards.
+
+#### The loop harness provisions nothing
+
+- **A CI failure:** all 11 tests of `review-loop-queue.test.mjs` failed. The first one timed out waiting for a writer's start to settle ("never: the beta writer’s start settled"); the other ten failed after it, because that writer stayed `starting` and held `beta`. The file relies on a real start getting past every gate and then failing at provisioning. With no docker that failure is immediate. On the CI runner, which has docker and network, the start went on into real `docker` / `git` calls and took longer than the tests' 3 s waits.
+- **Reproduced** by making `resolveLaunch` take 10 s in the harness: the same 11 failures, with the same messages.
+- **Fix.** `scripts/lib/loop-harness.mjs` replaces `kernel.containers.resolveLaunch` with one that throws at once. Every successful launch needs docker (`ensure`, then the adapter install by `docker exec`), so none could succeed in the harness anyway; now it fails the same way on every machine. The gates a start passes first (missing repo, the clone conflict) run before `resolveLaunch` and are unchanged.
+- **Swept the whole suite** under a slow fake `docker` (10 s, then an error) and a proxy that accepts and never answers. Beyond the docker-dependent `env-image-build` file, two files hung. `proxy-server` hangs only with proxy variables in the environment, which CI does not set. `proactive` awaits real `docker ps` calls when it deletes a scope (`containers.teardownTask`, even for sessions without a container). CI's daemon answers quickly, so it passes there, but it is the next place a slow or hung daemon would show.
+

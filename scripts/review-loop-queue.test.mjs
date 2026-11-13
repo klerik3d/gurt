@@ -13,7 +13,8 @@
 //   - after the release the idle timer is re-armed and the writer starts.
 //
 // No docker and no agent process: a fake `session/prompt` runs the turns; every
-// real start fails fast at provisioning, which is the proof it got past the gate.
+// real start fails at once at provisioning (the harness's `resolveLaunch`, on
+// every machine, docker or not), which is the proof it got past the gate.
 //
 //   node scripts/review-loop-queue.test.mjs
 import { test, after } from 'node:test'

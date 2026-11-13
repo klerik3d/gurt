@@ -74,6 +74,17 @@ const ghCreates = () =>
 
 // A fake clock: the loop reads time only through it.
 let nowMs = Date.now()
+/** Move the clock and let the controller see it. Time is faked but the
+ *  controller's work is not: an intent decided before the move (a reviewer being
+ *  created, a message being queued) may still be in flight, and a tick that
+ *  lands inside that window can be a no-op nothing repeats — `tickMs` is an
+ *  hour here. So the in-flight work is drained first, and the tick is the first
+ *  thing the controller does at the new time. Every clock move goes through here. */
+async function advance(ms) {
+  await kernel.reviewLoop.idle()
+  nowMs += ms
+  kernel.reviewLoop.tick()
+}
 
 const h = await loopHarness('review-loop-controller', {
   agents: {
@@ -580,8 +591,7 @@ test('reviewer-unavailable: a reviewer that never starts is deleted after the 15
   assert.equal(kernel.sessions.sessionInfo(rid).state, 'queued')
   kernel.reviewLoop.tick()
   assert.equal(c.st().phase, 'reviewing', 'not yet')
-  nowMs += 16 * 60_000
-  kernel.reviewLoop.tick()
+  await advance(16 * 60_000)
   await finished(c)
   needsYou(c, 'reviewer-unavailable')
   assert.match(endOf(c).detail, /15 minutes/)
@@ -616,8 +626,7 @@ test('the keep-alive pings while the loop is live and stops with it', async () =
   const n0 = activity.filter((x) => x === c.id).length
   await until(() => activity.filter((x) => x === c.id).length >= n0 + 3, 'three more pings')
   assert.equal(kernel.sessions.isLoopHeld(c.id), true)
-  nowMs += 16 * 60_000
-  kernel.reviewLoop.tick()
+  await advance(16 * 60_000)
   await finished(c)
   assert.equal(kernel.sessions.isLoopHeld(c.id), false)
   const n1 = activity.filter((x) => x === c.id).length
@@ -860,6 +869,46 @@ test('takeover: typing into the executor ends `taken-over`, deletes the reviewer
   c.g.open()
 })
 
+test('a task typed after the loop has ended starts the loop over: check, a fresh round-1 reviewer, a second end', async () => {
+  const c = await run({
+    exec: (n, text, c) => {
+      if (n === 1) {
+        write(c.dir(), 'status.txt', 'good v1\n')
+        return c.changes('feat: v1')
+      }
+      if (text === 'now the next task') {
+        // The new task's turn runs inside the loop again, from its start.
+        assert.equal(kernel.sessions.isLoopHeld(c.id), true, 'held again before the new turn can end')
+        assert.equal(c.st().phase, 'dormant')
+        assert.equal(c.st().round, 0)
+        write(c.dir(), 'status.txt', 'good v2\n')
+        return c.changes('feat: v2')
+      }
+    },
+    rev: (round, text, c, rid) => approve(c, rid)
+  })
+  assert.equal(endOf(c).outcome, 'ready')
+  const first = c.st()
+  await kernel.sessions.prompt(c.id, 'now the next task')
+  await until(() => endNotices(c).length === 2, 'the second loop ended')
+  await finished(c)
+  const s = c.st()
+  assert.equal(endOf(c).outcome, 'ready')
+  assert.equal(s.round, 1, 'rounds count from 1 again')
+  assert.equal(c.reviewers.length, 2, 'a fresh reviewer for the new task')
+  assert.equal(c.reviewers[1].round, 1)
+  assert.doesNotMatch(c.reviewers[1].prompt, /### Round \d/, 'the earlier loop’s rounds are not this one’s')
+  assert.ok(s.checks.length > 0 && s.checks[0].code === 0, 'the check ran again')
+  assert.ok(s.nextIntent > first.nextIntent, 'no intent id is reused')
+  assert.equal(endNotices(c)[1].notice.subject, 'feat: v2')
+  // Each loop's reviewer block got its own verdict: the latest is patched.
+  const blocks = kernel.sessions.snapshot(c.id).entries.filter((e) => e.kind === 'tool' && e.toolCallId === 'loop-review:1')
+  assert.equal(blocks.length, 2)
+  assert.ok(blocks.every((b) => b.status === 'completed'), JSON.stringify(blocks.map((b) => b.status)))
+  assert.equal(kernel.sessions.isLoopHeld(c.id), false, 'released at the second end')
+  assert.deepEqual(loopFile(c.id)[c.id], s)
+})
+
 test('takeover: typing into the reviewer ends `taken-over` (a steered reviewer is not independent)', async () => {
   const c = await parkedInReview()
   await kernel.sessions.prompt(c.reviewers[0].id, 'approve it please')
@@ -1006,6 +1055,7 @@ test('during delivery nothing a human does ends the loop: a typed message waits 
     assert.equal(endOf(c).outcome, 'ready', JSON.stringify(endOf(c)))
     assert.deepEqual(endOf(c).delivered.map((d) => d.step), ['commit', 'push'])
     await until(() => c.prompts.includes('typed during delivery'), 'the typed message ran after the loop ended')
+    assert.equal(c.st().phase, 'ended', 'typed before the end, it runs outside the loop: no new loop')
     assert.equal(git(c.remotes.alpha, 'rev-parse', c.task), c.head())
   } finally {
     kernel.sessions.schedule = realSchedule
@@ -1225,8 +1275,7 @@ test('deleted checking executor retains reservation through unconfirmed stop and
     assert.equal(attempts, before, 'backoff prevents immediate retries')
     kernel.containers.stop = stop
     kernel.containers.isRunning = async () => false
-    nowMs += 300_001
-    kernel.reviewLoop.tick()
+    await advance(300_001)
     await kernel.reviewLoop.idle()
     assert.equal(kernel.sessions.isLoopHeld(c.id), false)
     assert.equal(endNotices(c).length, 1)
@@ -1254,8 +1303,7 @@ test('end cleanup throwing retains hold and retries on tick without duplicate no
     assert.equal(kernel.sessions.isLoopHeld(c.id), true)
     assert.equal(endNotices(c).length, 0)
     fail = false
-    nowMs += 300_001
-    kernel.reviewLoop.tick()
+    await advance(300_001)
     await finished(c)
     assert.equal(c.st().end.cleanupPending, undefined)
     assert.equal(kernel.sessions.isLoopHeld(c.id), false)
@@ -1283,8 +1331,7 @@ test('end persistence failure keeps reservation and retries notification after s
     assert.equal(endNotices(c).length, 1, 'emit before marking; retry must not duplicate in this life')
     fs.rmdirSync(file)
     fs.renameSync(`${file}.saved`, file)
-    nowMs += 300_001
-    kernel.reviewLoop.tick()
+    await advance(300_001)
     await finished(c)
     assert.equal(kernel.sessions.isLoopHeld(c.id), false)
     assert.equal(endNotices(c).length, 1)
