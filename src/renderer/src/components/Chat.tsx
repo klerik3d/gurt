@@ -267,10 +267,17 @@ export function Chat({
     }
 
     const recompute = () => {
-      const threshold = feed.getBoundingClientRect().top + PIN_BAR_CLEARANCE
+      const feedTop = feed.getBoundingClientRect().top
       let active: number | undefined
       for (const { id, node } of nodes) {
-        if (node.getBoundingClientRect().top < threshold) active = id
+        const top = node.getBoundingClientRect().top - feedTop
+        // A message resting closer to the feed's top than the bar is tall
+        // (the opening request, with only the feed's padding above it) sits
+        // "under the bar" even fully scrolled up, so it would never count as
+        // back in view. Its line sits halfway to where it rests instead: at
+        // the top of the feed it is plainly on screen and the bar leaves.
+        const rest = top + feed.scrollTop
+        if (top < Math.min(PIN_BAR_CLEARANCE, rest / 2)) active = id
       }
       setPinnedId(active)
     }
