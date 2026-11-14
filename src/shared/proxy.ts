@@ -52,10 +52,6 @@ export interface DomainPolicy {
 /** The policy's entries, in the one reading the UI and the proxy share. */
 export const explicitAllows = (policy?: DomainPolicy): string[] => policy?.allow ?? []
 
-/** Does this policy name destinations — i.e. is it rule 2 rather than rule 1?
- *  The whole of "effective behaviour", derived from the list and nothing else. */
-export const isAllowlisted = (policy?: DomainPolicy): boolean => explicitAllows(policy).length > 0
-
 /** The session's network settings, as the proxy sees them. `internal` is
  *  informational here — it is the *daemon* that enforces it, by giving the
  *  session network no route out; the proxy records it so a log reader can tell
@@ -117,14 +113,6 @@ export const proxyBaseUrl = (host: string = PROXY_ALIAS, port: number = PROXY_PO
  *  could send anywhere else. base64url is URL-safe, so no escaping. */
 export const proxyMcpUrl = (token: string, id: string, base: string = proxyBaseUrl()): string =>
   `${base}/mcp/${encodeURIComponent(token)}/${encodeURIComponent(id)}`
-
-/** The default policy: an empty allow list, which is rule 1 — everything
- *  outward permitted and recorded (§6.3). You cannot write an allow list for a
- *  toolchain you have not watched yet.
- *
- *  "Everything" is everything *outward*: the built-in denylist (§6.4) is under
- *  rule 1 and is not part of what the user edits. */
-export const DEFAULT_DOMAIN_POLICY: DomainPolicy = { allow: [] }
 
 /**
  * The rule name the proxy logs when the built-in denylist refused an attempt —
