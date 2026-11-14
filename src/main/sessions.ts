@@ -401,6 +401,11 @@ interface Session {
   recovering?: boolean | undefined
   recoveryStarting?: boolean | undefined
   promptRunning?: boolean | undefined
+  /** The first turn ended without `complete` and its nudge turn is about to be
+   *  sent: `busy` is false in that window, but the session is not idle — nothing
+   *  may reap, stop or hand off its container. Set before the non-final
+   *  `session.turn ended` emit, cleared at the next turn's end. */
+  nudgePending?: boolean | undefined
   /** Prompts accepted while the session could not run them, oldest first — a
    *  turn was in flight, or its clone was somebody else's. Drained by
    *  {@link SessionManager.drainPending}. Persisted across restarts; see
@@ -2062,7 +2067,7 @@ export class SessionManager {
     for (const o of this.sessions.values()) {
       // A queued holder is the scheduler's business, not the reaper's: it owns
       // a container it is about to start into.
-      if (o.info.state === 'queued' || o.info.state === 'starting' || o.busy) continue
+      if (o.info.state === 'queued' || o.info.state === 'starting' || o.busy || o.nudgePending) continue
       // The loop's executor keeps its container up for the check and the next
       // turn (docs/requirements-review-loop.md §5.5) — a handoff would stop it.
       if (this.loopHolds.has(o.info.id)) continue
@@ -2994,16 +2999,19 @@ export class SessionManager {
       outcome = this.withLimit(s, { threw: true }, detail, firstEntry)
       return outcome
     } finally {
+      // Decided and published before `busy` drops: the persist below yields, and
+      // a queue event in that gap must already see the session as awaiting its
+      // nudge. False only for the nudge turn's own boundary — the healing
+      // follow-up runPrompt is about to send, not the user-visible end of the
+      // turn. See the `final` field on `session.turn` in shared/events.ts.
+      const final = this.decideTurn(s, outcome, isNudge) !== 'nudge'
+      s.nudgePending = !final
       s.busy = false
       s.interrupted = false
       await this.persistNow(s)
       this.bus.emit('session.changed', { sessionId: s.info.id })
       this.schedulePersist(s.ref)
       this.reportTurn(s, startedAt, outcome, detail)
-      // False only for the nudge turn's own boundary — the healing follow-up
-      // runPrompt is about to send, not the user-visible end of the turn. See
-      // the `final` field on `session.turn` in shared/events.ts.
-      const final = this.decideTurn(s, outcome, isNudge) !== 'nudge'
       this.bus.emit('session.turn', { sessionId: s.info.id, ref: s.ref, phase: 'ended', final })
     }
   }
@@ -3185,6 +3193,7 @@ export class SessionManager {
       }
       how = turnHow(second, incomplete)
     } finally {
+      s.nudgePending = false
       // An ordinary session drops `promptRunning` right here, with no write and
       // no event in between, exactly as before the loop (it is the update
       // deferral's and the drain's gate); only a loop session pays for the
@@ -3645,7 +3654,7 @@ export class SessionManager {
   isSessionIdle(sessionId: string): boolean {
     const s = this.sessions.get(sessionId)
     if (!s) return false
-    return !s.busy && s.info.state !== 'starting'
+    return !s.busy && !s.nudgePending && s.info.state !== 'starting'
   }
 
   /** Ping from the UI (e.g. typing in the composer) — postpones a pending auto-stop. */

@@ -228,3 +228,76 @@ test('queueing a prompt reaps the idle holder that is blocking it', async () => 
     'the message waiting on beta stops the idle session sitting on it, at once'
   )
 })
+
+// Between a turn that skipped `complete` and its nudge turn, `busy` is false —
+// but the session is about to run again. Reaping it there kills the nudge
+// turn's adapter a few seconds in. C is the holder and D still waits on beta.
+test('a session awaiting its nudge is not reaped; once the nudge ends it is', () => {
+  const c = kernel.sessions.sessions.get('sc')
+  assert.deepEqual(kernel.sessions.holdersBlockingQueue(), ['sc'], 'idle holder is listed (regression)')
+  const before = stops.length
+  c.nudgePending = true
+  assert.deepEqual(kernel.sessions.holdersBlockingQueue(), [], 'not listed in the nudge window')
+  assert.equal(kernel.sessions.isSessionIdle('sc'), false, 'nor idle')
+  // The first turn's non-final end, as sendTurn emits it: no stop.
+  kernel.bus.emit('session.turn', { sessionId: 'sc', ref: c.ref, phase: 'ended', final: false })
+  assert.equal(stops.length, before, 'no stop requested before the nudge turn has finished')
+  // The nudge turn's own (final) end: sendTurn clears the flag, then emits.
+  c.nudgePending = false
+  kernel.bus.emit('session.turn', { sessionId: 'sc', ref: c.ref, phase: 'ended', final: true })
+  assert.deepEqual(stops.slice(before), [{ id: 'sc', reason: 'queue' }], 'handed off promptly after it')
+})
+
+// The real lifecycle: runPrompt → first turn (no `complete`) → nudge turn, with
+// the first turn's persist held open — the gap where `busy` is already false.
+for (const completes of [false, true]) {
+  test(`no stop between a turn and its nudge; handoff after the nudge (${completes ? 'with' : 'without'} complete)`, async () => {
+    const c = kernel.sessions.sessions.get('sc')
+    const sess = kernel.sessions
+    const origPersist = sess.persistNow
+    const origAttach = sess.attach
+    const seen = []
+    let calls = 0
+    let release
+    let held
+    sess.attach = async () => ({
+      peer: {
+        request: async () => {
+          calls++
+          seen.push(`request${calls}`)
+          if (calls === 2 && completes) c.turnComplete = true
+          if (calls === 2) assert.equal(c.busy, true)
+          return { stopReason: 'end_turn' }
+        }
+      }
+    })
+    sess.persistNow = async () => {
+      if (calls === 1 && !held) {
+        held = new Promise((r) => (release = r))
+        await held // first turn's finally: busy already false here
+      }
+    }
+    const before = stops.length
+    try {
+      const run = sess.runPrompt(c, 'go')
+      while (!held) await new Promise((r) => setTimeout(r, 5))
+      assert.equal(c.busy, false)
+      assert.deepEqual(sess.holdersBlockingQueue(), [], 'not listed while the first turn persists')
+      assert.equal(sess.isSessionIdle('sc'), false)
+      kernel.bus.emit('session.promptQueued', { sessionId: 'sd' })
+      kernel.bus.emit('session.state', { sessionId: 'sd', state: 'queued' })
+      assert.equal(stops.length, before, 'a competing queue event requests no stop')
+      release()
+      await run
+      assert.equal(calls, 2, 'the nudge turn ran')
+      assert.equal(c.nudgePending, false)
+      assert.deepEqual(sess.holdersBlockingQueue(), ['sc'], 'listed again once the nudge is done')
+      assert.deepEqual(stops.slice(before), [{ id: 'sc', reason: 'queue' }], 'handoff after the nudge turn')
+    } finally {
+      sess.persistNow = origPersist
+      sess.attach = origAttach
+      c.turnComplete = false
+      c.info.incomplete = undefined
+    }
+  })
+}
