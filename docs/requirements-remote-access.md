@@ -169,6 +169,10 @@ Each Gurt install has an Ed25519 *relay identity* key, separate from its
 Noise key. `hostId` = base32 of the first 20 bytes of SHA-256 of the
 public key. To register, the relay sends a random challenge and Gurt signs
 it; the relay checks the signature against the claimed id.
+The key is made the first time remote access starts and kept in the
+credential store as a `remote-identity` entry, listed in Settings →
+Credentials; deleting it there gives the install a new host id, and every
+paired device has to pair again.
 
 This stops someone else registering the same host id and blackholing the
 user's connections, and it is what authorises a host's push requests (§8.2).

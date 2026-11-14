@@ -35,6 +35,10 @@ node --test packages/remote-protocol/test/*.test.mjs   # also part of `npm test`
 
 Vectors live in `testdata/` (format: `testdata/README.md`); regenerate the
 generated ones with `node packages/remote-protocol/scripts/gen-testdata.mjs`.
+The host-socket frame and REGISTER vectors are the relay's, pinned in
+`testdata/relay/` and checked against a `gurt-relay` checkout with
+`node packages/remote-protocol/scripts/sync-relay-vectors.mjs --check`
+(update instructions in `testdata/README.md`).
 
 ## Publishing
 

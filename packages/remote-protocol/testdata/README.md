@@ -6,73 +6,63 @@ Go relay, Gurt and the app can all run the same cases. Byte strings are
 lowercase hex, without a prefix. Unknown members of any object are to be
 ignored by readers, so a file can grow without breaking an older runner.
 
-`frames.json`, `channel.json` and `pairing.json` are written by
-`scripts/gen-testdata.mjs` and committed; the tests only read them. To change
-a vector, change the script and regenerate: the diff of the JSON is what
-gets reviewed. Fixed keys and nonces make every run produce the same bytes.
+`channel.json` and `pairing.json` are written by `scripts/gen-testdata.mjs` and
+committed; the tests only read them. To change a vector, change the script and
+regenerate: the diff of the JSON is what gets reviewed. Fixed keys and nonces
+make every run produce the same bytes.
 
-## `frames.json` — host-socket frames (§3)
+`relay/` is not generated here; it is the relay's, see the next section.
 
-```json
-{
-  "format": "gurt-frames/1",
-  "description": "…",
-  "vectors": [
-    { "name": "…", "hex": "…", "frame": { … }, "canonical": true, "note": "…" },
-    { "name": "…", "hex": "…", "error": "bad-length" }
-  ]
-}
+## `relay/` — the relay's vectors, host-socket frames (§3) and REGISTER (§2, §3.2)
+
+The host-socket frame codec has two implementations, the relay's (Go) and
+`src/frames.ts`, and one set of vectors, the relay's. `relay/` is a **pinned
+copy** of `gurt-relay/testdata/`:
+
+| File | |
+|---|---|
+| `relay/frames.json` | every frame type, valid and invalid (format 1) |
+| `relay/register.json` | the REGISTER signature and the `hostId` derivation |
+| `relay/README.md` | the format, unchanged from the relay |
+| `relay/SHA256SUMS` | `sha256sum` of the three files, written by the update script |
+
+The format is the relay's `testdata/README.md`; read it there (the copy is
+`relay/README.md`). `test/relay-vectors.test.mjs` runs `frames.ts` and
+`register.ts` over every case: a valid case decodes to its `frame` and, with
+`roundtrip: true`, encodes back to the same bytes; an invalid case is refused
+with the matching error. The relay's identifiers map one to one to this codec's
+`FrameError` codes:
+
+| Relay | `short` | `unknown-type` | `stream` | `length` | `too-large` | `reason` | `code` | `json` |
+|---|---|---|---|---|---|---|---|---|
+| `src/frames.ts` | `truncated` | `unknown-type` | `bad-stream` | `bad-length` | `too-large` | `bad-reason` | `bad-code` | `bad-push` |
+
+The relay's `too-many-tokens` is the one difference: `decodeFrame` returns the
+33-token `PUSH_SET` (the sender or a fake relay applies `MAX_PUSH_TOKENS`), and
+the test checks the count on the decoded tokens.
+
+A case the codec fails is a finding, not something to fix in the test: decide
+from the protocol which side is wrong, fix that codec, and if the protocol
+does not say, add an entry to `gurt-relay/docs/NOTES-for-gurt.md`. New cases go
+in the relay's generator (`go run ./internal/vectors/gen`), so that the Go
+codec runs them too — do not add Gurt-only frame vectors.
+
+### Keeping the copy current
+
+The copy must never be edited by hand. When `gurt-relay/testdata/` changes:
+
+```sh
+node packages/remote-protocol/scripts/sync-relay-vectors.mjs --update ../gurt-relay
+node packages/remote-protocol/scripts/sync-relay-vectors.mjs --check  ../gurt-relay
+node --test packages/remote-protocol/test/relay-vectors.test.mjs
 ```
 
-Each vector has `name`, `hex` (one whole WebSocket message) and exactly one
-of:
-
-- **`frame`** — the hex decodes, to this. `canonical: true` additionally
-  means encoding `frame` gives exactly `hex` back; `false` marks inputs a
-  decoder must accept but an encoder never writes (extra whitespace, unknown
-  members, keys out of order).
-- **`error`** — the hex must be refused, with this code.
-
-`note` is optional and informational.
-
-### Decoded form
-
-Always `type` (the §3.1 name, e.g. `"PUSH_SET"`) and `stream` (a number),
-plus per type:
-
-| `type` | Members |
-|---|---|
-| `HELLO` | `version` (number), `challenge` (hex, 32 bytes) |
-| `REGISTER` | `version`, `pubkey` (hex, 32), `sig` (hex, 64) |
-| `READY`, `OPEN` | — |
-| `DATA` | `data` (hex, may be empty) |
-| `CLOSE` | `reason` (number) |
-| `PUSH_ERR` | `code` (number) |
-| `PUSH_SET`, `PUSH`, `PUSH_GONE` | `json`: the payload as the decoder understood it — only the members §3.5 defines, optional ones present only when set |
-
-A canonical JSON payload is `JSON.stringify` of the members in the order §3.5
-lists them (`tokens` → `d`, `p`, `t`; `t`, `s`, `w`, `p`; `d`), with no
-whitespace.
-
-### Error codes
-
-Checked in this order; a vector has one fault, so the order only matters to
-an implementation that wants to match messages as well as codes.
-
-| Code | When |
-|---|---|
-| `truncated` | fewer than 5 bytes |
-| `unknown-type` | a type byte not in §3.1 |
-| `bad-stream` | `HELLO`, `REGISTER`, `READY` or a push frame on a stream other than 0; `OPEN`, `DATA` or `CLOSE` on stream 0 |
-| `bad-length` | a fixed-size payload of another size (`HELLO` 34, `REGISTER` 98, `CLOSE` 2, `PUSH_ERR` 2), or any payload on `READY` / `OPEN` |
-| `too-large` | `DATA` over 65 536 bytes |
-| `bad-reason` | a `CLOSE` reason outside 0–6 |
-| `bad-code` | a `PUSH_ERR` code outside 1–4 |
-| `bad-push` | a push payload that is not UTF-8 JSON of an object of the §3.5 shape: missing or mistyped members, empty `d` / `t` / `s`, a `p` platform other than `apns` / `fcm`, a `t` that is not a notification type, a `w` that is not a boolean, a `p` (in `PUSH`) that is not base64url |
-
-`bad-push` is the relay's `PUSH_ERR 1` (malformed); every other code is a
-protocol error, WebSocket close `4400`. Well-formed but refused (33 tokens,
-`PUSH_ERR 2`) is not a codec error and decodes normally.
+and commit `testdata/relay/` with whatever `frames.ts` needed. The test suite
+checks the copy twice: against `relay/SHA256SUMS` always (so a hand-edited copy
+fails), and against a gurt-relay checkout when one sits next to this repository
+or `GURT_RELAY_DIR` points at one (so a copy that fell behind fails; the check
+is skipped, and reported as skipped, without a checkout). CI should have the
+relay checked out and run `--check`.
 
 ## `channel.json` — the Noise channel (§6)
 

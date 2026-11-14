@@ -64,6 +64,9 @@ export interface StreamHandler {
 export interface RelayClientOptions {
   /** Relay base URL, `wss://…`; the client connects to `<url>/v1/host`. */
   relayUrl: string
+  /** Explicit transport endpoint for integration tests (e.g. loopback ws://).
+   *  Not a user setting; startRemoteAccess never supplies this override. */
+  hostSocketUrl?: string
   identity: HostIdentity
   socketFactory?: SocketFactory
   streams?: StreamHandler
@@ -198,7 +201,7 @@ export class RelayClient {
     this.setState({ state: 'connecting', attempt: this.attempt })
     let sock: RelaySocket
     try {
-      sock = this.factory(hostSocketUrl(this.opts.relayUrl))
+      sock = this.factory(this.opts.hostSocketUrl ?? hostSocketUrl(this.opts.relayUrl))
     } catch (e) {
       this.retry(e instanceof Error ? e.message : 'connect failed')
       return

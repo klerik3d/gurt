@@ -31,7 +31,9 @@ await bundle({
       export * from ${S('packages/remote-protocol/src/index.ts')}
       export { RelayClient, backoffDelay, hostSocketUrl } from ${S('src/main/remote/relayClient.ts')}
       export { startRemoteAccess } from ${S('src/main/remote/index.ts')}
-      export { loadOrCreateIdentity } from ${S('src/main/remote/identity.ts')}
+      export { loadOrCreateIdentity, RELAY_IDENTITY_ID } from ${S('src/main/remote/identity.ts')}
+      export { listCredentials, getCredentials } from ${S('src/main/credentials.ts')}
+      export { isGitKind } from ${S('src/shared/credentials.ts')}
       export { sendExternal } from ${S('src/main/notify-external.ts')}
       export { getRemoteSettings, setRemoteSettings } from ${S('src/main/store.ts')}
       export { normalizeRemoteSettings, REMOTE_DEFAULTS } from ${S('src/shared/remote.ts')}
@@ -97,7 +99,11 @@ test('off by default: nothing is constructed, nothing connects, no key is made',
   })
   assert.equal(r, undefined)
   assert.equal(dialled + keyed, 0)
-  assert.equal(fs.existsSync(path.join(GURT_ROOT, 'remote')), false, 'no identity file either')
+  assert.deepEqual(
+    (await m.listCredentials()).filter((c) => c.kind === 'remote-identity'),
+    [],
+    'no key in the credential store either'
+  )
 
   const noUrl = await m.startRemoteAccess({
     settings: { enabled: true, relayUrl: '', keepAwake: true },
@@ -362,18 +368,31 @@ test('streams: open, data both ways, close from either side, going away', async 
 
 // ---------------------------------------------------------------- identity
 
-test('identity: made once, 0600, the same host id after a reload', async () => {
+test('identity: a credential made once, sealed like one, the same host id after a reload', async () => {
   const a = await m.loadOrCreateIdentity()
-  const file = path.join(GURT_ROOT, 'remote', 'identity.json')
-  assert.equal(fs.statSync(file).mode & 0o777, 0o600)
-  assert.equal(fs.statSync(path.dirname(file)).mode & 0o777, 0o700)
   const b = await m.loadOrCreateIdentity()
   assert.equal(b.hostId, a.hostId)
   assert.match(a.hostId, m.HOST_ID_RE)
   assert.ok(m.verifyRegister(b.publicKey, new Uint8Array(32), m.signRegister(b.secretKey, new Uint8Array(32))))
-  // Damaged: an error, never a silent new host id.
-  fs.writeFileSync(file, '{"v":1,"relayIdentity":{"sealed":"AAAA"}}')
+
+  const entries = (await m.listCredentials()).filter((c) => c.kind === 'remote-identity')
+  assert.equal(entries.length, 1, 'one entry, not one per load')
+  assert.equal(entries[0].id, m.RELAY_IDENTITY_ID)
+  assert.equal(m.isGitKind('remote-identity'), false, 'never auto-matched to a git host')
+  const masked = (await m.getCredentials()).credentials.find((c) => c.id === m.RELAY_IDENTITY_ID)
+  assert.notEqual(masked.data.secret, entries[0].data.secret, 'the renderer sees a mask, not the key')
+
+  // Unreadable or damaged: an error, never a silent new host id.
+  const file = path.join(GURT_ROOT, 'credentials.json')
+  const onDisk = JSON.parse(fs.readFileSync(file, 'utf8'))
+  const mine = onDisk.credentials.find((c) => c.id === m.RELAY_IDENTITY_ID)
+  delete mine.data.secret
+  mine.sealed = { secret: 'AAAA' } // ciphertext this process cannot open
+  fs.writeFileSync(file, JSON.stringify(onDisk))
   await assert.rejects(m.loadOrCreateIdentity(), /cannot be unsealed/)
-  fs.writeFileSync(file, 'not json')
+  delete mine.sealed
+  mine.data.secret = 'AAAA'
+  fs.writeFileSync(file, JSON.stringify(onDisk))
   await assert.rejects(m.loadOrCreateIdentity(), /damaged/)
+  assert.equal((await m.listCredentials()).filter((c) => c.kind === 'remote-identity').length, 1, 'and no second key was made')
 })

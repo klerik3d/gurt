@@ -34,7 +34,7 @@ export function createFakeRelay(p, opts = {}) {
     /** The client side's socket factory. */
     factory: (url) => {
       relay.urls.push(url)
-      return connect(url).client
+      return new URL(url).pathname === "/v1/client" ? connectApp(url) : connect(url).client
     },
     /** A relay restart: every socket drops, all memory is gone. */
     restart(code = 1012) {
@@ -48,6 +48,41 @@ export function createFakeRelay(p, opts = {}) {
     }
   }
 
+  const apps = new Map()
+  function connectApp(url) {
+    const host = relay.hosts.get(new URL(url).searchParams.get('host'))
+    let stream
+    const app = {
+      binaryType: 'arraybuffer', readyState: 0,
+      onopen: null, onmessage: null, onclose: null, onerror: null,
+      send(data) {
+        if (app.readyState !== OPEN) throw new Error('socket not open')
+        if (typeof data === 'string') return end(4400)
+        if (data.byteLength > 65536) return end(4413)
+        host.send({ type: 'DATA', stream, data: Uint8Array.from(data) })
+      },
+      close() {
+        if (app.readyState === CLOSED) return
+        end(1000)
+        if (stream) { host.streams.delete(stream); host.send({ type: 'CLOSE', stream, reason: 0 }) }
+      }
+    }
+    function end(code) {
+      if (app.readyState === CLOSED) return
+      app.readyState = CLOSED
+      apps.delete(stream)
+      void tick().then(() => app.onclose?.({ code }))
+    }
+    void tick().then(() => {
+      if (!host?.open) return end(4404)
+      if (app.readyState === CLOSED) return
+      stream = host.openStream()
+      apps.set(stream, { host, app, end })
+      app.readyState = OPEN
+      app.onopen?.({})
+    })
+    return app
+  }
   let nextStream = 1
 
   function connect(url) {
@@ -151,6 +186,12 @@ export function createFakeRelay(p, opts = {}) {
           case 'DATA':
           case 'CLOSE':
             if (f.type === 'CLOSE') conn.streams.delete(f.stream)
+            { const target = apps.get(f.stream)
+              if (target?.host === conn) {
+                if (f.type === 'CLOSE') target.end(4000 + f.reason)
+                else { const data = Uint8Array.from(f.data).buffer; void tick().then(() => target.app.onmessage?.({ data })) }
+              }
+            }
             return
           default:
             return conn.close(4400, `${f.type} from a host`)
@@ -170,6 +211,7 @@ export function createFakeRelay(p, opts = {}) {
 
   /** A host socket went away: its registration and its tokens with it (§3.2). */
   relay.dropHost = (conn) => {
+    for (const target of apps.values()) if (target.host === conn) target.end(4503)
     if (conn.hostId && relay.hosts.get(conn.hostId) === conn) {
       relay.hosts.delete(conn.hostId)
       relay.tokens.delete(conn.hostId)

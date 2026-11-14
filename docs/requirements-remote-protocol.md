@@ -535,7 +535,7 @@ answers anything.
 | Party | Persistent state |
 |---|---|
 | Relay | nothing on disk. In memory: registered host sockets and, per host, the last `PUSH_SET` token set |
-| Gurt | relay-identity Ed25519 key and Noise static key (sealed with `safeStorage` like credential secrets, in `~/.gurt/remote/identity.json`, 0600); the device list `{deviceId, name, publicKey, pairedAt, lastSeen, push?}`; the relay URL |
+| Gurt | relay-identity Ed25519 key and Noise static key (in the credential store, `safeStorage`, as `remote-identity` entries); the device list `{deviceId, name, publicKey, pairedAt, lastSeen, push?}`; the relay URL |
 | App | per host, in secure storage: `{hostId, hostKey, relayUrl, name, deviceKey}`; the push token is not stored (the OS owns it and the app re-sends it each connection); the `lastSeq` map is in memory only |
 
 Revoking a device deletes its entry and its token. "Revoke all" also
