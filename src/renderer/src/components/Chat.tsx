@@ -24,7 +24,7 @@ import { agentKind, agentName, useAgents } from '../useAgents'
 import { useMcpEntries, useMcpFailures } from '../useMcp'
 import { usePiiEntries, usePiiPlan, usePiiStatus, usePiiView, type PiiView } from '../usePii'
 import { resolveMcpSelection } from '../../../shared/mcp'
-import { alertDialog } from '../dialog'
+import { alertDialog, confirmDialog } from '../dialog'
 import { createLogger, logErr } from '../log'
 import { SESSION_DOT } from '../status'
 import { Icon, Dot, InfoDot } from './icons'
@@ -378,6 +378,32 @@ export function Chat({
         ? null
         : 'thinking…'
 
+  // Rewind needs an agent that is idle: the turn in flight, a queued message or
+  // an unanswered permission would each be cut off mid-sentence.
+  const canRewind = info.state === 'started' && !busy && !pendingCount && !info.awaitingInput
+  const rewindTo = async (entryId: number) => {
+    if (
+      !(await confirmDialog(
+        'Rewind to before this message? It and everything after it are removed from the conversation, and the agent forgets them too. Writable clones are restored to before this prompt when checkpoints are available. Current edits will be replaced; a safety checkpoint is saved for manual recovery. Old messages without checkpoints rewind only the conversation. Packages, databases, network effects and files outside the clones cannot be reverted. The message comes back in the composer.',
+        { title: 'Rewind conversation', confirmText: 'Rewind', danger: true }
+      ))
+    )
+      return
+    try {
+      const { text } = await window.gurt.sessionRewind(sessionId, entryId)
+      setRestore({ text, context: [], at: Date.now() })
+    } catch (e) {
+      await alertDialog(e instanceof Error ? e.message : String(e))
+    }
+  }
+  const branchAt = async (entryId: number) => {
+    try {
+      onSelect((await window.gurt.sessionBranch(sessionId, entryId)).id)
+    } catch (e) {
+      await alertDialog(e instanceof Error ? e.message : String(e))
+    }
+  }
+
   // The wait indicator is one more icon on the tail strip (a strip of its own
   // when the tail is a text) rather than a row that comes and goes.
   const blocks = feedBlocks(entries.filter((e) => !isCompleteEcho(e)))
@@ -481,7 +507,13 @@ export function Chat({
                       />
                     </div>
                   ) : (
-                    <Msg key={b.entry.id} entry={b.entry} sessionId={sessionId} />
+                    <Msg
+                      key={b.entry.id}
+                      entry={b.entry}
+                      sessionId={sessionId}
+                      {...(canRewind ? { onRewind: (id: number) => void rewindTo(id) } : {})}
+                      onBranch={(id) => void branchAt(id)}
+                    />
                   )
                 )}
               </div>
@@ -757,11 +789,17 @@ function LoopNoteMsg({ entry, note }: { entry: ChatEntry & { kind: 'system' }; n
 function Msg({
   entry,
   sessionId,
-  readOnly = false
+  readOnly = false,
+  onRewind,
+  onBranch
 }: {
   entry: ChatEntry
   sessionId: string
   readOnly?: boolean
+  /** Offered on a user message while the session can be rewound. */
+  onRewind?: (entryId: number) => void
+  /** Offered on a user message: a new draft carrying the conversation before it. */
+  onBranch?: (entryId: number) => void
 }) {
   switch (entry.kind) {
     case 'user':
@@ -771,6 +809,28 @@ function Msg({
           <span className="msg-dot msg-dot-user" />
           <div className="msg-you seclabel">YOU</div>
           <div className="msg-text user">{entry.text}</div>
+          {!readOnly && (onRewind || onBranch) && (
+            <div className="msg-actions">
+              {onRewind && (
+                <button
+                  className="msg-action"
+                  title="remove this message and everything after it, and let the agent forget them"
+                  onClick={() => onRewind(entry.id)}
+                >
+                  Rewind
+                </button>
+              )}
+              {onBranch && (
+                <button
+                  className="msg-action"
+                  title="start a new draft from the conversation before this message"
+                  onClick={() => onBranch(entry.id)}
+                >
+                  Branch
+                </button>
+              )}
+            </div>
+          )}
         </div>
       )
     case 'agent':

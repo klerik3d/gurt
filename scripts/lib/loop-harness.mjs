@@ -13,6 +13,7 @@ import { pathToFileURL, fileURLToPath } from 'node:url'
 import path from 'node:path'
 import os from 'node:os'
 import fs from 'node:fs'
+import { execFileSync } from 'node:child_process'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 
@@ -59,6 +60,11 @@ export async function loopHarness(name, opts = {}) {
       }
     )
   )
+  // Every user prompt first snapshots the session's write clones (rewind
+  // checkpoints, docs/requirements-session-log.md); a missing clone fails the
+  // turn. Each repo gets an empty clone in the default task.
+  for (const { name: repo } of JSON.parse(fs.readFileSync(path.join(GURT_ROOT, ws, 'workspace.json'), 'utf8')).repos ?? [])
+    execFileSync('git', ['init', '-q', path.join(GURT_ROOT, ws, task, repo)], { stdio: 'ignore' })
   if (opts.credentials)
     fs.writeFileSync(path.join(GURT_ROOT, 'credentials.json'), JSON.stringify({ version: 2, credentials: opts.credentials }))
   fs.writeFileSync(path.join(GURT_ROOT, ws, task, 'task.json'), JSON.stringify({}))

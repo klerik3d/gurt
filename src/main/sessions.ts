@@ -1,3 +1,4 @@
+import { checkpointRef, sessionCheckpoints } from './checkpoints'
 import { randomUUID } from 'node:crypto'
 import type {
   AcpHttpMcpServer,
@@ -49,6 +50,7 @@ import {
   spawnableRoles,
   writeRepos
 } from '../shared/types'
+import { branchPrompt, rewindPreface } from '../shared/transcript'
 import { defaultAgentConfig } from '../shared/agentConfig'
 import type { AgentManifest } from '../shared/agentPlugin'
 import {
@@ -89,6 +91,7 @@ import {
   PERMISSION_REQUEST,
   PLAN_UPDATE,
   PROMPT_RESULT,
+  SESSION_FORK_RESULT,
   SESSION_LOAD_RESULT,
   SESSION_NEW_RESULT,
   SESSION_UPDATE,
@@ -286,6 +289,8 @@ interface Connection {
    *  (agent-level). Unset until `initialize` answers, and an agent may report
    *  none at all. */
   promptCapabilities?: PromptCapabilities | undefined
+  /** The adapter can `session/fork` (`sessionCapabilities.fork` in `initialize`). */
+  canFork?: boolean | undefined
   kill: () => void
   /** The `fs/*` + `terminal/*` handlers, for a session that masks. Their
    *  processes die with the connection. */
@@ -380,6 +385,9 @@ interface Session {
   info: SessionInfo
   ref: EnvRef
   acpSessionId?: string | undefined
+  /** Conversation to hand the agent ahead of the next prompt — set by a rewind
+   *  the adapter could not fork natively. Persisted until that prompt is sent. */
+  preface?: string | undefined
   /** The append-only log; the timeline below is its fold. */
   records: SessionLogRecord[]
   /** seq of the last appended record (monotonic from 1 per session). */
@@ -929,6 +937,7 @@ export class SessionManager {
         info: r.info,
         ref: { workspace: r.info.workspace, task: r.info.task, env: r.info.env },
         acpSessionId: r.acpSessionId,
+        preface: r.preface,
         proposal: r.proposal,
         records: r.log,
         lastSeq,
@@ -1703,6 +1712,147 @@ export class SessionManager {
     return info
   }
 
+  /**
+   * Rewind a started session to just before one of the user's messages: that
+   * message and everything after it leave the timeline (a `truncate` record —
+   * the log itself stays append-only), and the message's text is handed back so
+   * the composer can offer it for editing.
+   *
+   * The agent has to forget too, or the chat would show a conversation the
+   * agent is not having. An adapter that can `session/fork` does it natively:
+   * it forks its own session at the last agent message that is kept, and this
+   * session carries on in the fork. Anything else — an adapter without fork, or
+   * a fork point it does not know — gets a fresh `session/new` and the kept
+   * conversation as text ahead of the next prompt (`preface`).
+   *
+   * Writable clones are restored from pre-prompt snapshots when available.
+   */
+  async rewindSession(sessionId: string, entryId: number): Promise<{ text: string }> {
+    this.assertSessionWritable(sessionId)
+    const s = this.sessions.get(sessionId)
+    if (!s) throw new Error('unknown session')
+    if (s.info.state !== 'started') throw new Error('only a started session can be rewound')
+    if (s.busy || s.promptRunning || s.draining || s.pending.length || s.pendingPermissions.size)
+      throw new Error('stop the current turn and clear the queued messages first')
+    if (writeRepos(s.info).length && (!this.isActive(s) || this.repoHolder(s)))
+      throw new Error('Rewind requires this session to hold its writable clones; resume it after the current holder releases them')
+    const target = s.entries.find((e) => e.id === entryId)
+    if (!target || target.kind !== 'user') throw new Error('a session can only be rewound to a message of yours')
+    const kept = s.entries.filter((e) => e.id < entryId)
+    const lastAgent = [...kept].reverse().find((e) => e.kind === 'agent')
+    const hasSpeech = kept.some((e) => e.kind === 'user' || e.kind === 'agent')
+
+    let filesRestored = false
+    let fileNotice = ''
+    this.bus.emit('session.activity', { sessionId })
+    s.draining = true // nothing may start a turn while the agent side is swapped
+    try {
+      const conn = await this.attach(s)
+      const ctx = await this.events.resolveLaunch(s.info.id)
+      const mcpServers = await this.attachMcp(s, ctx)
+      const meta = this.startMeta(ctx.agent, s.info.configValues)
+      const open = { timeoutMs: ACP_REQUEST_TIMEOUT_MS }
+      let result: { sessionId: string; modes?: unknown; configOptions?: unknown } | undefined
+      let preface: string | undefined
+      const messageId = lastAgent?.kind === 'agent' ? lastAgent.acpMessageId : undefined
+      if (conn.canFork && messageId && s.acpSessionId) {
+        try {
+          result = await conn.peer.request(
+            'session/fork',
+            {
+              sessionId: s.acpSessionId,
+              cwd: ctx.remoteWorkspaceFolder,
+              mcpServers,
+              _meta: { ...(meta ?? {}), jetbrains: { air: { fork: { version: 1, messageId } } } }
+            },
+            SESSION_FORK_RESULT,
+            open
+          )
+        } catch (e) {
+          log.warn('session.rewind.fork-failed', { s: sessionId, err: e })
+        }
+      }
+      if (!result) {
+        result = await conn.peer.request(
+          'session/new',
+          { cwd: ctx.remoteWorkspaceFolder, mcpServers, ...(meta ? { _meta: meta } : {}) },
+          SESSION_NEW_RESULT,
+          open
+        )
+        if (hasSpeech) preface = rewindPreface(kept)
+      }
+      s.acpSessionId = result.sessionId
+      s.preface = preface
+      s.modes = normalizeModes(result.modes) ?? s.modes
+      s.configOptions = normalizeConfigOptions(result.configOptions, ctx.agent.id) ?? s.configOptions
+      s.attached = true
+      await this.applyStartConfig(s, conn)
+      await this.applyAutoAllow(s, conn)
+      const safetyRef = checkpointRef(sessionId, `pre-rewind-${Date.now()}`)
+      try {
+        const repos = await sessionCheckpoints(s.info)
+        const targets = await Promise.all(repos.map((r) => r.resolve(checkpointRef(sessionId, entryId))))
+        // All backups must be durable before touching any clone.
+        const backups = await Promise.all(repos.map((r) => r.snapshot(safetyRef)))
+        fileNotice = repos.length ? `Safety checkpoint saved in each writable clone: ${safetyRef}. ` : ''
+        for (let i = 0; i < repos.length; i++) {
+          try { await repos[i]!.restore(targets[i]!, backups[i]!) }
+          catch (e) { throw new Error(`${repos[i]!.dir}: ${e instanceof Error ? e.message : String(e)}`, { cause: e }) }
+          fileNotice += `Restored ${repos[i]!.dir}. `
+        }
+        filesRestored = repos.length > 0
+        fileNotice += filesRestored ? 'Working trees restored. External effects (packages, databases, network and files outside the clones) are not reverted.' : 'No writable repositories.'
+      } catch (e) {
+        fileNotice += `Files in the working tree were NOT reverted completely; inspect each clone. ${e instanceof Error ? e.message : String(e)}. Any saved safety checkpoints remain under ${safetyRef}.`
+      }
+      if (preface) s.preface = rewindPreface(kept, filesRestored)
+      this.append(s, { type: 'truncate', afterId: entryId - 1 })
+      this.push(s, { kind: 'system', text: fileNotice })
+      try {
+        for (const repo of await sessionCheckpoints(s.info)) await repo.prune(sessionId, entryId)
+      } catch (e) { log.warn('checkpoint.prune.failed', { err: e }) }
+    } finally {
+      s.draining = false
+    }
+
+    s.plan = undefined
+    s.proposal = undefined
+    s.info.incomplete = undefined
+    this.cacheAgentConfig(s)
+    this.bus.emit('session.changed', { sessionId })
+    this.schedulePersist(s.ref)
+    log.info('session.rewound', { s: sessionId, to: entryId, native: !s.preface })
+    return { text: this.maskEnabled() ? this.mask.decode(sessionId, target.text) : target.text }
+  }
+
+  /**
+   * Branch a session at one of the user's messages: a new **draft** of the same
+   * task whose first prompt carries the conversation up to that message (the
+   * message itself is the tail, ready to edit). The original is untouched.
+   *
+   * A transcript rather than a native fork on purpose: an adapter's own history
+   * lives in a per-session directory no other session may read
+   * (docs/requirements-agent-history.md §2), so a fork cannot cross sessions.
+   */
+  branchSession(sessionId: string, entryId: number): SessionInfo {
+    const source = this.sessions.get(sessionId)
+    if (!source) throw new Error('unknown session')
+    const target = source.entries.find((e) => e.id === entryId)
+    if (!target || target.kind !== 'user') throw new Error('a session can only be branched at a message of yours')
+    const info = this.draftFrom(source.info)
+    this.renameSession(info.id, `${source.info.title} (branch)`)
+    const draft = this.sessions.get(info.id)!
+    const text = this.maskEnabled() ? this.mask.decode(sessionId, target.text) : target.text
+    const history = source.entries
+      .filter((e) => e.id < entryId)
+      .map((e) => (this.maskEnabled() && 'text' in e ? { ...e, text: this.mask.decode(sessionId, e.text) } : e))
+    draft.info.startPrompt = branchPrompt(history) + text
+    this.bus.emit('session.changed', { sessionId: info.id })
+    this.schedulePersist(draft.ref)
+    log.info('session.branched', { s: info.id, from: sessionId, at: entryId })
+    return draft.info
+  }
+
   /** A fresh draft of the same task carrying everything the user configured on
    *  `source`, and nothing runtime-derived (see {@link duplicateSession}). */
   private draftFrom(source: SessionInfo): SessionInfo {
@@ -1741,6 +1891,10 @@ export class SessionManager {
    * the clone and the uncommitted work in it deliberately stay, since a clone
    * outlives every session of its task.
    */
+  private async clearCheckpoints(s: Session): Promise<void> {
+    for (const repo of await sessionCheckpoints(s.info, true)) await repo.prune(s.info.id)
+  }
+
   deleteSession(sessionId: string): void {
     this.assertSessionWritable(sessionId)
     const s = this.sessions.get(sessionId)
@@ -1757,6 +1911,7 @@ export class SessionManager {
       // Only once the container is gone: its bind mounts are staged inside that
       // directory, so removing it any earlier races the daemon.
       .then(() => this.events.deleteScratch(workspace, task, sessionId))
+    void this.clearCheckpoints(s).catch((err: unknown) => log.warn('checkpoint.cleanup.failed', { err }))
     this.sessions.delete(sessionId)
     // Its correspondence table goes with it — the tokens it produced end here.
     this.mask.drop(sessionId)
@@ -2362,6 +2517,7 @@ export class SessionManager {
       return {
         info,
         acpSessionId: s.acpSessionId,
+        preface: s.preface,
         proposal: s.proposal,
         ...(s.lastSettled ? { lastSettled: structuredClone(s.lastSettled) } : {}),
         ...(s.loopRan ? { loopRan: s.loopRan } : {}),
@@ -2436,9 +2592,10 @@ export class SessionManager {
   }
 
   /** Archive retirement preserves the log/history until the archive is verified. */
-  dropArchivedSession(id: string): void {
+  async dropArchivedSession(id: string): Promise<void> {
     const s = this.sessions.get(id)
     if (!s) return
+    await this.clearCheckpoints(s)
     this.detach(id)
     this.events.stopGurtServer(id)
     this.mask.drop(id)
@@ -2766,6 +2923,7 @@ export class SessionManager {
     }
 
     conn.promptCapabilities = init.agentCapabilities?.promptCapabilities
+    conn.canFork = init.agentCapabilities?.sessionCapabilities?.fork != null
     // The session may have been deleted while the adapter was coming up. Its
     // `detach` found no connection to kill (this one did not exist yet), so
     // this process is the one thing that would outlive it — and caching it
@@ -2943,7 +3101,10 @@ export class SessionManager {
         maskError = e instanceof Error ? e : new Error(String(e))
       }
     }
-    this.push(s, loop === undefined ? { kind: entryKind, text: outbound } : { kind: 'system', text: outbound, loop })
+    const promptEntry = this.push(
+      s,
+      loop === undefined ? { kind: entryKind, text: outbound } : { kind: 'system', text: outbound, loop }
+    )
     // Prompt start: the turn is incomplete until `complete` fires; clear any
     // prior violation overlay.
     s.turnComplete = false
@@ -2975,14 +3136,28 @@ export class SessionManager {
     try {
       if (maskError) throw maskError
       const conn = await this.attach(s)
+      // A review-loop host message lands as a `system` entry — not a rewind point.
+      if (promptEntry.kind === 'user') {
+        for (const repo of await sessionCheckpoints(s.info))
+          await repo.snapshot(checkpointRef(s.info.id, promptEntry.id))
+      }
+      const preface = s.preface
       const result = await conn.peer.request(
         'session/prompt',
         {
           sessionId: s.acpSessionId,
-          prompt: this.promptBlocks(s, outbound, context, images)
+          prompt: [
+            ...(preface ? [{ type: 'text', text: preface }] : []),
+            ...this.promptBlocks(s, outbound, context, images)
+          ]
         },
         PROMPT_RESULT
       )
+      // Only once the agent has taken it: a failed send keeps it for the retry.
+      if (preface && s.preface === preface) {
+        s.preface = undefined
+        this.schedulePersist(s.ref)
+      }
       const reason = result.stopReason ?? undefined
       s.lastStopReason = reason
       if (reason && reason !== 'end_turn') {
@@ -4159,10 +4334,13 @@ export class SessionManager {
         // accumulated entry, and the chat view reveals it at render time.
         const text = received
         const last = s.entries[s.entries.length - 1]
-        if (last && last.kind === kind) {
+        const messageId = kind === 'agent' && u?.messageId ? u.messageId : undefined
+        // A new message id starts a new entry, so each entry names exactly one
+        // fork point; chunks without ids (or of one message) still merge.
+        if (last && last.kind === kind && (!messageId || messageId === last.acpMessageId)) {
           this.append(s, { type: 'append', id: last.id, text, at: Date.now() })
         } else {
-          this.push(s, { kind, text })
+          this.push(s, { kind, text, ...(messageId ? { acpMessageId: messageId } : {}) })
         }
         break
       }

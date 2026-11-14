@@ -86,6 +86,16 @@ ignored (forward compatibility). `seq` is monotonic from 1 per session.
   arriving for a session with no snapshot yet are dropped (the snapshot
   fetch that follows selection supersedes them).
 
+## 5a. Rewind (`truncate`)
+
+Rewinding a session to before one of the user's messages appends
+`{ seq, type: 'truncate', afterId }`: the fold drops every entry whose id is
+above `afterId`, and later entries may reuse those ids. The file is still never
+rewritten — the rewound tail stays on disk, and a fold that replays the log
+reaches the same timeline the live session had. `ChatText.acpMessageId` records
+the adapter's id of an agent message; it is the fork point a native
+`session/fork` is given. See `SessionManager.rewindSession` / `branchSession`.
+
 ## 6. Non-goals
 
 - Inter-agent messages, log compaction, cross-session/global logs,
@@ -105,3 +115,63 @@ ignored (forward compatibility). `seq` is monotonic from 1 per session.
    listening on the preload event, or by payload-size logging in dev).
 5. Existing behavior intact: permissions flow, tool status updates,
    stop/cancel, resume after restart.
+
+### Rewind file checkpoints
+
+Before sending each user prompt (including `startSession`'s initial prompt),
+main awaits a snapshot of every `writeRepos(info)` clone. Automatic system
+nudges belong to the preceding user turn and do not replace its snapshot.
+Read-only and read-locked mounts are excluded. A snapshot failure stops the
+prompt before the agent can edit files and appears as a turn error.
+
+Host Git uses the same access resolution, runner and per-clone operation queue
+as Changes. A disposable `GIT_INDEX_FILE`, `read-tree`, `add -A`, `write-tree`
+and `commit-tree` save the working tree, including untracked files, respecting
+Git ignore rules (already tracked files remain tracked). The commit's parent
+is HEAD, or absent for an unborn repository. No branch, HEAD, real index or
+stash is changed. Refs `refs/gurt/checkpoints/<sessionId>/<userEntryId>` keep
+objects reachable; no log fields or record types are added.
+
+Rewind requires the session to be active and hold its clones, with no
+conflicting holder. It first switches the agent session using the existing
+fork/new behavior. Then it resolves **all** target checkpoints and saves
+**all** current trees as `refs/gurt/checkpoints/<sessionId>/pre-rewind-<timestamp>`
+before restoring any repository. Restoration uses a temporary index and a
+checked two-tree update; untracked/ignored collisions and changes since the
+backup are refused. Successful restores leave the real index and HEAD intact,
+so staged differences may no longer match the restored working tree.
+
+Missing checkpoints (including old logs), backup or restore failures still
+allow the conversation rewind. The system line reports the reason, repositories
+already restored, and the safety ref. There is no cross-repository atomic Git
+transaction: a later repository may fail after an earlier one was restored.
+Safety refs remain for manual recovery. The append-only `truncate` and status
+line follow the restoration attempt, while prompt dispatch remains blocked.
+The fallback transcript describes whether restoration succeeded. Agent-session
+creation failure leaves files and the timeline intact. A process crash between
+Git writes and the appended truncate can leave files restored but the old chat;
+the safety refs are the recovery source.
+
+To recover manually, first stop sessions using the clone and inspect the backup
+with `git show <safety-ref>` or `git diff <safety-ref>`. To recover its complete
+file tree without changing the active clone, run
+`git worktree add --detach /path/to/recovery <safety-ref>`, then copy the needed
+files. Ignored files, installed packages, databases, network side effects and
+files outside clones are outside these snapshots.
+
+Retention: keep checkpoints for the surviving timeline; after truncate remove
+numeric refs at and above the removed entry, and keep the ten newest safety
+refs per session. Session deletion removes its refs (cleanup errors are logged);
+individual session archival awaits cleanup. Full scope archival moves the whole
+clone out of the live workspace into the archive, including its refs, so a scope
+restore retains rewind support; deleting the archive removes those refs too.
+Task deletion removes the clones and all their refs. Unreachable objects are
+left for normal Git garbage collection; Gurt does not run aggressive GC.
+
+Snapshot work runs asynchronously on the host but is awaited before prompt
+submission. A local test with 5,000 included and 5,000 ignored small files took
+about 75–80 ms for the snapshot alone. This is not a latency guarantee: large
+nonignored files still cost hashing/storage and delay prompt dispatch. Ignore
+build output and dependency directories. Nested repository/submodule contents
+are not recursively snapshotted (Git records gitlinks); this follows Git tree
+semantics, and external repositories need their own registered writable clone.

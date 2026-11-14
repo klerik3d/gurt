@@ -437,6 +437,8 @@ export function registerIpc(): void {
     sessionEditDraft: async (id, patch) => kernel.editDraft(id, patch),
     sessionDuplicate: async (id) => kernel.sessions.duplicateSession(id),
     sessionRecreate: async (id) => kernel.sessions.recreateSession(id),
+    sessionRewind: async (id, entryId) => kernel.sessions.rewindSession(id, entryId),
+    sessionBranch: async (id, entryId) => kernel.sessions.branchSession(id, entryId),
     sessionDelete: async (id) => kernel.sessions.deleteSession(id),
     sessionSnapshot: async (id) => {
       // A restored selection asks once, before boot may have loaded its session.

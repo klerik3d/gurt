@@ -901,6 +901,10 @@ export interface Tree {
 export interface ChatText {
   kind: 'user' | 'agent' | 'thought'
   text: string
+  /** The adapter's `messageId` for an agent message — what a native
+   *  `session/fork` names as its fork point on a rewind. Absent when the
+   *  adapter sends none. */
+  acpMessageId?: string
 }
 
 export interface ChatToolCall {
@@ -980,6 +984,10 @@ export type SessionLogRecord =
       id: number
       patch: { status?: string; title?: string; detail?: string; chosen?: string; endAt?: number }
     }
+  /** Rewind: every entry with an id above `afterId` is dropped from the fold.
+   *  The file stays append-only — the rewound tail is still on disk, and later
+   *  entries may reuse its ids. */
+  | { seq: number; type: 'truncate'; afterId: number }
 
 /**
  * Pure fold used by BOTH main (derive entries) and renderer (apply deltas).
@@ -988,11 +996,15 @@ export type SessionLogRecord =
  * record replaces the entry with the same id instead of duplicating it.
  */
 export function applyLog(entries: ChatEntry[], records: SessionLogRecord[]): ChatEntry[] {
-  const out = entries.slice()
+  let out = entries.slice()
   const index = new Map<number, number>()
   out.forEach((e, i) => index.set(e.id, i))
   for (const r of records) {
-    if (r.type === 'entry') {
+    if (r.type === 'truncate') {
+      out = out.filter((e) => e.id <= r.afterId)
+      index.clear()
+      out.forEach((e, i) => index.set(e.id, i))
+    } else if (r.type === 'entry') {
       const i = index.get(r.entry.id)
       if (i == null) {
         index.set(r.entry.id, out.length)
@@ -1236,6 +1248,8 @@ export interface PersistedSession {
   pending?: PersistedPrompt[] | undefined
   info: SessionInfo
   acpSessionId?: string | undefined
+  /** Rewound conversation owed to the agent ahead of its next prompt. */
+  preface?: string | undefined
   /** Latest change proposal (outcome=changes) submitted via `complete`; last one wins. */
   proposal?: StoredProposal | undefined
   /** The last logical turn gurt finished classifying
