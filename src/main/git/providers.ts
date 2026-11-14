@@ -156,7 +156,3 @@ const PROVIDERS: ForgeProvider[] = [github]
 /** The provider serving `host`, or null when none matches. */
 export const providerForHost = (host: string): ForgeProvider | null =>
   PROVIDERS.find((p) => p.matches(host)) ?? null
-
-/** Kept for the (unused today) case of stacked providers; returns 0 or 1 today. */
-export const providersForHost = (host: string): ForgeProvider[] =>
-  PROVIDERS.filter((p) => p.matches(host))

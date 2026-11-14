@@ -84,17 +84,6 @@ export const wsDir = (ws: string) => path.join(gurtRoot, ws)
 export const taskDir = (ws: string, task: string) => path.join(gurtRoot, ws, scopeDirName(task))
 export const cloneDir = (ws: string, task: string, repo: string) =>
   path.join(taskDir(ws, task), repo)
-/** Host directory used as `--workspace-folder` by a session whose repos are
- *  bind-mounted individually — more than one repo, or a read-only role, see
- *  `usesRepoMounts` in containers.ts. Empty except for those mount points, and
- *  never the task dir itself, which also holds `task.json` / `sessions.json`.
- *  Fixed basename `repos` so the container-side default (`/workspaces/<basename>`)
- *  is predictable; the `.multirepo` segment predates read-only roles and is kept
- *  so existing sessions' containers keep pointing at the directory they were
- *  provisioned against. */
-export const mountedWorkspaceDir = (ws: string, task: string, sessionId: string) =>
-  path.join(sessionScratchDir(ws, task, sessionId), 'repos')
-
 /** The workspace's skill registry: one directory per skill, each holding a
  *  `SKILL.md` and whatever supporting files it references
  *  (docs/requirements-skills.md §4.1). A sibling of `workspace.json` — the

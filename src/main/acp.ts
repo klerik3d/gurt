@@ -15,7 +15,6 @@
 //    code (see `issuePaths`); the values are prompt text, agent output and tool
 //    arguments.
 import { z } from 'zod'
-import type { SessionConfigOption } from '../shared/types'
 import { issuePaths } from './jsonrpc'
 import { createLogger } from './log'
 
@@ -71,7 +70,6 @@ export const CONFIG_OPTION = z.looseObject({
   currentValue: z.unknown(),
   options: z.array(CONFIG_SELECT_ITEM).optional()
 })
-export type AcpConfigOption = z.infer<typeof CONFIG_OPTION>
 
 /** The `configOptions` member of every response that carries one. Items stay
  *  `unknown` so one malformed entry is skipped rather than dropping the list. */
@@ -190,9 +188,6 @@ export const PERMISSION_REQUEST = z.looseObject({
     .array(z.looseObject({ optionId: z.string(), name: soft, kind: soft }))
     .default([])
 })
-
-/** Re-exported so callers name the type they normalize into in one place. */
-export type NormalizedConfigOption = SessionConfigOption
 
 // ---------------------------------------------------------------------------
 // Client methods the agent calls on gurt (fs/*, terminal/*)

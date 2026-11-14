@@ -73,9 +73,6 @@ export const PII_BACKENDS: PiiBackendDef[] = [
   }
 ]
 
-export const piiBackendDef = (id: string): PiiBackendDef | undefined =>
-  PII_BACKENDS.find((b) => b.id === id)
-
 // --- pattern sources for the built-in detector (§4.1) ------------------------
 
 export interface PiiSourceDef {

@@ -277,7 +277,7 @@ the core, **U** renderer.
   - `onPermission`: `/^mcp__gurt__/` auto-allow. §6b.
   - `loadAgentKinds`, `defaultAgentConfig(kind)` fallbacks, the draft agent-change container release. **E**.
 - `src/main/acp.ts`, `src/main/jsonrpc.ts`: tolerant parsing; comments name adapters. **E**.
-- `src/main/agentProviders.ts`: `PROVIDERS` record keyed by kind (claude-code: `sk-ant-oat` → `/api/oauth/usage` with the oauth beta header and claude-cli user agent, else `/v1/models`; codex; gemini; opencode and pi: the Anthropic API-key probe). Request builders **H**, `probeAgentToken` **E**. `canProbeAgentToken` is used only by tests; `agentSecretEnv` is unused.
+- `src/main/agentProviders.ts`: `PROVIDERS` record keyed by kind (claude-code: `sk-ant-oat` → `/api/oauth/usage` with the oauth beta header and claude-cli user agent, else `/v1/models`; codex; gemini; opencode and pi: the Anthropic API-key probe). Request builders **H**, `probeAgentToken` **E**. `canProbeAgentToken` is used only by tests.
 - `src/main/planUsage.ts`: `parsePlanWindows`, `parseClaudeRateLimit(State)`, `parseOverage(body, codex)`, `parseCodexPlanWindows`, endpoints (`api.anthropic.com/api/oauth/usage`, `chatgpt.com/backend-api/wham/usage`), `fetchUsage` headers, `poll` (codex needs `providerId === 'openai'`), `refreshAll` (polls only claude-code and codex; claude only with an oauth-shaped secret). Agent parts **H**, polling **E**. Wiring in `kernel.ts` (`freshCredential`) and `ipc.ts` (3-minute poll) stays.
 - `src/main/oauth/`
   - `provider.ts`, `flow.ts`, `index.ts` (refresh, single-flight). **E**.
@@ -563,8 +563,7 @@ exceptions are:
 - "Claude AI usage limit reached|<epoch>" and "5-hour limit reached ∙ resets"
   are not in SDK 0.3.303 (which builds "You've hit your {session|weekly|Opus|
   Sonnet|Fable|usage credit} limit · resets {time}"); kept for older SDKs.
-- `canProbeAgentToken` is used only by tests and `agentSecretEnv` by nothing;
-  left as they were.
+- `canProbeAgentToken` is used only by tests; left as it was.
 - `docs/development.md` says `scripts/*.test.mjs` is "currently 78" files
   (83 at `e673f9e`, 86 now); a historical doc under §2, not edited.
 - Smokes that fail identically on an untouched build of `e673f9e` in this

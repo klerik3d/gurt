@@ -30,7 +30,6 @@
 //      every provider, and would make Settings → Credentials refuse a token on
 //      a machine that is merely offline. The probe stays on the path where the
 //      user is asking for exactly this check.
-import { agentDef } from '../shared/agents'
 import type { TokenProbe } from '../shared/doctor'
 import { agentMain } from './agentPlugins'
 import { createLogger } from './log'
@@ -106,7 +105,3 @@ export async function probeAgentToken(
     detail: `${provider.label} answered ${status} — continuing without checking`
   }
 }
-
-/** The env var name a kind's token lands in, for the field's hint — the string
- *  that tells a user *which* token they are being asked for. */
-export const agentSecretEnv = (kind: string): string => agentDef(kind)?.secretEnv ?? ''

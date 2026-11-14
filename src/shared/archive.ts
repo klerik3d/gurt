@@ -7,7 +7,7 @@ export interface ArchiveSettings {
   retentionDays: number
 }
 
-export const ARCHIVE_DEFAULTS: ArchiveSettings = {
+const ARCHIVE_DEFAULTS: ArchiveSettings = {
   autoArchive: false, inactiveHours: 72, autoDelete: false, retentionDays: 90
 }
 
@@ -17,9 +17,9 @@ export function normalizeArchiveSettings(raw: unknown): ArchiveSettings {
     typeof n === 'number' && Number.isFinite(n) ? Math.max(1, Math.min(max, Math.floor(n))) : fallback
   return {
     autoArchive: r.autoArchive === true,
-    inactiveHours: count(r.inactiveHours, 72, 87600),
+    inactiveHours: count(r.inactiveHours, ARCHIVE_DEFAULTS.inactiveHours, 87600),
     autoDelete: r.autoDelete === true,
-    retentionDays: count(r.retentionDays, 90, 36500)
+    retentionDays: count(r.retentionDays, ARCHIVE_DEFAULTS.retentionDays, 36500)
   }
 }
 

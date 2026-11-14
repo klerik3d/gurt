@@ -244,8 +244,8 @@ otherwise have to re-derive from the diff:
   2026-08-17: `--mount` flags → the `mounts` array of the per-session merged
   config, and the sibling root is the env config's `workspaceFolder`, not
   `/workspaces/repos` — see the amended mount bullet in
-  `requirements-multirepo-sessions.md` §2.)* `store.multiRepoWorkspaceDir`
-  became `mountedWorkspaceDir`; its on-disk path keeps the `.multirepo` segment
+  `requirements-multirepo-sessions.md` §2.)* The mounted workspace directory
+  is `<session scratch dir>/repos`; its on-disk path keeps the `.multirepo` segment
   so containers already provisioned against it still resolve. A discovery
   session that already has a live container keeps it — and therefore its
   read-write mounts — until that container is recreated; only the mounts are

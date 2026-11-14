@@ -41,6 +41,3 @@ export function canonicalRepoId(url: string): RepoId | null {
 }
 
 export const repoIdString = (id: RepoId): string => `${id.host}/${id.path}`
-
-/** Just the git host of an origin URL, or null when it cannot be parsed. */
-export const repoHost = (url: string): string | null => canonicalRepoId(url)?.host ?? null

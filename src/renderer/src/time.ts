@@ -1,16 +1,5 @@
 export { relativeTime } from '../../shared/time'
 
-/** `6:30pm` today, `Aug 20 at 12am` on another day — when a plan window
- *  resets, in this machine's timezone. The wording Claude Code's own `/usage`
- *  uses, so the two surfaces read the same. */
-export function resetClock(iso: string): string {
-  const d = new Date(iso)
-  if (!Number.isFinite(d.getTime())) return 'unknown'
-  const time = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
-  if (new Date().toDateString() === d.toDateString()) return `today at ${time}`
-  return `${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} at ${time}`
-}
-
 /** Wall clock since something started: `12s`, `1:05`, `1:02:03`. Shown where a
  *  live row has no better progress signal than the time it has been up. */
 export function elapsedClock(seconds: number): string {
