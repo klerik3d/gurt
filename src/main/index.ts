@@ -10,8 +10,12 @@ import { getHotkeys } from './store'
 import { gurtRoot } from './paths'
 import { initAutoUpdater } from './update'
 import { initAppMenu } from './menu'
+import { startRemoteAccess, type RemoteAccess } from './remote'
 
 const log = createLogger('app')
+
+/** Remote access, when its setting is on (docs/requirements-remote-access.md). */
+let remote: RemoteAccess | undefined
 
 // Before anything can spawn: a macOS app launched from the Dock inherits
 // launchd's PATH, which has neither `docker` nor a Homebrew `git` on it
@@ -139,6 +143,10 @@ void app.whenReady().then(async () => {
   // keystore may be available. Idempotent, so safe to run every start.
   await sealPlaintextSecrets().catch((e: unknown) => log.error('internal.fail', { site: 'credential-seal', err: e }))
   registerIpc()
+  // Off by default; with it off nothing is constructed and nothing connects.
+  startRemoteAccess()
+    .then((r) => (remote = r))
+    .catch((e: unknown) => log.error('internal.fail', { site: 'remote-start', err: e }))
   initAutoUpdater()
   initAppMenu(await getHotkeys())
   createWindow()
@@ -159,6 +167,9 @@ app.on('before-quit', () => {
   // die with the parent: an orphaned `kubernetes-mcp-server` holding a `tsh`
   // session is exactly the thing a user would not think to go looking for.
   stopLocalMcpServers()
+  // Tell the open streams the host is going away (close reason 5), so a phone
+  // shows "Gurt is restarting" rather than "offline".
+  remote?.stop({ goingAway: true })
   flushSync()
 })
 

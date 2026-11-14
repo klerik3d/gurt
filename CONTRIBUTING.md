@@ -74,8 +74,9 @@ surrounding code; correctness is held by the TypeScript compiler and ESLint.
 npm test
 ```
 
-This runs every `scripts/*.test.mjs` through Node's built-in test runner —
-the same command CI uses. To run one file: `node --test scripts/<name>.test.mjs`.
+This runs every `scripts/*.test.mjs`, and the remote-access protocol
+package's `packages/remote-protocol/test/*.test.mjs`, through Node's built-in
+test runner — the same command CI uses. To run one file: `node --test scripts/<name>.test.mjs`.
 
 Smoke tests (`scripts/smoke*.mjs`) drive the built app end-to-end with
 Playwright. `npm run smoke` runs the docker-free subset (CI runs it as its own

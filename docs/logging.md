@@ -134,7 +134,15 @@ escaped, and `\n` written as `\\n`, so one record stays one line.
 | `session.proposal`        | INF   | `s`, `repos`                                               |
 | `session.drafted`         | INF   | `s` (the new draft), `by` (the session whose agent asked), `role` |
 | `session.recreated`       | INF   | `s` (the new draft), `from` (the deleted session it replaces) |
-| `external.stub`           | INF   | `type`, `s`                                                |
+| `external.none`           | INF   | `type`, `s` — no external delivery installed (remote access off) |
+| `external.push`           | INF   | `type`, `s`, `sent` — handed to the relay as a `PUSH`       |
+| `remote.start`            | INF   | `hostId`                                                   |
+| `remote.no-relay-url`     | WRN   | — (remote access on with no relay URL: nothing started)    |
+| `remote.push-gone`        | INF   | `devices` (a count)                                        |
+| `relay.state`             | INF   | `state`, and per state `attempt`, `hostId`, `relayVersion`, `retryInMs`, `reason`, `detail` |
+| `relay.protocol-error`    | WRN   | `what` (a frame error code or the out-of-order frame)      |
+| `relay.push-refused`      | WRN   | `code` (`PUSH_ERR`)                                        |
+| `relay.send-failed`       | WRN   | `type`, `err`                                              |
 | `session.end`             | INF   | `s`, `turns`, `ms`, `stopReason`, `exitCode`               |
 | `agent.spawn`             | INF   | `s`, `cmd`, `pid`, `c`, `env` (injected variable *names*)   |
 | `agent.exit`              | INF   | `s`, `pid`, `code`, `signal`, `ms`                         |
