@@ -1377,6 +1377,28 @@ button.sb-session {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.msg-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 4px;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.msg-user:hover .msg-actions,
+.msg-actions:focus-within {
+  opacity: 1;
+}
+.msg-action {
+  background: none;
+  border: 0;
+  padding: 0;
+  font-size: 11px;
+  color: var(--faint);
+  cursor: pointer;
+}
+.msg-action:hover {
+  color: var(--accent);
+}
 .msg-sys {
   font-size: 11px;
   color: var(--faint);

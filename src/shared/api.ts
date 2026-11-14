@@ -369,6 +369,16 @@ export interface GurtApi {
    *  prompts). Answers the new draft — it has a new id; the old one is
    *  deleted. Rejects for a session that is already a draft. */
   sessionRecreate(id: string): Promise<SessionInfo>
+  /** Rewind a started, idle session to just before one of the user's messages
+   *  (`entryId`): that message and everything after it leave the chat, and the
+   *  agent is rewound with it (natively where its adapter can fork, otherwise by
+   *  restating the kept conversation). Answers the message's text for the
+   *  composer. Files are not reverted. */
+  sessionRewind(id: string, entryId: number): Promise<{ text: string }>
+  /** Branch a session at one of the user's messages: a new draft of the same
+   *  task whose first prompt carries the conversation before it, plus the
+   *  message itself. The original is untouched. */
+  sessionBranch(id: string, entryId: number): Promise<SessionInfo>
   /** Delete a session: its container is destroyed with it, its chat log removed.
    *  The clone (and any uncommitted work in it) stays. */
   sessionDelete(id: string): Promise<void>
@@ -643,6 +653,8 @@ const METHODS = {
   sessionEditDraft: 'none', //  §2.4
   sessionDuplicate: 'none', //  §2.4
   sessionRecreate: 'none', //   §2.4
+  sessionRewind: 'none', //     drives another agent's history
+  sessionBranch: 'none', //     §2.4
   sessionDelete: 'none', //     §2.4
   sessionSnapshot: 'read', //   narrowed: state and diagnostics, no chat (§3.2)
   sessionTraffic: 'read', //    blocked hosts — the diagnostic the operator exists for
