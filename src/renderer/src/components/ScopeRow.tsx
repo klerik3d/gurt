@@ -1,13 +1,16 @@
 import type { HTMLAttributes, ReactNode } from 'react'
 import { isActionable, isDelivered, type RepoChanges } from '../../../shared/types'
+import type { ScopeLabel } from '../../../shared/proactive'
 import { Icon } from './icons'
+import { LabelTag } from './tags'
 
-export function ScopeRow({ name, open, selected, cursor, repos, editing, children, onSelect, onToggle, ...attributes }: {
+export function ScopeRow({ name, open, selected, cursor, repos, label, editing, children, onSelect, onToggle, ...attributes }: {
   name: string
   open: boolean
   selected: boolean
   cursor: boolean
   repos: RepoChanges[]
+  label?: ScopeLabel | undefined
   editing?: boolean
   children?: ReactNode
   onSelect: () => void
@@ -24,6 +27,7 @@ export function ScopeRow({ name, open, selected, cursor, repos, editing, childre
     </span>
     {children ?? <>
       <span className="sb-task-name">{name}</span>
+      {label && <LabelTag label={label} />}
       <ScopeBadge repos={repos} />
       <span className="spacer" />
     </>}

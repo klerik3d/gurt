@@ -18,7 +18,22 @@ import type { DomainPolicy } from '../../../shared/proxy'
 import { explicitAllows } from '../../../shared/proxy'
 import type { McpFailure, ResolvedMcpSelection } from '../../../shared/mcp'
 import type { ResolvedSkillSelection } from '../../../shared/skills'
+import type { ScopeLabel } from '../../../shared/proactive'
 import { AgentIcon, Icon, type IconName } from './icons'
+
+/** A scope label: a short word in its own colour (proactive agents put theirs
+ *  on the scopes they raise). */
+export function LabelTag({ label, title }: { label: ScopeLabel; title?: string }): JSX.Element {
+  return (
+    <span
+      className="scope-label"
+      style={{ ['--label' as string]: label.color }}
+      title={title ?? `label ${label.text}`}
+    >
+      {label.text}
+    </span>
+  )
+}
 
 export function EnvTag({ name }: { name: string }): JSX.Element {
   return (

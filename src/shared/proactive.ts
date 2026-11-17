@@ -2,6 +2,40 @@
 // shared by main (the manager, the `gurt` tools) and the renderer (the mode).
 import type { SessionInfo } from './types'
 
+/** A short coloured word a scope carries in the sidebar. Proactive agents put
+ *  theirs on every scope they raise. */
+export interface ScopeLabel {
+  text: string
+  /** `#rrggbb` — a {@link LABEL_PALETTE} entry or the user's own. */
+  color: string
+}
+
+/** Offered colours, in the app's own tones (styles.css `:root`, plus three
+ *  neighbours so eight labels stay apart). Any `#rrggbb` is also accepted. */
+export const LABEL_PALETTE: readonly { name: string; color: string }[] = [
+  { name: 'blue', color: '#4da3ff' },
+  { name: 'teal', color: '#4ec9b0' },
+  { name: 'green', color: '#6cc47f' },
+  { name: 'yellow', color: '#e0a020' },
+  { name: 'orange', color: '#e08a4a' },
+  { name: 'red', color: '#e5544b' },
+  { name: 'pink', color: '#e07aa8' },
+  { name: 'purple', color: '#a78bfa' }
+]
+
+export const LABEL_MAX_LENGTH = 12
+export const HEX_COLOR_RE = /^#[0-9a-f]{6}$/i
+
+/** A valid label from untrusted input, or undefined for none (empty text). */
+export function sanitizeLabel(raw: unknown): ScopeLabel | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const r = raw as Record<string, unknown>
+  const text = typeof r['text'] === 'string' ? r['text'].replace(/\s+/g, ' ').trim().slice(0, LABEL_MAX_LENGTH).trim() : ''
+  if (!text) return undefined
+  const color = typeof r['color'] === 'string' && HEX_COLOR_RE.test(r['color']) ? r['color'].toLowerCase() : LABEL_PALETTE[0]!.color
+  return { text, color }
+}
+
 /**
  * A proactive agent's settings — `task.json`'s `proactive` member of the scope
  * that holds its template and its runs. The rest of its configuration (agent,
@@ -26,6 +60,11 @@ export interface ProactiveConfig {
   keepRuns: number
   /** Id of the template session — the draft each run is copied from. */
   templateId?: string
+  /** Put on every scope this agent raises (`origin.label`). */
+  label?: ScopeLabel
+  /** EXPERIMENTAL exception to "drafts are approval": the sessions of a scope
+   *  the agent raises are enqueued at once instead of waiting for the user. */
+  autoRun: boolean
 }
 
 export const PROACTIVE_DEFAULTS: Omit<ProactiveConfig, 'templateId'> = {
@@ -33,12 +72,13 @@ export const PROACTIVE_DEFAULTS: Omit<ProactiveConfig, 'templateId'> = {
   everyMinutes: 60,
   maxPendingScopes: 10,
   maxRunMinutes: 30,
-  keepRuns: 5
+  keepRuns: 5,
+  autoRun: false
 }
 
 /** Bounds every numeric setting is clamped to. */
 export const PROACTIVE_BOUNDS: Record<
-  Exclude<keyof ProactiveConfig, 'enabled' | 'templateId' | 'cron'>,
+  Exclude<keyof ProactiveConfig, 'enabled' | 'templateId' | 'cron' | 'label' | 'autoRun'>,
   [number, number]
 > = {
   everyMinutes: [5, 7 * 24 * 60],
@@ -60,7 +100,8 @@ export function sanitizeProactiveConfig(
     everyMinutes: fallback.everyMinutes,
     maxPendingScopes: fallback.maxPendingScopes,
     maxRunMinutes: fallback.maxRunMinutes,
-    keepRuns: fallback.keepRuns
+    keepRuns: fallback.keepRuns,
+    autoRun: typeof r['autoRun'] === 'boolean' ? r['autoRun'] : fallback.autoRun
   }
   for (const [key, [lo, hi]] of Object.entries(PROACTIVE_BOUNDS) as [
     keyof typeof PROACTIVE_BOUNDS,
@@ -74,6 +115,9 @@ export function sanitizeProactiveConfig(
   else if (fallback.cron) out.cron = fallback.cron
   const templateId = typeof r['templateId'] === 'string' ? r['templateId'] : fallback.templateId
   if (templateId) out.templateId = templateId
+  // A label given (even an empty one) replaces the old; absent keeps it.
+  const label = 'label' in r ? sanitizeLabel(r['label']) : fallback.label
+  if (label) out.label = label
   return out
 }
 
@@ -100,6 +144,8 @@ export interface ProactiveOrigin {
   summary: string
   createdAt: string
   notes?: ProactiveNote[]
+  /** The agent's label when it raised the scope; kept in step with the agent's. */
+  label?: ScopeLabel
 }
 
 export type ProactiveRunOutcome =

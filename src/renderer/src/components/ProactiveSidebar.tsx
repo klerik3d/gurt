@@ -3,6 +3,7 @@ import type { Tree } from '../../../shared/types'
 import type { ProactiveAgentView, ProactiveRun } from '../../../shared/proactive'
 import type { Tone } from '../status'
 import { Icon, Dot } from './icons'
+import { LabelTag } from './tags'
 
 /** What an agent's dot says: running, on schedule, or switched off. */
 export function proactiveDot(a: ProactiveAgentView): {
@@ -120,6 +121,7 @@ export function ProactiveSidebar({
                 </span>
                 <Dot tone={dot.tone} pulse={dot.pulse} hollow={dot.hollow} />
                 <span className="sb-task-name">{a.name}</span>
+                {a.config.label && <LabelTag label={a.config.label} />}
                 <span className="spacer" />
                 <span className="sb-session-client">{a.config.cron ?? everyLabel(a.config.everyMinutes)}</span>
               </div>

@@ -5134,3 +5134,56 @@ button { user-select: none; }
   top: 4px;
   right: 30px;
 }
+
+/* ---- scope labels: a short word in the label's own colour ---- */
+.scope-label {
+  --label: var(--accent);
+  flex: none;
+  max-width: 96px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 14px;
+  padding: 0 6px;
+  margin-left: 6px;
+  border-radius: 6.667px;
+  color: var(--label);
+  border: 1px solid color-mix(in srgb, var(--label) 55%, transparent);
+  background: color-mix(in srgb, var(--label) 14%, transparent);
+}
+.label-editor {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 4px;
+  font-size: 12.5px;
+  color: var(--dim);
+}
+.label-swatch {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border-radius: 50%;
+  background: var(--label);
+  border: 2px solid transparent;
+  cursor: pointer;
+}
+.label-swatch.on {
+  border-color: var(--text);
+}
+.label-text.input {
+  width: 110px;
+}
+.label-hex.input {
+  width: 84px;
+}
+.label-hex[aria-invalid="true"] {
+  border-color: var(--red);
+}
+.pa-rename.input {
+  font-size: 13px;
+  width: 200px;
+}

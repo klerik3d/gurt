@@ -795,6 +795,7 @@ export function Sidebar({
                 selected={taskSelected}
                 cursor={cursorKey === rowKey(row)}
                 repos={changes[tkey] ?? []}
+                label={task.origin?.label}
                 editing={!!editing}
                 onSelect={() => { moveTo(row); treeRef.current?.focus() }}
                 onToggle={() => setCollapse(wsName, task.name, !isCollapsed)}

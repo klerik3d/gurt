@@ -1218,6 +1218,7 @@ export default function App() {
                     selectTask(w, t)
                   }}
                   onDeleted={() => setProactiveAgent(null)}
+                  onRenamed={setProactiveAgent}
                 />
               )}
               {workMode === 'proactive' && !openProactive && (
