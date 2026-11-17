@@ -1,4 +1,3 @@
-import { checkpointRef, sessionCheckpoints } from './checkpoints'
 import { randomUUID } from 'node:crypto'
 import type {
   AcpHttpMcpServer,
@@ -570,6 +569,21 @@ export interface SessionEvents {
    *  `changes` must answer, each exactly once. Absent, or an empty list = no
    *  open set: `replies` is accepted and ignored. */
   openFindings?: (sessionId: string) => readonly string[] | undefined
+  /** Snapshot every writable clone of the session as it stands before this
+   *  user entry is sent — the point a rewind to it restores. Rejects when a
+   *  clone cannot be snapshotted (the turn fails before the agent is asked).
+   *  Absent = no checkpoints: nothing is snapshotted. */
+  snapshotCheckpoint?: (info: SessionInfo, entryId: number) => Promise<void>
+  /** Rewind the session's writable clones to their snapshot at `entryId`, after
+   *  saving each one's current state as a safety checkpoint (all of them durable
+   *  before any clone is touched), then drop the checkpoints the rewind made
+   *  obsolete. Never rejects: `notice` is the text shown to the user — what was
+   *  restored, or why the files were not; `restored` says whether any clone
+   *  was. Absent = no checkpoints: nothing is restored. */
+  restoreCheckpoint?: (info: SessionInfo, entryId: number) => Promise<{ restored: boolean; notice: string }>
+  /** Drop every checkpoint of the session in all of its repos (session deleted
+   *  or retired to the archive). Absent = nothing to drop. */
+  clearCheckpoints?: (info: SessionInfo) => Promise<void>
   /** Env definition names claiming this repo as their default (`EnvConfig.repo`
    *  read backwards). The source of the env a `create_session` draft runs in
    *  when it names none — see `resolveDraftEnv`. */
@@ -1726,8 +1740,6 @@ export class SessionManager {
     const lastAgent = [...kept].reverse().find((e) => e.kind === 'agent')
     const hasSpeech = kept.some((e) => e.kind === 'user' || e.kind === 'agent')
 
-    let filesRestored = false
-    let fileNotice = ''
     this.bus.emit('session.activity', { sessionId })
     s.draining = true // nothing may start a turn while the agent side is swapped
     try {
@@ -1772,29 +1784,17 @@ export class SessionManager {
       s.attached = true
       await this.applyStartConfig(s, conn)
       await this.applyAutoAllow(s, conn)
-      const safetyRef = checkpointRef(sessionId, `pre-rewind-${Date.now()}`)
-      try {
-        const repos = await sessionCheckpoints(s.info)
-        const targets = await Promise.all(repos.map((r) => r.resolve(checkpointRef(sessionId, entryId))))
-        // All backups must be durable before touching any clone.
-        const backups = await Promise.all(repos.map((r) => r.snapshot(safetyRef)))
-        fileNotice = repos.length ? `Safety checkpoint saved in each writable clone: ${safetyRef}. ` : ''
-        for (let i = 0; i < repos.length; i++) {
-          try { await repos[i]!.restore(targets[i]!, backups[i]!) }
-          catch (e) { throw new Error(`${repos[i]!.dir}: ${e instanceof Error ? e.message : String(e)}`, { cause: e }) }
-          fileNotice += `Restored ${repos[i]!.dir}. `
-        }
-        filesRestored = repos.length > 0
-        fileNotice += filesRestored ? 'Working trees restored. External effects (packages, databases, network and files outside the clones) are not reverted.' : 'No writable repositories.'
-      } catch (e) {
-        fileNotice += `Files in the working tree were NOT reverted completely; inspect each clone. ${e instanceof Error ? e.message : String(e)}. Any saved safety checkpoints remain under ${safetyRef}.`
-      }
+      const { restored: filesRestored, notice: fileNotice } = this.events.restoreCheckpoint
+        ? await this.events.restoreCheckpoint(s.info, entryId)
+        : {
+            restored: false,
+            notice: writeRepos(s.info).length
+              ? 'Files in the working tree were NOT reverted completely; inspect each clone. No checkpoints are available.'
+              : 'No writable repositories.'
+          }
       if (preface) s.preface = rewindPreface(kept, filesRestored)
       this.append(s, { type: 'truncate', afterId: entryId - 1 })
       this.push(s, { kind: 'system', text: fileNotice })
-      try {
-        for (const repo of await sessionCheckpoints(s.info)) await repo.prune(sessionId, entryId)
-      } catch (e) { log.warn('checkpoint.prune.failed', { err: e }) }
     } finally {
       s.draining = false
     }
@@ -1875,10 +1875,6 @@ export class SessionManager {
    * the clone and the uncommitted work in it deliberately stay, since a clone
    * outlives every session of its task.
    */
-  private async clearCheckpoints(s: Session): Promise<void> {
-    for (const repo of await sessionCheckpoints(s.info, true)) await repo.prune(s.info.id)
-  }
-
   deleteSession(sessionId: string): void {
     this.assertSessionWritable(sessionId)
     const s = this.sessions.get(sessionId)
@@ -1907,6 +1903,11 @@ export class SessionManager {
     this.bus.emit('tree.changed', undefined)
     // Its clone may now be free — let the next queued session take it.
     this.schedule()
+  }
+
+  /** Drop every checkpoint of the session (delete and archive retirement). */
+  private async clearCheckpoints(s: Session): Promise<void> {
+    await this.events.clearCheckpoints?.(s.info)
   }
 
   // --- scheduler ----------------------------------------------------------
@@ -3121,10 +3122,7 @@ export class SessionManager {
       if (maskError) throw maskError
       const conn = await this.attach(s)
       // A review-loop host message lands as a `system` entry — not a rewind point.
-      if (promptEntry.kind === 'user') {
-        for (const repo of await sessionCheckpoints(s.info))
-          await repo.snapshot(checkpointRef(s.info.id, promptEntry.id))
-      }
+      if (promptEntry.kind === 'user') await this.events.snapshotCheckpoint?.(s.info, promptEntry.id)
       const preface = s.preface
       const result = await conn.peer.request(
         'session/prompt',
