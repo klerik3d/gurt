@@ -604,7 +604,8 @@ for why the container-side path was removed.
   (or auto-matches by host); the link is never a secret. The same store holds
   `agent-token` (an agent's API key), `mcp-token` (a registry MCP server's),
   `oauth` (browser sign-in tokens for agents and MCP servers) and
-  `pii-detector` (a remote masking analyzer).
+  `pii-detector` (a remote masking analyzer) and `remote-identity` (the key
+  remote access registers with the relay under, made by Gurt).
 - A gurt-local repo (a bare origin under `~/.gurt/<ws>/repos/`) uses a fourth
   host-git mode, `local`: no auth, push and pull allowed.
 - Ambient host auth is **never a fallback**. When nothing resolves, remote

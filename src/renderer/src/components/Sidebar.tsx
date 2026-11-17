@@ -905,7 +905,7 @@ export function Sidebar({
           </div>
         )}
       </div>
-      {commitScope && <GitCommitPanel key={commitKey} ws={commitScope.ws} task={commitScope.task} repo={commitScope.row.repo}
+      {commitScope && <GitCommitPanel key={commitKey} ws={commitScope.ws} task={commitScope.task} repo={commitScope.row.repo} local={!!changes[taskKey(commitScope.ws, commitScope.task)]?.find((r) => r.repo === commitScope.row.repo)?.local}
         draft={commitDrafts[commitKey]}
         onDraft={(update) => setCommitDrafts((prev) => ({ ...prev, [commitKey]: update(prev[commitKey]) }))}
         busy={busyRepos.has(commitKey)}

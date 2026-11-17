@@ -18,6 +18,7 @@ export type CredentialKind =
   | 'mcp-token'
   | 'oauth'
   | 'pii-detector'
+  | 'remote-identity'
 
 export interface CredentialEntry {
   /** uuid, stable — configs link by this. */
@@ -208,12 +209,24 @@ export const CREDENTIAL_KINDS: CredentialKindDef[] = [
       { key: 'secret', label: 'token / api key', secret: true, placeholder: 'sk-… / api key' }
     ],
     implemented: true
+  },
+  {
+    kind: 'remote-identity',
+    label: 'remote access key',
+    hint:
+      'Made by Gurt when remote access is first turned on: the key this computer registers ' +
+      'with the relay under. Not created by hand. Deleting it gives this computer a new ' +
+      'identity, and every paired phone has to pair again.',
+    // Minted by Gurt, never typed: hidden, but declared so it is sealed,
+    // masked and redacted like any other secret (see `CredentialField.hidden`).
+    fields: [{ key: 'secret', label: 'Ed25519 key', secret: true, hidden: true }],
+    implemented: true
   }
 ]
 
 /** Kinds that are not a git transport: they link explicitly (from an agent, from
  *  an MCP registry entry, from Settings → Masking) and never auto-match a host. */
-const NON_GIT_KINDS: readonly CredentialKind[] = ['agent-token', 'mcp-token', 'oauth', 'pii-detector']
+const NON_GIT_KINDS: readonly CredentialKind[] = ['agent-token', 'mcp-token', 'oauth', 'pii-detector', 'remote-identity']
 
 /** Whether a kind matches a git host (auto-match, forge verification, hosts field). */
 export const isGitKind = (kind: CredentialKind): boolean => !NON_GIT_KINDS.includes(kind)

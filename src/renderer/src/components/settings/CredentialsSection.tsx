@@ -39,7 +39,8 @@ const KIND_TAG: Record<CredentialKind, string> = {
   'agent-token': 'agent',
   'mcp-token': 'mcp',
   oauth: 'oauth',
-  'pii-detector': 'pii'
+  'pii-detector': 'pii',
+  'remote-identity': 'remote'
 }
 
 /** Tag for a stored entry, tolerating a kind this build retired (§10.1) — such

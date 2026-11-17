@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { CopyButton } from './CopyButton'
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react'
 import type { NotificationRecord, NotificationType } from '../../../shared/notifications'
 import type { Tree } from '../../../shared/types'
@@ -79,6 +80,8 @@ export function NotificationsPanel({
       e.preventDefault()
       setIdx((i) => Math.max(i - 1, 0))
     } else if (e.key === 'Enter') {
+      // A focused control inside a row (copy, dismiss) activates itself.
+      if ((e.target as HTMLElement).closest('button')) return
       e.preventDefault()
       const n = items[idx]
       if (n) open(n)
@@ -100,7 +103,7 @@ export function NotificationsPanel({
             key={n.id}
             role="button"
             tabIndex={-1}
-            className={`notif-row ${n.read ? 'read' : ''} ${i === idx ? 'active' : ''}`}
+            className={`notif-row has-copy ${n.read ? 'read' : ''} ${i === idx ? 'active' : ''}`}
             onClick={() => open(n)}
             onMouseEnter={() => setIdx(i)}
           >
@@ -112,6 +115,7 @@ export function NotificationsPanel({
               <div className="notif-detail">{n.detail}</div>
               <div className="notif-ts mono">{relativeTime(n.ts)}</div>
             </div>
+            <CopyButton text={`${n.title}\n${n.detail}`} title="copy notification" />
             <button
               className="notif-dismiss"
               title="Dismiss"

@@ -422,9 +422,10 @@ export function createKernel(options: KernelOptions = {}): Kernel {
     // blocker (a start it was waiting on finished), and the check is cheap.
     reapForQueue()
   }
-  bus.on('session.turn', ({ sessionId, phase }) => {
+  bus.on('session.turn', ({ sessionId, phase, final }) => {
     if (phase === 'started') containers.noteActive(sessionId)
-    else idle(sessionId)
+    // A non-final end is followed at once by the nudge turn; its own end counts.
+    else if (final !== false) idle(sessionId)
   })
   bus.on('session.awaiting', ({ sessionId, awaiting }) => {
     if (!awaiting) idle(sessionId)

@@ -137,7 +137,9 @@ export interface ReviewLoopConfig {
 - **When clean**: notify / commit / commit + push / commit + push + PR ("draft"
   on by default). Write repos all `RepoConfig.local` (no forge): notify /
   commit / commit + merge into main. Local and forge mixed: notify / commit.
-- **No check command** is allowed; the block says the check is skipped.
+- **No check command** is allowed, but never silent: the block warns that the
+  check is skipped, every check pass posts a warning note in the executor's
+  chat, and the reviewer's prompt says no test ran (§4.3).
 - **Default reviewer**: an instance of a **different kind** than the
   executor's with a usable credential (a linked `credentialId` that resolves
   and, for `oauth`, is not `oauthSignedOut`), else one of the same kind — the
@@ -243,7 +245,8 @@ Host-authored from typed data only; never the executor's chat, commit text or
    (HEAD at arming; nothing commits during the loop) — `git diff <base>` plus
    untracked files. (To verify: `git diff` / `git status` on a read-only bind.)
 3. **The check result** per repo (command, exit code, duration, output tail),
-   or "no check configured". The reviewer cannot run tests itself.
+   or a loud "no check configured — skipped" telling the reviewer nothing was
+   verified by the host. The reviewer cannot run tests itself.
 4. **Mandatory items**: changed paths that can weaken the check or steer an
    agent — test files (`*.test.*`, `*.spec.*`, `test/`, `tests/`,
    `__tests__/`), CI config (`.github/workflows/`, `.gitlab-ci.yml`,

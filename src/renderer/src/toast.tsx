@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { JSX } from 'react'
 import { Icon } from './components/icons'
+import { CopyButton } from './components/CopyButton'
 
 /**
  * Bottom-right error toast, visually matching the session notification popups
@@ -25,10 +26,11 @@ export function showToast(message: string): void {
  *  its own is one nobody may have read. */
 function Toast({ toast, onDismiss }: { toast: ToastRecord; onDismiss: (id: string) => void }) {
   return (
-    <div className="notification-popup toast-popup">
+    <div className="notification-popup toast-popup has-copy">
       <div className="notification-popup-open">
         <span className="notif-detail">{toast.message}</span>
       </div>
+      <CopyButton text={toast.message} title="copy message" />
       <button className="notif-dismiss" aria-label="Dismiss" onClick={() => onDismiss(toast.id)}>
         <Icon name="x" size={12} />
       </button>

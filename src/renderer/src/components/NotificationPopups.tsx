@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import type { NotificationRecord } from '../../../shared/notifications'
 import type { Tree } from '../../../shared/types'
 import { Icon } from './icons'
+import { CopyButton } from './CopyButton'
 
 function NotificationPopup({ notification, onDismiss, onOpen }: {
   notification: NotificationRecord
@@ -18,11 +19,12 @@ function NotificationPopup({ notification, onDismiss, onOpen }: {
   }, [notification.id, onDismiss, sticky])
 
   return (
-    <div className={sticky ? 'notification-popup toast-popup' : 'notification-popup'}>
+    <div className={`${sticky ? 'notification-popup toast-popup' : 'notification-popup'} has-copy`}>
       <button className="notification-popup-open" onClick={() => onOpen(notification)}>
         <span className="notif-loc mono">{notification.ref.workspace} / {notification.title}</span>
         <span className="notif-detail">{notification.detail}</span>
       </button>
+      <CopyButton text={`${notification.title}\n${notification.detail}`} title="copy notification" />
       <button className="notif-dismiss" aria-label="Dismiss notification" onClick={() => onDismiss(notification.id)}>
         <Icon name="x" size={12} />
       </button>

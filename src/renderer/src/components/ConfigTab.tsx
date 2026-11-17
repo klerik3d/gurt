@@ -1036,8 +1036,9 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
                 )}
               </div>
               {rv.writeRepos.length > 0 && rv.checkless.length > 0 && (
-                <div className="hc-note">
-                  no check configured for {rv.checkless.join(', ')} — the check is skipped (set one in Settings → Repos)
+                <div className="hc-note hc-warn" data-testid="review-checkless">
+                  no check configured for {rv.checkless.join(', ')} — the check is skipped: no tests run before review
+                  (set one in Settings → Repos)
                 </div>
               )}
               {rv.problem && (

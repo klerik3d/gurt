@@ -3,6 +3,7 @@ import type { ChatText, ChatToolCall } from '../../../shared/types'
 import { Icon, type IconName } from './icons'
 import { durationLabel } from '../time'
 import { agentVocabulary, mcpToolOf } from '../../../shared/agentVocabulary'
+import { CopyButton } from './CopyButton'
 
 /** A tool call or a thought — the entries that collapse into one icon strip. */
 type Timed = { id: number; at?: number; endAt?: number }
@@ -140,7 +141,10 @@ function Panel({ entry, live }: { entry: StripEntry; live: boolean }) {
     return (
       <div className="ts-panel-body">
         <div className="ts-sec seclabel">THINK{live ? ' · live' : ''}</div>
-        <div className="thought-text">{entry.text || '…'}</div>
+        <div className="has-copy">
+          <CopyButton text={entry.text} title="copy thought" />
+          <div className="thought-text">{entry.text || '…'}</div>
+        </div>
       </div>
     )
   }
@@ -159,11 +163,17 @@ function Panel({ entry, live }: { entry: StripEntry; live: boolean }) {
           </span>
         )}
       </div>
-      <pre className="tool-in mono">{entry.title}</pre>
+      <div className="has-copy">
+        <CopyButton text={entry.title} title="copy" />
+        <pre className="tool-in mono">{entry.title}</pre>
+      </div>
       {entry.detail && (
         <>
           <div className="ts-sec seclabel">{outLabel}</div>
-          <ToolDetail detail={entry.detail} kind={k} />
+          <div className="has-copy">
+            <CopyButton text={entry.detail} title="copy" />
+            <ToolDetail detail={entry.detail} kind={k} />
+          </div>
         </>
       )}
     </div>

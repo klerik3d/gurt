@@ -88,6 +88,8 @@ export function createAdminSurface(kernel: Kernel): AdminSurface {
     if (!snap) return undefined
     return {
       info: { ...snap.info, startPrompt: '' },
+      // A count, not content: how far the log has run says nothing of the chat.
+      logSeq: snap.logSeq,
       busy: snap.busy,
       resuming: snap.resuming,
       startError: snap.startError,

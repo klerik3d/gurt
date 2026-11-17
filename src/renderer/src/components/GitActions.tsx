@@ -40,10 +40,12 @@ type UpdateDraft = (update: (draft: CommitDraft | undefined) => CommitDraft) => 
 
 /** The selected clone's commit form. Drafts belong to the sidebar so walking to
  * another repository and back preserves the message, including on failed git. */
-export function GitCommitPanel({ ws, task, repo, draft, onDraft, busy, act }: {
+export function GitCommitPanel({ ws, task, repo, local, draft, onDraft, busy, act }: {
   ws: string
   task: string
   repo: string
+  /** A local repo has no forge, so no pull request to open. */
+  local: boolean
   draft: CommitDraft | undefined
   onDraft: UpdateDraft
   busy: boolean
@@ -75,17 +77,24 @@ export function GitCommitPanel({ ws, task, repo, draft, onDraft, busy, act }: {
   }, [ws, task, repo])
 
   const text = draft?.text ?? `gurt: ${task}`
-  const commit = async (push: boolean) => {
+  const commit = async (then: 'commit' | 'push' | 'pr') => {
     if (busy || !text.trim()) return
     await act(async () => {
       await window.gurt.changesCommit(ws, task, repo, text.trim(), commitOptions)
       onDraft((prev) => ({ text: '', edited: false, proposalAt: prev?.proposalAt }))
       // A failed push must not look like a failed commit or invite a second one.
-      if (push) {
+      if (then === 'commit') return
+      try {
+        await window.gurt.changesPush(ws, task, repo, pushOptions)
+      } catch (e) {
+        throw new Error(`Commit created; push failed: ${e instanceof Error ? e.message : String(e)}`, { cause: e })
+      }
+      // Only after the push: the compare page needs the branch on the remote.
+      if (then === 'pr') {
         try {
-          await window.gurt.changesPush(ws, task, repo, pushOptions)
+          await window.gurt.changesOpenPr(ws, task, repo)
         } catch (e) {
-          throw new Error(`Commit created; push failed: ${e instanceof Error ? e.message : String(e)}`, { cause: e })
+          throw new Error(`Commit pushed; opening the PR failed: ${e instanceof Error ? e.message : String(e)}`, { cause: e })
         }
       }
     })
@@ -99,7 +108,7 @@ export function GitCommitPanel({ ws, task, repo, draft, onDraft, busy, act }: {
         placeholder="Commit message" aria-label={`Commit message for ${repo}`} value={text} disabled={busy}
         onChange={(e) => { const text = e.target.value; onDraft((prev) => ({ ...prev, text, edited: true })) }}
         onKeyDown={(e) => {
-          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void commit(e.shiftKey) }
+          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void commit(e.shiftKey ? 'push' : 'commit') }
         }} />
     </label>
     <div className="git-commit-hint">Commits all changed files · Ctrl/⌘+Enter</div>
@@ -114,8 +123,11 @@ export function GitCommitPanel({ ws, task, repo, draft, onDraft, busy, act }: {
     </details>
     {pushOptions.forceWithLease && <div className="git-commit-hint">Push will use --force-with-lease</div>}
     <div className="git-commit-buttons">
-      <button className="btn btn-sm" disabled={busy || !text.trim()} onClick={run(() => commit(false))}>Commit</button>
-      <button className="btn btn-sm btn-primary" disabled={busy || !text.trim()} onClick={run(() => commit(true))}>Commit &amp; Push</button>
+      <button className="btn btn-sm" disabled={busy || !text.trim()} onClick={run(() => commit('commit'))}>Commit</button>
+      <button className={`btn btn-sm${local ? ' btn-primary' : ''}`} disabled={busy || !text.trim()} onClick={run(() => commit('push'))}>Commit &amp; Push</button>
+      {!local && <button className="btn btn-sm btn-primary" disabled={busy || !text.trim()}
+        title="Commit, push the branch, then open the pull request in the browser"
+        onClick={run(() => commit('pr'))}>Commit &amp; Create PR</button>}
     </div>
   </section>
 }
