@@ -1,5 +1,6 @@
 import type { GurtApi, GurtEvents } from '../shared/api'
 import type { Level } from '../shared/log'
+import type { ColorScheme } from '../shared/appearance'
 
 declare global {
   interface Window {
@@ -12,6 +13,9 @@ declare global {
       /** Main's effective log threshold, mirrored at preload time — lets the
        *  renderer skip the IPC send for records main would filter anyway. */
       logLevel: Level
+      /** The scheme in effect when the window opened (Settings → Appearance,
+       *  resolved by main); follow `onColorScheme` for changes. */
+      colorScheme: ColorScheme
       onTreeChanged(cb: () => void): () => void
       onArchiveProgress(cb: (event: GurtEvents['archive-progress']) => void): () => void
       onTerminalChanged(cb: (event: GurtEvents['terminal-changed']) => void): () => void
@@ -36,6 +40,7 @@ declare global {
       /** macOS's reserved ⌘`/⌘⇧` window-cycle, reclaimed by main and forwarded
        *  here — see `GurtEvents['hotkey-cycle-workspace']`. */
       onHotkeyCycleWorkspace(cb: (dir: GurtEvents['hotkey-cycle-workspace']) => void): () => void
+      onColorScheme(cb: (scheme: GurtEvents['color-scheme']) => void): () => void
     }
   }
 }

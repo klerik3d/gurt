@@ -39,6 +39,7 @@ import type { TurnRecord } from './usage'
 import type { LimitSettings, PlanUsage } from './planUsage'
 import type { NotificationPrefs, NotificationRecord } from './notifications'
 import type { HotkeyMap } from './hotkeys'
+import type { Appearance, ColorScheme } from './appearance'
 import type { GcResult, GcSettings } from './gc'
 import type { ArchiveSettings, ScopeArchive } from './archive'
 import type { ChatEntry } from './types'
@@ -445,6 +446,10 @@ export interface GurtApi {
    *  an action missing from the stored file uses its built-in default. */
   getHotkeys(): Promise<HotkeyMap>
   setHotkeys(map: HotkeyMap): Promise<void>
+  /** Settings → Appearance. Main applies a save at once — native theme,
+   *  window background, page zoom — so the renderer only re-reads it. */
+  getAppearance(): Promise<Appearance>
+  setAppearance(appearance: Appearance): Promise<void>
   /** The retained usage ledger, oldest first — one record per agent turn.
    *  Survives relaunches (unlike the notification ring): it is what puts a
    *  finished session on the dashboard's DONE column and marks its failures. */
@@ -685,6 +690,8 @@ const METHODS = {
   setNotificationPrefs: 'write',
   getHotkeys: 'read',
   setHotkeys: 'write',
+  getAppearance: 'none', //     how this host's window looks: the user's, not an operator's
+  setAppearance: 'none',
   getUsage: 'read',
   getPlanUsage: 'read',
   getBootProgress: 'read',
@@ -791,4 +798,9 @@ export interface GurtEvents {
    *  workspace, -1 = previous. Renderer-only on other platforms, where the
    *  ordinary keydown listener already catches the combination. */
   'hotkey-cycle-workspace': 1 | -1
+  /** The scheme in effect changed — a Settings → Appearance save, or the OS
+   *  flipping under `system`. Main resolves it rather than the renderer's
+   *  `prefers-color-scheme`, which `nativeTheme.themeSource` does not reach
+   *  on Linux. */
+  'color-scheme': ColorScheme
 }

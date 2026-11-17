@@ -1,7 +1,7 @@
 import { usePreference, z } from '../persisted'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
-import { Terminal } from '@xterm/xterm'
+import { Terminal, type ITheme } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import type { TerminalInfo, TerminalOutput } from '../../../shared/terminal'
@@ -9,8 +9,33 @@ import { bindingMatchesEvent } from '../../../shared/hotkeys'
 import { useHotkeys } from '../useHotkeys'
 import { Icon } from './icons'
 import { logErr } from '../log'
+import { colorScheme, useColorScheme, type ColorScheme } from '../colorScheme'
 
 const scopeKey = (ws: string, task: string) => JSON.stringify([ws, task])
+
+/** xterm takes literal colours, not CSS variables — these mirror the palette
+ *  in styles.css. Programs print ANSI white/bright white expecting a dark
+ *  background, so the light palette darkens them, and a minimum contrast ratio
+ *  keeps any other pairing a program picks legible on the light background. */
+const TERMINAL_THEME: Record<ColorScheme, ITheme> = {
+  dark: {
+    background: '#100f0d', foreground: '#eae8e4', cursor: '#eae8e4',
+    selectionBackground: '#3f3c35', black: '#100f0d', brightBlack: '#726e66',
+    red: '#e5544b', green: '#6cc47f', yellow: '#e0a020', blue: '#4da3ff',
+    magenta: '#c792ea', cyan: '#4ec9b0', white: '#eae8e4'
+  },
+  light: {
+    background: '#ffffff', foreground: '#1d1c1a', cursor: '#1d1c1a',
+    selectionBackground: '#b6d2f2', black: '#1d1c1a', brightBlack: '#6b675f',
+    red: '#c4362c', green: '#2b7f41', yellow: '#946000', blue: '#1a6ccc',
+    magenta: '#8a3fb0', cyan: '#0e7568', white: '#6b675f', brightWhite: '#8a857b'
+  }
+}
+
+const terminalColors = (scheme: ColorScheme) => ({
+  theme: TERMINAL_THEME[scheme],
+  minimumContrastRatio: scheme === 'light' ? 4.5 : 1
+})
 
 /** Always mounted: hiding a scope must preserve xterm's screen, scroll position,
  * selection and partially typed input, as well as the main process's shell. */
@@ -34,10 +59,7 @@ function TerminalSession({ info, visible }: { info: TerminalInfo; visible: boole
       cols: 80, rows: 24, cursorBlink: true, scrollback: 10000,
       fontFamily: "'IBM Plex Mono', ui-monospace, Menlo, monospace",
       fontSize: 12,
-      theme: { background: '#100f0d', foreground: '#eae8e4', cursor: '#eae8e4',
-        selectionBackground: '#3f3c35', black: '#100f0d', brightBlack: '#726e66',
-        red: '#e5544b', green: '#6cc47f', yellow: '#e0a020', blue: '#4da3ff',
-        magenta: '#c792ea', cyan: '#4ec9b0', white: '#eae8e4' }
+      ...terminalColors(colorScheme())
     })
     const fitAddon = new FitAddon()
     term.loadAddon(fitAddon)
@@ -107,6 +129,11 @@ function TerminalSession({ info, visible }: { info: TerminalInfo; visible: boole
       term.dispose()
     }
   }, [info.id])
+
+  const scheme = useColorScheme()
+  useEffect(() => {
+    if (terminal.current) Object.assign(terminal.current.options, terminalColors(scheme))
+  }, [scheme])
 
   useEffect(() => {
     if (visible && ready) {

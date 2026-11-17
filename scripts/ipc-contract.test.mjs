@@ -213,6 +213,7 @@ test('preload exposes nothing beyond API_METHODS + the known event hooks', () =>
   const NON_METHOD_KEYS = new Set([
     'log',
     'logLevel',
+    'colorScheme',
     'onTreeChanged',
     'onTerminalChanged',
     'onTerminalOutput',
@@ -230,7 +231,8 @@ test('preload exposes nothing beyond API_METHODS + the known event hooks', () =>
     'onProxyTraffic',
     'onPiiTable',
     'onMcpFail',
-    'onHotkeyCycleWorkspace'
+    'onHotkeyCycleWorkspace',
+    'onColorScheme'
   ])
   const extra = Object.keys(api).filter((k) => !apiSet.has(k) && !NON_METHOD_KEYS.has(k))
   assert.deepEqual(extra, [], `window.gurt exposes keys that are neither API methods nor known event hooks: ${extra}`)

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Compartment, EditorState } from '@codemirror/state'
 import { EditorView, keymap } from '@codemirror/view'
 import { indentWithTab } from '@codemirror/commands'
-import { codeEditorSetup, codeLanguage } from '../codeEditor'
+import { codeEditorSetup, codeLanguage, schemeRefresh } from '../codeEditor'
 import type { FilesController, FileTab } from '../useFiles'
 import { fileKey } from '../../../shared/files'
 import { logErr } from '../log'
@@ -55,11 +55,11 @@ export function FileEditor({ tab, controller, onView, onNavigate }: {
       } })
     ]
     const state = memory?.generation === generation
-      ? memory.state.update({ effects: handlers.reconfigure(callbacks) }).state
+      ? memory.state.update({ effects: [handlers.reconfigure(callbacks), ...schemeRefresh(memory.state)] }).state
       : EditorState.create({
           doc: current.content,
           extensions: [
-            handlers.of(callbacks), codeEditorSetup,
+            handlers.of(callbacks), codeEditorSetup(),
             language.of([]), EditorView.contentAttributes.of({ 'aria-label': `Edit ${current.file.path}` }),
             ...(/\r\n/.test(current.content) && !/(?<!\r)\n/.test(current.content) ? [EditorState.lineSeparator.of('\r\n')] : [])
           ]

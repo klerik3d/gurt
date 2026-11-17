@@ -36,6 +36,8 @@ import { createLocalRepo, publishLocalRepo } from './localRepo'
 import { normalizeNotificationPrefs } from '../shared/notifications'
 import { sanitizeHotkeys } from '../shared/hotkeys'
 import { initAppMenu } from './menu'
+import { applyAppearance } from './appearance'
+import { sanitizeAppearance } from '../shared/appearance'
 import { machineDoctor, machinePrepare, startDockerApp } from './doctor'
 import { cancelFirstRunSignIn, firstRunSignIn, firstRunStart } from './firstRun'
 import { PREPARE_LOG_KEY, sanitizeWelcomeMode } from '../shared/doctor'
@@ -526,6 +528,12 @@ export function registerIpc(): void {
       // needs (menu.ts) — otherwise a remap away from ⌘`/⌘⇧` would leave the
       // old combination silently hijacked until the next launch.
       initAppMenu(normalized)
+    },
+    getAppearance: () => store.getAppearance(),
+    setAppearance: async (appearance) => {
+      const normalized = sanitizeAppearance(appearance, await store.getAppearance())
+      await store.setAppearance(normalized)
+      applyAppearance(normalized)
     },
     getUsage: async () => {
       // The first read can beat the ledger's own load off disk; waiting on it

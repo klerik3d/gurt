@@ -172,8 +172,8 @@ Wireframes come next, after this document's scope is agreed.
   tokens as the desktop (`--app`, `--surface`, `--panel`, `--text`,
   `--dim`, `--accent`, `--green`, `--yellow`, `--red` in
   `src/renderer/src/styles.css`), IBM Plex Sans for UI, IBM Plex Mono for
-  code, paths and commands. The desktop is dark-only; the app starts
-  dark-only too (§8 Q2).
+  code, paths and commands. The desktop defaults to dark (a light palette
+  is opt-in under Settings → Appearance); the app starts dark-only (§8 Q2).
 - **The same status language.** Colour, dot shape and label per status, as
   in `src/renderer/src/status.ts`: working = green pulsing, needs you =
   yellow, queued = accent, draft = hollow faint, error = red. Never colour

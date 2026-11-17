@@ -10,6 +10,7 @@ import { getHotkeys } from './store'
 import { gurtRoot } from './paths'
 import { initAutoUpdater } from './update'
 import { initAppMenu } from './menu'
+import { attachAppearance, initAppearance, windowBackground } from './appearance'
 import { startRemoteAccess, type RemoteAccess } from './remote'
 
 const log = createLogger('app')
@@ -59,7 +60,7 @@ function createWindow(): void {
     height: 900,
     title: 'gurt',
     icon: iconPath,
-    backgroundColor: '#100f0d',
+    backgroundColor: windowBackground(),
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     // Centered in the 44px title bar (lights are 12px tall).
     trafficLightPosition: { x: 16, y: 16 },
@@ -69,6 +70,8 @@ function createWindow(): void {
       nodeIntegration: false
     }
   })
+
+  attachAppearance(win)
 
   win.webContents.on('will-prevent-unload', (event) => {
     const response = dialog.showMessageBoxSync(win, {
@@ -149,6 +152,7 @@ void app.whenReady().then(async () => {
     .catch((e: unknown) => log.error('internal.fail', { site: 'remote-start', err: e }))
   initAutoUpdater()
   initAppMenu(await getHotkeys())
+  await initAppearance().catch((e: unknown) => log.error('internal.fail', { site: 'appearance-load', err: e }))
   createWindow()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

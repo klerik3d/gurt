@@ -48,6 +48,7 @@ export type IconName =
   | 'edit'
   | 'think'
   | 'move'
+  | 'sun'
 
 const PATHS: Record<IconName, JSX.Element> = {
   list: (
@@ -307,6 +308,13 @@ const PATHS: Record<IconName, JSX.Element> = {
       <line x1="4" y1="18" x2="8" y2="18" />
       <polyline points="16 14 19 17.5 22 14" />
       <line x1="19" y1="6" x2="19" y2="17" />
+    </>
+  ),
+  // Settings → Appearance.
+  sun: (
+    <>
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
     </>
   ),
   info: (

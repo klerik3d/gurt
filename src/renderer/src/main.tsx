@@ -2,6 +2,7 @@ import React from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App'
 import { installErrorHooks } from './log'
+import { initColorScheme } from './colorScheme'
 // Design typography (bundled — the CSP blocks remote fonts): IBM Plex Sans for
 // UI text, IBM Plex Mono for paths, labels, counters and code.
 import '@fontsource/ibm-plex-sans/400.css'
@@ -14,6 +15,7 @@ import '@fontsource/ibm-plex-mono/600.css'
 import './styles.css'
 
 installErrorHooks()
+initColorScheme()
 
 createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

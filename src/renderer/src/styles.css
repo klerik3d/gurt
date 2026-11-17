@@ -4,8 +4,13 @@
   padding: 0;
 }
 
-/* Warm graphite palette — design handoff `gurt Redesign` (dark theme only). */
+/* Warm graphite palette — design handoff `gurt Redesign`. Dark is the base;
+   the light palette below overrides it when the scheme in effect is light
+   (Settings → Appearance, resolved by main and set as `<html data-theme>` by
+   colorScheme.ts). The terminal and code editor take their colours from JS —
+   keep TerminalSidebar.tsx's TERMINAL_THEME in step. */
 :root {
+  color-scheme: dark;
   --app: #100f0d;
   --surface: #1a1917;
   --panel: #1f1e1b;
@@ -21,9 +26,47 @@
   --green: #6cc47f;
   --yellow: #e0a020;
   --red: #e5544b;
+  /* Hover fills of the solid accent / danger buttons. */
+  --accent-hover: #66b1ff;
+  --red-hover: #ec6a62;
+  --on-red: #fff;
+  /* Text of added / removed lines in the chat's inline diffs. */
+  --diff-add-text: #a9d9b3;
+  --diff-del-text: #d99a94;
+  --selection: #31527680;
+  /* Drop shadows are tuned for the dark page; on paper they read as smudges. */
+  --shadow-strength: 1;
   --ui: 'IBM Plex Sans', system-ui, sans-serif;
   --mono: 'IBM Plex Mono', ui-monospace, Menlo, monospace;
-  --glow: 0 0 0 3px rgba(77, 163, 255, 0.12);
+  --glow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+/* Warm paper — the same hues, lifted: `--app` is the page, `--surface` and
+   `--panel` the cards on it, darkening toward `--hover` instead of
+   lightening. Status colours are deepened to hold contrast on white. */
+:root[data-theme='light'] {
+  color-scheme: light;
+  --app: #ffffff;
+  --surface: #f7f6f3;
+  --panel: #f0eeea;
+  --hover: #e8e5e0;
+  --border: #e2dfd8;
+  --border2: #cfcac1;
+  --text: #1d1c1a;
+  --dim: #57534c;
+  --faint: #858076;
+  --accent: #1a6ccc;
+  --on-accent: #fff;
+  --code: #0e7568;
+  --green: #2b7f41;
+  --yellow: #946000;
+  --red: #c4362c;
+  --accent-hover: #155cb0;
+  --red-hover: #a82e25;
+  --diff-add-text: #1f5f30;
+  --diff-del-text: #8f2a22;
+  --selection: #b6d2f2;
+  --shadow-strength: 0.35;
 }
 
 html,
@@ -56,13 +99,13 @@ body {
   height: 10px;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(114, 110, 102, 0.4);
+  background: color-mix(in srgb, var(--faint) 40%, transparent);
   border-radius: 4px;
   border: 2px solid transparent;
   background-clip: padding-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(114, 110, 102, 0.6);
+  background: color-mix(in srgb, var(--faint) 60%, transparent);
   background-clip: padding-box;
 }
 ::-webkit-scrollbar-track {
@@ -210,18 +253,18 @@ button:disabled {
   font-weight: 600;
 }
 .btn-primary:hover:not(:disabled) {
-  background: #66b1ff;
-  border-color: #66b1ff;
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
 }
 .btn-danger {
   background: var(--red);
   border-color: var(--red);
-  color: #fff;
+  color: var(--on-red);
   font-weight: 600;
 }
 .btn-danger:hover:not(:disabled) {
-  background: #ec6a62;
-  border-color: #ec6a62;
+  background: var(--red-hover);
+  border-color: var(--red-hover);
 }
 .btn-sm {
   padding: 5px 12px;
@@ -510,7 +553,7 @@ textarea.input {
   background: var(--surface);
   border: 1px solid var(--border2);
   border-radius: 6.667px;
-  box-shadow: 0 16px 40px -8px rgba(0, 0, 0, 0.7);
+  box-shadow: 0 16px 40px -8px rgb(0 0 0 / calc(0.7 * var(--shadow-strength)));
   padding: 6px;
   z-index: 40;
 }
@@ -1296,7 +1339,7 @@ button.sb-session {
   color: var(--dim);
   font-size: 12px;
   cursor: pointer;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+  box-shadow: 0 2px 10px rgb(0 0 0 / calc(0.25 * var(--shadow-strength)));
   transform: translateX(-50%);
   transition:
     transform 0.2s ease,
@@ -1628,12 +1671,12 @@ button.sb-session {
   color: var(--dim);
 }
 .diffline.add {
-  background: rgba(108, 196, 127, 0.1);
-  color: #a9d9b3;
+  background: color-mix(in srgb, var(--green) 10%, transparent);
+  color: var(--diff-add-text);
 }
 .diffline.del {
-  background: rgba(229, 84, 75, 0.1);
-  color: #d99a94;
+  background: color-mix(in srgb, var(--red) 10%, transparent);
+  color: var(--diff-del-text);
 }
 .diffline.hunk {
   color: var(--accent);
@@ -1645,7 +1688,7 @@ button.sb-session {
   border: 1px solid var(--border2);
   border-radius: 6.667px;
   overflow: hidden;
-  box-shadow: 0 8px 24px -12px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 8px 24px -12px rgb(0 0 0 / calc(0.5 * var(--shadow-strength)));
 }
 .perm-card.settled {
   box-shadow: none;
@@ -1910,7 +1953,7 @@ button.sb-session {
   flex: none;
 }
 .send-btn:hover:not(:disabled) {
-  background: #66b1ff;
+  background: var(--accent-hover);
 }
 .send-btn:disabled {
   opacity: 0.45;
@@ -1947,7 +1990,7 @@ button.sb-session {
   background: var(--surface);
   border: 1px solid var(--border2);
   border-radius: 8px;
-  box-shadow: 0 24px 60px -20px rgba(0, 0, 0, 0.7);
+  box-shadow: 0 24px 60px -20px rgb(0 0 0 / calc(0.7 * var(--shadow-strength)));
   z-index: 30;
   overflow: hidden;
 }
@@ -2138,7 +2181,7 @@ button.sb-session {
   max-height: 90vh;
   display: flex;
   flex-direction: column;
-  box-shadow: 0 32px 80px -24px rgba(0, 0, 0, 0.75);
+  box-shadow: 0 32px 80px -24px rgb(0 0 0 / calc(0.75 * var(--shadow-strength)));
 }
 .modal-wide {
   width: 760px;
@@ -2456,7 +2499,7 @@ button.sb-session {
   text-transform: none;
   white-space: normal;
   color: var(--dim);
-  box-shadow: 0 12px 32px -12px rgba(0, 0, 0, 0.6);
+  box-shadow: 0 12px 32px -12px rgb(0 0 0 / calc(0.6 * var(--shadow-strength)));
 }
 .info-dot:hover .info-pop,
 .info-dot:focus .info-pop {
@@ -3473,7 +3516,7 @@ button.sb-session {
   border: 1px solid var(--border2);
   border-radius: 9.333px;
   overflow: hidden;
-  box-shadow: 0 40px 90px -24px rgba(0, 0, 0, 0.8);
+  box-shadow: 0 40px 90px -24px rgb(0 0 0 / calc(0.8 * var(--shadow-strength)));
   display: flex;
   flex-direction: column;
 }
@@ -3557,7 +3600,7 @@ button.sb-session {
   width: 380px;
   max-width: 90vw;
   padding: 18px;
-  box-shadow: 0 32px 80px -24px rgba(0, 0, 0, 0.75);
+  box-shadow: 0 32px 80px -24px rgb(0 0 0 / calc(0.75 * var(--shadow-strength)));
 }
 .dialog-title {
   font-weight: 600;
@@ -3595,15 +3638,15 @@ button.sb-session {
   font-weight: 600;
 }
 .dialog-ok:hover {
-  background: #66b1ff !important;
+  background: var(--accent-hover) !important;
 }
 .dialog-ok.danger {
   background: var(--red);
   border-color: var(--red) !important;
-  color: #fff !important;
+  color: var(--on-red) !important;
 }
 .dialog-ok.danger:hover {
-  background: #ec6a62 !important;
+  background: var(--red-hover) !important;
 }
 
 /* ---- notifications: bell + popover panel (§4.1, §4.2) ---- */
@@ -3621,7 +3664,7 @@ button.sb-session {
   padding: 0 3px;
   border-radius: 4.667px;
   background: var(--red);
-  color: #fff;
+  color: var(--on-red);
   font-family: var(--mono);
   font-size: 9px;
   font-weight: 600;
@@ -3637,7 +3680,7 @@ button.sb-session {
   background: var(--surface);
   border: 1px solid var(--border2);
   border-radius: 8px;
-  box-shadow: 0 24px 60px -16px rgba(0, 0, 0, 0.75);
+  box-shadow: 0 24px 60px -16px rgb(0 0 0 / calc(0.75 * var(--shadow-strength)));
   display: flex;
   flex-direction: column;
   z-index: 60;
@@ -4473,7 +4516,7 @@ button.sb-session {
   border: 1px solid var(--border2);
   border-radius: 8px;
   background: var(--surface);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 8px 24px rgb(0 0 0 / calc(0.3 * var(--shadow-strength)));
   pointer-events: auto;
 }
 .notification-popup-open {
@@ -4517,7 +4560,7 @@ button.sb-session {
   font-size: 12px;
 }
 .file-tree-row:hover { background: var(--hover); color: var(--text); }
-.file-tree-row.selected { background: #4da3ff14; color: var(--text); }
+.file-tree-row.selected { background: color-mix(in srgb, var(--accent) 8%, transparent); color: var(--text); }
 
 .file-tree:focus-visible { outline: none; }
 .sb-tree:focus-visible .file-tree-row.cursor { background: var(--hover); color: var(--text); box-shadow: inset 0 0 0 1px var(--border2); }
@@ -4554,14 +4597,14 @@ button.sb-session {
 .code-diff .cm-mergeViewEditors { min-height: 100%; }
 .code-diff .cm-mergeViewEditor { min-width: 0; }
 .code-diff .cm-scroller { overflow: auto; }
-.code-diff .cm-merge-a .cm-changedLine, .code-diff .cm-deletedChunk { background: #e5544b0d; }
-.code-diff .cm-merge-b .cm-changedLine { background: #6cc47f0d; }
-.code-diff .cm-merge-a .cm-changedText, .code-diff .cm-deletedText { background: #e5544b26; background-image: none; }
-.code-diff .cm-merge-b .cm-changedText { background: #6cc47f26; background-image: none; }
+.code-diff .cm-merge-a .cm-changedLine, .code-diff .cm-deletedChunk { background: color-mix(in srgb, var(--red) 5%, transparent); }
+.code-diff .cm-merge-b .cm-changedLine { background: color-mix(in srgb, var(--green) 5%, transparent); }
+.code-diff .cm-merge-a .cm-changedText, .code-diff .cm-deletedText { background: color-mix(in srgb, var(--red) 15%, transparent); background-image: none; }
+.code-diff .cm-merge-b .cm-changedText { background: color-mix(in srgb, var(--green) 15%, transparent); background-image: none; }
 .code-diff .cm-deletedLine del { text-decoration: none; }
 .code-diff .cm-collapsedLines { color: var(--faint); background: var(--surface); border-color: var(--border); }
 .file-statusbar { display: flex; flex: none; justify-content: flex-end; gap: 16px; padding: 4px 12px; font-size: 10px; color: var(--faint); border-top: 1px solid var(--border); }
-.file-error { padding: 8px 12px; color: var(--red); background: #e5544b0a; font-size: 12px; overflow-wrap: anywhere; flex: none; }
+.file-error { padding: 8px 12px; color: var(--red); background: color-mix(in srgb, var(--red) 4%, transparent); font-size: 12px; overflow-wrap: anywhere; flex: none; }
 .file-navigation { display: flex; flex-direction: column; max-height: 35%; flex: none; border-top: 1px solid var(--border2); background: var(--surface); }
 .file-navigation-head { display: flex; align-items: center; gap: 12px; padding: 5px 12px; font-size: 11px; }
 .file-navigation-list { overflow-y: auto; min-height: 0; }
@@ -4739,7 +4782,7 @@ button { user-select: none; }
   background: var(--panel);
   border: 1px solid var(--border2);
   border-radius: 5.333px;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 6px 18px rgb(0 0 0 / calc(0.35 * var(--shadow-strength)));
 }
 .ts-panel > .ts-panel-head {
   display: flex;
@@ -5063,6 +5106,8 @@ button { user-select: none; }
 .archive-settings .fld-hint { margin-top: 6px; font-weight: 400; line-height: 1.5; }
 .archive-settings .archive-number { flex: 0 0 88px; width: 88px; }
 .archive-settings .set-row > .chip-btn { flex: none; }
+.appearance-settings .set-row-label { flex: 1; }
+.appearance-settings .fld-hint { margin-top: 6px; font-weight: 400; line-height: 1.5; }
 .archive-policy-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 8px; }
 
 .archive-progress { position: fixed; bottom: 36px; right: 20px; z-index: 1500; display: flex; align-items: flex-start; gap: 12px; width: min(390px, calc(100vw - 40px)); padding: 16px; }
@@ -5149,6 +5194,11 @@ button { user-select: none; }
   color: var(--label);
   border: 1px solid color-mix(in srgb, var(--label) 55%, transparent);
   background: color-mix(in srgb, var(--label) 14%, transparent);
+}
+/* Label colours are picked for the dark page; on paper the lighter ones
+   (yellow, teal) wash out as text, so the ink is darkened toward black. */
+:root[data-theme='light'] .scope-label {
+  color: color-mix(in srgb, var(--label) 65%, #000);
 }
 .label-editor {
   display: flex;
