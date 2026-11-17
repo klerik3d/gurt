@@ -2,7 +2,7 @@ import { taskKey } from '../../../shared/keys'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FileEntry, ScopeFile } from '../../../shared/files'
 import type { RepoChanges, Tree } from '../../../shared/types'
-import { ARTIFACTS, fileKey, imageType } from '../../../shared/files'
+import { ARTIFACTS, CONTAINER_ROOT, fileKey, imageType } from '../../../shared/files'
 import { usePreference, z } from '../persisted'
 import { Icon } from './icons'
 import { sortTasks, type ScopeListController } from '../useScopeList'
@@ -211,7 +211,7 @@ export function FilesSidebar({ controller, tree, collapsed, setCollapse, changes
             open={expandable(row) ? open : undefined} selected={selected} cursor={cursor === key}
             id={`file-tree-row-${index}`} disabled={row.kind === 'symlink'}
             title={row.kind === 'symlink' ? `${row.path} · Symbolic links cannot be opened`
-              : row.path === ARTIFACTS ? 'artifacts · shared by every session of this scope (/workspaces/artifacts), not part of any repository'
+              : row.path === ARTIFACTS ? `${ARTIFACTS} · shared by every session of this scope (${CONTAINER_ROOT}/${ARTIFACTS}), not part of any repository`
               : row.path || row.task}
             onContextMenu={(event) => { event.preventDefault(); openMenu(row, event.clientX, event.clientY) }}
             onClick={() => activate(row)} />}

@@ -64,6 +64,7 @@ import type { CreateAction, SessionDraftPatch } from '../shared/api'
 import { taskKey } from '../shared/keys'
 import { sanitizeSkillSelection } from '../shared/skills'
 import { MCP_DEFS } from '../shared/mcp'
+import { CONTAINER_ROOT } from '../shared/files'
 import type { SettledTurn } from '../shared/reviewLoop'
 import { isLimitReply, limitResetAt, turnOutcome, usageFields } from '../shared/usage'
 import { formatResetAt, type PlanHold } from '../shared/planUsage'
@@ -754,7 +755,7 @@ export function assertVerdictFits(repos: readonly string[], v: ReviewVerdict): v
     if (!repos.includes(parts[0] ?? '') || parts.includes('..'))
       throw new Error(
         `finding "${f.id}": file "${f.file}" names no repository of this session — write it as ` +
-          `<repo>/<path> relative to /workspaces, <repo> one of: ${repos.join(', ') || '(none)'}`
+          `<repo>/<path> relative to ${CONTAINER_ROOT}, <repo> one of: ${repos.join(', ') || '(none)'}`
       )
   }
 }

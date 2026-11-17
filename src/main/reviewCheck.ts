@@ -26,6 +26,7 @@
 import { StringDecoder } from 'node:string_decoder'
 import { REVIEW_LOOP, type CheckResult } from '../shared/reviewLoop'
 import { loginShell } from './provision'
+import { CONTAINER_ROOT } from '../shared/files'
 
 // --- bounded capture (§5.3) -------------------------------------------------
 
@@ -241,7 +242,7 @@ export class CheckRunner {
 
     let child: ExecChild
     try {
-      child = this.deps.exec(loginShell(req.command), `/workspaces/${req.repo}`)
+      child = this.deps.exec(loginShell(req.command), `${CONTAINER_ROOT}/${req.repo}`)
     } catch (e) {
       return { status: 'failed-to-run', error: `could not start the check: ${errText(e)}` }
     }
