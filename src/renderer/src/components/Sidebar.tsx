@@ -933,7 +933,7 @@ function ScopeNameHint({ draft, typed }: { draft: { name: string; error: string 
   return null
 }
 
-function RenameInput({
+export function RenameInput({
   value,
   error,
   onChange,

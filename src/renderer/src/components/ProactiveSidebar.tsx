@@ -4,6 +4,10 @@ import type { ProactiveAgentView, ProactiveRun } from '../../../shared/proactive
 import type { Tone } from '../status'
 import { Icon, Dot } from './icons'
 import { LabelTag } from './tags'
+import { RenameInput, scopeNamesOf } from './Sidebar'
+import { scopeNameInput } from '../../../shared/scopeName'
+import { alertDialog } from '../dialog'
+import { run } from '../async'
 
 /** What an agent's dot says: running, on schedule, or switched off. */
 export function proactiveDot(a: ProactiveAgentView): {
@@ -57,7 +61,8 @@ export function ProactiveSidebar({
   selectedRun,
   onSelect,
   onSelectRun,
-  onNew
+  onNew,
+  onRenamed
 }: {
   tree: Tree | null
   ws: string | null
@@ -67,6 +72,7 @@ export function ProactiveSidebar({
   onSelect: (name: string) => void
   onSelectRun: (id: string) => void
   onNew: () => void
+  onRenamed: (newName: string) => void
 }) {
   const agents = tree?.workspaces.find((w) => w.name === ws)?.proactive ?? []
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
@@ -76,6 +82,25 @@ export function ProactiveSidebar({
       if (!next.delete(name)) next.add(name)
       return next
     })
+  const wsData = tree?.workspaces.find((w) => w.name === ws)
+  // Rename works as in the scope tree: Enter / F2 on a row, or a double click.
+  const [renaming, setRenaming] = useState<{ name: string; draft: string } | null>(null)
+  const rename = scopeNameInput(renaming?.draft ?? '', scopeNamesOf(wsData), renaming?.name)
+  const startRename = (a: ProactiveAgentView): void => {
+    if (!a.activeRun) setRenaming({ name: a.name, draft: a.name })
+  }
+  const commitRename = async (): Promise<void> => {
+    const cur = renaming
+    if (!cur || !ws) return
+    setRenaming(null)
+    if (!rename.name || rename.name === cur.name || rename.error) return
+    try {
+      await window.gurt.renameTask(ws, cur.name, rename.name)
+      onRenamed(rename.name)
+    } catch (e) {
+      await alertDialog(e instanceof Error ? e.message : String(e))
+    }
+  }
   return (
     <aside className="sidebar" style={{ width }}>
       <div className="sb-head">
@@ -108,7 +133,16 @@ export function ProactiveSidebar({
                 aria-expanded={open}
                 aria-selected={a.name === selected && !selectedRun}
                 title={dot.label}
+                tabIndex={0}
                 onClick={() => onSelect(a.name)}
+                onDoubleClick={() => startRename(a)}
+                onKeyDown={(e) => {
+                  if (e.target !== e.currentTarget) return
+                  if (e.key === 'Enter' || e.key === 'F2') {
+                    e.preventDefault()
+                    startRename(a)
+                  }
+                }}
               >
                 <span
                   className="sb-chev"
@@ -120,7 +154,17 @@ export function ProactiveSidebar({
                   <Icon name="chevron" size={11} style={open ? undefined : { transform: 'rotate(-90deg)' }} />
                 </span>
                 <Dot tone={dot.tone} pulse={dot.pulse} hollow={dot.hollow} />
-                <span className="sb-task-name">{a.name}</span>
+                {renaming?.name === a.name ? (
+                  <RenameInput
+                    value={renaming.draft}
+                    error={rename.error}
+                    onChange={(draft) => setRenaming({ name: a.name, draft })}
+                    onCommit={run(commitRename)}
+                    onCancel={() => setRenaming(null)}
+                  />
+                ) : (
+                  <span className="sb-task-name">{a.name}</span>
+                )}
                 {a.config.label && <LabelTag label={a.config.label} />}
                 <span className="spacer" />
                 <span className="sb-session-client">{a.config.cron ?? everyLabel(a.config.everyMinutes)}</span>

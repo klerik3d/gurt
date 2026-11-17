@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { SessionSnapshot, Tree } from '../../../shared/types'
 import type { ProactiveConfig } from '../../../shared/proactive'
 import {
@@ -9,8 +9,6 @@ import {
   isPendingScope,
   cronError
 } from '../../../shared/proactive'
-import { scopeNameInput } from '../../../shared/scopeName'
-import { scopeNamesOf } from './Sidebar'
 import { LabelTag } from './tags'
 import { alertDialog, confirmDialog } from '../dialog'
 import { logErr } from '../log'
@@ -37,8 +35,7 @@ export function ProactivePane({
   name,
   snapshots,
   onSelectTask,
-  onDeleted,
-  onRenamed
+  onDeleted
 }: {
   tree: Tree | null
   ws: string
@@ -46,7 +43,6 @@ export function ProactivePane({
   snapshots: Record<string, SessionSnapshot>
   onSelectTask: (ws: string, task: string) => void
   onDeleted: () => void
-  onRenamed: (newName: string) => void
 }) {
   const wsData = tree?.workspaces.find((w) => w.name === ws)
   const agent = wsData?.proactive.find((a) => a.name === name)
@@ -94,8 +90,6 @@ export function ProactivePane({
     setLabelHex(agent?.config.label?.color ?? '')
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [labelKey])
-  const [renaming, setRenaming] = useState<string | null>(null)
-  const renameCancelled = useRef(false)
   const [advanced, setAdvanced] = useState(false)
   const [scopesShown, setScopesShown] = useState(PAGE)
 
@@ -143,24 +137,6 @@ export function ProactivePane({
     else setLabelHex(label.color)
   }
 
-  const rename = scopeNameInput(renaming ?? '', scopeNamesOf(wsData), name)
-  const commitRename = async (): Promise<void> => {
-    const typed = renaming
-    setRenaming(null)
-    // Escape unmounts the input, whose blur then lands here.
-    if (renameCancelled.current) {
-      renameCancelled.current = false
-      return
-    }
-    if (typed === null || !rename.name || rename.name === name || rename.error) return
-    try {
-      await window.gurt.renameTask(ws, name, rename.name)
-      onRenamed(rename.name)
-    } catch (e) {
-      await alertDialog(e instanceof Error ? e.message : String(e))
-    }
-  }
-
   const dot = proactiveDot(agent)
   // The scopes this agent raised that still exist; deleting one is closing it.
   const scopes = (wsData?.tasks ?? [])
@@ -186,38 +162,7 @@ export function ProactivePane({
           <span className="dim" style={{ fontWeight: 400 }}>
             {ws} /
           </span>{' '}
-          {renaming === null ? (
-            <>
-              <span onDoubleClick={() => { renameCancelled.current = false; setRenaming(name) }}>{name}</span>
-              <button
-                className="icon-sq"
-                title="rename this proactive agent"
-                aria-label="rename"
-                disabled={!!agent.activeRun}
-                onClick={() => { renameCancelled.current = false; setRenaming(name) }}
-              >
-                <Icon name="edit" size={12} />
-              </button>
-            </>
-          ) : (
-            <input
-              className="input mono pa-rename"
-              aria-label="agent name"
-              aria-invalid={!!rename.error}
-              title={rename.error ?? (rename.name && rename.name !== renaming.trim() ? `Branch: ${rename.name}` : '')}
-              autoFocus
-              value={renaming}
-              onChange={(e) => setRenaming(e.target.value)}
-              onBlur={run(commitRename)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') e.currentTarget.blur()
-                if (e.key === 'Escape') {
-                  renameCancelled.current = true
-                  setRenaming(null)
-                }
-              }}
-            />
-          )}
+          {name}
         </span>
         {label && <LabelTag label={label} />}
         <Dot tone={dot.tone} pulse={dot.pulse} hollow={dot.hollow} />

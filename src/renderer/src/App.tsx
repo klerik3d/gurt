@@ -1150,6 +1150,7 @@ export default function App() {
                   }}
                   onSelectRun={selectSession}
                   onNew={() => setNewProactive(true)}
+                  onRenamed={setProactiveAgent}
                 />
               )}
               <div className="sidebar-resizer" onMouseDown={startSidebarResize} />
@@ -1218,7 +1219,6 @@ export default function App() {
                     selectTask(w, t)
                   }}
                   onDeleted={() => setProactiveAgent(null)}
-                  onRenamed={setProactiveAgent}
                 />
               )}
               {workMode === 'proactive' && !openProactive && (

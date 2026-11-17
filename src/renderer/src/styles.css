@@ -1118,13 +1118,13 @@ button.sb-session {
   box-shadow: inset 0 0 0 1px var(--border2);
 }
 /* Every session row of the scope tree reserves the scope row's fold slot, so
-   dots line up whether or not a row has reviews to fold. A reviewer is one
-   indent level deeper. */
+   dots line up whether or not a row has reviews to fold. Like the file tree,
+   each level of nesting indents by 14px: scope 16, session 30, reviewer 44. */
 .sb-session.foldable {
-  padding-left: 16px;
+  padding-left: 30px;
 }
 .sb-session.foldable.nested {
-  padding-left: 30px;
+  padding-left: 44px;
 }
 .sb-session.nested .sb-session-name {
   font-size: 12.5px;
@@ -2352,11 +2352,10 @@ button.sb-session {
 }
 
 /* What gurt itself ran — the review loop's check, reviewer, verdicts — set
-   apart from the model's own tool rows by the badge and the yellow rail. */
+   apart from the model's own tool rows by the badge. */
 .host-block,
 .host-note {
   border: 1px solid var(--border2);
-  border-left: 2px solid var(--yellow);
   border-radius: 6px;
   background: var(--app);
   font-size: 12px;
@@ -2364,13 +2363,10 @@ button.sb-session {
 }
 .host-block[data-status='failed'],
 .host-note[data-tone='error'] {
-  border-left-color: var(--red);
+  border-color: var(--red);
 }
 .host-note[data-tone='ok'] {
-  border-left-color: var(--green);
-}
-.host-note[data-tone='info'] {
-  border-left-color: var(--border2);
+  border-color: var(--green);
 }
 .host-head {
   display: flex;
@@ -5229,8 +5225,4 @@ button { user-select: none; }
 }
 .label-hex[aria-invalid="true"] {
   border-color: var(--red);
-}
-.pa-rename.input {
-  font-size: 13px;
-  width: 200px;
 }
