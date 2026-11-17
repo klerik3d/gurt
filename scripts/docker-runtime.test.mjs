@@ -615,6 +615,7 @@ test('ensure (executor, image env): clone → create with the clone at /workspac
   const [create] = fake.of('create')
   const mounts = create.args.flatMap((x, i) => (create.args[i - 1] === '--mount' ? [x] : []))
   assert.ok(mounts.includes(`type=bind,source=${clone},target=/workspaces/repo`), mounts.join(' | '))
+  assert.ok(mounts.includes(`type=bind,source=${path.join(GURT_ROOT, 'wse', 'task', 'artifacts')},target=/workspaces/artifacts`), 'the scope artifacts dir, read-write')
   assert.equal(create.args[create.args.indexOf('-w') + 1], '/workspaces/repo')
   assert.deepEqual(
     fake.execs().filter((e) => e.cmd.some((x) => x === 'echo prep' || x === 'echo go')).map((e) => e.cmd.at(-1)),
@@ -632,7 +633,7 @@ test('ensure (stopped own container): docker start + the start script, no create
     id: 'ex2', workspace: 'wse', task: 'task', env: 'dev', repos: ['repo'], role: 'executor',
     container: {
       status: 'stopped', id: 'cid-old', remoteWorkspaceFolder: '/workspaces/repo',
-      user: 'dev', path: '/cached/bin', repos: ['repo']
+      user: 'dev', path: '/cached/bin', repos: ['repo'], artifacts: true
     }
   }
   const c = await managerFor(sess).ensure('ex2')
@@ -648,6 +649,24 @@ test('ensure (stopped own container): docker start + the start script, no create
   assert.equal(c.status, 'running')
   assert.equal(c.path, '/cached/bin')
   assert.equal(c.id, 'cid-old')
+})
+
+test('ensure (stopped container from before the artifacts bind): re-created with it, not restarted', async () => {
+  seedWorkspace({ name: 'dev', image: 'img:1' })
+  fake.ctl({ volumeExists: true, volumeReady: true, psSession: 'cid-pre\n' })
+  const sess = {
+    id: 'ex2b', workspace: 'wse', task: 'task', env: 'dev', repos: ['repo'], role: 'executor',
+    container: { status: 'stopped', id: 'cid-pre', remoteWorkspaceFolder: '/workspaces/repo', user: 'dev', path: '/x', repos: ['repo'] }
+  }
+  const c = await managerFor(sess).ensure('ex2b')
+  assert.equal(fake.of('start').filter((x) => x.args[1] === 'cid-pre').length, 0, 'the old container is not restarted')
+  const [create] = fake.of('create')
+  assert.ok(create, 'a fresh create')
+  const mounts = create.args.flatMap((x, i) => (create.args[i - 1] === '--mount' ? [x] : []))
+  const artifacts = path.join(GURT_ROOT, 'wse', 'task', 'artifacts')
+  assert.ok(mounts.includes(`type=bind,source=${artifacts},target=/workspaces/artifacts`), mounts.join(' | '))
+  assert.ok(fs.statSync(artifacts).isDirectory(), 'the bind source exists on the host')
+  assert.equal(c.artifacts, true, 'the record says so, so the next start restarts it')
 })
 
 test('ensure (stopped record whose container is gone): a fresh create, not a start', async () => {

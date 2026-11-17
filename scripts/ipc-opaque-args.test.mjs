@@ -108,6 +108,9 @@ const SAFE_ARGS = new Set([
   'getTaskChanges',
   'listTaskFiles',
   'readTaskFile',
+  'readTaskImage',
+  // Path candidates lifted from an agent message: paths, not prose.
+  'findTaskFile',
   // Scope identifiers, file paths and a destination name; no file contents or prose.
   'taskFilePath',
   'renameTaskFile',

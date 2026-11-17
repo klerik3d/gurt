@@ -3,10 +3,14 @@ import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { createRequire } from 'node:module'
 import type ts from 'typescript'
-import type { FileDocument, FileEntry, FileLocation, FileNavigation, FileNavigationResult } from '../shared/files'
-import { cloneDir, taskClones, taskExists, validateName } from './store'
+import type { FileDocument, FileEntry, FileImage, FileLocation, FileNavigation, FileNavigationResult } from '../shared/files'
+import { ARTIFACTS, imageType } from '../shared/files'
+import { cloneDir, ensureArtifactsDir, taskClones, taskExists, validateName } from './store'
 
 const MAX_FILE = 2 * 1024 * 1024
+const MAX_IMAGE = 20 * 1024 * 1024
+/** How many path candidates one `findTaskFile` call may try. */
+const MAX_CANDIDATES = 16
 const MAX_INDEX_FILES = 3000
 const MAX_INDEX_BYTES = 24 * 1024 * 1024
 const SKIP = new Set(['.git', 'node_modules', 'vendor', 'dist', 'build', 'out', 'coverage', '.next', '.venv', 'venv', '__pycache__'])
@@ -20,7 +24,8 @@ function checkScope(ws: string, task: string): void {
 }
 
 /** No traversal or symlinks, including intermediate directories and clone roots.
- * Only actual clones are visible; scope metadata and session logs stay private. */
+ * Only actual clones and the scope's artifacts dir are visible; scope metadata
+ * and session logs stay private. */
 async function resolveFile(ws: string, task: string, relative: string): Promise<{ absolute: string; root: string; repo: string }> {
   checkScope(ws, task)
   if (typeof relative !== 'string' || relative.includes('\\') || relative.includes('\0'))
@@ -29,7 +34,7 @@ async function resolveFile(ws: string, task: string, relative: string): Promise<
   if (parts.some((part) => !part || part === '.' || part === '..' || part === '.git'))
     throw new Error('Invalid file path')
   const repo = parts[0]!
-  if (!(await taskClones(ws, task)).includes(repo)) throw new Error('Repository no longer exists')
+  if (repo !== ARTIFACTS && !(await taskClones(ws, task)).includes(repo)) throw new Error('Repository no longer exists')
   const root = cloneDir(ws, task, repo)
   const scopeRoot = await fs.realpath(path.dirname(root))
   let absolute = scopeRoot
@@ -44,7 +49,9 @@ export async function listTaskFiles(ws: string, task: string, directory: string)
   checkScope(ws, task)
   if (directory === '') {
     const clones = await taskClones(ws, task)
-    return clones.sort().map((name) => ({ name, path: name, kind: 'directory' }))
+    // Created on first look, so the root is there before any session wrote to it.
+    await ensureArtifactsDir(ws, task)
+    return [...clones.sort(), ARTIFACTS].map((name) => ({ name, path: name, kind: 'directory' }))
   }
   const { absolute } = await resolveFile(ws, task, directory)
   const entries = await fs.readdir(absolute, { withFileTypes: true })
@@ -105,6 +112,38 @@ export async function readTaskFile(ws: string, task: string, relative: string): 
   const { absolute } = await resolveFile(ws, task, relative)
   const { data, content } = await readText(absolute)
   return { content, version: versionOf(data) }
+}
+
+export async function readTaskImage(ws: string, task: string, relative: string): Promise<FileImage> {
+  const type = imageType(relative)
+  if (!type) throw new Error('Not an image file')
+  const { absolute } = await resolveFile(ws, task, relative)
+  const handle = await fs.open(absolute, constants.O_RDONLY | constants.O_NOFOLLOW)
+  try {
+    const stat = await handle.stat()
+    if (!stat.isFile()) throw new Error('Only regular files can be opened')
+    if (stat.size > MAX_IMAGE) throw new Error('This image is larger than the 20 MiB viewer limit')
+    const data = await handle.readFile()
+    // An SVG is shown through <img>, where its scripts never run.
+    return { dataUrl: `data:${type};base64,${data.toString('base64')}`, version: versionOf(data) }
+  } finally { await handle.close() }
+}
+
+/** The first candidate that is a regular file in the scope, or null. A path in
+ *  an agent's message may name a file in any repo, or none: the renderer maps
+ *  it to its plausible scope paths and this keeps the existing one. Invalid
+ *  candidates are skipped, never thrown — the input is the agent's prose. */
+export async function findTaskFile(ws: string, task: string, candidates: string[]): Promise<string | null> {
+  checkScope(ws, task)
+  if (!Array.isArray(candidates)) throw new Error('Invalid file candidates')
+  for (const candidate of candidates.slice(0, MAX_CANDIDATES)) {
+    if (typeof candidate !== 'string' || candidate.length > 4096) continue
+    try {
+      const { absolute } = await resolveFile(ws, task, candidate)
+      if ((await fs.lstat(absolute)).isFile()) return candidate
+    } catch { /* Not this one. */ }
+  }
+  return null
 }
 
 // Serialize editor saves; a second save based on an old version must conflict.

@@ -67,3 +67,44 @@ entries, 24 MiB of indexed text or 500 results and show when a limit is reached.
 Other languages offer **Word matches**, a labelled text search through the
 repository; their Definition action is disabled. Semantic navigation for
 those languages would require language servers as a separate integration.
+
+## Artifacts
+
+Every scope has an **artifacts** directory beside its repositories: the last
+root under the scope in the Scopes panel. Every session container of the
+scope mounts it read-write at `/workspaces/artifacts`, and the gurt MCP
+server's instructions tell agents about it. It is not a repository, so nothing
+in it is committed, reviewed or shipped. Use it for reports, screenshots, logs,
+notes and intermediate data that several sessions and the user should see, but
+that should not go into a repo. It lives in the scope's directory and is
+deleted with the scope. Archiving a scope does not keep it: archives hold only
+gurt's own state. `artifacts` is reserved as a repository name.
+Containers created before this directory existed are re-created once at their
+next start to add the mount. Only in-container state is lost; the clones and
+agent history are bind mounts.
+
+## Images and Markdown
+
+PNG, JPEG, GIF, WebP, AVIF, BMP, ICO and SVG files open in an image viewer,
+up to 20 MiB. The image fits the pane; click it for its actual size. SVGs are
+shown as images, so their scripts never run.
+
+Markdown files open rendered (GitHub-flavoured: tables, task lists,
+strikethrough). **Preview / Edit** above the file switches to the editor and
+back; Preview shows unsaved edits. Relative links open the target file in
+Files, including `#L12` line anchors and links into another repository of the
+scope (`../other-repo/…`). Relative images load from the scope. Remote images
+are blocked by the app's content security policy and show as their alt text.
+
+## Links in agent messages
+
+A path in an agent's message opens the file in Files, on the line if one is
+given. This covers inline code such as `src/a.ts:12`, `src/a.ts:12:3` or
+`/workspaces/<repo>/src/a.ts`, and Markdown links such as
+`[a.ts](src/a.ts#L12)`. Container paths under `/workspaces/<repo>` and
+`/workspaces/artifacts` map to that root. A relative path is tried as rooted at
+a repository, then relative to each repository of the session. Inline code
+turns into a link only once the file is confirmed to exist in the scope, so
+identifiers like `fs.readFile` stay plain. A missing target of a Markdown link
+shows a notice instead.
+

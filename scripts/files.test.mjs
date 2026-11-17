@@ -27,13 +27,14 @@ fs.symlinkSync(root, path.join(repo, 'linked-folder'), 'dir')
 fs.symlinkSync(path.resolve('node_modules'), path.join(root, 'node_modules'), 'dir')
 const outfile = path.join(root, 'files.mjs')
 await bundle({ entryPoints: [path.resolve('src/main/files.ts')], outfile })
-const { renameTaskFile, deleteTaskFile, taskFilePath, listTaskFiles, readTaskFile, writeTaskFile, navigateTaskFile } = await import(pathToFileURL(outfile).href)
+const { renameTaskFile, deleteTaskFile, taskFilePath, listTaskFiles, readTaskFile, writeTaskFile, navigateTaskFile, readTaskImage, findTaskFile } = await import(pathToFileURL(outfile).href)
 after(() => fs.rmSync(root, { recursive: true, force: true }))
 const read = (name) => readTaskFile('demo', 'scope', `frontend/${name}`)
 const write = (name, content, version) => writeTaskFile('demo', 'scope', `frontend/${name}`, content, version)
 
 test('explorer exposes clones, dotfiles and untracked files, excluding scope metadata and .git', async () => {
-  assert.deepEqual((await listTaskFiles('demo', 'scope', '')).map((e) => e.name), ['backend', 'frontend'])
+  // The scope's artifacts dir follows the clones, created on first look.
+  assert.deepEqual((await listTaskFiles('demo', 'scope', '')).map((e) => e.name), ['backend', 'frontend', 'artifacts'])
   const entries = await listTaskFiles('demo', 'scope', 'frontend')
   assert.equal(entries[0].kind, 'directory')
   assert.ok(entries.some((e) => e.name === '.gitignore'))
@@ -139,4 +140,44 @@ test('other languages get labelled word matches, with ignored directories and sy
   assert.equal(fs.readFileSync(path.join(repo, 'mutations', 'new.txt'), 'utf8'), 'keep')
   await deleteTaskFile('demo', 'scope', 'frontend/mutations')
   assert.equal(fs.existsSync(path.join(repo, 'mutations')), false)
+})
+
+test('the artifacts dir is a root beside the clones: readable, writable, never a clone, never renamed away', async () => {
+  const artifacts = path.join(scope, 'artifacts')
+  fs.mkdirSync(path.join(artifacts, 'reports', '.git'), { recursive: true })
+  fs.mkdirSync(path.join(artifacts, '.git'), { recursive: true })
+  fs.writeFileSync(path.join(artifacts, 'reports', 'run.md'), '# Run\n')
+  assert.deepEqual((await listTaskFiles('demo', 'scope', '')).map((e) => e.name), ['backend', 'frontend', 'artifacts'],
+    'an agent running `git init` in it does not make it a repository')
+  assert.deepEqual((await listTaskFiles('demo', 'scope', 'artifacts')).map((e) => e.name), ['reports'])
+  const doc = await readTaskFile('demo', 'scope', 'artifacts/reports/run.md')
+  assert.equal(doc.content, '# Run\n')
+  await writeTaskFile('demo', 'scope', 'artifacts/reports/run.md', '# Run 2\n', doc.version)
+  assert.equal(fs.readFileSync(path.join(artifacts, 'reports', 'run.md'), 'utf8'), '# Run 2\n')
+  await assert.rejects(renameTaskFile('demo', 'scope', 'artifacts', 'other'))
+  await assert.rejects(deleteTaskFile('demo', 'scope', 'artifacts'))
+  await assert.rejects(readTaskFile('demo', 'scope', 'artifacts/../sessions.json'))
+})
+
+test('images open as data URLs, bounded, by extension only', async () => {
+  const png = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex')
+  fs.writeFileSync(path.join(repo, 'shot.png'), png)
+  fs.writeFileSync(path.join(repo, 'logo.svg'), '<svg xmlns="http://www.w3.org/2000/svg"/>')
+  const img = await readTaskImage('demo', 'scope', 'frontend/shot.png')
+  assert.equal(img.dataUrl, `data:image/png;base64,${png.toString('base64')}`)
+  assert.match(img.version, /^[0-9a-f]{64}$/)
+  assert.match((await readTaskImage('demo', 'scope', 'frontend/logo.svg')).dataUrl, /^data:image\/svg\+xml;base64,/)
+  await assert.rejects(readTaskImage('demo', 'scope', 'frontend/README.md'), /Not an image/)
+  fs.writeFileSync(path.join(repo, 'huge.png'), Buffer.alloc(20 * 1024 * 1024 + 1))
+  await assert.rejects(readTaskImage('demo', 'scope', 'frontend/huge.png'), /20 MiB/)
+  fs.symlinkSync(path.join(repo, 'shot.png'), path.join(repo, 'linked.png'))
+  await assert.rejects(readTaskImage('demo', 'scope', 'frontend/linked.png'))
+})
+
+test('findTaskFile keeps the first candidate that is a regular file of the scope', async () => {
+  assert.equal(await findTaskFile('demo', 'scope', ['backend/README.md', 'frontend/README.md']), 'frontend/README.md')
+  assert.equal(await findTaskFile('demo', 'scope', ['frontend/src', 'frontend/link.txt', '../outside.txt', 'sessions.json', 42]), null,
+    'directories, symlinks, traversal, metadata and junk are skipped, not thrown')
+  assert.equal(await findTaskFile('demo', 'scope', []), null)
+  await assert.rejects(findTaskFile('demo', 'missing', ['frontend/README.md']))
 })

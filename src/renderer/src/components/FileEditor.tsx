@@ -91,11 +91,21 @@ export function FileEditor({ tab, controller, onView, onNavigate }: {
   useEffect(() => {
     const view = viewRef.current
     if (!view || !jump || jump.key !== key) return
-    // Navigation returns UTF-16 offsets in the original buffer. CodeMirror
-    // represents CRLF as one character internally.
-    const offset = (raw: number) => Math.min(view.state.doc.length, latest.current.tab.content.slice(0, raw).replace(/\r\n/g, '\n').length)
-    const from = offset(jump.from)
-    view.dispatch({ selection: { anchor: from, head: offset(jump.to) }, effects: EditorView.scrollIntoView(from, { y: 'center' }) })
+    let from: number
+    let to: number
+    if ('line' in jump) {
+      // A line from an agent's message: clamped, since the file may have
+      // changed since it was written.
+      const line = view.state.doc.line(Math.min(Math.max(1, jump.line), view.state.doc.lines))
+      from = to = Math.min(line.to, line.from + Math.max(0, (jump.column ?? 1) - 1))
+    } else {
+      // Navigation returns UTF-16 offsets in the original buffer. CodeMirror
+      // represents CRLF as one character internally.
+      const offset = (raw: number) => Math.min(view.state.doc.length, latest.current.tab.content.slice(0, raw).replace(/\r\n/g, '\n').length)
+      from = offset(jump.from)
+      to = offset(jump.to)
+    }
+    view.dispatch({ selection: { anchor: from, head: to }, effects: EditorView.scrollIntoView(from, { y: 'center' }) })
     view.focus()
     consumeJump(jump.seq)
   }, [jump, key, generation, consumeJump])

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { PromptImage, SessionSnapshot, Tree } from '../../../shared/types'
 import { missingRepoReason, repoMode, sessionRole, sessionStatus } from '../../../shared/types'
 import { agentKind, agentName, useAgents } from '../useAgents'
@@ -16,6 +16,7 @@ import { ConfigTab } from './ConfigTab'
 import { SessionMenu, deleteSession, duplicateSession } from './SessionActions'
 import { TabBar, useSessionTab, type SessionTab } from './SessionTabs'
 import { ContainerTerminalButton } from './ContainerTerminalButton'
+import { FileLinkScopeProvider } from '../fileLinks'
 import { run } from '../async'
 
 export function SessionPane({
@@ -44,19 +45,31 @@ export function SessionPane({
   onSelect: (id: string) => void
   onDeleted: () => void
 }) {
+  // Paths in the agent's messages resolve against this session's scope.
+  const linkWs = snapshot?.info.workspace
+  const linkTask = snapshot?.info.task
+  const linkRepos = snapshot?.info.repos.join('\n') ?? ''
+  const linkScope = useMemo(
+    () => (linkWs !== undefined && linkTask !== undefined
+      ? { ws: linkWs, task: linkTask, repos: linkRepos ? linkRepos.split('\n') : [] }
+      : null),
+    [linkWs, linkTask, linkRepos]
+  )
   if (!snapshot) return <div className="placeholder">loading session…</div>
   if (snapshot.info.state === 'started')
     return (
-      <Chat
-        tree={tree}
-        snapshot={snapshot}
-        sessionId={sessionId}
-        seen={seen}
-        log={log}
-        composerNote={composerNote}
-        onSelect={onSelect}
-        onDeleted={onDeleted}
-      />
+      <FileLinkScopeProvider scope={linkScope}>
+        <Chat
+          tree={tree}
+          snapshot={snapshot}
+          sessionId={sessionId}
+          seen={seen}
+          log={log}
+          composerNote={composerNote}
+          onSelect={onSelect}
+          onDeleted={onDeleted}
+        />
+      </FileLinkScopeProvider>
     )
 
   return (

@@ -386,6 +386,10 @@ export interface SessionContainer {
    *  `SessionInfo.repos`. The anchor drives the build + git identity; every
    *  repo is a sibling mount, read-only or not per its mode. */
   repos: string[]
+  /** Whether it was created with the scope's artifacts bind
+   *  (`/workspaces/artifacts`). A container from before that mount existed is
+   *  re-created rather than restarted, so every running session has it. */
+  artifacts?: boolean
   /** Last provisioning failure. Cleared by assignment on the next transition —
    *  every status change either sets it or resets it. */
   error?: string | undefined

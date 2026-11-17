@@ -1455,57 +1455,57 @@ button.sb-session {
   padding-top: 7px;
 }
 
-/* Markdown rendering for agent messages. */
-.msg-text.markdown {
+/* Markdown rendering for agent messages and Markdown files in the file view. */
+:is(.msg-text, .file-markdown).markdown {
   white-space: normal;
 }
-.msg-text.markdown > :first-child {
+:is(.msg-text, .file-markdown).markdown > :first-child {
   margin-top: 0;
 }
-.msg-text.markdown > :last-child {
+:is(.msg-text, .file-markdown).markdown > :last-child {
   margin-bottom: 0;
 }
-.msg-text.markdown p {
+:is(.msg-text, .file-markdown).markdown p {
   margin: 0 0 10px;
 }
-.msg-text.markdown ul,
-.msg-text.markdown ol {
+:is(.msg-text, .file-markdown).markdown ul,
+:is(.msg-text, .file-markdown).markdown ol {
   margin: 0 0 10px;
   padding-left: 22px;
 }
-.msg-text.markdown li {
+:is(.msg-text, .file-markdown).markdown li {
   margin: 2px 0;
 }
-.msg-text.markdown li > p {
+:is(.msg-text, .file-markdown).markdown li > p {
   margin: 0;
 }
-.msg-text.markdown h1,
-.msg-text.markdown h2,
-.msg-text.markdown h3,
-.msg-text.markdown h4 {
+:is(.msg-text, .file-markdown).markdown h1,
+:is(.msg-text, .file-markdown).markdown h2,
+:is(.msg-text, .file-markdown).markdown h3,
+:is(.msg-text, .file-markdown).markdown h4 {
   margin: 16px 0 8px;
   font-weight: 600;
   line-height: 1.3;
 }
-.msg-text.markdown h1 {
+:is(.msg-text, .file-markdown).markdown h1 {
   font-size: 18px;
 }
-.msg-text.markdown h2 {
+:is(.msg-text, .file-markdown).markdown h2 {
   font-size: 16px;
 }
-.msg-text.markdown h3 {
+:is(.msg-text, .file-markdown).markdown h3 {
   font-size: 14.5px;
 }
-.msg-text.markdown h4 {
+:is(.msg-text, .file-markdown).markdown h4 {
   font-size: 13.5px;
 }
-.msg-text.markdown a {
+:is(.msg-text, .file-markdown).markdown a {
   color: var(--accent);
 }
-.msg-text.markdown strong {
+:is(.msg-text, .file-markdown).markdown strong {
   font-weight: 600;
 }
-.msg-text.markdown code {
+:is(.msg-text, .file-markdown).markdown code {
   font-family: var(--mono);
   font-size: 12px;
   background: var(--surface);
@@ -1513,7 +1513,7 @@ button.sb-session {
   border-radius: 2.667px;
   padding: 1px 5px;
 }
-.msg-text.markdown pre {
+:is(.msg-text, .file-markdown).markdown pre {
   font-family: var(--mono);
   font-size: 12px;
   line-height: 1.6;
@@ -1524,7 +1524,7 @@ button.sb-session {
   margin: 0;
   overflow: auto;
 }
-.msg-text.markdown pre code {
+:is(.msg-text, .file-markdown).markdown pre code {
   background: none;
   border: none;
   padding: 0;
@@ -1539,28 +1539,28 @@ button.sb-session {
   top: 6px;
   right: 6px;
 }
-.msg-text.markdown blockquote {
+:is(.msg-text, .file-markdown).markdown blockquote {
   margin: 0 0 10px;
   padding: 2px 12px;
   border-left: 2px solid var(--border2);
   color: var(--dim);
 }
-.msg-text.markdown hr {
+:is(.msg-text, .file-markdown).markdown hr {
   border: none;
   border-top: 1px solid var(--border);
   margin: 12px 0;
 }
-.msg-text.markdown table {
+:is(.msg-text, .file-markdown).markdown table {
   border-collapse: collapse;
   margin: 0 0 10px;
   font-size: 12.5px;
 }
-.msg-text.markdown th,
-.msg-text.markdown td {
+:is(.msg-text, .file-markdown).markdown th,
+:is(.msg-text, .file-markdown).markdown td {
   border: 1px solid var(--border);
   padding: 4px 8px;
 }
-.msg-text.markdown th {
+:is(.msg-text, .file-markdown).markdown th {
   color: var(--dim);
   font-weight: 600;
 }
@@ -4603,6 +4603,23 @@ button.sb-session {
 .code-diff .cm-merge-b .cm-changedText { background: color-mix(in srgb, var(--green) 15%, transparent); background-image: none; }
 .code-diff .cm-deletedLine del { text-decoration: none; }
 .code-diff .cm-collapsedLines { color: var(--faint); background: var(--surface); border-color: var(--border); }
+/* A Markdown file, rendered (the Preview side of its Preview / Edit switch). */
+.file-markdown { flex: 1; min-height: 0; overflow: auto; padding: 18px 28px 40px; font-size: 13.5px; line-height: 1.6; user-select: text; }
+.file-markdown > * { max-width: 860px; }
+.file-markdown img { max-width: 100%; }
+.file-markdown h1 { padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+.md-image-missing { color: var(--faint); font-size: 12px; }
+/* An image file: fitted by default, its own size on click; a checkerboard
+   shows through transparency. */
+.file-image { flex: 1; min-height: 0; overflow: auto; display: flex; padding: 16px;
+  background: repeating-conic-gradient(var(--surface) 0% 25%, var(--app) 0% 50%) 50% / 20px 20px; }
+.file-image img { margin: auto; max-width: 100%; max-height: 100%; object-fit: contain; cursor: zoom-in; box-shadow: 0 0 0 1px var(--border); }
+.file-image.actual img { max-width: none; max-height: none; cursor: zoom-out; }
+/* A path in an agent message (or a Markdown file) that opens the file view. */
+.file-link { cursor: pointer; text-decoration: underline dotted color-mix(in srgb, var(--accent) 60%, transparent); text-underline-offset: 3px; }
+code.file-link { color: var(--accent); }
+.file-link:hover { text-decoration-style: solid; }
+.file-toolbar .chip-btn { padding: 2px 10px; }
 .file-statusbar { display: flex; flex: none; justify-content: flex-end; gap: 16px; padding: 4px 12px; font-size: 10px; color: var(--faint); border-top: 1px solid var(--border); }
 .file-error { padding: 8px 12px; color: var(--red); background: color-mix(in srgb, var(--red) 4%, transparent); font-size: 12px; overflow-wrap: anywhere; flex: none; }
 .file-navigation { display: flex; flex-direction: column; max-height: 35%; flex: none; border-top: 1px solid var(--border2); background: var(--surface); }

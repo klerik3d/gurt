@@ -27,6 +27,7 @@ import { FilesSidebar } from './components/FilesSidebar'
 import { ProactiveSidebar } from './components/ProactiveSidebar'
 import { ProactivePane } from './components/ProactivePane'
 import { useFiles } from './useFiles'
+import { FileOpener, type OpenScopeFile } from './fileLinks'
 import { useScopeList } from './useScopeList'
 import type { DiffFileSelection } from './components/DiffSidebar'
 import { SettingsPage, SETTINGS_SECTIONS, type SettingsSection } from './components/SettingsPage'
@@ -860,6 +861,18 @@ export default function App() {
     ? diffFile : null
   const fileScope = diffTask && diffTask.ws === ws?.name && ws.tasks.some((t) => t.name === diffTask.task) ? diffTask : null
   const files = useFiles(fileScope, refreshChanges)
+  // A path in an agent's message, clicked: the file view of that scope, on the
+  // file. The session stays selected when it is the scope's own — that keeps
+  // the way back to the chat one click.
+  const openFile = files.open
+  const openScopeFile = useCallback<OpenScopeFile>((fws, task, path, jump) => {
+    if (fws !== diffTask?.ws || task !== diffTask.task) selectTask(fws, task)
+    setView('work')
+    setWorkMode('files')
+    setLeftSidebarVisible(true)
+    setForceWelcome(false)
+    openFile({ ws: fws, task, path }, jump)
+  }, [diffTask?.ws, diffTask?.task, selectTask, setView, setWorkMode, setLeftSidebarVisible, openFile])
   const diffWorkspace = ws?.name
   useEffect(() => {
     if (view !== 'work' || workMode !== 'diff' || !diffWorkspace) return
@@ -902,6 +915,7 @@ export default function App() {
   const crumbDot = view === 'work' && workMode === 'sessions' && activeStatus ? SESSION_DOT[activeStatus] : null
 
   return (
+    <FileOpener.Provider value={openScopeFile}>
     <div className="app">
       <div className="titlebar">
         <div className="tb-center">
@@ -1437,5 +1451,6 @@ export default function App() {
         onClose={() => setRecoveryOpen(false)} />}
       <DialogHost />
     </div>
+    </FileOpener.Provider>
   )
 }
