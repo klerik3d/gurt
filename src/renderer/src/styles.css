@@ -965,6 +965,57 @@ textarea.input {
     0 5px 0 var(--accent);
 }
 
+/* One row for every line of the left sidebar (scopes, sessions, runs, files,
+   git): same height, font, padding, colours, no border in any state.
+   Indent = --row-pad-l + --row-indent * level (--level, default 0).
+   Decision: docs/design-sidebar-rows.md. */
+:root {
+  --row-h: 24px;
+  --row-lh: 16px;
+  --row-pad-y: 4px;
+  --row-pad-l: 10px;
+  --row-pad-r: 10px;
+  --row-indent: 9px;
+  --row-gap: 6px;
+  --row-chev: 12px;
+  --row-icon: 14px;
+  --row-font: 12px;
+}
+.sb-task,
+.sb-session,
+.file-tree-row {
+  display: flex;
+  align-items: center;
+  gap: var(--row-gap);
+  box-sizing: border-box;
+  width: 100%;
+  height: var(--row-h);
+  min-height: var(--row-h);
+  margin: 0;
+  padding: var(--row-pad-y) var(--row-pad-r) var(--row-pad-y) calc(var(--row-pad-l) + var(--row-indent) * var(--level, 0));
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+  color: var(--dim);
+  font: 400 var(--row-font)/var(--row-lh) var(--ui);
+  text-align: left;
+  cursor: pointer;
+}
+.sb-task { --level: 0; }
+.sb-session { --level: 1; }
+.sb-session.nested { --level: 2; }
+.sb-task:hover, .sb-session:hover, .file-tree-row:hover,
+.sb-task.selected, .sb-session.selected, .file-tree-row.selected,
+.sb-tree:focus-visible .cursor {
+  background: var(--hover);
+  color: var(--text);
+}
+.sb-task > svg, .sb-session > svg, .file-tree-row > svg { flex: none; width: var(--row-icon); height: var(--row-icon); }
+.sb-chev, .file-tree-chevron { display: flex; width: var(--row-chev); flex: none; }
+.sb-chev > svg, .file-tree-chevron > svg { width: var(--row-chev); height: var(--row-chev); }
+.sb-task-name, .file-tree-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 .sb-head {
   min-height: 32px;
   flex: none;
@@ -1022,52 +1073,15 @@ textarea.input {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 0;
   padding: 4px 0;
   outline: none;
 }
-.sb-group + .sb-group {
-  margin-top: 4px;
-}
-.sb-task {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 2px 16px;
-  min-height: 22px;
-  height: 22px;
-  cursor: pointer;
-}
-.sb-task:hover {
-  background: var(--hover);
-  box-shadow: inset 0 0 0 1px var(--border2);
-}
-.sb-task.selected {
-  background: var(--hover);
-}
 .sb-chev {
-  display: flex;
   color: var(--faint);
-  flex: none;
 }
 .sb-chev:hover {
   color: var(--dim);
-}
-.sb-task-name {
-  font-weight: 600;
-  font-size: 12px;
-  color: var(--dim);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.sb-task:hover .sb-task-name,
-.sb-task.selected .sb-task-name {
-  color: var(--text);
-}
-/* The focused tree marks its cursor row, so keyboard nav has something to follow. */
-.sb-tree:focus-visible .cursor {
-  box-shadow: inset 0 0 0 1px var(--border2);
 }
 .sb-rename {
   flex: 1;
@@ -1093,46 +1107,9 @@ textarea.input {
   border: 1.5px solid var(--faint);
 }
 
-.sb-session {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  padding: 2px 18px 2px 34px;
-  min-height: 22px;
-  cursor: pointer;
-}
-button.sb-session {
-  width: 100%;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  text-align: left;
-  font: inherit;
-}
-.sb-session > svg {
-  flex: none;
-  color: var(--dim);
-}
-.sb-session:hover {
-  background: var(--hover);
-  box-shadow: inset 0 0 0 1px var(--border2);
-}
-/* Every session row of the scope tree reserves the scope row's fold slot, so
-   dots line up whether or not a row has reviews to fold. Like the file tree,
-   each level of nesting indents by 14px: scope 16, session 30, reviewer 44. */
-.sb-session.foldable {
-  padding-left: 30px;
-}
-.sb-session.foldable.nested {
-  padding-left: 44px;
-}
-.sb-session.nested .sb-session-name {
-  font-size: 12.5px;
-}
 .sb-fold {
   display: flex;
-  width: 11px;
-  margin-right: -2px;
+  width: var(--row-chev);
   flex: none;
 }
 .sb-review-count {
@@ -1141,19 +1118,11 @@ button.sb-session {
   color: var(--faint);
   flex: none;
 }
-.sb-session.selected {
-  background: var(--hover);
-}
 .sb-session-name {
-  font-size: 13px;
-  color: var(--dim);
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-.sb-session.selected .sb-session-name {
-  font-weight: 600;
-  color: var(--text);
 }
 .sb-session-client {
   margin-left: auto;
@@ -1163,8 +1132,9 @@ button.sb-session {
   flex: none;
 }
 .sb-empty {
-  padding: 3px 18px 3px 34px;
-  font-size: 11.5px;
+  padding: 4px var(--row-pad-r) 4px calc(var(--row-pad-l) + var(--row-indent));
+  font-size: 12px;
+  line-height: var(--row-lh);
   color: var(--faint);
 }
 
@@ -2361,12 +2331,14 @@ button.sb-session {
   font-size: 12px;
   min-width: 0;
 }
+/* Status tints the shared neutral border, never replaces it: a full-strength
+   red or green outline reads as neon next to the other blocks. */
 .host-block[data-status='failed'],
 .host-note[data-tone='error'] {
-  border-color: var(--red);
+  border-color: color-mix(in srgb, var(--red) 35%, var(--border2));
 }
 .host-note[data-tone='ok'] {
-  border-color: var(--green);
+  border-color: color-mix(in srgb, var(--green) 35%, var(--border2));
 }
 .host-head {
   display: flex;
@@ -4543,29 +4515,9 @@ button.sb-session {
 
 /* Scope file explorer and CodeMirror workspace. */
 .file-tree { gap: 0; }
-.file-tree-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  width: 100%;
-  min-height: 27px;
-  margin-top: 1px;
-  padding: 3px 10px;
-  color: var(--dim);
-  text-align: left;
-  font-size: 12px;
-}
-.file-tree-row:hover { background: var(--hover); color: var(--text); }
-.file-tree-row.selected { background: color-mix(in srgb, var(--accent) 8%, transparent); color: var(--text); }
-
 .file-tree:focus-visible { outline: none; }
-.sb-tree:focus-visible .file-tree-row.cursor { background: var(--hover); color: var(--text); box-shadow: inset 0 0 0 1px var(--border2); }
 .file-tree-row:disabled { opacity: .45; cursor: default; }
-.file-tree-row > svg { flex: none; }
-.file-scope-group:not(:first-child) { margin-top: 5px; }
-.file-tree-chevron { display: flex; width: 10px; flex: none; }
-.file-tree-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.file-tree-note { padding: 7px 12px; color: var(--faint); font-size: 11px; overflow-wrap: anywhere; }
+.file-tree-note { padding: 4px var(--row-pad-r) 4px var(--row-pad-l); color: var(--faint); font-size: 12px; line-height: var(--row-lh); overflow-wrap: anywhere; }
 .file-tree-note.error { color: var(--red); }
 .files-pane { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
 .files-pane .placeholder { display: flex; align-items: center; justify-content: center; padding: 24px; color: var(--faint); font-size: 12px; text-align: center; }
@@ -4959,9 +4911,9 @@ button { user-select: none; }
 /* ---- proactive agents (docs/design-proactive-agents.md §7) ---- */
 
 .pa-empty {
-  padding: 8px 18px;
+  height: auto;
   white-space: normal;
-  line-height: 1.5;
+  line-height: var(--row-lh);
 }
 .pa-head-status {
   font-size: 12px;

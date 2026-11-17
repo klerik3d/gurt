@@ -14,7 +14,7 @@ import { GitCommitPanel, type CommitDraft } from './GitActions'
 import { SESSION_DOT } from '../status'
 import { markUnread } from '../reviewed'
 import { Icon, Dot } from './icons'
-import { AgentMark, ROLE_INFO } from './tags'
+import { AgentMark } from './tags'
 import { deleteSession, duplicateSession, recreateSession } from './SessionActions'
 import { Modal } from './Modal'
 import { fire, run } from '../async'
@@ -857,7 +857,7 @@ export function Sidebar({
                           }
                         } : {})}
                       >
-                        {reviews > 0 && <Icon name="chevron" size={11} style={open ? undefined : { transform: 'rotate(-90deg)' }} />}
+                        {reviews > 0 && <Icon name="chevron" size={12} style={open ? undefined : { transform: 'rotate(-90deg)' }} />}
                       </span>
                       <Dot tone={dot.tone} pulse={dot.pulse} hollow={dot.hollow} />
                       {renamingThis ? (
@@ -869,13 +869,6 @@ export function Sidebar({
                         />
                       ) : (
                         <>
-                          {/* A loop's reviewer is no session the user made: its
-                              role mark says so (docs/requirements-review-loop.md §4). */}
-                          {s.reviewOf && (
-                            <span title={`${ROLE_INFO.reviewer.label} — ${ROLE_INFO.reviewer.hint}`} data-role="reviewer">
-                              <Icon name={ROLE_INFO.reviewer.icon} size={11} className="faint" />
-                            </span>
-                          )}
                           <span className="sb-session-name">{s.title}</span>
                           {reviews > 0 && !open && <span className="sb-review-count" title="reviews, folded">⟲ {reviews}</span>}
                           <span className="sb-session-client">
@@ -896,12 +889,12 @@ export function Sidebar({
         })}
         {!!allTasks.length && !tasks.length && <div className="sb-empty">No matching scopes</div>}
         {wsData && wsData.tasks.length === 0 && (
-          <div className="sb-empty" style={{ paddingLeft: 18 }}>
+          <div className="sb-empty">
             no scopes yet — “+” above to add one
           </div>
         )}
         {tree && tree.workspaces.length === 0 && (
-          <div className="sb-empty" style={{ paddingLeft: 18 }}>
+          <div className="sb-empty">
             no workspaces yet — create one via the workspace menu
           </div>
         )}
