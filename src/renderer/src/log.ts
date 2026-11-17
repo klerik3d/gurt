@@ -3,16 +3,9 @@
 // here — main owns the file, the level threshold, the rate limit and the
 // redaction, and treats everything arriving over the channel as untrusted.
 
-export type Level = 'debug' | 'info' | 'warn' | 'error'
+import { LEVEL_RANK as RANK, type Level, type Logger } from '../../shared/log'
 
-export interface Logger {
-  debug(msg: string, ctx?: object): void
-  info(msg: string, ctx?: object): void
-  warn(msg: string, ctx?: object): void
-  error(msg: string, ctx?: object): void
-}
-
-const RANK: Record<Level, number> = { debug: 10, info: 20, warn: 30, error: 40 }
+export type { Level, Logger } from '../../shared/log'
 
 /** Main's threshold, mirrored over the bridge at preload time. Resolved lazily
  *  (and cached) so a missing bridge — tests, a torn-down window — degrades to
@@ -23,7 +16,7 @@ let threshold: number | undefined
 function passes(level: Level): boolean {
   if (threshold === undefined) {
     try {
-      threshold = RANK[window.gurt?.logLevel as Level] ?? RANK.debug
+      threshold = RANK[window.gurt?.logLevel] ?? RANK.debug
     } catch {
       threshold = RANK.debug
     }
