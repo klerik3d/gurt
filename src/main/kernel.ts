@@ -29,6 +29,7 @@ import { TerminalManager } from './terminals'
 import { ContainerManager } from './containers'
 import { traffic } from './proxy/traffic'
 import { SessionManager, type RestoredSession } from './sessions'
+import { pruneSessionCheckpoints, restoreSessionCheckpoint, snapshotSessionCheckpoint } from './checkpoints'
 import { createAdminSurface, type AdminSurface } from './adminSurface'
 import { createNotifications, type Notifications } from './notifications'
 import { createUsageLedger, type UsageLedger } from './usage'
@@ -242,6 +243,21 @@ export function createKernel(options: KernelOptions = {}): Kernel {
       // The findings a loop executor's next `complete` must answer (§4.2) —
       // the controller owns the loop; read at call time like `admin` above.
       openFindings: (sessionId) => reviewLoop.openFindings(sessionId),
+      // Rewind checkpoints: host git snapshots of the session's clones
+      // (checkpoints.ts) — the refs and clone paths stay out of the manager.
+      snapshotCheckpoint: snapshotSessionCheckpoint,
+      restoreCheckpoint: async (info, entryId) => {
+        const result = await restoreSessionCheckpoint(info, entryId)
+        // The rewound entries' snapshots are obsolete whatever the outcome; a
+        // failure to drop them only leaves stale refs behind.
+        try {
+          await pruneSessionCheckpoints(info, entryId)
+        } catch (e) {
+          sessionLog.warn('checkpoint.prune.failed', { err: e })
+        }
+        return result
+      },
+      clearCheckpoints: (info) => pruneSessionCheckpoints(info),
       defaultEnvsForRepo,
       defaultAgentForWorkspace: async (ws) => (await store.getWorkspace(ws)).defaultAgent,
       defaultEnvForWorkspace: async (ws) => defaultEnvName(await store.getWorkspace(ws)),

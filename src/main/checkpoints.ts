@@ -89,3 +89,50 @@ export async function sessionCheckpoints(info: SessionInfo, allRepos = false): P
   return Promise.all((allRepos ? info.repos : writeRepos(info)).map(async (repo) => new Checkpoints(
     cloneDir(info.workspace, info.task, repo), await hostGitAccessForRepo(info.workspace, repo))))
 }
+
+// --- session-level operations ------------------------------------------------
+// What the session manager asks for through `SessionEvents` (wired in
+// kernel.ts): it names a session and a timeline entry, and the refs, clone
+// paths and host git access stay on this side.
+
+/** Snapshot every writable clone of the session at this timeline entry. */
+export async function snapshotSessionCheckpoint(info: SessionInfo, entryId: number): Promise<void> {
+  for (const repo of await sessionCheckpoints(info)) await repo.snapshot(checkpointRef(info.id, entryId))
+}
+
+/** Restore every writable clone to its snapshot at `entryId`. Each clone's
+ *  current state is first saved under one `pre-rewind-<ts>` safety ref, and
+ *  all of those backups are durable before any clone is touched. Never rejects:
+ *  a failure is reported in `notice`, the text the user sees. */
+export async function restoreSessionCheckpoint(
+  info: SessionInfo,
+  entryId: number
+): Promise<{ restored: boolean; notice: string }> {
+  const safetyRef = checkpointRef(info.id, `pre-rewind-${Date.now()}`)
+  let notice = ''
+  try {
+    const repos = await sessionCheckpoints(info)
+    const targets = await Promise.all(repos.map((r) => r.resolve(checkpointRef(info.id, entryId))))
+    // All backups must be durable before touching any clone.
+    const backups = await Promise.all(repos.map((r) => r.snapshot(safetyRef)))
+    notice = repos.length ? `Safety checkpoint saved in each writable clone: ${safetyRef}. ` : ''
+    for (let i = 0; i < repos.length; i++) {
+      try { await repos[i]!.restore(targets[i]!, backups[i]!) }
+      catch (e) { throw new Error(`${repos[i]!.dir}: ${e instanceof Error ? e.message : String(e)}`, { cause: e }) }
+      notice += `Restored ${repos[i]!.dir}. `
+    }
+    const restored = repos.length > 0
+    notice += restored ? 'Working trees restored. External effects (packages, databases, network and files outside the clones) are not reverted.' : 'No writable repositories.'
+    return { restored, notice }
+  } catch (e) {
+    notice += `Files in the working tree were NOT reverted completely; inspect each clone. ${e instanceof Error ? e.message : String(e)}. Any saved safety checkpoints remain under ${safetyRef}.`
+    return { restored: false, notice }
+  }
+}
+
+/** Drop the session's checkpoints: those at `from` and later (the entries a
+ *  rewind removed, plus all but the newest ten safety refs) in its writable
+ *  clones, or — with no `from` — every one of them in all of its repos. */
+export async function pruneSessionCheckpoints(info: SessionInfo, from?: number): Promise<void> {
+  for (const repo of await sessionCheckpoints(info, from === undefined)) await repo.prune(info.id, from)
+}
