@@ -96,6 +96,9 @@ const SAFE_ARGS = new Set([
   'gcRunNow',
   'getWelcomeMode',
   'setWelcomeMode',
+  // Two enum values (theme, text size) — nothing user-authored.
+  'getAppearance',
+  'setAppearance',
   'getMcpDefs',
   'getAgents',
   'getAgentConfig',
@@ -336,7 +339,9 @@ const electronStub = {
         // needs these to exist; nothing here calls into either.
         export const clipboard = { writeText() {} }
         export const Menu = { buildFromTemplate: () => ({}), setApplicationMenu() {} }
-        export default { BrowserWindow, ipcMain, shell, dialog, app, Notification, clipboard, Menu }
+        // appearance.ts (through ipc.ts's setAppearance handler).
+        export const nativeTheme = { themeSource: 'system', shouldUseDarkColors: true, on() {} }
+        export default { BrowserWindow, ipcMain, shell, dialog, app, Notification, clipboard, Menu, nativeTheme }
       `
     }))
   }

@@ -214,6 +214,10 @@ test('a dropped socket reconnects and re-registers; a restarted relay gets the t
   assert.equal(relay.tokens.size, 0, 'a restarted relay holds nothing')
   await until(() => relay.connections.length === 2 && client.status.state === 'ready', 'second registration')
   assert.ok(states.some((s) => s.state === 'retrying'), 'went through a backoff wait')
+  // The client re-sends PUSH_SET on READY, but the fake relay takes it in on a
+  // later tick than the one that flips the status — wait for it rather than
+  // asserting in the same tick (that raced under load).
+  await until(() => relay.tokens.has(id.hostId), 'PUSH_SET after READY')
   assert.deepEqual(relay.tokens.get(id.hostId), tokens, 'the token set is sent again after READY')
   client.stop()
 })

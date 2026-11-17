@@ -46,6 +46,7 @@ import type { TurnRecord } from '../shared/usage'
 import { NOTIFICATION_DEFAULTS } from '../shared/notifications'
 import type { HotkeyMap } from '../shared/hotkeys'
 import { HOTKEY_DEFAULTS, sanitizeHotkeys } from '../shared/hotkeys'
+import { sanitizeAppearance, type Appearance } from '../shared/appearance'
 import type { ProactiveState } from '../shared/proactive'
 import type { LoopState } from '../shared/reviewLoop'
 import { emptyProactiveState, sanitizeProactiveConfig } from '../shared/proactive'
@@ -671,6 +672,17 @@ export async function getHotkeys(): Promise<HotkeyMap> {
 
 export async function setHotkeys(map: HotkeyMap): Promise<void> {
   await writeJson(hotkeysFile(), map)
+}
+
+const appearanceFile = () => path.join(gurtRoot, 'appearance.json')
+
+/** Settings → Appearance; a missing or garbled field is its default. */
+export async function getAppearance(): Promise<Appearance> {
+  return sanitizeAppearance(await readJson<unknown>(appearanceFile(), {}))
+}
+
+export async function setAppearance(appearance: Appearance): Promise<void> {
+  await writeJson(appearanceFile(), sanitizeAppearance(appearance))
 }
 
 // --- PII masking: settings + the fetched pattern cache (§4.1/§5.1) ----------

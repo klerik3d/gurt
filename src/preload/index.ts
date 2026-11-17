@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { API_METHODS, type GurtEvents } from '../shared/api'
 import { isLevel, type Level } from '../shared/log'
+import type { ColorScheme } from '../shared/appearance'
 
 /** Named subscription wrapper over one `GurtEvents` channel. */
 const subscribe =
@@ -24,12 +25,24 @@ const logLevel: Level = (() => {
   }
 })()
 
+// The scheme to draw the first frame in — fetched synchronously for the same
+// reason as the log level: a round trip after mount would paint the default
+// palette first. Later changes arrive as `color-scheme` events.
+const colorScheme: ColorScheme = (() => {
+  try {
+    return ipcRenderer.sendSync('appearance:scheme') === 'light' ? 'light' : 'dark'
+  } catch {
+    return 'dark'
+  }
+})()
+
 const api: Record<string, unknown> = {
   // Fire-and-forget log record (`send`, not `invoke`): logging must never make
   // the renderer wait, and main validates + rate-limits everything it accepts.
   log: (level: Level, scope: string, msg: string, ctx?: object, ts?: number) =>
     ipcRenderer.send('log', level, scope, msg, ctx, ts),
   logLevel,
+  colorScheme,
   onTreeChanged: subscribe('tree-changed'),
   onArchiveProgress: subscribe('archive-progress'),
   onTerminalChanged: subscribe('terminal-changed'),
@@ -47,7 +60,8 @@ const api: Record<string, unknown> = {
   onProxyTraffic: subscribe('proxy-traffic'),
   onPiiTable: subscribe('pii-table'),
   onMcpFail: subscribe('mcp-fail'),
-  onHotkeyCycleWorkspace: subscribe('hotkey-cycle-workspace')
+  onHotkeyCycleWorkspace: subscribe('hotkey-cycle-workspace'),
+  onColorScheme: subscribe('color-scheme')
 }
 for (const m of API_METHODS) api[m] = (...args: unknown[]) => ipcRenderer.invoke(`api:${m}`, ...args)
 

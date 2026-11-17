@@ -17,7 +17,7 @@ export function CodeDiff({ before, after, path, mode }: {
     if (!parent.current) return
     const language = new Compartment()
     const extensions = (side: string) => [
-      codeEditorSetup, language.of([]), EditorState.readOnly.of(true), EditorView.editable.of(false),
+      codeEditorSetup(), language.of([]), EditorState.readOnly.of(true), EditorView.editable.of(false),
       EditorView.contentAttributes.of({ 'aria-label': `${side} ${path}`, tabindex: '0' })
     ]
     const collapseUnchanged = { margin: 3, minSize: 8 }
