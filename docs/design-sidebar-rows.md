@@ -22,3 +22,5 @@ Implemented by the `--row-*` variables and the shared rule in `styles.css`
 (`.sb-task, .sb-session, .file-tree-row`). Open points, decided as in the
 table: selected and cursor share one colour; scope rows lose their bold
 weight, so hierarchy rests on indent and chevron.
+
+Notes use one class, .sb-empty, indent via --level; no inline pixel paddings

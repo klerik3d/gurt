@@ -1,5 +1,5 @@
 import { taskKey } from '../../../shared/keys'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import type { FileEntry, ScopeFile } from '../../../shared/files'
 import type { RepoChanges, Tree } from '../../../shared/types'
 import { ARTIFACTS, CONTAINER_ROOT, fileKey, imageType } from '../../../shared/files'
@@ -215,20 +215,20 @@ export function FilesSidebar({ controller, tree, collapsed, setCollapse, changes
               : row.path || row.task}
             onContextMenu={(event) => { event.preventDefault(); openMenu(row, event.clientX, event.clientY) }}
             onClick={() => activate(row)} />}
-          {open && (!folder || folder.error || !folder.entries?.length) && <div className={`file-tree-note${folder?.error ? ' error' : ''}`} style={{ paddingLeft: 38 + row.depth * 14 }}>
+          {open && (!folder || folder.error || !folder.entries?.length) && <div className={`sb-empty${folder?.error ? ' error' : ''}`} style={{ '--level': row.depth + 1 } as CSSProperties}>
             {folder?.error ?? (!folder ? 'Loading…' : row.kind === 'scope' ? 'No repository clones yet' : 'Empty folder')}
           </div>}
         </div>
       })}
-      {tree && !tasks.length && <div className="file-tree-note">Create a scope to browse its files.</div>}
-      {!!tasks.length && !visibleTasks.length && <div className="file-tree-note">No matching scopes</div>}
+      {tree && !tasks.length && <div className="sb-empty" style={{ '--level': 0 } as CSSProperties}>Create a scope to browse its files.</div>}
+      {!!tasks.length && !visibleTasks.length && <div className="sb-empty" style={{ '--level': 0 } as CSSProperties}>No matching scopes</div>}
     </div>
     {menu && <RowContextMenu x={menu.x} y={menu.y} onClose={() => { if (!busy) setMenu(null) }}>
       {renaming ? <form onSubmit={(event) => { event.preventDefault(); void action('rename') }}><input aria-label="New file name" className="sb-rename" autoFocus value={rename} onChange={(event) => setRename(event.target.value)} /><button className="menu-item" disabled={busy || !rename.trim()} type="submit">Rename</button></form> : <button className="menu-item" disabled={busy || !menu.row.path.includes('/')} onClick={() => setRenaming(true)}>Rename</button>}
       <button className="menu-item" disabled={busy} onClick={() => { void action('relative') }}>Copy path from repository root</button>
       <button className="menu-item" disabled={busy} onClick={() => { void action('absolute') }}>Copy absolute path</button>
       <button className="menu-item danger" disabled={busy || !menu.row.path.includes('/')} onClick={() => { void action('delete') }}>Delete</button>
-      {actionError && <div className="file-tree-note error" role="alert">{actionError}</div>}
+      {actionError && <div className="sb-empty error" style={{ '--level': 0 } as CSSProperties} role="alert">{actionError}</div>}
     </RowContextMenu>}
   </aside>
 }
