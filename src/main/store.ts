@@ -53,7 +53,7 @@ import type { LoopState } from '../shared/reviewLoop'
 import { emptyProactiveState, sanitizeProactiveConfig } from '../shared/proactive'
 import { createLogger } from './log'
 import { gurtRoot } from './paths'
-import { writeJsonDurable } from './durableWrite'
+import { writeFileDurable, writeJsonDurable } from './durableWrite'
 
 const pexecFile = promisify(execFile)
 
@@ -1691,33 +1691,14 @@ function appendJsonl(file: string, records: unknown[]): Promise<void> {
   return next
 }
 
-/** Replace a JSONL file's contents, waiting for pending appends first so a
- *  rewrite can never land between an append's mkdir and its write. Same
- *  tmp+fsync+rename durability as `writeJson` — `fs.writeFile` in place would
- *  be just as vulnerable to a crash leaving a 0-byte file. */
+/** Replace a JSONL file's contents durably via `writeFileDurable`, waiting for
+ *  pending appends first so a rewrite can never land between an append's mkdir
+ *  and its write. */
 function rewriteJsonl(file: string, records: unknown[]): Promise<void> {
   const prev = appendChains.get(file) ?? Promise.resolve()
-  const next = prev.then(async () => {
-    const dir = path.dirname(file)
-    await fs.mkdir(dir, { recursive: true })
-    const tmp = path.join(dir, `.${path.basename(file)}.tmp`)
-    const fh = await fs.open(tmp, 'w')
-    try {
-      await fh.writeFile(records.map((r) => JSON.stringify(r) + '\n').join(''))
-      await fh.sync()
-    } finally {
-      await fh.close()
-    }
-    await fs.rename(tmp, file)
-    if (process.platform !== 'win32') {
-      const dh = await fs.open(dir, 'r')
-      try {
-        await dh.sync()
-      } finally {
-        await dh.close()
-      }
-    }
-  })
+  const next = prev.then(() =>
+    writeFileDurable(file, records.map((r) => JSON.stringify(r) + '\n').join(''))
+  )
   appendChains.set(
     file,
     next.catch(() => {})
