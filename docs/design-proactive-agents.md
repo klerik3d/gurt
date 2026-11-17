@@ -18,6 +18,13 @@ for it, here are the sessions I would run".
   without a click. This is the one, explicit exception to "drafts are
   approval" (`agent-brief-workflows.md` §5), and it covers only the agent's
   own runs.
+  > **Experimental exception: auto run.** With the agent's "Auto run" box
+  > checked (off by default), the sessions of every scope it raises are
+  > enqueued at once instead of waiting as drafts — the box is the standing
+  > approval. Such a scope is no longer "waiting for you", so
+  > `maxPendingScopes` stops bounding the agent; to be revisited once it has
+  > been tried.
+  >
   > **Superseded in part** by `requirements-review-loop.md`: a review loop's
   > reviewer sessions are a second exception — enabling an executor draft's
   > Review block is the standing approval for them.
@@ -35,7 +42,8 @@ for it, here are the sessions I would run".
 listed under `Tree.workspaces[].proactive`, not among the scopes, and holds:
 
 - `task.json` → `proactive`: `enabled`, `everyMinutes`, `maxPendingScopes`,
-  `maxRunMinutes`, `keepRuns`, `templateId` (`ProactiveConfig`, clamped by
+  `maxRunMinutes`, `keepRuns`, `templateId`, `autoRun`, `label`
+  (`ProactiveConfig`, clamped by
   `sanitizeProactiveConfig`, which drops unknown keys — an older build's
   `maxScopesPerRun` goes with the next save);
 - the **template**: a draft session of role `proactive` with
@@ -47,8 +55,17 @@ listed under `Tree.workspaces[].proactive`, not among the scopes, and holds:
 - the run sessions (§3), and `proactive-state.json` (§6).
 
 New agents start switched off, on the workspace's default env (the base
-image unless one is set), with auto-allow on and the network internal. An agent cannot be
-renamed: its name is what every scope it raised records as `origin.agent`.
+image unless one is set), with auto-allow on and the network internal. An agent can be
+renamed (the ordinary scope rename, refused mid-run): its name is what every
+scope it raised records as `origin.agent`, so the rename rewrites those.
+
+**Label.** `label` is `{ text, color }` — a short word (12 characters) and a
+`#rrggbb` colour, picked from `LABEL_PALETTE` or typed. Every scope the agent
+raises records it as `origin.label` and the sidebar shows it beside the
+scope's name (and beside the agent's); changing or clearing the agent's label
+rewrites it on the scopes it already raised. A scope keeps its label when the
+agent is deleted.
+
 Deleting it is deleting its scope; the scopes it raised stay.
 
 ## 3. Runs

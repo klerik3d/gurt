@@ -1,7 +1,17 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { SessionSnapshot, Tree } from '../../../shared/types'
 import type { ProactiveConfig } from '../../../shared/proactive'
-import { PROACTIVE_BOUNDS, isPendingScope, cronError } from '../../../shared/proactive'
+import {
+  HEX_COLOR_RE,
+  LABEL_MAX_LENGTH,
+  LABEL_PALETTE,
+  PROACTIVE_BOUNDS,
+  isPendingScope,
+  cronError
+} from '../../../shared/proactive'
+import { scopeNameInput } from '../../../shared/scopeName'
+import { scopeNamesOf } from './Sidebar'
+import { LabelTag } from './tags'
 import { alertDialog, confirmDialog } from '../dialog'
 import { logErr } from '../log'
 import { run } from '../async'
@@ -27,7 +37,8 @@ export function ProactivePane({
   name,
   snapshots,
   onSelectTask,
-  onDeleted
+  onDeleted,
+  onRenamed
 }: {
   tree: Tree | null
   ws: string
@@ -35,6 +46,7 @@ export function ProactivePane({
   snapshots: Record<string, SessionSnapshot>
   onSelectTask: (ws: string, task: string) => void
   onDeleted: () => void
+  onRenamed: (newName: string) => void
 }) {
   const wsData = tree?.workspaces.find((w) => w.name === ws)
   const agent = wsData?.proactive.find((a) => a.name === name)
@@ -74,6 +86,16 @@ export function ProactivePane({
 
   const [cron, setCron] = useState('')
   useEffect(() => setCron(agent?.config.cron ?? ''), [agent?.config.cron])
+  const [labelText, setLabelText] = useState('')
+  const [labelHex, setLabelHex] = useState('')
+  const labelKey = JSON.stringify(agent?.config.label ?? null)
+  useEffect(() => {
+    setLabelText(agent?.config.label?.text ?? '')
+    setLabelHex(agent?.config.label?.color ?? '')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [labelKey])
+  const [renaming, setRenaming] = useState<string | null>(null)
+  const renameCancelled = useRef(false)
   const [advanced, setAdvanced] = useState(false)
   const [scopesShown, setScopesShown] = useState(PAGE)
 
@@ -107,6 +129,38 @@ export function ProactivePane({
     />
   )
 
+  const label = agent.config.label
+  const setLabel = (text: string, color: string): void => update({ label: { text, color } })
+  const commitLabelText = (): void => {
+    const text = labelText.trim()
+    if (text === (label?.text ?? '')) return
+    setLabel(text, label?.color ?? LABEL_PALETTE[0]!.color)
+  }
+  const commitHex = (): void => {
+    const hex = labelHex.trim()
+    if (!label || hex.toLowerCase() === label.color) return
+    if (HEX_COLOR_RE.test(hex)) setLabel(label.text, hex)
+    else setLabelHex(label.color)
+  }
+
+  const rename = scopeNameInput(renaming ?? '', scopeNamesOf(wsData), name)
+  const commitRename = async (): Promise<void> => {
+    const typed = renaming
+    setRenaming(null)
+    // Escape unmounts the input, whose blur then lands here.
+    if (renameCancelled.current) {
+      renameCancelled.current = false
+      return
+    }
+    if (typed === null || !rename.name || rename.name === name || rename.error) return
+    try {
+      await window.gurt.renameTask(ws, name, rename.name)
+      onRenamed(rename.name)
+    } catch (e) {
+      await alertDialog(e instanceof Error ? e.message : String(e))
+    }
+  }
+
   const dot = proactiveDot(agent)
   // The scopes this agent raised that still exist; deleting one is closing it.
   const scopes = (wsData?.tasks ?? [])
@@ -132,8 +186,40 @@ export function ProactivePane({
           <span className="dim" style={{ fontWeight: 400 }}>
             {ws} /
           </span>{' '}
-          {name}
+          {renaming === null ? (
+            <>
+              <span onDoubleClick={() => { renameCancelled.current = false; setRenaming(name) }}>{name}</span>
+              <button
+                className="icon-sq"
+                title="rename this proactive agent"
+                aria-label="rename"
+                disabled={!!agent.activeRun}
+                onClick={() => { renameCancelled.current = false; setRenaming(name) }}
+              >
+                <Icon name="edit" size={12} />
+              </button>
+            </>
+          ) : (
+            <input
+              className="input mono pa-rename"
+              aria-label="agent name"
+              aria-invalid={!!rename.error}
+              title={rename.error ?? (rename.name && rename.name !== renaming.trim() ? `Branch: ${rename.name}` : '')}
+              autoFocus
+              value={renaming}
+              onChange={(e) => setRenaming(e.target.value)}
+              onBlur={run(commitRename)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') e.currentTarget.blur()
+                if (e.key === 'Escape') {
+                  renameCancelled.current = true
+                  setRenaming(null)
+                }
+              }}
+            />
+          )}
         </span>
+        {label && <LabelTag label={label} />}
         <Dot tone={dot.tone} pulse={dot.pulse} hollow={dot.hollow} />
         <span className="dim pa-head-status">
           {agent.activeRun
@@ -175,7 +261,7 @@ export function ProactivePane({
             <InfoDot
               text={
                 'Runs start by themselves while the agent is on — everything a run raises waits for you ' +
-                'as a draft. They happen only while gurt is open; runs missed while it was closed become one run.'
+                'as a draft, unless auto run is checked. They happen only while gurt is open; runs missed while it was closed become one run.'
               }
             />
           </div>
@@ -208,6 +294,22 @@ export function ProactivePane({
               }
             />
           </div>
+          <label className="rv-check">
+            <input
+              type="checkbox"
+              checked={agent.config.autoRun}
+              onChange={(e) => update({ autoRun: e.target.checked })}
+            />
+            <span>Auto run</span>
+            <span className="tag">experimental</span>
+            <InfoDot
+              text={
+                'An exception to "drafts are approval": the sessions of every scope this agent raises are queued ' +
+                'at once, without waiting for you. Such scopes no longer count as waiting, so the waiting limit does ' +
+                'not slow the agent down.'
+              }
+            />
+          </label>
           <button type="button" className="btn-link pa-advanced" onClick={() => setAdvanced((v) => !v)}>
             <Icon name="chevron" size={11} style={advanced ? undefined : { transform: 'rotate(-90deg)' }} />
             Advanced
@@ -230,6 +332,51 @@ export function ProactivePane({
               />
             </div>
           )}
+        </div>
+
+        <div className="tp-sep" />
+
+        <div className="tp-section">
+          <div className="seclabel-row">
+            <span className="seclabel">LABEL</span>
+            <InfoDot text="A short word shown in the sidebar on every scope this agent raises, and next to the agent. Clear the word to remove the label." />
+          </div>
+          <div className="label-editor">
+            <input
+              className="input label-text"
+              aria-label="label text"
+              placeholder="label"
+              maxLength={LABEL_MAX_LENGTH}
+              value={labelText}
+              onChange={(e) => setLabelText(e.target.value)}
+              onBlur={commitLabelText}
+              onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }}
+            />
+            {LABEL_PALETTE.map((c) => (
+              <button
+                key={c.color}
+                type="button"
+                className={`label-swatch${label?.color === c.color ? ' on' : ''}`}
+                style={{ ['--label' as string]: c.color }}
+                title={c.name}
+                aria-label={c.name}
+                disabled={!label}
+                onClick={() => label && setLabel(label.text, c.color)}
+              />
+            ))}
+            <input
+              className="input mono label-hex"
+              aria-label="label colour, #rrggbb"
+              placeholder="#rrggbb"
+              disabled={!label}
+              aria-invalid={!!labelHex && !HEX_COLOR_RE.test(labelHex.trim())}
+              value={labelHex}
+              onChange={(e) => setLabelHex(e.target.value)}
+              onBlur={commitHex}
+              onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }}
+            />
+            {label && <LabelTag label={label} />}
+          </div>
         </div>
 
         <div className="tp-sep" />

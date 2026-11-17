@@ -103,6 +103,22 @@ test('refs, slugs, config, schedule', () => {
   assert.equal(m.isPendingScope([{ state: 'draft' }, { state: 'started' }]), false)
 })
 
+test('labels and auto run: sanitizing', () => {
+  assert.deepEqual(m.sanitizeLabel({ text: '  sentry  ', color: '#ABCDEF' }), { text: 'sentry', color: '#abcdef' })
+  assert.equal(m.sanitizeLabel({ text: '   ', color: '#abcdef' }), undefined, 'no word, no label')
+  assert.equal(m.sanitizeLabel({ text: 'x'.repeat(40), color: '#abcdef' }).text.length, m.LABEL_MAX_LENGTH)
+  assert.equal(m.sanitizeLabel({ text: 'x', color: 'red; background:url(x)' }).color, m.LABEL_PALETTE[0].color, 'only #rrggbb passes')
+  assert.ok(m.LABEL_PALETTE.length >= 5 && m.LABEL_PALETTE.length <= 10)
+  assert.ok(m.LABEL_PALETTE.every((c) => m.HEX_COLOR_RE.test(c.color)))
+  const withLabel = m.sanitizeProactiveConfig({ label: { text: 'bugs', color: '#4da3ff' }, autoRun: true })
+  assert.deepEqual(withLabel.label, { text: 'bugs', color: '#4da3ff' })
+  assert.equal(withLabel.autoRun, true)
+  assert.equal(m.sanitizeProactiveConfig({}, withLabel).label.text, 'bugs', 'absent keeps the label')
+  assert.equal('label' in m.sanitizeProactiveConfig({ label: { text: '' } }, withLabel), false, 'an empty word removes it')
+  assert.equal(m.sanitizeProactiveConfig({}).autoRun, false, 'auto run is off unless asked for')
+  assert.equal(m.sanitizeProactiveConfig({ autoRun: 'yes' }).autoRun, false)
+})
+
 test('the role', () => {
   assert.equal(m.roleHasTurnContract('proactive'), true)
   assert.equal(m.roleNeedsRepo('proactive'), false)
@@ -141,7 +157,6 @@ test('create: a scope with a template that never runs', async () => {
   assert.equal(w.proactive.some((p) => p.name === 'triage'), true, 'listed as an agent')
   assert.ok(m.getTask && (await m.getTask(ws, 'triage')).proactive, 'task.json carries the config')
   await assert.rejects(kernel.proactive.create(ws, 'triage'), /already exists/)
-  await assert.rejects(kernel.renameTask(ws, 'triage', 'other'), /cannot be renamed/)
 })
 
 // --- a run's tools ------------------------------------------------------------
@@ -296,6 +311,91 @@ test('crash recovery: a scope whose drafts never landed is finished', async () =
   assert.equal(r.drafted.length, 1)
   assert.equal(kernel.sessions.listForTask(ws, 'orphan').length, 1)
   endTurn(run4)
+})
+
+test('labels follow the agent; rename; auto run', async () => {
+  const label = { text: 'sentry', color: '#e5544b' }
+  await kernel.proactive.update(ws, 'triage', { label })
+  assert.deepEqual(view().config.label, label)
+  assert.deepEqual((await m.getTask(ws, 'orphan')).origin.label, label, 'scopes raised earlier get the new label too')
+  const enqueued = []
+  const realEnqueue = kernel.sessions.enqueue
+  kernel.sessions.enqueue = (id) => enqueued.push(id)
+  let runId
+  try {
+    runId = await kernel.proactive.runNow(ws, 'triage')
+    const p = tools(runId)
+    const made = await p.proposeScope({ title: 'Labelled one', summary: 'x', refs: ['sentry:100'], sessions: [executor()] })
+    assert.deepEqual((await m.getTask(ws, made.scope)).origin.label, label, 'the scope carries the label')
+    const tree = await kernel.tree()
+    assert.deepEqual(tree.workspaces.find((w) => w.name === ws).tasks.find((t) => t.name === made.scope).origin.label, label)
+    assert.deepEqual(enqueued, [], 'auto run is off: the draft waits')
+
+    // Changing the label rewrites the scopes it raised.
+    const next = { text: 'bugs', color: '#4da3ff' }
+    await kernel.proactive.update(ws, 'triage', { label: next })
+    assert.deepEqual((await m.getTask(ws, made.scope)).origin.label, next)
+    await kernel.proactive.update(ws, 'triage', { label: { text: '', color: '#4da3ff' } })
+    assert.equal(view().config.label, undefined)
+    assert.equal('label' in (await m.getTask(ws, made.scope)).origin, false, 'cleared')
+    await kernel.proactive.update(ws, 'triage', { label: next })
+
+    // Auto run: the sessions of a raised scope are queued at once.
+    await kernel.proactive.update(ws, 'triage', { autoRun: true })
+    const auto = await p.proposeScope({ title: 'Runs itself', summary: 'x', refs: ['sentry:101'], sessions: [executor(), executor('second')] })
+    assert.deepEqual(enqueued, auto.sessions.map((s) => s.id), 'every draft of the scope is enqueued')
+    await kernel.proactive.update(ws, 'triage', { autoRun: false })
+
+    // A rename is refused mid-run.
+    await assert.rejects(kernel.renameTask(ws, 'triage', 'watcher'), /is running/)
+    endTurn(runId)
+  } finally {
+    kernel.sessions.enqueue = realEnqueue
+  }
+
+  // A rename holds the agent: no run starts while it is paused mid-way.
+  {
+    await kernel.proactive.update(ws, 'triage', { enabled: true, everyMinutes: 5 })
+    view().state.lastRunAt = new Date(Date.now() - 6 * 60_000).toISOString()
+    let release
+    const gate = new Promise((r) => (release = r))
+    const hold = kernel.proactive.onAgentRenamed
+    kernel.proactive.onAgentRenamed = async (...a) => {
+      await assert.rejects(kernel.proactive.runNow(ws, 'triage'), /being renamed/, 'manual run refused')
+      kernel.proactive.tick()
+      assert.equal(view().activeRun, undefined, 'the clock starts nothing')
+      release()
+      return hold(...a)
+    }
+    try {
+      await kernel.renameTask(ws, 'triage', 'watcher')
+      await gate
+    } finally {
+      kernel.proactive.onAgentRenamed = hold
+    }
+    await kernel.proactive.update(ws, 'watcher', { enabled: false })
+    await kernel.renameTask(ws, 'watcher', 'triage')
+  }
+  assert.equal(view().activeRun, undefined)
+  // Renamed: the agent keeps its settings, and its scopes follow it.
+  await kernel.renameTask(ws, 'triage', 'watcher')
+  assert.equal(kernel.proactive.views(ws).some((a) => a.name === 'triage'), false)
+  const renamed = kernel.proactive.views(ws).find((a) => a.name === 'watcher')
+  assert.deepEqual(renamed.config.label, { text: 'bugs', color: '#4da3ff' })
+  assert.equal((await m.getTask(ws, 'labelled-one')).origin.agent, 'watcher')
+  assert.ok(kernel.sessions.listForTask(ws, 'watcher').some((s) => s.template), 'the template moved with it')
+  assert.equal(
+    (await m.readProactiveState(ws, 'watcher')).runs.some((r) => r.id === runId),
+    true,
+    'its history moved with it'
+  )
+  await assert.rejects(kernel.renameTask(ws, 'watcher', 'labelled-one'), /already exists|taken|clash/i)
+  await kernel.renameTask(ws, 'watcher', 'triage')
+  assert.equal(view().config.templateId, templateId, 'the same template')
+  assert.equal((await m.getTask(ws, 'labelled-one')).origin.agent, 'triage')
+  // Leave the later tests the waiting scopes they count on.
+  await kernel.deleteTask(ws, 'labelled-one')
+  await kernel.deleteTask(ws, 'runs-itself')
 })
 
 test('the clock: a due run is skipped at the waiting-scopes limit', async () => {

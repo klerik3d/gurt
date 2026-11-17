@@ -795,6 +795,7 @@ export function Sidebar({
                 selected={taskSelected}
                 cursor={cursorKey === rowKey(row)}
                 repos={changes[tkey] ?? []}
+                label={task.origin?.label}
                 editing={!!editing}
                 onSelect={() => { moveTo(row); treeRef.current?.focus() }}
                 onToggle={() => setCollapse(wsName, task.name, !isCollapsed)}
@@ -831,7 +832,7 @@ export function Sidebar({
                   return (
                     <div
                       key={s.id}
-                      className={`sb-session ${nested ? 'nested' : ''} ${selected ? 'selected' : ''}${cursorKey === rowKey(srow) ? ' cursor' : ''}`}
+                      className={`sb-session foldable ${nested ? 'nested' : ''} ${selected ? 'selected' : ''}${cursorKey === rowKey(srow) ? ' cursor' : ''}`}
                       role="treeitem"
                       aria-selected={selected}
                       aria-level={nested ? 3 : 2}
@@ -846,18 +847,18 @@ export function Sidebar({
                       onDoubleClick={() => startRename(srow)}
                       onContextMenu={renamingThis ? undefined : (e) => openContextMenu(e, srow)}
                     >
-                      {reviews > 0 && (
-                        <span
-                          className="sb-chev sb-review-chev"
-                          title={`${open ? 'Hide' : 'Show'} ${reviews} review${reviews === 1 ? '' : 's'}`}
-                          onClick={(event) => {
+                      <span
+                        className={reviews > 0 ? 'sb-fold sb-chev' : 'sb-fold'}
+                        {...(reviews > 0 ? {
+                          title: `${open ? 'Hide' : 'Show'} ${reviews} review${reviews === 1 ? '' : 's'}`,
+                          onClick: (event: ReactMouseEvent) => {
                             event.stopPropagation()
                             setReviewFold((prev) => new Map(prev).set(s.id, !open))
-                          }}
-                        >
-                          <Icon name="chevron" size={10} style={open ? undefined : { transform: 'rotate(-90deg)' }} />
-                        </span>
-                      )}
+                          }
+                        } : {})}
+                      >
+                        {reviews > 0 && <Icon name="chevron" size={11} style={open ? undefined : { transform: 'rotate(-90deg)' }} />}
+                      </span>
                       <Dot tone={dot.tone} pulse={dot.pulse} hollow={dot.hollow} />
                       {renamingThis ? (
                         <RenameInput

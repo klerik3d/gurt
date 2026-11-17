@@ -615,24 +615,31 @@ export function createKernel(options: KernelOptions = {}): Kernel {
     async renameTask(ws: string, task: string, newName: string): Promise<void> {
       sessions.assertTaskWritable(ws, task)
       if (newName === task) return
-      // Its name is what every scope it raised records as `origin.agent`.
-      if (proactive.isAgent(ws, task)) throw new Error('a proactive agent cannot be renamed')
-      // Up front, before any container is stopped for a rename that cannot happen.
-      store.validateNewTaskName(ws, newName, task)
-      // A case-only rename would find its own branch on a case-insensitive filesystem.
-      const clashes =
-        newName.toLowerCase() === task.toLowerCase() ? [] : await changes.taskBranchClashes(ws, task, newName)
-      if (clashes.length)
-        throw new Error(`branch "${newName}" already exists in ${clashes.join(', ')} — pick another scope name`)
-      await terminals.withScopeBlocked(ws, task, async () => {
-        await containers.stopTask(ws, task)
-        await store.renameTask(ws, task, newName)
-        terminals.renameScope(ws, task, newName)
-        await changes.renameTaskBranches(ws, newName, task)
-        sessions.renameTask(ws, task, newName)
-        proactive.onScopeRenamed(ws, task, newName)
-        bus.emit('tree.changed', undefined)
-      })
+      // Its name is what every scope it raised records as `origin.agent`;
+      // `onAgentRenamed` rewrites those.
+      const isAgent = proactive.isAgent(ws, task)
+      if (isAgent) proactive.reserveRename(ws, task)
+      try {
+        // Up front, before any container is stopped for a rename that cannot happen.
+        store.validateNewTaskName(ws, newName, task)
+        // A case-only rename would find its own branch on a case-insensitive filesystem.
+        const clashes =
+          newName.toLowerCase() === task.toLowerCase() ? [] : await changes.taskBranchClashes(ws, task, newName)
+        if (clashes.length)
+          throw new Error(`branch "${newName}" already exists in ${clashes.join(', ')} — pick another scope name`)
+        await terminals.withScopeBlocked(ws, task, async () => {
+          await containers.stopTask(ws, task)
+          await store.renameTask(ws, task, newName)
+          terminals.renameScope(ws, task, newName)
+          await changes.renameTaskBranches(ws, newName, task)
+          sessions.renameTask(ws, task, newName)
+          if (isAgent) await proactive.onAgentRenamed(ws, task, newName)
+          else proactive.onScopeRenamed(ws, task, newName)
+          bus.emit('tree.changed', undefined)
+        })
+      } finally {
+        if (isAgent) proactive.releaseRename(ws, task)
+      }
     },
 
     async taskDirtyRepos(ws: string, task: string): Promise<string[]> {

@@ -84,6 +84,14 @@ export interface ProactiveManager {
    *  raised scope frees its refs — a later run may raise them again. */
   onScopeDeleted(ws: string, task: string): Promise<void>
   onScopeRenamed(ws: string, task: string, newName: string): void
+  /** Reserve an agent for a rename, synchronously: refused mid-run (its run's
+   *  tools are bound to the old name), and until {@link releaseRename} no run
+   *  of it starts, by schedule or by hand. */
+  reserveRename(ws: string, name: string): void
+  releaseRename(ws: string, name: string): void
+  /** An agent's scope was renamed on disk: it keeps its settings and runs, and
+   *  every scope it raised now records the new name as its `origin.agent`. */
+  onAgentRenamed(ws: string, name: string, newName: string): Promise<void>
   dropWorkspace(ws: string): void
 }
 
@@ -98,6 +106,8 @@ export function createProactive(deps: ProactiveDeps): ProactiveManager {
   /** Per workspace: ref → the scope it is bound to (raised scopes only). */
   const refIndex = new Map<string, Map<string, string>>()
   const locks = new Map<string, Promise<unknown>>()
+  /** Agents being renamed (by their old name): no run may start. */
+  const renaming = new Set<string>()
   let timer: NodeJS.Timeout | undefined
 
   /** Run `fn` after everything queued for this workspace — the lock every
@@ -170,6 +180,7 @@ export function createProactive(deps: ProactiveDeps): ProactiveManager {
 
   function startRun(a: Agent): string {
     if (a.active) throw new Error(`"${a.name}" is already running`)
+    if (renaming.has(key(a.ws, a.name))) throw new Error(`"${a.name}" is being renamed`)
     const t = template(a)
     if (!t) throw new Error(`"${a.name}" has no template session`)
     const startedAt = now()
@@ -285,6 +296,7 @@ export function createProactive(deps: ProactiveDeps): ProactiveManager {
         else if (info) sessions.deleteSession(id)
         continue
       }
+      if (renaming.has(key(a.ws, a.name))) continue
       if (!a.config.enabled || t < nextRunDue(a.config, a.state)) continue
       // A run could raise nothing while the user's inbox from this agent is
       // full: no session is started for it.
@@ -299,6 +311,33 @@ export function createProactive(deps: ProactiveDeps): ProactiveManager {
         recordSlot(a, 'failed', e instanceof Error ? e.message : String(e))
       }
     }
+  }
+
+  /** Rewrite the origin of every scope `a` raised (a renamed agent, a changed
+   *  label) — on disk first, then in the index. Call under the workspace lock. */
+  async function rewriteOrigins(
+    a: Agent,
+    change: (o: ProactiveOrigin) => ProactiveOrigin
+  ): Promise<void> {
+    for (const { scope, origin } of ownScopes(a)) {
+      const next = change(origin)
+      const file = await store.getTask(a.ws, scope)
+      await store.saveTask(a.ws, scope, { ...file, origin: next })
+      indexOrigin(a.ws, scope, next)
+    }
+  }
+
+  /** Auto run (EXPERIMENTAL, §1): start the sessions of a scope the agent just
+   *  raised. A session that cannot be enqueued stays a draft for the user. */
+  function autoRun(ws: string, scope: string, ids: string[]): void {
+    for (const id of ids) {
+      try {
+        sessions.enqueue(id)
+      } catch (e) {
+        log.error('internal.fail', { site: 'proactive-autorun', ws, scope, s: id, err: e })
+      }
+    }
+    log.info('proactive.autorun', { ws, scope, sessions: ids.length })
   }
 
   // --- the run's tools --------------------------------------------------------
@@ -423,6 +462,7 @@ export function createProactive(deps: ProactiveDeps): ProactiveManager {
       if (!existing.length && origin?.agent === a.name) {
         const prepared = await prepare()
         const drafted = prepared.map((p) => sessions.createPreparedDraft(ws, bound, p, inherit))
+        if (a.config.autoRun) autoRun(ws, bound, drafted.map((d) => d.id))
         bus.emit('tree.changed', undefined)
         return { scope: bound, created: false, drafted: drafted.map((d) => ({ id: d.id, title: d.title })) }
       }
@@ -459,12 +499,14 @@ export function createProactive(deps: ProactiveDeps): ProactiveManager {
       refs,
       title: input.title,
       summary: input.summary,
-      createdAt: now()
+      createdAt: now(),
+      ...(a.config.label ? { label: a.config.label } : {})
     }
     // One write: the scope exists exactly when its refs are bound.
     await store.createTask(ws, scope, { origin })
     indexOrigin(ws, scope, origin)
     const drafted = prepared.map((p) => sessions.createPreparedDraft(ws, scope, p, inherit))
+    if (a.config.autoRun) autoRun(ws, scope, drafted.map((d) => d.id))
     runRecord(a, active.id)?.proposed.push(scope)
     await persistState(a)
     log.info('proactive.scope', { ws, agent: a.name, scope, s: active.id, sessions: drafted.length })
@@ -573,7 +615,11 @@ export function createProactive(deps: ProactiveDeps): ProactiveManager {
         if (a.config.templateId) next.templateId = a.config.templateId
         else delete next.templateId
         await store.saveTask(ws, name, { ...(await store.getTask(ws, name)), proactive: next })
+        const labelChanged = JSON.stringify(a.config.label) !== JSON.stringify(next.label)
         a.config = next
+        // The scopes it raised carry its label: they follow it.
+        if (labelChanged)
+          await rewriteOrigins(a, ({ label: _old, ...o }) => ({ ...o, ...(next.label ? { label: next.label } : {}) }))
         bus.emit('tree.changed', undefined)
         // A shorter interval or a fresh enable may have made a run due now.
         tick()
@@ -607,6 +653,33 @@ export function createProactive(deps: ProactiveDeps): ProactiveManager {
       origins.delete(key(ws, task))
       indexOrigin(ws, newName, origin)
     },
+
+    reserveRename(ws, name) {
+      const k = key(ws, name)
+      if (agents.get(k)?.active) throw new Error(`"${name}" is running — rename it when the run ends`)
+      if (renaming.has(k)) throw new Error(`"${name}" is already being renamed`)
+      renaming.add(k)
+    },
+
+    releaseRename: (ws, name) => void renaming.delete(key(ws, name)),
+
+    onAgentRenamed: (ws, name, newName) =>
+      locked(ws, async () => {
+        const a = agents.get(key(ws, name))
+        if (!a) return
+        agents.delete(key(ws, name))
+        a.name = newName
+        agents.set(key(ws, newName), a)
+        await rewriteOrigins(
+          { ...a, name },
+          (o) => ({
+            ...o,
+            agent: newName,
+            ...(o.notes ? { notes: o.notes.map((n) => (n.agent === name ? { ...n, agent: newName } : n)) } : {})
+          })
+        )
+        bus.emit('tree.changed', undefined)
+      }),
 
     dropWorkspace(ws) {
       for (const [k, a] of agents) if (a.ws === ws) agents.delete(k)
