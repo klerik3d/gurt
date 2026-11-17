@@ -2352,11 +2352,10 @@ button.sb-session {
 }
 
 /* What gurt itself ran — the review loop's check, reviewer, verdicts — set
-   apart from the model's own tool rows by the badge and the yellow rail. */
+   apart from the model's own tool rows by the badge. */
 .host-block,
 .host-note {
   border: 1px solid var(--border2);
-  border-left: 2px solid var(--yellow);
   border-radius: 6px;
   background: var(--app);
   font-size: 12px;
@@ -2364,13 +2363,10 @@ button.sb-session {
 }
 .host-block[data-status='failed'],
 .host-note[data-tone='error'] {
-  border-left-color: var(--red);
+  border-color: var(--red);
 }
 .host-note[data-tone='ok'] {
-  border-left-color: var(--green);
-}
-.host-note[data-tone='info'] {
-  border-left-color: var(--border2);
+  border-color: var(--green);
 }
 .host-head {
   display: flex;
@@ -5229,8 +5225,4 @@ button { user-select: none; }
 }
 .label-hex[aria-invalid="true"] {
   border-color: var(--red);
-}
-.pa-rename.input {
-  font-size: 13px;
-  width: 200px;
 }
