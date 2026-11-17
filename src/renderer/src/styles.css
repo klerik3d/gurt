@@ -1254,8 +1254,8 @@ textarea.input {
   border-bottom: 1px solid var(--border);
   cursor: pointer;
   transition:
-    transform 0.22s ease,
-    opacity 0.22s ease;
+    transform 220ms ease,
+    opacity 220ms ease;
 }
 .pinned-req.off {
   transform: translateY(-100%);
@@ -1321,8 +1321,8 @@ textarea.input {
   box-shadow: 0 2px 10px rgb(0 0 0 / calc(0.25 * var(--shadow-strength)));
   transform: translateX(-50%);
   transition:
-    transform 0.2s ease,
-    opacity 0.2s ease;
+    transform 200ms ease,
+    opacity 200ms ease;
 }
 .jump-latest:hover {
   color: var(--text);
@@ -1411,7 +1411,7 @@ textarea.input {
   gap: 10px;
   margin-top: 4px;
   opacity: 0;
-  transition: opacity 0.12s;
+  transition: opacity 120ms;
 }
 .msg-user:hover .msg-actions,
 .msg-actions:focus-within {
@@ -1855,8 +1855,8 @@ textarea.input {
   border: 1px solid var(--border2);
   border-radius: var(--r-lg);
   transition:
-    border-color 0.15s,
-    box-shadow 0.15s;
+    border-color 150ms,
+    box-shadow 150ms;
 }
 .composer.focused {
   border-color: var(--accent);
@@ -5128,7 +5128,7 @@ button { user-select: none; }
   border-radius: var(--r-sm);
   color: var(--dim);
   opacity: 0;
-  transition: opacity 0.1s ease;
+  transition: opacity 100ms ease;
   cursor: pointer;
   z-index: 1;
 }
