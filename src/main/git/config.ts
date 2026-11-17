@@ -46,6 +46,7 @@ export function rewriteRules(host: string, kind: CredentialKind): ConfigPair[] {
     case 'mcp-token':
     case 'oauth':
     case 'pii-detector':
+    case 'remote-identity':
       // Not a gurt-managed git transport — nothing to rewrite (§6.1).
       return []
   }

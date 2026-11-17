@@ -136,6 +136,9 @@ test('legacy migration', async () => {
   }
   assert.ok(snap, 'restored session must be visible')
   assert.deepEqual(snap.entries, entries)
+  // The snapshot says how far its entries reach, so a client applying deltas
+  // on top knows which records it already has (remote-protocol §7.5).
+  assert.equal(snap.logSeq, 3, 'logSeq is the seq of the last record folded into entries')
 
   const jsonlFile = path.join(GURT_ROOT, 'p', 't', 'sessions', 'sess-1.jsonl')
   const records = fs

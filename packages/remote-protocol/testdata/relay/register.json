@@ -1,0 +1,143 @@
+{
+  "format": 1,
+  "context": "gurt-relay/1 register",
+  "about": "REGISTER signature vectors for gurt-relay protocol §3.2. Layout: testdata/README.md.",
+  "keys": [
+    {
+      "name": "k1",
+      "seed": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+      "pubkey": "79b5562e8fe654f94078b112e8a98ba7901f853ae695bed7e0e3910bad049664",
+      "hostId": "mw3am46w5weex4a4fqrc3avnub2a6knm"
+    },
+    {
+      "name": "k2",
+      "seed": "4142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f60",
+      "pubkey": "adc14011f82d1c56d956aa4f9d73d8858361a606048525e0d08c638dc75dd8c7",
+      "hostId": "xkarf6sluplpsnfsvuvka2lgai6vnypo"
+    },
+    {
+      "name": "k3",
+      "seed": "0000000000000000000000000000000000000000000000000000000000000000",
+      "pubkey": "3b6a27bcceb6a42d62a3a8d02a6f0d73653215771de243a63ac048a18b59da29",
+      "hostId": "copdsqhgjnkjc4rardm2bv2bmkh4qjxa"
+    }
+  ],
+  "cases": [
+    {
+      "name": "k1-challenge1",
+      "pubkey": "79b5562e8fe654f94078b112e8a98ba7901f853ae695bed7e0e3910bad049664",
+      "challenge": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "message": "677572742d72656c61792f3120726567697374657200000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "sig": "1174e1ded268df433fe31f3a1e597982adde85ec926bc4fa154afaaed24d6831ce010c1267c4396682322c9aa4523bffb704dc9ed07c22f997b1fdf73f472506",
+      "valid": true,
+      "hostId": "mw3am46w5weex4a4fqrc3avnub2a6knm"
+    },
+    {
+      "name": "k2-challenge2",
+      "pubkey": "adc14011f82d1c56d956aa4f9d73d8858361a606048525e0d08c638dc75dd8c7",
+      "challenge": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+      "message": "677572742d72656c61792f3120726567697374657200a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+      "sig": "6597c02b2983af4a8e89904b210564b8c18fe348ac661b40ebe6e95f9646cf03ce46097b312cf8d55cbe7759cc4bfe7d1643439c336d509093e6a8f7601cab04",
+      "valid": true,
+      "hostId": "xkarf6sluplpsnfsvuvka2lgai6vnypo"
+    },
+    {
+      "name": "k3-challenge3",
+      "pubkey": "3b6a27bcceb6a42d62a3a8d02a6f0d73653215771de243a63ac048a18b59da29",
+      "challenge": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "message": "677572742d72656c61792f3120726567697374657200ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "sig": "c091be9db38f64239edade868d08c5b6a1d9250f7d446452ae590d5ae37a2832a4e1975ed26c76c0d47a9241586c4cdd075abe5bc4e15a42f887c60def78cc0a",
+      "valid": true,
+      "hostId": "copdsqhgjnkjc4rardm2bv2bmkh4qjxa"
+    },
+    {
+      "name": "k1-challenge2",
+      "comment": "Same key, another challenge.",
+      "pubkey": "79b5562e8fe654f94078b112e8a98ba7901f853ae695bed7e0e3910bad049664",
+      "challenge": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+      "message": "677572742d72656c61792f3120726567697374657200a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+      "sig": "b59fb0bb46268c134a95fa2593970f16d48b0dfaf74df21d1a86bbbbff1e920e6859e616077b42fed0f5c7a70fe3f65344d81d5322aee2944f5b30fc148de707",
+      "valid": true,
+      "hostId": "mw3am46w5weex4a4fqrc3avnub2a6knm"
+    },
+    {
+      "name": "wrong-challenge",
+      "comment": "k1's signature over challenge1, presented for challenge2.",
+      "pubkey": "79b5562e8fe654f94078b112e8a98ba7901f853ae695bed7e0e3910bad049664",
+      "challenge": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+      "message": "677572742d72656c61792f3120726567697374657200a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+      "sig": "1174e1ded268df433fe31f3a1e597982adde85ec926bc4fa154afaaed24d6831ce010c1267c4396682322c9aa4523bffb704dc9ed07c22f997b1fdf73f472506",
+      "valid": false,
+      "relay": 4401
+    },
+    {
+      "name": "wrong-key",
+      "comment": "k1's signature presented with k2's public key.",
+      "pubkey": "adc14011f82d1c56d956aa4f9d73d8858361a606048525e0d08c638dc75dd8c7",
+      "challenge": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "message": "677572742d72656c61792f3120726567697374657200000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "sig": "1174e1ded268df433fe31f3a1e597982adde85ec926bc4fa154afaaed24d6831ce010c1267c4396682322c9aa4523bffb704dc9ed07c22f997b1fdf73f472506",
+      "valid": false,
+      "relay": 4401
+    },
+    {
+      "name": "flipped-bit",
+      "comment": "One bit of the signature changed.",
+      "pubkey": "79b5562e8fe654f94078b112e8a98ba7901f853ae695bed7e0e3910bad049664",
+      "challenge": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "message": "677572742d72656c61792f3120726567697374657200000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "sig": "1174e1ded268df433fe31e3a1e597982adde85ec926bc4fa154afaaed24d6831ce010c1267c4396682322c9aa4523bffb704dc9ed07c22f997b1fdf73f472506",
+      "valid": false,
+      "relay": 4401
+    },
+    {
+      "name": "no-context",
+      "comment": "Signature over the bare challenge.",
+      "pubkey": "79b5562e8fe654f94078b112e8a98ba7901f853ae695bed7e0e3910bad049664",
+      "challenge": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "message": "677572742d72656c61792f3120726567697374657200000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "sig": "91dd905cea357982290ea3734e9ec32ba0fa52056d4fcbf9756f50ffe2e54bc3abd8347de7d0b914ab4a6b45e46734d69ef41d603b4b1e8a843c98c705d97d00",
+      "valid": false,
+      "relay": 4401
+    },
+    {
+      "name": "no-separator",
+      "comment": "Signature over the context and challenge without the 0x00.",
+      "pubkey": "79b5562e8fe654f94078b112e8a98ba7901f853ae695bed7e0e3910bad049664",
+      "challenge": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "message": "677572742d72656c61792f3120726567697374657200000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "sig": "88d68132c43124425f322883bfa027b1e5bb7992ee266852d3c736687bf9b93d79d0e12acab3b735005f9cd81eab95ba139db6dd20292b9139f8f9bf75579107",
+      "valid": false,
+      "relay": 4401
+    },
+    {
+      "name": "other-context",
+      "comment": "Signature over \"gurt-relay/2 register\".",
+      "pubkey": "79b5562e8fe654f94078b112e8a98ba7901f853ae695bed7e0e3910bad049664",
+      "challenge": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "message": "677572742d72656c61792f3120726567697374657200000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "sig": "289fc68d5a2f8958ec2bdf1d4ef1f0e6ece25977ccd25586e55d63edf056d36ac15d69d26cc90f3fddcdfcb5b01b503f7fb07cd5570821601bd9a105e15c8a03",
+      "valid": false,
+      "relay": 4401
+    },
+    {
+      "name": "non-canonical-s",
+      "comment": "S + L: the same signature with S not reduced; RFC 8032 verifiers reject it.",
+      "pubkey": "79b5562e8fe654f94078b112e8a98ba7901f853ae695bed7e0e3910bad049664",
+      "challenge": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "message": "677572742d72656c61792f3120726567697374657200000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "sig": "1174e1ded268df433fe31f3a1e597982adde85ec926bc4fa154afaaed24d6831bbd5016f81274cbe58cf233d834c1a14b804dc9ed07c22f997b1fdf73f472516",
+      "valid": false,
+      "relay": 4401
+    },
+    {
+      "name": "zero-signature",
+      "pubkey": "79b5562e8fe654f94078b112e8a98ba7901f853ae695bed7e0e3910bad049664",
+      "challenge": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "message": "677572742d72656c61792f3120726567697374657200000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "sig": "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "valid": false,
+      "relay": 4401
+    }
+  ]
+}

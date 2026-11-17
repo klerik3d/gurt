@@ -18,6 +18,9 @@
 //     over is dropped whole rather than truncated, reported once, and the
 //     stream resynchronizes at the next newline — including the runaway case
 //     of an adapter that never writes a newline at all;
+//   * the message-transport sibling (`JsonRpcMessagePeer`, used by the remote
+//     channel): the same envelope over whole messages, a non-frame answered
+//     with -32600, `close` rejecting what is pending and silencing the peer;
 //   * the DBG trace, which must carry method/id/direction/size and never params
 //     (docs/logging.md: "JSON-RPC params — a frame is logged as method, id,
 //     direction and byte size").
@@ -50,7 +53,7 @@ const logFile = path.join(process.env.GURT_ROOT, 'logs', 'gurt.log')
 await bundle({
   stdin: {
     contents:
-      `export { JsonRpcPeer, issuePaths, MAX_FRAME } from ${S('src/main/jsonrpc.ts')}\n` +
+      `export { JsonRpcPeer, JsonRpcMessagePeer, issuePaths, MAX_FRAME } from ${S('src/main/jsonrpc.ts')}\n` +
       `export { z } from 'zod'`,
     resolveDir: ROOT,
     loader: 'ts',
@@ -508,6 +511,56 @@ test('an astral character (surrogate pair) split at every byte offset', async ()
       `cut ${off} byte(s) in: both halves of the surrogate pair arrive, not two replacements`
     )
   }
+})
+
+// ------------------------------------------------- message transport
+/** A `JsonRpcMessagePeer` over an in-memory transport. */
+function makeMessagePeer(id) {
+  const out = []
+  const peer = new m.JsonRpcMessagePeer({ send: (msg) => out.push(msg) }, id)
+  return { peer, out, sent: () => out.map((t) => JSON.parse(t)) }
+}
+
+test('message peer: one message per frame, no newline framing', async () => {
+  const h = makeMessagePeer('m1')
+  h.peer.onRequest('echo', (p) => p)
+  const seen = []
+  h.peer.onNotification('note', (p) => seen.push(p))
+  const p = h.peer.request('remote.ping', {})
+  assert.deepEqual(h.out, ['{"jsonrpc":"2.0","id":1,"method":"remote.ping","params":{}}'], 'a message carries no trailing newline')
+  h.peer.deliver('{"jsonrpc":"2.0","id":1,"result":{}}')
+  assert.deepEqual(await p, {})
+  // A message may contain newlines of its own: it is one message regardless.
+  h.peer.deliver('{"jsonrpc":"2.0",\n"method":"note","params":"a\\nb"}')
+  h.peer.deliver('{"jsonrpc":"2.0","id":"x","method":"echo","params":{"k":1}}')
+  await drain()
+  assert.deepEqual(seen, ['a\nb'])
+  assert.deepEqual(h.sent()[1], { jsonrpc: '2.0', id: 'x', result: { k: 1 } })
+})
+
+test('message peer: a non-frame is answered -32600, not skipped', async () => {
+  const h = makeMessagePeer('m2')
+  for (const bad of ['not json', '[1]', '{"method":5}']) h.peer.deliver(bad)
+  await drain()
+  assert.deepEqual(
+    h.sent(),
+    Array(3).fill({ jsonrpc: '2.0', id: null, error: { code: -32600, message: 'invalid request' } })
+  )
+})
+
+test('message peer: close rejects pending and silences the peer', async () => {
+  const h = makeMessagePeer('m3')
+  const seen = []
+  h.peer.onNotification('note', (p) => seen.push(p))
+  const a = h.peer.request('m', {})
+  h.peer.close(new Error('stream closed'))
+  await assert.rejects(a, /stream closed/)
+  h.peer.close() // idempotent
+  h.peer.notify('late', {})
+  h.peer.deliver('{"jsonrpc":"2.0","method":"note","params":1}')
+  await drain()
+  assert.equal(h.out.length, 1, 'nothing is sent after close')
+  assert.deepEqual(seen, [], 'nothing is dispatched after close')
 })
 
 // ------------------------------------------------------------- DBG trace

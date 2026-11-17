@@ -20,9 +20,15 @@ const BUILD_INFO = {
   __GURT_BUILD_DATE__: JSON.stringify(new Date().toISOString())
 }
 
+// @noble/* ship as ES modules only; bundled into main rather than required
+// from node_modules at runtime. They come in through packages/remote-protocol
+// (the remote-access channel), which main imports by path, so it is bundled
+// too.
+const BUNDLED_DEPS = ['@noble/ciphers', '@noble/curves', '@noble/hashes']
+
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin()],
+    plugins: [externalizeDepsPlugin({ exclude: BUNDLED_DEPS })],
     define: BUILD_INFO
   },
   preload: {

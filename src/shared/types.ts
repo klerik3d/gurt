@@ -1183,6 +1183,11 @@ export interface SessionSnapshot {
   /** Full folded timeline — present from `session:snapshot` only; the per-change
    *  `session-changed` broadcast omits it (deltas ride the `session-log` event). */
   entries?: ChatEntry[] | undefined
+  /** `seq` of the last session-log record folded into `entries` (0 for an
+   *  empty log). A client that applies `session-log` deltas on top of this
+   *  snapshot drops every record with `seq <= logSeq` — `append` records are
+   *  not idempotent (docs/requirements-remote-protocol.md §7.5). */
+  logSeq: number
   /** Agent is processing a prompt right now. */
   busy: boolean
   /** `session/load` in flight — the UI shows a live "resuming" indicator. */
