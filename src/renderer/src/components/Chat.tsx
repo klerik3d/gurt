@@ -35,6 +35,7 @@ import { SessionMenu } from './SessionActions'
 import { ToolStrip, type StripEntry } from './ToolStrip'
 import { TabBar, useSessionTab } from './SessionTabs'
 import { ContainerTerminalButton } from './ContainerTerminalButton'
+import { CopyButton } from './CopyButton'
 import { run } from '../async'
 import { durationLabel, stamp } from '../time'
 
@@ -583,13 +584,14 @@ function PinnedRequest({
 
   return (
     <div
-      className={`pinned-req ${open ? 'open' : ''} ${visible ? '' : 'off'}`}
+      className={`pinned-req has-copy ${open ? 'open' : ''} ${visible ? '' : 'off'}`}
       onClick={onNavigate}
     >
       <span className="seclabel">↑ YOUR REQUEST</span>
       <span className="pinned-req-text" ref={textRef} key={text}>
         {text}
       </span>
+      <CopyButton text={text} title="copy request" className="copy-inline" />
       {truncated && (
         <span
           className="pinned-req-toggle mono"
@@ -766,7 +768,8 @@ function Msg({
   switch (entry.kind) {
     case 'user':
       return (
-        <div className="msg msg-user" data-eid={entry.id}>
+        <div className="msg msg-user has-copy" data-eid={entry.id}>
+          <CopyButton text={entry.text} title="copy message" />
           <MsgTime at={entry.at} />
           <span className="msg-dot msg-dot-user" />
           <div className="msg-you seclabel">YOU</div>
@@ -775,7 +778,8 @@ function Msg({
       )
     case 'agent':
       return (
-        <div className="msg">
+        <div className="msg has-copy">
+          <CopyButton text={entry.text} title="copy message" />
           <MsgTime at={entry.endAt ?? entry.at} />
           <span className="msg-dot" style={{ background: 'var(--accent)' }} />
           <div className="msg-text markdown">
@@ -798,7 +802,8 @@ function Msg({
     case 'system':
       if (entry.note) return <LoopNoteMsg entry={entry} note={entry.note} />
       return (
-        <div className="msg msg-tool">
+        <div className="msg msg-tool has-copy">
+          <CopyButton text={entry.text} title="copy message" />
           <MsgTime at={entry.at} />
           <span className="msg-dot msg-dot-sm" style={{ background: 'var(--border2)' }} />
           <div className="msg-sys mono">{entry.text}</div>
@@ -840,7 +845,16 @@ function PermissionMsg({
 }) {
   const pending = !entry.chosen
   return (
-    <div className="msg">
+    <div className="msg has-copy">
+      <CopyButton
+        title="copy message"
+        text={() => {
+          const chosen = entry.chosen
+            ? `→ ${entry.options.find((o) => o.optionId === entry.chosen)?.name ?? entry.chosen}${entry.chosen === 'auto' ? ' (auto)' : ''}`
+            : entry.options.map((o) => o.name).join(' / ')
+          return `${entry.title}\n${chosen}`
+        }}
+      />
       <MsgTime at={entry.at} />
       <span
         className={`msg-dot ${pending ? 'dot-pulse' : ''}`}
