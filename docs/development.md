@@ -104,6 +104,10 @@ works for exercising the check-and-download path, but electron-updater then has
 no `APPIMAGE` env var to tell it how it was installed and falls back to the
 deb/sudo path above — always test through the actual `.AppImage` file.
 
+## CSS conventions
+
+- CSS: transition durations are written in integer ms (`200ms`, not `0.2s`), so every duration in `styles.css` reads the same way and can be grepped/compared at a glance.
+
 ## Dev container
 
 `.devcontainer/` provides a Node 22 environment for working on Gurt itself.
