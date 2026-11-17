@@ -36,6 +36,20 @@ const S = (rel) => JSON.stringify(path.join(ROOT, rel))
 const GURT_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'gurt-prompt-queue-'))
 process.env.GURT_ROOT = GURT_ROOT
 
+// The file's premise is "no docker, no agent", so make it true on every host.
+// The kernel's boot reconcile and the sweep behind it talk to whatever `docker`
+// is on the PATH: with none they are skipped at once, but on a runner with a
+// daemon they are real calls, and a docker child that is slow (or never answers)
+// outlives the last test and holds this process open until the runner's timeout.
+// A stub that answers "daemon unreachable" is the same for every machine.
+const stubBin = fs.mkdtempSync(path.join(os.tmpdir(), 'gurt-prompt-queue-bin-'))
+fs.writeFileSync(
+  path.join(stubBin, 'docker'),
+  '#!/bin/sh\necho "Cannot connect to the Docker daemon (test stub)" >&2\nexit 1\n',
+  { mode: 0o755 }
+)
+process.env.PATH = `${stubBin}${path.delimiter}${process.env.PATH ?? ''}`
+
 const outfile = path.join(os.tmpdir(), `gurt-prompt-queue-${process.pid}.mjs`)
 await bundle({
   stdin: {
@@ -50,6 +64,7 @@ const { createKernel } = await import(pathToFileURL(outfile).href)
 
 after(() => {
   fs.rmSync(outfile, { force: true })
+  fs.rmSync(stubBin, { recursive: true, force: true })
   fs.rmSync(GURT_ROOT, { recursive: true, force: true })
 })
 
