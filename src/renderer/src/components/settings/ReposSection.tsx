@@ -261,7 +261,7 @@ function RepoModal({
               <div className="env-access-chips" ref={credRef}>
                 {linked ? (
                   <span className="chip-tag">
-                    <Icon name="key" size={11} style={{ color: 'var(--yellow)' }} />
+                    <Icon name="key" size={11} className="icon-warn" />
                     {linked.label}
                     <span className="chip-x" title="unlink" onClick={() => setCredentialId('')}>
                       ×

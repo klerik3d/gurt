@@ -911,7 +911,7 @@ function PermissionMsg({
       />
       <div className={`perm-card ${pending ? '' : 'settled'}`}>
         <div className="perm-head">
-          <Icon name="lock" size={14} style={{ color: 'var(--yellow)', flex: 'none' }} />
+          <Icon name="lock" size={14} className="icon-warn" />
           <span className="perm-title">{entry.title}</span>
         </div>
         {entry.detail && <pre className="perm-detail mono">{entry.detail}</pre>}

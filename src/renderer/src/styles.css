@@ -1614,6 +1614,13 @@ textarea.input {
   color: var(--faint);
   flex: none;
 }
+.tool-meta.warn {
+  color: var(--yellow);
+}
+.icon-warn {
+  color: var(--yellow);
+  flex: none;
+}
 .tool-out {
   font-size: 11.5px;
   line-height: 1.7;
