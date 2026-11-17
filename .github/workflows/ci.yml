@@ -26,9 +26,19 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - name: tests
+        # A hung test must fail the job, not burn GitHub's 6 h limit (a run
+        # once did). The suite takes ~1.5 min; `--test-timeout` in the npm
+        # script names the offending test, this is the outer backstop.
+        timeout-minutes: 15
         # `node --test` over scripts/*.test.mjs — see the Tests section of
         # CONTRIBUTING.md for why the suite is shaped the way it is.
         run: npm test
+      - name: what is still running
+        # Only on a failed/timed-out/cancelled `tests` step: lists the live
+        # processes so a hang names its test file (`node --test` runs every
+        # file as its own child process) instead of leaving an empty log.
+        if: failure() || cancelled()
+        run: ps -eo pid,etimes,args --forest | grep -v -E 'ps -eo|grep -v' || true
 
   # e2e lives in its own job so a broken UI is visually distinct from a broken
   # unit test or a lint error, and so it can install the extra system bits the

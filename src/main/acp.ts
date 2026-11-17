@@ -88,7 +88,9 @@ export const INITIALIZE_RESULT = z.looseObject({
           audio: z.boolean().optional(),
           embeddedContext: z.boolean().optional()
         })
-        .optional()
+        .optional(),
+      // Presence of `fork` (an empty object) is the capability.
+      sessionCapabilities: z.looseObject({ fork: z.unknown().optional() }).nullish().catch(undefined)
     })
     .optional()
 })
@@ -100,6 +102,10 @@ export const SESSION_NEW_RESULT = z.looseObject({
   modes: MODES.optional(),
   configOptions: CONFIG_OPTIONS
 })
+
+/** `session/fork` answers like `session/new`: the forked session's id, plus its
+ *  modes and config options. */
+export const SESSION_FORK_RESULT = SESSION_NEW_RESULT
 
 export const SESSION_LOAD_RESULT = z.looseObject({
   modes: MODES.optional(),
@@ -136,6 +142,8 @@ const TOOL_CONTENT = z.array(
 export type AcpToolContent = z.infer<typeof TOOL_CONTENT>
 
 export const TEXT_CHUNK = z.looseObject({
+  // Chunks of one message share it; a rewind names it as the fork point.
+  messageId: soft,
   content: z.looseObject({ type: soft, text: soft }).optional()
 })
 

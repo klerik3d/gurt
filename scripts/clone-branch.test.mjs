@@ -20,8 +20,12 @@ const outfile = path.join(os.tmpdir(), `gurt-clone-branch-${process.pid}.mjs`)
 const S = (rel) => JSON.stringify(path.join(ROOT, rel))
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gurt-clone-branch-'))
-// store.ts reads GURT_ROOT at module load — set it before importing the bundle.
+// store.ts / log.ts read GURT_ROOT / GURT_LOG at module load — set before import.
 process.env.GURT_ROOT = path.join(root, 'gurt')
+// Every git call traces `proc.spawn`/`proc.exit` (info/warn) to an async sink
+// under GURT_ROOT/logs; a write still in flight when `after()` runs recreates
+// `logs/` mid-rmSync (ENOTEMPTY in CI). Nothing here reads the log — mute it.
+process.env.GURT_LOG = 'error'
 
 await bundle({
   stdin: {

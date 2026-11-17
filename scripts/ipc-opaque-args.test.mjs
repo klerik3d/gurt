@@ -177,6 +177,8 @@ const SAFE_ARGS = new Set([
   'sessionCancelQueue',
   'sessionDuplicate',
   'sessionRecreate',
+  'sessionRewind',
+  'sessionBranch',
   'sessionDelete',
   'sessionCancel',
   'reviewLoopState', // an executor id

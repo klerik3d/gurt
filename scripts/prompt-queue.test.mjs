@@ -27,6 +27,7 @@ import { pathToFileURL, fileURLToPath } from 'node:url'
 import path from 'node:path'
 import os from 'node:os'
 import fs from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import assert from 'node:assert/strict'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -35,6 +36,21 @@ const S = (rel) => JSON.stringify(path.join(ROOT, rel))
 // store.ts reads GURT_ROOT at module load — set it before the import.
 const GURT_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'gurt-prompt-queue-'))
 process.env.GURT_ROOT = GURT_ROOT
+
+// The file's premise is "no docker, no agent", so make it true on every host —
+// and not only for speed: the kernel's boot reconcile lists every container
+// labelled `gurt.session` (not just this test's), removes the ones its own index
+// does not know and sweeps foreign proxies and networks. Against a real daemon
+// that destroys the containers of a Gurt running on the same machine. A stub
+// that answers "daemon unreachable" makes the reconcile skip itself, the same on
+// every machine; it must be in place before the kernel is created.
+const stubBin = fs.mkdtempSync(path.join(os.tmpdir(), 'gurt-prompt-queue-bin-'))
+fs.writeFileSync(
+  path.join(stubBin, 'docker'),
+  '#!/bin/sh\necho "Cannot connect to the Docker daemon (test stub)" >&2\nexit 1\n',
+  { mode: 0o755 }
+)
+process.env.PATH = `${stubBin}${path.delimiter}${process.env.PATH ?? ''}`
 
 const outfile = path.join(os.tmpdir(), `gurt-prompt-queue-${process.pid}.mjs`)
 await bundle({
@@ -50,6 +66,7 @@ const { createKernel } = await import(pathToFileURL(outfile).href)
 
 after(() => {
   fs.rmSync(outfile, { force: true })
+  fs.rmSync(stubBin, { recursive: true, force: true })
   fs.rmSync(GURT_ROOT, { recursive: true, force: true })
 })
 
@@ -66,6 +83,13 @@ fs.writeFileSync(
     envs: [{ name: 'dev', image: 'x', repo: 'alpha' }]
   })
 )
+// Every user prompt first snapshots the session's writable clones (rewind
+// checkpoints, docs/requirements-session-log.md), and a missing clone fails the
+// turn before the agent is asked anything. The tests below that drive
+// `runPrompt` through a stubbed `attach` need that turn to get as far as the
+// agent, so each repo gets an empty clone — as in scripts/lib/loop-harness.mjs.
+for (const repo of ['alpha', 'beta'])
+  execFileSync('git', ['init', '-q', path.join(GURT_ROOT, ws, task, repo)], { stdio: 'ignore' })
 fs.writeFileSync(path.join(GURT_ROOT, ws, task, 'task.json'), JSON.stringify({}))
 fs.writeFileSync(path.join(GURT_ROOT, ws, 'agents.json'), JSON.stringify({}))
 

@@ -272,7 +272,7 @@ export class ArchiveManager {
           await fs.rename(temp, dataFile(meta.id))
           await writeJsonDurable(metaFile(meta.id), meta, { mode: 0o600, pretty: false })
           this.report('Finishing archive…')
-          this.kernel.sessions.dropArchivedSession(sessionId)
+          await this.kernel.sessions.dropArchivedSession(sessionId)
           dropSessionLog(sessionId)
           await this.kernel.sessions.flushTask(ws, task)
           if (!this.kernel.sessions.listForTask(ws, task).length) await store.writeSessions(ws, task, [])
