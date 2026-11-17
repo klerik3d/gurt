@@ -792,7 +792,9 @@ pass 3
 
 ### web
 
-no check configured
+**No check configured — skipped.** No tests, lint or build ran for this repo;
+nothing in this change is verified by the host. Judge it from the diff alone,
+and say so in your summary.
 
 ## 4. Mandatory items
 
