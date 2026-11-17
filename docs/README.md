@@ -9,6 +9,8 @@ The current documentation:
   smoke and unit tests, packaging, auto-update, Docker Desktop gotchas.
 - [client-config.md](client-config.md) — client-specific JSON settings.
 - [logging.md](logging.md) — the local app log.
+- [design-radii.md](design-radii.md) — the corner-radius scale (`--r-*`);
+  new radii only from it.
 
 Everything else here is the historical specs and design notes (work orders)
 Gurt was built from. When one of them says "read `README.md` first", it means
