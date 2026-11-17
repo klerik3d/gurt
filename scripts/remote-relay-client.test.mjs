@@ -83,7 +83,13 @@ function setup(relayOpts = {}, clientOpts = {}) {
     onState: (s) => states.push(s),
     ...clientOpts
   })
-  return { relay, client, states, id, ready: () => until(() => client.status.state === 'ready', 'ready') }
+  // Ready, and then what the client sent on READY (the token set) delivered:
+  // the fake relay receives a macrotask later, which a 2 ms poll can beat.
+  const ready = async () => {
+    await until(() => client.status.state === 'ready', 'ready')
+    await settle()
+  }
+  return { relay, client, states, id, ready }
 }
 
 // --------------------------------------------------------------- off is off

@@ -92,7 +92,7 @@ export class RemoteProbe {
     return new Promise<Awaited<ReturnType<Api[M]>>>((resolve, reject) => {
       this.pending.set(id, { resolve: value => resolve(value as Awaited<ReturnType<Api[M]>>), reject })
       try { for (const frame of c.channel.seal(JSON.stringify(rpcRequest(id, method, params)))) c.stream.send(frame) }
-      catch (e) { this.pending.delete(id); reject(e) }
+      catch (e) { this.pending.delete(id); reject(e instanceof Error ? e : new Error(String(e))) }
     })
   }
 

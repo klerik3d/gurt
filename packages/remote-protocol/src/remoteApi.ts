@@ -28,7 +28,13 @@ export type NoParams = Record<string, never>
  *  "working", `waiting` is "needs you", `idle-read` is "seen". */
 export type RemoteSessionStatus = 'draft' | 'queued' | 'starting' | 'running' | 'waiting' | 'idle' | 'idle-read'
 
-export type RemoteSessionRole = 'executor' | 'researcher' | 'reviewer' | 'operator' | 'proactive'
+export type RemoteSessionRole =
+  | 'executor'
+  | 'researcher'
+  | 'inspector'
+  | 'operator'
+  | 'proactive'
+  | 'reviewer'
 
 /** One session row of the tree. */
 export interface RemoteSessionRow {
