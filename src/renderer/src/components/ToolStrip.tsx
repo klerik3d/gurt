@@ -114,7 +114,7 @@ function DurationMark({ entry, now, live }: { entry: StripEntry; now: number; li
   const d = durationOf(entry, now, live)
   if (!d) return null
   return (
-    <span className="tool-meta mono" style={live ? { color: 'var(--yellow)' } : undefined} title={live ? 'running' : 'took'}>
+    <span className={`tool-meta mono${live ? ' warn' : ''}`} title={live ? 'running' : 'took'}>
       {live ? `running ${d}` : d}
     </span>
   )
@@ -158,7 +158,7 @@ function Panel({ entry, live }: { entry: StripEntry; live: boolean }) {
         {inLabel}
         {state === 'failed' && <span className="tool-exit mono">FAILED</span>}
         {state === 'running' && (
-          <span className="tool-meta mono" style={{ color: 'var(--yellow)' }}>
+          <span className="tool-meta warn mono">
             running…
           </span>
         )}

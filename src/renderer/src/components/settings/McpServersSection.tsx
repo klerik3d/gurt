@@ -144,7 +144,7 @@ export function McpServersSection({ ws }: { ws: string | null }) {
             <span className="set-row-label">{mcpLabel(m)}</span>
             <span className="set-row-url mono">{mcpEntryDetail(m)}</span>
             {mcpCredentialIds(m).length > 0 && (
-              <Icon name="key" size={11} style={{ color: 'var(--yellow)', flex: 'none' }} />
+              <Icon name="key" size={11} className="icon-warn" />
             )}
             {/* Said here, in the editor and in the composer's picker — every
                 surface that offers a local entry carries the same line
@@ -283,7 +283,7 @@ function McpValueRowEditor({
               }
             />
             <span className="chip-tag mcp-ref-chip">
-              <Icon name="key" size={11} style={{ color: 'var(--yellow)', flex: 'none' }} />
+              <Icon name="key" size={11} className="icon-warn" />
               <span className="menu-item-name">
                 {pend ? `new credential · ${pend.name}` : (cred?.label ?? 'missing credential')}
               </span>

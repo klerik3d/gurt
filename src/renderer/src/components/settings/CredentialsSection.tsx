@@ -300,7 +300,7 @@ export function CredentialsSection() {
           return (
             <div key={c.id} className="set-card">
               <div className="set-card-head" onClick={collapse}>
-                <Icon name="key" size={13} style={{ color: 'var(--yellow)', flex: 'none' }} />
+                <Icon name="key" size={13} className="icon-warn" />
                 <span className="cred-name mono">{draft?.label || c.label || 'new credential'}</span>
                 <span className="cred-tag">
                   <span className="tag">{kindTag(draft?.kind ?? c.kind)}</span>
