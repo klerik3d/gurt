@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
 import type { EditorView } from '@codemirror/view'
 import type { FileLocation, FileNavigationResult } from '../../../shared/files'
 import { fileKey, isMarkdown } from '../../../shared/files'
@@ -130,9 +130,9 @@ export function FilesPane({ controller, scope, visible }: {
         <div className="file-navigation-head"><strong>{navigation.kind === 'definition' ? 'Definitions' : navigation.result?.semantic === false ? 'Word matches' : 'References'}</strong>
           <span className="dim">{navigation.busy ? 'Searching…' : navigation.result ? `${navigation.result.locations.length} results${navigation.result.limited ? ' · search limit reached' : ''}` : ''}</span><span className="spacer" />
           <button className="icon-sq" aria-label="Close navigation results" onClick={() => { navSeq.current++; setNavigation(null) }}><Icon name="x" size={12} /></button></div>
-        {navigation.error && <div className="file-tree-note error">{navigation.error}</div>}
-        {navigation.result?.semantic === false && <div className="file-tree-note">{navigation.kind === 'definition' ? 'Go to definition is available for JavaScript and TypeScript.' : 'Text search in this repository; matches may include comments and unrelated symbols.'}</div>}
-        {navigation.result?.locations.length === 0 && <div className="file-tree-note">No matches found in the indexed repository files.</div>}
+        {navigation.error && <div className="sb-empty error" style={{ '--level': 0 } as CSSProperties}>{navigation.error}</div>}
+        {navigation.result?.semantic === false && <div className="sb-empty" style={{ '--level': 0 } as CSSProperties}>{navigation.kind === 'definition' ? 'Go to definition is available for JavaScript and TypeScript.' : 'Text search in this repository; matches may include comments and unrelated symbols.'}</div>}
+        {navigation.result?.locations.length === 0 && <div className="sb-empty" style={{ '--level': 0 } as CSSProperties}>No matches found in the indexed repository files.</div>}
         <div className="file-navigation-list">{navigation.result?.locations.map((location, index) => <button key={`${location.path}:${location.from}:${index}`} className="file-location" onClick={() => openLocation(location)}>
           <span>{location.path}:{location.line}:{location.column}</span><code>{location.preview}</code>
         </button>)}</div>

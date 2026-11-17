@@ -1,6 +1,6 @@
 import { taskKey } from '../../../shared/keys'
 import { useEffect, useRef, useState } from 'react'
-import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react'
+import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react'
 import type { ChangedFile, DiffTarget, RepoChanges, SessionActivity, Tree } from '../../../shared/types'
 import { sessionStatus } from '../../../shared/types'
 import type { Selection } from '../App'
@@ -874,19 +874,19 @@ export function Sidebar({
                   )
                 })}
               {!isCollapsed && mode === 'sessions' && task.sessions.length === 0 && (
-                <div className="sb-empty">no sessions — “+” to add one</div>
+                <div className="sb-empty" style={{ '--level': 1 } as CSSProperties}>no sessions — “+” to add one</div>
               )}
             </div>
           )
         })}
-        {!!allTasks.length && !tasks.length && <div className="sb-empty">No matching scopes</div>}
+        {!!allTasks.length && !tasks.length && <div className="sb-empty" style={{ '--level': 1 } as CSSProperties}>No matching scopes</div>}
         {wsData && wsData.tasks.length === 0 && (
-          <div className="sb-empty">
+          <div className="sb-empty" style={{ '--level': 1 } as CSSProperties}>
             no scopes yet — “+” above to add one
           </div>
         )}
         {tree && tree.workspaces.length === 0 && (
-          <div className="sb-empty">
+          <div className="sb-empty" style={{ '--level': 1 } as CSSProperties}>
             no workspaces yet — create one via the workspace menu
           </div>
         )}

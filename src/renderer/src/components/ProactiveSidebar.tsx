@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type CSSProperties } from 'react'
 import type { Tree } from '../../../shared/types'
 import type { ProactiveAgentView, ProactiveRun } from '../../../shared/proactive'
 import type { Tone } from '../status'
@@ -193,12 +193,12 @@ export function ProactiveSidebar({
                     </div>
                   )
                 })}
-              {open && !runs.length && <div className="sb-empty">no runs yet</div>}
+              {open && !runs.length && <div className="sb-empty" style={{ '--level': 1 } as CSSProperties}>no runs yet</div>}
             </div>
           )
         })}
         {tree && !agents.length && (
-          <div className="sb-empty pa-empty">
+          <div className="sb-empty pa-empty" style={{ '--level': 1 } as CSSProperties}>
             No proactive agents yet. One watches a source on a schedule and raises scopes with draft
             sessions for you to launch — “+” to add one.
           </div>

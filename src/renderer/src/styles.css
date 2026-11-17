@@ -1132,11 +1132,13 @@ textarea.input {
   flex: none;
 }
 .sb-empty {
-  padding: 4px var(--row-pad-r) 4px calc(var(--row-pad-l) + var(--row-indent));
+  padding: var(--row-pad-y) var(--row-pad-r) var(--row-pad-y) calc(var(--row-pad-l) + var(--row-indent) * var(--level, 0));
   font-size: 12px;
   line-height: var(--row-lh);
   color: var(--faint);
+  overflow-wrap: anywhere;
 }
+.sb-empty.error { color: var(--red); }
 
 /* ---- chat ---- */
 
@@ -4517,8 +4519,6 @@ textarea.input {
 .file-tree { gap: 0; }
 .file-tree:focus-visible { outline: none; }
 .file-tree-row:disabled { opacity: .45; cursor: default; }
-.file-tree-note { padding: 4px var(--row-pad-r) 4px var(--row-pad-l); color: var(--faint); font-size: 12px; line-height: var(--row-lh); overflow-wrap: anywhere; }
-.file-tree-note.error { color: var(--red); }
 .files-pane { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
 .files-pane .placeholder { display: flex; align-items: center; justify-content: center; padding: 24px; color: var(--faint); font-size: 12px; text-align: center; }
 .file-tabs { display: flex; min-height: 35px; flex: none; overflow-x: auto; border-bottom: 1px solid var(--border); background: var(--surface); }

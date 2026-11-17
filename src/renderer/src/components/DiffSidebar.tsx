@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { MouseEvent as ReactMouseEvent } from 'react'
+import type { CSSProperties, MouseEvent as ReactMouseEvent } from 'react'
 import type { ChangedFile, DiffTarget, RepoChanges } from '../../../shared/types'
 import { targetKey, isActionable, isDelivered } from '../../../shared/types'
 import { run } from '../async'
@@ -134,8 +134,8 @@ export function TaskRepositories({ ws, task, changes, layout, selection, nav }: 
   selection: DiffFileSelection | null
   nav: DiffNav
 }) {
-  if (!changes) return <div className="sb-empty">loading repositories…</div>
-  if (!changes.length) return <div className="sb-empty">no repositories yet</div>
+  if (!changes) return <div className="sb-empty" style={{ '--level': 1 } as CSSProperties}>loading repositories…</div>
+  if (!changes.length) return <div className="sb-empty" style={{ '--level': 1 } as CSSProperties}>no repositories yet</div>
   return (
     <div role="group">
       {changes.map((repo) => (
