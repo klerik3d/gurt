@@ -255,10 +255,22 @@ function Repository({ ws, task, repo: r, layout, nav, activePath, activeTarget }
           >
             <Icon name="send" size={13} /> Push changes…
           </button>
-          {r.prUrl && <button className="menu-item diff-menu-action" disabled={busy} onClick={run(async () => {
-            setMenu(null)
-            await act(() => window.gurt.changesOpenPr(ws, task, r.repo))
-          })}><Icon name="pull-request" size={13} /> Create PR</button>}
+          {!r.local && (
+            <button
+              className="menu-item diff-menu-action"
+              disabled={busy || r.integrated || r.commits.length === 0}
+              title="Push the branch if needed, then open the pull request in the browser"
+              onClick={run(async () => {
+                setMenu(null)
+                await act(async () => {
+                  if (r.commits.some((c) => !c.pushed)) await window.gurt.changesPush(ws, task, r.repo)
+                  await window.gurt.changesOpenPr(ws, task, r.repo)
+                })
+              })}
+            >
+              <Icon name="pull-request" size={13} /> Create PR
+            </button>
+          )}
           {r.local && (
             <button
               className="menu-item diff-menu-action"

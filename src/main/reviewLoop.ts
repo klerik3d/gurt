@@ -608,9 +608,24 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
     const ws = await store.getWorkspace(w.ws)
     const runner = runnerFor(id)
     const results: CheckResult[] = []
+    // Repos without a `check` are skipped — but never silently: the user is
+    // told in the chat on every pass, and the reviewer in its prompt (§4.3).
+    const checkless = a.repos.filter((repo) => !ws.repos.find((r) => r.name === repo)?.check?.trim())
+    if (checkless.length) {
+      try {
+        note(
+          id,
+          `No check configured for ${checkless.join(', ')} — deterministic tests skipped, nothing was run\n` +
+            'The change goes to review unverified by tests. Set a check command in Settings → Repos.',
+          { tone: 'warn' }
+        )
+      } catch (e) {
+        log.warn('loop chat report failed', { s: id, err: errCtx(e) })
+      }
+    }
     for (const repo of a.repos) {
       const command = ws.repos.find((r) => r.name === repo)?.check?.trim()
-      if (!command) continue // no check configured for this repo
+      if (!command) continue // skipped — reported above
       if (!stillLive(id)) return
       rt(id).check = { intent: a.id, runner }
       const block = sessions.loopFeedPush(id, {

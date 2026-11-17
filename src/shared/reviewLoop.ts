@@ -879,6 +879,13 @@ export interface ReviewedRepo {
   untracked: string[]
 }
 
+/** §4.3: what the reviewer reads for a repo with no `check` — loud, since no
+ *  test, lint or build ran and the reviewer cannot run one either. */
+const NO_CHECK_TEXT =
+  '**No check configured — skipped.** No tests, lint or build ran for this repo;\n' +
+  'nothing in this change is verified by the host. Judge it from the diff alone,\n' +
+  'and say so in your summary.'
+
 export interface ReviewerPromptInput {
   round: number
   maxRounds: number
@@ -920,7 +927,7 @@ export function buildReviewerPrompt(input: ReviewerPromptInput): string {
     const c = input.checks.find((x) => x.repo === r.repo)
     p.push('', `### ${r.repo}`, '')
     if (!c) {
-      p.push('no check configured')
+      p.push(NO_CHECK_TEXT)
       continue
     }
     const how = c.timedOut ? `timed out after ${formatDuration(c.ms)}` : `exit ${c.code} after ${formatDuration(c.ms)}`
