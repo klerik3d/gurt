@@ -328,6 +328,8 @@ export function registerIpc(): void {
     deleteTaskFile: files.deleteTaskFile,
     listTaskFiles: files.listTaskFiles,
     readTaskFile: files.readTaskFile,
+    readTaskImage: files.readTaskImage,
+    findTaskFile: files.findTaskFile,
     writeTaskFile: files.writeTaskFile,
     navigateTaskFile: files.navigateTaskFile,
     getTaskChanges: (ws, task, opts) => changes.getTaskChanges(ws, task, opts ?? {}),

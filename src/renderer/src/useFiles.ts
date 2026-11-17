@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { EditorState } from '@codemirror/state'
 import type { FileLocation, ScopeFile } from '../../shared/files'
-import { fileKey } from '../../shared/files'
+import { fileKey, imageType } from '../../shared/files'
 import { confirmDialog } from './dialog'
 import { readPreference, usePreference, z } from './persisted'
 
@@ -17,7 +17,14 @@ export interface FileTab {
   saving: boolean
   error: string
   generation: number
+  /** An image file's `data:` URL — such a tab has no text buffer, so it is
+   *  never dirty and never saved. Empty for a text file. */
+  image: string
 }
+
+/** Where to put the cursor once a file is open: a navigation result's offsets,
+ *  or a line (and column, 1-based) from a path in an agent's message. */
+export type FileJump = Pick<FileLocation, 'from' | 'to'> | { line: number; column?: number | undefined }
 
 export interface EditorMemory {
   state: EditorState
@@ -27,7 +34,7 @@ export interface EditorMemory {
 }
 
 export const isDirty = (tab: FileTab): boolean => tab.content !== tab.saved
-const emptyTab = (file: ScopeFile): FileTab => ({ file, content: '', saved: '', version: '', loading: true, saving: false, error: '', generation: 0 })
+const emptyTab = (file: ScopeFile): FileTab => ({ file, content: '', saved: '', version: '', loading: true, saving: false, error: '', generation: 0, image: '' })
 const message = (error: unknown): string => error instanceof Error ? error.message : String(error)
 
 /** Buffers and editor history outlive mode, workspace and scope switches. Only
@@ -37,7 +44,7 @@ export function useFiles(scope: { ws: string; task: string } | null, onSaved: (w
   const tabsRef = useRef(tabs)
   tabsRef.current = tabs
   const [active, setActive] = usePreference('activeFiles', {}, z.record(z.string(), z.string()))
-  const [jump, setJump] = useState<{ key: string; from: number; to: number; seq: number } | null>(null)
+  const [jump, setJump] = useState<(FileJump & { key: string; seq: number }) | null>(null)
   const editors = useRef(new Map<string, EditorMemory>())
   const loading = useRef(new Map<string, symbol>())
   const closing = useRef(new Set<string>())
@@ -56,6 +63,14 @@ export function useFiles(scope: { ws: string; task: string } | null, onSaved: (w
     loading.current.set(key, token)
     patch(key, { loading: true, error: '' })
     try {
+      if (imageType(file.path)) {
+        const img = await window.gurt.readTaskImage(file.ws, file.task, file.path)
+        if (loading.current.get(key) !== token) return
+        mutate((prev) => prev.map((tab) => fileKey(tab.file) === key ? {
+          ...tab, image: img.dataUrl, version: img.version, error: '', loading: false, generation: tab.generation + 1
+        } : tab))
+        return
+      }
       const doc = await window.gurt.readTaskFile(file.ws, file.task, file.path)
       if (loading.current.get(key) !== token) return
       editors.current.delete(key)
@@ -74,11 +89,11 @@ export function useFiles(scope: { ws: string; task: string } | null, onSaved: (w
     try { localStorage.setItem('gurt.ui.fileTabs', JSON.stringify(tabs.map((t) => t.file))) } catch { /* Optional storage. */ }
   }, [tabs, load])
 
-  const open = useCallback((file: ScopeFile, location?: Pick<FileLocation, 'from' | 'to'>) => {
+  const open = useCallback((file: ScopeFile, location?: FileJump) => {
     const key = fileKey(file)
     mutate((prev) => prev.some((t) => fileKey(t.file) === key) ? prev : [...prev, emptyTab(file)])
     setActive((prev) => ({ ...prev, [scopeKey(file)]: key }))
-    if (location) setJump({ key, from: location.from, to: location.to, seq: Date.now() + Math.random() })
+    if (location) setJump({ ...location, key, seq: Date.now() + Math.random() })
   }, [mutate, setActive])
   const consumeJump = useCallback((seq: number) => {
     setJump((previous) => previous?.seq === seq ? null : previous)
@@ -129,6 +144,13 @@ export function useFiles(scope: { ws: string; task: string } | null, onSaved: (w
     const tab = tabsRef.current.find((t) => fileKey(t.file) === key)
     if (!tab || tab.loading || tab.saving || !tab.version || isDirty(tab)) return
     try {
+      if (tab.image) {
+        const img = await window.gurt.readTaskImage(tab.file.ws, tab.file.task, tab.file.path)
+        const current = tabsRef.current.find((t) => fileKey(t.file) === key)
+        if (current && !current.loading && current.version === tab.version && img.version !== tab.version)
+          patch(key, { image: img.dataUrl, version: img.version, error: '', generation: current.generation + 1 })
+        return
+      }
       const doc = await window.gurt.readTaskFile(tab.file.ws, tab.file.task, tab.file.path)
       const current = tabsRef.current.find((t) => fileKey(t.file) === key)
       if (!current || current.version !== tab.version || current.loading || current.saving || isDirty(current) || current.version === doc.version) return

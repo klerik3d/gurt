@@ -83,6 +83,9 @@ with no repos at all takes the workspace's default env.
 - Each repo bind carries its own `readonly` flag.
 - The workdir is the repo's directory when there is exactly one repo, else
   `/workspaces` (unchanged).
+- The scope's artifacts directory is bound read-write at
+  `/workspaces/artifacts` in every session, whatever its repos and their modes
+  (docs/files.md#artifacts).
 - The env's setup hooks are skipped when the anchor is mounted read-only —
   they exist to prepare a writable checkout. A session with a writable
   anchor runs them unmodified.

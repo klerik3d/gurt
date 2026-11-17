@@ -22,6 +22,7 @@ import { ADMIN_TOOLS } from '../../shared/adminTools.generated'
 import { listenEphemeral } from '../listen'
 import { createLogger } from '../log'
 import { buildStatelessMcpHttpServer } from './httpEndpoint'
+import { ARTIFACTS, CONTAINER_ROOT } from '../../shared/files'
 
 const log = createLogger('mcp')
 
@@ -213,6 +214,14 @@ export function mountsText(role: SessionRole, mounts: readonly { repo: string; m
   return `Repositories:\n${lines.join('\n')}${multi}`
 }
 
+/** The scope's shared scratch dir, as every session's instructions state it. */
+export const ARTIFACTS_TEXT =
+  `Artifacts: ${CONTAINER_ROOT}/${ARTIFACTS} is this scope's shared scratch directory —\n` +
+  'not part of any repository, so nothing in it is committed or reviewed. Every\n' +
+  'session of the scope sees the same files, and the user can open them in\n' +
+  "gurt's file view. Put what others should see but the repos should not hold\n" +
+  'there: reports, screenshots, logs, notes, intermediate data.'
+
 /** Server `instructions` for a session of this role, delivered via MCP init:
  *  the role's own text, then the mount table. An executor in a review loop
  *  gets the loop's variant (docs/requirements-review-loop.md §5.5). */
@@ -235,7 +244,7 @@ export function instructionsFor(
               : opts.reviewLoop
                 ? LOOP_EXECUTOR_INSTRUCTIONS
                 : EXECUTOR_INSTRUCTIONS
-  return `${base}\n\n${mountsText(role, mounts)}`
+  return `${base}\n\n${mountsText(role, mounts)}\n\n${ARTIFACTS_TEXT}`
 }
 
 /**

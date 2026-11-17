@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { AnchorWithFileLink, CodeWithFileLink } from '../fileLinks'
 import type {
   ChatEntry,
   ChatPermission,
@@ -831,7 +832,7 @@ function Msg({
           <MsgTime at={entry.endAt ?? entry.at} />
           <span className="msg-dot" style={{ background: 'var(--accent)' }} />
           <div className="msg-text markdown">
-            <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ pre: CodeBlock }}>
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ pre: CodeBlock, code: CodeWithFileLink, a: AnchorWithFileLink }}>
               {entry.text}
             </ReactMarkdown>
           </div>

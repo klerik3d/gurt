@@ -46,7 +46,7 @@ import type { ChatEntry } from './types'
 import type { DoctorReport, DoctorRow, FirstRunResult, WelcomeMode } from './doctor'
 
 import type { TerminalInfo, TerminalSnapshot } from './terminal'
-import type { FileDocument, FileEntry, FileNavigation, FileNavigationResult } from './files'
+import type { FileDocument, FileEntry, FileImage, FileNavigation, FileNavigationResult } from './files'
 import type { ProactiveConfig } from './proactive'
 import type { LoopState } from './reviewLoop'
 
@@ -135,6 +135,11 @@ export interface GurtApi {
   deleteTaskFile(ws: string, task: string, path: string): Promise<void>
   listTaskFiles(ws: string, task: string, directory: string): Promise<FileEntry[]>
   readTaskFile(ws: string, task: string, path: string): Promise<FileDocument>
+  /** An image file of the scope for the file view, as a `data:` URL. */
+  readTaskImage(ws: string, task: string, path: string): Promise<FileImage>
+  /** The first of `candidates` (scope-relative paths) that is a regular file
+   *  in the scope, or null — how a path in an agent's message becomes a link. */
+  findTaskFile(ws: string, task: string, candidates: string[]): Promise<string | null>
   writeTaskFile(ws: string, task: string, path: string, content: string, version: string): Promise<FileDocument>
   navigateTaskFile(ws: string, task: string, path: string, request: FileNavigation): Promise<FileNavigationResult>
   /** Host terminals: memory-only, owned by the scope. Never exposed to agents. */
@@ -576,6 +581,8 @@ const METHODS = {
   deleteTaskFile: 'none',
   listTaskFiles: 'none',
   readTaskFile: 'none',
+  readTaskImage: 'none',
+  findTaskFile: 'none',
   writeTaskFile: 'none',
   navigateTaskFile: 'none',
   terminalList: 'none',

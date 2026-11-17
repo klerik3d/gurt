@@ -63,6 +63,7 @@ import {
   sessionNetworkName
 } from './proxy/network'
 import { proxyEnv, type ProxyConfig } from '../shared/proxy'
+import { ARTIFACTS, CONTAINER_ROOT } from '../shared/files'
 
 const log = createLogger('containers')
 
@@ -411,12 +412,18 @@ export class ContainerManager {
     }
 
     // The container to restart in place: the record names one, on the same repo
-    // set, and the daemon still has it. Anything else is a fresh create.
+    // set, with the artifacts bind, and the daemon still has it. Anything else
+    // is a fresh create — the mount list is fixed at create time, so a
+    // container from before the artifacts bind existed is re-created once.
     const existing =
-      owned?.id && sameRepos(owned.repos, info.repos) && (await dockerContainerExists(owned.id))
+      owned?.id && sameRepos(owned.repos, info.repos) && owned.artifacts && (await dockerContainerExists(owned.id))
         ? owned
         : undefined
-    if (owned?.id && !existing) this.forget(owned.id)
+    if (owned?.id && !existing) {
+      if (sameRepos(owned.repos, info.repos) && !owned.artifacts)
+        provisionLog('re-creating the container to add the scope\'s shared /workspaces/artifacts directory')
+      this.forget(owned.id)
+    }
 
     // `building` covers the clone and the image; the create flips it to `post`
     // as soon as the container exists and its setup script starts running.
@@ -493,10 +500,16 @@ export class ContainerManager {
       if (usesHistoryMounts(historyPaths))
         await store.ensureSessionHistory(info.workspace, info.task, sessionId, historyPaths)
       const historyMounts = historyHostMounts(info.workspace, info.task, sessionId, historyPaths)
+      // The scope's shared scratch dir, read-write for every session of the
+      // scope (shared/files.ts ARTIFACTS).
+      const artifactsMount = {
+        hostDir: await store.ensureArtifactsDir(info.workspace, info.task),
+        target: `${CONTAINER_ROOT}/${ARTIFACTS}`
+      }
       const { mounts, workdir } = containerLayout(
         info,
         clones.map(({ cfg, dir }) => ({ name: cfg.name, dir })),
-        [...skillMounts, ...historyMounts]
+        [...skillMounts, ...historyMounts, artifactsMount]
       )
       const bindSources = mounts.filter((m) => m.type === 'bind').map((m) => m.source)
 
@@ -536,12 +549,13 @@ export class ContainerManager {
             // No id yet — a record naming a half-provisioned container is the
             // one thing that must never be written.
             onCreated: () =>
-              this.setStatus(sessionId, { repos: info.repos, status: 'post' }, 'user'),
+              this.setStatus(sessionId, { repos: info.repos, artifacts: true, status: 'post' }, 'user'),
             onSetupDone: (id, user) =>
               this.setStatus(
                 sessionId,
                 {
                   repos: info.repos,
+                  artifacts: true,
                   status: 'post',
                   id,
                   user,
@@ -583,7 +597,8 @@ export class ContainerManager {
         remoteWorkspaceFolder: execT.cwd,
         user: execT.user,
         ...(execT.path ? { path: execT.path } : {}),
-        repos: info.repos
+        repos: info.repos,
+        artifacts: true
       }
       this.setStatus(sessionId, next, 'user')
       enter()

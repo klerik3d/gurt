@@ -30,6 +30,7 @@ import { validateEnvConfig } from '../shared/envConfig'
 import { scopeDirName, scopeFromDirName, scopeNameConflict, scopeNameProblem } from '../shared/scopeName'
 import { normalizeMcpEntry, validateMcpEntry } from '../shared/mcp'
 import type { SkillEntry } from '../shared/skills'
+import { ARTIFACTS } from '../shared/files'
 import {
   SKILL_FILE,
   skillEntries,
@@ -86,6 +87,17 @@ export const wsDir = (ws: string) => path.join(gurtRoot, ws)
 export const taskDir = (ws: string, task: string) => path.join(gurtRoot, ws, scopeDirName(task))
 export const cloneDir = (ws: string, task: string, repo: string) =>
   path.join(taskDir(ws, task), repo)
+/** The scope's shared scratch dir (shared/files.ts `ARTIFACTS`): bound into
+ *  every session container of the scope, a root of the file view. Lives and
+ *  dies with the scope directory. */
+export const artifactsDir = (ws: string, task: string) => path.join(taskDir(ws, task), ARTIFACTS)
+
+/** {@link artifactsDir}, created if missing — a bind source has to exist. */
+export async function ensureArtifactsDir(ws: string, task: string): Promise<string> {
+  const dir = artifactsDir(ws, task)
+  await fs.mkdir(dir, { recursive: true })
+  return dir
+}
 /** The workspace's skill registry: one directory per skill, each holding a
  *  `SKILL.md` and whatever supporting files it references
  *  (docs/requirements-skills.md §4.1). A sibling of `workspace.json` — the
@@ -156,7 +168,8 @@ export async function ensureSessionHistory(
 const RESERVED_NAMES: Record<string, string[]> = {
   workspace: ['agents.json', 'credentials.json', 'agent-config-cache.json', '.archives', 'archive-settings.json'],
   task: ['workspace.json', 'skills', 'repos'],
-  repo: ['task.json', 'sessions.json', 'review.json', 'sessions', '.multirepo', 'proactive-state.json', 'review-loop.json'],
+  // `artifacts` is the scope's shared scratch dir (shared/files.ts ARTIFACTS).
+  repo: ['task.json', 'sessions.json', 'review.json', 'sessions', '.multirepo', 'proactive-state.json', 'review-loop.json', 'artifacts'],
   // The base image's virtual env shares the env name space, so a workspace env may not take its name.
   env: [BASE_ENV_NAME]
 }
@@ -1393,7 +1406,8 @@ export async function taskClones(ws: string, task: string): Promise<string[]> {
   for (const entry of await fs
     .readdir(taskDir(ws, task), { withFileTypes: true })
     .catch(() => []))
-    if (entry.isDirectory() && existsSync(path.join(taskDir(ws, task), entry.name, '.git')))
+    // The artifacts dir is never a clone, even if an agent ran `git init` in it.
+    if (entry.isDirectory() && entry.name !== ARTIFACTS && existsSync(path.join(taskDir(ws, task), entry.name, '.git')))
       out.push(entry.name)
   return out
 }

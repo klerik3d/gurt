@@ -292,6 +292,8 @@ test('instructions state each repo and its mode', () => {
   ])
   assert.match(multi, /its own commit in\n`complete`'s `repos`/, 'several writable repos: the per-repo rule is stated')
   assert.match(instructionsFor('researcher', []), /No repository is mounted/)
+  for (const role of ['executor', 'researcher', 'reviewer', 'operator'])
+    assert.match(instructionsFor(role, []), /\/workspaces\/artifacts is this scope's shared scratch directory/, `${role}: the artifacts dir is stated`)
   assert.doesNotMatch(instructionsFor('researcher', []), /mounted read-only and you/, 'the role text claims nothing about mounts')
 })
 
