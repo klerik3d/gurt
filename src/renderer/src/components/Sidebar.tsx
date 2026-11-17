@@ -135,10 +135,6 @@ export function Sidebar({
    *  instead of behind a dedicated button, so hovering the tree never has to
    *  reserve or reveal space for one and the list holds still under the mouse. */
   const [ctxMenu, setCtxMenu] = useState<{ row: Row; x: number; y: number } | null>(null)
-  /** Guards the edit against resolving twice: both Escape and a keyboard commit
-   *  move focus off the input, and the blur that follows would otherwise run the
-   *  commit a second time — against a name that no longer exists. */
-  const renameSettled = useRef(false)
   const treeRef = useRef<HTMLDivElement>(null)
   /** Diff-mode folding lives here, not in the rows, so arrow keys see it too. */
   const [openRepos, setOpenRepos] = useState<Set<string>>(() => new Set())
@@ -553,7 +549,6 @@ export function Sidebar({
   })
 
   const startRename = (r: Row) => {
-    renameSettled.current = false
     setRenameDraft(
       r.kind === 'task'
         ? r.task
@@ -566,8 +561,6 @@ export function Sidebar({
    *  back to the tree so navigation continues — from committing by clicking
    *  away, where focus has already gone somewhere the user chose. */
   const commitRename = async (refocus: boolean) => {
-    if (renameSettled.current) return
-    renameSettled.current = true
     const r = renaming
     // A scope's name is its branch: committed as the branch it would become.
     const name = r?.kind === 'task' ? renameTaskDraft(r.task).name : renameDraft.trim()
@@ -619,7 +612,6 @@ export function Sidebar({
   const renameTaskDraft = (task: string) => scopeNameInput(renameDraft, scopeNames, task)
 
   const cancelRename = () => {
-    renameSettled.current = true
     setRenaming(null)
     treeRef.current?.focus()
   }
@@ -916,8 +908,6 @@ export function Sidebar({
   )
 }
 
-/** Inline name editor for a tree row: commits on Enter or blur, drops on Escape.
- *  Its keys stop at the input so the tree's own arrow/Enter handling stays out. */
 /** Every name a new scope must not clash with — agents included: a proactive
  *  agent is a scope on disk, and its name a branch like any other. */
 export function scopeNamesOf(ws: Tree['workspaces'][number] | undefined): string[] {
@@ -933,6 +923,15 @@ function ScopeNameHint({ draft, typed }: { draft: { name: string; error: string 
   return null
 }
 
+/** Inline name editor for a tree row: commits on Enter or blur, drops on Escape.
+ *  Its keys stop at the input so the tree's own arrow/Enter handling stays out.
+ *
+ *  The edit resolves at most once per mount: `onCommit` or `onCancel` is called
+ *  once, never both and never twice. After Enter or Escape the caller drops the
+ *  input and may move focus elsewhere (the scope tree refocuses itself), and the
+ *  blur that follows, still within the old render's closure, would otherwise
+ *  commit again: a second rename of a name that no longer exists, or a commit
+ *  right after Escape cancelled. So callers need no guard of their own. */
 export function RenameInput({
   value,
   error,
@@ -947,6 +946,7 @@ export function RenameInput({
   onCommit: (refocus: boolean) => void
   onCancel: () => void
 }) {
+  const settled = useRef(false)
   return (
     <input
       autoFocus
@@ -958,12 +958,22 @@ export function RenameInput({
       onChange={(e) => onChange(e.target.value)}
       onClick={(e) => e.stopPropagation()}
       onDoubleClick={(e) => e.stopPropagation()}
-      onBlur={() => onCommit(false)}
+      onBlur={() => {
+        if (settled.current) return
+        settled.current = true
+        onCommit(false)
+      }}
       onKeyDown={(e) => {
         e.stopPropagation()
+        if (settled.current) return
         if (e.key === 'Enter') {
-          if (!error) onCommit(true)
-        } else if (e.key === 'Escape') onCancel()
+          if (error) return
+          settled.current = true
+          onCommit(true)
+        } else if (e.key === 'Escape') {
+          settled.current = true
+          onCancel()
+        }
       }}
     />
   )
