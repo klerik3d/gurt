@@ -1,4 +1,4 @@
-import type { ButtonHTMLAttributes, ReactNode } from 'react'
+import type { ButtonHTMLAttributes, CSSProperties, ReactNode } from 'react'
 import { Icon, type IconName } from './icons'
 
 /** Files and Git share row geometry, icons, selection and focus styling. */
@@ -17,10 +17,10 @@ export function FileTreeRow({ label, depth, icon, open, selected = false, cursor
 } & Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'className' | 'style' | 'children'>) {
   return <button {...attributes} type="button" role="treeitem" tabIndex={-1}
     className={`file-tree-row${className ? ` ${className}` : ''}${selected ? ' selected' : ''}${cursor ? ' cursor' : ''}`}
-    aria-level={depth + 1} aria-expanded={open} aria-selected={selected} style={{ paddingLeft: 10 + depth * 14 }}>
-    <span className="file-tree-chevron">{open !== undefined && <Icon name="chevron" size={10}
+    aria-level={depth + 1} aria-expanded={open} aria-selected={selected} style={{ '--level': depth } as CSSProperties}>
+    <span className="file-tree-chevron">{open !== undefined && <Icon name="chevron" size={12}
       style={open ? undefined : { transform: 'rotate(-90deg)' }} />}</span>
-    <Icon name={icon} size={13} />
+    <Icon name={icon} size={14} />
     {beforeLabel}
     <span className={`file-tree-name${labelClassName ? ` ${labelClassName}` : ''}`}>{label}</span>
     {children}

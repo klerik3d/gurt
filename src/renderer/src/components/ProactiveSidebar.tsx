@@ -151,7 +151,7 @@ export function ProactiveSidebar({
                     toggle(a.name)
                   }}
                 >
-                  <Icon name="chevron" size={11} style={open ? undefined : { transform: 'rotate(-90deg)' }} />
+                  <Icon name="chevron" size={12} style={open ? undefined : { transform: 'rotate(-90deg)' }} />
                 </span>
                 <Dot tone={dot.tone} pulse={dot.pulse} hollow={dot.hollow} />
                 {renaming?.name === a.name ? (
@@ -165,9 +165,9 @@ export function ProactiveSidebar({
                 ) : (
                   <span className="sb-task-name">{a.name}</span>
                 )}
-                {a.config.label && <LabelTag label={a.config.label} />}
                 <span className="spacer" />
                 <span className="sb-session-client">{a.config.cron ?? everyLabel(a.config.everyMinutes)}</span>
+                {a.config.label && <LabelTag label={a.config.label} />}
               </div>
               {open &&
                 runs.map(({ session: s, record: r }) => {

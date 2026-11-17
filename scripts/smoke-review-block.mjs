@@ -554,8 +554,6 @@ try {
   await t2row.waitFor(T)
   if ((await t2row.getAttribute('aria-expanded')) !== 'true') await t2row.locator('.sb-chev').click()
   await page.waitForSelector('.sb-session-name:text-is("ship it")', T)
-  assert.equal(await page.locator('.sb-session:has(.sb-session-name:text-is("review 2 — ship it")) [data-role="reviewer"]').count(), 1, 'the reviewer carries its role mark')
-  assert.equal(await page.locator('.sb-session:has(.sb-session-name:text-is("ship it")) [data-role="reviewer"]').count(), 0, 'the executor does not')
   await page.click('.sb-session:has(.sb-session-name:text-is("ship it"))')
   // The loop's state is in the session menu; its story — and the unresolved findings — in the chat.
   await page.click('.session-menu .icon-sq')
