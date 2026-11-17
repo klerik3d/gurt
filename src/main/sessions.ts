@@ -27,7 +27,6 @@ import type {
   SessionMode,
   SessionModes,
   RepoMode,
-  ReviewLoopConfig,
   ReviewVerdict,
   SessionRole,
   SessionSnapshot,
@@ -60,7 +59,7 @@ import {
   type ModeWords,
   type Vocabulary
 } from '../shared/agentVocabulary'
-import type { CreateAction } from '../shared/api'
+import type { CreateAction, SessionDraftPatch } from '../shared/api'
 import { taskKey } from '../shared/keys'
 import { sanitizeSkillSelection } from '../shared/skills'
 import { MCP_DEFS } from '../shared/mcp'
@@ -1510,23 +1509,7 @@ export class SessionManager {
    * supplied keys change; unknown ids and non-draft sessions are ignored (which
    * is what makes the role immutable for everything that has run).
    */
-  editDraft(
-    sessionId: string,
-    patch: {
-      agent?: string
-      env?: string
-      role?: SessionRole
-      repos?: string[]
-      repoModes?: Record<string, RepoMode>
-      autoAllow?: boolean
-      mcp?: McpSelection[]
-      skills?: SkillSelection[]
-      network?: SessionNetwork
-      startPrompt?: string
-      configValues?: Record<string, string | boolean>
-      review?: ReviewLoopConfig | null
-    }
-  ): void {
+  editDraft(sessionId: string, patch: SessionDraftPatch): void {
     this.assertSessionWritable(sessionId)
     const s = this.sessions.get(sessionId)
     if (!s || s.info.state !== 'draft') return
