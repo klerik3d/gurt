@@ -1471,31 +1471,11 @@ button.sb-session {
   position: relative;
   margin: 0 0 10px;
 }
-.code-copy {
-  position: absolute;
+/* The code block's `CopyButton` (see `.copy-btn`), inset from the corner so it
+   sits inside the `<pre>` padding. */
+.code-block > .copy-btn {
   top: 6px;
   right: 6px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  color: var(--dim);
-  opacity: 0;
-  transition: opacity 0.1s ease;
-  cursor: pointer;
-}
-.code-block:hover .code-copy,
-.code-copy:focus-visible {
-  opacity: 1;
-}
-.code-copy:hover {
-  color: var(--text);
-  border-color: var(--border2);
 }
 .msg-text.markdown blockquote {
   margin: 0 0 10px;
@@ -5086,8 +5066,10 @@ button { user-select: none; }
 .archive-empty { flex: 1; display: flex; align-items: center; justify-content: center; padding: 32px; text-align: center; color: var(--faint); font-size: 13px; }
 .archive-empty-list { padding: 16px; color: var(--faint); font-size: 12px; }
 
-/* Copy button — revealed with its `.has-copy` host, like the code-block one.
-   The host must be positioned (or the button `copy-inline`). */
+/* Copy button (`CopyButton`) — revealed with its `.has-copy` host. The reveal
+   uses the child combinator so a nested host (a code block inside a message)
+   reveals only its own button. The host must be positioned (or the button
+   `copy-inline`). */
 .copy-btn {
   position: absolute;
   top: 0;

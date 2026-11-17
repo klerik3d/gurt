@@ -616,22 +616,10 @@ function PinnedRequest({
  *  exactly what's on screen, syntax quirks and all. */
 function CodeBlock({ node: _node, ...rest }: React.ComponentPropsWithoutRef<'pre'> & { node?: unknown }) {
   const ref = useRef<HTMLPreElement>(null)
-  const [copied, setCopied] = useState(false)
   return (
-    <div className="code-block">
+    <div className="code-block has-copy">
       <pre ref={ref} {...rest} />
-      <button
-        type="button"
-        className="code-copy"
-        title={copied ? 'copied' : 'copy'}
-        onClick={() => {
-          void navigator.clipboard.writeText(ref.current?.textContent ?? '')
-          setCopied(true)
-          setTimeout(() => setCopied(false), 1200)
-        }}
-      >
-        <Icon name={copied ? 'check' : 'copy'} size={13} />
-      </button>
+      <CopyButton text={() => ref.current?.textContent ?? ''} title="copy code" />
     </div>
   )
 }
