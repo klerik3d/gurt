@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { API_METHODS, type GurtEvents } from '../shared/api'
+import { isLevel, type Level } from '../shared/log'
 
 /** Named subscription wrapper over one `GurtEvents` channel. */
 const subscribe =
@@ -14,9 +15,10 @@ const subscribe =
 // after registerIpc(), and one sync roundtrip at window creation is cheaper
 // than an IPC message per filtered-out record later. Fallback 'debug' means
 // "filter nothing here"; main filters regardless.
-const logLevel: string = (() => {
+const logLevel: Level = (() => {
   try {
-    return (ipcRenderer.sendSync('log:level') as string) ?? 'debug'
+    const level: unknown = ipcRenderer.sendSync('log:level')
+    return isLevel(level) ? level : 'debug'
   } catch {
     return 'debug'
   }
@@ -25,7 +27,7 @@ const logLevel: string = (() => {
 const api: Record<string, unknown> = {
   // Fire-and-forget log record (`send`, not `invoke`): logging must never make
   // the renderer wait, and main validates + rate-limits everything it accepts.
-  log: (level: string, scope: string, msg: string, ctx?: object, ts?: number) =>
+  log: (level: Level, scope: string, msg: string, ctx?: object, ts?: number) =>
     ipcRenderer.send('log', level, scope, msg, ctx, ts),
   logLevel,
   onTreeChanged: subscribe('tree-changed'),

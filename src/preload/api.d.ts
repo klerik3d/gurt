@@ -1,4 +1,5 @@
 import type { GurtApi, GurtEvents } from '../shared/api'
+import type { Level } from '../shared/log'
 
 declare global {
   interface Window {
@@ -7,10 +8,10 @@ declare global {
       /** Fire-and-forget log record for the main-process log (see renderer/src/log.ts).
        *  `ts` is the renderer's `Date.now()` at the moment of the call, so a
        *  rate-limited or delayed IPC delivery doesn't skew the record's timestamp. */
-      log(level: string, scope: string, msg: string, ctx?: object, ts?: number): void
+      log(level: Level, scope: string, msg: string, ctx?: object, ts?: number): void
       /** Main's effective log threshold, mirrored at preload time — lets the
        *  renderer skip the IPC send for records main would filter anyway. */
-      logLevel: string
+      logLevel: Level
       onTreeChanged(cb: () => void): () => void
       onArchiveProgress(cb: (event: GurtEvents['archive-progress']) => void): () => void
       onTerminalChanged(cb: (event: GurtEvents['terminal-changed']) => void): () => void

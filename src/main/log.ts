@@ -15,6 +15,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { createRequire } from 'node:module'
 import { isRecord } from '../shared/json'
+import { LEVEL_RANK as RANK, isLevel, type Level, type Logger } from '../shared/log'
 import { gurtRoot } from './paths'
 import { REDACTED, deniedKey, redact } from './redact'
 
@@ -24,16 +25,10 @@ import { REDACTED, deniedKey, redact } from './redact'
 // registered its values through this module's name.
 export { addSecrets } from './redact'
 
-export type Level = 'debug' | 'info' | 'warn' | 'error'
+// The level vocabulary is shared with the renderer (src/shared/log.ts) so both
+// sides of the IPC channel rank levels identically; re-exported for main's callers.
+export type { Level, Logger } from '../shared/log'
 
-export interface Logger {
-  debug(msg: string, ctx?: object): void
-  info(msg: string, ctx?: object): void
-  warn(msg: string, ctx?: object): void
-  error(msg: string, ctx?: object): void
-}
-
-const RANK: Record<Level, number> = { debug: 10, info: 20, warn: 30, error: 40 }
 const TAG: Record<Level, string> = { debug: 'DBG', info: 'INF', warn: 'WRN', error: 'ERR' }
 
 /** Rotate the app log at this size; keep `gurt.log` + `.1`…`.5` (6 files max). */
@@ -67,7 +62,7 @@ function isDev(): boolean {
 
 function envLevel(): Level | undefined {
   const v = (process.env['GURT_LOG'] ?? '').trim().toLowerCase()
-  return Object.prototype.hasOwnProperty.call(RANK, v) ? (v as Level) : undefined
+  return isLevel(v) ? v : undefined
 }
 
 const dev = isDev()
@@ -948,16 +943,14 @@ function rendererTs(ts: unknown): number {
  */
 export function logRenderer(level: unknown, scope: unknown, msg: unknown, ctx?: unknown, ts?: unknown): void {
   try {
-    if (typeof level !== 'string' || !Object.prototype.hasOwnProperty.call(RANK, level)) return
-    const lvl = level as Level
-    if (RANK[lvl] < threshold) return
+    if (!isLevel(level) || RANK[level] < threshold) return
     if (rateLimited()) {
       appSink.noteDropped(1)
       return
     }
     const safeCtx = isRecord(ctx) ? truncateCtxStrings(ctx) : undefined
     const safeMsg = truncateForSanitize(wireText(msg), RECORD_MAX)
-    emit('r', lvl, scopeName(wireText(scope), 'renderer'), safeMsg, safeCtx, rendererTs(ts))
+    emit('r', level, scopeName(wireText(scope), 'renderer'), safeMsg, safeCtx, rendererTs(ts))
   } catch (e) {
     internalFailure('gurt.log', e)
   }
