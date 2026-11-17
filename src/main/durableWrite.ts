@@ -13,16 +13,16 @@ export async function syncDirectory(dir: string): Promise<void> {
 }
 
 /**
- * Write JSON durably: a complete temp file, fsync'd, renamed over the target
+ * Write a file durably: a complete temp file, fsync'd, renamed over the target
  * (atomic on POSIX), then the directory fsync'd so the rename itself survives a
  * power loss. `fs.writeFile` truncates in place and never fsyncs — a crash
  * between the truncate and the flush leaves a 0-byte file, which is how one
  * task lost every session record on 2026-08-27.
  */
-export async function writeJsonDurable(
+export async function writeFileDurable(
   file: string,
-  data: unknown,
-  opts: { mode?: number; pretty?: boolean } = {}
+  contents: string | Uint8Array,
+  opts: { mode?: number } = {}
 ): Promise<void> {
   const dir = path.dirname(file)
   await fs.mkdir(dir, { recursive: true })
@@ -30,9 +30,7 @@ export async function writeJsonDurable(
   const fh = await fs.open(tmp, 'wx', opts.mode ?? 0o644)
   try {
     try {
-      await fh.writeFile(
-        opts.pretty === false ? JSON.stringify(data) : JSON.stringify(data, null, 2) + '\n'
-      )
+      await fh.writeFile(contents)
       await fh.sync()
     } finally {
       await fh.close()
@@ -42,4 +40,18 @@ export async function writeJsonDurable(
   } finally {
     await fs.rm(tmp, { force: true })
   }
+}
+
+/** Serialize `data` as JSON (pretty unless `pretty === false`) and write it via
+ *  `writeFileDurable`. */
+export async function writeJsonDurable(
+  file: string,
+  data: unknown,
+  opts: { mode?: number; pretty?: boolean } = {}
+): Promise<void> {
+  await writeFileDurable(
+    file,
+    opts.pretty === false ? JSON.stringify(data) : JSON.stringify(data, null, 2) + '\n',
+    { mode: opts.mode ?? 0o644 }
+  )
 }

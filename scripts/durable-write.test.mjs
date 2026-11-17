@@ -9,7 +9,7 @@ import { bundle } from './lib/bundle.mjs'
 const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gurt-durable-write-'))
 const outfile = path.join(root, 'bundle.mjs')
 await bundle({ stdin: { contents: "export * from './src/main/durableWrite.ts'", resolveDir: process.cwd(), loader: 'ts' }, outfile })
-const { writeJsonDurable } = await import(pathToFileURL(outfile).href)
+const { writeFileDurable, writeJsonDurable } = await import(pathToFileURL(outfile).href)
 after(() => fs.rm(root, { recursive: true, force: true }))
 
 test('creates parents, writes pretty JSON, and overwrites with compact owner-only JSON', async () => {
@@ -47,4 +47,13 @@ test('overlapping writes use independent temp files and leave complete JSON', as
   const result = JSON.parse(await fs.readFile(file, 'utf8'))
   assert.ok(Number.isInteger(result.value) && result.value >= 0 && result.value < 20)
   assert.deepEqual(await fs.readdir(dir), ['data.json'])
+})
+
+test('writeFileDurable writes string contents intact and leaves no temp file', async () => {
+  const dir = path.join(root, 'file')
+  const file = path.join(dir, 'log.jsonl')
+  const contents = '{"a":1}\n{"b":"ü"}\n'
+  await writeFileDurable(file, contents)
+  assert.equal(await fs.readFile(file, 'utf8'), contents)
+  assert.deepEqual((await fs.readdir(dir)).filter((name) => name.endsWith('.tmp')), [])
 })
