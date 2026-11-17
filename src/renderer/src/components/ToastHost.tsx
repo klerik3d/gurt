@@ -1,26 +1,9 @@
 import { useEffect, useState } from 'react'
 import type { JSX } from 'react'
-import { Icon } from './components/icons'
-import { CopyButton } from './components/CopyButton'
-
-/**
- * Bottom-right error toast, visually matching the session notification popups
- * but independent of them — git/task operations aren't tied to a session, so
- * they can't go through the sessionId-keyed notification system. Callable
- * from anywhere (event handlers, promise `catch`) like {@link alertDialog}.
- */
-
-interface ToastRecord {
-  id: string
-  message: string
-}
-
-let enqueue: ((t: ToastRecord) => void) | null = null
-let counter = 0
-
-export function showToast(message: string): void {
-  enqueue?.({ id: `toast-${++counter}`, message })
-}
+import { Icon } from './icons'
+import { CopyButton } from './CopyButton'
+import { onToast } from '../toast'
+import type { ToastRecord } from '../toast'
 
 /** No timer: an error stays until the user closes it — one that vanishes on
  *  its own is one nobody may have read. */
@@ -42,12 +25,7 @@ function Toast({ toast, onDismiss }: { toast: ToastRecord; onDismiss: (id: strin
 export function ToastHost(): JSX.Element | null {
   const [toasts, setToasts] = useState<ToastRecord[]>([])
 
-  useEffect(() => {
-    enqueue = (t) => setToasts((q) => [...q, t].slice(-3))
-    return () => {
-      enqueue = null
-    }
-  }, [])
+  useEffect(() => onToast((t) => setToasts((q) => [...q, t].slice(-3))), [])
 
   if (!toasts.length) return null
   const dismiss = (id: string) => setToasts((q) => q.filter((t) => t.id !== id))
