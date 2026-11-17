@@ -1074,26 +1074,23 @@ button.sb-session {
   background: var(--hover);
   box-shadow: inset 0 0 0 1px var(--border2);
 }
-.sb-session.nested {
-  position: relative;
-  padding-left: 66px;
+/* Every session row of the scope tree reserves the scope row's fold slot, so
+   dots line up whether or not a row has reviews to fold. A reviewer is one
+   indent level deeper. */
+.sb-session.foldable {
+  padding-left: 16px;
 }
-/* A guide line marks the reviewer as belonging to the executor above. */
-.sb-session.nested::before {
-  content: '';
-  position: absolute;
-  left: 44px;
-  top: 0;
-  bottom: 0;
-  border-left: 1px solid var(--border2);
+.sb-session.foldable.nested {
+  padding-left: 30px;
 }
 .sb-session.nested .sb-session-name {
   font-size: 12.5px;
 }
-.sb-review-chev {
-  margin-left: -16px;
-  margin-right: -4px;
-  cursor: pointer;
+.sb-fold {
+  display: flex;
+  width: 11px;
+  margin-right: -2px;
+  flex: none;
 }
 .sb-review-count {
   font-family: var(--mono);
