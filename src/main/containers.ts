@@ -139,10 +139,10 @@ export function containerLayout(
   const missing = clones.length ? undefined : missingRepoReason({ ...info, repos: [] })
   if (missing) throw new Error(missing)
   const mounts = clones.map((c) =>
-    bind(c.dir, `/workspaces/${c.name}`, repoModeIsReadOnly(repoMode(info, c.name)))
+    bind(c.dir, `${CONTAINER_ROOT}/${c.name}`, repoModeIsReadOnly(repoMode(info, c.name)))
   )
   const [only] = clones
-  const workdir = clones.length === 1 && only ? `/workspaces/${only.name}` : '/workspaces'
+  const workdir = clones.length === 1 && only ? `${CONTAINER_ROOT}/${only.name}` : CONTAINER_ROOT
   for (const m of extra) mounts.push(bind(m.hostDir, m.target, m.readonly))
   return { mounts, workdir }
 }
@@ -421,7 +421,7 @@ export class ContainerManager {
         : undefined
     if (owned?.id && !existing) {
       if (sameRepos(owned.repos, info.repos) && !owned.artifacts)
-        provisionLog('re-creating the container to add the scope\'s shared /workspaces/artifacts directory')
+        provisionLog(`re-creating the container to add the scope's shared ${CONTAINER_ROOT}/${ARTIFACTS} directory`)
       this.forget(owned.id)
     }
 

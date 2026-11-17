@@ -21,6 +21,7 @@ import { ChoiceGroup } from '../ChoiceGroup'
 import { saveRepo } from './repoSave'
 import { run } from '../../async'
 import { stripProtocol } from './shared'
+import { CONTAINER_ROOT } from '../../../../shared/files'
 
 // ---- Repos — the workspace's repo identities (url + credential) ----
 
@@ -314,7 +315,7 @@ function RepoModal({
             onChange={(e) => setCheck(e.target.value)}
           />
           <div className="env-access-note">
-            run by the review loop in the session container, from /workspaces/{name.trim() || '<repo>'}, after each
+            run by the review loop in the session container, from {CONTAINER_ROOT}/{name.trim() || '<repo>'}, after each
             round of changes; empty = no check for this repo
           </div>
         </label>
