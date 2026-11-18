@@ -35,6 +35,7 @@ import { envBuildImage } from './provision'
 import { createLocalRepo } from './localRepo'
 import { dropSessionLog } from './log'
 import * as store from './store'
+import { keyedChain } from './keyedChain'
 import type { Kernel } from './kernel'
 
 /** The revision of an entity that does not exist — what a create carries. */
@@ -360,17 +361,7 @@ export function createAdminWrites(kernel: Kernel): AdminWrites {
 
   /** One admin write per workspace at a time: the revision check and the write
    *  it guards must not interleave with a sibling's. */
-  const chains = new Map<string, Promise<unknown>>()
-  const serial = <T>(ws: string, fn: () => Promise<T>): Promise<T> => {
-    const next = Promise.resolve(chains.get(ws))
-      .catch(() => {})
-      .then(fn)
-    chains.set(
-      ws,
-      next.catch(() => {})
-    )
-    return next
-  }
+  const serial = keyedChain()
 
   /** The write binding — the same side effects ipc.ts's `impl` performs, so a
    *  change made by the operator is indistinguishable downstream from one

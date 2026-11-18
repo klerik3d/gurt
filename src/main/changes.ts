@@ -15,6 +15,7 @@ import { canonicalRepoId } from '../shared/repoId'
 import { scopeBranch } from '../shared/scopeName'
 import { createLogger } from './log'
 import { openInTerminal } from './terminal'
+import { keyedChain } from './keyedChain'
 
 const log = createLogger('changes')
 
@@ -29,7 +30,10 @@ const PUSH_TIMEOUT_MS = 120_000
 /** Per-clone chain for the *mutating* git operations (fetch/commit/push/merge):
  *  interleaved they fight over `.git/index.lock` at best, and at worst a
  *  `commit` runs `add -A` in the middle of `updateFromMain`'s merge and stages
- *  its conflict markers. Reads stay unchained — git serves them concurrently. */
+ *  its conflict markers. Reads stay unchained — git serves them concurrently.
+ *  `cloneChains` mirrors each clone's latest settled-either-way tail, for
+ *  `withTaskChangesPaused` to wait on. */
+const cloneChain = keyedChain()
 const cloneChains = new Map<string, Promise<unknown>>()
 const frozenScopes = new Set<string>()
 
@@ -38,9 +42,7 @@ const frozenScopes = new Set<string>()
 export function serialized<T>(dir: string, fn: () => Promise<T>): Promise<T> {
   if ([...frozenScopes].some((prefix) => dir.startsWith(prefix)))
     return Promise.reject(new Error('Scope repositories are being archived'))
-  const next = Promise.resolve(cloneChains.get(dir))
-    .catch(() => {})
-    .then(fn)
+  const next = cloneChain(dir, fn)
   cloneChains.set(
     dir,
     next.catch(() => {})

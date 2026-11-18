@@ -54,6 +54,7 @@ import { emptyProactiveState, sanitizeProactiveConfig } from '../shared/proactiv
 import { createLogger } from './log'
 import { gurtRoot } from './paths'
 import { writeFileDurable, writeJsonDurable } from './durableWrite'
+import { keyedChain } from './keyedChain'
 
 const pexecFile = promisify(execFile)
 
@@ -414,21 +415,10 @@ export async function setAgents(agents: AgentsFile): Promise<void> {
   await journal('agents: registry replaced', 'setAgents', 'agents')
 }
 
-/** Per-key promise chain for read-modify-write cycles on one JSON file — two
- *  overlapping mutations would otherwise both read, then last-write-wins away
- *  one of them. Same shape as review.ts's `edit()`. */
-const rmwChains = new Map<string, Promise<unknown>>()
-
-function chained<T>(key: string, fn: () => Promise<T>): Promise<T> {
-  const next = Promise.resolve(rmwChains.get(key))
-    .catch(() => {})
-    .then(fn)
-  rmwChains.set(
-    key,
-    next.catch(() => {})
-  )
-  return next
-}
+/** Per-key promise chain (keyedChain.ts) for read-modify-write cycles on one
+ *  JSON file — two overlapping mutations would otherwise both read, then
+ *  last-write-wins away one of them. */
+const chained = keyedChain()
 
 // --- config journal: ~/.gurt is a git repository ----------------------------
 // docs/requirements-session-operator.md §7. Every config mutation auto-commits
