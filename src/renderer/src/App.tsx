@@ -953,7 +953,7 @@ export default function App() {
                         setCurWs(w.name)
                       }}
                     >
-                      <span style={{ flex: 1 }}>{w.name}</span>
+                      <span className="grow">{w.name}</span>
                       <button
                         className="icon-sq sb-act"
                         title="delete workspace"

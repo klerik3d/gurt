@@ -108,6 +108,7 @@ deb/sudo path above — always test through the actual `.AppImage` file.
 
 - CSS: transition and animation durations are written in integer ms (`200ms`, not `0.2s`), so every duration in `styles.css` reads the same way and can be grepped/compared at a glance.
 - CSS: a static element color is a modifier class (`.msg-dot-warn`), not an inline `style`.
+- CSS: static styling is a class in `styles.css`, never an inline `style`; inline `style` is only for dynamic values, passed as a CSS variable (`style={{ "--level": n }}`) or computed size/position.
 - transition: `<prop> <N>ms ease` — длительность в целых ms и easing всегда явно.
 - CSS: icons carry no inline `flex`/`transform`; use `.icon-fixed` (`flex: none`) and `.chev-closed` (`rotate(-90deg)`, applied conditionally as `open ? '' : 'chev-closed'`).
 
