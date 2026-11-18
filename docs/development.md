@@ -106,7 +106,7 @@ deb/sudo path above — always test through the actual `.AppImage` file.
 
 ## CSS conventions
 
-- CSS: transition durations are written in integer ms (`200ms`, not `0.2s`), so every duration in `styles.css` reads the same way and can be grepped/compared at a glance.
+- CSS: transition and animation durations are written in integer ms (`200ms`, not `0.2s`), so every duration in `styles.css` reads the same way and can be grepped/compared at a glance.
 
 ## Dev container
 
