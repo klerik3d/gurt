@@ -26,20 +26,12 @@ import { cloneDir } from './store'
 import * as changes from './changes'
 import { unattendedGitAccessForRepo } from './git/env'
 import { repoTree, type RepoTree } from './treeHash'
+import { keyedChain } from './keyedChain'
 
 /** Read-modify-write of one scope's file, one at a time. */
-const chains = new Map<string, Promise<unknown>>()
-function chained<T>(ws: string, task: string, fn: () => Promise<T>): Promise<T> {
-  const key = JSON.stringify([ws, task])
-  const next = Promise.resolve(chains.get(key))
-    .catch(() => {})
-    .then(fn)
-  chains.set(
-    key,
-    next.catch(() => {})
-  )
-  return next
-}
+const chain = keyedChain()
+const chained = <T>(ws: string, task: string, fn: () => Promise<T>): Promise<T> =>
+  chain(JSON.stringify([ws, task]), fn)
 
 /** Whether `a` approves exactly the repo's state `t`. */
 export const approvalMatches = (a: StoredApproval | undefined, t: RepoTree | undefined): boolean =>

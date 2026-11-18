@@ -29,6 +29,7 @@ import type { ProactiveHooks, ProposeScopeInput } from './mcp/gurtServer'
 import type { DraftInheritance, PreparedDraft, SessionManager } from './sessions'
 import * as store from './store'
 import { createLogger } from './log'
+import { keyedChain } from './keyedChain'
 
 const log = createLogger('proactive')
 
@@ -105,22 +106,13 @@ export function createProactive(deps: ProactiveDeps): ProactiveManager {
   const origins = new Map<string, ProactiveOrigin>()
   /** Per workspace: ref → the scope it is bound to (raised scopes only). */
   const refIndex = new Map<string, Map<string, string>>()
-  const locks = new Map<string, Promise<unknown>>()
   /** Agents being renamed (by their old name): no run may start. */
   const renaming = new Set<string>()
   let timer: NodeJS.Timeout | undefined
 
   /** Run `fn` after everything queued for this workspace — the lock every
    *  identity decision (ref → scope) is taken under. */
-  function locked<T>(ws: string, fn: () => Promise<T>): Promise<T> {
-    const prev = locks.get(ws) ?? Promise.resolve()
-    const next = prev.then(fn, fn)
-    locks.set(
-      ws,
-      next.catch(() => {})
-    )
-    return next
-  }
+  const locked = keyedChain()
 
   const refsOf = (ws: string): Map<string, string> => {
     let m = refIndex.get(ws)
