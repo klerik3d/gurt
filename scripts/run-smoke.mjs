@@ -28,6 +28,7 @@ const SMOKES = [
   'smoke-diff-mode.mjs',
   'smoke-session-recovery.mjs',
   'smoke-files-mode.mjs',
+  'smoke-html-preview.mjs',
   'smoke-terminal.mjs',
   'smoke-delete-row.mjs',
   'smoke-session-copy.mjs',

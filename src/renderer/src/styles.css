@@ -4597,6 +4597,10 @@ textarea.input {
 .file-markdown img { max-width: 100%; }
 .file-markdown h1 { padding-bottom: 6px; border-bottom: 1px solid var(--border); }
 .md-image-missing { color: var(--faint); font-size: 12px; }
+/* An HTML file, rendered inert in a sandboxed frame (see htmlPreview.ts).
+   White like a browser page: most HTML assumes it, whatever the app's theme. */
+.file-html { flex: 1; min-height: 0; width: 100%; border: 0; background: #fff; }
+.file-preview-note { font-size: 11px; margin-right: 6px; white-space: nowrap; }
 /* An image file: fitted by default, its own size on click; a checkerboard
    shows through transparency. */
 .file-image { flex: 1; min-height: 0; overflow: auto; display: flex; padding: 16px;

@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
 import type { EditorView } from '@codemirror/view'
 import type { FileLocation, FileNavigationResult } from '../../../shared/files'
-import { fileKey, isMarkdown } from '../../../shared/files'
+import { fileKey, previewKind } from '../../../shared/files'
 import type { FilesController } from '../useFiles'
 import { isDirty } from '../useFiles'
 import { RowContextMenu } from './RowContextMenu'
@@ -12,6 +12,7 @@ const shortcut = (code: string) => bindingLabel({ code, mod: true, shift: false,
 const FileEditor = lazy(() => import('./FileEditor').then((module) => ({ default: module.FileEditor })))
 const ImageView = lazy(() => import('./FilePreview').then((module) => ({ default: module.ImageView })))
 const MarkdownView = lazy(() => import('./FilePreview').then((module) => ({ default: module.MarkdownView })))
+const HtmlView = lazy(() => import('./FilePreview').then((module) => ({ default: module.HtmlView })))
 
 export function FilesPane({ controller, scope, visible }: {
   controller: FilesController
@@ -24,10 +25,10 @@ export function FilesPane({ controller, scope, visible }: {
   const [navigation, setNavigation] = useState<{ kind: 'definition' | 'references'; result?: FileNavigationResult; error?: string; busy?: boolean } | null>(null)
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const navSeq = useRef(0)
-  // Markdown files open rendered; these are the ones switched to the editor.
-  // Per file, for the session — like the editor's own undo history.
-  const [editingMarkdown, setEditingMarkdown] = useState<ReadonlySet<string>>(new Set())
-  const setEditing = useCallback((key: string, on: boolean) => setEditingMarkdown((prev) => {
+  // Markdown and HTML files open rendered; these are the ones switched to the
+  // editor. Per file, for the session — like the editor's own undo history.
+  const [editingPreviewed, setEditingPreviewed] = useState<ReadonlySet<string>>(new Set())
+  const setEditing = useCallback((key: string, on: boolean) => setEditingPreviewed((prev) => {
     if (prev.has(key) === on) return prev
     const next = new Set(prev)
     if (on) next.add(key)
@@ -37,12 +38,14 @@ export function FilesPane({ controller, scope, visible }: {
   // A jump to a line (a link like `README.md:40`) needs the editor.
   const { jump } = controller
   useEffect(() => {
-    if (jump && 'line' in jump && controller.tabs.some((t) => fileKey(t.file) === jump.key && isMarkdown(t.file.path))) setEditing(jump.key, true)
+    if (jump && 'line' in jump && controller.tabs.some((t) => fileKey(t.file) === jump.key && previewKind(t.file.path))) setEditing(jump.key, true)
     // Only a new jump decides; the tab list changing under it does not.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jump, setEditing])
   const scopeId = scope ? JSON.stringify([scope.ws, scope.task]) : ''
   const activeKey = tab ? fileKey(tab.file) : ''
+  const preview = tab && !tab.image ? previewKind(tab.file.path) : null
+  const editing = editingPreviewed.has(activeKey)
 
   useEffect(() => { navSeq.current++; setNavigation(null) }, [scopeId])
   useEffect(() => { navSeq.current++; setNavigation((previous) => previous?.busy ? null : previous) }, [activeKey])
@@ -105,17 +108,19 @@ export function FilesPane({ controller, scope, visible }: {
       </div>
       {!tab ? <div className="placeholder">Open a file from the tree.</div> : <div className="file-document" id="file-document" role="tabpanel" aria-label={tab.file.path}>
         {tab.error && <div className="file-error" role="alert">{tab.error}</div>}
-        {!tab.loading && tab.version && !tab.image && isMarkdown(tab.file.path) && <div className="file-toolbar">
+        {!tab.loading && tab.version && preview && <div className="file-toolbar">
           <span className="file-breadcrumb mono">{tab.file.path}</span>
           <span className="spacer" />
-          <div className="chip-row" role="radiogroup" aria-label="Markdown view">
-            <button type="button" role="radio" aria-checked={!editingMarkdown.has(activeKey)} className={`chip-btn ${editingMarkdown.has(activeKey) ? '' : 'on'}`} onClick={() => setEditing(activeKey, false)}>Preview</button>
-            <button type="button" role="radio" aria-checked={editingMarkdown.has(activeKey)} className={`chip-btn ${editingMarkdown.has(activeKey) ? 'on' : ''}`} onClick={() => setEditing(activeKey, true)}>Edit</button>
+          {preview === 'html' && !editing && <span className="dim file-preview-note" title="Scripts, forms and network requests of this file are blocked in the preview">No scripts · offline</span>}
+          <div className="chip-row" role="radiogroup" aria-label={preview === 'html' ? 'HTML view' : 'Markdown view'}>
+            <button type="button" role="radio" aria-checked={!editing} className={`chip-btn ${editing ? '' : 'on'}`} onClick={() => setEditing(activeKey, false)}>Preview</button>
+            <button type="button" role="radio" aria-checked={editing} className={`chip-btn ${editing ? 'on' : ''}`} onClick={() => setEditing(activeKey, true)}>Edit</button>
           </div>
         </div>}
         {tab.loading ? <div className="placeholder">Loading file…</div> : !tab.version ? <div className="placeholder">This file could not be opened.</div> : <Suspense fallback={<div className="placeholder">Loading editor…</div>}>
           {tab.image ? <ImageView key={activeKey} tab={tab} />
-            : isMarkdown(tab.file.path) && !editingMarkdown.has(activeKey) ? <MarkdownView tab={tab} controller={controller} />
+            : preview === 'markdown' && !editing ? <MarkdownView tab={tab} controller={controller} />
+            : preview === 'html' && !editing ? <HtmlView key={activeKey} tab={tab} controller={controller} />
             : <FileEditor key={activeKey} tab={tab} controller={controller} onView={onView} onNavigate={navigate} />}
         </Suspense>}
       </div>}
