@@ -326,6 +326,11 @@ export interface GurtApi {
   /** Local repos only: fast-forward the local origin's default branch to the
    *  task branch — their delivery, in place of a pull request. */
   changesMergeToMain(ws: string, task: string, repo: string): Promise<void>
+  /** Approve the repo's uncommitted changes as they are now (`approved`), or
+   *  withdraw the approval. Any later change to the clone drops it
+   *  (`RepoChanges.approved`); a review loop with manual approval delivers
+   *  only approved changes. */
+  changesApprove(ws: string, task: string, repo: string, approved: boolean): Promise<void>
   /** Newest change proposal for this env, if any — the commit form prefills from it. */
   latestProposal(ws: string, task: string, repo: string): Promise<StoredProposal | undefined>
   /** Open the browser at the forge's compare URL (impl: `prUrl` + `shell.openExternal`). */
@@ -651,6 +656,7 @@ const METHODS = {
   changesPush: 'none', //       writes to repos and remotes
   changesUpdateFromMain: 'none',
   changesMergeToMain: 'none', // writes to repos and remotes
+  changesApprove: 'none', //    the user's own sign-off; lets a loop ship
   latestProposal: 'none', //    repo content
   changesOpenPr: 'none', //     host browser
   changesOpenTerminal: 'none', // host GUI

@@ -203,7 +203,8 @@ export function seedReviewBlock(
     ...(configValues && Object.keys(configValues).length ? { configValues: { ...configValues } } : {}),
     maxRounds: clampRounds(defaults?.maxRounds ?? REVIEW_LOOP_DEFAULTS.maxRounds),
     whenClean: clampRung(defaults?.whenClean ?? REVIEW_LOOP_DEFAULTS.whenClean, ladder),
-    draftPr: defaults?.draftPr ?? REVIEW_LOOP_DEFAULTS.draftPr
+    draftPr: defaults?.draftPr ?? REVIEW_LOOP_DEFAULTS.draftPr,
+    manualApproval: defaults?.manualApproval ?? REVIEW_LOOP_DEFAULTS.manualApproval
   }
 }
 
@@ -230,6 +231,7 @@ export function sameReviewBlock(a: ReviewLoopConfig, b: ReviewLoopConfig): boole
     a.maxRounds === b.maxRounds &&
     a.whenClean === b.whenClean &&
     a.draftPr === b.draftPr &&
+    (a.manualApproval === true) === (b.manualApproval === true) &&
     av.length === Object.keys(b.configValues ?? {}).length &&
     av.every(([k, v]) => b.configValues?.[k] === v)
   )
@@ -274,7 +276,8 @@ export function sanitizeReviewBlock(raw: unknown): ReviewLoopConfig {
     ...(values.length ? { configValues: Object.fromEntries(values) } : {}),
     maxRounds: clampRounds(r['maxRounds']),
     whenClean: SHIP_RUNGS.includes(r['whenClean'] as ShipRung) ? (r['whenClean'] as ShipRung) : REVIEW_LOOP_DEFAULTS.whenClean,
-    draftPr: typeof r['draftPr'] === 'boolean' ? r['draftPr'] : REVIEW_LOOP_DEFAULTS.draftPr
+    draftPr: typeof r['draftPr'] === 'boolean' ? r['draftPr'] : REVIEW_LOOP_DEFAULTS.draftPr,
+    manualApproval: typeof r['manualApproval'] === 'boolean' ? r['manualApproval'] : REVIEW_LOOP_DEFAULTS.manualApproval
   }
 }
 

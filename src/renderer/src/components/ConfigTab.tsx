@@ -1028,6 +1028,17 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
                     <span>open the PR as a draft</span>
                   </label>
                 )}
+                {review.whenClean !== 'notify' && (
+                  <label className="rv-check" title="The loop waits until you approve the reviewed changes in the Diff view; any later change drops the approval">
+                    <input
+                      type="checkbox"
+                      data-testid="rv-manual-approval"
+                      checked={review.manualApproval === true}
+                      onChange={(e) => patchReview({ manualApproval: e.target.checked })}
+                    />
+                    <span>wait for my approval in the Diff view before shipping</span>
+                  </label>
+                )}
                 {rv.writeRepos.length === 0 && (
                   <div className="hc-note">no repository mounted for write yet — the steps offered depend on it</div>
                 )}

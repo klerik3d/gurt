@@ -426,6 +426,73 @@ test('delivering | the deadline and the permission wait do not apply: delivery i
     assert.equal(endOf(run(live, { kind: 'tick', now: at(100_000) })).reason, 'time-cap', live.phase)
 })
 
+// --- manual approval (§13, "Manual approval") ---------------------------------
+
+test('approving | an approve with manual approval and none given waits for the user: no delivery step, no expiry', () => {
+  const s = reviewing(cfg({ whenClean: 'push', manualApproval: true }))
+  const r = run(s, rv(s, verdict('approve', [F('N1', 'naming', 'nit')])))
+  assert.equal(r.state.phase, 'approving')
+  assert.deepEqual(kinds(r.actions), ['stop-reviewer'], 'the reviewer stops; nothing ships yet')
+  assert.deepEqual(r.state.plan, [{ repo: 'api', step: 'commit' }, { repo: 'api', step: 'push' }], 'the plan is decided at the verdict')
+  assert.ok(loopIsLive(r.state), 'the hold stays: nothing else takes the clone meanwhile')
+  const waiting = r.state
+  // Waiting for a human: neither the deadline nor a permission wait ends it.
+  assert.equal(loopStep(waiting, { kind: 'tick', now: at(100_000) }).state, waiting)
+  assert.equal(loopStep(waiting, { kind: 'tick', now: at(100_000), permissionOpenSince: at(30) }).state, waiting)
+  // An approval of something else (another repo, or withdrawn) does nothing.
+  assert.equal(loopStep(waiting, { kind: 'approval', hash: waiting.reviewedHash, approved: [] }).state, waiting)
+  assert.equal(loopStep(waiting, { kind: 'approval', hash: waiting.reviewedHash, approved: ['web'] }).state, waiting)
+  // The approval of the reviewed tree: the loop goes on, as without the step.
+  const go = run(waiting, { kind: 'approval', hash: waiting.reviewedHash, approved: ['api'] })
+  assert.equal(go.state.phase, 'delivering')
+  assert.deepEqual(go.actions.map((a) => [a.kind, a.repo, a.step, a.head]), [['deliver', 'api', 'commit', 'base-api']])
+  // Once delivering, a late approval event is ignored.
+  assert.equal(loopStep(go.state, { kind: 'approval', hash: waiting.reviewedHash, approved: ['api'] }).state, go.state)
+})
+
+test('approving | an approval given before the verdict, of the reviewed tree, delivers at once — as before', () => {
+  const s = reviewing(cfg({ whenClean: 'commit', manualApproval: true }))
+  const r = run(s, rv(s, verdict('approve', []), { approved: ['api'] }))
+  assert.equal(r.state.phase, 'delivering')
+  assert.deepEqual(kinds(r.actions), ['stop-reviewer', 'deliver'])
+})
+
+test('approving | the tree moved before the approval: tree-moved, nothing ships', () => {
+  const s = reviewing(cfg({ whenClean: 'commit', manualApproval: true }))
+  const waiting = run(s, rv(s, verdict('approve', []))).state
+  const r = run(waiting, { kind: 'approval', hash: 'h-edited', approved: ['api'] })
+  assert.equal(endOf(r).reason, 'tree-moved')
+  assert.deepEqual(kinds(r.actions), ['end'])
+})
+
+test('approving | a human act ends it like any live phase; a fault fails it', () => {
+  const s = reviewing(cfg({ whenClean: 'commit', manualApproval: true }))
+  const waiting = run(s, rv(s, verdict('approve', []))).state
+  for (const [did, reason] of [['prompt', 'taken-over'], ['stop', 'cancelled'], ['cancel', 'cancelled'], ['delete', 'cancelled']]) {
+    const r = run(waiting, { kind: 'human', on: 'executor', did })
+    assert.equal(endOf(r).reason, reason, did)
+    assert.deepEqual(kinds(r.actions), ['end'], 'the reviewer already stopped: nothing to delete')
+  }
+  assert.equal(endOf(run(waiting, { kind: 'fault', error: 'x' })).outcome, 'failed')
+})
+
+test('approving | not asked for: notify ships nothing, so it ends ready; off or absent delivers at once', () => {
+  let s = reviewing(cfg({ whenClean: 'notify', manualApproval: true }))
+  assert.equal(endOf(run(s, rv(s, verdict('approve', [])))).outcome, 'ready')
+  for (const manualApproval of [false, undefined]) {
+    s = reviewing(cfg({ whenClean: 'commit', ...(manualApproval === undefined ? {} : { manualApproval }) }))
+    assert.equal(run(s, rv(s, verdict('approve', []))).state.phase, 'delivering', String(manualApproval))
+  }
+  // Every repo the plan ships must be approved; an unchanged repo need not be.
+  s = run(started(cfg({ whenClean: 'commit', manualApproval: true })), ex(changes(), { heads: { api: 'A', web: 'W' }, changed: ['api', 'web'] })).state
+  s = adopt(run(s, green).state)
+  const one = run(s, rv(s, verdict('approve', []), { changed: ['api', 'web'], approved: ['api'] })).state
+  assert.equal(one.phase, 'approving', 'web is not approved')
+  assert.equal(run(one, { kind: 'approval', hash: one.reviewedHash, approved: ['api', 'web'] }).state.phase, 'delivering')
+  const only = run(s, rv(s, verdict('approve', []), { changed: ['api'], approved: ['api'] })).state
+  assert.equal(only.phase, 'delivering', 'web did not change: the plan does not ship it')
+})
+
 test('any | a controller fault: failed', () => {
   for (const s of [initialLoopState(cfg(), EX), started(), checking(), reviewing(), fixing()]) {
     const r = run(s, { kind: 'fault', error: 'check could not be stopped' })
@@ -850,7 +917,10 @@ function walk(seed) {
   const rnd = prng(seed)
   const pick = (xs) => xs[Math.floor(rnd() * xs.length)]
   const N = 1 + Math.floor(rnd() * 5)
-  let s = initialLoopState(cfg({ maxRounds: N, whenClean: pick(RUNGS) }), EX)
+  // Half the walks ask for manual approval; a quarter of those have it at the verdict.
+  const manual = seed % 2 === 0
+  const preApproved = seed % 4 === 0 ? ['api', 'web'] : []
+  let s = initialLoopState(cfg({ maxRounds: N, whenClean: pick(RUNGS), manualApproval: manual }), EX)
   let now = T0
   let n = 0
   let lastExecTurn
@@ -940,7 +1010,8 @@ function walk(seed) {
         hash: rnd() < 0.9 ? (s.reviewedHash ?? 'h1') : pick(hashes),
         uncovered: rnd() < 0.05 ? ['web'] : [],
         heads: { api: 'A0', web: 'W0' },
-        changed: subset(['api', 'web'], 0.7)
+        changed: subset(['api', 'web'], 0.7),
+        approved: preApproved
       }
     }
     if (x < 0.78) {
@@ -956,6 +1027,8 @@ function walk(seed) {
     if (x < 0.94) return { kind: 'human', on: pick(['executor', 'reviewer']), did: pick(['prompt', 'cancel', 'stop', 'delete']) }
     if (x < 0.96) return { kind: 'reviewer-unavailable', detail: 'start failed' }
     if (x < 0.98) return { kind: 'delivery-failed', error: 'push rejected' }
+    if (x < 0.99)
+      return { kind: 'approval', hash: rnd() < 0.8 ? (s.reviewedHash ?? 'h1') : pick(hashes), approved: subset(['api', 'web'], 0.7) }
     return { kind: 'fault', error: 'boom' }
   }
 
@@ -968,6 +1041,8 @@ function walk(seed) {
     if (!loopIsLive(s)) step({ kind: 'turn-started', on: 'executor', now: iso })
     else if (s.phase === 'delivering')
       step({ kind: 'delivered', step: { ...s.plan[s.delivered.length], ref: `ref${n++}` } })
+    // Waiting for a human never expires: the user approves.
+    else if (s.phase === 'approving') step({ kind: 'approval', hash: s.reviewedHash, approved: ['api', 'web'] })
     else step({ kind: 'tick', now: iso })
   }
   assert.equal(s.phase, 'ended', `${ctx()}: never ended`)

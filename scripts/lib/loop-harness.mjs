@@ -36,14 +36,15 @@ export async function loopHarness(name, opts = {}) {
         `export { createKernel } from ${JSON.stringify(path.join(ROOT, 'src/main/kernel.ts'))}\n` +
         `export * as reviewLoop from ${JSON.stringify(path.join(ROOT, 'src/shared/reviewLoop.ts'))}\n` +
         `export * as store from ${JSON.stringify(path.join(ROOT, 'src/main/store.ts'))}\n` +
-        `export * as api from ${JSON.stringify(path.join(ROOT, 'src/shared/api.ts'))}`,
+        `export * as api from ${JSON.stringify(path.join(ROOT, 'src/shared/api.ts'))}\n` +
+        `export * as approvals from ${JSON.stringify(path.join(ROOT, 'src/main/approvals.ts'))}`,
       resolveDir: ROOT,
       loader: 'ts',
       sourcefile: 'entry.ts'
     },
     outfile
   })
-  const { createKernel, reviewLoop, store, api } = await import(pathToFileURL(outfile).href)
+  const { createKernel, reviewLoop, store, api, approvals } = await import(pathToFileURL(outfile).href)
 
   const ws = 'w'
   const task = 't'
@@ -179,7 +180,7 @@ export async function loopHarness(name, opts = {}) {
     }
 
     return {
-      kernel, reviewLoop: mod.reviewLoop, store: mod.store, api: mod.api, ws, task, ref, stops, inContainer,
+      kernel, reviewLoop: mod.reviewLoop, store: mod.store, api: mod.api, approvals: mod.approvals, ws, task, ref, stops, inContainer,
       started, container, agent, tick, until, GURT_ROOT: root
     }
   }
@@ -214,7 +215,7 @@ export async function loopHarness(name, opts = {}) {
   // The boot reconcile drops container records Docker does not confirm; stage
   // after it, not into it (scripts/queue-handoff.test.mjs).
   await kernel.ready
-  const first = wire(kernel, GURT_ROOT, { reviewLoop, store, api }, { reboot: false })
+  const first = wire(kernel, GURT_ROOT, { reviewLoop, store, api, approvals }, { reboot: false })
 
   function cleanup() {
     fs.rmSync(outfile, { force: true })

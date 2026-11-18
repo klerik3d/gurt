@@ -232,6 +232,11 @@ export interface ReviewLoopConfig {
   whenClean: ShipRung
   /** With `pr`: open it as a draft. */
   draftPr: boolean
+  /** A human approves the uncommitted changes in the Diff view before the loop
+   *  delivers them (commit / push / PR / merge). Only `true` asks: a block
+   *  frozen before the field existed delivers as it always did. New blocks
+   *  are prefilled with {@link REVIEW_LOOP_DEFAULTS}' `true`. */
+  manualApproval?: boolean | undefined
 }
 
 /** `ReviewLoopConfig.maxRounds`' bounds and default (§3). */
@@ -240,10 +245,11 @@ export const REVIEW_MAX_ROUNDS = { min: 1, max: 5, default: 2 } as const
 /** A Review block's defaults when neither the anchor's `RepoConfig.review`
  *  nor the user says otherwise (§3); the reviewer agent has none — it is
  *  picked per draft. */
-export const REVIEW_LOOP_DEFAULTS: Omit<ReviewLoopConfig, 'agent' | 'configValues'> = {
+export const REVIEW_LOOP_DEFAULTS: Required<Omit<ReviewLoopConfig, 'agent' | 'configValues'>> = {
   maxRounds: REVIEW_MAX_ROUNDS.default,
   whenClean: 'notify',
-  draftPr: true
+  draftPr: true,
+  manualApproval: true
 }
 
 /** What publishing a local repo asks for (docs/requirements-new-projects.md §6). */
@@ -932,6 +938,9 @@ export interface LoopNote {
   tone: 'info' | 'ok' | 'warn' | 'error'
   /** The verdict's findings, when the note is one. */
   findings?: { ref: string; severity: ReviewFinding['severity']; file: string; line?: number; claim: string }[]
+  /** The note asks the user to look at the scope's uncommitted changes: the
+   *  chat offers a link into the Diff view. */
+  openDiff?: true
 }
 
 export interface ChatSystem {
@@ -1328,6 +1337,10 @@ export interface RepoChanges {
   behind: number
   /** A prior update-from-main merge left conflicts unresolved (`MERGE_HEAD` present). */
   conflicted: boolean
+  /** The user approved exactly these uncommitted changes (HEAD and working
+   *  tree unchanged since) — what a review loop with manual approval waits for
+   *  before it delivers. Any change to the tree or HEAD drops it. */
+  approved?: true
 }
 
 /**

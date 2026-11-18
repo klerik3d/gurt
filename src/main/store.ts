@@ -169,7 +169,7 @@ const RESERVED_NAMES: Record<string, string[]> = {
   workspace: ['agents.json', 'credentials.json', 'agent-config-cache.json', '.archives', 'archive-settings.json'],
   task: ['workspace.json', 'skills', 'repos'],
   // `artifacts` is the scope's shared scratch dir (shared/files.ts ARTIFACTS).
-  repo: ['task.json', 'sessions.json', 'review.json', 'sessions', '.multirepo', 'proactive-state.json', 'review-loop.json', ARTIFACTS],
+  repo: ['task.json', 'sessions.json', 'review.json', 'sessions', '.multirepo', 'proactive-state.json', 'review-loop.json', 'approvals.json', ARTIFACTS],
   // The base image's virtual env shares the env name space, so a workspace env may not take its name.
   env: [BASE_ENV_NAME]
 }
@@ -814,6 +814,7 @@ function sanitizeRepoReview(raw: unknown): RepoConfig['review'] {
   if (typeof r['whenClean'] === 'string' && (SHIP_RUNGS as readonly string[]).includes(r['whenClean']))
     out.whenClean = r['whenClean'] as ShipRung
   if (typeof r['draftPr'] === 'boolean') out.draftPr = r['draftPr']
+  if (typeof r['manualApproval'] === 'boolean') out.manualApproval = r['manualApproval']
   const cv = r['configValues']
   if (cv && typeof cv === 'object' && !Array.isArray(cv)) {
     const values = Object.entries(cv).filter(([, v]) => typeof v === 'string' || typeof v === 'boolean')
@@ -1468,10 +1469,10 @@ const LOOP_INTENT = z.discriminatedUnion('kind', [
 ])
 const STORED_LOOP = z.object({
   version: z.literal(1), executor: z.string(),
-  config: z.object({ agent: z.string(), maxRounds: z.number().int().min(1).max(5), whenClean: z.enum(['notify', 'commit', 'push', 'pr', 'merge']), draftPr: z.boolean(), configValues: z.record(z.string(), z.union([z.string(), z.boolean()])).optional() }),
+  config: z.object({ agent: z.string(), maxRounds: z.number().int().min(1).max(5), whenClean: z.enum(['notify', 'commit', 'push', 'pr', 'merge']), draftPr: z.boolean(), manualApproval: z.boolean().optional(), configValues: z.record(z.string(), z.union([z.string(), z.boolean()])).optional() }),
   heldRepos: z.array(z.string()).optional(),
   proposals: z.record(z.string(), z.object({ commit: z.object({ subject: z.string(), body: z.string().optional() }).optional(), pr: z.object({ title: z.string(), body: z.string().optional() }).optional() })).optional(),
-  phase: z.enum(['dormant', 'checking', 'proposing', 'reviewing', 'fixing', 'delivering', 'ended']),
+  phase: z.enum(['dormant', 'checking', 'proposing', 'reviewing', 'fixing', 'approving', 'delivering', 'ended']),
   round: LOOP_COUNT, redStreak: LOOP_COUNT, repaired: z.boolean(), base: LOOP_STRINGS,
   lastHash: z.string().optional(), fixFrom: z.string().optional(), reviewedHash: z.string().optional(),
   open: z.array(LOOP_FINDING), openAnswered: z.boolean(),
@@ -1510,6 +1511,41 @@ export async function readReviewLoops(ws: string, task: string): Promise<Record<
 
 export function writeReviewLoops(ws: string, task: string, loops: Record<string, LoopState>): Promise<void> {
   return writeJson(reviewLoopFile(ws, task), loops)
+}
+
+// --- approvals: <ws>/<task>/approvals.json -----------------------------------
+// The user's approvals of a scope's uncommitted changes (the Diff view's
+// "Approve"), per repo: the HEAD and working tree they approved. A review loop
+// with manual approval delivers only what is approved as it is now
+// (docs/requirements-review-loop.md §13, "Manual approval"). An approval that no
+// longer matches the clone is simply not one; it is replaced by the next.
+
+export interface StoredApproval {
+  /** HEAD when approved, '' for an unborn branch. */
+  head: string
+  /** The working tree as a commit would record it (`treeHash.repoTree`). */
+  tree: string
+  at: string
+}
+
+const approvalsFile = (ws: string, task: string) => path.join(taskDir(ws, task), 'approvals.json')
+
+const STORED_APPROVAL = z.object({ head: z.string(), tree: z.string(), at: z.string() })
+
+/** Unreadable or missing = no approvals: the worst case is asking again. */
+export async function readApprovals(ws: string, task: string): Promise<Record<string, StoredApproval>> {
+  try {
+    const raw: unknown = JSON.parse(await fs.readFile(approvalsFile(ws, task), 'utf8'))
+    const parsed = z.record(z.string(), STORED_APPROVAL).safeParse(raw)
+    return parsed.success ? parsed.data : {}
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') log.warn('approvals unreadable', { ws, task, err: jsonParseErrCtx(e) })
+    return {}
+  }
+}
+
+export function writeApprovals(ws: string, task: string, approvals: Record<string, StoredApproval>): Promise<void> {
+  return writeJson(approvalsFile(ws, task), approvals)
 }
 
 export async function removeTaskDir(ws: string, task: string): Promise<void> {
