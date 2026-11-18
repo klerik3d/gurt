@@ -129,8 +129,7 @@ export function EnvironmentsSection({ tree, ws }: { tree: Tree | null; ws: strin
         <div className="set-row" title="the image new sessions run on unless an env is picked">
           <span className="set-row-label">{BASE_ENV_NAME}</span>
           <input
-            className="input mono"
-            style={{ flex: 1 }}
+            className="input mono grow"
             value={baseDraft}
             spellCheck={false}
             onChange={(ev) => setBaseDraft(ev.target.value)}

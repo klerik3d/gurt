@@ -5238,3 +5238,7 @@ button { user-select: none; }
 .label-hex[aria-invalid="true"] {
   border-color: var(--red);
 }
+
+.chat-title .dim { font-weight: 400; }
+.grow { flex: 1; }
+.input-below { margin-top: 6px; }

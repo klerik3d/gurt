@@ -1064,8 +1064,7 @@ export function DeleteWorkspaceModal({
           </span>
           <input
             autoFocus
-            className="input"
-            style={{ marginTop: 6 }}
+            className="input input-below"
             value={name}
             onChange={(e) => setName(e.target.value)}
             onKeyDown={run((e) => e.key === 'Enter' && submit())}

@@ -1477,7 +1477,7 @@ function Composer({
           type="file"
           accept="image/*"
           multiple
-          style={{ display: 'none' }}
+          hidden
           onChange={(e) => {
             void pickImages(e.target.files)
             e.target.value = ''

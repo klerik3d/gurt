@@ -159,7 +159,7 @@ export function ProactivePane({
     <div className="task-pane">
       <div className="chat-head">
         <span className="chat-title">
-          <span className="dim" style={{ fontWeight: 400 }}>
+          <span className="dim">
             {ws} /
           </span>{' '}
           {name}
