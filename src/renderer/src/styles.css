@@ -222,7 +222,7 @@ body {
   background: transparent;
 }
 .dot-pulse {
-  animation: pulse 1.4s ease-in-out infinite;
+  animation: pulse 1400ms ease-in-out infinite;
 }
 
 /* ---- buttons / inputs ---- */
@@ -1263,7 +1263,7 @@ textarea.input {
   pointer-events: none;
 }
 .pinned-req-text {
-  animation: pinned-swap 0.2s ease;
+  animation: pinned-swap 200ms ease;
 }
 @keyframes pinned-swap {
   from {
@@ -3262,7 +3262,7 @@ textarea.input {
   font-size: 11px;
   color: var(--faint);
   flex: none;
-  animation: pulse 1.4s ease-in-out infinite;
+  animation: pulse 1400ms ease-in-out infinite;
 }
 .env-build-log {
   margin: 2px 8px 0;
@@ -4467,7 +4467,7 @@ textarea.input {
 }
 .diff-placeholder .dim { font-size: 12px; }
 @keyframes diff-refresh { to { transform: rotate(360deg); } }
-.diff-refreshing { animation: diff-refresh 1s linear infinite; }
+.diff-refreshing { animation: diff-refresh 1000ms linear infinite; }
 
 /* New notifications stay above the workbench at the bottom right. */
 .popup-stack {
@@ -4735,7 +4735,7 @@ button { user-select: none; }
 }
 .ts-item.ts-running {
   color: var(--yellow);
-  animation: ts-pulse 1.2s ease-in-out infinite;
+  animation: ts-pulse 1200ms ease-in-out infinite;
 }
 .ts-item.ts-failed {
   color: var(--red);
