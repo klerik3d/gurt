@@ -46,6 +46,10 @@
   --r-lg: 8px;
   --r-xl: 12px;
   --r-pill: 999px;
+
+  /* Motion: see docs/design-motion.md */
+  --dur-fast: 120ms;
+  --dur-base: 200ms;
 }
 
 /* Warm paper — the same hues, lifted: `--app` is the page, `--surface` and
@@ -889,7 +893,7 @@ textarea.input {
   height: 100%;
   border-radius: var(--r-xs);
   background: var(--accent);
-  transition: width 200ms ease;
+  transition: width var(--dur-base) ease;
 }
 
 .main {
@@ -1254,8 +1258,8 @@ textarea.input {
   border-bottom: 1px solid var(--border);
   cursor: pointer;
   transition:
-    transform 220ms ease,
-    opacity 220ms ease;
+    transform var(--dur-base) ease,
+    opacity var(--dur-base) ease;
 }
 .pinned-req.off {
   transform: translateY(-100%);
@@ -1321,8 +1325,8 @@ textarea.input {
   box-shadow: 0 2px 10px rgb(0 0 0 / calc(0.25 * var(--shadow-strength)));
   transform: translateX(-50%);
   transition:
-    transform 200ms ease,
-    opacity 200ms ease;
+    transform var(--dur-base) ease,
+    opacity var(--dur-base) ease;
 }
 .jump-latest:hover {
   color: var(--text);
@@ -1420,7 +1424,7 @@ textarea.input {
   gap: 10px;
   margin-top: 4px;
   opacity: 0;
-  transition: opacity 120ms ease;
+  transition: opacity var(--dur-fast) ease;
 }
 .msg-user:hover .msg-actions,
 .msg-actions:focus-within {
@@ -1867,8 +1871,8 @@ textarea.input {
   border: 1px solid var(--border2);
   border-radius: var(--r-lg);
   transition:
-    border-color 150ms ease,
-    box-shadow 150ms ease;
+    border-color var(--dur-fast) ease,
+    box-shadow var(--dur-fast) ease;
 }
 .composer.focused {
   border-color: var(--accent);
@@ -4263,9 +4267,9 @@ textarea.input {
   /* The sweep is fast by design (§3.5), so the transition has to be too: this
      is what keeps a row from snapping between states, not what paces them. */
   transition:
-    border-color 140ms ease,
-    background 140ms ease,
-    opacity 140ms ease;
+    border-color var(--dur-fast) ease,
+    background var(--dur-fast) ease,
+    opacity var(--dur-fast) ease;
 }
 /* Not yet reached: present, legible, plainly not answered. */
 .wc-row.wc-pending {
@@ -5161,7 +5165,7 @@ button { user-select: none; }
   border-radius: var(--r-sm);
   color: var(--dim);
   opacity: 0;
-  transition: opacity 100ms ease;
+  transition: opacity var(--dur-fast) ease;
   cursor: pointer;
   z-index: 1;
 }

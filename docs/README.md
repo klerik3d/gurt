@@ -11,6 +11,8 @@ The current documentation:
 - [logging.md](logging.md) — the local app log.
 - [design-radii.md](design-radii.md) — the corner-radius scale (`--r-*`);
   new radii only from it.
+- [design-motion.md](design-motion.md) — the transition-duration tokens
+  (`--dur-fast`, `--dur-base`); new transitions only from them.
 
 Everything else here is the historical specs and design notes (work orders)
 Gurt was built from. When one of them says "read `README.md` first", it means
