@@ -107,6 +107,7 @@ deb/sudo path above — always test through the actual `.AppImage` file.
 ## CSS conventions
 
 - CSS: transition and animation durations are written in integer ms (`200ms`, not `0.2s`), so every duration in `styles.css` reads the same way and can be grepped/compared at a glance.
+- CSS: a static element color is a modifier class (`.msg-dot-warn`), not an inline `style`.
 - transition: `<prop> <N>ms ease` — длительность в целых ms и easing всегда явно.
 
 ## Dev container

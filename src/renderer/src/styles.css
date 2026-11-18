@@ -1395,6 +1395,15 @@ textarea.input {
   border: 2px solid var(--accent);
   box-sizing: border-box;
 }
+.msg-dot-idle {
+  background: var(--border2);
+}
+.msg-dot-warn {
+  background: var(--yellow);
+}
+.msg-dot-accent {
+  background: var(--accent);
+}
 .msg-you {
   margin-bottom: 4px;
   letter-spacing: 0.08em;

@@ -500,7 +500,7 @@ export function Chat({
                   b.kind === 'strip' ? (
                     <div className="msg msg-tool" key={`s${b.entries[0]!.id}`}>
                       <MsgTime at={stripTime(b.entries)} />
-                      <span className="msg-dot msg-dot-sm" style={{ background: 'var(--border2)' }} />
+                      <span className="msg-dot msg-dot-sm msg-dot-idle" />
                       <ToolStrip
                         entries={b.entries}
                         agentKind={agentKind(agents, info.agent)}
@@ -682,7 +682,7 @@ function HostTool({ entry }: { entry: ChatEntry & { kind: 'tool' } }) {
   return (
     <div className="msg msg-tool">
       <MsgTime at={entry.endAt ?? entry.at} />
-      <span className="msg-dot msg-dot-sm" style={{ background: 'var(--yellow)' }} />
+      <span className="msg-dot msg-dot-sm msg-dot-warn" />
       <div className="host-block" data-status={failed ? 'failed' : running ? 'running' : 'ok'}>
         <div className="host-head">
           <span className="host-badge mono">gurt</span>
@@ -745,7 +745,7 @@ function LoopNoteMsg({ entry, note }: { entry: ChatEntry & { kind: 'system' }; n
   return (
     <div className="msg msg-tool">
       <MsgTime at={entry.at} />
-      <span className="msg-dot msg-dot-sm" style={{ background: 'var(--yellow)' }} />
+      <span className="msg-dot msg-dot-sm msg-dot-warn" />
       <div className="host-note" data-tone={note.tone}>
         <div className="host-head">
           <span className="host-badge mono">gurt</span>
@@ -830,7 +830,7 @@ function Msg({
         <div className="msg has-copy">
           <CopyButton text={entry.text} title="copy message" />
           <MsgTime at={entry.endAt ?? entry.at} />
-          <span className="msg-dot" style={{ background: 'var(--accent)' }} />
+          <span className="msg-dot msg-dot-accent" />
           <div className="msg-text markdown">
             <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ pre: CodeBlock, code: CodeWithFileLink, a: AnchorWithFileLink }}>
               {entry.text}
@@ -854,7 +854,7 @@ function Msg({
         <div className="msg msg-tool has-copy">
           <CopyButton text={entry.text} title="copy message" />
           <MsgTime at={entry.at} />
-          <span className="msg-dot msg-dot-sm" style={{ background: 'var(--border2)' }} />
+          <span className="msg-dot msg-dot-sm msg-dot-idle" />
           <div className="msg-sys mono">{entry.text}</div>
         </div>
       )
@@ -906,8 +906,7 @@ function PermissionMsg({
       />
       <MsgTime at={entry.at} />
       <span
-        className={`msg-dot ${pending ? 'dot-pulse' : ''}`}
-        style={{ background: pending ? 'var(--yellow)' : 'var(--border2)' }}
+        className={`msg-dot ${pending ? 'msg-dot-warn dot-pulse' : 'msg-dot-idle'}`}
       />
       <div className={`perm-card ${pending ? '' : 'settled'}`}>
         <div className="perm-head">
