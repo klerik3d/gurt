@@ -113,7 +113,7 @@ export function ArchivePane({ workspace, width }: { workspace: string | null; wi
               <h2>Sessions <span className="faint">{active.sessions.length}</span></h2>
               {active.sessions.length ? <div className="archive-session-list">{active.sessions.map((s) =>
                 <button className="archive-session-card" key={s.id} onClick={() => { setSession(s.id); setError('') }}>
-                  <Icon name="message" size={16} /><span>{s.title}</span><Icon name="chevron" size={14} style={{ transform: 'rotate(-90deg)' }} />
+                  <Icon name="message" size={16} /><span>{s.title}</span><Icon name="chevron" size={14} className="chev-closed" />
                 </button>)}</div> : <p className="set-note">No sessions in this archive.</p>}
             </section>}
       </> : <div className="archive-empty">Select an archived scope.</div>}

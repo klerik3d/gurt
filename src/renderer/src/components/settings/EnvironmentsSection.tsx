@@ -409,7 +409,7 @@ function EnvModal({
               </span>
               {repoUrl && <span className="pick-meta mono">{stripProtocol(repoUrl)}</span>}
               <span className="spacer" />
-              <Icon name="chevron" size={12} className="faint" style={{ flex: 'none' }} />
+              <Icon name="chevron" size={12} className="faint icon-fixed" />
             </button>
             {repoMenu && (
               <div className="menu pick-menu">
@@ -517,7 +517,7 @@ function EnvModal({
                     {dockerfilePath || 'choose a Dockerfile'}
                   </span>
                   <span className="spacer" />
-                  <Icon name="chevron" size={12} className="faint" style={{ flex: 'none' }} />
+                  <Icon name="chevron" size={12} className="faint icon-fixed" />
                 </button>
                 {dockerfileMenu && (
                   <div className="menu pick-menu">

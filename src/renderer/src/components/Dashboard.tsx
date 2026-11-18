@@ -537,7 +537,7 @@ function WorkspaceBoardView({
           <Icon
             name="chevron"
             size={11}
-            style={collapsed ? { transform: 'rotate(-90deg)' } : undefined}
+            className={collapsed ? 'chev-closed' : ''}
           />
         </span>
         <span className="dash-group-name">{board.key}</span>

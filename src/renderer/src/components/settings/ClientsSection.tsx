@@ -189,7 +189,7 @@ export function ClientsSection() {
                 <span className="set-row-label">{cfg.label || 'unnamed'}</span>
                 <AgentTag kind={cfg.kind} name={kindLabel} />
                 <span className="spacer" />
-                <Icon name="chevron" size={12} className="faint" style={{ transform: 'rotate(-90deg)' }} />
+                <Icon name="chevron" size={12} className="faint chev-closed" />
               </div>
             )
           return (
@@ -395,10 +395,10 @@ function ProviderCombo({ value, onPick }: { value: string; onPick: (kind: string
             setQuery('')
           }}
         >
-          <AgentIcon kind={value} size={13} className="faint" style={{ flex: 'none' }} />
+          <AgentIcon kind={value} size={13} className="faint icon-fixed" />
           <span className="pick-value">{cur?.label ?? value}</span>
           <span className="spacer" />
-          <Icon name="chevron" size={12} className="faint" style={{ flex: 'none' }} />
+          <Icon name="chevron" size={12} className="faint icon-fixed" />
         </button>
         {open && (
           <div className="menu pick-menu combo-menu">

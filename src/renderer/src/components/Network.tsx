@@ -244,7 +244,7 @@ export function NetworkPicker({
             <Icon
               name="chevron"
               size={11}
-              style={{ flex: 'none', transform: open ? undefined : 'rotate(-90deg)' }}
+              className={`icon-fixed ${open ? '' : 'chev-closed'}`}
             />
             network
             <span className="strong">{internal ? 'internal' : 'open'}</span>

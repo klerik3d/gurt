@@ -849,7 +849,7 @@ export function Sidebar({
                           }
                         } : {})}
                       >
-                        {reviews > 0 && <Icon name="chevron" size={12} style={open ? undefined : { transform: 'rotate(-90deg)' }} />}
+                        {reviews > 0 && <Icon name="chevron" size={12} className={open ? '' : 'chev-closed'} />}
                       </span>
                       <Dot tone={dot.tone} pulse={dot.pulse} hollow={dot.hollow} />
                       {renamingThis ? (

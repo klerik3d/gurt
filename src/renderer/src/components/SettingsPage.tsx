@@ -113,7 +113,7 @@ function NavItem({
 }): JSX.Element {
   return (
     <div className={`set-nav-item ${active ? 'active' : ''}`} onClick={() => onSection(s)}>
-      <Icon name={SECTION_ICON[s]} size={14} style={{ flex: 'none' }} />
+      <Icon name={SECTION_ICON[s]} size={14} className="icon-fixed" />
       {sectionLabel(s)}
     </div>
   )
@@ -140,10 +140,9 @@ function GroupFold({
       <Icon
         name="chevron"
         size={12}
-        className="faint"
-        style={{ flex: 'none', transform: open ? undefined : 'rotate(-90deg)' }}
+        className={`faint icon-fixed ${open ? '' : 'chev-closed'}`}
       />
-      {icon && <Icon name={icon} size={14} className="faint" style={{ flex: 'none' }} />}
+      {icon && <Icon name={icon} size={14} className="faint icon-fixed" />}
       {label}
     </div>
   )

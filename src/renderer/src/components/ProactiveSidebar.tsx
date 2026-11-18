@@ -151,7 +151,7 @@ export function ProactiveSidebar({
                     toggle(a.name)
                   }}
                 >
-                  <Icon name="chevron" size={12} style={open ? undefined : { transform: 'rotate(-90deg)' }} />
+                  <Icon name="chevron" size={12} className={open ? '' : 'chev-closed'} />
                 </span>
                 <Dot tone={dot.tone} pulse={dot.pulse} hollow={dot.hollow} />
                 {renaming?.name === a.name ? (
