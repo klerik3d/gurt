@@ -1411,7 +1411,7 @@ textarea.input {
   gap: 10px;
   margin-top: 4px;
   opacity: 0;
-  transition: opacity 120ms;
+  transition: opacity 120ms ease;
 }
 .msg-user:hover .msg-actions,
 .msg-actions:focus-within {
@@ -1855,8 +1855,8 @@ textarea.input {
   border: 1px solid var(--border2);
   border-radius: var(--r-lg);
   transition:
-    border-color 150ms,
-    box-shadow 150ms;
+    border-color 150ms ease,
+    box-shadow 150ms ease;
 }
 .composer.focused {
   border-color: var(--accent);
