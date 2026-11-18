@@ -19,7 +19,7 @@ export function FileTreeRow({ label, depth, icon, open, selected = false, cursor
     className={`file-tree-row${className ? ` ${className}` : ''}${selected ? ' selected' : ''}${cursor ? ' cursor' : ''}`}
     aria-level={depth + 1} aria-expanded={open} aria-selected={selected} style={{ '--level': depth } as CSSProperties}>
     <span className="file-tree-chevron">{open !== undefined && <Icon name="chevron" size={12}
-      style={open ? undefined : { transform: 'rotate(-90deg)' }} />}</span>
+      className={open ? '' : 'chev-closed'} />}</span>
     <Icon name={icon} size={14} />
     {beforeLabel}
     <span className={`file-tree-name${labelClassName ? ` ${labelClassName}` : ''}`}>{label}</span>

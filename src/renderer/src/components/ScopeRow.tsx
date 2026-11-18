@@ -23,7 +23,7 @@ export function ScopeRow({ name, open, selected, cursor, repos, label, editing, 
       onToggle()
     }}>
     <span className="sb-chev" onClick={(event) => { event.stopPropagation(); onToggle() }}>
-      <Icon name="chevron" size={12} style={open ? undefined : { transform: 'rotate(-90deg)' }} />
+      <Icon name="chevron" size={12} className={open ? '' : 'chev-closed'} />
     </span>
     {children ?? <>
       <span className="sb-task-name">{name}</span>

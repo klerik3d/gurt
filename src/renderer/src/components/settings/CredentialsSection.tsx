@@ -285,14 +285,14 @@ export function CredentialsSection() {
             if (!c.label.trim()) return null
             return (
               <div key={c.id} className="set-row clickable" onClick={() => expand(c)}>
-                <Icon name="key" size={13} className="faint" style={{ flex: 'none' }} />
+                <Icon name="key" size={13} className="faint icon-fixed" />
                 <span className="cred-name mono">{c.label}</span>
                 <span className="cred-tag">
                   <span className="tag">{kindTag(c.kind)}</span>
                 </span>
                 {usageMarkers(c.id)}
                 <span className="cred-preview mono">{maskedPreview(c)}</span>
-                <Icon name="chevron" size={12} className="faint" style={{ transform: 'rotate(-90deg)' }} />
+                <Icon name="chevron" size={12} className="faint chev-closed" />
               </div>
             )
           }
@@ -450,7 +450,7 @@ function ProviderPick({ value, onPick }: { value: string; onPick: (id: string) =
       <button type="button" className="pick-row" onClick={() => setOpen((o) => !o)}>
         <span className="pick-value">{cur?.label ?? 'choose provider…'}</span>
         <span className="spacer" />
-        <Icon name="chevron" size={12} className="faint" style={{ flex: 'none' }} />
+        <Icon name="chevron" size={12} className="faint icon-fixed" />
       </button>
       {open && (
         <div className="menu pick-menu">
@@ -484,7 +484,7 @@ function KindPick({ value, onPick }: { value: CredentialKind; onPick: (k: Creden
       <button type="button" className="pick-row" onClick={() => setOpen((o) => !o)}>
         <span className="pick-value">{cur?.label ?? value}</span>
         <span className="spacer" />
-        <Icon name="chevron" size={12} className="faint" style={{ flex: 'none' }} />
+        <Icon name="chevron" size={12} className="faint icon-fixed" />
       </button>
       {open && (
         <div className="menu pick-menu">

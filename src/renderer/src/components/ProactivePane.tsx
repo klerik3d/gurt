@@ -256,7 +256,7 @@ export function ProactivePane({
             />
           </label>
           <button type="button" className="btn-link pa-advanced" onClick={() => setAdvanced((v) => !v)}>
-            <Icon name="chevron" size={11} style={advanced ? undefined : { transform: 'rotate(-90deg)' }} />
+            <Icon name="chevron" size={11} className={advanced ? '' : 'chev-closed'} />
             Advanced
           </button>
           {advanced && (

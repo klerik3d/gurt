@@ -1637,6 +1637,9 @@ textarea.input {
   color: var(--yellow);
   flex: none;
 }
+/* Icons carry no inline flex/transform: use these instead. */
+.icon-fixed { flex: none; }
+.chev-closed { transform: rotate(-90deg); }
 .tool-out {
   font-size: 11.5px;
   line-height: 1.7;

@@ -30,7 +30,7 @@ export function CredentialPick({
         </span>
         {cur && <span className="tag">oauth</span>}
         <span className="spacer" />
-        <Icon name="chevron" size={12} className="faint" style={{ flex: 'none' }} />
+        <Icon name="chevron" size={12} className="faint icon-fixed" />
       </button>
       {open && (
         <div className="menu pick-menu">

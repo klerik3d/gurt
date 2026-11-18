@@ -100,7 +100,7 @@ function PickRow({
         {...(accessible ? { 'aria-haspopup': true, 'aria-expanded': open } : {})}
       >
         {children}
-        <Icon name="chevron" size={13} className="faint" style={{ flex: 'none' }} />
+        <Icon name="chevron" size={13} className="faint icon-fixed" />
       </button>
       {open && <div className="menu pick-menu">{menu}</div>}
     </div>
@@ -143,7 +143,7 @@ function McpRow({
         <Dot tone={on ? 'green' : 'faint'} hollow={!on} size={7} />
         <span className={`mcp-name ${on ? '' : 'faint'}`}>{entry.label}</span>
         <span className="mcp-desc faint">{entry.description}</span>
-        <div className="chip-row" style={{ flex: 'none' }}>
+        <div className="chip-row icon-fixed">
           {options.map((m) => (
             <button
               key={m}
@@ -209,7 +209,7 @@ function SkillRow({
       />
       <span className={`mcp-name ${on ? '' : 'faint'}`}>{entry.name}</span>
       <span className="mcp-desc faint">{entry.problem ?? entry.description}</span>
-      <div className="chip-row" style={{ flex: 'none' }}>
+      <div className="chip-row icon-fixed">
         {(['off', 'on'] as const).map((m) => (
           <button
             key={m}
@@ -592,7 +592,7 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
             // So is a loop's reviewer: only the loop creates one
             // (docs/requirements-review-loop.md §4).
             <button type="button" className="pick-row" disabled aria-disabled="true">
-              <Icon name={ROLE_INFO[role].icon} size={14} className="dim" style={{ flex: 'none' }} />
+              <Icon name={ROLE_INFO[role].icon} size={14} className="dim icon-fixed" />
               <span className="pick-value strong">{ROLE_INFO[role].label}</span>
               <span className="spacer" />
             </button>
@@ -616,7 +616,7 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
               </div>
             ))}
           >
-            <Icon name={ROLE_INFO[role].icon} size={14} className="dim" style={{ flex: 'none' }} />
+            <Icon name={ROLE_INFO[role].icon} size={14} className="dim icon-fixed" />
             <span className="pick-value strong">{ROLE_INFO[role].label}</span>
             <span className="spacer" />
           </PickRow>
@@ -688,7 +688,7 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
                     pickEnv(BASE_ENV_NAME)
                   }}
                 >
-                  <Icon name="box" size={13} className="dim" style={{ flex: 'none' }} />
+                  <Icon name="box" size={13} className="dim icon-fixed" />
                   {BASE_ENV_NAME}
                   <span className="menu-meta mono">base image</span>
                 </div>
@@ -702,7 +702,7 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
                         pickEnv(e.name)
                       }}
                     >
-                      <Icon name="box" size={13} className="dim" style={{ flex: 'none' }} />
+                      <Icon name="box" size={13} className="dim icon-fixed" />
                       {e.name}
                       {e.repo && <span className="menu-meta mono">{e.repo}</span>}
                     </div>
@@ -711,7 +711,7 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
               </>
             }
           >
-            <Icon name="box" size={14} className="dim" style={{ flex: 'none' }} />
+            <Icon name="box" size={14} className="dim icon-fixed" />
             <span className="pick-value strong">{info.env || 'pick an environment'}</span>
             <span className="spacer" />
           </PickRow>
@@ -764,7 +764,7 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
                               toggleRepo(r.name)
                             }}
                           >
-                            <Icon name="branch" size={11} className="faint" style={{ flex: 'none' }} />
+                            <Icon name="branch" size={11} className="faint icon-fixed" />
                             <span className="menu-item-name">{r.name}</span>
                             <span className="menu-meta mono">{r.local ? 'local' : shortRepoUrl(r.url)}</span>
                           </div>
@@ -791,7 +791,7 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
                       setNewRepo('')
                     }}
                   >
-                    <Icon name="plus" size={11} className="faint" style={{ flex: 'none' }} />
+                    <Icon name="plus" size={11} className="faint icon-fixed" />
                     <span className="menu-item-name">new local repository…</span>
                   </div>
                 ) : (
@@ -813,7 +813,7 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
               </>
             }
           >
-            <Icon name="branch" size={14} className="dim" style={{ flex: 'none' }} />
+            <Icon name="branch" size={14} className="dim icon-fixed" />
             <span className="pick-value">{repos.length ? 'add another repository' : 'pick a repository'}</span>
             {repos.length > 0 && <span className="pick-meta">{repos.length} selected</span>}
             <span className="spacer" />
@@ -830,7 +830,7 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
                 return (
                   <div className="repo-mode-row" key={name}>
                     <div className="repo-mode-head">
-                      <Icon name="branch" size={11} className="faint" style={{ flex: 'none' }} />
+                      <Icon name="branch" size={11} className="faint icon-fixed" />
                       <span className="repo-mode-name">{cfg ? repoChipLabel(cfg) : name}</span>
                       <span className="spacer" />
                       <span
@@ -857,7 +857,7 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
                           disabled={roleForcesRead(role)}
                           onClick={() => mode !== m && setMode(name, m)}
                         >
-                          {REPO_MODE_INFO[m].locked && <Icon name="lock" size={10} style={{ flex: 'none' }} />}
+                          {REPO_MODE_INFO[m].locked && <Icon name="lock" size={10} className="icon-fixed" />}
                           {REPO_MODE_INFO[m].label}
                         </button>
                       ))}
@@ -1062,7 +1062,7 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
               <Icon
                 name="chevron"
                 size={11}
-                style={{ flex: 'none', transform: advancedOpen ? undefined : 'rotate(-90deg)' }}
+                className={`icon-fixed ${advancedOpen ? '' : 'chev-closed'}`}
               />
               advanced
               <span className="dim">{advancedSummary}</span>
