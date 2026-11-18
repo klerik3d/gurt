@@ -46,6 +46,17 @@
   --r-lg: 8px;
   --r-xl: 12px;
   --r-pill: 999px;
+  /* Stacking layers — the only app-wide layers; a local 0/1/-1 may stay raw
+     (docs/design-z-index.md). */
+  --z-raised: 4;
+  --z-float: 20;
+  --z-composer-menu: 30;
+  --z-menu: 40;
+  --z-ctx-menu: 50;
+  --z-popover: 60;
+  --z-toast: 80;
+  --z-modal: 100;
+  --z-progress: 1500;
 }
 
 /* Warm paper — the same hues, lifted: `--app` is the page, `--surface` and
@@ -562,7 +573,7 @@ textarea.input {
   border-radius: var(--r-md);
   box-shadow: 0 16px 40px -8px rgb(0 0 0 / calc(0.7 * var(--shadow-strength)));
   padding: 6px;
-  z-index: 40;
+  z-index: var(--z-menu);
 }
 .menu-item {
   display: flex;
@@ -617,7 +628,7 @@ textarea.input {
    instead of a button, so it reads as a normal OS menu. */
 .ctx-menu {
   position: fixed;
-  z-index: 50;
+  z-index: var(--z-ctx-menu);
   min-width: 170px;
 }
 .menu-empty {
@@ -950,7 +961,7 @@ textarea.input {
   flex: none;
   width: 5px;
   cursor: col-resize;
-  z-index: 5;
+  z-index: var(--z-raised);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1245,7 +1256,7 @@ textarea.input {
   top: 0;
   left: 0;
   right: 0;
-  z-index: 4;
+  z-index: var(--z-raised);
   display: flex;
   align-items: center;
   gap: 10px;
@@ -1307,7 +1318,7 @@ textarea.input {
   position: absolute;
   left: 50%;
   bottom: 14px;
-  z-index: 4;
+  z-index: var(--z-raised);
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -1989,7 +2000,7 @@ textarea.input {
   border: 1px solid var(--border2);
   border-radius: var(--r-lg);
   box-shadow: 0 24px 60px -20px rgb(0 0 0 / calc(0.7 * var(--shadow-strength)));
-  z-index: 30;
+  z-index: var(--z-composer-menu);
   overflow: hidden;
 }
 .slash-menu {
@@ -2168,7 +2179,7 @@ textarea.input {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 100;
+  z-index: var(--z-modal);
 }
 .modal {
   background: var(--surface);
@@ -2490,7 +2501,7 @@ textarea.input {
   position: absolute;
   top: calc(100% + 7px);
   left: -7px;
-  z-index: 60;
+  z-index: var(--z-popover);
   width: 260px;
   padding: 8px 11px;
   background: var(--surface);
@@ -3688,7 +3699,7 @@ textarea.input {
   box-shadow: 0 24px 60px -16px rgb(0 0 0 / calc(0.75 * var(--shadow-strength)));
   display: flex;
   flex-direction: column;
-  z-index: 60;
+  z-index: var(--z-popover);
 }
 .notif-head {
   display: flex;
@@ -4500,7 +4511,7 @@ textarea.input {
   position: fixed;
   right: 16px;
   bottom: 16px;
-  z-index: 80;
+  z-index: var(--z-toast);
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -4783,7 +4794,7 @@ button { user-select: none; }
    panel without the strip's mouseleave firing. */
 .ts-panel {
   position: fixed;
-  z-index: 20;
+  z-index: var(--z-float);
   box-sizing: border-box;
   overflow-y: auto;
 }
@@ -5122,7 +5133,7 @@ button { user-select: none; }
 .appearance-settings .fld-hint { margin-top: 6px; font-weight: 400; line-height: 1.5; }
 .archive-policy-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 8px; }
 
-.archive-progress { position: fixed; bottom: 36px; right: 20px; z-index: 1500; display: flex; align-items: flex-start; gap: 12px; width: min(390px, calc(100vw - 40px)); padding: 16px; }
+.archive-progress { position: fixed; bottom: 36px; right: 20px; z-index: var(--z-progress); display: flex; align-items: flex-start; gap: 12px; width: min(390px, calc(100vw - 40px)); padding: 16px; }
 .archive-progress-copy { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 8px; font-size: 12px; overflow-wrap: anywhere; }
 .archive-progress-copy progress { width: 100%; height: 5px; accent-color: var(--accent); }
 

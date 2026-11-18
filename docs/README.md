@@ -11,6 +11,8 @@ The current documentation:
 - [logging.md](logging.md) — the local app log.
 - [design-radii.md](design-radii.md) — the corner-radius scale (`--r-*`);
   new radii only from it.
+- [design-z-index.md](design-z-index.md) — the named stacking layers (`--z-*`);
+  no raw `z-index` outside `:root` except a local 0/1/-1.
 
 Everything else here is the historical specs and design notes (work orders)
 Gurt was built from. When one of them says "read `README.md` first", it means
