@@ -13,6 +13,8 @@ The current documentation:
   new radii only from it.
 - [design-z-index.md](design-z-index.md) — the named stacking layers (`--z-*`);
   no raw `z-index` outside `:root` except a local 0/1/-1.
+- [design-motion.md](design-motion.md) — the transition-duration tokens
+  (`--dur-fast`, `--dur-base`); new transitions only from them.
 
 Everything else here is the historical specs and design notes (work orders)
 Gurt was built from. When one of them says "read `README.md` first", it means
