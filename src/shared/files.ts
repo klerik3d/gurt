@@ -55,6 +55,9 @@ export const IMAGE_TYPES: Record<string, string> = {
 }
 export const imageType = (path: string): string | undefined => IMAGE_TYPES[path.split('.').at(-1)?.toLowerCase() ?? '']
 export const isMarkdown = (path: string): boolean => /\.(?:md|markdown|mdx)$/i.test(path)
+export const isHtml = (path: string): boolean => /\.html?$/i.test(path)
+/** How the file view can show a text file besides the editor, if at all. */
+export const previewKind = (path: string): 'markdown' | 'html' | null => isMarkdown(path) ? 'markdown' : isHtml(path) ? 'html' : null
 
 /** An image read for display, as a `data:` URL (the CSP allows those). */
 export interface FileImage {

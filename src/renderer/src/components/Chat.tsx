@@ -18,18 +18,17 @@ import type {
   SessionSnapshot,
   Tree
 } from '../../../shared/types'
-import { sessionRole, sessionStatus } from '../../../shared/types'
+import { sessionStatus } from '../../../shared/types'
 import { agentOptionView, withPickedValues } from '../../../shared/agentConfig'
 import { agentVocabulary, isBlanketMode } from '../../../shared/agentVocabulary'
-import { agentKind, agentName, useAgents } from '../useAgents'
-import { useMcpEntries, useMcpFailures } from '../useMcp'
+import { agentKind, useAgents } from '../useAgents'
+import { useMcpFailures } from '../useMcp'
 import { usePiiEntries, usePiiPlan, usePiiStatus, usePiiView, type PiiView } from '../usePii'
-import { resolveMcpSelection } from '../../../shared/mcp'
 import { alertDialog, confirmDialog } from '../dialog'
 import { createLogger, logErr } from '../log'
 import { SESSION_DOT } from '../status'
 import { Icon, Dot, InfoDot } from './icons'
-import { AgentMark, EnvRepoMarks, hasNetMark, McpFailBanner, McpMarks, NetMark, RoleMark } from './tags'
+import { McpFailBanner } from './tags'
 import { NetButton } from './Network'
 import { ConfigTab } from './ConfigTab'
 import { SessionMenu } from './SessionActions'
@@ -152,7 +151,6 @@ export function Chat({
   const pinnedTextRef = useRef('')
   const agents = useAgents()
   // Up here with the other hooks: the snapshot guard below is an early return.
-  const mcpOffered = useMcpEntries(snapshot?.info.workspace)
   const mcpFailures = useMcpFailures(sessionId)
 
   const hasSnapshot = !!snapshot
@@ -359,7 +357,6 @@ export function Chat({
   if (!snapshot) return <div className="placeholder">loading session…</div>
 
   const { info, modes, commands, configOptions, promptCapabilities } = snapshot
-  const mcp = resolveMcpSelection(info.mcp, mcpOffered)
 
   const hasPlan = !!plan && plan.length > 0
 
@@ -434,25 +431,6 @@ export function Chat({
           {info.task} / {info.title}
         </span>
         <span className="chat-pill">{sizeLabel}</span>
-        <span className="chat-pill">
-          <RoleMark role={sessionRole(info)} />
-          <EnvRepoMarks env={info.env} repos={info.repos} task={info.task} session={info} />
-          {info.agent && (
-            <span>
-              · <AgentMark kind={agentKind(agents, info.agent)} name={agentName(agents, info.agent)} />
-            </span>
-          )}
-          {mcp.length > 0 && (
-            <span>
-              · <McpMarks resolved={mcp} />
-            </span>
-          )}
-          {hasNetMark(info.network) && (
-            <span>
-              · <NetMark network={info.network} />
-            </span>
-          )}
-        </span>
         <ContainerTerminalButton info={info} />
         {/* A session already running is exactly where "this was set up wrong"
             is noticed — duplicate/delete belong on this header, not only on the
