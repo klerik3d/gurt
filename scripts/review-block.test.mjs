@@ -211,9 +211,10 @@ test('the ladder follows the repos’ kinds', () => {
 
 test('a new block is prefilled from the anchor’s defaults, then the global ones', () => {
   const ladder = ['notify', 'commit', 'push', 'pr']
-  assert.deepEqual(B.seedReviewBlock(undefined, 'a2', ladder), { agent: 'a2', maxRounds: 2, whenClean: 'notify', draftPr: true })
-  const defaults = { enabled: true, agent: 'a4', configValues: { model: 'haiku' }, maxRounds: 4, whenClean: 'pr', draftPr: false }
-  assert.deepEqual(B.seedReviewBlock(defaults, 'a2', ladder), { agent: 'a4', configValues: { model: 'haiku' }, maxRounds: 4, whenClean: 'pr', draftPr: false })
+  // Manual approval is on by default whenever the loop is (§13, "Manual approval").
+  assert.deepEqual(B.seedReviewBlock(undefined, 'a2', ladder), { agent: 'a2', maxRounds: 2, whenClean: 'notify', draftPr: true, manualApproval: true })
+  const defaults = { enabled: true, agent: 'a4', configValues: { model: 'haiku' }, maxRounds: 4, whenClean: 'pr', draftPr: false, manualApproval: false }
+  assert.deepEqual(B.seedReviewBlock(defaults, 'a2', ladder), { agent: 'a4', configValues: { model: 'haiku' }, maxRounds: 4, whenClean: 'pr', draftPr: false, manualApproval: false })
   // The reviewer comes from the fallback: its picks are not the named reviewer’s.
   assert.deepEqual(B.seedReviewBlock({ ...defaults, agent: undefined }, 'a2', ladder).configValues, undefined)
   // A rung the draft’s repos cannot deliver steps down.
@@ -242,7 +243,7 @@ test('the prefill is owed from the draft alone: no block, not switched off, an a
   assert.equal(due({ review: mine, seeded: { anchor: 'older', block: mine } }), true, 'untouched since another anchor: swap')
   const reordered = { ...mine, configValues: { effort: 'low', model: 'haiku' } }
   assert.equal(due({ review: reordered, seeded: { anchor: 'older', block: mine } }), true, 'key order is not an edit')
-  for (const edit of [{ maxRounds: 4 }, { whenClean: 'commit' }, { draftPr: false }, { agent: 'a1' }, { configValues: { model: 'sonnet', effort: 'low' } }, { configValues: undefined }])
+  for (const edit of [{ maxRounds: 4 }, { whenClean: 'commit' }, { draftPr: false }, { manualApproval: true }, { agent: 'a1' }, { configValues: { model: 'sonnet', effort: 'low' } }, { configValues: undefined }])
     assert.equal(due({ review: { ...mine, ...edit }, seeded: { anchor: 'older', block: mine } }), false, `edited: ${JSON.stringify(edit)}`)
   assert.equal(due({ review: mine, seeded: { anchor: 'older', block: mine }, reviewOff: true }), false)
   assert.equal(due({ review: mine, seeded: { anchor: 'older', block: mine }, anchor: { name: 'beta', url: 'u' } }), false, 'a new anchor with review off leaves the block')
@@ -253,11 +254,12 @@ test('the rounds a picker offers are every integer the block allows', () => {
 })
 
 test('an untrusted block is shaped, never thrown on', () => {
-  assert.deepEqual(B.sanitizeReviewBlock(undefined), { agent: '', maxRounds: 2, whenClean: 'notify', draftPr: true })
+  assert.deepEqual(B.sanitizeReviewBlock(undefined), { agent: '', maxRounds: 2, whenClean: 'notify', draftPr: true, manualApproval: true })
   assert.deepEqual(
-    B.sanitizeReviewBlock({ agent: 'a1', maxRounds: 99, whenClean: 'yolo', draftPr: 'yes', configValues: { m: 'x', n: 3, ok: true } }),
-    { agent: 'a1', configValues: { m: 'x', ok: true }, maxRounds: 5, whenClean: 'notify', draftPr: true }
+    B.sanitizeReviewBlock({ agent: 'a1', maxRounds: 99, whenClean: 'yolo', draftPr: 'yes', manualApproval: 'no', configValues: { m: 'x', n: 3, ok: true } }),
+    { agent: 'a1', configValues: { m: 'x', ok: true }, maxRounds: 5, whenClean: 'notify', draftPr: true, manualApproval: true }
   )
+  assert.equal(B.sanitizeReviewBlock({ manualApproval: false }).manualApproval, false, 'switched off on purpose')
   assert.equal(B.sanitizeReviewBlock({ maxRounds: -3 }).maxRounds, 1)
 })
 
@@ -320,7 +322,7 @@ const info = (id) => kernel.sessions.snapshot(id).info
 test('editDraft sets, clamps and clears the Review block; off is remembered as a choice', async () => {
   const id = draft()
   await kernel.editDraft(id, { review: { agent: 'a2', maxRounds: 99, whenClean: 'push', draftPr: false } })
-  assert.deepEqual(info(id).review, { agent: 'a2', maxRounds: 5, whenClean: 'push', draftPr: false }, 'rounds clamped to 5')
+  assert.deepEqual(info(id).review, { agent: 'a2', maxRounds: 5, whenClean: 'push', draftPr: false, manualApproval: true }, 'rounds clamped to 5; approval on by default')
   assert.equal(info(id).reviewOff, undefined)
   await kernel.editDraft(id, { review: null })
   assert.equal(info(id).review, undefined)
@@ -398,7 +400,7 @@ test('the block is prefilled from the anchor repo in the UI’s own terms (defau
   const ws = await h.store.getWorkspace('w')
   const alpha = ws.repos.find((r) => r.name === 'alpha')
   const seeded = B.seedReviewBlock(alpha.review, pick(), B.ladderOfRepos(['alpha'], ws.repos))
-  assert.deepEqual(seeded, { agent: 'a2', maxRounds: 3, whenClean: 'push', draftPr: true })
+  assert.deepEqual(seeded, { agent: 'a2', maxRounds: 3, whenClean: 'push', draftPr: true, manualApproval: true })
 })
 
 test('ended cleanup failure is visible in the status line', () => {

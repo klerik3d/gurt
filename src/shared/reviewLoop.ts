@@ -48,7 +48,17 @@ export const REVIEW_LOOP = {
 
 // --- shapes (§5.1, §5.2, §8) ------------------------------------------------
 
-export type LoopPhase = 'dormant' | 'checking' | 'proposing' | 'reviewing' | 'fixing' | 'delivering' | 'ended'
+export type LoopPhase =
+  | 'dormant'
+  | 'checking'
+  | 'proposing'
+  | 'reviewing'
+  | 'fixing'
+  /** The reviewer approved and the block asks for manual approval: the loop
+   *  waits for the user to approve the reviewed changes in the Diff view. */
+  | 'approving'
+  | 'delivering'
+  | 'ended'
 
 /** One logical turn (a prompt plus its automatic nudge) once gurt has
  *  classified how it ended (§5.1); read through {@link settledOutcome}. */
@@ -95,7 +105,13 @@ export type LoopEvent =
       /** Write repos whose tree differs from their base (from HEAD before
        *  arming); an approval delivers exactly these. */
       changed: string[]
+      /** Write repos whose user approval (the Diff view's) matches their HEAD
+       *  and tree now. Absent = none. */
+      approved?: string[] | undefined
     }
+  /** The user approved (or withdrew) changes in the executor's scope: the
+   *  facts as they are now. */
+  | { kind: 'approval'; hash: string; approved: string[] }
   | { kind: 'check-pass'; results: CheckResult[] }
   | { kind: 'reviewer-unavailable'; detail: string }
   | { kind: 'human'; on: 'executor' | 'reviewer'; did: 'prompt' | 'cancel' | 'stop' | 'delete' }
@@ -434,7 +450,9 @@ function apply(s: LoopState, e: LoopEvent, out: LoopIntentBody[]): boolean {
       // Delivery is short, host-side and bounded (§5.6): neither the deadline
       // nor the permission wait (§5.2) cuts it into a partial delivery — exempt
       // from both expiries by design; an irreversible half-delivery is worse.
-      if (!live || s.phase === 'delivering') return false
+      // Waiting for the user's approval is waiting for a human by design: no
+      // expiry cuts it short either — the user approves, stops or takes over.
+      if (!live || s.phase === 'delivering' || s.phase === 'approving') return false
       const now = ms(e.now)
       if (Number.isNaN(now)) return false
       let reason: EndReason | undefined
@@ -446,6 +464,14 @@ function apply(s: LoopState, e: LoopEvent, out: LoopIntentBody[]): boolean {
       out.push({ kind: 'cancel-turn', sessionId: s.executor })
       deleteReviewer(s, out)
       return end(s, out, needsYou(s, reason))
+    }
+    case 'approval': {
+      if (s.phase !== 'approving') return false
+      // The approved tree must be the reviewed one (§6's re-check, early).
+      if (e.hash !== s.reviewedHash) return end(s, out, needsYou(s, 'tree-moved'))
+      if (!approvalCovers(s, e.approved)) return false
+      s.phase = 'delivering'
+      return deliverNext(s, out)
     }
     case 'delivered': {
       if (s.phase !== 'delivering') return false
@@ -598,6 +624,12 @@ function reviewerSettled(s: LoopState, e: Settled, out: LoopIntentBody[]): boole
     if (e.uncovered.length)
       return end(s, out, needsYou(s, 'delivery-failed', `no commit text for ${e.uncovered.join(', ')}`))
     s.plan = deliveryPlan(s.config.whenClean, Object.keys(s.base).filter((r) => e.changed.includes(r)))
+    // Manual approval: the reviewed changes ship only once the user approved
+    // exactly them; until then the loop waits (`approving`).
+    if (!approvalCovers(s, e.approved ?? [])) {
+      s.phase = 'approving'
+      return true
+    }
     s.phase = 'delivering'
     return deliverNext(s, out)
   }
@@ -606,6 +638,16 @@ function reviewerSettled(s: LoopState, e: Settled, out: LoopIntentBody[]): boole
   s.fixFrom = s.reviewedHash
   out.push({ kind: 'message', text: findingsMessage(s.round, s.config.maxRounds, v) })
   return true
+}
+
+/** The repos a manual approval must cover: every repo the plan touches. */
+export const approvalRepos = (s: Pick<LoopState, 'plan'>): string[] => [...new Set((s.plan ?? []).map((p) => p.repo))]
+
+/** Delivery may start: the block asks for no manual approval, the plan ships
+ *  nothing, or every repo it touches is approved as it is now. */
+export function approvalCovers(s: Pick<LoopState, 'config' | 'plan'>, approved: readonly string[]): boolean {
+  if (s.config.manualApproval !== true) return true
+  return approvalRepos(s).every((r) => approved.includes(r))
 }
 
 /** §6's order: all commits, then pushes, then PRs (each rung includes the ones

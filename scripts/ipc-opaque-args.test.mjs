@@ -201,6 +201,7 @@ const SAFE_ARGS = new Set([
   'changesPush',
   'changesUpdateFromMain',
   'changesMergeToMain',
+  'changesApprove', //  repo keys and a flag
   'changesOpenPr',
   'changesOpenTerminal',
   'taskOpenTerminal',

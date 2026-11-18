@@ -27,7 +27,7 @@ import { FilesSidebar } from './components/FilesSidebar'
 import { ProactiveSidebar } from './components/ProactiveSidebar'
 import { ProactivePane } from './components/ProactivePane'
 import { useFiles } from './useFiles'
-import { FileOpener, type OpenScopeFile } from './fileLinks'
+import { DiffOpener, FileOpener, type OpenScopeDiff, type OpenScopeFile } from './fileLinks'
 import { useScopeList } from './useScopeList'
 import type { DiffFileSelection } from './components/DiffSidebar'
 import { SettingsPage, SETTINGS_SECTIONS, type SettingsSection } from './components/SettingsPage'
@@ -873,6 +873,15 @@ export default function App() {
     setForceWelcome(false)
     openFile({ ws: fws, task, path }, jump)
   }, [diffTask?.ws, diffTask?.task, selectTask, setView, setWorkMode, setLeftSidebarVisible, openFile])
+  // The review loop's "approve the changes" note, clicked: the Diff view of
+  // that scope, where the uncommitted changes are read and approved.
+  const openScopeDiff = useCallback<OpenScopeDiff>((dws, task) => {
+    if (dws !== diffTask?.ws || task !== diffTask.task) selectTask(dws, task)
+    setView('work')
+    setWorkMode('diff')
+    setLeftSidebarVisible(true)
+    setForceWelcome(false)
+  }, [diffTask?.ws, diffTask?.task, selectTask, setView, setWorkMode, setLeftSidebarVisible])
   const diffWorkspace = ws?.name
   useEffect(() => {
     if (view !== 'work' || workMode !== 'diff' || !diffWorkspace) return
@@ -916,6 +925,7 @@ export default function App() {
 
   return (
     <FileOpener.Provider value={openScopeFile}>
+    <DiffOpener.Provider value={openScopeDiff}>
     <div className="app">
       <div className="titlebar">
         <div className="tb-center">
@@ -1451,6 +1461,7 @@ export default function App() {
         onClose={() => setRecoveryOpen(false)} />}
       <DialogHost />
     </div>
+    </DiffOpener.Provider>
     </FileOpener.Provider>
   )
 }

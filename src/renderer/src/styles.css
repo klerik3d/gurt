@@ -2414,6 +2414,15 @@ textarea.input {
 .host-link:hover {
   text-decoration: underline;
 }
+.host-action {
+  display: block;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+  padding: 0 11px 7px;
+  text-align: left;
+}
 .host-note .rv-findings {
   padding: 2px 11px 8px;
 }
@@ -4403,6 +4412,11 @@ textarea.input {
   background: transparent;
   border-color: var(--green);
 }
+.diff-approved {
+  flex: none;
+  color: var(--green);
+  font-size: 11px;
+}
 .diff-counts {
   display: inline-flex;
   flex: none;
@@ -5026,6 +5040,9 @@ button { user-select: none; }
 .git-commit-panel .fld { margin: 0; }
 .git-commit-panel .commit-message { min-height: 65px; width: 100%; resize: vertical; }
 .git-commit-hint { color: var(--dim); font-size: 10px; }
+.git-approve { display: flex; align-items: center; gap: 8px; }
+.git-approve-state { flex: 1; color: var(--dim); font-size: 11px; }
+.git-approve.approved .git-approve-state { color: var(--green); }
 .git-commit-buttons { display: flex; gap: 6px; flex-wrap: wrap; }
 .git-commit-buttons .btn { flex: 1; white-space: nowrap; }
 .git-parameters { font-size: 11px; }

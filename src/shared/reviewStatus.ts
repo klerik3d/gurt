@@ -3,7 +3,7 @@
 // as plain data. Pure, so the pane draws it and a test pins the wording
 // (scripts/review-block.test.mjs); the loop itself is `loopStep`'s.
 import type { DeliveredStep, EndReason, LoopEnd, LoopPhase, LoopState } from './reviewLoop'
-import { loopIsLive } from './reviewLoop'
+import { approvalRepos, loopIsLive } from './reviewLoop'
 import type { ReviewFinding } from './types'
 import { findingRef } from './types'
 
@@ -50,6 +50,7 @@ const PHASE_TEXT: Record<Exclude<LoopPhase, 'ended'>, string> = {
   proposing: 'waiting for commit texts',
   reviewing: 'reviewing',
   fixing: 'fixing',
+  approving: 'waiting for your approval',
   delivering: 'delivering'
 }
 
@@ -59,6 +60,17 @@ const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' 
 export function deliveredText(steps: readonly DeliveredStep[]): string {
   const verb = { commit: 'committed', push: 'pushed', pr: 'opened PR', merge: 'merged into main' } as const
   return steps.map((d) => `${verb[d.step]} ${d.ref} in ${d.repo}`).join(' · ')
+}
+
+/** What the user is asked for while the loop waits for a manual approval. */
+export function approvalText(s: Pick<LoopState, 'plan'>): string {
+  const repos = approvalRepos(s)
+  const steps = [...new Set((s.plan ?? []).map((p) => p.step))]
+  const verb = { commit: 'commit', push: 'push', pr: 'open a PR', merge: 'merge into main' } as const
+  return (
+    `approve the uncommitted changes in ${repos.join(', ') || 'the scope'} in the Diff view — ` +
+    `the loop then goes on to ${steps.map((x) => verb[x]).join(', ') || 'deliver'}`
+  )
 }
 
 function endLine(s: LoopState, end: LoopEnd): Omit<LoopLine, 'live' | 'stoppable'> {
@@ -123,9 +135,10 @@ export function loopLine(s: LoopState): LoopLine {
   return {
     live,
     stoppable: s.phase !== 'delivering',
-    tone: 'accent',
+    tone: s.phase === 'approving' ? 'yellow' : 'accent',
     headline: `${PHASE_TEXT[s.phase]} · ${where}${fixing ? ` · ${plural(s.open.length, 'finding')}` : ''}`,
     ...(s.phase === 'delivering' && s.delivered.length ? { detail: deliveredText(s.delivered) } : {}),
+    ...(s.phase === 'approving' ? { detail: approvalText(s) } : {}),
     findings
   }
 }

@@ -1,7 +1,7 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { AnchorWithFileLink, CodeWithFileLink } from '../fileLinks'
+import { AnchorWithFileLink, CodeWithFileLink, DiffOpener, FileLinkScopeContext } from '../fileLinks'
 import type {
   ChatEntry,
   ChatPermission,
@@ -734,6 +734,20 @@ function linkify(text: string): ReactNode[] {
   return out
 }
 
+/** A note that asks the user to look at the scope's uncommitted changes links
+ *  into the Diff view — where they are read and approved. Plain text outside a
+ *  live scope (an archived session). */
+function OpenDiffLink() {
+  const scope = useContext(FileLinkScopeContext)
+  const open = useContext(DiffOpener)
+  if (!scope || !open) return null
+  return (
+    <button type="button" className="host-link host-action" onClick={() => open(scope.ws, scope.task)}>
+      Open the changes in the Diff view →
+    </button>
+  )
+}
+
 /** The loop's own words in the chat: a verdict, a hand-over to the user, a
  *  delivery step. Findings are one line until opened — except that a blocker
  *  is not something to hide. */
@@ -757,6 +771,7 @@ function LoopNoteMsg({ entry, note }: { entry: ChatEntry & { kind: 'system' }; n
           )}
         </div>
         {rest.length > 0 && <div className="host-note-detail">{linkify(rest.join('\n'))}</div>}
+        {note.openDiff && <OpenDiffLink />}
         {open && findings.length > 0 && (
           <ul className="rv-findings">
             {findings.map((f) => (

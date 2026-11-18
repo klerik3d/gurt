@@ -102,8 +102,43 @@ const h = await loopHarness('review-loop-controller', {
     envs: [{ name: 'dev', image: 'x', repo: 'alpha' }]
   },
   credentials: [{ id: 'h', label: 'host auth', kind: 'git-host', hosts: ['github.com'], data: {} }],
-  kernel: { reviewLoop: { clock: { now: () => nowMs, tickMs: 3_600_000, keepAliveMs: 40 } } }
+  kernel: {
+    reviewLoop: {
+      clock: { now: () => nowMs, tickMs: 3_600_000, keepAliveMs: 40 },
+      // Around a manual-approval decision: a test holds it after the git facts
+      // (before the approvals lock) or under the lock, after the approvals read.
+      approvalSeam: {
+        before: () => approvalsHook?.(),
+        inside: () => approvalsLockedHook?.()
+      }
+    }
+  }
 })
+/** Runs before each manual-approval decision takes the approvals lock, while set. */
+let approvalsHook
+/** Runs under the lock, between the approvals read and the transition, while set. */
+let approvalsLockedHook
+/** A one-shot pause: `hook` holds the first call after `arm()` until `release()`. */
+function pause() {
+  let armed = false
+  let reached
+  let release
+  const at = new Promise((r) => (reached = r))
+  const held = new Promise((r) => (release = r))
+  return {
+    at,
+    release,
+    arm: () => (armed = true),
+    hook: async () => {
+      if (!armed) return
+      armed = false
+      reached()
+      await held
+    }
+  }
+}
+const approvalsFile = (task) => path.join(h.GURT_ROOT, ws, task, 'approvals.json')
+const recordedApprovals = (task) => (fs.existsSync(approvalsFile(task)) ? JSON.parse(fs.readFileSync(approvalsFile(task), 'utf8')) : {})
 const { kernel, ws, stops, started, container, agent, tick, until: harnessUntil } = h
 after(() => {
   h.cleanup()
@@ -682,6 +717,298 @@ test('rung merge on a local repo: commit, then the origin’s default branch mov
   assert.equal(endOf(c).outcome, 'ready', JSON.stringify(endOf(c)))
   assert.deepEqual(endOf(c).delivered.map((d) => d.step), ['commit', 'merge'])
   assert.equal(git(c.remotes.lib, 'rev-parse', 'main'), c.head())
+})
+
+// ========================================================== manual approval ===
+// docs/requirements-review-loop.md §13, "Manual approval": the Diff view's
+// approval of the uncommitted changes, by HEAD and tree; any change drops it.
+
+test('manual approval: the loop waits with a link in the chat, past the deadline and without pings; the approval ships it', async () => {
+  const c = await run(deliverable({ block: { whenClean: 'commit', manualApproval: true }, wait: false }))
+  await until(() => c.st()?.phase === 'approving', 'approving')
+  await kernel.reviewLoop.idle()
+  const ask = c.entries().find((e) => e.note?.openDiff)
+  assert.ok(ask, 'asked in the chat, with the link into the Diff view')
+  assert.match(ask.text, /^Waiting for your approval\napprove the uncommitted changes in alpha in the Diff view — the loop then goes on to commit\.$/)
+  assert.equal(c.head(), c.bases.alpha, 'nothing committed while it waits')
+  assert.equal(kernel.sessions.isLoopHeld(c.id), true, 'the clone stays reserved')
+  assert.equal(kernel.reviewLoop.owns(c.id), true)
+  // No keep-alive while it waits: the container may idle out.
+  const n0 = activity.filter((x) => x === c.id).length
+  await tick(200)
+  assert.equal(activity.filter((x) => x === c.id).length, n0, 'no pings while waiting for the user')
+  // Waiting for a human: the deadline does not end it.
+  await advance(5 * 60 * 60_000)
+  assert.equal(c.st().phase, 'approving', 'past the deadline, still waiting')
+  // Withdrawing an approval that was never given changes nothing.
+  await kernel.approveChanges(ws, c.task, 'alpha', false)
+  assert.equal(c.st().phase, 'approving')
+  // The approval: the loop goes on and commits, as without the step.
+  await kernel.approveChanges(ws, c.task, 'alpha', true)
+  await finished(c)
+  assert.equal(endOf(c).outcome, 'ready', JSON.stringify(endOf(c)))
+  assert.deepEqual(endOf(c).delivered.map((d) => [d.repo, d.step]), [['alpha', 'commit']])
+  assert.equal(git(c.dir(), 'log', '-1', '--format=%s'), 'feat: deliver me')
+  assert.ok(c.entries().some((e) => e.text === 'Changes approved — delivering'))
+  assert.equal(kernel.sessions.isLoopHeld(c.id), false, 'released at the end')
+})
+
+test('an approval is dropped by the turn of a session that writes the repo, even one that edits and reverts with nothing looking in between', async () => {
+  const fx = fixture(['alpha', 'beta'])
+  const dir = fx.clones.alpha
+  const id = `w${process.pid}x${++seq}`
+  started(id, ['alpha'], { task: fx.task, title: 'writer' }) // writes alpha only, no loop
+  const file = path.join(h.GURT_ROOT, ws, fx.task, 'approvals.json')
+  const recorded = () => (fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {})
+  write(dir, 'status.txt', 'good\nA\n')
+  write(fx.clones.beta, 'status.txt', 'good\nbeta\n')
+  await kernel.approveChanges(ws, fx.task, 'alpha', true)
+  await kernel.approveChanges(ws, fx.task, 'beta', true)
+  let refused
+  agent(id, async () => {
+    // Mid-turn the repo may still change: an approval is refused, not taken.
+    refused = await kernel.approveChanges(ws, fx.task, 'alpha', true).then(() => null, (e) => e)
+    write(dir, 'status.txt', 'good\nB\n') // A -> B -> A, no read of the approvals in between
+    write(dir, 'status.txt', 'good\nA\n')
+    return {}
+  })
+  await kernel.sessions['runPrompt'](kernel.sessions['sessions'].get(id), 'edit and revert')
+  assert.match(String(refused?.message), /session "writer" is working in alpha — approve once its turn has ended/)
+  await until(() => !recorded().alpha, 'the turn end dropped alpha’s approval')
+  assert.ok(recorded().beta, 'beta is not the session’s to write: its approval stays')
+  const marks = (await h.approvals.withApprovals(ws, fx.task, [{ repo: 'alpha', dirty: true }, { repo: 'beta', dirty: true }]))
+    .map((r) => [r.repo, !!r.approved])
+  assert.deepEqual(marks, [['alpha', false], ['beta', true]], 'the content is A again, and still unapproved')
+  await kernel.approveChanges(ws, fx.task, 'alpha', true)
+  assert.ok(recorded().alpha, 'approved again by hand, after the turn')
+})
+
+test('an edit undone outside gurt keeps exactly the approved content — and that is what ships, as approved (the owner’s reading of “any change resets”)', async () => {
+  const c = await run(deliverable({
+    block: { whenClean: 'commit', manualApproval: true },
+    rev: async (r, t, c, rid) => {
+      await kernel.approveChanges(ws, c.task, 'alpha', true)
+      const f = path.join(c.dir(), 'status.txt')
+      const a = fs.readFileSync(f, 'utf8')
+      fs.writeFileSync(f, 'good\nB from a terminal\n') // A -> B -> A, no gurt event, no read in between
+      fs.writeFileSync(f, a)
+      approve(c, rid)
+    }
+  }))
+  assert.equal(endOf(c).outcome, 'ready')
+  // What was committed is byte for byte the approved tree.
+  assert.equal(git(c.dir(), 'show', 'HEAD:status.txt'), 'good\ndelivered')
+})
+
+test('manual approval landing while the verdict’s settle is processed (after its approvals read, before its transition) is not lost', async () => {
+  let release
+  const held = new Promise((r) => (release = r))
+  let reached
+  const read = new Promise((r) => (reached = r))
+  let armed = false
+  approvalsHook = async () => {
+    if (!armed) return
+    armed = false
+    reached()
+    await held
+  }
+  try {
+    const c = await run(deliverable({
+      wait: false,
+      block: { whenClean: 'commit', manualApproval: true },
+      rev: (r, t, c, rid) => {
+        armed = true // the next read is this verdict's settle
+        approve(c, rid)
+      }
+    }))
+    await read // the settle has read "nothing approved" and is held there
+    assert.equal(c.st().phase, 'reviewing')
+    const approving = kernel.approveChanges(ws, c.task, 'alpha', true)
+    const file = path.join(h.GURT_ROOT, ws, c.task, 'approvals.json')
+    await until(() => fs.existsSync(file) && JSON.parse(fs.readFileSync(file, 'utf8')).alpha, 'the approval written')
+    await tick(50) // the approval's own look at the scope's loops has run
+    release()
+    await approving
+    await finished(c)
+    assert.equal(endOf(c).outcome, 'ready', JSON.stringify(endOf(c)))
+    assert.deepEqual(endOf(c).delivered.map((d) => d.step), ['commit'])
+  } finally {
+    approvalsHook = undefined
+    release()
+  }
+})
+
+test('withdrawn after the verdict’s git facts, before its decision: nothing ships, the loop waits for a new approval', async () => {
+  const p = pause()
+  approvalsHook = p.hook
+  try {
+    const c = await run(deliverable({
+      wait: false,
+      block: { whenClean: 'commit', manualApproval: true },
+      rev: async (r, t, c, rid) => {
+        await kernel.approveChanges(ws, c.task, 'alpha', true) // approved during the review
+        p.arm()
+        approve(c, rid)
+      }
+    }))
+    await p.at
+    // Not awaited: it also waits for the loop's look at it, queued behind this
+    // held settle. The withdrawal itself is not blocked — the lock is free.
+    const withdrawal = kernel.approveChanges(ws, c.task, 'alpha', false)
+    await until(() => recordedApprovals(c.task).alpha === undefined, 'withdrawn')
+    p.release()
+    await withdrawal
+    await until(() => c.st()?.phase === 'approving', 'waits instead of delivering')
+    await kernel.reviewLoop.idle()
+    assert.equal(c.head(), c.bases.alpha, 'nothing committed')
+    assert.ok(c.entries().some((e) => e.note?.openDiff), 'asked again in the chat')
+    await kernel.approveChanges(ws, c.task, 'alpha', true)
+    await finished(c)
+    assert.deepEqual(endOf(c).delivered.map((d) => d.step), ['commit'], 'shipped only after the new approval')
+  } finally {
+    approvalsHook = undefined
+    p.release()
+  }
+})
+
+test('withdrawn while the verdict’s decision reads the approvals: the decision is atomic — the withdrawal waits and is refused, delivery is what was decided', async () => {
+  const p = pause()
+  approvalsLockedHook = p.hook
+  try {
+    const c = await run(deliverable({
+      wait: false,
+      block: { whenClean: 'commit', manualApproval: true },
+      rev: async (r, t, c, rid) => {
+        await kernel.approveChanges(ws, c.task, 'alpha', true)
+        p.arm()
+        approve(c, rid)
+      }
+    }))
+    await p.at // under the lock: approvals read ("alpha approved"), transition not applied
+    let settled = false
+    const withdrawal = kernel.approveChanges(ws, c.task, 'alpha', false).then(
+      () => ((settled = true), null),
+      (e) => ((settled = true), e)
+    )
+    await tick(100)
+    assert.equal(settled, false, 'the withdrawal waits for the decision')
+    assert.ok(recordedApprovals(c.task).alpha, 'and has not removed the approval the decision read')
+    p.release()
+    const refused = await withdrawal
+    assert.match(String(refused?.message), /already delivering alpha — too late to withdraw/)
+    await finished(c)
+    assert.equal(endOf(c).outcome, 'ready')
+    assert.deepEqual(endOf(c).delivered.map((d) => d.step), ['commit'])
+  } finally {
+    approvalsLockedHook = undefined
+    p.release()
+  }
+})
+
+test('waiting for approval: an approval withdrawn before its check decides is seen — the loop keeps waiting, nothing ships', async () => {
+  const p = pause()
+  approvalsHook = p.hook
+  try {
+    const c = await run(deliverable({ block: { whenClean: 'commit', manualApproval: true }, wait: false }))
+    await until(() => c.st()?.phase === 'approving', 'approving')
+    await kernel.reviewLoop.idle()
+    p.arm()
+    const approving = kernel.approveChanges(ws, c.task, 'alpha', true) // its check is held before the lock
+    await p.at
+    const withdrawal = kernel.approveChanges(ws, c.task, 'alpha', false) // see above: not awaited yet
+    await until(() => recordedApprovals(c.task).alpha === undefined, 'withdrawn')
+    p.release()
+    await Promise.all([approving, withdrawal])
+    await kernel.reviewLoop.idle()
+    assert.equal(c.st().phase, 'approving', 'still waiting')
+    assert.equal(c.head(), c.bases.alpha, 'nothing committed')
+    await kernel.approveChanges(ws, c.task, 'alpha', true)
+    await finished(c)
+    assert.equal(endOf(c).outcome, 'ready')
+  } finally {
+    approvalsHook = undefined
+    p.release()
+  }
+})
+
+test('manual approval given during the review, of the reviewed tree: delivered at once, nothing asked', async () => {
+  const c = await run(deliverable({
+    block: { whenClean: 'commit', manualApproval: true },
+    rev: async (r, t, c, rid) => {
+      await kernel.approveChanges(ws, c.task, 'alpha', true)
+      approve(c, rid)
+    }
+  }))
+  assert.equal(endOf(c).outcome, 'ready', JSON.stringify(endOf(c)))
+  assert.deepEqual(endOf(c).delivered.map((d) => d.step), ['commit'])
+  assert.ok(!c.entries().some((e) => e.note?.openDiff), 'never asked')
+})
+
+test('manual approval is dropped by any change: approved in round 1, the fix moves the tree, round 2 asks again', async () => {
+  const c = await run({
+    wait: false,
+    block: { whenClean: 'commit', manualApproval: true },
+    exec: (n, text, c) => {
+      if (n === 1) {
+        write(c.dir(), 'status.txt', 'good v1\n')
+        return c.changes('feat: v1')
+      }
+      write(c.dir(), 'status.txt', 'good v2\n')
+      c.changes('feat: v2', { replies: [{ findingId: 'R1.F1', resolution: 'fixed', note: 'done' }] })
+    },
+    rev: async (round, text, c, rid) => {
+      if (round === 1) {
+        await kernel.approveChanges(ws, c.task, 'alpha', true)
+        return c.submit(rid, { verdict: 'request_changes', summary: 'needs work', findings: [blocker()] })
+      }
+      approve(c, rid)
+    }
+  })
+  await until(() => c.st()?.phase === 'approving', 'approving after round 2')
+  assert.equal(c.st().round, 2)
+  assert.equal(c.head(), c.bases.alpha)
+  // Approved again, now of v2: it ships.
+  await kernel.approveChanges(ws, c.task, 'alpha', true)
+  await finished(c)
+  assert.equal(endOf(c).outcome, 'ready')
+  assert.equal(fs.readFileSync(path.join(c.dir(), 'status.txt'), 'utf8'), 'good v2\n')
+  assert.equal(git(c.dir(), 'status', '--porcelain'), '', 'v2 committed')
+})
+
+test('manual approval: an edit after the review, then the approval, ends `tree-moved`; approving a clean repo is refused', async () => {
+  const c = await run(deliverable({ block: { whenClean: 'commit', manualApproval: true }, wait: false }))
+  await until(() => c.st()?.phase === 'approving', 'approving')
+  await kernel.reviewLoop.idle()
+  write(c.dir(), 'status.txt', 'good\nedited by hand after the review\n')
+  await kernel.approveChanges(ws, c.task, 'alpha', true)
+  await finished(c)
+  needsYou(c, 'tree-moved')
+  assert.equal(c.head(), c.bases.alpha, 'nothing committed')
+  const clean = fixture(['alpha'])
+  await assert.rejects(kernel.approveChanges(ws, clean.task, 'alpha', true), /no uncommitted changes to approve/)
+})
+
+test('the Diff view’s mark: `approved` only while HEAD and the tree are what was approved', async () => {
+  const fx = fixture(['alpha', 'beta'])
+  const dir = fx.clones.alpha
+  const mark = async () =>
+    (await h.approvals.withApprovals(ws, fx.task, [{ repo: 'alpha', dirty: true }, { repo: 'beta', dirty: false }]))
+      .map((r) => [r.repo, !!r.approved])
+  write(dir, 'status.txt', 'good\nedit\n')
+  assert.deepEqual(await mark(), [['alpha', false], ['beta', false]], 'nothing approved yet')
+  await kernel.approveChanges(ws, fx.task, 'alpha', true)
+  assert.deepEqual(await mark(), [['alpha', true], ['beta', false]])
+  write(dir, 'new.txt', 'an untracked file counts\n')
+  assert.deepEqual(await mark(), [['alpha', false], ['beta', false]], 'a new file drops it')
+  fs.rmSync(path.join(dir, 'new.txt'))
+  assert.deepEqual(await mark(), [['alpha', false], ['beta', false]], 'the approved content back again does not revive it')
+  git(dir, 'commit', '-q', '-am', 'by hand')
+  write(dir, 'status.txt', 'good\nedit 2\n')
+  assert.deepEqual(await mark(), [['alpha', false], ['beta', false]], 'a commit moved HEAD: dropped')
+  await kernel.approveChanges(ws, fx.task, 'alpha', true)
+  assert.deepEqual(await mark(), [['alpha', true], ['beta', false]])
+  await kernel.approveChanges(ws, fx.task, 'alpha', false)
+  assert.deepEqual(await mark(), [['alpha', false], ['beta', false]], 'withdrawn')
 })
 
 test('a reviewed tree that moves before the verdict ends `tree-moved`; nothing is delivered', async () => {

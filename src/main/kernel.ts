@@ -12,7 +12,8 @@ import {
   isSessionRole,
   repoMode,
   roleIsLoopOwned,
-  sessionRole
+  sessionRole,
+  writeRepos
 } from '../shared/types'
 import { ladderOfRepos, sanitizeReviewBlock, validateReviewBlock } from '../shared/reviewBlock'
 import type { BootProgress, SessionDraftPatch } from '../shared/api'
@@ -40,7 +41,8 @@ import { resolveOAuthAccess } from './oauth'
 import { createPiiMask, type PiiManager } from './pii'
 import { createLogger, dropSessionLog, sessionLogLine } from './log'
 import { createProactive, type ProactiveManager } from './proactive'
-import { createReviewLoop, type ReviewLoopClock, type ReviewLoopController } from './reviewLoop'
+import { createReviewLoop, type ReviewLoopClock, type ReviewLoopController, type ReviewLoopDeps } from './reviewLoop'
+import { dropApprovals, setApproval } from './approvals'
 
 const log = createLogger('kernel')
 // Same scope as sessions.ts/containers.ts's own loggers (`sessions`,
@@ -73,6 +75,10 @@ export interface Kernel {
    *  kept from arming — `noteIdle` when idle, then the queue handoff — and
    *  re-run the scheduler. True when there was a hold. */
   releaseLoopHold(sessionId: string): boolean
+  /** The Diff view's "Approve" on a repo's uncommitted changes, or its
+   *  withdrawal (docs/requirements-review-loop.md §13, "Manual approval"); a
+   *  review loop of the scope waiting for it goes on. */
+  approveChanges(ws: string, task: string, repo: string, approved: boolean): Promise<void>
   notifications: Notifications
   /** Per-turn agent accounting — what the dashboard's agent cards read. */
   usage: UsageLedger
@@ -168,7 +174,7 @@ async function defaultEnvsForRepo(ws: string, repo: string): Promise<string[]> {
 
 /** Seams a test drives time through; the app passes none. */
 export interface KernelOptions {
-  reviewLoop?: { clock?: Partial<ReviewLoopClock> }
+  reviewLoop?: { clock?: Partial<ReviewLoopClock>; approvalSeam?: ReviewLoopDeps['approvalSeam'] }
 }
 
 export function createKernel(options: KernelOptions = {}): Kernel {
@@ -316,6 +322,8 @@ export function createKernel(options: KernelOptions = {}): Kernel {
     // `idle`, not `user`: only the scope pane's stop is a human's (§5.6).
     stopContainer: (sessionId) => containers.stop(sessionId, 'idle', true),
     release: (sessionId) => kernel.releaseLoopHold(sessionId),
+    idle: (sessionId) => idle(sessionId),
+    ...(options.reviewLoop?.approvalSeam ? { approvalSeam: options.reviewLoop.approvalSeam } : {}),
     ...(options.reviewLoop?.clock ? { clock: options.reviewLoop.clock } : {})
   })
   sessions.setLoopHooks({
@@ -334,6 +342,17 @@ export function createKernel(options: KernelOptions = {}): Kernel {
     sessionLog.info('session.state', { s: sessionId, task: ref.task, state, reason, err })
   })
   bus.on('session.turn', ({ sessionId, phase }) => sessionLog.info('session.turn', { s: sessionId, phase }))
+  // Manual approval (docs/requirements-review-loop.md §13): a turn of a
+  // session that writes a repo may have changed it — and may have undone the
+  // change before anyone looked — so the repo's approval goes, whatever the
+  // tree is now. Read-only sessions (a reviewer, a proactive run) drop nothing.
+  bus.on('session.turn', ({ sessionId, ref, phase }) => {
+    if (phase !== 'ended') return
+    const info = sessions.sessionInfo(sessionId)
+    if (!info) return
+    void dropApprovals(ref.workspace, ref.task, writeRepos(info)).catch((e: unknown) =>
+      log.warn('approval drop failed', { ws: ref.workspace, task: ref.task, err: e }))
+  })
   bus.on('session.awaiting', ({ sessionId, awaiting }) =>
     sessionLog.info('session.awaiting', { s: sessionId, awaiting })
   )
@@ -566,6 +585,21 @@ export function createKernel(options: KernelOptions = {}): Kernel {
       sessions.schedule()
       return had
     },
+    async approveChanges(ws, task, repo, approved) {
+      // An agent mid-turn in the repo may still change it: its turn's end would
+      // drop the approval anyway, so say so instead of taking it.
+      const busy = approved
+        ? sessions.listForTask(ws, task).find((i) => writeRepos(i).includes(repo) && !sessions.isSessionIdle(i.id) && i.state === 'started')
+        : undefined
+      if (busy) throw new Error(`session "${busy.title}" is working in ${repo} — approve once its turn has ended`)
+      // A withdrawal is checked in the same lock the loop's decision to deliver
+      // takes: once delivery has started it is too late, and says so.
+      await setApproval(ws, task, repo, approved, () => {
+        if (!approved && reviewLoop.deliveringRepos(ws, task).includes(repo))
+          throw new Error(`the review loop is already delivering ${repo} — too late to withdraw the approval`)
+      })
+      await reviewLoop.approvalChanged(ws, task)
+    },
     notifications,
     usage,
     planUsage,
@@ -723,7 +757,8 @@ export function createKernel(options: KernelOptions = {}): Kernel {
         ...(clean.agent && clean.configValues ? { configValues: clean.configValues } : {}),
         ...(review.maxRounds !== undefined ? { maxRounds: clean.maxRounds } : {}),
         ...(review.whenClean !== undefined ? { whenClean: clean.whenClean } : {}),
-        ...(review.draftPr !== undefined ? { draftPr: clean.draftPr } : {})
+        ...(review.draftPr !== undefined ? { draftPr: clean.draftPr } : {}),
+        ...(review.manualApproval !== undefined ? { manualApproval: clean.manualApproval } : {})
       }
       return { ...rest, ...(cmd ? { check: cmd } : {}), ...(Object.keys(out).length ? { review: out } : {}) }
     },

@@ -373,6 +373,16 @@ function RepoModal({
               <span>open the PR as a draft</span>
             </label>
           )}
+          {rung !== 'notify' && (
+            <label className="rv-check" title="The loop waits until you approve the reviewed changes in the Diff view">
+              <input
+                type="checkbox"
+                checked={rv.manualApproval ?? REVIEW_LOOP_DEFAULTS.manualApproval}
+                onChange={(e) => setRvField({ manualApproval: e.target.checked })}
+              />
+              <span>wait for manual approval in the Diff view before shipping</span>
+            </label>
+          )}
           {reviewProblem && <div className="error">{reviewProblem}</div>}
         </div>
 

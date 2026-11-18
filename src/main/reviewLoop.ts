@@ -47,16 +47,17 @@ import {
   type LoopState,
   type ReviewedRepo
 } from '../shared/reviewLoop'
-import { deliveredText, loopLine } from '../shared/reviewStatus'
+import { approvalText, deliveredText, loopLine } from '../shared/reviewStatus'
 import type { Bus } from './bus'
 import type { SessionManager } from './sessions'
 import * as store from './store'
 import { cloneDir } from './store'
 import * as changes from './changes'
 import { unattendedGitAccessForRepo } from './git/env'
-import { diffHash, parseDiffHash, repoTree } from './treeHash'
+import { diffHash, parseDiffHash, repoTree, type RepoTree } from './treeHash'
 import { CheckRunner, type ExecChild } from './reviewCheck'
 import { DeliveryError, checkDeliveryPreconditions, deliverStep, type DeliveryContext } from './delivery'
+import { decideWithApprovals, dropApprovals } from './approvals'
 import { createLogger, errCtx } from './log'
 
 const log = createLogger('review-loop')
@@ -91,6 +92,14 @@ export interface ReviewLoopDeps {
   stopContainer(sessionId: string): Promise<void>
   /** Drop the loop hold and run the idle handling (`Kernel.releaseLoopHold`). */
   release(sessionId: string): void
+  /** The idle handling alone, the hold kept: a loop waiting for the user's
+   *  approval needs no container, so its keep-alive stops and the container
+   *  may idle out like any other. */
+  idle?(sessionId: string): void
+  /** Test seam around a manual-approval decision: `before` runs once the git
+   *  facts are read and before the scope's approvals lock is taken, `inside`
+   *  under the lock, after the approvals are read and before the transition. */
+  approvalSeam?: { before?(): Promise<void>; inside?(): Promise<void> } | undefined
   clock?: Partial<ReviewLoopClock>
 }
 
@@ -118,8 +127,15 @@ export interface ReviewLoopController {
   stopLoop(executorId: string): Promise<void>
   /** The open findings `complete` must answer (`SessionEvents.openFindings`). */
   openFindings(sessionId: string): string[]
+  /** The user approved or withdrew an approval in this scope (the Diff view):
+   *  a loop waiting for it reads the facts again and goes on when they cover
+   *  its delivery. Resolves when the loops of the scope have looked. */
+  approvalChanged(ws: string, task: string): Promise<void>
   /** `LoopHooks.owns`: an executor or reviewer of a loop that has not ended. */
   owns(sessionId: string): boolean
+  /** The repos the delivering loops of this scope ship: a withdrawal of their
+   *  approval comes too late (§13, "Manual approval"). */
+  deliveringRepos(ws: string, task: string): string[]
   /** `LoopHooks.delivering`: the executors of this scope whose loop is in its
    *  delivery. */
   delivering(ws: string, task: string): string[]
@@ -292,7 +308,16 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
   function afterStep(id: string, before: LoopState, after: LoopState, actions: LoopIntent[]): void {
     // The loop hold follows the phase (§5.5): taken the moment the dormant
     // executor's turn starts, here, inside the `started` handler.
-    if (loopIsLive(after)) hold(id)
+    // Waiting for the user's approval needs no container: no pings, and the
+    // container may idle out while the clone stays reserved.
+    if (loopIsLive(after)) hold(id, after.phase !== 'approving')
+    if (after.phase === 'approving' && before.phase !== 'approving') {
+      stopKeepAlive(id)
+      deps.idle?.(id)
+      // The facts this transition rode on were read before it: an approval
+      // that landed in between is looked for once more (§13).
+      serial(id, () => checkApproval(id))
+    }
     // The reviewer's start bound (§5.4) runs from this decision: creating the
     // session is part of starting it, so a creation that stalls is bounded too,
     // not only a created session that never starts.
@@ -389,7 +414,7 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
    *  records them as the base), which differ from the base (from HEAD before
    *  arming) and which of those have no commit text (`proposalForRepo` finds
    *  none). */
-  async function gatherFacts(id: string, st: LoopState): Promise<Facts> {
+  async function gatherFacts(id: string, st: LoopState): Promise<Facts & { trees: Record<string, RepoTree> }> {
     const info = sessions.sessionInfo(id)
     const w = where.get(id)
     if (!info || !w) throw new Error('the executor is gone')
@@ -402,7 +427,23 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
     for (const r of repos)
       if ((trees[r]?.tree ?? '') !== (await baseTree(id, r, st.base[r] ?? heads[r] ?? ''))) changed.push(r)
     const uncovered = changed.filter((r) => !sessions.latestProposal(w.ws, w.task, r))
-    return { hash, uncovered, heads, changed }
+    return { hash, uncovered, heads, changed, trees }
+  }
+
+  /** Run a transition that may start delivery. With manual approval the
+   *  approvals are read and the transition applied in one step under the
+   *  scope's approvals lock (`decideWithApprovals`), so a withdrawal either
+   *  lands before it (and is seen) or after it (and is refused: the loop is
+   *  delivering) — never between the read and the decision. */
+  async function decide(id: string, trees: Record<string, RepoTree>, transition: (approved: string[]) => void): Promise<void> {
+    const st = loops.get(id)
+    const w = where.get(id)
+    if (!st || !w || st.config.manualApproval !== true) return transition([])
+    await deps.approvalSeam?.before?.()
+    await decideWithApprovals(w.ws, w.task, trees, async (approved) => {
+      await deps.approvalSeam?.inside?.()
+      transition(approved)
+    })
   }
 
   async function onSettled(
@@ -413,16 +454,35 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
     const st = loops.get(id)
     if (!st || st.phase === 'ended') return
     let facts: Facts = { hash: '', uncovered: [], heads: {}, changed: [] }
+    let trees: Record<string, RepoTree> = {}
     // A plan hold settles nothing (§5.2): no git for it.
     if (!turn.limited) {
       try {
-        facts = await gatherFacts(id, st)
+        ;({ trees, ...facts } = await gatherFacts(id, st))
       } catch (e) {
         fault(id, `cannot read the repositories: ${errText(e)}`)
         return
       }
     }
-    apply(id, { kind: 'settled', on, turn, now: iso(clock.now()), ...facts })
+    // Only an approving verdict can start delivery; every other settle needs
+    // no approvals at all.
+    if (on !== 'reviewer' || turn.limited) return void apply(id, { kind: 'settled', on, turn, now: iso(clock.now()), ...facts })
+    await decide(id, trees, (approved) => apply(id, { kind: 'settled', on, turn, now: iso(clock.now()), ...facts, approved }))
+  }
+
+  /** A loop waiting for the user's approval looks again (§13, "Manual
+   *  approval"): the reviewed tree, approved as it is, goes on to delivery. */
+  async function checkApproval(id: string): Promise<void> {
+    const st = loops.get(id)
+    if (!st || st.phase !== 'approving') return
+    let facts: Facts & { trees: Record<string, RepoTree> }
+    try {
+      facts = await gatherFacts(id, st)
+    } catch (e) {
+      fault(id, `cannot read the repositories: ${errText(e)}`)
+      return
+    }
+    await decide(id, facts.trees, (approved) => void apply(id, { kind: 'approval', hash: facts.hash, approved }))
   }
 
   /** Run `fn` after everything queued before it for this loop. */
@@ -499,6 +559,10 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
         const was = before.rounds.find((x) => x.round === r.round)
         if (r.verdict && !was?.verdict) reportVerdict(id, r.round, r.verdict)
       }
+      if (after.phase === 'approving' && before.phase !== 'approving')
+        note(id, `Waiting for your approval\n${approvalText(after)}.`, { tone: 'warn', openDiff: true })
+      if (before.phase === 'approving' && after.phase === 'delivering')
+        note(id, 'Changes approved — delivering', { tone: 'ok' })
       for (const d of after.delivered.slice(before.delivered.length))
         note(id, `gurt ${deliveredText([d])}`, { tone: 'ok' })
       if (after.end && !before.end) {
@@ -638,6 +702,9 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
       })
       const run = await runner.run({ intent: a.id, repo, command })
       rt(id).check = undefined
+      // The check ran the repo's code in the clone: whatever it did, an
+      // approval of the repo given before it no longer counts (§13).
+      await dropApprovals(w.ws, w.task, [repo])
       settleCheck(id, block, run)
       if (run.status === 'failed-to-run') {
         fault(id, `the check could not run: ${run.error}`)
@@ -1111,6 +1178,8 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
     const go = (sid: string): void =>
       void track(sessions.resumeInterrupted(sid).catch((e: unknown) => log.warn('loop resume failed', { s: sid, err: errCtx(e) })))
     if (['dormant', 'fixing', 'proposing'].includes(st.phase)) go(id)
+    // An approval may have landed just before the app went down.
+    if (st.phase === 'approving') serial(id, () => checkApproval(id))
     if (st.phase !== 'reviewing' || st.reviewer === undefined) return
     const r = sessions.sessionInfo(st.reviewer)
     if (!r) {
@@ -1199,7 +1268,7 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
       // clones with its container down; one that ended and has not notified
       // yet keeps them until the end has run (no keep-alive pings for that).
       for (const [id, st] of loops) {
-        if (loopIsLive(st)) hold(id)
+        if (loopIsLive(st)) hold(id, st.phase !== 'approving')
         else if (st.phase === 'ended' && (!st.notified || st.intents.length > 0)) hold(id, false)
       }
     },
@@ -1233,6 +1302,18 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
       apply(id, { kind: 'human', on: 'executor', did: 'stop' })
       sessions.cancel(id, 'host')
     },
+    async approvalChanged(ws, task) {
+      // Every live loop of the scope, not only the ones waiting now: a settle
+      // still being processed may be about to enter `approving` on facts read
+      // before this approval. The check runs after it (`serial`) and decides
+      // on the phase it finds then.
+      const scope = [...loops].filter(([id, st]) => {
+        const w = where.get(id)
+        return loopIsLive(st) && w?.ws === ws && w.task === task
+      })
+      for (const [id] of scope) serial(id, () => checkApproval(id))
+      await Promise.all(scope.map(([id]) => rt(id).serial))
+    },
     openFindings: (sessionId) => {
       const st = loops.get(sessionId)
       return st ? openRefs(st) : []
@@ -1241,6 +1322,14 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
       const t = roleIn(sessionId)
       const st = t && loops.get(t.executor)
       return !!st && loopIsLive(st)
+    },
+    deliveringRepos(ws, task) {
+      const out = new Set<string>()
+      for (const [id, st] of loops) {
+        const w = where.get(id)
+        if (st.phase === 'delivering' && w?.ws === ws && w.task === task) for (const p of st.plan ?? []) out.add(p.repo)
+      }
+      return [...out]
     },
     delivering(ws, task) {
       const out: string[] = []
