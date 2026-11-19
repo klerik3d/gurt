@@ -77,6 +77,9 @@
   --dur-fast: 120ms;
   --dur-base: 200ms;
 
+  /* Disabled controls: see docs/design-disabled.md */
+  --op-disabled: 0.5;
+
   /* Elevation and scrim: see docs/design-shadows.md */
   --shadow-sm: 0 2px 10px rgb(0 0 0 / calc(0.25 * var(--shadow-strength)));
   --shadow-md: 0 12px 32px -12px rgb(0 0 0 / calc(0.6 * var(--shadow-strength)));
@@ -272,7 +275,7 @@ button {
   cursor: pointer;
 }
 button:disabled {
-  opacity: 0.5;
+  opacity: var(--op-disabled);
   cursor: default;
 }
 
@@ -404,7 +407,7 @@ textarea.input {
   box-shadow: var(--glow);
 }
 .input:disabled {
-  opacity: 0.6;
+  opacity: var(--op-disabled);
 }
 .input::placeholder {
   color: var(--faint);
@@ -1989,9 +1992,6 @@ textarea.input {
 }
 .send-btn:hover:not(:disabled) {
   background: var(--accent-hover);
-}
-.send-btn:disabled {
-  opacity: 0.45;
 }
 /* Same button, different promise: this one joins the queue instead of starting
    a turn. Outlined rather than solid — it is still the primary action, but it
@@ -4487,7 +4487,6 @@ textarea.input {
 .diff-files-empty { color: var(--faint); }
 .diff-menu-action { width: 100%; }
 .diff-menu-action:disabled {
-  opacity: 0.4;
   cursor: default;
   background: transparent;
 }
@@ -4595,7 +4594,7 @@ textarea.input {
 /* Scope file explorer and CodeMirror workspace. */
 .file-tree { gap: 0; }
 .file-tree:focus-visible { outline: none; }
-.file-tree-row:disabled { opacity: .45; cursor: default; }
+.file-tree-row:disabled { cursor: default; }
 .files-pane { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
 .files-pane .placeholder { display: flex; align-items: center; justify-content: center; padding: 24px; color: var(--faint); font-size: var(--fs-12); text-align: center; }
 .file-tabs { display: flex; min-height: 35px; flex: none; overflow-x: auto; border-bottom: 1px solid var(--border); background: var(--surface); }
@@ -4612,7 +4611,7 @@ textarea.input {
 .file-breadcrumb { color: var(--faint); font-size: var(--fs-11); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 30px; }
 .file-action { padding: 4px 7px; color: var(--dim); font-size: var(--fs-11); border-radius: var(--r-sm); flex: none; }
 .file-action:hover { background: var(--hover); color: var(--text); }
-.file-action:disabled { opacity: .4; cursor: default; }
+.file-action:disabled { cursor: default; }
 .file-editor { flex: 1; min-height: 0; overflow: hidden; }
 .code-editor .cm-editor.cm-focused { outline: none; }
 .code-editor .cm-search input { background: var(--app); color: var(--text); border: 1px solid var(--border2); padding: 2px 4px; }
