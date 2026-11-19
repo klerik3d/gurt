@@ -12,7 +12,7 @@ import { colorScheme, onColorSchemeChange, type ColorScheme } from './colorSchem
 // differ between them.
 const editorTheme = EditorView.theme({
   '&': { height: '100%', backgroundColor: 'var(--app)', color: 'var(--text)' },
-  '.cm-scroller': { fontFamily: 'var(--mono)', fontSize: '12px', lineHeight: '1.65' },
+  '.cm-scroller': { fontFamily: 'var(--mono)', fontSize: 'var(--fs-12)', lineHeight: '1.65' },
   '.cm-content': { caretColor: 'var(--text)', padding: '10px 0' },
   '.cm-cursor, .cm-dropCursor': { borderLeftColor: 'var(--text)' },
   '.cm-gutters': { backgroundColor: 'var(--app)', color: 'var(--faint)', borderRight: '1px solid var(--border)' },
