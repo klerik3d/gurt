@@ -239,8 +239,9 @@ export interface ReviewLoopConfig {
   manualApproval?: boolean | undefined
 }
 
-/** `ReviewLoopConfig.maxRounds`' bounds and default (§3). */
-export const REVIEW_MAX_ROUNDS = { min: 1, max: 5, default: 2 } as const
+/** `ReviewLoopConfig.maxRounds`' bounds and default (§3). `ceiling`: how far
+ *  "One more round" may raise an exhausted loop's limit (§5.2). */
+export const REVIEW_MAX_ROUNDS = { min: 1, max: 5, default: 2, ceiling: 10 } as const
 
 /** A Review block's defaults when neither the anchor's `RepoConfig.review`
  *  nor the user says otherwise (§3); the reviewer agent has none — it is
@@ -951,6 +952,10 @@ export interface LoopNote {
   /** The note asks the user to look at the scope's uncommitted changes: the
    *  chat offers a link into the Diff view. */
   openDiff?: true
+  /** The note is an `exhausted` end: the id of that end (`LoopState.endId`).
+   *  The chat offers "One more round" while it is still the loop's current end
+   *  and the loop may have one (`loopExtendable`). */
+  extend?: string
 }
 
 export interface ChatSystem {

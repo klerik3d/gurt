@@ -36,6 +36,7 @@ const {
   loopStep,
   loopIsLive,
   loopRearmable,
+  loopExtendable,
   rearmLoop,
   openRefs,
   normalise,
@@ -514,7 +515,7 @@ test('an event that does not apply is ignored: the same state, no actions; ended
     assert.deepEqual(r.actions, [])
   }
   const ended = run(c, { kind: 'fault', error: 'x' }).state
-  for (const e of [green, ex(changes()), { kind: 'tick', now: at(9999) }, { kind: 'fault', error: 'y' }]) {
+  for (const e of [green, ex(changes()), { kind: 'tick', now: at(9999) }, { kind: 'fault', error: 'y' }, { kind: 'extend' }]) {
     const r = loopStep(ended, e)
     assert.equal(r.state, ended)
     assert.deepEqual(r.actions, [])
@@ -1104,4 +1105,81 @@ test('an ended loop starts over only once nothing is left to do; the fresh one k
   // The old loop's last settled turn, replayed into the fresh one, is ignored.
   const replay = loopStep(fresh, { kind: 'settled', on: 'executor', turn: { turnId: `${EX}:5`, complete: changes(), incomplete: false }, now: at(0), hash: 'h', uncovered: [], heads: {}, changed: [] })
   assert.equal(replay.state, fresh)
+})
+
+// --- one more round after `exhausted` (§5.2) ---------------------------------
+
+/** Round 2 of 2 asked for changes again: ended `exhausted`, notified, every
+ *  intent confirmed — as the controller leaves it. */
+function exhausted(c = cfg(), findings = [F('F1', 'still wrong')]) {
+  let s = fixing(c)
+  s = adopt(run(s, ex(changes({ replies: [{ findingId: 'R1.F1', resolution: 'fixed', note: 'ok' }] }), { hash: 'h2' }), green).state)
+  const r = run(s, rv(s, verdict('request_changes', findings, s.round, 'not yet')))
+  assert.equal(endOf(r).outcome, 'exhausted')
+  return { ...r.state, intents: [], notified: true, endId: r.state.endId }
+}
+
+test('exhausted | the end records its intent id; only a notified, finished, below-ceiling exhausted end is extendable', () => {
+  const s = exhausted()
+  assert.match(s.endId, /^ex\.\d+$/)
+  assert.equal(loopExtendable(s), true)
+  assert.equal(loopExtendable({ ...s, endId: undefined }), true, 'a loop stored before end ids were recorded')
+  assert.equal(loopStep({ ...s, endId: undefined }, { kind: 'extend' }).state.phase, 'fixing')
+  assert.equal(loopExtendable({ ...s, notified: false }), false, 'not before it has notified')
+  assert.equal(loopExtendable({ ...s, intents: [{ id: 'ex.99', kind: 'end', end: s.end }] }), false, 'nor while its end still runs')
+  assert.equal(loopExtendable({ ...s, end: { ...s.end, cleanupPending: 'docker is down' } }), false)
+  assert.equal(loopExtendable({ ...s, config: { ...s.config, maxRounds: 10 } }), false, 'the ceiling is 10')
+  assert.equal(loopExtendable({ ...s, config: { ...s.config, maxRounds: 9 } }), true)
+  assert.equal(loopExtendable({ ...s, end: { outcome: 'needs-you', reason: 'no-progress', open: [], delivered: [] } }), false, 'only exhausted')
+  assert.equal(loopExtendable({ ...s, end: { outcome: 'ready', delivered: [], notes: [] } }), false)
+  assert.equal(loopExtendable({ ...s, phase: 'fixing', end: undefined }), false)
+  // Any other end gets no endId change from `extend`, and is not touched.
+  const other = { ...s, end: { outcome: 'needs-you', reason: 'no-progress', open: [], delivered: [] } }
+  assert.equal(loopStep(other, { kind: 'extend' }).state, other)
+})
+
+test('exhausted | extend: one more round — fixing the last verdict’s findings, history kept, deadline as it was', () => {
+  const s = exhausted()
+  const r = loopStep(s, { kind: 'extend' })
+  assert.equal(r.state.phase, 'fixing')
+  assert.equal(r.state.config.maxRounds, 3)
+  assert.equal(r.state.round, 2, 'no round is consumed by raising the limit')
+  assert.equal(r.state.end, undefined)
+  assert.equal(r.state.endId, undefined)
+  assert.equal(r.state.notified, undefined)
+  assert.equal(r.state.fixFrom, s.reviewedHash)
+  assert.equal(r.state.deadline, s.deadline, 'the deadline is not reset')
+  assert.deepEqual(r.state.fingerprints, s.fingerprints, 'oscillation and disagreement still see the earlier rounds')
+  assert.deepEqual(openRefs(r.state), ['R2.F1'])
+  assert.equal(loopIsLive(r.state), true)
+  assert.deepEqual(kinds(r.actions), ['message'])
+  assert.equal(r.actions[0].text, findingsMessage(2, 3, verdict('request_changes', [F('F1', 'still wrong')], 2, 'not yet')))
+  assert.equal(r.actions[0].id, `${EX}.${s.nextIntent}`)
+  assert.equal(loopStep(r.state, { kind: 'extend' }).state, r.state, 'a live loop takes no extend')
+
+  // The extra round runs as any other: the fix, the check, reviewer 3; its
+  // request_changes ends exhausted at the new limit, which may be raised again.
+  let t = run(r.state, ex(changes({ replies: [{ findingId: 'R2.F1', resolution: 'fixed', note: 'ok' }] }), { hash: 'h3', now: at(40) }), green).state
+  assert.equal(t.round, 3)
+  assert.deepEqual(kinds(t.intents.slice(-1)), ['reviewer'])
+  t = adopt(t)
+  const end = run(t, rv(t, verdict('request_changes', [F('F9', 'new one')], 3)))
+  assert.equal(endOf(end).outcome, 'exhausted')
+  assert.notEqual(end.state.endId, s.endId, 'a new end, a new id')
+  assert.equal(loopExtendable({ ...end.state, intents: [], notified: true }), true)
+  // …and an approve in the extra round delivers as usual.
+  assert.equal(endOf(run(t, rv(t, verdict('approve', [], 3)))).outcome, 'ready')
+})
+
+test('exhausted | extend: a re-raised finding still ends oscillation in the extra round', () => {
+  const f = F('F1', 'off by one')
+  const fixed = (round) => ({ replies: [{ findingId: `R${round}.F1`, resolution: 'fixed', note: 'ok' }] })
+  let s = fixing(cfg(), [f])
+  s = adopt(run(s, ex(changes(fixed(1)), { hash: 'h2' }), green).state)
+  s = run(s, rv(s, verdict('request_changes', [f], 2))).state
+  assert.equal(s.end.outcome, 'exhausted')
+  s = run({ ...s, intents: [], notified: true }, { kind: 'extend' }, ex(changes(fixed(2)), { hash: 'h3' }), green).state
+  s = adopt(s)
+  const end = endOf(run(s, rv(s, verdict('request_changes', [f], 3))))
+  assert.equal(end.reason, 'oscillation')
 })

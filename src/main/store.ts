@@ -22,7 +22,7 @@ import type {
 } from '../shared/types'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import type { McpRegistryEntry } from '../shared/mcp'
-import { BASE_ENV_NAME, DEFAULT_BASE_IMAGE, SHIP_RUNGS, legacyRepoMode } from '../shared/types'
+import { BASE_ENV_NAME, DEFAULT_BASE_IMAGE, REVIEW_MAX_ROUNDS, SHIP_RUNGS, legacyRepoMode } from '../shared/types'
 import { sanitizeWelcomeMode, type WelcomeMode } from '../shared/doctor'
 import { agentDef } from '../shared/agents'
 import { defaultAgentConfig } from '../shared/agentConfig'
@@ -1459,7 +1459,7 @@ const LOOP_INTENT = z.discriminatedUnion('kind', [
 ])
 const STORED_LOOP = z.object({
   version: z.literal(1), executor: z.string(),
-  config: z.object({ agent: z.string(), maxRounds: z.number().int().min(1).max(5), whenClean: z.enum(['notify', 'commit', 'push', 'pr', 'merge']), draftPr: z.boolean(), manualApproval: z.boolean().optional(), configValues: z.record(z.string(), z.union([z.string(), z.boolean()])).optional() }),
+  config: z.object({ agent: z.string(), maxRounds: z.number().int().min(1).max(REVIEW_MAX_ROUNDS.ceiling), whenClean: z.enum(['notify', 'commit', 'push', 'pr', 'merge']), draftPr: z.boolean(), manualApproval: z.boolean().optional(), configValues: z.record(z.string(), z.union([z.string(), z.boolean()])).optional() }),
   heldRepos: z.array(z.string()).optional(),
   proposals: z.record(z.string(), z.object({ commit: z.object({ subject: z.string(), body: z.string().optional() }).optional(), pr: z.object({ title: z.string(), body: z.string().optional() }).optional() })).optional(),
   phase: z.enum(['dormant', 'checking', 'proposing', 'reviewing', 'fixing', 'approving', 'delivering', 'ended']),
@@ -1474,7 +1474,7 @@ const STORED_LOOP = z.object({
   intents: z.array(LOOP_INTENT), nextIntent: LOOP_COUNT,
   plan: z.array(z.object({ repo: z.string(), step: z.enum(['commit', 'push', 'pr', 'merge']) })).optional(),
   delivered: z.array(LOOP_DELIVERED), turns: z.object({ executor: LOOP_COUNT, reviewer: LOOP_COUNT }),
-  end: LOOP_END.optional(), notified: z.boolean().optional()
+  end: LOOP_END.optional(), endId: z.string().optional(), notified: z.boolean().optional()
 }).refine((s) => (s.phase === 'ended') === !!s.end)
 
 export class UnreadableReviewLoops extends Error {

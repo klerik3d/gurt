@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
+import { createContext, useEffect, useState } from 'react'
 import type { SessionInfo, SessionSnapshot } from '../../../shared/types'
-import type { LoopState } from '../../../shared/reviewLoop'
+import { loopExtendable, type LoopState } from '../../../shared/reviewLoop'
 import { loopLine, type LoopLine } from '../../../shared/reviewStatus'
 import { alertDialog, confirmDialog } from '../dialog'
 import { logErr } from '../log'
@@ -23,7 +23,20 @@ export interface LoopView {
   asReviewer: boolean
   round: number | undefined
   stop: () => Promise<void>
+  /** "One more round" may be offered (§5.2): the executor's own loop ran out
+   *  of rounds and may still have one. */
+  extendable: boolean
+  /** The current end's id: the chat offers the action under that end's note
+   *  only. A loop stored before ids were recorded has none — the menu still
+   *  offers it. */
+  endId: string | undefined
+  extend: () => Promise<void>
 }
+
+/** The open session's loop, for the chat's notes (the end's "One more
+ *  round"). Provided by the chat, which reads the loop once for its header
+ *  menu and its feed. */
+export const LoopViewContext = createContext<LoopView | undefined>(undefined)
 
 /** Undefined for a session that is in no loop. */
 export function useReviewLoop(
@@ -61,7 +74,23 @@ export function useReviewLoop(
       await alertDialog(String(e))
     }
   }
-  return { line: loopLine(state), asReviewer: executor !== info.id, round: info.reviewOf?.round, stop }
+  const extend = async (): Promise<void> => {
+    try {
+      await window.gurt.reviewLoopExtend(executor)
+    } catch (e) {
+      await alertDialog(e instanceof Error ? e.message : String(e))
+    }
+  }
+  const asReviewer = executor !== info.id
+  return {
+    line: loopLine(state),
+    asReviewer,
+    round: info.reviewOf?.round,
+    stop,
+    extendable: !asReviewer && loopExtendable(state),
+    endId: state.endId,
+    extend
+  }
 }
 
 /** The loop's place in the session menu: where it stands, and "Stop loop". */
@@ -78,6 +107,19 @@ export function LoopMenuSection({ loop, onDone }: { loop: LoopView; onDone: () =
           <span data-testid="loop-headline">{line.headline}</span>
         </div>
       </div>
+      {loop.extendable && (
+        <div
+          className="menu-item"
+          data-testid="loop-extend"
+          onMouseDown={(e) => {
+            e.preventDefault()
+            onDone()
+            void loop.extend()
+          }}
+        >
+          <span>One more round</span>
+        </div>
+      )}
       {line.stoppable && (
         <div
           className="menu-item danger"

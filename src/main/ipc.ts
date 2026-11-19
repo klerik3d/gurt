@@ -479,6 +479,10 @@ export function registerIpc(): void {
       await kernel.ready
       return kernel.reviewLoop.stopLoop(id)
     },
+    reviewLoopExtend: async (id) => {
+      await kernel.ready
+      return kernel.reviewLoop.extendLoop(id)
+    },
     sessionSetMode: (id, modeId) => kernel.sessions.setMode(id, modeId),
     sessionSetConfigOption: async (id, configId, value) => {
       await kernel.ready

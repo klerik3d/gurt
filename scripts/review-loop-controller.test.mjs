@@ -531,6 +531,82 @@ test('request_changes at maxRounds ends `exhausted` with the open findings; noth
   assert.equal(c.head(), c.bases.alpha, 'a non-clean review commits nothing, whatever the rung')
 })
 
+test('one more round after `exhausted`: the limit goes up by one, the executor fixes the last findings, the loop goes on to its end', async () => {
+  const c = await run({
+    block: { maxRounds: 1, whenClean: 'commit', manualApproval: false },
+    exec: (n, text, c) => {
+      write(c.dir(), 'status.txt', `good ${n}\n`)
+      if (n === 1) return c.changes('feat: one')
+      c.changes('feat: one', { replies: [{ findingId: 'R1.F1', resolution: 'fixed', note: 'done' }] })
+    },
+    rev: (round, text, c, rid) =>
+      c.submit(rid, round === 1 ? { verdict: 'request_changes', findings: [blocker()] } : { verdict: 'approve' })
+  })
+  assert.equal(endOf(c).outcome, 'exhausted')
+  const firstEnd = c.st().endId
+  const ask = c.entries().find((e) => e.note?.extend)
+  assert.ok(ask, 'the exhausted note offers one more round')
+  assert.equal(ask.note.extend, firstEnd)
+  assert.equal(c.prompts.length, 1)
+  assert.equal(kernel.sessions.isLoopHeld(c.id), false)
+
+  await kernel.reviewLoop.extendLoop(c.id)
+  assert.equal(c.st().phase, 'fixing', 'applied at once')
+  assert.equal(c.st().config.maxRounds, 2)
+  assert.equal(kernel.sessions.isLoopHeld(c.id), true, 'live again: the clone is held')
+  assert.ok(c.entries().some((e) => /Round limit raised to 2 — the executor fixes R1’s findings/.test(e.text)))
+  await finished(c)
+  assert.match(c.prompts[1], /^gurt review loop — round 1 of 2: the reviewer requested changes\./)
+  assert.match(c.prompts[1], /R1\.F1 \[blocker\]/)
+  assert.equal(c.reviewers.length, 2)
+  assert.equal(endOf(c).outcome, 'ready')
+  assert.notEqual(c.head(), c.bases.alpha, 'the clean extra round delivered')
+  assert.equal(endNotices(c).length, 2, 'each end is announced')
+  assert.equal(kernel.sessions.isLoopHeld(c.id), false)
+  assert.equal(kernel.sessions['sessions'].get(c.id).info.review.maxRounds, 1, 'the session’s own block is untouched')
+  await assert.rejects(kernel.reviewLoop.extendLoop(c.id), /only a loop that ran out of rounds/)
+  await assert.rejects(kernel.reviewLoop.extendLoop('nope'), /no review loop/)
+})
+
+test('one more round: the stored limit may reach the ceiling of 10, no further; refused once the loop’s time is up', async () => {
+  const c = await run({
+    block: { maxRounds: 1 },
+    exec: (n, text, c) => {
+      write(c.dir(), 'status.txt', 'good 1\n')
+      c.changes('feat: one')
+    },
+    rev: (round, text, c, rid) => c.submit(rid, { verdict: 'request_changes', findings: [blocker()] })
+  })
+  assert.equal(endOf(c).outcome, 'exhausted')
+  const file = path.join(h.GURT_ROOT, ws, c.task, 'review-loop.json')
+  const original = fs.readFileSync(file, 'utf8')
+  const stored = JSON.parse(original)
+  stored[c.id].config.maxRounds = 10
+  fs.writeFileSync(file, JSON.stringify(stored))
+  assert.equal((await h.store.readReviewLoops(ws, c.task))[c.id].config.maxRounds, 10)
+  stored[c.id].config.maxRounds = 11
+  fs.writeFileSync(file, JSON.stringify(stored))
+  await assert.rejects(h.store.readReviewLoops(ws, c.task), /state-unreadable/)
+  fs.writeFileSync(file, original)
+  for (const f of fs.readdirSync(path.dirname(file))) if (f.startsWith('review-loop.json.corrupt-')) fs.rmSync(path.join(path.dirname(file), f))
+
+  // A loop stored before end ids were recorded (no endId; its chat note has no
+  // link): loaded as it is and still extendable — the session menu offers it.
+  const legacy = JSON.parse(original)
+  delete legacy[c.id].endId
+  fs.writeFileSync(file, JSON.stringify(legacy))
+  const read = (await h.store.readReviewLoops(ws, c.task))[c.id]
+  assert.equal(read.endId, undefined)
+  assert.equal(h.reviewLoop.loopExtendable(read), true)
+  fs.writeFileSync(file, original)
+
+  // The deadline is not reset by one more round: past it, the round is refused.
+  await advance(121 * 60_000)
+  await assert.rejects(kernel.reviewLoop.extendLoop(c.id), /time is up/)
+  assert.equal(c.st().phase, 'ended')
+  assert.equal(c.prompts.length, 1, 'nothing sent')
+})
+
 test('a fix round that leaves the diff unchanged ends `no-progress`', async () => {
   const c = await run({
     exec: (n, text, c) => {
@@ -1169,7 +1245,7 @@ test('review-loop.json is a reserved repo name, written like the other store fil
 
 test('the stop-loop and state methods are on the API and not offered to the operator', async () => {
   const { API_METHODS, METHOD_EXPOSURE } = h.api
-  for (const m of ['reviewLoopState', 'reviewLoopStop']) {
+  for (const m of ['reviewLoopState', 'reviewLoopStop', 'reviewLoopExtend']) {
     assert.ok(API_METHODS.includes(m))
     assert.equal(METHOD_EXPOSURE[m], 'none')
   }
