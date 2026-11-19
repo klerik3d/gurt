@@ -182,6 +182,33 @@ export type McpEntry =
       entry: McpRegistryEntry
     }
 
+/**
+ * The canonical spelling of an MCP server URL — what an OAuth sign-in is bound
+ * to (RFC 8707 `resource`, docs/requirements-oauth-credentials.md §3): no
+ * fragment, host lowercased (the URL parser does that), and no trailing slash
+ * on a bare origin. A path's own trailing slash is kept — `/mcp` and `/mcp/`
+ * are different resources to a server. Null when `raw` is not an absolute
+ * http(s) URL.
+ */
+export function canonicalMcpUrl(raw: string): string | null {
+  let url: URL
+  try {
+    url = new URL(raw.trim())
+  } catch {
+    return null
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return null
+  url.hash = ''
+  const href = url.href
+  return url.pathname === '/' && !url.search ? href.replace(/\/$/, '') : href
+}
+
+/** Whether two spellings name the same MCP server URL. */
+export const sameMcpUrl = (a: string, b: string): boolean => {
+  const ca = canonicalMcpUrl(a)
+  return ca !== null && ca === canonicalMcpUrl(b)
+}
+
 /** Display name of a registry entry: its label, or its id when unlabelled. */
 export const mcpLabel = (entry: McpRegistryEntry): string => entry.label?.trim() || entry.id
 

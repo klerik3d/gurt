@@ -77,7 +77,9 @@ import type { PiiMask } from './pii'
 import { lineBuffer, spawnAcpAdapter, spawnInContainer } from './provision'
 import { createAcpClient, type AcpClient } from './acpClient'
 import { servePiiRewrite, stopPiiRewrite } from './piiRewrite'
-import { resolveProxyPlan } from './proxy/config'
+import { resolveProxyPlan, type ResolvedProxyPlan } from './proxy/config'
+import { scopeKeeper } from './oauth/keeper'
+import { oauthStoredAccess } from './oauth'
 import type { ProxyConfig } from '../shared/proxy'
 import { JsonRpcPeer } from './jsonrpc'
 import {
@@ -860,6 +862,9 @@ export function postTurnDecision(o: {
 export class SessionManager {
   /** One ACP adapter per session, held under the session id. */
   private connections = new Map<string, Connection>()
+  /** Bumped by `detach`; an `attachMcp` that began before it must not arm the
+   *  live-scope keeper after it (docs/requirements-oauth-credentials.md §5.2). */
+  private readonly detachEpoch = new Map<string, number>()
   /** In-flight adapter spawn per session — concurrent callers (a prompt's
    *  attach racing a config change's) must share one, or the loser's spawn
    *  leaks a second adapter process. Same shape as `installsInFlight` in
@@ -2265,6 +2270,10 @@ export class SessionManager {
    * is also what makes a scope edit mid-session take effect on the next attach.
    */
   private async attachMcp(s: Session, ctx: LaunchContext): Promise<AcpHttpMcpServer[]> {
+    // `detach` may run while this is awaiting (a token refresh inside the plan,
+    // a host listener coming up): a watch armed after it would outlive the
+    // teardown it was supposed to be undone by.
+    const epoch = this.detachEpoch.get(s.info.id) ?? 0
     const hosted = [
       ...(await this.events.resolveMcpServers(s.ref, s.info.id, anchorRepo(s.info), s.info.mcp)),
       await this.events.resolveGurtServer(s.ref, s.info.id, this.gurtHooks(s))
@@ -2274,19 +2283,109 @@ export class SessionManager {
     let piiUrl: string | undefined
     if (this.maskEnabled()) piiUrl = await servePiiRewrite(s.info.id, this.mask)
     else stopPiiRewrite(s.info.id)
-    const plan = await resolveProxyPlan(s.ref, s.info.id, ctx.proxy.token, s.info.mcp, {
+    // Captured once: the live-scope refresh below rebuilds exactly this scope,
+    // with only the tokens renewed — it is not a second way to apply an edit.
+    const selection = s.info.mcp
+    const planOpts = {
       piiUrl,
       // One URL per built-in, because gurt still runs one listener per (session,
       // mcp id); §10.4 collapses these into a single `hostMcpUrl`.
       hostMcpUrls: Object.fromEntries(hosted.map((m) => [m.name, m.url])),
       network: s.info.network,
       proxyBase: ctx.proxy.base
-    })
+    }
+    const plan = await resolveProxyPlan(s.ref, s.info.id, ctx.proxy.token, selection, planOpts)
     for (const line of plan.errors)
       this.bus.emit('provision.log', { key: s.info.id, line: `[mcp] ${line}` })
     await this.events.pushProxyScope(s.info.id, plan.config)
-    this.noteUnattachedMcp(s, plan.mcpServers)
-    return plan.mcpServers
+    if ((this.detachEpoch.get(s.info.id) ?? 0) === epoch && this.sessions.get(s.info.id) === s)
+      this.keepOAuthScopeFresh(s, ctx, selection, planOpts, plan)
+    const attached = [...plan.mcpServers, ...plan.recoverable]
+    this.noteUnattachedMcp(s, attached)
+    return attached
+  }
+
+  /**
+   * An MCP access token rides in the scope the proxy reads and has a short
+   * life, so a session that outlives it would start answering 401
+   * (docs/requirements-oauth-credentials.md §5.2). The keeper refreshes the
+   * linked `oauth` entries ahead of expiry and calls back here to rewrite the
+   * scope — the proxy watches the file, and the agent's URL and token do not
+   * change. No-op for a session whose servers link no `oauth` entry.
+   *
+   * A rebuild that lost a route to a failed refresh pushes nothing: the old
+   * scope still holds a token for a few more minutes, which beats removing the
+   * server from a running session.
+   */
+  private keepOAuthScopeFresh(
+    s: Session,
+    ctx: LaunchContext,
+    selection: McpSelection[] | undefined,
+    planOpts: Parameters<typeof resolveProxyPlan>[4],
+    pushedPlan: ResolvedProxyPlan
+  ): void {
+    const oauthIds = pushedPlan.oauthCredentialIds
+    // The scope the proxy holds. A rebuild keeps the routes whose credential
+    // failed *this time* exactly as they are here: dropping a server from a
+    // running session over a transient failure of another entry's refresh is
+    // worse than leaving its old token to run out.
+    let last = pushedPlan.config
+    // One rebuild at a time per session: two entries' timers can fire together,
+    // and each rebuild composes from the store as it is when its turn comes, so
+    // the last push is always the newest — never an older plan landing late.
+    let queue: Promise<unknown> = Promise.resolve()
+    const serially = <T,>(fn: () => Promise<T>): Promise<T> => {
+      const run = queue.catch(() => {}).then(fn)
+      queue = run
+      return run
+    }
+    scopeKeeper.watch(
+      s.info.id,
+      oauthIds,
+      {
+        rebuild: (isCurrent, credentialId, token) =>
+          serially(async () => {
+            if (!isCurrent()) return
+            // No second refresh: the renewed entry's token is the one the keeper
+            // just resolved, and the others are used as stored while still
+            // valid — a refresh here would persist, and short-lived tokens would
+            // chase their own writes.
+            const reuse: Record<string, string> = {}
+            for (const id of oauthIds) {
+              const stored = id === credentialId ? token : await oauthStoredAccess(id)
+              if (stored) reuse[id] = stored
+            }
+            const plan = await resolveProxyPlan(
+              s.ref,
+              s.info.id,
+              ctx.proxy.token,
+              selection,
+              planOpts,
+              reuse
+            )
+            // Only the entry being renewed can fail this renewal.
+            const failed = plan.oauthErrors[credentialId]
+            if (failed) throw new Error(failed)
+            // A route whose own credential failed *this time* keeps its previous
+            // upstream. Only those: a route that is simply gone (the entry was
+            // deleted or edited out of the registry meanwhile) stays gone.
+            for (const [route, upstream] of Object.entries(last.mcp)) {
+              if (upstream.kind !== 'registry' || route in plan.config.mcp) continue
+              const atRisk = plan.oauthRoutes[route]?.some((cid) => plan.oauthErrors[cid])
+              if (atRisk) plan.config.mcp[route] = upstream
+            }
+            if (!isCurrent()) return
+            await this.events.pushProxyScope(s.info.id, plan.config)
+            last = plan.config
+          }),
+        onProblem: (message) =>
+          this.bus.emit('provision.log', {
+            key: s.info.id,
+            line: `[mcp] could not renew an MCP sign-in for this running session — ${message}`
+          })
+      },
+      pushedPlan.oauthTokens
+    )
   }
 
   /**
@@ -2418,6 +2517,11 @@ export class SessionManager {
       conn.kill()
     }
     this.events.stopMcpServers(sessionId)
+    // Before the scope is revoked: a renewal landing after it would rewrite the
+    // file the revocation removed. The epoch also voids an `attachMcp` that is
+    // still in flight and would arm a watch after this.
+    this.detachEpoch.set(sessionId, (this.detachEpoch.get(sessionId) ?? 0) + 1)
+    scopeKeeper.unwatch(sessionId)
     if (s) s.attached = false
   }
 

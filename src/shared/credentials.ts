@@ -8,7 +8,7 @@ import type { RepoConfig } from './types'
 import { canonicalRepoId } from './repoId'
 import { AGENT_MANIFESTS } from './agents'
 import type { McpHeader, McpHttpEntry, McpLocalEntry } from './mcp'
-import { headerValueProblem, isHeaderName, isMcpCredentialRef } from './mcp'
+import { headerValueProblem, isHeaderName, isMcpCredentialRef, sameMcpUrl } from './mcp'
 
 export type CredentialKind =
   | 'git-token'
@@ -257,13 +257,31 @@ export const signedOutError = (entry: CredentialEntry): string =>
 export const oauthSignedOut = (entry: CredentialEntry): boolean =>
   entry.kind === 'oauth' && (!!entry.data['signedOut'] || !entry.data['refresh'])
 
+/**
+ * Whether an `mcp`-provider sign-in was made for a server other than `url` —
+ * independent of whether it is still signed in. A signed-out entry keeps its
+ * `serverUrl`, and other registry entries may still link it for that server:
+ * signing it in again for a different URL would rebind it under them.
+ */
+export const oauthBoundElsewhere = (entry: CredentialEntry, url: string): boolean => {
+  const bound = entry.kind === 'oauth' ? (entry.data['serverUrl'] ?? '') : ''
+  return !!bound && !sameMcpUrl(bound, url)
+}
+
 /** pii-detector entries — the pool Settings → Masking links against (§5.3). */
 export const piiCredentials = (credentials: CredentialEntry[]): CredentialEntry[] =>
   credentials.filter((c) => c.kind === 'pii-detector')
 
-/** Agent-token and oauth entries — the pool the Agents editor links against. */
+/** A sign-in made to one MCP server (the generic `mcp` provider): its token is
+ *  for that server and for nothing else — never an agent's API credential. */
+export const isMcpSignIn = (entry: CredentialEntry): boolean =>
+  entry.kind === 'oauth' && entry.data['providerId'] === 'mcp'
+
+/** Agent-token and oauth entries — the pool the Agents editor links against.
+ *  An MCP server's sign-in is not offered: it would be sent to the model
+ *  provider's API as the agent's key. */
 export const agentCredentials = (credentials: CredentialEntry[]): CredentialEntry[] =>
-  credentials.filter((c) => c.kind === 'agent-token' || c.kind === 'oauth')
+  credentials.filter((c) => c.kind === 'agent-token' || (c.kind === 'oauth' && !isMcpSignIn(c)))
 
 /** Mcp-token and oauth entries — the pool the MCP registry editor links against. */
 export const mcpCredentials = (credentials: CredentialEntry[]): CredentialEntry[] =>
@@ -284,13 +302,17 @@ export const mcpCredentials = (credentials: CredentialEntry[]): CredentialEntry[
 export function resolveMcpSecret(
   credentials: readonly CredentialEntry[],
   credentialId: string
-): { secret?: string; label?: string; error?: string } {
+): { secret?: string; label?: string; boundTo?: string; error?: string } {
   const entry = credentials.find((c) => c.id === credentialId)
   if (!entry) return { error: 'linked credential no longer exists' }
   const label = entry.label || entry.id
   if (entry.kind === 'oauth') {
     if (oauthSignedOut(entry)) return { error: signedOutError(entry) }
-    return { secret: (entry.data['access'] ?? '').trim(), label }
+    // `boundTo`: the MCP server an `mcp`-provider sign-in was made for. A token
+    // minted for one server is only ever sent to that server — the callers
+    // check where they are about to send it.
+    const boundTo = entry.data['serverUrl']
+    return { secret: (entry.data['access'] ?? '').trim(), label, ...(boundTo ? { boundTo } : {}) }
   }
   if (entry.kind !== 'mcp-token') return { error: `linked credential "${label}" is not an MCP token` }
   return { secret: (entry.data['secret'] ?? '').trim(), label }
@@ -361,8 +383,17 @@ export function resolveMcpHeaders(
       headers.push({ name: h.name, value: h.value })
       continue
     }
-    const { secret, label, error } = resolveMcpSecret(credentials, h.value.credentialId)
+    const { secret, label, boundTo, error } = resolveMcpSecret(credentials, h.value.credentialId)
     if (error) return { error }
+    // A sign-in to one MCP server is never sent to another: the generic `mcp`
+    // provider records the server it signed in to (`data.serverUrl`), and an
+    // entry whose URL was edited since — or a credential linked by hand to a
+    // different server — would otherwise hand that server a token minted for
+    // someone else.
+    if (boundTo && !sameMcpUrl(boundTo, entry.url))
+      return {
+        error: `linked credential "${label}" is signed in to ${boundTo}, not ${entry.url} — sign in again from this server`
+      }
     if (!isHeaderName(h.name))
       return { error: `linked credential "${label}" is sent as "${h.name}", which is not a valid header name` }
     // The composed value, not the secret alone: the prefix is user-typed too.
@@ -394,8 +425,13 @@ export function resolveMcpSecretEnv(
   const env: Record<string, string> = {}
   for (const [name, value] of Object.entries(entry.env ?? {})) {
     if (!isMcpCredentialRef(value)) continue
-    const { secret, label, error } = resolveMcpSecret(credentials, value.credentialId)
+    const { secret, label, boundTo, error } = resolveMcpSecret(credentials, value.credentialId)
     if (error) return { error }
+    // A local process is not the server that sign-in was made for.
+    if (boundTo)
+      return {
+        error: `linked credential "${label}" is a sign-in to ${boundTo} and cannot be given to a local server`
+      }
     const composed = `${value.prefix ?? ''}${secret ?? ''}`
     if (composed.includes('\0'))
       return { error: `linked credential "${label}" contains a NUL byte — re-enter it` }
@@ -444,6 +480,11 @@ export function resolveAgentSecret(
   const entry = credentials.find((c) => c.id === credentialId)
   if (!entry) return { secret: '', error: 'linked credential no longer exists' }
   if (entry.kind === 'oauth') {
+    if (isMcpSignIn(entry))
+      return {
+        secret: '',
+        error: `linked credential "${entry.label}" is a sign-in to an MCP server, not an agent credential`
+      }
     if (oauthSignedOut(entry)) return { secret: '', entry, error: signedOutError(entry) }
     return { secret: entry.data['access'] ?? '', entry }
   }

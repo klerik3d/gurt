@@ -271,6 +271,24 @@ async function write(data: CredentialsFile): Promise<void> {
     credentials: data.credentials.map((entry) => seal(entry, electron, priorSealed))
   }
   await writeJsonDurable(credentialsFile(), out, { mode: 0o600 })
+  for (const fn of [...writeListeners]) {
+    try {
+      fn()
+    } catch {
+      // a listener's trouble is not the write's
+    }
+  }
+}
+
+const writeListeners = new Set<() => void>()
+
+/** Called after every durable write of the store — what lets a long-lived
+ *  watcher (the live-scope keeper parking a signed-out entry) notice a new
+ *  sign-in the moment it lands instead of polling the file. Returns the
+ *  unsubscribe. */
+export function onCredentialsWritten(fn: () => void): () => void {
+  writeListeners.add(fn)
+  return () => void writeListeners.delete(fn)
 }
 
 /** Every mask starts with this — and no real token can (U+2022 is not in any
@@ -506,15 +524,23 @@ export async function listCredentials(): Promise<CredentialEntry[]> {
  * versa, so both writers sit on it and this one reads the store *inside* its
  * turn. A `undefined` value deletes the key. Values are main-minted plaintext,
  * never renderer input — no sentinel resolution here.
+ *
+ * `ifMatch` makes it a compare-and-set: the patch applies only while every
+ * listed key still holds the listed value, evaluated on the chain's own read.
+ * A refresh result derived from a refresh token must not overwrite a newer
+ * sign-in that landed while the request was in flight. Resolves true when the
+ * patch was written, false when the guard refused it.
  */
 export function patchCredentialData(
   id: string,
-  patch: Record<string, string | undefined>
-): Promise<void> {
+  patch: Record<string, string | undefined>,
+  ifMatch?: Record<string, string>
+): Promise<boolean> {
   const next = saveChain.catch(() => {}).then(async () => {
     const before = await read()
     const entry = before.credentials.find((c) => c.id === id)
     if (!entry) throw new Error('linked credential no longer exists')
+    if (ifMatch && Object.entries(ifMatch).some(([k, v]) => (entry.data[k] ?? '') !== v)) return false
     const data = { ...entry.data }
     for (const [key, value] of Object.entries(patch)) {
       if (value === undefined) delete data[key]
@@ -523,6 +549,7 @@ export function patchCredentialData(
     const credentials = before.credentials.map((c) => (c.id === id ? { ...c, data } : c))
     await write({ credentials })
     feedRedactor(credentials)
+    return true
   })
   saveChain = next.catch(() => {})
   return next

@@ -287,8 +287,10 @@ export async function resolveProxyPlan(
   sessionId: string,
   token: string,
   selection: McpSelection[] | undefined,
-  opts: Omit<ProxyPlanInput, 'sessionId' | 'token' | 'selection' | 'registry' | 'credentials'> = {}
-): Promise<ProxyPlan> {
+  opts: Omit<ProxyPlanInput, 'sessionId' | 'token' | 'selection' | 'registry' | 'credentials'> = {},
+  /** oauth access tokens already resolved (id → access); see freshenOAuthCredentials. */
+  reuseTokens: Readonly<Record<string, string>> = {}
+): Promise<ResolvedProxyPlan> {
   const [registry, credentials] = await Promise.all([
     getMcpServers(ref.workspace),
     listCredentials()
@@ -305,9 +307,11 @@ export async function resolveProxyPlan(
     .flatMap(mcpCredentialIds)
   const { credentials: freshened, errors: credentialErrors } = await freshenOAuthCredentials(
     credentials,
-    oauthIds
+    oauthIds,
+    undefined,
+    reuseTokens
   )
-  return planProxy({
+  const plan = planProxy({
     sessionId,
     token,
     selection,
@@ -316,6 +320,61 @@ export async function resolveProxyPlan(
     credentialErrors,
     ...opts
   })
+  // What a running session needs to keep this scope alive (oauth/keeper.ts):
+  // which `oauth` entries its routes were composed from, and which of those
+  // failed to freshen *this* time — a rebuild must not push a scope that has
+  // lost a route to a transient refresh failure.
+  const isOAuth = new Set(credentials.filter((c) => c.kind === 'oauth').map((c) => c.id))
+  const oauthRoutes: Record<string, string[]> = {}
+  for (const e of registry) {
+    if (!selected.has(e.id) || isLocalMcpEntry(e)) continue
+    const ids = mcpCredentialIds(e).filter((id) => isOAuth.has(id))
+    if (ids.length > 0) oauthRoutes[e.id] = ids
+  }
+  // A selected remote server whose own oauth credential failed is not in
+  // `mcpServers` (planProxy's contract), so the agent would never be told about
+  // it — and the keeper's later rebuild, once the user signs in, would open a
+  // route no one knows to call. Its descriptor is handed out anyway, with the
+  // route still closed (the proxy answers 404 for it, §4.3): the URL is the
+  // same one the route will answer on after recovery.
+  const recoverable: AcpHttpMcpServer[] = []
+  for (const [route, ids] of Object.entries(oauthRoutes)) {
+    if (route in plan.config.mcp || !ids.some((id) => credentialErrors[id])) continue
+    recoverable.push({
+      type: 'http',
+      name: route,
+      url: proxyMcpUrl(token, route, opts.proxyBase ?? proxyBaseUrl()),
+      headers: []
+    })
+  }
+  return {
+    ...plan,
+    recoverable,
+    oauthCredentialIds: [...new Set(oauthIds)].filter((id) => isOAuth.has(id)),
+    oauthErrors: credentialErrors,
+    oauthRoutes,
+    oauthTokens: Object.fromEntries(
+      freshened.flatMap((c) => (c.kind === 'oauth' && c.data['access'] ? [[c.id, c.data['access']]] : []))
+    )
+  }
+}
+
+/** A {@link ProxyPlan} as `resolveProxyPlan` returns it. */
+export interface ResolvedProxyPlan extends ProxyPlan {
+  /** Descriptors of selected servers whose route is closed for want of a
+   *  working sign-in — to be given to the agent *in addition to* `mcpServers`,
+   *  so that the route a recovery opens is one the agent already knows. */
+  recoverable: AcpHttpMcpServer[]
+  /** The `oauth` credentials the selected http entries link. */
+  oauthCredentialIds: string[]
+  /** Why each of them failed to deliver an access token, by credential id. */
+  oauthErrors: Record<string, string>
+  /** For each selected remote route, the `oauth` credentials it is composed
+   *  from — which routes a failed credential puts at risk. */
+  oauthRoutes: Record<string, string[]>
+  /** The access token each `oauth` entry contributed to this plan, by id —
+   *  what the keeper treats as "already pushed". */
+  oauthTokens: Record<string, string>
 }
 
 /**

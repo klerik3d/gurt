@@ -5,7 +5,10 @@ import {
   credentialKindLabel,
   mcpCredentials,
   liftLegacyMcpCredential,
-  resolveMcpSecret
+  oauthBoundElsewhere,
+  oauthSignedOut,
+  resolveMcpSecret,
+  signedOutError
 } from '../../../../shared/credentials'
 import type {
   McpDef,
@@ -19,6 +22,7 @@ import type {
 } from '../../../../shared/mcp'
 import {
   LOCAL_MCP_NOTICE,
+  canonicalMcpUrl,
   isEnvName,
   isHttpMcpEntry,
   isLocalMcpEntry,
@@ -400,6 +404,38 @@ function McpServerModal({
   const [probed, setProbed] = useState<{ key: string; result: McpProbeResult } | null>(null)
   const [note, setNote] = useState('')
   const [error, setError] = useState('')
+  /** Credential id of the browser sign-in in flight, if any (§4: one pending
+   *  attempt per entry). */
+  const [signing, setSigning] = useState<string | null>(null)
+  /** The scopes the user typed for the next sign-in; null = not touched, so the
+   *  linked credential's own override (if it has one) is shown. */
+  const [scopesText, setScopesText] = useState<string | null>(null)
+  const signingRef = useRef<string | null>(null)
+  signingRef.current = signing
+  /** Credentials this editor minted by signing in. A sign-in stores its
+   *  credential at once, independent of Save — so closing the editor without
+   *  saving must take back what it made, or a live refresh token is left in
+   *  the store for no server. */
+  const mintedRef = useRef<Set<string>>(new Set())
+  // Closing the editor mid-sign-in abandons the attempt: the loopback listener
+  // closes with it instead of waiting out its timeout.
+  /** Set once the editor is closing or gone: a sign-in that still lands (its
+   *  token response was already on the wire) must not leave its credential. */
+  const abandonedRef = useRef(false)
+  /** The latest `dropMinted` — the unmount cleanup below outlives the render it
+   *  was made in. */
+  const dropMintedRef = useRef<(keep: readonly string[]) => Promise<void>>(async () => {})
+  useEffect(() => {
+    abandonedRef.current = false // (a StrictMode remount runs the cleanup once)
+    return () => {
+      abandonedRef.current = true
+      if (signingRef.current) void window.gurt.oauthCancel(signingRef.current)
+      // Unmounted without Save or Cancel (the settings page was left): whatever
+      // this editor minted and Save has not claimed goes with it. Save empties
+      // `mintedRef` of the credentials it keeps, so only the unsaved are left.
+      void dropMintedRef.current([])
+    }
+  }, [])
 
   useEffect(() => {
     window.gurt
@@ -418,6 +454,75 @@ function McpServerModal({
   }, [legacy])
 
   const isLocal = kind !== 'http'
+
+  // The sign-in this server's headers already link, if any: the `mcp`-provider
+  // `oauth` credential behind one of its header rows.
+  const oauthCred = headers
+    .flatMap((h) => (isMcpCredentialRef(h.value) ? [h.value.credentialId] : []))
+    .map((cid) => credentials.find((c) => c.id === cid))
+    .find((c) => c?.kind === 'oauth' && c.data['providerId'] === 'mcp')
+  const signedIn = !!oauthCred && !!oauthCred.data['refresh'] && !oauthSignedOut(oauthCred)
+  const boundUrl = oauthCred?.data['serverUrl'] ?? ''
+  // Independent of signed-in: a signed-out credential keeps its binding too.
+  const urlDrifted = !!oauthCred && oauthBoundElsewhere(oauthCred, url)
+
+  /**
+   * Run the browser sign-in for this server (docs/requirements-oauth-
+   * credentials.md §3, §4) and link the result: an `oauth` credential for the
+   * server URL, sent as `Authorization: Bearer …` — replacing a header row of
+   * that name, since two would not both be sent. Main owns the whole flow
+   * (discovery, client registration, the system browser, the loopback
+   * listener) and stores the token set; this only starts it and links what it
+   * made. A failure leaves the entry as it was, with the server's own sentence.
+   */
+  const signIn = async () => {
+    setError('')
+    setNote('')
+    const server = canonicalMcpUrl(url)
+    if (!server) {
+      setError('enter the server URL first')
+      return
+    }
+    // A credential signed in to another URL is not re-signed-in to this one:
+    // it may be linked by other servers, which would then fail their binding
+    // check. A drifted URL gets a credential of its own.
+    const reuse = oauthCred && !urlDrifted ? oauthCred : undefined
+    const credId = reuse?.id ?? crypto.randomUUID()
+    const fresh = !reuse
+    const scopes = (scopesText ?? reuse?.data['scopes'] ?? '').trim()
+    setSigning(credId)
+    try {
+      await window.gurt.oauthSignIn({
+        id: credId,
+        label: reuse?.label ?? `${id.trim() || new URL(server).host} sign-in`,
+        kind: 'oauth',
+        hosts: [],
+        data: { providerId: 'mcp', serverUrl: server, ...(scopes ? { scopes } : {}) }
+      })
+      if (fresh) mintedRef.current.add(credId)
+      if (abandonedRef.current) {
+        // The editor closed while the token exchange was in flight and the
+        // sign-in landed anyway: take back what it just stored.
+        await dropMinted([])
+        return
+      }
+      setCredentials((await window.gurt.getCredentials()).credentials)
+      setHeaders((prev) => {
+        const link = { name: 'Authorization', value: { credentialId: credId, prefix: 'Bearer ' } }
+        const at = prev.findIndex((h) => h.name.trim().toLowerCase() === 'authorization')
+        return at < 0 ? [...prev, link] : prev.map((h, i) => (i === at ? link : h))
+      })
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e)
+      // Cancelled by the user (Cancel, or closing the editor) — not an error.
+      // Matched on the flow's own whole sentence at the end of the message (the
+      // IPC layer prefixes it), so a provider's error that merely mentions
+      // "cancelled" is still shown.
+      if (!/(^|: |Error: )sign-in cancelled$/.test(message)) setError(message)
+    } finally {
+      setSigning(null)
+    }
+  }
 
   /**
    * The entry the form currently describes.
@@ -588,6 +693,36 @@ function McpServerModal({
     return relink
   }
 
+  /** Remove sign-ins this editor minted that nothing links: all of them when
+   *  closing without saving, and on Save the ones the saved entry no longer
+   *  uses (an earlier sign-in replaced by one for a changed URL, or unlinked
+   *  with ×). A sign-in stores its credential at once, so left alone each would
+   *  stay in the store with a live refresh token for no server. */
+  const dropMinted = async (keep: readonly string[]): Promise<void> => {
+    const drop = [...mintedRef.current].filter((cid) => !keep.includes(cid))
+    mintedRef.current.clear()
+    if (!drop.length) return
+    try {
+      const file = await window.gurt.getCredentials()
+      await window.gurt.setCredentials({
+        credentials: file.credentials.filter((c) => !drop.includes(c.id))
+      })
+    } catch {
+      // Still listed in Credentials, unused, where it can be deleted.
+    }
+  }
+
+  dropMintedRef.current = dropMinted
+
+  const cancelEditor = async () => {
+    abandonedRef.current = true
+    // Settle a pending attempt first, so it cannot store anything after the
+    // cleanup below has looked.
+    if (signingRef.current) await window.gurt.oauthCancel(signingRef.current)
+    await dropMinted([])
+    onClose()
+  }
+
   const save = async () => {
     setError('')
     try {
@@ -596,6 +731,7 @@ function McpServerModal({
       await (editing
         ? window.gurt.updateMcpServer(ws, saved)
         : window.gurt.addMcpServer(ws, saved))
+      await dropMinted(mcpCredentialIds(saved))
       onClose()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -663,7 +799,7 @@ function McpServerModal({
   const filledIn = id.trim() || url.trim() || pkg.trim() || command.trim()
 
   return (
-    <Modal title={editing ? 'Edit MCP server' : 'New MCP server'} width={520} onClose={onClose}>
+    <Modal title={editing ? 'Edit MCP server' : 'New MCP server'} width={520} onClose={run(cancelEditor)}>
       <div className="modal-body env-modal">
         <div className="fld">
           <span className="seclabel">TRANSPORT</span>
@@ -867,6 +1003,56 @@ function McpServerModal({
           </div>
         )}
 
+        {kind === 'http' && (
+          <div className="fld">
+            <span className="seclabel">SIGN IN</span>
+            {signing ? (
+              <div className="set-card-foot" style={{ justifyContent: 'flex-start' }}>
+                <span className="fld-hint">waiting for the browser sign-in…</span>
+                <button className="btn" onClick={() => void window.gurt.oauthCancel(signing)}>
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <div className="set-card-foot" style={{ justifyContent: 'flex-start' }}>
+                <button
+                  className="btn"
+                  disabled={!canonicalMcpUrl(url)}
+                  title="discover how this server signs users in, then sign in in your browser"
+                  onClick={run(signIn)}
+                >
+                  {signedIn && !urlDrifted ? 'Re-authenticate' : 'Sign in'}
+                </button>
+                <input
+                  className="input mono"
+                  placeholder="scopes (optional, space-separated)"
+                  value={scopesText ?? oauthCred?.data['scopes'] ?? ''}
+                  onChange={(e) => setScopesText(e.target.value)}
+                />
+              </div>
+            )}
+            {signedIn && !urlDrifted && (
+              <span className="fld-hint">
+                signed in as {oauthCred?.data['account'] || 'an unnamed account'} — the access token
+                is renewed by gurt, also in a running session
+              </span>
+            )}
+            {urlDrifted && (
+              <div className="error">
+                ⚠ the linked sign-in is for {boundUrl}, not this URL — Sign in makes a separate one for this server
+              </div>
+            )}
+            {oauthCred && oauthSignedOut(oauthCred) && (
+              <div className="error">⚠ {signedOutError(oauthCred)}</div>
+            )}
+            <span className="fld-hint">
+              For a server that asks for an OAuth sign-in (the MCP authorization spec) instead of a
+              pasted key. Opens your browser; gurt keeps the tokens, never the container. Scopes
+              default to what the server advertises — set them only to ask for more or less.
+            </span>
+          </div>
+        )}
+
         {isLocal && (
           <div className="fld">
             <div className="fld-head">
@@ -939,7 +1125,7 @@ function McpServerModal({
           {probing ? 'Testing…' : 'Test'}
         </button>
         <span className="spacer" />
-        <button className="btn" onClick={onClose}>
+        <button className="btn" onClick={run(cancelEditor)}>
           Cancel
         </button>
         <button
