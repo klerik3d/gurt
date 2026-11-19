@@ -27,11 +27,14 @@ Rules:
 - The same applies to inline `fontSize` in `*.tsx`: use the variable or a
   class. The one exception is the xterm.js `Terminal` option `fontSize`
   (a number of pixels, not CSS) in `TerminalSidebar.tsx`.
+- The same applies to theme objects in `*.ts` (CodeMirror `EditorView.theme`
+  in `codeEditor.ts`): `fontSize: 'var(--fs-*)'`, never a raw pixel value.
 
 Check (the first should print only the `:root` token definitions, the second
-only the xterm option):
+only the xterm option, the third only the CodeMirror `var(--fs-12)` line):
 
 ```sh
 grep -nE "font-size: *[0-9.]+px" src/renderer/src/styles.css
 git grep -nIE "fontSize" -- '*.tsx'
+git grep -nIE "fontSize|font-size" -- '*.ts' ':!*test*'
 ```
