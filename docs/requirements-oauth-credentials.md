@@ -1,7 +1,9 @@
 # Requirements: OAuth credentials (sign in instead of pasting a key)
 
-Status: partial — §8 phases 1–2 implemented, phase 3 (the generic MCP
-provider) pending · Target: gurt Electron MVP (this repo)
+Status: §8 phases 1–3 implemented. Phase 3 (the generic `mcp` provider)
+is built and tested against mocks; its **live smoke test against a real
+Cloudflare account is outstanding** (§9.11, §12). · Target: gurt Electron MVP
+(this repo)
 
 This document is a work order for an implementing agent. Read
 `requirements-git-access.md` §3 first — this adds one kind to its
@@ -12,8 +14,11 @@ or block deletion. Key code: `src/shared/credentials.ts`
 chain), `src/main/containers.ts` (`resolveLaunch` — the `secretEnv`
 injection), `src/main/proxy/config.ts` + `src/main/proxy/manager.ts`
 (the header a `pushScope` carries), `src/main/redact.ts` (`addSecrets`),
-and — new — `src/main/oauth/` (the flow, the refresh) with
-`src/main/oauth/providers/` (one module per provider).
+and `src/main/oauth/` (the flow, the refresh, the generic `mcp` provider,
+the live-scope keeper). The agent providers are **not** modules in that
+directory: each is declared by its agent plugin (`AgentMainPlugin.oauth`,
+`src/plugins/agents/<kind>/main.ts`) and run by the shared flow; the one
+provider no plugin declares is `mcp` (`src/main/oauth/mcp.ts`).
 
 > **Extends** `requirements-git-access.md`: §3's store gains a kind
 > whose secret gurt *obtains* rather than the user pasting it. The
@@ -47,7 +52,8 @@ A new kind in `CREDENTIAL_KINDS`:
 ```
 kind: 'oauth'
 data:
-  providerId   which src/main/oauth/providers/ module owns this entry
+  providerId   which provider owns this entry: an agent plugin's
+               `oauth.client.id` (anthropic / openai / google), or `mcp`
   refresh      the refresh token — secret, sealed, never leaves the host
   access       the current access token — secret, sealed
   expiresAt    when `access` expires (ISO 8601)
@@ -121,16 +127,48 @@ mechanical check, so it is named here rather than discovered as a leak.
 exists precisely to be shown. The openai `idToken` is on the secret
 side of the line: declared hidden+secret like `refresh` and `access`.
 
+The **mcp** provider stores four more plaintext extras, because a refresh
+has no plugin config to read them from:
+
+```
+  serverUrl      the canonical MCP URL signed in to (also the RFC 8707 resource)
+  tokenEndpoint  the authorization server's token endpoint, from discovery
+  clientId       the public client dynamic registration minted
+  scopes         optional — the user's override of the advertised scopes
+```
+
+`account` is the `id_token`'s email/name when the server sends one, else the
+server's host (the protocol defines no identity). **A sign-in is bound to its
+server:** `resolveMcpHeaders` refuses an `oauth` entry whose `serverUrl` is not
+the URL of the entry it is linked from (`linked credential "…" is signed in to
+A, not B — sign in again from this server`), so editing a server's URL or
+linking by hand never hands server B a token minted for server A. A local
+(`npm`/`command`) server is not that server either: `resolveMcpSecretEnv`
+refuses a bound sign-in, and an agent is not it either: the Agents editor does
+not offer an `mcp` sign-in and `resolveAgentSecret` refuses one — its token
+would otherwise be sent to a model provider as the agent's key. The editor reuses its credential only while the URL
+still matches — signed in or not: a signed-out credential keeps its binding
+and other servers may still link it; after the URL changed, Sign in mints a new one instead of
+rebinding a credential other servers may link. A sign-in the editor made is
+taken back if the editor is closed without Save, and on Save when the saved
+entry no longer links it (replaced by a sign-in for a changed URL, or unlinked).
+
 ## 3. Providers
 
-One interface, all specifics behind it (`src/main/oauth/providers/`):
+One interface, all specifics behind it. The agent providers are declared by
+their agent plugins (`AgentMainPlugin.oauth` → `OAuthClient` + hooks, run by
+`src/main/oauth/flow.ts`); the engine builds `OAUTH_PROVIDERS` from them, and
+`OAUTH_PROVIDER_REGISTRY` adds the generic `mcp` provider on top (kept out of
+`OAUTH_PROVIDERS` because that set is pinned to the agent kinds — it is also
+the picker's list, and `mcp` is started from the MCP registry editor):
 
 ```ts
 interface OAuthProvider {
   id: string
   /** Run the full sign-in: system browser, loopback redirect, code
-   *  exchange. Resolves when the tokens are in hand. */
-  authorize(): Promise<TokenSet>
+   *  exchange. Resolves when the tokens are in hand. `context.data` is the
+   *  entry's data — only the `mcp` provider reads it (serverUrl, scopes). */
+  authorize(signal?: AbortSignal, context?: { data: Record<string, string> }): Promise<TokenSet>
   /** Exchange a refresh token for a new access token. MAY rotate the
    *  refresh token — the returned set is the truth. */
   refresh(current: TokenSet): Promise<TokenSet>
@@ -141,6 +179,7 @@ interface TokenSet {
   refresh: string
   expiresAt: string
   account: string
+  extra?: Record<string, string>   // provider-named §2 extras
 }
 ```
 
@@ -151,13 +190,68 @@ per RFC 8252. `state` is generated per attempt and checked on the way
 back; a mismatch is an aborted flow, not a warning.
 
 Providers, phase 1: **anthropic**, **openai**, **google** — hardcoded
-configs (endpoints, client_id, scopes), one small module each. Phase 3
-adds a **generic MCP provider**: given a server URL it discovers the
-authorization server via RFC 8414 metadata and registers a client via
-RFC 7591 dynamic client registration, then runs the identical
-authorize/refresh interface. That one provider is what covers the
-MCP-spec OAuth path for any conforming server, without a per-server
-module.
+configs (endpoints, client_id, scopes), declared by the agent plugin whose CLI
+borrows the sign-in. Phase 3 adds the **generic `mcp` provider**
+(`src/main/oauth/mcp.ts`, discovery and registration in
+`src/main/oauth/mcpDiscovery.ts`): given a server URL it discovers the
+authorization server and registers a client, then runs the same shared
+authorize/refresh. It covers the MCP-spec OAuth path for any conforming
+server, without a per-server module. What it does, in order:
+
+1. **Probe.** An unauthenticated JSON-RPC `initialize` POST to the MCP URL.
+   A `401` with `WWW-Authenticate: Bearer resource_metadata="…"` names the
+   protected-resource metadata (RFC 9728) and may carry a `scope`.
+2. **Protected-resource metadata.** The advertised URL; failing it,
+   `/.well-known/oauth-protected-resource<path>` then the origin's
+   `/.well-known/oauth-protected-resource`. Its `resource` must be the MCP URL
+   (a document for another resource is refused). It names the authorization
+   server (`authorization_servers[0]`).
+3. **Authorization-server metadata.** RFC 8414
+   (`/.well-known/oauth-authorization-server[<path>]`), then OIDC discovery
+   (`/.well-known/openid-configuration`, path-inserted and path-appended); the
+   document must carry an `issuer` and it must be the issuer asked for
+   (absent or different: the document is not accepted).
+4. **Refusals, as sentences, before any browser opens:** an MCP URL that is
+   not https (plain http only for a loopback MCP server) — the token would
+   travel in the clear; any discovered endpoint (metadata URL, authorization
+   server, registration, token, authorize) that is not https, or that names this
+   machine (`localhost`, `127.0.0.0/8`, `[::1]`, `0.0.0.0`) — judged before the
+   scheme, so `https://localhost` is no way round it — unless the MCP server
+   itself is on loopback. Redirects are never left to `fetch`: each hop of a
+   discovery request is validated by the same rule, and the token endpoint
+   (code exchange and refresh) is never followed through a redirect at all,
+   since the request carries the code and verifier or the refresh token. The
+   stored token endpoint is checked again before a refresh sends the refresh
+   token to it; a
+   protected-resource document without `resource` (RFC 9728 requires it); no
+   `code_challenge_methods_supported` with `S256` (absent = no PKCE); no
+   `registration_endpoint` (gurt has no pre-registered clients); an explicit
+   `token_endpoint_auth_methods_supported` without `none` (public clients
+   only); a non-https endpoint (loopback excepted).
+5. **Dynamic client registration** (RFC 7591), *after* the loopback listener
+   is bound so the real port is registered: `redirect_uris:
+   ["http://127.0.0.1:<port>/callback"]` (RFC 8252 §7.3; the listener binds
+   `127.0.0.1` only, like every flow here), `token_endpoint_auth_method:
+   "none"`. A fresh client is registered per sign-in (a re-authentication gets
+   a new port, and so a new client); any `client_secret` in the answer is
+   ignored and never stored, and a server that answers with a confidential
+   method is refused.
+6. **Authorize + exchange**, PKCE S256, `state` checked, with the **RFC 8707
+   `resource=<MCP URL>`** on the authorize request *and on every token request,
+   the refresh included*.
+7. **Scopes**, most specific first: the credential's `scopes` override; the
+   401 challenge's `scope`; the protected resource's `scopes_supported`;
+   otherwise **no `scope` parameter at all**. The authorization server's own
+   `scopes_supported` is deliberately *not* a default — Cloudflare's lists ~400
+   scopes, and asking for all of them is the opposite of least privilege.
+8. **Refresh** is `refreshGrant` with the `tokenEndpoint` and `clientId` read
+   from the credential's own data (§2), not from any plugin config. An
+   `invalid_client` / `unauthorized_client` answer (the server dropped the
+   dynamically registered client) counts as signed out — only a new sign-in,
+   a new registration, can fix it. Every persist of a refresh result (and the
+   signed-out marker) is a compare-and-set on the refresh token it was
+   derived from, so a re-authentication that lands during an in-flight
+   refresh is never overwritten by it (§5.3).
 
 **Decision: reuse the official CLI clients' `client_id`s.** gurt does
 not have its own registrations with Anthropic, OpenAI or Google, and it
@@ -236,7 +330,50 @@ paths that already exist:
   rides in the proxy scope, and reaches the proxy via `pushScope`. The
   scope file *is* the push (`requirements-mcp-proxy.md` §5.4), so a
   refreshed token can be delivered to a **live** session by rewriting
-  the scope — no restart, no token reissue for the agent.
+  the scope — no restart, no token reissue for the agent. **This is
+  implemented** (`src/main/oauth/keeper.ts`, wired in
+  `SessionManager.attachMcp`): for each session whose selected http servers
+  link an `oauth` entry, one timer per entry fires when the access token's
+  refresh window opens (`expiresAt` minus the 5-minute skew, +5 s; a token
+  that lives *less* than the skew is inside the window from birth, so it is
+  renewed at half its remaining life, with a 5 s floor against a hot loop —
+  never later than its expiry minus that margin), resolves it through the same single-flight refresh,
+  and — only when the token changed — rebuilds the session's plan with the
+  same selection and host listeners and pushes it. A failed renewal is
+  retried with back-off (60 s doubling to 10 min) and reported once per
+  streak on the session's provisioning log; a dead refresh token
+  (`SignedOutError`) is reported once and the entry is *parked* — no timer, no
+  polling. While a session is watched the keeper listens to credential-store
+  writes (`onCredentialsWritten`, coalesced over 250 ms) and rechecks every
+  watched entry on one: a Re-authenticate of a still-signed-in entry replaces
+  its token (and a provider may revoke the old grant) and a sign-in of a parked
+  one ends its wait — both reach the running session promptly, not at the old
+  timer. The first check at attach goes through the same path as every later
+  one (so a watch that starts signed out parks at once, and an entry whose
+  route was left out of the scope is pushed as soon as it resolves); checks of
+  one entry never overlap. Rebuilds of one
+  session run one at a time, each composing from the store as it is on its
+  turn, so a late older plan can never overwrite a newer one. A rebuild fails
+  only for the entry it is renewing (one signed-out server does not stop
+  another's renewal), and it keeps the previous route only of a server whose
+  own credential failed this time — the old scope still holds a token for a
+  few minutes, which beats dropping a server from a running session; a route
+  that is simply gone (entry deleted meanwhile) stays gone. A watch is never
+  armed after the session's `detach`, even when the attach was in flight.
+  A store write is answered by *reading* the stored token, never by a
+  refresh (a refresh persists, and a token shorter than the skew would chase
+  its own writes); only the entry's timer refreshes, and the rebuild reuses
+  the token the keeper resolved instead of resolving again. A selected
+  server whose credential failed at attach still gets its descriptor in
+  `session/new`, with the route closed (404) until the keeper's rebuild opens
+  it — the URL is the same either way. Whether the agent retries a server
+  that failed its first connect is the agent's behaviour; part of the §12
+  live check. Every token-endpoint request (exchange and refresh) has a 30 s
+  deadline covering headers and body, and the exchange also ends on Cancel.
+  `detach` unwatches before the scope is revoked, and a late
+  rebuild checks it is still current before writing. Local (`npm`/`command`)
+  servers take their token in the process environment at spawn and are not
+  renewed this way.
 
 ### 5.2.1 Delivery is per agent kind — DECIDED
 
@@ -377,9 +514,20 @@ string is not) and every token value appear in no record at any level.
 2. **UI.** The Sign in button, `shell.openExternal`, the loopback
    listener, pending/cancel/timeout, "signed in as", Re-authenticate,
    and the two-paths presentation (§4).
-3. **The generic MCP provider.** RFC 8414 discovery + RFC 7591 dynamic
-   client registration behind the same interface, and the MCP registry
-   editor offering "sign in" for a server that advertises it.
+3. **The generic MCP provider.** RFC 9728/8414 discovery + RFC 7591 dynamic
+   client registration behind the same interface, the live-scope keeper, and
+   the MCP registry editor's **Sign in** button — **implemented** (see §3,
+   §5.2). The button is on every remote entry, not only on "a server that
+   advertises it": gurt cannot know that before discovery runs, and discovery
+   runs when Sign in is pressed; a server that advertises nothing answers
+   with a sentence (§3 step 4). It creates the `oauth` credential
+   (`providerId: mcp`, `serverUrl` = the entry's URL) and links it as
+   `Authorization: Bearer <access>` (replacing an `Authorization` row),
+   showing pending/Cancel/timeout, "signed in as", Re-authenticate and the
+   §2 signed-out sentence as §4 describes. Closing the editor mid-sign-in
+   cancels it — including during the code exchange, which then stores
+   nothing — and a sign-in the editor made but Save did not claim is removed
+   when the editor closes or unmounts.
 
 ## 9. Acceptance
 
@@ -417,6 +565,23 @@ string is not) and every token value appear in no record at any level.
    approximate items 7–8 (composed file content, env suppression); this
    item is the part no test can stand in for.
 
+10. **MCP (phase 3), automated against mocks** (`scripts/mcp-oauth.test.mjs`):
+    both discovery paths (the 401 challenge; the well-known fallbacks) and
+    both metadata paths (RFC 8414; OIDC); DCR for the real loopback redirect
+    as a public client; PKCE S256; `resource` on the authorize and every token
+    request; single-flight refresh of an `mcp` credential from its own
+    endpoint and client; a revoked refresh token blocking with the §2 sentence
+    and leaving the server out of the scope (an MCP server whose credential
+    cannot resolve is *not routed* — the session itself still starts, the
+    existing rule of `requirements-mcp-proxy.md` §3.2; only an agent's own
+    credential fails the start); the refresh token in no scope; the keeper's
+    scheduling, de-duplication, retry and unwatch.
+11. **MCP live smoke test, human** (release blocker for phase 3): add the
+    Cloudflare MCP server to the registry, **Sign in**, start a session, and
+    get a real answer to a D1 tool call (list databases); then leave the
+    session running past the access token's lifetime and call it again (§5.2's
+    live push). Checklist and what to record: §12.
+
 ## 10. Out of scope
 
 A host-side token broker and any mid-turn refresh for the env-var path
@@ -451,3 +616,49 @@ verified** — per consumer, against the pinned version, the way
 smoke test gates any release that touches credential delivery** (§9.9).
 The bug was invisible to every automated check we had, because every
 automated check stopped where the token left our code.
+
+## 12. Phase 3 findings: Cloudflare MCP
+
+Measured **2026-11-19** with unauthenticated requests only (a 401 probe and the
+public metadata documents); **nothing below that needs an account has been
+verified** — it is marked *unverified* and is the live smoke test's to fill in.
+
+| | `https://bindings.mcp.cloudflare.com/mcp` | `https://mcp.cloudflare.com/mcp` |
+|---|---|---|
+| unauthenticated `initialize` | `401`, `resource_metadata=…/oauth-protected-resource/mcp` | `401`, same, plus `scope="user:read account:read"` |
+| protected-resource metadata | `authorization_servers: [origin]`, **no** `scopes_supported` | same shape, `scopes_supported: ["user:read","account:read"]`, `resource_name: "Cloudflare API MCP Server"` |
+| AS metadata (RFC 8414) | yes — authorize at `/oauth/authorize`, token at `/token` | yes — authorize at `/authorize`, token at `/token` |
+| `registration_endpoint` (DCR) | `/register` ✔ | `/register` ✔ |
+| `code_challenge_methods_supported` | `["S256"]` ✔ | `["S256"]` ✔ |
+| `token_endpoint_auth_methods_supported` | `client_secret_basic`, `client_secret_post`, `none` ✔ | + `private_key_jwt`; `none` ✔ |
+| grants | `authorization_code`, `refresh_token` | same |
+| AS `scopes_supported` | absent | 403 scopes, incl. `offline_access`, `d1.read`, `d1.write`, `d1.metadata_read` |
+| legacy `/sse` | `410` — use `/mcp` | not probed |
+
+Every field gurt's flow requires is present on both, so **no spec-vs-doc
+divergence was found** and discovery needed no workaround for either server.
+(Dynamic registration itself was *not* exercised: it would create a client
+registration on Cloudflare's side, which is the live test's job.)
+
+**Which URL manages D1 — unverified.** Discovery cannot answer it; the tool
+list needs a token. What the metadata does say: `bindings.mcp.cloudflare.com`
+is the *bindings* server (D1/KV/R2/Workers by Cloudflare's own naming — not
+checked against a tool list); `mcp.cloudflare.com` is the general API server
+and advertises D1 scopes (`d1.read`, `d1.write`) but, by default, asks for
+only `user:read account:read` — **a D1 call through it will likely need the
+scopes override** (`d1.read d1.write`, probably `offline_access` too). Live
+check, in this order: sign in to `bindings…/mcp` with the defaults, press
+**Test** in the editor (the probe lists tools) and look for a D1 tool; if there
+is none, sign in to `mcp.cloudflare.com/mcp` with the override and do the
+same. Record the answer here.
+
+**Also unverified (needs an account):** the access token's lifetime
+(`expires_in`; `expiryFrom` assumes an hour when absent); whether the refresh
+token rotates (gurt handles both — a response without a new `refresh_token`
+keeps the old one — and logs `rotated` on `oauth.refresh`); whether a refresh
+token is issued without `offline_access` on `mcp.cloudflare.com` (if not, the
+sign-in fails with a sentence naming `offline_access` — the provider adds the
+hint when the server advertises the scope — and the fix is the override);
+whether Cloudflare's DCR accepts the `http://127.0.0.1:<random port>/callback`
+redirect and a `scope` in the registration. If any of these differs from §3,
+stop and record it here rather than work around it.

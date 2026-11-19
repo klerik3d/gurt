@@ -373,6 +373,7 @@ export function CredentialsSection() {
                       {c.data['refresh'] && !oauthSignedOut(c) && (
                         <div className="fld-hint">
                           signed in as {c.data['account'] || 'an unnamed account'}
+                          {c.data['serverUrl'] ? ` · ${c.data['serverUrl']}` : ''}
                         </div>
                       )}
                       {oauthSignedOut(c) && c.data['account'] && (
@@ -448,7 +449,9 @@ function ProviderPick({ value, onPick }: { value: string; onPick: (id: string) =
   return (
     <div className="pick-wrap" ref={ref}>
       <button type="button" className="pick-row" onClick={() => setOpen((o) => !o)}>
-        <span className="pick-value">{cur?.label ?? 'choose provider…'}</span>
+        <span className="pick-value">
+          {cur?.label ?? (value === 'mcp' ? 'MCP server' : 'choose provider…')}
+        </span>
         <span className="spacer" />
         <Icon name="chevron" size={12} className="faint icon-fixed" />
       </button>

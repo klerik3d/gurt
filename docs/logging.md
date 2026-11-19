@@ -161,9 +161,9 @@ escaped, and `\n` written as `\\n`, so one record stays one line.
 | `mcp.out`                 | DBG   | `id`, `stream`, `line` — a local MCP server's own stdout/stderr. Its **environment** is never logged at any level: that is where the credential lands |
 | `mcp.probe`               | INF   | `id`, `kind`, `ok`, `tools` (how many, never their names), `err`, `ms` — a user pressed Test in the MCP editor and gurt started the entry to see what it answers. The launch transcript it shows the user is the server's own output: displayed there, never written here |
 | `gitbroker.start` / `.stop` | INF | `s`, `port`                                                |
-| `oauth.authorize`         | INF   | `id`, `provider`, `ok`, `ms` — a sign-in attempt ended (success, failure or timeout). The authorization code, the loopback callback's query string and every token value appear in no record at any level; the listener's port is fine |
-| `oauth.refresh`           | INF   | `id`, `provider`, `ok`, `rotated` (bool), `ms`             |
-| `oauth.expired`           | WRN   | `id`, `provider` — the refresh token is dead; the session start it blocked says so too |
+| `oauth.authorize`         | INF   | `id`, `provider`, `ok`, `ms` — a sign-in attempt ended (success, failure or timeout). `provider` is `mcp` for a remote MCP server's sign-in (the server URL, discovery URLs and the dynamically registered `client_id` are not logged). The authorization code, the loopback callback's query string and every token value appear in no record at any level; the listener's port is fine |
+| `oauth.refresh`           | INF   | `id`, `provider`, `ok`, `rotated` (bool), `ms` — also the record of a live session's scope-refresh timer (`oauth/keeper.ts`): it resolves through the same single-flight refresh, and a push of the renewed scope is the `proxy.scope` record that follows |
+| `oauth.expired`           | WRN   | `id`, `provider` — the refresh token is dead; the session start it blocked says so too (for an MCP server: its route is left out of the scope, and the session log says why) |
 | `ipc.call`                | DBG   | `method`, `ms`, `args`                                     |
 | `ipc.fail`                | ERR   | `method`, `ms`, `err`, `args` (DBG only)                   |
 | `rpc.msg`                 | DBG   | `s`, `dir`, `method`, `id`, `bytes`                        |

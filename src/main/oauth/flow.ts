@@ -24,6 +24,33 @@ export interface AuthCodeConfig extends OAuthClient {
    *  so a value the response omits (a non-rotated id_token, say) can be
    *  carried forward instead of erased. */
   extraData?: (tokens: Record<string, unknown>, current?: TokenSet) => Record<string, string>
+  /** Extra form fields sent on every token-endpoint grant, code exchange and
+   *  refresh alike — the RFC 8707 `resource` of an MCP sign-in. A grant's own
+   *  fields (`grant_type`, `code`, …) and `client_id` always win over these. */
+  tokenParams?: Record<string, string>
+  /** Deadline of one token request (default {@link TOKEN_TIMEOUT_MS}) — tests. */
+  tokenTimeoutMs?: number
+  /** Never follow a redirect from the token endpoint. The request carries the
+   *  authorization code and verifier, or the refresh token; an endpoint that
+   *  was validated (https, not this machine) must not be able to pass them on
+   *  to one that was not. Set for dynamically discovered endpoints; the
+   *  vendors' fixed ones keep the fetch default. */
+  noRedirects?: boolean
+}
+
+/** Hooks of one {@link authorizeGrant} run that the plugin-declared providers
+ *  never need. */
+export interface AuthorizeHooks {
+  /** Called once the loopback listener is bound and the exact `redirect_uri`
+   *  is known, before the browser opens: registers a client for that redirect
+   *  (RFC 7591) and returns its `client_id`, which then replaces `cfg.clientId`
+   *  for the authorize URL and the code exchange. The MCP provider's dynamic
+   *  client registration (RFC 8252 §7.3 servers match the loopback redirect, so
+   *  the port has to be the real one). A rejection aborts the sign-in. */
+  register?: (redirectUri: string) => Promise<string>
+  /** Open the authorization URL. Defaults to the system browser — tests inject
+   *  their own so the flow runs end to end without Electron. */
+  open?: (url: string) => void
 }
 
 /** A flow-level failure. `code` is the OAuth error code when the provider sent
@@ -47,6 +74,9 @@ export const isSignedOut = (e: unknown): boolean =>
 /** A browser round-trip that produced nothing by now is abandoned (§4: the
  *  attempt times out on its own; the loopback listener closes with it). */
 const AUTHORIZE_TIMEOUT_MS = 5 * 60_000
+/** One token-endpoint request, headers *and* body. A server that answers and
+ *  then stalls must not hold a sign-in or the single-flight refresh forever. */
+export const TOKEN_TIMEOUT_MS = 30_000
 
 const str = (v: unknown): string => (typeof v === 'string' ? v : '')
 
@@ -78,19 +108,30 @@ export function idTokenClaims(idToken: unknown): Record<string, unknown> {
  */
 export async function tokenRequest(
   cfg: AuthCodeConfig,
-  grant: Record<string, string>
+  grant: Record<string, string>,
+  signal?: AbortSignal
 ): Promise<Record<string, unknown>> {
   const host = new URL(cfg.tokenEndpoint).host
+  // One signal for the whole exchange — connect, headers and body: the caller's
+  // cancellation or the deadline, whichever comes first.
+  const deadline = AbortSignal.timeout(cfg.tokenTimeoutMs ?? TOKEN_TIMEOUT_MS)
+  const guard = signal ? AbortSignal.any([signal, deadline]) : deadline
+  const stopped = (): OAuthFlowError =>
+    signal?.aborted
+      ? new OAuthFlowError('sign-in cancelled')
+      : new OAuthFlowError(`${host} did not answer the token request in time`)
   const body: Record<string, string> = {
+    ...cfg.tokenParams,
     ...grant,
     client_id: cfg.clientId,
     ...(cfg.clientSecret ? { client_secret: cfg.clientSecret } : {})
   }
   let res: Response
   try {
-    res = await fetch(
-      cfg.tokenEndpoint,
-      cfg.tokenBody === 'json'
+    res = await fetch(cfg.tokenEndpoint, {
+      signal: guard,
+      ...(cfg.noRedirects ? { redirect: 'manual' as const } : {}),
+      ...(cfg.tokenBody === 'json'
         ? {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -100,14 +141,32 @@ export async function tokenRequest(
             method: 'POST',
             headers: { 'content-type': 'application/x-www-form-urlencoded' },
             body: new URLSearchParams(body).toString()
-          }
-    )
+          })
+    })
   } catch (e) {
+    if (guard.aborted) throw stopped()
     throw new OAuthFlowError(
       `could not reach ${host} — ${e instanceof Error ? e.message : String(e)}`
     )
   }
-  const text = await res.text()
+  if (cfg.noRedirects && res.status >= 300 && res.status < 400)
+    throw new OAuthFlowError(`${host} answered the token request with a redirect — not following it`)
+  let text: string
+  try {
+    // Raced against the signal as well: the body read must end with it even
+    // where the runtime does not tie the stream to the fetch signal.
+    text = await Promise.race([
+      res.text(),
+      new Promise<never>((_, reject) => {
+        if (guard.aborted) return reject(stopped())
+        guard.addEventListener('abort', () => reject(stopped()), { once: true })
+      })
+    ])
+  } catch (e) {
+    if (e instanceof OAuthFlowError) throw e
+    if (guard.aborted) throw stopped()
+    throw new OAuthFlowError(`could not read the answer of ${host} — ${e instanceof Error ? e.message : String(e)}`)
+  }
   let parsed: Record<string, unknown> = {}
   try {
     parsed = JSON.parse(text) as Record<string, unknown>
@@ -176,13 +235,16 @@ function openInSystemBrowser(url: string): void {
 export async function authorizeGrant(
   cfg: AuthCodeConfig,
   account: (tokens: Record<string, unknown>) => Promise<string> | string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  hooks: AuthorizeHooks = {}
 ): Promise<TokenSet> {
   const verifier = randomBytes(32).toString('base64url')
   const challenge = createHash('sha256').update(verifier).digest('base64url')
   const state = randomBytes(16).toString('base64url')
   const redirectPath = cfg.redirectPath ?? '/callback'
 
+  // `register` may replace the client id once the redirect is known.
+  let clientId = cfg.clientId
   const { code, redirectUri } = await new Promise<{ code: string; redirectUri: string }>(
     (resolve, reject) => {
       let redirectUri = ''
@@ -256,35 +318,51 @@ export async function authorizeGrant(
         const addr = server.address()
         const port = addr && typeof addr === 'object' ? addr.port : cfg.port
         redirectUri = `http://${cfg.redirectHost ?? '127.0.0.1'}:${port}${redirectPath}`
-        const authorize = new URL(cfg.authorizationEndpoint)
-        const params: Record<string, string> = {
-          response_type: 'code',
-          client_id: cfg.clientId,
-          redirect_uri: redirectUri,
-          scope: cfg.scopes.join(' '),
-          state,
-          code_challenge: challenge,
-          code_challenge_method: 'S256',
-          ...(cfg.authParams ?? {})
+        const launch = (): void => {
+          const authorize = new URL(cfg.authorizationEndpoint)
+          const params: Record<string, string> = {
+            response_type: 'code',
+            client_id: clientId,
+            redirect_uri: redirectUri,
+            // A server that advertises no scopes is sent none, not `scope=`.
+            ...(cfg.scopes.length ? { scope: cfg.scopes.join(' ') } : {}),
+            state,
+            code_challenge: challenge,
+            code_challenge_method: 'S256',
+            ...(cfg.authParams ?? {})
+          }
+          for (const [k, v] of Object.entries(params)) authorize.searchParams.set(k, v)
+          ;(hooks.open ?? openInSystemBrowser)(authorize.toString())
         }
-        for (const [k, v] of Object.entries(params)) authorize.searchParams.set(k, v)
-        try {
-          openInSystemBrowser(authorize.toString())
-        } catch (e) {
+        const fail = (e: unknown): void =>
           settle(() => reject(e instanceof Error ? e : new Error(String(e))))
+        if (!hooks.register) {
+          try {
+            launch()
+          } catch (e) {
+            fail(e)
+          }
+          return
         }
+        hooks
+          .register(redirectUri)
+          .then((id) => {
+            clientId = id
+            if (!done) launch()
+          })
+          .catch(fail)
       })
     }
   )
 
-  const parsed = await tokenRequest(cfg, {
+  const parsed = await tokenRequest({ ...cfg, clientId }, {
     grant_type: 'authorization_code',
     code,
     redirect_uri: redirectUri,
     code_verifier: verifier,
     // Conforming servers ignore it; Anthropic's endpoint checks it.
     state
-  })
+  }, signal)
   const access = str(parsed['access_token'])
   const refresh = str(parsed['refresh_token'])
   if (!access || !refresh)

@@ -13,6 +13,7 @@ import { addSecrets, createLogger } from '../log'
 import type { AgentOAuth, OAuthTools } from '../../shared/agentPlugin'
 import { agentMains } from '../agentPlugins'
 import { authorizeGrant, idTokenClaims, isSignedOut, refreshGrant, type AuthCodeConfig } from './flow'
+import { MCP_PROVIDER_ID, mcpProvider } from './mcp'
 import type { OAuthProvider, TokenSet } from './provider'
 
 const log = createLogger('oauth')
@@ -42,9 +43,31 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProvider> = Object.fromEntries
   agentMains().flatMap((p) => (p.oauth ? [[p.oauth.client.id, providerOf(p.oauth)]] : []))
 )
 
+/** Everything a stored `providerId` may name: the plugin-declared sign-ins
+ *  above plus the generic `mcp` provider, which no plugin declares — it signs
+ *  in to whatever server URL the credential names (phase 3, §3). It is kept out
+ *  of {@link OAUTH_PROVIDERS} on purpose: that set is pinned to the agent kinds
+ *  (the picker's, and the ids already in users' credentials.json), and `mcp` is
+ *  started from the MCP registry editor, never from the picker. The resolve,
+ *  refresh and sign-in paths all default to this registry. */
+export const OAUTH_PROVIDER_REGISTRY: Record<string, OAuthProvider> = {
+  ...OAUTH_PROVIDERS,
+  [MCP_PROVIDER_ID]: mcpProvider
+}
+
+/** The refresh token is dead and the entry is signed out (§2) — as opposed to
+ *  a refresh that merely failed. The message is the §2 sentence; the class is
+ *  for callers (the live-scope keeper) that must not retry it. */
+export class SignedOutError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options)
+    this.name = 'SignedOutError'
+  }
+}
+
 /** Refresh when the access token is expired *or* within this window of it — a
  *  token that dies mid-injection helps nobody (§5.3). */
-const EXPIRY_SKEW_MS = 5 * 60_000
+export const EXPIRY_SKEW_MS = 5 * 60_000
 
 const stillFresh = (expiresAt: string): boolean => {
   const t = Date.parse(expiresAt)
@@ -94,7 +117,7 @@ const resolving = new Map<string, Promise<string>>()
  */
 export function resolveOAuthAccess(
   credentialId: string,
-  providers: Record<string, OAuthProvider> = OAUTH_PROVIDERS
+  providers: Record<string, OAuthProvider> = OAUTH_PROVIDER_REGISTRY
 ): Promise<string> {
   const inflight = resolving.get(credentialId)
   if (inflight) return inflight
@@ -114,7 +137,7 @@ async function resolveUncoalesced(
   if (!entry) throw new Error('linked credential no longer exists')
   const label = entry.label || entry.id
   if (entry.kind !== 'oauth') throw new Error(`credential "${label}" is not an oauth entry`)
-  if (oauthSignedOut(entry)) throw new Error(signedOutError(entry))
+  if (oauthSignedOut(entry)) throw new SignedOutError(signedOutError(entry))
   const providerId = entry.data['providerId'] ?? ''
   const provider = providers[providerId]
   if (!provider)
@@ -140,8 +163,15 @@ async function resolveUncoalesced(
       // is what lets the modal show "sign in again" (§4) — and block with the
       // §2 sentence. A best-effort persist: the block holds regardless.
       log.warn('oauth.expired', { id, provider: provider.id })
-      await patchCredentialData(id, { signedOut: 'true' }).catch(() => {})
-      throw new Error(signedOutError(entry), { cause: e })
+      // Only while the dead token is still the stored one: a sign-in that
+      // landed during the request must not be marked signed out for it.
+      const marked = await patchCredentialData(id, { signedOut: 'true' }, { refresh: current.refresh }).catch(
+        () => true
+      )
+      // Superseded: the token that died belonged to a sign-in that has been
+      // replaced meanwhile. Say nothing about the new one — resolve it.
+      if (!marked) return resolveUncoalesced(id, providers)
+      throw new SignedOutError(signedOutError(entry), { cause: e })
     }
     // A network blip or provider outage leaves the sign-in intact: block this
     // resolve honestly, sign nothing out.
@@ -168,15 +198,50 @@ async function resolveUncoalesced(
   // Provider extras (§2 — an idToken/accountId, say) persist alongside; the
   // patch merges keys, so an extra the provider did not return this time
   // simply keeps its stored value.
-  await patchCredentialData(id, {
-    ...set.extra,
-    access: set.access,
-    refresh: set.refresh,
-    expiresAt: set.expiresAt,
-    account: set.account,
-    signedOut: undefined
-  })
+  const written = await patchCredentialData(
+    id,
+    {
+      ...set.extra,
+      access: set.access,
+      refresh: set.refresh,
+      expiresAt: set.expiresAt,
+      account: set.account,
+      signedOut: undefined
+    },
+    // Compare-and-set on the refresh token this result was derived from: a
+    // re-authentication that completed while the request was in flight stored
+    // a newer sign-in, and writing this one over it would clobber it (and the
+    // old token may already be revoked server-side).
+    { refresh: current.refresh }
+  )
+  // Superseded: this result belongs to the old sign-in. Resolve again — the
+  // newer entry is fresh, so that is a store read.
+  if (!written) return resolveUncoalesced(id, providers)
   return set.access
+}
+
+/** The access token stored for an `oauth` entry, *without* refreshing: null
+ *  when the entry is gone, signed out, or its token is missing or already
+ *  expired. A token inside the refresh skew still counts — it is valid, and
+ *  asking for it must not cause a write (the keeper reacts to writes). */
+export async function oauthStoredAccess(credentialId: string): Promise<string | null> {
+  const entry = (await listCredentials()).find((c) => c.id === credentialId)
+  if (!entry || entry.kind !== 'oauth' || oauthSignedOut(entry)) return null
+  const access = entry.data['access'] ?? ''
+  const t = Date.parse(entry.data['expiresAt'] ?? '')
+  return access && Number.isFinite(t) && t > Date.now() ? access : null
+}
+
+/** When the stored access token of an `oauth` entry expires (epoch ms), or
+ *  null when the entry is gone, not an oauth entry, or has no usable expiry —
+ *  what the live-scope keeper schedules its next refresh from. Read from the
+ *  store rather than returned by the resolve, so a refresh another session
+ *  made is seen too. */
+export async function oauthExpiresAtMs(credentialId: string): Promise<number | null> {
+  const entry = (await listCredentials()).find((c) => c.id === credentialId)
+  if (!entry || entry.kind !== 'oauth') return null
+  const t = Date.parse(entry.data['expiresAt'] ?? '')
+  return Number.isFinite(t) ? t : null
 }
 
 /**
@@ -190,7 +255,10 @@ async function resolveUncoalesced(
 export async function freshenOAuthCredentials(
   credentials: readonly CredentialEntry[],
   ids: Iterable<string | undefined>,
-  providers: Record<string, OAuthProvider> = OAUTH_PROVIDERS
+  providers: Record<string, OAuthProvider> = OAUTH_PROVIDER_REGISTRY,
+  /** Tokens already resolved by the caller (id → access): used as they are, no
+   *  resolve — so a rebuild does not refresh a short-lived token a second time. */
+  reuse: Readonly<Record<string, string>> = {}
 ): Promise<{ credentials: CredentialEntry[]; errors: Record<string, string> }> {
   const wanted = new Set<string>()
   for (const id of ids) if (id) wanted.add(id)
@@ -199,7 +267,7 @@ export async function freshenOAuthCredentials(
     credentials.map(async (entry) => {
       if (entry.kind !== 'oauth' || !wanted.has(entry.id)) return entry
       try {
-        const access = await resolveOAuthAccess(entry.id, providers)
+        const access = reuse[entry.id] ?? (await resolveOAuthAccess(entry.id, providers))
         return { ...entry, data: { ...entry.data, access } }
       } catch (e) {
         errors[entry.id] = e instanceof Error ? e.message : String(e)
@@ -222,7 +290,7 @@ const attempts = new Map<string, AbortController>()
  */
 export async function oauthSignIn(
   entry: CredentialEntry,
-  providers: Record<string, OAuthProvider> = OAUTH_PROVIDERS
+  providers: Record<string, OAuthProvider> = OAUTH_PROVIDER_REGISTRY
 ): Promise<void> {
   if (entry.kind !== 'oauth')
     throw new Error(`credential "${entry.label || entry.id}" is not an oauth entry`)
@@ -234,7 +302,15 @@ export async function oauthSignIn(
   attempts.set(entry.id, ctl)
   const started = Date.now()
   try {
-    const set = await provider.authorize(ctl.signal)
+    const set = await provider.authorize(ctl.signal, { data: entry.data })
+    // Cancelled (or superseded) while the code exchange was in flight: the
+    // callback had settled the listener, so the abort only shows up here. The
+    // user abandoned this attempt — storing its tokens would leave a live
+    // refresh token nobody asked for.
+    if (ctl.signal.aborted) {
+      redactTokenSet(set)
+      throw new Error('sign-in cancelled')
+    }
     // §5.4, same rule as the refresh path: redactor first, store write second.
     redactTokenSet(set)
     log.info('oauth.authorize', { id: entry.id, provider: provider.id, ok: true, ms: Date.now() - started })

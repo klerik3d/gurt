@@ -8,12 +8,20 @@ import type { TokenSet } from '../../shared/agentPlugin'
 
 export type { TokenSet }
 
+/** What a sign-in is told about the entry it is for. Plugin-declared providers
+ *  ignore it (everything they need is in their config); the generic `mcp`
+ *  provider reads the server URL (and an optional scope override) from
+ *  `data`, because it has no config of its own. */
+export interface AuthorizeContext {
+  data: Readonly<Record<string, string>>
+}
+
 export interface OAuthProvider {
   id: string
   /** Run the full sign-in: system browser, loopback redirect, code exchange.
    *  Resolves when the tokens are in hand. The signal cancels the attempt —
    *  the loopback listener closes and the promise rejects. */
-  authorize(signal?: AbortSignal): Promise<TokenSet>
+  authorize(signal?: AbortSignal, context?: AuthorizeContext): Promise<TokenSet>
   /** Exchange a refresh token for a new access token. MAY rotate the refresh
    *  token — the returned set is the truth. */
   refresh(current: TokenSet): Promise<TokenSet>
