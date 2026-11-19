@@ -15,8 +15,9 @@ The current documentation:
   no raw `z-index` outside `:root` except a local 0/1/-1.
 - [design-motion.md](design-motion.md) — the transition-duration tokens
   (`--dur-fast`, `--dur-base`); new transitions only from them.
-- [design-type.md](design-type.md) — the font-size scale (`--fs-9`…`--fs-18`);
-  new sizes only from it.
+- [design-type.md](design-type.md) — the font-size scale (`--fs-9`…`--fs-18`)
+  and letter-spacing tokens (`--ls-*`); new sizes and label spacing only
+  from them.
 - [design-shadows.md](design-shadows.md) — the elevation scale (`--shadow-*`)
   and the modal scrim (`--scrim`); no raw shadows or scrims outside `:root`.
 

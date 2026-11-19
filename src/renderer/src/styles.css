@@ -57,6 +57,10 @@
   --fs-16: 16px;
   --fs-17: 17px;
   --fs-18: 18px;
+  /* Letter-spacing of uppercase labels. Decision: docs/design-type.md. */
+  --ls-tight: 0.08em;
+  --ls-label: 0.12em;
+  --ls-wide: 0.14em;
   /* Stacking layers — the only app-wide layers; a local 0/1/-1 may stay raw
      (docs/design-z-index.md). */
   --z-raised: 4;
@@ -221,7 +225,7 @@ body {
   font-family: var(--mono);
   font-weight: 500;
   font-size: var(--fs-10);
-  letter-spacing: 0.12em;
+  letter-spacing: var(--ls-label);
   text-transform: uppercase;
   color: var(--faint);
 }
@@ -1312,7 +1316,7 @@ textarea.input {
   }
 }
 .pinned-req .seclabel {
-  letter-spacing: 0.08em;
+  letter-spacing: var(--ls-tight);
   flex: none;
 }
 .pinned-req-text {
@@ -1439,7 +1443,7 @@ textarea.input {
 }
 .msg-you {
   margin-bottom: 4px;
-  letter-spacing: 0.08em;
+  letter-spacing: var(--ls-tight);
 }
 .msg-text {
   font-size: var(--fs-14);
@@ -1636,7 +1640,7 @@ textarea.input {
 .tool-kind {
   font-weight: 500;
   font-size: var(--fs-10);
-  letter-spacing: 0.08em;
+  letter-spacing: var(--ls-tight);
   color: var(--faint);
   text-transform: uppercase;
   min-width: 34px;
@@ -1784,7 +1788,7 @@ textarea.input {
   user-select: none;
 }
 .plan-pin-bar .seclabel {
-  letter-spacing: 0.08em;
+  letter-spacing: var(--ls-tight);
 }
 .plan-count {
   font-size: var(--fs-11);
@@ -2037,7 +2041,7 @@ textarea.input {
 }
 .cmp-menu-head {
   padding: 6px 9px 5px;
-  letter-spacing: 0.14em;
+  letter-spacing: var(--ls-wide);
 }
 .cmp-menu-empty {
   padding: 12px 9px;
@@ -2116,7 +2120,7 @@ textarea.input {
   gap: 8px;
 }
 .gear-group .seclabel {
-  letter-spacing: 0.14em;
+  letter-spacing: var(--ls-wide);
 }
 
 /* ---- quiet select rows (new session, settings) ---- */
@@ -2409,7 +2413,7 @@ textarea.input {
 }
 .host-badge {
   font-size: var(--fs-10);
-  letter-spacing: 0.1em;
+  letter-spacing: var(--ls-label);
   text-transform: uppercase;
   color: var(--yellow);
   border: 1px solid var(--border2);
@@ -2570,7 +2574,7 @@ textarea.input {
   font-family: var(--mono);
   font-weight: 500;
   font-size: var(--fs-10);
-  letter-spacing: 0.12em;
+  letter-spacing: var(--ls-label);
   text-transform: uppercase;
   color: var(--faint);
 }
@@ -2700,7 +2704,7 @@ textarea.input {
   gap: 11px;
 }
 .tp-section > .seclabel {
-  letter-spacing: 0.14em;
+  letter-spacing: var(--ls-wide);
 }
 .tp-sec-head {
   display: flex;
@@ -2708,7 +2712,7 @@ textarea.input {
   gap: 10px;
 }
 .tp-sec-head .seclabel {
-  letter-spacing: 0.14em;
+  letter-spacing: var(--ls-wide);
 }
 .tp-sec-hint {
   font-size: var(--fs-11);
@@ -3033,7 +3037,7 @@ textarea.input {
   color: var(--faint);
   font-size: var(--fs-11);
   font-weight: 500;
-  letter-spacing: 0.06em;
+  letter-spacing: var(--ls-tight);
   text-transform: uppercase;
 }
 .set-nav-sub {
@@ -3587,7 +3591,7 @@ textarea.input {
 }
 .pal-group {
   padding: 8px 10px 4px;
-  letter-spacing: 0.14em;
+  letter-spacing: var(--ls-wide);
 }
 .pal-item {
   display: flex;
@@ -3867,7 +3871,7 @@ textarea.input {
   gap: 10px;
 }
 .dash-sec-head .seclabel {
-  letter-spacing: 0.14em;
+  letter-spacing: var(--ls-wide);
 }
 .dash-sec-head.dash-sub {
   margin-top: 10px;
