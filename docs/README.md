@@ -15,6 +15,8 @@ The current documentation:
   no raw `z-index` outside `:root` except a local 0/1/-1.
 - [design-motion.md](design-motion.md) — the transition-duration tokens
   (`--dur-fast`, `--dur-base`); new transitions only from them.
+- [design-type.md](design-type.md) — the font-size scale (`--fs-9`…`--fs-18`);
+  new sizes only from it.
 
 Everything else here is the historical specs and design notes (work orders)
 Gurt was built from. When one of them says "read `README.md` first", it means
