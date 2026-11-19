@@ -28,7 +28,7 @@ export const manifest: AgentManifest = {
   // The same fact as the paragraph above, as data: a review loop reads it to
   // refuse pi as executor and not offer it as reviewer.
   acpMcp: false,
-  adapterPackages: ['pi-acp@0.0.34', '@earendil-works/pi-coding-agent@1.5.0'],
+  adapterPackages: ['pi-acp@0.0.34', '@earendil-works/pi-coding-agent@1.5.2'],
   bin: 'pi-acp',
   binArgs: [],
   // pi is multi-provider and reads each provider's standard key variable
