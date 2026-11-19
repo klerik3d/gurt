@@ -15,6 +15,8 @@ The current documentation:
   no raw `z-index` outside `:root` except a local 0/1/-1.
 - [design-motion.md](design-motion.md) — the transition-duration tokens
   (`--dur-fast`, `--dur-base`); new transitions only from them.
+- [design-shadows.md](design-shadows.md) — the elevation scale (`--shadow-*`)
+  and the modal scrim (`--scrim`); no raw shadows or scrims outside `:root`.
 
 Everything else here is the historical specs and design notes (work orders)
 Gurt was built from. When one of them says "read `README.md` first", it means
