@@ -109,8 +109,9 @@ selection, because the starter claims no default repo.
 
 ## 5. Creating one where a repo is picked
 
-The draft's repo picker ends with **new local repository…**. Typing a name and
-pressing Enter creates the repo (§2), selects it (added to a researcher's
+The draft's repo field offers **new local repository "name"** as the last
+suggestion once a name is typed that no repo has. Choosing it (Enter or a click)
+creates the repo (§2), selects it (added to a researcher's
 selection, replacing anyone else's), and, if the draft has no env yet, picks
 the starter. Settings → Repos → **+ New repo** offers the same thing as a
 **new, local** source beside **existing, by URL**.

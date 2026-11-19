@@ -37,6 +37,7 @@ import { useSkillEntries } from '../useSkills'
 import { useReviewBlock } from '../useReviewBlock'
 import { NetworkPicker } from './Network'
 import { ChoiceGroup } from './ChoiceGroup'
+import { PickerField } from './PickerField'
 import { useOutsideClose } from '../hooks'
 import { alertDialog } from '../dialog'
 import { AgentIcon, Icon, Dot, InfoDot } from './icons'
@@ -107,140 +108,111 @@ function PickRow({
   )
 }
 
-/**
- * One offered MCP server in the harness config: dot + name + description + menu.
- *
- * Three states for a built-in (off / read-only / full) and two for a registry
- * entry (off / on): gurt knows which of *its own* tools write and can hand the
- * agent a smaller set, and knows nothing about an upstream's, so offering
- * read-only there would claim an enforcement it does not have (§3.3). "on" is
- * recorded as `full` — one `McpSelection` shape for both sources.
- */
-function McpRow({
+/** A picked MCP server, listed under the field. Picked is on; removing is off.
+ *  A built-in with enforcement levels keeps its read-only/full switch — gurt
+ *  knows which of *its own* tools write — while a registry entry has no such
+ *  switch, because gurt knows nothing about an upstream's tools (§3.3). */
+function McpSelectedRow({
+  id,
   entry,
   mode,
   onChange
 }: {
-  entry: McpEntry
+  id: string
+  entry: McpEntry | undefined
   mode: McpMode | undefined
   onChange: (mode: McpMode | null) => void
 }) {
-  const modes = mcpHasModes(entry)
-  // Selecting this runs a process on the user's machine, so the picker says so
-  // where the choice is made — not only in Settings, and not only as a tooltip
-  // (docs/requirements-mcp-stdio.md §2).
-  const local = entry.source === 'registry' && isLocalMcpEntry(entry.entry)
-  const on = mode != null
-  // A plain on/off reads as a single toggle; a built-in with enforcement
-  // levels gets a three-way bar instead of a nested menu (§3.3) — one click
-  // either way, no popup step.
-  const options = modes ? (['off', 'read-only', 'full'] as const) : (['off', 'on'] as const)
-  const current = !on ? 'off' : modes ? mode : 'on'
-  const pick = (m: (typeof options)[number]) => onChange(m === 'off' ? null : m === 'on' ? 'full' : m)
+  // An id the workspace no longer offers stays listed, and stays in the
+  // selection until the user removes it: a start would report it unroutable,
+  // which is a thing to see here rather than in the session log.
+  const missing = !entry
+  // Selecting this runs a process on the user's machine, so the field says so
+  // where the choice is made (docs/requirements-mcp-stdio.md §2).
+  const local = !!entry && entry.source === 'registry' && isLocalMcpEntry(entry.entry)
   return (
-    <div className="pick-wrap">
-      <div className="pick-row mcp-row" title={entry.description}>
-        <Dot tone={on ? 'green' : 'faint'} hollow={!on} size={7} />
-        <span className={`mcp-name ${on ? '' : 'faint'}`}>{entry.label}</span>
-        <span className="mcp-desc faint">{entry.description}</span>
-        <div className="chip-row icon-fixed">
-          {options.map((m) => (
-            <button
-              key={m}
-              type="button"
-              className={`chip-btn ${current === m ? 'on' : ''}`}
-              onClick={() => pick(m)}
-            >
-              {m}
-            </button>
-          ))}
-        </div>
+    <div className="sel-row-wrap">
+      <div
+        className="sel-row"
+        title={
+          missing
+            ? `"${id}" is selected but this workspace no longer offers it — it is not a built-in and not in the registry`
+            : entry.description
+        }
+      >
+        <Dot tone={missing ? 'red' : 'green'} size={7} />
+        <span className="mcp-name">{entry?.label ?? id}</span>
+        <span className="mcp-desc faint">
+          {missing ? 'unavailable — not a built-in, not in the registry' : entry.description}
+        </span>
+        {entry && mcpHasModes(entry) && (
+          <div className="chip-row icon-fixed">
+            {(['read-only', 'full'] as const).map((m) => (
+              <button
+                key={m}
+                type="button"
+                className={`chip-btn ${mode === m ? 'on' : ''}`}
+                onClick={() => onChange(m)}
+              >
+                {m}
+              </button>
+            ))}
+          </div>
+        )}
+        <button
+          type="button"
+          className="chip-x"
+          title="remove"
+          aria-label={`remove ${entry?.label ?? id}`}
+          onClick={() => onChange(null)}
+        >
+          ×
+        </button>
       </div>
       {local && <div className="mcp-local-note">{LOCAL_MCP_NOTICE}</div>}
     </div>
   )
 }
 
-/** A selected id the workspace no longer offers. It stays on the list — and
- *  stays in the selection until the user says otherwise — because the draft
- *  still names it and a start would report it as unroutable, which is a thing
- *  to see here rather than in the session log. */
-function McpMissingRow({ id, onRemove }: { id: string; onRemove: () => void }) {
-  return (
-    <div
-      className="pick-row mcp-row"
-      title={`"${id}" is selected but this workspace no longer offers it — it is not a built-in and not in the registry`}
-    >
-      <Dot tone="red" size={7} />
-      <span className="mcp-name">{id}</span>
-      <span className="mcp-desc faint">unavailable — not a built-in, not in the registry</span>
-      <button type="button" className="btn-link" onClick={onRemove}>
-        remove
-      </button>
-    </div>
-  )
-}
-
-/**
- * One offered skill in the harness config: dot + name + description + menu.
- *
- * Two states, off and on. A skill has no `read-only`/`full` twin to
- * `McpRow`'s — gurt hands the agent files, and there is no half of a file to
- * grant (docs/requirements-skills.md §7). A skill whose `SKILL.md` does not
- * parse is still listed and still selectable: it says what is wrong instead of
- * what it does, and Settings is where it gets fixed.
- */
-function SkillRow({
+/** A picked skill, listed under the field. A skill whose `SKILL.md` does not
+ *  parse is still selectable: it says what is wrong instead of what it does,
+ *  and Settings is where it gets fixed. A selected skill the workspace no
+ *  longer holds stays listed (and selected) until removed, because a start
+ *  would report it as not mounted. */
+function SkillSelectedRow({
+  name,
   entry,
-  on,
-  onChange
+  onRemove
 }: {
-  entry: SkillEntry
-  on: boolean
-  onChange: (on: boolean) => void
+  name: string
+  entry: SkillEntry | undefined
+  onRemove: () => void
 }) {
-  const current = on ? 'on' : 'off'
+  const missing = !entry
+  const text = missing ? "unavailable — not in this workspace's skills" : (entry.problem ?? entry.description)
   return (
-    <div className="pick-row mcp-row" title={entry.problem ?? entry.description}>
-      <Dot
-        tone={entry.problem ? 'red' : on ? 'green' : 'faint'}
-        hollow={!entry.problem && !on}
-        size={7}
-      />
-      <span className={`mcp-name ${on ? '' : 'faint'}`}>{entry.name}</span>
-      <span className="mcp-desc faint">{entry.problem ?? entry.description}</span>
-      <div className="chip-row icon-fixed">
-        {(['off', 'on'] as const).map((m) => (
-          <button
-            key={m}
-            type="button"
-            className={`chip-btn ${current === m ? 'on' : ''}`}
-            onClick={() => onChange(m === 'on')}
-          >
-            {m}
-          </button>
-        ))}
+    <div className="sel-row-wrap">
+      <div
+        className="sel-row"
+        title={
+          missing
+            ? `"${name}" is selected but this workspace no longer offers it — it is not in the skill registry`
+            : text
+        }
+      >
+        <Dot tone={missing || entry.problem ? 'red' : 'green'} size={7} />
+        <span className="mcp-name">{name}</span>
+        <span className="mcp-desc faint">{text}</span>
+        <button
+          type="button"
+          className="chip-x"
+          title="remove"
+          aria-label={`remove ${name}`}
+          onClick={() => onRemove()}
+        >
+          ×
+        </button>
       </div>
-    </div>
-  )
-}
-
-/** A selected skill the workspace no longer holds. It stays on the list — and
- *  stays in the selection until the user says otherwise — because the draft
- *  still names it and a start would report it as not mounted, which is a thing
- *  to see here rather than in the session log. */
-function SkillMissingRow({ name, onRemove }: { name: string; onRemove: () => void }) {
-  return (
-    <div
-      className="pick-row mcp-row"
-      title={`"${name}" is selected but this workspace no longer offers it — it is not in the skill registry`}
-    >
-      <Dot tone="red" size={7} />
-      <span className="mcp-name">{name}</span>
-      <span className="mcp-desc faint">unavailable — not in this workspace&apos;s skills</span>
-      <button type="button" className="btn-link" onClick={onRemove}>
-        remove
-      </button>
     </div>
   )
 }
@@ -350,10 +322,7 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
   /** Global masking config; null until it loads. `ready` is what makes the
    *  chip usable at all (docs/requirements-pii-mask.md §5.2). */
   const [advancedOpen, setAdvancedOpen] = useState(false)
-  const [picker, setPicker] = useState<'env' | 'repo' | 'client' | 'role' | null>(null)
-  const [repoFilter, setRepoFilter] = useState('')
-  // The name being typed for a new local repo; null = not creating one.
-  const [newRepo, setNewRepo] = useState<string | null>(null)
+  const [picker, setPicker] = useState<'env' | 'client' | 'role' | null>(null)
   const [error, setError] = useState('')
   const [reviewerMenu, setReviewerMenu] = useState(false)
   const rv = useReviewBlock(tree, info)
@@ -383,6 +352,8 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
     }
   }, [info.agent])
 
+  const latest = useRef(info)
+  latest.current = info
   const patch = (p: SessionDraftPatch): void => {
     window.gurt
       .sessionEditDraft(info.id, p)
@@ -478,19 +449,13 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
     setPicker(null)
   }
 
-  const repoQuery = repoFilter.trim().toLowerCase()
-  const filteredRepos = repoQuery
-    ? allRepos.filter(
-        (r) =>
-          r.name.toLowerCase().includes(repoQuery) ||
-          shortRepoUrl(r.url).toLowerCase().includes(repoQuery)
-      )
-    : allRepos
-
   // Always multi-select: any session may hold any number of repos. A new pick
   // takes the default mode; the host fills it in.
-  const toggleRepo = (name: string) => {
-    patch({ repos: repos.includes(name) ? repos.filter((n) => n !== name) : [...repos, name] })
+  // Add and remove, not a toggle: both are idempotent, so a second click on
+  // × before the snapshot lands cannot put the repo back.
+  const setRepoPicked = (name: string, picked: boolean): void => {
+    if (repos.includes(name) === picked) return
+    patch({ repos: picked ? [...repos, name] : repos.filter((n) => n !== name) })
   }
   const setMode = (name: string, mode: RepoMode) => patch({ repoModes: { [name]: mode } })
   const repoGap = missingRepoReason(info)
@@ -498,34 +463,37 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
   // A new local repo, made right here and picked at once — and, being new, it
   // has no env, so a draft with no env yet gets the base image. It is a workspace repo from then
   // on, offered to every later session like any other.
-  const createRepo = async (): Promise<void> => {
-    const name = (newRepo ?? '').trim()
-    if (!name) return
+  // Resolves to whether it worked, so the field keeps the typed name on failure.
+  // Resolves to whether the new repo ended up picked, so the field keeps the
+  // typed name when it did not.
+  const createRepo = async (typed: string): Promise<boolean> => {
+    const name = typed.trim()
+    if (!name) return false
     try {
       const created = await window.gurt.createLocalRepo(info.workspace, name)
-      patch({
-        repos: [...repos, created.name],
-        ...(info.env ? {} : { env: BASE_ENV_NAME })
+      const now = latest.current
+      await window.gurt.sessionEditDraft(info.id, {
+        repos: now.repos.includes(created.name) ? now.repos : [...now.repos, created.name],
+        ...(now.env ? {} : { env: BASE_ENV_NAME })
       })
-      setNewRepo(null)
-      setRepoFilter('')
-      setPicker(null)
+      return true
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
+      return false
     }
   }
 
   const mcpMode = (id: string): McpMode | undefined => mcp.find((m) => m.id === id)?.mode
   const setMcpMode = (id: string, mode: McpMode | null): void => {
-    const next =
-      mode == null
-        ? mcp.filter((m) => m.id !== id)
-        : mcp.some((m) => m.id === id)
-          ? mcp.map((m) => (m.id === id ? { id, mode } : m))
-          : [...mcp, { id, mode }]
-    patch({ mcp: next })
+    patch({
+      mcp:
+        mode == null
+          ? mcp.filter((m) => m.id !== id)
+          : mcp.some((m) => m.id === id)
+            ? mcp.map((m) => (m.id === id ? { id, mode } : m))
+            : [...mcp, { id, mode }]
+    })
   }
-  const mcpOrphans = mcp.filter((sel) => !mcpOffered.some((e) => e.id === sel.id))
 
   // The `mcpHasModes` rule again: gurt does not claim what it cannot deliver.
   // A kind whose pinned CLI reads no skills directory (`AgentManifest.skillsDir` is
@@ -543,7 +511,6 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
           : [...skills, { name }]
         : skills.filter((k) => k.name !== name)
     })
-  const skillOrphans = skills.filter((sel) => !skillsOffered.some((e) => e.name === sel.name))
 
   const setConfig = (opt: SessionConfigOption, value: string | boolean) =>
     patch({ configValues: { ...configValues, [opt.id]: value } })
@@ -554,16 +521,6 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
   // the collapsed panel with MCP and the rest.
   const behaviorOptions = cfgOptions.filter((o) => o.category === 'model' || o.category === 'thought_level')
   const advancedOptions = cfgOptions.filter((o) => o.category !== 'model' && o.category !== 'thought_level')
-  const advancedSummary =
-    [
-      mcp.length ? `${mcp.length} mcp` : '',
-      // An unsupported agent's count would read as "these are active" — say
-      // the honest thing in the same number of characters.
-      skillsUnsupported ? 'no skills' : skills.length ? `${skills.length} skills` : ''
-    ]
-      .filter(Boolean)
-      .join(' · ') || 'no mcp, no skills'
-
   const configBlock = (opt: SessionConfigOption): ReactNode => (
     <OptionBlock
       key={opt.id}
@@ -720,164 +677,153 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
         {/* session repositories — seeded from the env's default, changeable
             here, any number of them, each with its own mount mode
             (docs/requirements-repo-mounts.md §6). The notes stay visible
-            rather than moving behind the info dot: they block Run/Queue. */}
-        <div className="cfg-cell">
-          <div className="seclabel-row">
-            <span className="seclabel">REPOSITORIES</span>
-            <InfoDot text="each repository is mounted the way its row says: write — read-write, holds the clone exclusively; read with a lock — read-only, the tree does not move while this session runs; read — read-only, blocks nobody" />
-          </div>
-          <PickRow
-            open={picker === 'repo'}
-            onToggle={() => setPicker(picker === 'repo' ? null : 'repo')}
-            onClose={() => {
-              setPicker(null)
-              setRepoFilter('')
-              setNewRepo(null)
-            }}
-            menu={
-              <>
-                {allRepos.length ? (
-                  <>
-                    {/* Only worth the extra row once there's enough repos that
-                        scanning the list by eye stops being faster than typing. */}
-                    {allRepos.length > 6 && (
-                      <input
-                        autoFocus
-                        type="text"
-                        className="menu-filter"
-                        placeholder="filter repositories…"
-                        value={repoFilter}
-                        onChange={(e) => setRepoFilter(e.target.value)}
-                        onMouseDown={(e) => e.stopPropagation()}
-                        onKeyDown={(e) => e.stopPropagation()}
-                      />
-                    )}
-                    {filteredRepos.length ? (
-                      filteredRepos.map((r) => {
-                        const active = repos.includes(r.name)
-                        return (
-                          <div
-                            key={r.name}
-                            className={`menu-item ${active ? 'active' : ''}`}
-                            onMouseDown={(e) => {
-                              e.preventDefault()
-                              toggleRepo(r.name)
-                            }}
-                          >
-                            <Icon name="branch" size={11} className="faint icon-fixed" />
-                            <span className="menu-item-name">{r.name}</span>
-                            <span className="menu-meta mono">{r.local ? 'local' : shortRepoUrl(r.url)}</span>
-                          </div>
-                        )
-                      })
-                    ) : (
-                      <div className="menu-empty">no repositories match &quot;{repoFilter}&quot;</div>
-                    )}
-                  </>
-                ) : (
-                  <div className="menu-empty">no repositories yet</div>
-                )}
-                {newRepo === null ? (
-                  <div
-                    className="menu-item"
-                    title="a repository kept by gurt on this machine — no forge needed; publish it later from Settings → Repos"
-                    onMouseDown={(e) => {
-                      e.preventDefault()
-                      // This row is replaced by the input before the event
-                      // reaches `useOutsideClose`'s document listener, which
-                      // would then see a detached target, read it as a click
-                      // outside, and close the menu the click just opened.
-                      e.stopPropagation()
-                      setNewRepo('')
-                    }}
-                  >
-                    <Icon name="plus" size={11} className="faint icon-fixed" />
-                    <span className="menu-item-name">new local repository…</span>
-                  </div>
-                ) : (
-                  <input
-                    autoFocus
-                    type="text"
-                    className="menu-filter"
-                    placeholder="name, then Enter"
-                    value={newRepo}
-                    onChange={(e) => setNewRepo(e.target.value)}
-                    onMouseDown={(e) => e.stopPropagation()}
-                    onKeyDown={(e) => {
-                      e.stopPropagation()
-                      if (e.key === 'Enter') void createRepo()
-                      if (e.key === 'Escape') setNewRepo(null)
-                    }}
-                  />
-                )}
-              </>
-            }
-          >
-            <Icon name="branch" size={14} className="dim icon-fixed" />
-            <span className="pick-value">{repos.length ? 'add another repository' : 'pick a repository'}</span>
-            {repos.length > 0 && <span className="pick-meta">{repos.length} selected</span>}
-            <span className="spacer" />
-          </PickRow>
-          {/* One row per picked repo: its name, its mode, its remove. Below the
-              pick-row rather than inside it, so any number of them wraps
-              instead of overrunning the row. A proactive run's repos are
-              always read — the control says so instead of offering a choice. */}
-          {repos.length > 0 && (
-            <div className="repo-mode-list">
-              {repos.map((name) => {
-                const cfg = allRepos.find((r) => r.name === name)
-                const mode = repoMode(info, name)
-                return (
-                  <div className="repo-mode-row" key={name}>
-                    <div className="repo-mode-head">
-                      <Icon name="branch" size={11} className="faint icon-fixed" />
-                      <span className="repo-mode-name">{cfg ? repoChipLabel(cfg) : name}</span>
-                      <span className="spacer" />
-                      <span
-                        className="chip-x"
-                        title="remove"
-                        onMouseDown={(e) => {
-                          e.preventDefault()
-                          toggleRepo(name)
-                        }}
-                      >
-                        ×
-                      </span>
-                    </div>
-                    <div className="repo-mode-seg" role="radiogroup" aria-label={`${name} mount mode`}>
-                      {REPO_MODES.map((m) => (
-                        <button
-                          type="button"
-                          key={m}
-                          role="radio"
-                          data-mode={m}
-                          aria-checked={mode === m}
-                          className={`chip-btn ${mode === m ? 'on' : ''}`}
-                          title={REPO_MODE_INFO[m].hint}
-                          disabled={roleForcesRead(role)}
-                          onClick={() => mode !== m && setMode(name, m)}
-                        >
-                          {REPO_MODE_INFO[m].locked && <Icon name="lock" size={10} className="icon-fixed" />}
-                          {REPO_MODE_INFO[m].label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
+            rather than moving behind the info dot: they block Run/Queue.
+            Same field as MCP and skills — only what an item is differs. */}
+        <PickerField
+          label="REPOSITORIES"
+          info="each repository is mounted the way its row says: write — read-write, holds the clone exclusively; read with a lock — read-only, the tree does not move while this session runs; read — read-only, blocks nobody"
+          icon="branch"
+          placeholder={repos.length ? 'add another repository' : 'pick a repository'}
+          items={allRepos.map((r) => ({
+            id: r.name,
+            label: r.name,
+            meta: r.local ? 'local' : shortRepoUrl(r.url)
+          }))}
+          selected={repos}
+          onPick={(name) => setRepoPicked(name, true)}
+          emptyText="no repositories yet — type a name to create a local one"
+          create={{
+            label: (name) => `new local repository "${name}"`,
+            title:
+              'a repository kept by gurt on this machine — no forge needed; publish it later from Settings → Repos',
+            onCreate: createRepo
+          }}
+          // One row per picked repo: its name, its mode, its remove. A
+          // proactive run's repos are always read — the control says so
+          // instead of offering a choice.
+          renderSelected={(name) => {
+            const cfg = allRepos.find((r) => r.name === name)
+            const mode = repoMode(info, name)
+            return (
+              <div className="repo-mode-row" key={name}>
+                <div className="repo-mode-head">
+                  <Icon name="branch" size={11} className="faint icon-fixed" />
+                  <span className="repo-mode-name">{cfg ? repoChipLabel(cfg) : name}</span>
+                  <span className="spacer" />
+                  <button
+          type="button"
+          className="chip-x"
+          title="remove"
+          aria-label={`remove ${name}`}
+          onClick={() => setRepoPicked(name, false)}
+        >
+          ×
+        </button>
+                </div>
+                <div className="repo-mode-seg" role="radiogroup" aria-label={`${name} mount mode`}>
+                  {REPO_MODES.map((m) => (
+                    <button
+                      type="button"
+                      key={m}
+                      role="radio"
+                      data-mode={m}
+                      aria-checked={mode === m}
+                      className={`chip-btn ${mode === m ? 'on' : ''}`}
+                      title={REPO_MODE_INFO[m].hint}
+                      disabled={roleForcesRead(role)}
+                      onClick={() => mode !== m && setMode(name, m)}
+                    >
+                      {REPO_MODE_INFO[m].locked && <Icon name="lock" size={10} className="icon-fixed" />}
+                      {REPO_MODE_INFO[m].label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )
+          }}
+          footer={
+            <>
+              {repoGap && (
+                <div className="hc-note">
+                  {repos.length
+                    ? 'no repository mounted for write — an executor cannot Run/Queue until one is'
+                    : 'no repository — Run/Queue disabled until you pick one'}
+                </div>
+              )}
+              {role === 'proactive' && (
+                <div className="hc-note">optional — repos are read-only context for each run</div>
+              )}
+            </>
+          }
+        />
+
+        <PickerField
+          label="MCP"
+          info="servers the agent may call. Picked means on, not picked means off. A built-in can be limited to read-only; a registry entry is all or nothing — gurt cannot tell which of an upstream's tools write."
+          icon="plug"
+          placeholder={mcp.length ? 'add another server' : 'pick an MCP server'}
+          items={mcpOffered.map((e) => ({
+            id: e.id,
+            label: e.label,
+            meta: e.description,
+            title: e.description,
+            warning: e.source === 'registry' && isLocalMcpEntry(e.entry) ? LOCAL_MCP_NOTICE : undefined
+          }))}
+          selected={mcp.map((m) => m.id)}
+          onPick={(id) => setMcpMode(id, 'full')}
+          emptyText="no MCP servers in this workspace — add one in Settings → MCP"
+          renderSelected={(id) => {
+            const entry = mcpOffered.find((e) => e.id === id)
+            return (
+              <McpSelectedRow
+                key={id}
+                id={id}
+                entry={entry}
+                mode={mcpMode(id)}
+                onChange={(mode) => setMcpMode(id, mode)}
+              />
+            )
+          }}
+        />
+
+        <PickerField
+          label="SKILLS"
+          info="skill directories mounted for the agent. Picked means on, not picked means off. A skill in the repository's own .claude/skills is the repo's and is not listed here."
+          icon="sliders"
+          placeholder={
+            skillsUnsupported
+              ? 'not supported by this agent'
+              : skills.length
+                ? 'add another skill'
+                : 'pick a skill'
+          }
+          items={skillsOffered.map((e) => ({
+            id: e.name,
+            label: e.name,
+            meta: e.problem ?? e.description,
+            title: e.problem ?? e.description
+          }))}
+          selected={skills.map((k) => k.name)}
+          onPick={(name) => setSkill(name, true)}
+          emptyText="no skills in this workspace — add one in Settings → Skills"
+          disabled={skillsUnsupported}
+          renderSelected={(name) => (
+            <SkillSelectedRow
+              key={name}
+              name={name}
+              entry={skillsOffered.find((e) => e.name === name)}
+              onRemove={() => setSkill(name, false)}
+            />
           )}
-          {repoGap && (
-            <div className="hc-note">
-              {repos.length
-                ? 'no repository mounted for write — an executor cannot Run/Queue until one is'
-                : 'no repository — Run/Queue disabled until you pick one'}
-            </div>
-          )}
-          {role === 'proactive' && (
-            <div className="hc-note">optional — repos are read-only context for each run</div>
-          )}
-        </div>
+          footer={
+            skillsUnsupported ? (
+              <div className="hc-note">
+                {draftAgentDef?.label} does not support skills — nothing would be mounted.
+                {skills.length ? ' Your selection is kept and applies if you pick an agent that does.' : ''}
+              </div>
+            ) : null
+          }
+        />
       </div>
 
       {/* behavior — the fields changed most often (model/effort) plus the
@@ -1062,8 +1008,8 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
         </div>
       )}
 
-      {/* advanced — everything left: rare agent-reported options, MCP
-          servers, the skills stub, and reset. Same fold shape as the network
+      {/* advanced — everything left: rare agent-reported options and
+          reset. Same fold shape as the network
           section above — an inline subfold label, not a full-width button —
           and the opened content sits flat in the section, no card around it. */}
       <div className="ns-section">
@@ -1076,69 +1022,12 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
                 className={`icon-fixed ${advancedOpen ? '' : 'chev-closed'}`}
               />
               advanced
-              <span className="dim">{advancedSummary}</span>
             </button>
           </div>
         </div>
         {advancedOpen && (
           <>
             {advancedOptions.map(configBlock)}
-            {/* MCP and skills side by side — two short columns instead of
-                two stacked full-width lists. */}
-            <div className="hc-cols">
-              {(mcpOffered.length > 0 || mcpOrphans.length > 0) && (
-                <div className="hc-block">
-                  <span className="seclabel">MCP SERVERS</span>
-                  {mcpOffered.map((entry) => (
-                    <McpRow
-                      key={entry.id}
-                      entry={entry}
-                      mode={mcpMode(entry.id)}
-                      onChange={(mode) => setMcpMode(entry.id, mode)}
-                    />
-                  ))}
-                  {mcpOrphans.map((sel) => (
-                    <McpMissingRow key={sel.id} id={sel.id} onRemove={() => setMcpMode(sel.id, null)} />
-                  ))}
-                </div>
-              )}
-              <div className="hc-block">
-                <span className="seclabel">SKILLS</span>
-                {skillsUnsupported ? (
-                  <div className="hc-note">
-                    {draftAgentDef?.label} does not support skills — nothing would be mounted.
-                    {skills.length
-                      ? ' Your selection is kept and applies if you pick an agent that does.'
-                      : ''}
-                  </div>
-                ) : (
-                  <>
-                    {skillsOffered.map((entry) => (
-                      <SkillRow
-                        key={entry.name}
-                        entry={entry}
-                        on={skills.some((k) => k.name === entry.name)}
-                        onChange={(on) => setSkill(entry.name, on)}
-                      />
-                    ))}
-                    {skillOrphans.map((sel) => (
-                      <SkillMissingRow
-                        key={sel.name}
-                        name={sel.name}
-                        onRemove={() => setSkill(sel.name, false)}
-                      />
-                    ))}
-                    {!skillsOffered.length && !skillOrphans.length && (
-                      <div className="hc-note">
-                        no skills in this workspace — add one in Settings &rarr; Skills. A skill
-                        in the repository&apos;s own .claude/skills is the repo&apos;s and is not
-                        listed here.
-                      </div>
-                    )}
-                  </>
-                )}
-              </div>
-            </div>
             <div className="hc-foot">
               <span className="spacer" />
               <button

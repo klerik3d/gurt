@@ -2551,7 +2551,9 @@ textarea.input {
    the pane is narrow. */
 .cfg-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  /* Three across (role|agent|env, repos|mcp|skills); fewer when the pane is
+     too narrow for 180px cells. */
+  grid-template-columns: repeat(auto-fit, minmax(max(180px, calc((100% - 32px) / 3)), 1fr));
   gap: 14px 16px;
   margin-top: 14px;
 }
@@ -5282,3 +5284,92 @@ button { user-select: none; }
 .chat-title .dim { font-weight: 400; }
 .grow { flex: 1; }
 .input-below { margin-top: 6px; }
+
+/* ---- multi-pick field (repositories, MCP, skills) ---- */
+
+/* A pick-row whose body is a text input rather than a button. */
+.pick-input {
+  cursor: text;
+}
+.pick-input-field {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: none;
+  border: none;
+  outline: none;
+  padding: 0;
+  color: var(--text);
+  font: inherit;
+}
+.pick-input-field::placeholder {
+  color: var(--faint);
+}
+/* A few rows, then it scrolls — the global thin scrollbar applies. */
+.pick-menu-field {
+  max-height: 176px;
+}
+.sel-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.sel-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 5px 6px 5px 9px;
+  background: var(--app);
+  border: 1px solid var(--border2);
+  border-radius: var(--r-sm);
+}
+.sel-row .chip-x {
+  color: var(--faint);
+  cursor: pointer;
+  padding: 0 3px;
+}
+.sel-row .chip-x:hover {
+  color: var(--red);
+}
+.sel-row .chip-btn {
+  padding: 2px 6px;
+  font-size: var(--fs-11);
+}
+/* A caution under a suggestion (a local MCP server runs a process). */
+.menu-item:has(.menu-item-warn) {
+  flex-wrap: wrap;
+}
+.menu-item-warn {
+  flex-basis: 100%;
+  white-space: normal;
+  font-size: var(--fs-11);
+  color: var(--red);
+}
+/* ×-remove buttons share the chip-x look. */
+button.chip-x {
+  background: none;
+  border: none;
+  font: inherit;
+  line-height: 1;
+}
+/* The name gives way (ellipsis) so the switch and × always stay in the column;
+   the description drops to its own line. */
+.sel-row .mcp-name {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sel-row .mcp-desc {
+  flex-basis: 100%;
+  order: 3;
+}
+.sel-row .chip-x,
+.sel-row .chip-row {
+  flex: none;
+}
+.sel-list-off {
+  opacity: 0.5;
+}

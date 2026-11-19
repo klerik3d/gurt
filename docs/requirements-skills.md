@@ -261,16 +261,19 @@ a user can act on it.
 
 ## 7. UI
 
-**Config tab, draft** — a `SKILLS` block in the Advanced panel, beside
-`MCP SERVERS`: one row per offered skill (dot, name, description,
-`off`/`on` menu), then a row per unresolvable selection. Identical
-mechanics to `McpRow`/`McpMissingRow`; a skill has no modes, so it is
-the two-option variant. When the draft's agent kind has
-`skillsDir: null`, the block shows a plain "does not support skills"
-note instead of the pickers — the `mcpHasModes` rule: gurt does not
-offer a switch it cannot honor. The stored selection is left exactly as
+**Config tab, draft** — a `SKILLS` field in the config grid, beside
+`MCP` and `REPOSITORIES`: all three are one component (`PickerField`) — a
+text input that drops a short, scrollable suggestion list on focus,
+filters as you type, and is walked with the arrow keys (Enter or a click
+picks). There is no on/off switch: picked is on, not picked is off. The
+picked skills are listed under the field (dot, name, description,
+remove), including a row, marked unavailable, per selection that no
+longer resolves. When the draft's agent kind has
+`skillsDir: null`, the field is disabled and shows a plain "does not
+support skills" note — the `mcpHasModes` rule: gurt does not offer a
+switch it cannot honor. The stored selection is left exactly as
 it is (absent/`[]` semantics of §4.3 included), so picking a supporting
-agent again restores the pickers with the selection intact.
+agent again restores the field with the selection intact.
 
 **Config tab, live** — the enabled skills of a started session, as tags
 in the frozen summary beside the MCP ones, and named by the same "fixed
