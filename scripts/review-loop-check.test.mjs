@@ -221,7 +221,9 @@ test('ensureContainerUp runs first and its failure means failed-to-run, with not
 // killing a check = stopping the container (§5.3)
 
 test('timeout stops the container, confirms it with an inspect, and the check dies with it', async () => {
-  const h = harness({ options: { timeoutMs: 300 } })
+  // The timeout must outlast the shell's start on a slow runner, or the kill
+  // lands before `started` is printed and the tail is empty.
+  const h = harness({ options: { timeoutMs: 1500 } })
   const res = await h.runner.run({ intent: nextId(), repo: 'api', command: `echo started; ${sleeper('t.pid')}` })
   assert.equal(res.status, 'stopped')
   assert.equal(res.reason, 'timeout')
