@@ -33,6 +33,8 @@ export type HotkeyActionId =
   | 'gotoTasks'
   | 'gotoDiff'
   | 'gotoFiles'
+  | 'gotoProactive'
+  | 'gotoArchive'
   | 'toggleTerminal'
   | 'gotoSettings'
 
@@ -55,6 +57,8 @@ export const HOTKEY_DEFS: HotkeyDef[] = [
   { id: 'gotoTasks', label: 'Go to agents', hint: 'show or hide scopes, focusing the list' },
   { id: 'gotoDiff', label: 'Go to diff', hint: 'show or hide scope changes, focusing the list' },
   { id: 'gotoFiles', label: 'Go to files', hint: 'show or hide scope files, focusing the tree' },
+  { id: 'gotoProactive', label: 'Go to proactive', hint: 'show or hide proactive agents, focusing the list' },
+  { id: 'gotoArchive', label: 'Go to archive', hint: 'open the archive' },
   { id: 'toggleTerminal', label: 'Toggle terminal', hint: 'show or hide the scope terminal' },
   { id: 'gotoSettings', label: 'Go to settings', hint: 'open settings' }
 ]
@@ -69,6 +73,8 @@ export const HOTKEY_DEFAULTS: Record<HotkeyActionId, HotkeyBinding> = {
   gotoTasks: { code: 'Digit2', mod: true, shift: false, alt: false },
   gotoDiff: { code: 'Digit3', mod: true, shift: false, alt: false },
   gotoFiles: { code: 'Digit5', mod: true, shift: false, alt: false },
+  gotoProactive: { code: 'Digit6', mod: true, shift: false, alt: false },
+  gotoArchive: { code: 'Digit7', mod: true, shift: false, alt: false },
   toggleTerminal: { code: 'Digit4', mod: true, shift: false, alt: false },
   gotoSettings: { code: 'Digit0', mod: true, shift: false, alt: false }
 }

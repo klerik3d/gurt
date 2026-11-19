@@ -769,6 +769,12 @@ export default function App() {
       } else if (bindingMatchesEvent(hotkeys.gotoFiles, e)) {
         e.preventDefault()
         if (!e.repeat) toggleWorkSidebar('files')
+      } else if (bindingMatchesEvent(hotkeys.gotoProactive, e)) {
+        e.preventDefault()
+        if (!e.repeat) toggleWorkSidebar('proactive')
+      } else if (bindingMatchesEvent(hotkeys.gotoArchive, e)) {
+        e.preventDefault()
+        setView('archive')
       } else if (bindingMatchesEvent(hotkeys.toggleTerminal, e)) {
         e.preventDefault()
         if (!e.repeat && view === 'work') setTerminalVisible((visible) => !visible)
@@ -1090,16 +1096,18 @@ export default function App() {
           </button>
           <button
             className={`ab-item ${view === 'work' && workMode === 'proactive' && leftSidebarVisible ? 'active' : ''}`}
-            title="Proactive agents"
+            title={`Proactive agents · ${bindingLabel(hotkeys.gotoProactive)}`}
             aria-label="Proactive agents"
             aria-pressed={view === 'work' && workMode === 'proactive' && leftSidebarVisible}
             onClick={() => toggleWorkSidebar('proactive')}
           >
             <Icon name="history" size={18} />
+            {modHeld && <span className="ab-badge">{bindingRestLabel(hotkeys.gotoProactive)}</span>}
           </button>
-          <button className={`ab-item ${view === 'archive' ? 'active' : ''}`} title="Archive"
+          <button className={`ab-item ${view === 'archive' ? 'active' : ''}`} title={`Archive · ${bindingLabel(hotkeys.gotoArchive)}`}
             aria-label="Archive" aria-pressed={view === 'archive'} onClick={() => setView('archive')}>
             <Icon name="archive" size={18} />
+            {modHeld && <span className="ab-badge">{bindingRestLabel(hotkeys.gotoArchive)}</span>}
           </button>
           <span className="spacer" />
           <button

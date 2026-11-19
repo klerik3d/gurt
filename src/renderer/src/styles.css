@@ -72,6 +72,13 @@
   /* Motion: see docs/design-motion.md */
   --dur-fast: 120ms;
   --dur-base: 200ms;
+
+  /* Elevation and scrim: see docs/design-shadows.md */
+  --shadow-sm: 0 2px 10px rgb(0 0 0 / calc(0.25 * var(--shadow-strength)));
+  --shadow-md: 0 12px 32px -12px rgb(0 0 0 / calc(0.6 * var(--shadow-strength)));
+  --shadow-lg: 0 32px 80px -24px rgb(0 0 0 / calc(0.75 * var(--shadow-strength)));
+  --shadow-xl: 0 40px 90px -24px rgb(0 0 0 / calc(0.8 * var(--shadow-strength)));
+  --scrim: rgb(0 0 0 / 0.5);
 }
 
 /* Warm paper — the same hues, lifted: `--app` is the page, `--surface` and
@@ -586,7 +593,7 @@ textarea.input {
   background: var(--surface);
   border: 1px solid var(--border2);
   border-radius: var(--r-md);
-  box-shadow: 0 16px 40px -8px rgb(0 0 0 / calc(0.7 * var(--shadow-strength)));
+  box-shadow: var(--shadow-md);
   padding: 6px;
   z-index: var(--z-menu);
 }
@@ -1344,7 +1351,7 @@ textarea.input {
   color: var(--dim);
   font-size: var(--fs-12);
   cursor: pointer;
-  box-shadow: 0 2px 10px rgb(0 0 0 / calc(0.25 * var(--shadow-strength)));
+  box-shadow: var(--shadow-sm);
   transform: translateX(-50%);
   transition:
     transform var(--dur-base) ease,
@@ -1712,7 +1719,7 @@ textarea.input {
   border: 1px solid var(--border2);
   border-radius: var(--r-md);
   overflow: hidden;
-  box-shadow: 0 8px 24px -12px rgb(0 0 0 / calc(0.5 * var(--shadow-strength)));
+  box-shadow: var(--shadow-md);
 }
 .perm-card.settled {
   box-shadow: none;
@@ -2014,7 +2021,7 @@ textarea.input {
   background: var(--surface);
   border: 1px solid var(--border2);
   border-radius: var(--r-lg);
-  box-shadow: 0 24px 60px -20px rgb(0 0 0 / calc(0.7 * var(--shadow-strength)));
+  box-shadow: var(--shadow-lg);
   z-index: var(--z-composer-menu);
   overflow: hidden;
 }
@@ -2190,7 +2197,7 @@ textarea.input {
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.55);
+  background: var(--scrim);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2205,7 +2212,7 @@ textarea.input {
   max-height: 90vh;
   display: flex;
   flex-direction: column;
-  box-shadow: 0 32px 80px -24px rgb(0 0 0 / calc(0.75 * var(--shadow-strength)));
+  box-shadow: var(--shadow-lg);
 }
 .modal-wide {
   width: 760px;
@@ -2530,7 +2537,7 @@ textarea.input {
   text-transform: none;
   white-space: normal;
   color: var(--dim);
-  box-shadow: 0 12px 32px -12px rgb(0 0 0 / calc(0.6 * var(--shadow-strength)));
+  box-shadow: var(--shadow-md);
 }
 .info-dot:hover .info-pop,
 .info-dot:focus .info-pop {
@@ -3538,7 +3545,7 @@ textarea.input {
 .pal-backdrop {
   align-items: flex-start;
   padding-top: 14vh;
-  background: rgba(0, 0, 0, 0.45);
+  background: var(--scrim);
 }
 .palette {
   width: 560px;
@@ -3547,7 +3554,7 @@ textarea.input {
   border: 1px solid var(--border2);
   border-radius: var(--r-lg);
   overflow: hidden;
-  box-shadow: 0 40px 90px -24px rgb(0 0 0 / calc(0.8 * var(--shadow-strength)));
+  box-shadow: var(--shadow-xl);
   display: flex;
   flex-direction: column;
 }
@@ -3631,7 +3638,7 @@ textarea.input {
   width: 380px;
   max-width: 90vw;
   padding: 18px;
-  box-shadow: 0 32px 80px -24px rgb(0 0 0 / calc(0.75 * var(--shadow-strength)));
+  box-shadow: var(--shadow-lg);
 }
 .dialog-title {
   font-weight: 600;
@@ -3711,7 +3718,7 @@ textarea.input {
   background: var(--surface);
   border: 1px solid var(--border2);
   border-radius: var(--r-lg);
-  box-shadow: 0 24px 60px -16px rgb(0 0 0 / calc(0.75 * var(--shadow-strength)));
+  box-shadow: var(--shadow-lg);
   display: flex;
   flex-direction: column;
   z-index: var(--z-popover);
@@ -4552,7 +4559,7 @@ textarea.input {
   border: 1px solid var(--border2);
   border-radius: var(--r-lg);
   background: var(--surface);
-  box-shadow: 0 8px 24px rgb(0 0 0 / calc(0.3 * var(--shadow-strength)));
+  box-shadow: var(--shadow-md);
   pointer-events: auto;
 }
 .notification-popup-open {
@@ -4817,7 +4824,7 @@ button { user-select: none; }
   background: var(--panel);
   border: 1px solid var(--border2);
   border-radius: var(--r-md);
-  box-shadow: 0 6px 18px rgb(0 0 0 / calc(0.35 * var(--shadow-strength)));
+  box-shadow: var(--shadow-md);
 }
 .ts-panel > .ts-panel-head {
   display: flex;
