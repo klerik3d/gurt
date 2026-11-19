@@ -54,6 +54,7 @@ import {
   sanitizeProactiveConfig,
   type ProactiveState
 } from '../shared/proactive'
+import { sanitizeWatcherConfig } from '../shared/watchers'
 import { createLogger } from './log'
 import { gurtRoot } from './paths'
 import { writeFileDurable, writeJsonDurable } from './durableWrite'
@@ -1321,7 +1322,7 @@ export function validateNewTaskName(ws: string, task: string, renaming?: string)
 export async function createTask(
   ws: string,
   task: string,
-  extra?: Pick<TaskFile, 'proactive' | 'origin'>
+  extra?: Pick<TaskFile, 'proactive' | 'origin' | 'watcher'>
 ): Promise<void> {
   validateName('task', task)
   if (taskExists(ws, task)) throw new Error(`task "${task}" already exists in "${ws}"`)
@@ -1837,6 +1838,7 @@ export async function buildTree(): Promise<Tree> {
     const wsData = await getWorkspace(ws)
     const tasks: Tree['workspaces'][number]['tasks'] = []
     const proactive: Tree['workspaces'][number]['proactive'] = []
+    const watchers: Tree['workspaces'][number]['watchers'] = []
     for (const task of await listTasks(ws)) {
       const taskFile = await getTask(ws, task)
       // A proactive agent's scope holds its template and its runs, not work
@@ -1849,6 +1851,12 @@ export async function buildTree(): Promise<Tree> {
           state: emptyProactiveState(),
           sessions: []
         })
+        continue
+      }
+      // A watcher's scope holds its one session and is listed apart too
+      // (docs/requirements-watchers.md §2); the kernel fills in the session id.
+      if (taskFile.watcher) {
+        watchers.push({ name: task, config: sanitizeWatcherConfig(taskFile.watcher) })
         continue
       }
       tasks.push({
@@ -1869,7 +1877,8 @@ export async function buildTree(): Promise<Tree> {
       ...(wsData.defaultSkills?.length ? { defaultSkills: wsData.defaultSkills } : {}),
       ...(wsData.defaultEnv ? { defaultEnv: wsData.defaultEnv } : {}),
       tasks,
-      proactive
+      proactive,
+      watchers
     })
   }
   return tree

@@ -2,7 +2,7 @@
 // into records, persists the on/off matrix) and renderer (settings, panel).
 import type { EnvRef } from './types'
 
-export type NotificationType = 'awaiting' | 'proposal' | 'error' | 'turn-ended'
+export type NotificationType = 'awaiting' | 'proposal' | 'error' | 'turn-ended' | 'watcher'
 
 export interface NotificationTypePrefs {
   inApp: boolean
@@ -15,7 +15,9 @@ export const NOTIFICATION_DEFAULTS: NotificationPrefs = {
   awaiting: { inApp: true, external: true },
   proposal: { inApp: true, external: false },
   error: { inApp: true, external: true },
-  'turn-ended': { inApp: false, external: false }
+  'turn-ended': { inApp: false, external: false },
+  // A watcher asks for attention (docs/requirements-watchers.md §11).
+  watcher: { inApp: true, external: true }
 }
 
 /** Oldest dropped once the in-memory/renderer history exceeds this — one
@@ -61,4 +63,7 @@ export interface NotificationRecord {
   /** ISO timestamp. */
   ts: string
   read: boolean
+  /** How urgent — a `watcher` notification carries one (`info` / `warning` /
+   *  `error`); a record without one keeps its type's tone. */
+  level?: 'info' | 'warning' | 'error'
 }

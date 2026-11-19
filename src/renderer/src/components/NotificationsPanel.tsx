@@ -13,8 +13,13 @@ const NOTIF_DOT: Record<NotificationType, { tone: Tone; hollow?: boolean }> = {
   awaiting: { tone: 'yellow' },
   proposal: { tone: 'green' },
   error: { tone: 'red' },
-  'turn-ended': { tone: 'faint', hollow: true }
+  'turn-ended': { tone: 'faint', hollow: true },
+  // Overridden by the record's own level (see `dotFor`).
+  watcher: { tone: 'yellow' }
 }
+
+/** A record's own level wins over its type's tone (a `watcher` notification). */
+const LEVEL_TONE: Record<NonNullable<NotificationRecord['level']>, Tone> = { info: 'green', warning: 'yellow', error: 'red' }
 
 /** Every session id the tree currently knows about — a notification for one
  *  that isn't here belongs to a deleted session; clicking it would otherwise
@@ -25,6 +30,8 @@ function liveSessionIds(tree: Tree | null): Set<string> {
     for (const task of ws.tasks) for (const s of task.sessions) ids.add(s.id)
     // A proactive agent's runs live outside the scopes, and notify too.
     for (const agent of ws.proactive) for (const s of agent.sessions) ids.add(s.id)
+    // A watcher's notification is the point of the feature: its session counts too.
+    for (const w of ws.watchers) if (w.sessionId) ids.add(w.sessionId)
   }
   return ids
 }
@@ -106,7 +113,7 @@ export function NotificationsPanel({
             onClick={() => open(n)}
             onMouseEnter={() => setIdx(i)}
           >
-            <Dot tone={NOTIF_DOT[n.type].tone} hollow={NOTIF_DOT[n.type].hollow} />
+            <Dot tone={n.level ? LEVEL_TONE[n.level] : NOTIF_DOT[n.type].tone} hollow={NOTIF_DOT[n.type].hollow} />
             <div className="notif-body">
               <div className="notif-loc mono">
                 {n.ref.workspace} / {n.title}

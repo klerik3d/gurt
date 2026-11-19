@@ -121,7 +121,7 @@ test('the reviewer is held to submit_review: nudged for it, marked incomplete wi
   // Exactly the contract roles: every other one is never nudged at all.
   assert.deepEqual(
     SESSION_ROLES.filter(roleHasTurnContract),
-    ['executor', 'proactive', 'reviewer']
+    ['executor', 'proactive', 'reviewer', 'watcher']
   )
 })
 

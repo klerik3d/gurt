@@ -42,7 +42,9 @@ export function NotificationPopups({ notifications, tree, onDismiss, onOpen }: {
     tree?.workspaces.flatMap((w) => [
       ...w.tasks.flatMap((t) => t.sessions.map((s) => s.id)),
       // A proactive agent's runs live outside the scopes, and notify too.
-      ...w.proactive.flatMap((a) => a.sessions.map((s) => s.id))
+      ...w.proactive.flatMap((a) => a.sessions.map((s) => s.id)),
+      // A watcher's notifications are the point of the feature.
+      ...w.watchers.flatMap((x) => (x.sessionId ? [x.sessionId] : []))
     ])
   )
   return (

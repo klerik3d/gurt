@@ -118,7 +118,13 @@ export function createNotifications(
    *  wrongly suppress the *next* turn's `turn-ended`. */
   const turnOpen = new Set<string>()
 
-  function push(type: NotificationType, sessionId: string, ref: EnvRef, detail: string): void {
+  function push(
+    type: NotificationType,
+    sessionId: string,
+    ref: EnvRef,
+    detail: string,
+    level?: NotificationRecord['level']
+  ): void {
     const info = sessionInfo(sessionId)
     if (!info) return // session gone (deleted) — nothing to show
     const record: NotificationRecord = {
@@ -129,7 +135,8 @@ export function createNotifications(
       title: `${ref.task} · ${info.title}`,
       detail,
       ts: new Date().toISOString(),
-      read: false
+      read: false,
+      ...(level ? { level } : {})
     }
     const p = prefs[type]
     if (p.inApp) {
@@ -187,6 +194,8 @@ export function createNotifications(
     // Read off the raw field on purpose: a proactive run always carries its
     // role, and a pre-roles record (no role) is never one.
     if (sessionInfo(sessionId)?.role === 'proactive') return
+    // A watcher's wake turn is not a turn anybody is waiting to read either.
+    if (sessionInfo(sessionId)?.role === 'watcher') return
     // Nor is a review loop's reviewer: it exists for one verdict (§7); and its
     // executor's turn is the controller's to announce while the loop runs.
     if (sessionInfo(sessionId)?.role === 'reviewer' || loopSpeaksFor(sessionId)) return
@@ -217,6 +226,11 @@ export function createNotifications(
       )
     if (outcome === 'timeout' || outcome === 'incomplete')
       notifyError(sessionId, ref, outcome === 'timeout' ? 'proactive run timed out' : 'proactive run ended without finish_run')
+  })
+
+  // A watcher asks for attention (docs/requirements-watchers.md §11).
+  bus.on('watcher.notify', ({ sessionId, ref, level, text }) => {
+    push('watcher', sessionId, ref, text, level)
   })
 
   // The review loop's own voice (§7): an ordinary `turn-ended` for a dormant

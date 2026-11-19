@@ -115,6 +115,8 @@ function useEntryTimes(sessionId: string, raw: ChatEntry[] | undefined): ChatEnt
 export interface ComposerNote {
   text: string
   hint: string
+  /** Buttons at the end of the line (a watcher's Wake now / Cancel / Resume). */
+  actions?: { label: string; title?: string; disabled?: boolean; onClick: () => void }[]
 }
 
 export function Chat({
@@ -496,7 +498,7 @@ export function Chat({
                       entry={b.entry}
                       sessionId={sessionId}
                       {...(canRewind ? { onRewind: (id: number) => void rewindTo(id) } : {})}
-                      onBranch={(id) => void branchAt(id)}
+                      {...(snapshot.info.role !== 'watcher' ? { onBranch: (id: number) => void branchAt(id) } : {})}
                     />
                   )
                 )}
@@ -1502,6 +1504,11 @@ function Composer({
         <div className="composer-note">
           <InfoDot text={note.hint} />
           <span>{note.text}</span>
+          {note.actions?.map((a) => (
+            <button key={a.label} className="btn btn-sm" title={a.title} disabled={a.disabled} onClick={a.onClick}>
+              {a.label}
+            </button>
+          ))}
         </div>
       )}
       <div className={`composer ${focused ? 'focused' : ''}`}>

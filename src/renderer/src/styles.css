@@ -5373,3 +5373,18 @@ button.chip-x {
 .sel-list-off {
   opacity: 0.5;
 }
+
+/* Watchers (docs/requirements-watchers.md §12): the settings phrase sits above
+   the ordinary session view, which takes the rest of the pane. */
+.wp-settings {
+  margin: 0;
+  padding: 6px 20px;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+.wp-session {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}

@@ -1,6 +1,7 @@
 // Domain model shared between main and renderer.
 import type { McpRegistryEntry } from './mcp'
 import type { ProactiveAgentView, ProactiveConfig, ProactiveOrigin } from './proactive'
+import type { PendingWake, WakeOrigin, WatcherConfig, WatcherState, WatcherView } from './watchers'
 import type { SettledTurn } from './reviewLoop'
 import { sanitizeDomainPolicy, type DomainPolicy } from './proxy'
 
@@ -426,6 +427,10 @@ export interface TaskFile {
   /** Present on a scope a proactive agent raised — written in the same write
    *  that creates the scope, so its refs are bound exactly when it exists. */
   origin?: ProactiveOrigin
+  /** Present on the scope that *is* a watcher (docs/requirements-watchers.md §2):
+   *  it holds the watcher's one session and is listed under
+   *  `Tree.workspaces[].watchers` instead of among the scopes. */
+  watcher?: WatcherConfig
 }
 
 /** Pre-1:1 shape of a `task.json` env record — read once, migrated, discarded. */
@@ -477,11 +482,17 @@ export type SessionState = 'draft' | 'queued' | 'starting' | 'started'
  *              every turn with `submit_review`. Never picked, never drafted:
  *              only the loop creates one, with `SessionInfo.reviewOf`.
  *
+ * watcher    — the one session of a watcher (docs/requirements-watchers.md):
+ *              monitors an outside process, wakes itself with `wake_me` and
+ *              ends every turn with `wake_me`, `cancel_wakeup`-less or
+ *              `finish_watch`. Its repos are always read-only. Never picked:
+ *              only the watcher manager creates it.
+ *
  * The former user-picked `reviewer` is gone (repo-mounts §4): its records —
  * those without `reviewOf` — migrate to a researcher whose repos are mounted
  * `write`, exactly as they were.
  */
-export type SessionRole = 'executor' | 'researcher' | 'inspector' | 'operator' | 'proactive' | 'reviewer'
+export type SessionRole = 'executor' | 'researcher' | 'inspector' | 'operator' | 'proactive' | 'reviewer' | 'watcher'
 
 export const SESSION_ROLES: readonly SessionRole[] = [
   'executor',
@@ -489,7 +500,8 @@ export const SESSION_ROLES: readonly SessionRole[] = [
   'inspector',
   'operator',
   'proactive',
-  'reviewer'
+  'reviewer',
+  'watcher'
 ]
 
 /** Only the review loop creates a session of this role (§4 of
@@ -497,11 +509,16 @@ export const SESSION_ROLES: readonly SessionRole[] = [
  *  duplicate or recreate copies it. */
 export const roleIsLoopOwned = (role: SessionRole): boolean => role === 'reviewer'
 
+/** Only a manager creates a session of this role — the review loop its
+ *  reviewer, the watcher manager its watcher. The guards at every entrance
+ *  (IPC create, draft edit, duplicate, recreate) refuse it for anyone else. */
+export const roleIsManagerOwned = (role: SessionRole): boolean => role === 'reviewer' || role === 'watcher'
+
 /** The roles a user picks for an ordinary session — every one but
  *  `proactive`, which only a proactive agent's template carries, and the
  *  loop's own {@link roleIsLoopOwned} reviewer. */
 export const USER_SESSION_ROLES: readonly SessionRole[] = SESSION_ROLES.filter(
-  (r) => r !== 'proactive' && !roleIsLoopOwned(r)
+  (r) => r !== 'proactive' && !roleIsManagerOwned(r)
 )
 
 /** Guard for a role arriving from outside the kernel (the renderer over IPC).
@@ -546,7 +563,8 @@ export const legacyRepoMode = (role: SessionRole): RepoMode => (role === 'execut
  *  limit, not a mount pick — it claims no clone, so it never waits on the
  *  executor whose `write` claim the loop keeps (never `read-locked`: that would
  *  deadlock, docs/requirements-review-loop.md §4). */
-export const roleForcesRead = (role: SessionRole): boolean => role === 'proactive' || role === 'reviewer'
+export const roleForcesRead = (role: SessionRole): boolean =>
+  role === 'proactive' || role === 'reviewer' || role === 'watcher'
 
 /** How `repo` is mounted in this session. A proactive run's and a reviewer's
  *  repos are always `read` ({@link roleForcesRead}). A record with no mode
@@ -616,7 +634,7 @@ export function missingRepoReason(s: Pick<SessionInfo, 'role' | 'repos' | 'repoM
  *  (docs/requirements-turn-contract.md), `finish_run` for a proactive run,
  *  `submit_review` for a reviewer (docs/requirements-review-loop.md §4). */
 export const roleHasTurnContract = (role: SessionRole): boolean =>
-  role === 'executor' || role === 'proactive' || role === 'reviewer'
+  role === 'executor' || role === 'proactive' || role === 'reviewer' || role === 'watcher'
 
 /** Gets the admin surface's read tools: the inspector and the operator. */
 export const roleReadsAdmin = (role: SessionRole): boolean => role === 'inspector' || role === 'operator'
@@ -800,6 +818,11 @@ export interface SessionInfo {
    *  expected to lift. Present while the session waits to send "continue" on
    *  its own; persisted, so a restart keeps waiting rather than resending. */
   limitedUntil?: string | undefined
+  /** The watcher's one pending wakeup (docs/requirements-watchers.md §2.2) —
+   *  the timed automatic prompt beside `limitedUntil`; persisted. */
+  wake?: PendingWake | undefined
+  /** A watcher's state, present from Start (§2.2); persisted. */
+  watcher?: WatcherState | undefined
   /** Runtime overlay (never persisted): the agent is processing a prompt right now. */
   busy?: boolean | undefined
   /** Runtime overlay (never persisted): gurt itself is working on the session
@@ -913,6 +936,8 @@ export interface Tree {
     /** Proactive agents of this workspace. Their scopes (template + runs) are
      *  not among `tasks`. */
     proactive: ProactiveAgentView[]
+    /** Watchers of this workspace; their scopes are not among `tasks` either. */
+    watchers: WatcherView[]
   }[]
 }
 
@@ -1272,7 +1297,7 @@ export interface PersistedPrompt {
   /** Who queued an `auto` prompt, when it was not gurt's own "continue": the
    *  review loop, by the id of the intent that decided it
    *  (docs/requirements-review-loop.md §5.5, §8). */
-  origin?: { loop: string } | undefined
+  origin?: { loop: string } | { limit: true; of: 'wake' | 'user' } | WakeOrigin | undefined
 }
 
 export interface PersistedSession {
@@ -1292,6 +1317,10 @@ export interface PersistedSession {
   /** The review-loop intent whose host message was last taken off the queue
    *  (docs/requirements-review-loop.md §8): the in-flight marker. */
   loopRan?: string | undefined
+  /** Where the turn in flight came from (docs/requirements-watchers.md §10):
+   *  written beside `interrupted`, so a restart can tell a watcher's own wake
+   *  turn (approved work) from attended work. */
+  ranOrigin?: 'wake' | 'user' | undefined
   /** Legacy pre-log format; migrated to the JSONL log on restore. */
   entries?: ChatEntry[] | undefined
 }

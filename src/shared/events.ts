@@ -9,6 +9,7 @@ import type {
 } from './types'
 import type { TerminalInfo, TerminalOutput } from './terminal'
 import type { ProactiveRunOutcome } from './proactive'
+import type { WatcherLevel } from './watchers'
 import type { ReviewLoopNotice, SettledTurn } from './reviewLoop'
 import type { DoctorRow } from './doctor'
 import type { PiiTable } from './pii'
@@ -134,6 +135,16 @@ export interface DomainEvents {
     agent: string
     outcome: ProactiveRunOutcome
     proposed: string[]
+  }
+  /** A watcher asks for attention (docs/requirements-watchers.md §11):
+   *  `notify_user`, `finish_watch`, a host end (`expired`) or a watcher gone
+   *  blind. `ref` is the watcher session's. */
+  'watcher.notify': {
+    sessionId: string
+    ref: EnvRef
+    level: WatcherLevel
+    text: string
+    reason: 'agent' | 'finish' | 'expired' | 'blind'
   }
   /** One `session/prompt` round-trip finished, as accounting: which agent
    *  instance served it, how long it took, what the adapter reported, and how

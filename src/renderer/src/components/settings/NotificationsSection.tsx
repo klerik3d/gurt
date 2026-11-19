@@ -8,10 +8,11 @@ const NOTIFICATION_COPY: Record<NotificationType, { label: string; hint: string 
   awaiting: { label: 'Awaiting', hint: 'needs your input — a permission request is pending' },
   proposal: { label: 'Proposal', hint: 'changes are ready to review' },
   error: { label: 'Error', hint: 'a session or its container failed' },
-  'turn-ended': { label: 'Turn ended', hint: 'turn finished, nothing to review' }
+  'turn-ended': { label: 'Turn ended', hint: 'turn finished, nothing to review' },
+  watcher: { label: 'Watcher', hint: 'a watcher asks for attention — a failure, or the outcome is known' }
 }
 
-const NOTIFICATION_ORDER: NotificationType[] = ['awaiting', 'proposal', 'error', 'turn-ended']
+const NOTIFICATION_ORDER: NotificationType[] = ['awaiting', 'proposal', 'error', 'turn-ended', 'watcher']
 
 export function NotificationsSection() {
   const [prefs, setPrefs] = useState<NotificationPrefs | null>(null)

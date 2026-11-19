@@ -915,9 +915,9 @@ export function Sidebar({
 }
 
 /** Every name a new scope must not clash with — agents included: a proactive
- *  agent is a scope on disk, and its name a branch like any other. */
+ *  agent or a watcher is a scope on disk, and its name a branch like any other. */
 export function scopeNamesOf(ws: Tree['workspaces'][number] | undefined): string[] {
-  return [...(ws?.tasks ?? []), ...(ws?.proactive ?? [])].map((t) => t.name)
+  return [...(ws?.tasks ?? []), ...(ws?.proactive ?? []), ...(ws?.watchers ?? [])].map((t) => t.name)
 }
 
 /** Under a scope-name field: why the name cannot be a branch, or — when typing

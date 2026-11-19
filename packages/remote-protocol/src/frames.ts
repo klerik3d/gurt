@@ -106,8 +106,14 @@ export type PushPlatform = 'apns' | 'fcm'
 export const PUSH_PLATFORMS: readonly PushPlatform[] = ['apns', 'fcm']
 
 /** What a push announces — the desktop's notification types. */
-export type NotificationType = 'awaiting' | 'proposal' | 'error' | 'turn-ended'
-export const NOTIFICATION_TYPES: readonly NotificationType[] = ['awaiting', 'proposal', 'error', 'turn-ended']
+export type NotificationType = 'awaiting' | 'proposal' | 'error' | 'turn-ended' | 'watcher'
+export const NOTIFICATION_TYPES: readonly NotificationType[] = [
+  'awaiting',
+  'proposal',
+  'error',
+  'turn-ended',
+  'watcher'
+]
 
 export interface PushToken {
   /** Device id. */

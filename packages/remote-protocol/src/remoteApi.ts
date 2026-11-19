@@ -35,6 +35,7 @@ export type RemoteSessionRole =
   | 'operator'
   | 'proactive'
   | 'reviewer'
+  | 'watcher'
 
 /** One session row of the tree. */
 export interface RemoteSessionRow {

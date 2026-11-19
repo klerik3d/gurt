@@ -48,6 +48,7 @@ import type { DoctorReport, DoctorRow, FirstRunResult, WelcomeMode } from './doc
 import type { TerminalInfo, TerminalSnapshot } from './terminal'
 import type { FileDocument, FileEntry, FileImage, FileNavigation, FileNavigationResult } from './files'
 import type { ProactiveConfig } from './proactive'
+import type { WatcherConfig } from './watchers'
 import type { LoopState } from './reviewLoop'
 
 export type CreateAction = 'run' | 'queue' | 'draft'
@@ -558,6 +559,21 @@ export interface GurtApi {
   /** Start a run now, whatever the schedule says; answers its session id.
    *  Refused while a run is going. */
   proactiveRunNow(ws: string, name: string): Promise<string>
+  /** Create a watcher (docs/requirements-watchers.md §2): a scope named `name`
+   *  holding one draft session of role `watcher`. */
+  watcherCreate(ws: string, name: string): Promise<void>
+  /** Change a watcher's settings; omitted keys stay. Pause is `wakeups: false`. */
+  watcherUpdate(ws: string, name: string, patch: Partial<WatcherConfig>): Promise<void>
+  /** Start the watcher (the user's approval for its unattended wake turns). */
+  watcherStart(ws: string, name: string): Promise<void>
+  /** Stop it for good: cancels the turn, drops the wakeup, ends it `stopped`. */
+  watcherStop(ws: string, name: string): Promise<void>
+  /** Re-arm a finished watcher, optionally with new limits. */
+  watcherRearm(ws: string, name: string, patch?: Partial<WatcherConfig>): Promise<void>
+  /** Wake it now instead of at the wakeup's time. */
+  watcherWakeNow(ws: string, name: string): Promise<void>
+  /** Withdraw the pending wakeup. */
+  watcherCancelWake(ws: string, name: string): Promise<void>
 }
 
 /**
@@ -755,7 +771,15 @@ const METHODS = {
   // operator doc); docs/design-proactive-agents.md §9 phase 2.
   proactiveCreate: 'none',
   proactiveUpdate: 'none',
-  proactiveRunNow: 'none'
+  proactiveRunNow: 'none',
+  // Watchers: the same — reading their state can become `read` later (§14).
+  watcherCreate: 'none',
+  watcherUpdate: 'none',
+  watcherStart: 'none',
+  watcherStop: 'none',
+  watcherRearm: 'none',
+  watcherWakeNow: 'none',
+  watcherCancelWake: 'none'
 } as const satisfies Record<keyof GurtApi, Exposure>
 
 /** Runtime method list; `api:<method>` is the IPC channel per entry. */
