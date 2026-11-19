@@ -18,6 +18,8 @@ The current documentation:
 - [design-type.md](design-type.md) — the font-size scale (`--fs-9`…`--fs-18`)
   and letter-spacing tokens (`--ls-*`); new sizes and label spacing only
   from them.
+- [design-disabled.md](design-disabled.md) — the disabled-control opacity
+  token (`--op-disabled`); no raw opacity on `:disabled` rules.
 - [design-shadows.md](design-shadows.md) — the elevation scale (`--shadow-*`)
   and the modal scrim (`--scrim`); no raw shadows or scrims outside `:root`.
 
