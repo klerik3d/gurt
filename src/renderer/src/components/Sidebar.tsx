@@ -11,7 +11,7 @@ import { useOutsideClose } from '../hooks'
 import { alertDialog, confirmDialog } from '../dialog'
 import { showToast } from '../toast'
 import { GitCommitPanel, type CommitDraft } from './GitActions'
-import { SESSION_DOT } from '../status'
+import { sessionDot } from '../status'
 import { markUnread } from '../reviewed'
 import { Icon, Dot } from './icons'
 import { AgentMark } from './tags'
@@ -817,7 +817,7 @@ export function Sidebar({
               {!isCollapsed && mode === 'sessions' &&
                 sessionLines(task).map(({ s, nested, reviews, open }) => {
                   const status = sessionStatus({ ...s, ...activity[s.id] })
-                  const dot = SESSION_DOT[status]
+                  const dot = sessionDot(status, activity[s.id]?.hostBusy)
                   const srow: Row = { kind: 'session', id: s.id, ws: wsName, task: task.name }
                   const selected = isSelected(srow)
                   const renamingThis = renaming && rowKey(renaming) === rowKey(srow)

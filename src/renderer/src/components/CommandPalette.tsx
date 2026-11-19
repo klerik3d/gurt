@@ -1,12 +1,12 @@
 import { taskKey } from '../../../shared/keys'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { SessionActivity, SessionStatus, Tree } from '../../../shared/types'
+import type { HostBusy, SessionActivity, SessionStatus, Tree } from '../../../shared/types'
 import { sessionStatus } from '../../../shared/types'
 import { bindingLabel } from '../../../shared/hotkeys'
 import { agentKind, agentName, useAgents } from '../useAgents'
 import { useHotkeys } from '../useHotkeys'
 import { logErr } from '../log'
-import { SESSION_DOT } from '../status'
+import { hostWorking, sessionDot } from '../status'
 import { Icon, Dot } from './icons'
 import { AgentMark } from './tags'
 
@@ -17,6 +17,7 @@ interface SessionItem {
   client: string
   clientKind?: string | undefined
   status: SessionStatus
+  hostBusy?: HostBusy | undefined
 }
 
 interface TaskItem {
@@ -54,6 +55,9 @@ const STATUS_WORD: Record<SessionStatus, string> = {
   idle: 'idle',
   'idle-read': 'seen'
 }
+
+/** The word for gurt's own work on a session whose turn has ended. */
+const HOST_WORD: Record<HostBusy, string> = { check: 'checking' }
 
 export function CommandPalette({
   tree,
@@ -108,7 +112,8 @@ export function CommandPalette({
               title: s.title,
               client: agentName(agents, s.agent),
               clientKind: agentKind(agents, s.agent),
-              status: sessionStatus({ ...s, ...activity[s.id] })
+              status: sessionStatus({ ...s, ...activity[s.id] }),
+              hostBusy: activity[s.id]?.hostBusy
             })
       }
 
@@ -186,7 +191,7 @@ export function CommandPalette({
         </div>
       )
     if (item.kind === 'session') {
-      const dot = SESSION_DOT[item.status]
+      const dot = sessionDot(item.status, item.hostBusy)
       return (
         <div key={item.id} {...common}>
           <Dot tone={dot.tone} pulse={dot.pulse} hollow={dot.hollow} />
@@ -197,7 +202,7 @@ export function CommandPalette({
                 <AgentMark kind={item.clientKind} name={item.client} /> ·{' '}
               </>
             )}
-            <span className={dot.tone}>{STATUS_WORD[item.status]}</span>
+            <span className={dot.tone}>{hostWorking(item.status, item.hostBusy) ? HOST_WORD[item.hostBusy] : STATUS_WORD[item.status]}</span>
           </span>
         </div>
       )

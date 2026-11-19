@@ -802,6 +802,10 @@ export interface SessionInfo {
   limitedUntil?: string | undefined
   /** Runtime overlay (never persisted): the agent is processing a prompt right now. */
   busy?: boolean | undefined
+  /** Runtime overlay (never persisted): gurt itself is working on the session
+   *  between its turns — `check`: the review loop's automatic check runs in its
+   *  container. The status marks blink yellow on it (`sessionDot`). */
+  hostBusy?: HostBusy | undefined
   /** Runtime overlay (never persisted): a permission request awaits the user's decision. */
   awaitingInput?: boolean | undefined
   /** Runtime overlay (never persisted): the turn ended without a `complete` call and the
@@ -837,9 +841,15 @@ export interface SessionInfo {
  */
 export interface SessionActivity {
   busy?: boolean | undefined
+  hostBusy?: HostBusy | undefined
   awaitingInput?: boolean | undefined
   seen?: boolean | undefined
 }
+
+/** What gurt itself does on a session between its turns (see
+ *  {@link SessionInfo.hostBusy}). Not a {@link SessionStatus}: the session's
+ *  own state is unchanged by it (its turn has ended), only its mark is. */
+export type HostBusy = 'check'
 
 /**
  * Fine-grained status shown in the session tree — the persisted {@link SessionState}

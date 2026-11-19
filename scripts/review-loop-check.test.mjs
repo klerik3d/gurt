@@ -21,7 +21,7 @@ import assert from 'node:assert/strict'
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const outfile = path.join(os.tmpdir(), `gurt-review-loop-check-${process.pid}.mjs`)
 await bundle({ entryPoints: [path.join(ROOT, 'src/main/reviewCheck.ts')], outfile })
-const { CheckRunner, LineRing, CHECK_TAIL } = await import(pathToFileURL(outfile).href)
+const { CheckRunner, LineRing, CHECK_TAIL, CHECK_PROGRESS, progressDelay } = await import(pathToFileURL(outfile).href)
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gurt-review-check-'))
 const repoDir = path.join(tmp, 'workspaces')
@@ -168,6 +168,73 @@ test('unbounded output stays bounded: a flood of lines and a giant unterminated 
   assert.ok(tail.every((l) => l.length <= CHECK_TAIL.lineChars))
   assert.ok(Buffer.byteLength(tail.join('\n')) <= CHECK_TAIL.bytes, '8 KB cap')
   assert.ok(peak - before < 96 * 1024 * 1024, `host memory grew by ${((peak - before) / 1048576) | 0} MB`)
+})
+
+test('LineRing.peek: the latest lines mid-stream, the unfinished line (its last redraw) included, nothing flushed', () => {
+  const r = new LineRing()
+  assert.deepEqual(r.peek(3), [])
+  r.push('one\ntwo\nthree\n')
+  assert.deepEqual(r.peek(2), ['two', 'three'])
+  r.push('\x1b[32mprog 10%\rprog 40%')
+  assert.deepEqual(r.peek(2), ['three', 'prog 40%'])
+  assert.deepEqual(r.peek(1), ['prog 40%'])
+  assert.deepEqual(r.lines(), ['one', 'two', 'three'], 'peek flushes nothing')
+  r.push('\rprog 100%\n')
+  assert.deepEqual(r.peek(5), ['one', 'two', 'three', 'prog 100%'])
+})
+
+test('progressDelay: a second at first, stretching to ten seconds', () => {
+  assert.equal(progressDelay(0), CHECK_PROGRESS.minMs)
+  assert.equal(progressDelay(30_000), 1_000)
+  assert.equal(progressDelay(150_000), 5_000)
+  assert.equal(progressDelay(20 * 60_000), CHECK_PROGRESS.maxMs)
+})
+
+test('onProgress streams the output while the check runs, throttled and bounded, and never after it resolved', async () => {
+  const h = harness({ options: { progressDelay: () => 100 } })
+  const seen = []
+  let resolved = false
+  let late = 0
+  const command = 'for i in 1 2 3 4 5 6 7 8 9 10; do echo step $i; sleep 0.1; done; i=0; while [ $i -lt 100 ]; do echo flood $i; i=$((i+1)); done'
+  const run = await h.runner.run({
+    intent: nextId(),
+    repo: 'api',
+    command,
+    // (the runner swallows a throw from here, so a late call is counted, not asserted)
+    onProgress: (lines) => {
+      if (resolved) late++
+      seen.push({ at: Date.now(), lines })
+    }
+  })
+  resolved = true
+  assert.equal(run.status, 'finished')
+  assert.equal(run.result.code, 0)
+  assert.ok(seen.length >= 3, `streamed ${seen.length} updates`)
+  assert.ok(seen.length <= 20, `throttled: ${seen.length} updates for ~1s of output`)
+  assert.deepEqual(seen[0].lines, ['step 1'], 'the first output is reported at once')
+  assert.ok(seen.every((u) => u.lines.length <= CHECK_PROGRESS.lines))
+  for (let i = 1; i < seen.length; i++) assert.ok(seen[i].at - seen[i - 1].at >= 90, 'at most once per delay')
+  // a throwing view does not break the check
+  const bad = await h.runner.run({ intent: nextId(), repo: 'api', command: 'echo a; exit 4', onProgress: () => { throw new Error('view') } })
+  assert.equal(bad.status, 'finished')
+  assert.equal(bad.result.code, 4)
+  await new Promise((r) => setTimeout(r, 300))
+  assert.equal(late, 0, 'no progress once the run resolved')
+})
+
+test('onProgress reports only a change: a command repeating one line is not reported again and again', async () => {
+  const h = harness({ options: { progressDelay: () => 50 } })
+  const seen = []
+  const run = await h.runner.run({
+    intent: nextId(),
+    repo: 'api',
+    // 25 lines of `same` fill the 20-line view; 15 more batches change nothing.
+    command: 'i=0; while [ $i -lt 40 ]; do echo same; i=$((i+1)); sleep 0.03; done',
+    onProgress: (lines) => seen.push(lines.join('\n'))
+  })
+  assert.equal(run.status, 'finished')
+  assert.equal(new Set(seen).size, seen.length, 'no two reports alike')
+  assert.ok(seen.length <= CHECK_PROGRESS.lines, `${seen.length} reports for a view that stopped changing at ${CHECK_PROGRESS.lines} lines`)
 })
 
 // ---------------------------------------------------------------------------
