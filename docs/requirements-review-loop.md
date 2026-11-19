@@ -400,6 +400,20 @@ docker CLI, which is not relied on to stop anything in the container.
   is written there: no wrapper, no pid file, no process group.
 - **Bounded capture**: the host keeps a ring of the last 60 lines, each cut at
   500 chars, ≤ 8 KB, and nothing else; stdout is never accumulated.
+- **Visible while it runs**: the check's console block in the executor's chat
+  shows the output as it comes — its last 20 lines (an unfinished line, such as
+  a progress bar's latest redraw, included), patched into the block at most
+  once a second at first, stretching to once every 10 s at five minutes, and
+  only when those lines changed, since each update is a record in the
+  append-only session log — with a ticking
+  clock; the settled block replaces it with the tail and the exit line. For as
+  long as a check runs, the executor carries the runtime overlay `hostBusy:
+  'check'`, and its status mark everywhere (tree, chat head, dashboard,
+  palette) blinks the system's yellow instead of the green of an ended turn;
+  something that needs the user still wins over it. The dashboard files such a
+  session under IN PROGRESS (`checking`), read or not, never under DONE or off
+  the board. Not a `SessionStatus`
+  (the remote protocol's vocabulary is unchanged).
 - **Killing a check = stopping the executor's container.** Nothing inside a
   container the agent controls can be trusted to supervise a process there (a
   pid file, a process group or a probe can be forged, raced or escaped with

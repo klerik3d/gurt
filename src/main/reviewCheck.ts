@@ -32,6 +32,19 @@ import { CONTAINER_ROOT } from '../shared/files'
 
 export const CHECK_TAIL = { lines: 60, lineChars: 500, bytes: 8 * 1024 } as const
 
+/** The live view of a running check (what {@link CheckRequest.onProgress}
+ *  gets): its last `lines`, at most once per {@link progressDelay}. Every
+ *  update is a patch in the session's append-only log, so both are bounded:
+ *  the interval stretches from `minMs` to `maxMs` as the check goes on —
+ *  a 20-minute flood costs a couple of hundred short patches, not thousands. */
+export const CHECK_PROGRESS = { lines: 20, minMs: 1_000, maxMs: 10_000 } as const
+
+/** How long a progress update waits after the previous one, `elapsedMs` into
+ *  the check: a second for the first half minute, then stretching to ten
+ *  seconds at five minutes. */
+export const progressDelay = (elapsedMs: number): number =>
+  Math.min(CHECK_PROGRESS.maxMs, Math.max(CHECK_PROGRESS.minMs, elapsedMs / 30))
+
 // CSI sequences and the C0 controls a test runner's colours and spinners leave.
 // eslint-disable-next-line no-control-regex
 const ANSI = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-Z\\-_]/g
@@ -73,6 +86,13 @@ export class LineRing {
     return [...this.ring]
   }
 
+  /** The last `n` lines as they stand mid-stream: the unterminated line counts
+   *  as one (a progress bar's latest redraw), without being flushed. */
+  peek(n: number): string[] {
+    const partial = clean(this.partial)
+    return (partial === '' ? this.ring : [...this.ring, partial]).slice(-n)
+  }
+
   /** UTF-8 bytes held — never more than {@link CHECK_TAIL}.bytes. */
   bytes(): number {
     return this.size
@@ -91,7 +111,7 @@ export class LineRing {
   }
 
   private endLine(): void {
-    const line = this.partial.replace(/\r+$/, '').replace(ANSI, '').replace(CONTROL, '')
+    const line = clean(this.partial)
     this.partial = ''
     this.ring.push(line)
     this.size += Buffer.byteLength(line)
@@ -102,6 +122,8 @@ export class LineRing {
     }
   }
 }
+
+const clean = (line: string): string => line.replace(/\r+$/, '').replace(ANSI, '').replace(CONTROL, '')
 
 // --- the runner --------------------------------------------------------------
 
@@ -147,9 +169,11 @@ export interface CheckOptions {
    *  may take to close before the host kills it. */
   exitWaitMs: number
   now: () => number
+  /** The gap between two progress updates, `elapsedMs` into the check. */
+  progressDelay: (elapsedMs: number) => number
 }
 
-const DEFAULTS: CheckOptions = { timeoutMs: REVIEW_LOOP.checkTimeoutMs, exitWaitMs: 2_000, now: Date.now }
+const DEFAULTS: CheckOptions = { timeoutMs: REVIEW_LOOP.checkTimeoutMs, exitWaitMs: 2_000, now: Date.now, progressDelay }
 
 export interface CheckRequest {
   /** The `check` intent's id (`<executor>.<n>`): what a cancel names. */
@@ -157,6 +181,11 @@ export interface CheckRequest {
   /** The repo's name: the check runs in /workspaces/<repo>. */
   repo: string
   command: string
+  /** The output so far, while the check runs — the last
+   *  {@link CHECK_PROGRESS}.lines lines, throttled by `progressDelay`, only
+   *  when they changed. Never called once the run has resolved. A throw is
+   *  swallowed: a live view must not break the check. */
+  onProgress?: (lines: string[]) => void
 }
 
 /** The container was stopped and confirmed not running, or it was not. */
@@ -249,8 +278,13 @@ export class CheckRunner {
     let code: number | null = null
     let spawnError: string | undefined
     a.child = child
-    child.stdout?.on('data', (d: Buffer) => ring.push(d))
-    child.stderr?.on('data', (d: Buffer) => ring.push(d))
+    const progress = this.progress(req, ring, started)
+    const onData = (d: Buffer): void => {
+      ring.push(d)
+      progress.touch()
+    }
+    child.stdout?.on('data', onData)
+    child.stderr?.on('data', onData)
     child.on('error', (e) => {
       spawnError ??= e.message
       a.exited = true
@@ -266,6 +300,7 @@ export class CheckRunner {
       await Promise.race([a.closed, stopRequested])
     } finally {
       clearTimeout(timer)
+      progress.done()
     }
     const stop = stopOf(a) // (re-read: TS cannot see `onStop` set it during the awaits)
     if (stop) {
@@ -295,6 +330,46 @@ export class CheckRunner {
   }
 
   // --- internals ---
+
+  /** The throttle behind {@link CheckRequest.onProgress}: new output is
+   *  reported at once when the last report is `progressDelay` old, else when
+   *  it will be — and only when the lines differ from the last ones reported
+   *  (a command repeating one line would otherwise log the same patch again
+   *  and again). */
+  private progress(req: CheckRequest, ring: LineRing, started: number): { touch(): void; done(): void } {
+    const report = req.onProgress
+    if (!report) return { touch: () => {}, done: () => {} }
+    let last = -Infinity
+    let reported: string | undefined
+    let timer: NodeJS.Timeout | undefined
+    let over = false
+    const emit = (): void => {
+      timer = undefined
+      if (over) return
+      const lines = ring.peek(CHECK_PROGRESS.lines)
+      const text = lines.join('\n')
+      if (text === reported) return
+      reported = text
+      last = this.o.now()
+      try {
+        report(lines)
+      } catch {
+        // the live view is best-effort; the result is what counts
+      }
+    }
+    return {
+      touch: () => {
+        if (over || timer) return
+        const wait = last + this.o.progressDelay(this.o.now() - started) - this.o.now()
+        if (wait <= 0) emit()
+        else timer = setTimeout(emit, wait)
+      },
+      done: () => {
+        over = true
+        clearTimeout(timer)
+      }
+    }
+  }
 
   private beginStop(intent: string, reason: 'timeout' | 'cancel'): Promise<Stopped> {
     const a = this.active.get(intent)

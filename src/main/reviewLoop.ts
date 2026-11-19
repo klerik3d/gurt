@@ -55,7 +55,7 @@ import { cloneDir } from './store'
 import * as changes from './changes'
 import { unattendedGitAccessForRepo } from './git/env'
 import { diffHash, parseDiffHash, repoTree, type RepoTree } from './treeHash'
-import { CheckRunner, type ExecChild } from './reviewCheck'
+import { CheckRunner, type CheckRun, type ExecChild } from './reviewCheck'
 import { DeliveryError, checkDeliveryPreconditions, deliverStep, type DeliveryContext } from './delivery'
 import { decideWithApprovals, dropApprovals } from './approvals'
 import { createLogger, errCtx } from './log'
@@ -595,7 +595,7 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
   }
 
   /** The check's console block settles with what the run came to. */
-  function settleCheck(id: string, entry: number | undefined, run: Awaited<ReturnType<CheckRunner['run']>>): void {
+  function settleCheck(id: string, entry: number | undefined, run: CheckRun): void {
     if (entry === undefined) return
     if (run.status === 'failed-to-run') {
       sessions.loopFeedPatch(id, entry, { status: 'failed', detail: run.error, endAt: Date.now() })
@@ -700,7 +700,23 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
         toolKind: 'execute',
         host: `auto-check · ${repo}`
       })
-      const run = await runner.run({ intent: a.id, repo, command })
+      // The executor's turn has ended, but gurt is working on it: its status
+      // mark blinks the system's yellow for as long as the check runs, and the
+      // block shows the output as it comes, not only at the end.
+      sessions.setHostBusy(id, 'check')
+      let run: CheckRun
+      try {
+        run = await runner.run({
+          intent: a.id,
+          repo,
+          command,
+          onProgress: (lines) => {
+            if (block !== undefined) sessions.loopFeedPatch(id, block, { detail: lines.join('\n') })
+          }
+        })
+      } finally {
+        sessions.setHostBusy(id, undefined)
+      }
       rt(id).check = undefined
       // The check ran the repo's code in the clone: whatever it did, an
       // approval of the repo given before it no longer counts (§13).

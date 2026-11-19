@@ -21,6 +21,7 @@ import type {
   PromptImage,
   SessionConfigOption,
   SessionContainer,
+  HostBusy,
   SessionInfo,
   SessionNetwork,
   SessionLogRecord,
@@ -406,6 +407,9 @@ interface Session {
    *  Used to turn repo-relative context paths into absolute `file://` resource links. */
   remoteCwd?: string | undefined
   busy: boolean
+  /** Gurt itself is working on the session between its turns — the review
+   *  loop's automatic check (runtime only; see {@link SessionInfo.hostBusy}). */
+  hostBusy?: HostBusy | undefined
   interrupted?: boolean | undefined
   recovering?: boolean | undefined
   recoveryStarting?: boolean | undefined
@@ -1243,6 +1247,7 @@ export class SessionManager {
     return {
       ...s.info,
       busy: s.busy || undefined,
+      hostBusy: s.hostBusy,
       awaitingInput: s.pendingPermissions.size > 0 || undefined,
       pending: s.pending.length ? s.pending.map(pendingInfo) : undefined,
       queueWaiting: s.recovering ? 'waiting for resume' : this.pendingBlocked(s) ?? (s.info.state === 'queued' ? this.queuedWaiting(s) : undefined)
@@ -4220,6 +4225,16 @@ export class SessionManager {
   loopFeedPush(sessionId: string, entry: ChatEntryBase): number | undefined {
     const s = this.sessions.get(sessionId)
     return s ? this.push(s, entry).id : undefined
+  }
+
+  /** Mark (or clear) gurt's own work on the session between its turns — the
+   *  review loop's automatic check. Runtime only: the status marks blink on it,
+   *  and a restart drops it with the check it described. */
+  setHostBusy(sessionId: string, what: HostBusy | undefined): void {
+    const s = this.sessions.get(sessionId)
+    if (!s || s.hostBusy === what) return
+    s.hostBusy = what
+    this.bus.emit('session.changed', { sessionId })
   }
 
   /** Settle or update a block `loopFeedPush` wrote. */

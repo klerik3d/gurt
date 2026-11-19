@@ -181,7 +181,7 @@ function Panel({ entry, live }: { entry: StripEntry; live: boolean }) {
 }
 
 /** Re-render once a second while `on` — drives the running-time readout. */
-function useNow(on: boolean): number {
+export function useNow(on: boolean): number {
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
     if (!on) return

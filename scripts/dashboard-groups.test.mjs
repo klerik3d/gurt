@@ -19,7 +19,7 @@ const S = (rel) => JSON.stringify(path.join(ROOT, rel))
 
 await bundle({
   stdin: {
-    contents: `export { boardByWorkspace, summarize, COLUMNS, resetCountdown } from ${S('src/renderer/src/components/Dashboard.tsx')}`,
+    contents: `export { boardByWorkspace, boardStatus, summarize, COLUMNS, resetCountdown } from ${S('src/renderer/src/components/Dashboard.tsx')}`,
     resolveDir: ROOT,
     loader: 'ts',
     sourcefile: 'entry.ts'
@@ -27,7 +27,7 @@ await bundle({
   outfile
 })
 
-const { boardByWorkspace, summarize, COLUMNS, resetCountdown } = await import(pathToFileURL(outfile).href)
+const { boardByWorkspace, boardStatus, summarize, COLUMNS, resetCountdown } = await import(pathToFileURL(outfile).href)
 
 /** A row as `allSessions` builds them. */
 const row = (id, status, workspace, task, extra = {}) => ({
@@ -62,6 +62,21 @@ test('every status lands in exactly one column', () => {
     rows.length,
     'no row is dropped and none is counted twice'
   )
+})
+
+test('gurt\'s own check is in progress, not done — even on a session already read; needing you still wins', () => {
+  const info = (extra) => ({ state: 'started', ...extra })
+  assert.equal(boardStatus(info({ hostBusy: 'check', seen: true })), 'checking', 'read: not off the board')
+  assert.equal(boardStatus(info({ hostBusy: 'check' })), 'checking', 'unread: not in DONE')
+  assert.equal(boardStatus(info({ hostBusy: 'check', awaitingInput: true })), 'waiting')
+  assert.equal(boardStatus(info({ seen: true })), 'idle-read')
+  const [b] = boardByWorkspace(
+    [row('s', 'starting', 'w', 't'), row('c', 'checking', 'w', 't'), row('r', 'running', 'w', 't'), row('a', 'waiting', 'w', 't')],
+    {}
+  )
+  assert.deepEqual(ids(b.columns[ACTIVE]), ['a', 'r', 'c', 's'])
+  assert.equal(b.columns[DONE].length, 0)
+  assert.equal(summarize([row('c', 'checking', 'w', 't'), row('r', 'running', 'w', 't')]), '1 running · 1 checking')
 })
 
 test('urgency ranks across the whole workspace, not per task', () => {

@@ -26,13 +26,13 @@ import { useMcpFailures } from '../useMcp'
 import { usePiiEntries, usePiiPlan, usePiiStatus, usePiiView, type PiiView } from '../usePii'
 import { alertDialog, confirmDialog } from '../dialog'
 import { createLogger, logErr } from '../log'
-import { SESSION_DOT } from '../status'
+import { sessionDot } from '../status'
 import { Icon, Dot, InfoDot } from './icons'
 import { McpFailBanner } from './tags'
 import { NetButton } from './Network'
 import { ConfigTab } from './ConfigTab'
 import { SessionMenu } from './SessionActions'
-import { ToolStrip, type StripEntry } from './ToolStrip'
+import { ToolStrip, useNow, type StripEntry } from './ToolStrip'
 import { TabBar, useSessionTab } from './SessionTabs'
 import { ContainerTerminalButton } from './ContainerTerminalButton'
 import { CopyButton } from './CopyButton'
@@ -419,7 +419,7 @@ export function Chat({
   }
 
   // `busy` is the live flag, fresher than the copy on `info`.
-  const headDot = SESSION_DOT[sessionStatus({ ...info, busy, seen })]
+  const headDot = sessionDot(sessionStatus({ ...info, busy, seen }), info.hostBusy)
 
   return (
     <div className="chat">
@@ -650,13 +650,25 @@ export function ArchiveChat({ entries, sessionId }: { entries: ChatEntry[]; sess
 /** A command or tool gurt ran itself — the review loop's automatic check and
  *  its reviewer — in the same input/output block as a console command, but
  *  marked as the system's so it never reads as something the model did. The
- *  output stays open while it runs or has failed, folded once it passed. */
+ *  output stays open while it runs or has failed, folded once it passed.
+ *  While a command runs, its output streams in (the check's latest lines, see
+ *  `CHECK_PROGRESS`) under a ticking clock, so a long check visibly lives. */
 function HostTool({ entry }: { entry: ChatEntry & { kind: 'tool' } }) {
   const [shown, setShown] = useState<boolean | undefined>(undefined)
   const running = entry.status === 'in_progress' || entry.status === 'pending'
   const failed = entry.status === 'failed'
   const open = shown ?? (running || failed)
+  const now = useNow(running)
   const took = entry.at != null && entry.endAt != null ? durationLabel(entry.endAt - entry.at) : undefined
+  const elapsed = running && entry.at != null ? durationLabel(now - entry.at) : undefined
+  const live = running && entry.toolKind === 'execute'
+  const out = useRef<HTMLPreElement>(null)
+  // Follow the stream like a terminal does — unless the reader scrolled up.
+  const pinned = useRef(true)
+  useLayoutEffect(() => {
+    const el = out.current
+    if (el && live && pinned.current) el.scrollTop = el.scrollHeight
+  }, [entry.detail, live, open])
   return (
     <div className="msg msg-tool">
       <MsgTime at={entry.endAt ?? entry.at} />
@@ -667,7 +679,10 @@ function HostTool({ entry }: { entry: ChatEntry & { kind: 'tool' } }) {
           <span className="host-label mono">{entry.host}</span>
           <span className="spacer" />
           {running ? (
-            <Dot tone="yellow" pulse size={6} />
+            <>
+              <span className="host-state mono">running{elapsed ? ` · ${elapsed}` : ''}</span>
+              <Dot tone="yellow" pulse size={6} />
+            </>
           ) : (
             <span className="host-state mono">{failed ? 'failed' : 'done'}{took ? ` · ${took}` : ''}</span>
           )}
@@ -676,9 +691,20 @@ function HostTool({ entry }: { entry: ChatEntry & { kind: 'tool' } }) {
           {entry.toolKind === 'execute' && <span className="faint">$ </span>}
           {entry.title}
         </div>
-        {entry.detail && (
+        {(entry.detail || live) && (
           <>
-            {open && <pre className="tool-out mono">{entry.detail}</pre>}
+            {open && (
+              <pre
+                ref={out}
+                className="tool-out mono"
+                onScroll={(e) => {
+                  const el = e.currentTarget
+                  pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 8
+                }}
+              >
+                {entry.detail || <span className="faint">no output yet…</span>}
+              </pre>
+            )}
             <button type="button" className="host-toggle mono" onClick={() => setShown(!open)}>
               {open ? 'hide output ▴' : 'show output ▾'}
             </button>

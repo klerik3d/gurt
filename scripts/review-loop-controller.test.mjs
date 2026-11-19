@@ -96,7 +96,7 @@ const h = await loopHarness('review-loop-controller', {
       // `status.txt` decides the check: green when it says `good`.
       { name: 'alpha', url: 'https://github.com/o/alpha.git', check: 'grep -q good status.txt' },
       { name: 'beta', url: 'https://github.com/o/beta.git' },
-      { name: 'slow', url: 'https://github.com/o/slow.git', check: 'touch started.flag; sleep 30; touch finished.flag' },
+      { name: 'slow', url: 'https://github.com/o/slow.git', check: 'touch started.flag; echo slow check running; sleep 30; touch finished.flag' },
       { name: 'lib', url: path.join(origins, 'lib-registered.git'), local: true }
     ],
     envs: [{ name: 'dev', image: 'x', repo: 'alpha' }]
@@ -1091,6 +1091,29 @@ test('stop loop ends `cancelled`, terminates the running check’s group and can
   assert.equal(c.reviewers.length, 0)
   await kernel.reviewLoop.stopLoop(c.id) // an ended loop: nothing to stop
   await assert.rejects(kernel.reviewLoop.stopLoop('nope'), /no review loop/)
+})
+
+test('while the check runs the executor is marked as gurt\'s work and its block streams the output', async () => {
+  const c = await run({
+    repos: ['slow'],
+    wait: false,
+    exec: (n, t, c) => {
+      write(c.dir(), 'a.txt', 'x\n')
+      c.changes('feat: slow')
+    }
+  })
+  await until(() => fs.existsSync(path.join(c.dir(), 'started.flag')), 'the check is running')
+  const block = () => kernel.sessions.snapshot(c.id).entries.find((e) => e.kind === 'tool' && e.host === 'auto-check · slow')
+  await until(() => block()?.detail === 'slow check running', 'the output shows while the check runs')
+  assert.equal(block().status, 'in_progress')
+  const info = kernel.sessions.snapshot(c.id).info
+  assert.equal(info.hostBusy, 'check', 'the session is marked as gurt\'s work')
+  assert.equal(info.busy, undefined, 'the executor\'s own turn has ended')
+  assert.equal(kernel.sessions.sessionInfo(c.id).hostBusy, undefined, 'a runtime overlay, not the record')
+  await kernel.reviewLoop.stopLoop(c.id)
+  await finished(c)
+  assert.equal(kernel.sessions.snapshot(c.id).info.hostBusy, undefined, 'cleared once the check is over')
+  assert.match(block().detail, /^slow check running\n\[stopped after /, 'the settled block keeps the output')
 })
 
 test('stopping a running check = stopping the executor\'s container (§5.3)', async () => {
