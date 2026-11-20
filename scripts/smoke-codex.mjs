@@ -180,11 +180,12 @@ console.log(
     : 'codex session started (ACP handshake OK)'
 )
 
-// open the session; the header pill must name codex (right session opened)
+// open the session; the app must name codex somewhere (right session opened) —
+// the header no longer carries the agent pill
 await page.click('.sb-session')
 await page.waitForSelector('.chat-head', { timeout: 15000 })
-const header = await page.evaluate(() => document.querySelector('.chat-head')?.innerText)
-console.log('session header:', JSON.stringify(header))
+const header = await page.evaluate(() => document.body.innerText)
+console.log('page text names codex:', header.includes('codex'))
 if (!header.includes('codex')) {
   console.log('WRONG SESSION OPENED')
   await closeApp(app)
