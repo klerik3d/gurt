@@ -1,9 +1,12 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
 import type { EditorView } from '@codemirror/view'
-import type { FileLocation, FileNavigationResult } from '../../../shared/files'
-import { fileKey, previewKind } from '../../../shared/files'
-import type { FilesController } from '../useFiles'
-import { isDirty } from '../useFiles'
+import {
+  fileKey,
+  previewKind,
+  type FileLocation,
+  type FileNavigationResult
+} from '../../../shared/files'
+import { isDirty, type FilesController } from '../useFiles'
 import { RowContextMenu } from './RowContextMenu'
 import { Icon } from './icons'
 import { bindingLabel } from '../../../shared/hotkeys'

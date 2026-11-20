@@ -3,19 +3,17 @@
 // leading icon is what tells them apart. `box` = env, `branch` = repo, the same
 // marks the env/repository pickers use in the new-session sidebar.
 
-import { Fragment } from 'react'
-import type { JSX } from 'react'
-import type {
-  McpSelection,
-  RepoMode,
-  SessionInfo,
-  SessionNetwork,
-  SessionRole,
-  SkillSelection
+import { Fragment, type JSX } from 'react'
+import {
+  repoMode,
+  type McpSelection,
+  type RepoMode,
+  type SessionInfo,
+  type SessionNetwork,
+  type SessionRole,
+  type SkillSelection
 } from '../../../shared/types'
-import { repoMode } from '../../../shared/types'
-import type { DomainPolicy } from '../../../shared/proxy'
-import { explicitAllows } from '../../../shared/proxy'
+import { explicitAllows, type DomainPolicy } from '../../../shared/proxy'
 import type { McpFailure, ResolvedMcpSelection } from '../../../shared/mcp'
 import type { ResolvedSkillSelection } from '../../../shared/skills'
 import type { ScopeLabel } from '../../../shared/proactive'

@@ -1,18 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
-import type { ReactNode } from 'react'
-import type {
-  AgentConfig,
-  McpMode,
-  ReviewLoopConfig,
-  RepoConfig,
-  RepoMode,
-  SessionConfigOption,
-  SessionInfo,
-  SessionModes,
-  SessionRole,
-  SessionSnapshot,
-  Tree
-} from '../../../shared/types'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   BASE_ENV_NAME,
   REPO_MODES,
@@ -20,13 +6,28 @@ import {
   missingRepoReason,
   repoMode,
   roleForcesRead,
-  sessionRole
+  sessionRole,
+  type AgentConfig,
+  type McpMode,
+  type ReviewLoopConfig,
+  type RepoConfig,
+  type RepoMode,
+  type SessionConfigOption,
+  type SessionInfo,
+  type SessionModes,
+  type SessionRole,
+  type SessionSnapshot,
+  type Tree
 } from '../../../shared/types'
 import type { SessionDraftPatch } from '../../../shared/api'
-import type { McpEntry } from '../../../shared/mcp'
-import { LOCAL_MCP_NOTICE, isLocalMcpEntry, mcpHasModes, resolveMcpSelection } from '../../../shared/mcp'
-import type { SkillEntry } from '../../../shared/skills'
-import { resolveSkillSelection } from '../../../shared/skills'
+import {
+  LOCAL_MCP_NOTICE,
+  isLocalMcpEntry,
+  mcpHasModes,
+  resolveMcpSelection,
+  type McpEntry
+} from '../../../shared/mcp'
+import { resolveSkillSelection, type SkillEntry } from '../../../shared/skills'
 import { REVIEW_ROUNDS, RUNG_LABEL } from '../../../shared/reviewBlock'
 import { agentOptionView } from '../../../shared/agentConfig'
 import { agentVocabulary, isBlanketMode } from '../../../shared/agentVocabulary'

@@ -18,8 +18,14 @@
 //
 // Public clients only: no `client_secret` is requested, kept or sent.
 
-import { OAuthFlowError, authorizeGrant, idTokenClaims, refreshGrant, type AuthCodeConfig } from './flow'
-import type { AuthorizeHooks } from './flow'
+import {
+  OAuthFlowError,
+  authorizeGrant,
+  idTokenClaims,
+  refreshGrant,
+  type AuthCodeConfig,
+  type AuthorizeHooks
+} from './flow'
 import { discoverMcpOAuth, endpointProblem, isLoopbackHost, registerMcpClient } from './mcpDiscovery'
 import type { AuthorizeContext, OAuthProvider, TokenSet } from './provider'
 

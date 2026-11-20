@@ -1,13 +1,13 @@
 import { useEffect, useState } from 'react'
 import type { SessionSnapshot, Tree } from '../../../shared/types'
-import type { ProactiveConfig } from '../../../shared/proactive'
 import {
   HEX_COLOR_RE,
   LABEL_MAX_LENGTH,
   LABEL_PALETTE,
   PROACTIVE_BOUNDS,
   isPendingScope,
-  cronError
+  cronError,
+  type ProactiveConfig
 } from '../../../shared/proactive'
 import { LabelTag } from './tags'
 import { alertDialog, confirmDialog } from '../dialog'

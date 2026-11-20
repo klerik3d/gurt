@@ -3,14 +3,15 @@ import {
   parseClientConfig,
   clientConfigExample
 } from '../../../../shared/clientConfig'
-import { useEffect, useRef, useState } from 'react'
-import type { JSX } from 'react'
+import { useEffect, useRef, useState, type JSX } from 'react'
 import type { AgentInstance, AgentsFile } from '../../../../shared/types'
-import type { CredentialEntry } from '../../../../shared/credentials'
-import { agentCredentials } from '../../../../shared/credentials'
+import { agentCredentials, type CredentialEntry } from '../../../../shared/credentials'
 import { AGENT_MANIFESTS, DEFAULT_AGENT_KIND, agentDef } from '../../../../shared/agents'
-import type { LimitSettings } from '../../../../shared/planUsage'
-import { LIMIT_THRESHOLD_MAX, LIMIT_THRESHOLD_MIN } from '../../../../shared/planUsage'
+import {
+  LIMIT_THRESHOLD_MAX,
+  LIMIT_THRESHOLD_MIN,
+  type LimitSettings
+} from '../../../../shared/planUsage'
 import { refreshAgents } from '../../useAgents'
 import { useOutsideClose } from '../../hooks'
 import { confirmDialog } from '../../dialog'

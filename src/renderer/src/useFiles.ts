@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { EditorState } from '@codemirror/state'
-import type { FileLocation, ScopeFile } from '../../shared/files'
-import { fileKey, imageType } from '../../shared/files'
+import { fileKey, imageType, type FileLocation, type ScopeFile } from '../../shared/files'
 import { confirmDialog } from './dialog'
 import { readPreference, usePreference, z } from './persisted'
 

@@ -2,8 +2,7 @@
 // draft, or delete it outright. Both are reachable from every place a session is
 // shown (sidebar row, draft/queued pane, chat header), so the confirmation
 // wording and the follow-up navigation live here once instead of in each caller.
-import { useRef, useState } from 'react'
-import type { JSX } from 'react'
+import { useRef, useState, type JSX } from 'react'
 import type { SessionInfo } from '../../../shared/types'
 import { alertDialog, confirmDialog } from '../dialog'
 import { useOutsideClose } from '../hooks'

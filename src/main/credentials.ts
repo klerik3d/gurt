@@ -17,18 +17,19 @@ import { createRequire } from 'node:module'
 import path from 'node:path'
 import { z } from 'zod'
 import type { AgentInstance, AgentsFile } from '../shared/types'
-import type { CredentialEntry, CredentialKind, CredentialsFile } from '../shared/credentials'
 import {
   CREDENTIAL_KINDS,
   checkMcpSecret,
   credentialIdentity,
   resolveForRepo,
   resolveMcpHeaders,
-  resolveMcpSecretEnv
+  resolveMcpSecretEnv,
+  type CredentialEntry,
+  type CredentialKind,
+  type CredentialsFile
 } from '../shared/credentials'
 import { canonicalRepoId } from '../shared/repoId'
-import type { McpRegistryEntry } from '../shared/mcp'
-import { isLocalMcpEntry, mcpCredentialIds, mcpLabel } from '../shared/mcp'
+import { isLocalMcpEntry, mcpCredentialIds, mcpLabel, type McpRegistryEntry } from '../shared/mcp'
 import {
   gurtRoot,
   getWorkspace,

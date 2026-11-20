@@ -21,8 +21,7 @@
 // on when the approval lands (`ReviewLoopController.approvalChanged`).
 import type { RepoChanges } from '../shared/types'
 import * as store from './store'
-import type { StoredApproval } from './store'
-import { cloneDir } from './store'
+import { cloneDir, type StoredApproval } from './store'
 import * as changes from './changes'
 import { unattendedGitAccessForRepo } from './git/env'
 import { repoTree, type RepoTree } from './treeHash'

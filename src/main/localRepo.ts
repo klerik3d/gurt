@@ -5,8 +5,7 @@
 // it through exactly the code paths a forge repo uses. Only the forge-facing
 // verbs (pull requests, publishing) know the difference — and publishing is
 // how it stops being local.
-import { existsSync } from 'node:fs'
-import { promises as fs } from 'node:fs'
+import { existsSync, promises as fs } from 'node:fs'
 import type { PublishResult, PublishSpec, RepoConfig } from '../shared/types'
 import * as store from './store'
 import { run } from './provision'

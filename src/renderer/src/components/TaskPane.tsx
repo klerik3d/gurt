@@ -1,5 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
-import type { JSX } from 'react'
+import { useEffect, useRef, useState, type JSX } from 'react'
 import type { Tree } from '../../../shared/types'
 import { agentKind, agentName, useAgents } from '../useAgents'
 import { alertDialog, confirmDialog } from '../dialog'

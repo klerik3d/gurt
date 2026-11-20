@@ -1,16 +1,14 @@
 import { usePreference, z } from '../../persisted'
 import { useEffect, useRef, useState } from 'react'
-import type {
-  CredentialEntry,
-  CredentialKind,
-  CredentialKindDef
-} from '../../../../shared/credentials'
 import {
   CREDENTIAL_KINDS,
   OAUTH_PROVIDER_CHOICES,
   isGitKind,
   oauthSignedOut,
-  signedOutError
+  signedOutError,
+  type CredentialEntry,
+  type CredentialKind,
+  type CredentialKindDef
 } from '../../../../shared/credentials'
 import { useOutsideClose } from '../../hooks'
 import { confirmDialog } from '../../dialog'

@@ -1,12 +1,12 @@
-import { useState } from 'react'
-import type { JSX } from 'react'
+import { useState, type JSX } from 'react'
 import type { SessionNetwork } from '../../../shared/types'
-import type { SessionTraffic, TrafficHost } from '../../../shared/proxy'
 import {
   BUILTIN_DENY_ENTRIES,
   BUILTIN_DENY_REASON,
   BUILTIN_DENY_SUMMARY,
-  explicitAllows
+  explicitAllows,
+  type SessionTraffic,
+  type TrafficHost
 } from '../../../shared/proxy'
 import { useSessionTraffic } from '../useTraffic'
 import { relativeTime } from '../time'

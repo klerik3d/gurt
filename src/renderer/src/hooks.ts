@@ -1,5 +1,4 @@
-import { useEffect } from 'react'
-import type { RefObject } from 'react'
+import { useEffect, type RefObject } from 'react'
 
 /** Close a popup on an outside mousedown or Escape while `open`. */
 export function useOutsideClose(

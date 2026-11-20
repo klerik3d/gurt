@@ -1,9 +1,8 @@
 // Domain model shared between main and renderer.
 import type { McpRegistryEntry } from './mcp'
-import type { DomainPolicy } from './proxy'
 import type { ProactiveAgentView, ProactiveConfig, ProactiveOrigin } from './proactive'
 import type { SettledTurn } from './reviewLoop'
-import { sanitizeDomainPolicy } from './proxy'
+import { sanitizeDomainPolicy, type DomainPolicy } from './proxy'
 
 /** How much of an MCP server's toolset the agent may use. */
 export type McpMode = 'read-only' | 'full'

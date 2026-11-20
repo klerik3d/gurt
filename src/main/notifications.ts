@@ -4,11 +4,14 @@
 // idle auto-stop policy in kernel.ts.
 import { randomUUID } from 'node:crypto'
 import type { Bus } from './bus'
-import type { EnvRef, ReviewFinding, SessionInfo } from '../shared/types'
-import { findingRef } from '../shared/types'
+import { findingRef, type EnvRef, type ReviewFinding, type SessionInfo } from '../shared/types'
 import type { LoopEnd } from '../shared/reviewLoop'
-import type { NotificationPrefs, NotificationRecord, NotificationType } from '../shared/notifications'
-import { NOTIFICATION_RING_CAP } from '../shared/notifications'
+import {
+  NOTIFICATION_RING_CAP,
+  type NotificationPrefs,
+  type NotificationRecord,
+  type NotificationType
+} from '../shared/notifications'
 import { sendExternal } from './notify-external'
 import { createLogger } from './log'
 

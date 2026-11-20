@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { SkillEntry } from '../../shared/skills'
-import { skillEntries } from '../../shared/skills'
+import { skillEntries, type SkillEntry } from '../../shared/skills'
 
 // Shared skill lookup for the renderer: the workspace's registry as main reads
 // it off disk (`getSkills`), in the one `SkillEntry` shape the draft's picker,

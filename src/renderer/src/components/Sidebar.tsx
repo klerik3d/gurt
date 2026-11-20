@@ -1,8 +1,20 @@
 import { taskKey } from '../../../shared/keys'
-import { useEffect, useRef, useState } from 'react'
-import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react'
-import type { ChangedFile, DiffTarget, RepoChanges, SessionActivity, Tree } from '../../../shared/types'
-import { sessionStatus } from '../../../shared/types'
+import {
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent
+} from 'react'
+import {
+  sessionStatus,
+  type ChangedFile,
+  type DiffTarget,
+  type RepoChanges,
+  type SessionActivity,
+  type Tree
+} from '../../../shared/types'
 import type { Selection } from '../App'
 import { bindingLabel } from '../../../shared/hotkeys'
 import { agentKind, agentName, useAgents } from '../useAgents'

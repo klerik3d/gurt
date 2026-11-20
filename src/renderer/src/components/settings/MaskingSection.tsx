@@ -1,14 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { CredentialEntry } from '../../../../shared/credentials'
-import { piiCredentials } from '../../../../shared/credentials'
-import type {
-  PiiAnalyzerState,
-  PiiAnalyzerStatus,
-  PiiBackendId,
-  PiiSettings,
-  PiiStatus,
-  PiiTestResult
-} from '../../../../shared/pii'
+import { piiCredentials, type CredentialEntry } from '../../../../shared/credentials'
 import {
   PII_BACKENDS,
   PII_DEFAULT_PORT,
@@ -16,7 +7,13 @@ import {
   PRESIDIO_LANGUAGES,
   PRESIDIO_MODELS,
   presidioLanguages,
-  presidioModelSize
+  presidioModelSize,
+  type PiiAnalyzerState,
+  type PiiAnalyzerStatus,
+  type PiiBackendId,
+  type PiiSettings,
+  type PiiStatus,
+  type PiiTestResult
 } from '../../../../shared/pii'
 import { run } from '../../async'
 import { CredentialPick } from './shared'

@@ -1,8 +1,6 @@
-import { useEffect, useId, useMemo, useRef, useState } from 'react'
-import type { ReactNode } from 'react'
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useOutsideClose } from '../hooks'
-import { Icon, InfoDot } from './icons'
-import type { IconName } from './icons'
+import { Icon, InfoDot, type IconName } from './icons'
 
 /** One suggestion in a `PickerField` dropdown. */
 export interface PickerItem {

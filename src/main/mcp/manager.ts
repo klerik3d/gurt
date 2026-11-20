@@ -1,13 +1,16 @@
 import { randomUUID } from 'node:crypto'
 import type { Server } from 'node:http'
 import type { AcpHttpMcpServer, EnvRef, McpMode, McpSelection } from '../../shared/types'
-import type {
-  McpFailure,
-  McpLocalEntry,
-  McpRegistryEntry,
-  SessionMcpFailures
+import {
+  RESERVED_MCP_IDS,
+  isLocalMcpEntry,
+  mcpCredentialIds,
+  mcpDef,
+  type McpFailure,
+  type McpLocalEntry,
+  type McpRegistryEntry,
+  type SessionMcpFailures
 } from '../../shared/mcp'
-import { RESERVED_MCP_IDS, isLocalMcpEntry, mcpCredentialIds, mcpDef } from '../../shared/mcp'
 import { resolveMcpSecretEnv } from '../../shared/credentials'
 import { freshenOAuthCredentials } from '../oauth'
 import { mcpServerKey } from '../../shared/keys'

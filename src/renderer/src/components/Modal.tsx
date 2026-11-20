@@ -1,5 +1,4 @@
-import { useEffect } from 'react'
-import type { ReactNode } from 'react'
+import { useEffect, type ReactNode } from 'react'
 import { Icon } from './icons'
 
 export function Modal({

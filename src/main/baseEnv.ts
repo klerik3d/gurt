@@ -2,8 +2,7 @@
 // It resolves to an image-only `EnvConfig` from the app-level setting
 // (`store.getBaseImage`), read fresh so a changed setting applies to the next
 // session start.
-import type { EnvConfig } from '../shared/types'
-import { BASE_ENV_NAME } from '../shared/types'
+import { BASE_ENV_NAME, type EnvConfig } from '../shared/types'
 import { getBaseImage } from './store'
 
 /** The env of this name, or undefined when the name is not a virtual one.

@@ -1,7 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { StringDecoder } from 'node:string_decoder'
-import { promises as fs } from 'node:fs'
-import { existsSync } from 'node:fs'
+import { existsSync, promises as fs } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { DEFAULT_BASE_IMAGE, type EnvConfig, type EnvRef, type RepoConfig } from '../shared/types'

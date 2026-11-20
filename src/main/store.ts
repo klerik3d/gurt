@@ -1,56 +1,59 @@
 import { clientConfigFile } from '../shared/clientConfig'
-import { promises as fs } from 'node:fs'
-import { existsSync, readdirSync, type Dirent } from 'node:fs'
+import { existsSync, promises as fs, readdirSync, type Dirent } from 'node:fs'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import path from 'node:path'
 import { z } from 'zod'
-import type {
-  AgentConfig,
-  AgentConfigCache,
-  AgentInstance,
-  AgentsFile,
-  EnvConfig,
-  PersistedSession,
-  RepoConfig,
-  SessionInfo,
-  ShipRung,
-  SessionLogRecord,
-  TaskFile,
-  Tree,
-  WorkspaceFile
-} from '../shared/types'
 import { AsyncLocalStorage } from 'node:async_hooks'
-import type { McpRegistryEntry } from '../shared/mcp'
-import { BASE_ENV_NAME, DEFAULT_BASE_IMAGE, REVIEW_MAX_ROUNDS, SHIP_RUNGS, legacyRepoMode } from '../shared/types'
+import {
+  BASE_ENV_NAME,
+  DEFAULT_BASE_IMAGE,
+  REVIEW_MAX_ROUNDS,
+  SHIP_RUNGS,
+  legacyRepoMode,
+  type AgentConfig,
+  type AgentConfigCache,
+  type AgentInstance,
+  type AgentsFile,
+  type EnvConfig,
+  type PersistedSession,
+  type RepoConfig,
+  type SessionInfo,
+  type ShipRung,
+  type SessionLogRecord,
+  type TaskFile,
+  type Tree,
+  type WorkspaceFile
+} from '../shared/types'
 import { sanitizeWelcomeMode, type WelcomeMode } from '../shared/doctor'
 import { agentDef } from '../shared/agents'
 import { defaultAgentConfig } from '../shared/agentConfig'
 import { validateEnvConfig } from '../shared/envConfig'
 import { scopeDirName, scopeFromDirName, scopeNameConflict, scopeNameProblem } from '../shared/scopeName'
-import { normalizeMcpEntry, validateMcpEntry } from '../shared/mcp'
-import type { SkillEntry } from '../shared/skills'
+import { normalizeMcpEntry, validateMcpEntry, type McpRegistryEntry } from '../shared/mcp'
 import { ARTIFACTS } from '../shared/files'
 import {
   SKILL_FILE,
   skillEntries,
   skillNameProblem,
   skillNames,
-  validateSkillDoc
+  validateSkillDoc,
+  type SkillEntry
 } from '../shared/skills'
-import type { NotificationPrefs } from '../shared/notifications'
 import { normalizeGcSettings, type GcSettings } from '../shared/gc'
 import { normalizeLimitSettings, type LimitSettings } from '../shared/planUsage'
 import type { PiiPatternCache, PiiSettings } from '../shared/pii'
 import { normalizeRemoteSettings, type RemoteSettings } from '../shared/remote'
 import type { TurnRecord } from '../shared/usage'
-import { NOTIFICATION_DEFAULTS } from '../shared/notifications'
-import type { HotkeyMap } from '../shared/hotkeys'
-import { HOTKEY_DEFAULTS, sanitizeHotkeys } from '../shared/hotkeys'
+import { NOTIFICATION_DEFAULTS, type NotificationPrefs } from '../shared/notifications'
+import { HOTKEY_DEFAULTS, sanitizeHotkeys, type HotkeyMap } from '../shared/hotkeys'
 import { sanitizeAppearance, type Appearance } from '../shared/appearance'
-import type { ProactiveState } from '../shared/proactive'
 import type { LoopState } from '../shared/reviewLoop'
-import { emptyProactiveState, sanitizeProactiveConfig } from '../shared/proactive'
+import {
+  emptyProactiveState,
+  sanitizeProactiveConfig,
+  type ProactiveState
+} from '../shared/proactive'
 import { createLogger } from './log'
 import { gurtRoot } from './paths'
 import { writeFileDurable, writeJsonDurable } from './durableWrite'

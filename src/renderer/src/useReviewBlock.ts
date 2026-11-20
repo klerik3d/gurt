@@ -1,15 +1,23 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { AgentConfig, RepoConfig, ReviewLoopConfig, SessionInfo, ShipRung, Tree } from '../../shared/types'
-import { repoMode, sessionRole } from '../../shared/types'
+import {
+  repoMode,
+  sessionRole,
+  type AgentConfig,
+  type RepoConfig,
+  type ReviewLoopConfig,
+  type SessionInfo,
+  type ShipRung,
+  type Tree
+} from '../../shared/types'
 import type { CredentialEntry } from '../../shared/credentials'
-import type { SeededReview } from '../../shared/reviewBlock'
 import {
   defaultReviewer,
   ladderOfRepos,
   reviewSeedDue,
   reviewerCandidates,
   seedReviewBlock,
-  validateReviewBlock
+  validateReviewBlock,
+  type SeededReview
 } from '../../shared/reviewBlock'
 import { useAgents } from './useAgents'
 import { logErr } from './log'

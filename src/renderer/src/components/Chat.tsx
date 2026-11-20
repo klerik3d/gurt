@@ -2,23 +2,23 @@ import { useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNod
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { AnchorWithFileLink, CodeWithFileLink, DiffOpener, FileLinkScopeContext } from '../fileLinks'
-import type {
-  ChatEntry,
-  ChatPermission,
-  LoopNote,
-  CommandInfo,
-  PendingPromptInfo,
-  PlanEntry,
-  PromptCapabilities,
-  PromptContext,
-  PromptImage,
-  SessionConfigOption,
-  SessionModes,
-  SessionNetwork,
-  SessionSnapshot,
-  Tree
+import {
+  sessionStatus,
+  type ChatEntry,
+  type ChatPermission,
+  type LoopNote,
+  type CommandInfo,
+  type PendingPromptInfo,
+  type PlanEntry,
+  type PromptCapabilities,
+  type PromptContext,
+  type PromptImage,
+  type SessionConfigOption,
+  type SessionModes,
+  type SessionNetwork,
+  type SessionSnapshot,
+  type Tree
 } from '../../../shared/types'
-import { sessionStatus } from '../../../shared/types'
 import { agentOptionView, withPickedValues } from '../../../shared/agentConfig'
 import { agentVocabulary, isBlanketMode } from '../../../shared/agentVocabulary'
 import { agentKind, useAgents } from '../useAgents'

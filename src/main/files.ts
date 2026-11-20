@@ -3,8 +3,16 @@ import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { createRequire } from 'node:module'
 import type ts from 'typescript'
-import type { FileDocument, FileEntry, FileImage, FileLocation, FileNavigation, FileNavigationResult } from '../shared/files'
-import { ARTIFACTS, imageType } from '../shared/files'
+import {
+  ARTIFACTS,
+  imageType,
+  type FileDocument,
+  type FileEntry,
+  type FileImage,
+  type FileLocation,
+  type FileNavigation,
+  type FileNavigationResult
+} from '../shared/files'
 import { cloneDir, ensureArtifactsDir, taskClones, taskExists, validateName } from './store'
 
 const MAX_FILE = 2 * 1024 * 1024

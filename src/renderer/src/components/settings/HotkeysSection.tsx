@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react'
-import type { HotkeyActionId, HotkeyBinding, HotkeyMap } from '../../../../shared/hotkeys'
 import {
   HOTKEY_DEFAULTS,
   HOTKEY_DEFS,
@@ -8,7 +7,10 @@ import {
   bindingLabel,
   conflictsFor,
   isRecordable,
-  modKeyLabel
+  modKeyLabel,
+  type HotkeyActionId,
+  type HotkeyBinding,
+  type HotkeyMap
 } from '../../../../shared/hotkeys'
 import { refreshHotkeys, useHotkeys } from '../../useHotkeys'
 import { run } from '../../async'

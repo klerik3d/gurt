@@ -6,18 +6,19 @@
 // disagree. No I/O; tested in plain node (scripts/review-block.test.mjs).
 import { agentOptionView } from './agentConfig'
 import { agentDef } from './agents'
-import type { CredentialEntry } from './credentials'
-import { oauthSignedOut } from './credentials'
+import { oauthSignedOut, type CredentialEntry } from './credentials'
 import { ladderFor } from './reviewLoop'
-import type {
-  AgentConfig,
-  AgentsFile,
-  RepoConfig,
-  ReviewLoopConfig,
-  SessionConfigOption,
-  ShipRung
+import {
+  REVIEW_LOOP_DEFAULTS,
+  REVIEW_MAX_ROUNDS,
+  SHIP_RUNGS,
+  type AgentConfig,
+  type AgentsFile,
+  type RepoConfig,
+  type ReviewLoopConfig,
+  type SessionConfigOption,
+  type ShipRung
 } from './types'
-import { REVIEW_LOOP_DEFAULTS, REVIEW_MAX_ROUNDS, SHIP_RUNGS } from './types'
 
 export { ladderFor }
 

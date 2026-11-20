@@ -1,9 +1,7 @@
-import { useEffect, useState } from 'react'
-import type { JSX } from 'react'
+import { useEffect, useState, type JSX } from 'react'
 import { Icon } from './icons'
 import { CopyButton } from './CopyButton'
-import { onToast } from '../toast'
-import type { ToastRecord } from '../toast'
+import { onToast, type ToastRecord } from '../toast'
 
 /** No timer: an error stays until the user closes it — one that vanishes on
  *  its own is one nobody may have read. */

@@ -4,7 +4,7 @@
 import { app, clipboard, dialog, ipcMain, shell } from 'electron'
 import { API_METHODS, type GurtApi } from '../shared/api'
 import { defaultEnvName, isSessionRole, roleIsLoopOwned, writeRepos } from '../shared/types'
-import { MCP_DEFS } from '../shared/mcp'
+import { MCP_DEFS, isLocalMcpEntry, mcpEntryKind } from '../shared/mcp'
 import { broadcast } from './broadcast'
 import { assertRepoModes, createKernel } from './kernel'
 import { saveBeforeQuit } from './shutdown'
@@ -17,7 +17,6 @@ import {
   checkMcpEntryCredential
 } from './credentials'
 import { cancelOAuthSignIn, oauthSignIn } from './oauth'
-import { isLocalMcpEntry, mcpEntryKind } from '../shared/mcp'
 import { sanitizeSkillSelection } from '../shared/skills'
 import { checkMcpCommand, clearNpmInstall } from './mcp/stdioBridge'
 import { probeMcpServer } from './mcp/probe'

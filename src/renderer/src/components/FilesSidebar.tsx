@@ -1,8 +1,14 @@
 import { taskKey } from '../../../shared/keys'
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import type { FileEntry, ScopeFile } from '../../../shared/files'
 import type { RepoChanges, Tree } from '../../../shared/types'
-import { ARTIFACTS, CONTAINER_ROOT, fileKey, imageType } from '../../../shared/files'
+import {
+  ARTIFACTS,
+  CONTAINER_ROOT,
+  fileKey,
+  imageType,
+  type FileEntry,
+  type ScopeFile
+} from '../../../shared/files'
 import { usePreference, z } from '../persisted'
 import { Icon } from './icons'
 import { sortTasks, type ScopeListController } from '../useScopeList'

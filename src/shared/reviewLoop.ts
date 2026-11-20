@@ -6,18 +6,19 @@
 // scripts/review-loop-step.test.mjs.
 import { AGENT_MANIFESTS } from './agents'
 import { sha256Hex } from './envConfig'
-import type {
-  ChangeProposal,
-  FindingReply,
-  RepoConfig,
-  ReviewFinding,
-  ReviewLoopConfig,
-  ReviewVerdict,
-  ShipRung,
-  StoredProposal,
-  StoredVerdict
+import {
+  REVIEW_MAX_ROUNDS,
+  findingRef,
+  type ChangeProposal,
+  type FindingReply,
+  type RepoConfig,
+  type ReviewFinding,
+  type ReviewLoopConfig,
+  type ReviewVerdict,
+  type ShipRung,
+  type StoredProposal,
+  type StoredVerdict
 } from './types'
-import { REVIEW_MAX_ROUNDS, findingRef } from './types'
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE

@@ -7,8 +7,7 @@
 // the keep-the-last-good-read rule are this file's.
 //
 // Both sources preserve the last good snapshot when data is unavailable.
-import type { CredentialEntry } from '../shared/credentials'
-import { resolveAgentSecret } from '../shared/credentials'
+import { resolveAgentSecret, type CredentialEntry } from '../shared/credentials'
 import type { AgentsFile } from '../shared/types'
 import type { AgentLink, PlanUsagePoll } from '../shared/agentPlugin'
 import type { PlanUsage } from '../shared/planUsage'

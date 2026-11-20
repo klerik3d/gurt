@@ -1,6 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { CopyButton } from './CopyButton'
-import type { KeyboardEvent as ReactKeyboardEvent } from 'react'
 import type { NotificationRecord, NotificationType } from '../../../shared/notifications'
 import type { Tree } from '../../../shared/types'
 import type { Tone } from '../status'

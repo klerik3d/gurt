@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { McpDef, McpEntry, McpFailure, McpRegistryEntry } from '../../shared/mcp'
-import { mcpEntries } from '../../shared/mcp'
+import {
+  mcpEntries,
+  type McpDef,
+  type McpEntry,
+  type McpFailure,
+  type McpRegistryEntry
+} from '../../shared/mcp'
 import { logErr } from './log'
 
 // Shared MCP lookup for the renderer: the built-ins main is willing to serve

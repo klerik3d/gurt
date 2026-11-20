@@ -6,8 +6,7 @@
 // shape as VS Code's About dialog.
 import { app, clipboard, dialog, Menu, type MenuItemConstructorOptions } from 'electron'
 import os from 'node:os'
-import type { HotkeyMap } from '../shared/hotkeys'
-import { bindingToAccelerator } from '../shared/hotkeys'
+import { bindingToAccelerator, type HotkeyMap } from '../shared/hotkeys'
 import { relativeTime } from '../shared/time'
 import { broadcast } from './broadcast'
 

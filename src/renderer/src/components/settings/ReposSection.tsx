@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { PublishResult, RepoConfig, ReviewLoopConfig, Tree } from '../../../../shared/types'
-import { REVIEW_LOOP_DEFAULTS } from '../../../../shared/types'
+import {
+  REVIEW_LOOP_DEFAULTS,
+  type PublishResult,
+  type RepoConfig,
+  type ReviewLoopConfig,
+  type Tree
+} from '../../../../shared/types'
 import {
   REVIEW_ROUNDS,
   RUNG_LABEL,
@@ -10,8 +15,12 @@ import {
   validateReviewBlock
 } from '../../../../shared/reviewBlock'
 import { useAgents } from '../../useAgents'
-import type { CredentialEntry } from '../../../../shared/credentials'
-import { credentialKindLabel, isGitKind, resolveForRepo } from '../../../../shared/credentials'
+import {
+  credentialKindLabel,
+  isGitKind,
+  resolveForRepo,
+  type CredentialEntry
+} from '../../../../shared/credentials'
 import { canonicalRepoId } from '../../../../shared/repoId'
 import { useOutsideClose } from '../../hooks'
 import { confirmDialog } from '../../dialog'

@@ -4,7 +4,6 @@
 // tests).
 import { startGc } from './gc'
 import { ArchiveManager } from './archive'
-import type { AgentConfig, RepoConfig, Tree } from '../shared/types'
 import {
   defaultEnvName,
   isBundledEnv,
@@ -13,7 +12,10 @@ import {
   repoMode,
   roleIsLoopOwned,
   sessionRole,
-  writeRepos
+  writeRepos,
+  type AgentConfig,
+  type RepoConfig,
+  type Tree
 } from '../shared/types'
 import { ladderOfRepos, sanitizeReviewBlock, validateReviewBlock } from '../shared/reviewBlock'
 import type { BootProgress, SessionDraftPatch } from '../shared/api'

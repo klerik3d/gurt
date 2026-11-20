@@ -1,5 +1,4 @@
-import { useLayoutEffect, useRef, useState } from 'react'
-import type { ReactNode } from 'react'
+import { useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { useOutsideClose } from '../hooks'
 
 /** A row's actions at the pointer instead of behind a button — opened by
