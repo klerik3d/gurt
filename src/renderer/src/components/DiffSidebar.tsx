@@ -1,7 +1,12 @@
-import { useState } from 'react'
-import type { CSSProperties, MouseEvent as ReactMouseEvent } from 'react'
-import type { ChangedFile, DiffTarget, RepoChanges } from '../../../shared/types'
-import { targetKey, isActionable, isDelivered } from '../../../shared/types'
+import { useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from 'react'
+import {
+  targetKey,
+  isActionable,
+  isDelivered,
+  type ChangedFile,
+  type DiffTarget,
+  type RepoChanges
+} from '../../../shared/types'
 import { run } from '../async'
 import { Icon } from './icons'
 import { RowContextMenu } from './RowContextMenu'

@@ -29,21 +29,19 @@
 // entry executes third-party code on the host, so *running* it is a decision
 // the user makes explicitly), and its tool list unlocks nothing (§3.3).
 
-import type {
-  McpEntryKind,
-  McpHttpEntry,
-  McpLocalEntry,
-  McpProbeLine,
-  McpProbeResult,
-  McpProbedTool,
-  McpRegistryEntry
-} from '../../shared/mcp'
 import {
   isLocalMcpEntry,
   mcpCredentialIds,
   mcpEntryKind,
   normalizeMcpEntry,
-  validateMcpEntry
+  validateMcpEntry,
+  type McpEntryKind,
+  type McpHttpEntry,
+  type McpLocalEntry,
+  type McpProbeLine,
+  type McpProbeResult,
+  type McpProbedTool,
+  type McpRegistryEntry
 } from '../../shared/mcp'
 import { resolveMcpHeaders } from '../../shared/credentials'
 import { listCredentials } from '../credentials'

@@ -6,8 +6,12 @@
 // exist (§5.4), and blocking with the signed-out sentence when the refresh
 // token is dead. It also owns the sign-in attempts the Credentials modal
 // starts (§4).
-import type { CredentialEntry } from '../../shared/credentials'
-import { CREDENTIAL_KINDS, oauthSignedOut, signedOutError } from '../../shared/credentials'
+import {
+  CREDENTIAL_KINDS,
+  oauthSignedOut,
+  signedOutError,
+  type CredentialEntry
+} from '../../shared/credentials'
 import { listCredentials, patchCredentialData, upsertCredentialEntry } from '../credentials'
 import { addSecrets, createLogger } from '../log'
 import type { AgentOAuth, OAuthTools } from '../../shared/agentPlugin'

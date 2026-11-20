@@ -1,19 +1,18 @@
 import { taskKey } from '../../shared/keys'
 import { usePreference, readPreference, selectionSchema, diffFileSchema, z } from './persisted'
-import { useCallback, useEffect, useRef, useState } from 'react'
-import type { MouseEvent as ReactMouseEvent } from 'react'
-import type {
-  RepoChanges,
-  InterruptedSession,
-  SessionActivity,
-  SessionInfo,
-  SessionSnapshot,
-  Tree
-} from '../../shared/types'
+import { useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import type { BootProgress } from '../../shared/api'
-import { applyLog, sessionStatus } from '../../shared/types'
-import type { NotificationRecord } from '../../shared/notifications'
-import { NOTIFICATION_RING_CAP } from '../../shared/notifications'
+import {
+  applyLog,
+  sessionStatus,
+  type RepoChanges,
+  type InterruptedSession,
+  type SessionActivity,
+  type SessionInfo,
+  type SessionSnapshot,
+  type Tree
+} from '../../shared/types'
+import { NOTIFICATION_RING_CAP, type NotificationRecord } from '../../shared/notifications'
 import { containerDot, hostWorking, sessionDot } from './status'
 import { Icon, Logo } from './components/icons'
 import { EnvRepoMarks } from './components/tags'
@@ -36,8 +35,12 @@ import { ArchivePane } from './components/ArchivePane'
 import { CommandPalette } from './components/CommandPalette'
 import { Welcome } from './components/Welcome'
 import { SessionRecoveryModal } from './components/SessionRecoveryModal'
-import { PREPARE_LOG_KEY, WELCOME_MODE_DEFAULT, welcomeShows } from '../../shared/doctor'
-import type { WelcomeMode } from '../../shared/doctor'
+import {
+  PREPARE_LOG_KEY,
+  WELCOME_MODE_DEFAULT,
+  welcomeShows,
+  type WelcomeMode
+} from '../../shared/doctor'
 import { NotificationsPanel } from './components/NotificationsPanel'
 import { NotificationPopups } from './components/NotificationPopups'
 import { useOutsideClose } from './hooks'

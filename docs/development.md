@@ -112,6 +112,19 @@ deb/sudo path above — always test through the actual `.AppImage` file.
 - transition: `<prop> <N>ms ease` — длительность в целых ms и easing всегда явно.
 - CSS: icons carry no inline `flex`/`transform`; use `.icon-fixed` (`flex: none`) and `.chev-closed` (`rotate(-90deg)`, applied conditionally as `open ? '' : 'chev-closed'`).
 
+## Imports
+
+One import statement per module, where the import forms can be combined. When a file needs both values and types from
+the same module, they share a single statement and the type names carry an
+inline `type` qualifier: `import { CLOSE_REASON, type CloseReason } from './frames'`.
+A statement that imports only types stays `import type { ... }`. A namespace import (`import * as x`) cannot share a statement with named imports, so that pair is the one allowed exception.
+
+This is enforced by ESLint (`@typescript-eslint/consistent-type-imports` with
+`fixStyle: 'inline-type-imports'`, `no-import-type-side-effects` (a lone `{ type X }` becomes `import type { X }`), plus `no-duplicate-imports` with
+`allowSeparateTypeImports: false`), so don't flip it back to split
+`import type` / `import` pairs. `npx eslint --fix` fixes the type qualifiers
+but does not merge duplicates; merge those by hand.
+
 ## Dev container
 
 `.devcontainer/` provides a Node 22 environment for working on Gurt itself.

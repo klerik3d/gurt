@@ -1,5 +1,4 @@
-import { useCallback, useState } from 'react'
-import type { Dispatch, SetStateAction } from 'react'
+import { useCallback, useState, type Dispatch, type SetStateAction } from 'react'
 import { z } from 'zod'
 
 /** Only UI preferences belong here: never credentials, prompts or live state. */

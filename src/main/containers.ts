@@ -10,8 +10,17 @@ import { clientConfigFile } from '../shared/clientConfig'
 // or env name. A container id is minted by `docker` and never reused, so a
 // record keyed by it cannot survive the thing it describes. That is what makes
 // stale-cache reuse unrepresentable rather than merely avoided.
-import type { EnvRef, RepoConfig, SessionContainer, SessionInfo } from '../shared/types'
-import { anchorRepo, missingRepoReason, repoMode, repoModeIsReadOnly, sessionRole } from '../shared/types'
+import {
+  anchorRepo,
+  missingRepoReason,
+  repoMode,
+  repoModeIsReadOnly,
+  sessionRole,
+  type EnvRef,
+  type RepoConfig,
+  type SessionContainer,
+  type SessionInfo
+} from '../shared/types'
 import type { ContainerStatusReason } from '../shared/events'
 import type { AgentManifest } from '../shared/agentPlugin'
 import { agentDef } from '../shared/agents'

@@ -30,8 +30,17 @@
 // an external effect is looked for before it is repeated, and where it cannot
 // be known whether it happened the loop prefers not to repeat it (a message
 // that may have reached the agent). Notifications retry until marked (§8).
-import type { EnvRef, LoopNote, ReviewFinding, SessionInfo, StoredVerdict } from '../shared/types'
-import { REVIEW_MAX_ROUNDS, findingRef, sessionRole, writeRepos } from '../shared/types'
+import {
+  REVIEW_MAX_ROUNDS,
+  findingRef,
+  sessionRole,
+  writeRepos,
+  type EnvRef,
+  type LoopNote,
+  type ReviewFinding,
+  type SessionInfo,
+  type StoredVerdict
+} from '../shared/types'
 import {
   REVIEW_LOOP,
   buildReviewerPrompt,

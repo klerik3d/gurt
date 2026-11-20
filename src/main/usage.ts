@@ -7,8 +7,7 @@
 // it consumed was spent whether or not the session still exists. Deleting a
 // session therefore does not delete its turns.
 import type { Bus } from './bus'
-import type { TurnRecord } from '../shared/usage'
-import { DAY } from '../shared/usage'
+import { DAY, type TurnRecord } from '../shared/usage'
 import * as store from './store'
 import { createLogger } from './log'
 

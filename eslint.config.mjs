@@ -20,6 +20,16 @@ export default tseslint.config(
       parserOptions: { projectService: true, tsconfigRootDir: import.meta.dirname }
     },
     rules: {
+      // One import statement per module: a type and a value from the same
+      // module share it, with an inline `type` qualifier on the type names
+      // (`import { X, type Y } from 'm'`). A purely type-only import stays
+      // `import type { ... }`. See "Imports" in docs/development.md.
+      '@typescript-eslint/consistent-type-imports': [
+        'error',
+        { prefer: 'type-imports', fixStyle: 'inline-type-imports', disallowTypeAnnotations: false }
+      ],
+      '@typescript-eslint/no-import-type-side-effects': 'error',
+      'no-duplicate-imports': ['error', { allowSeparateTypeImports: false }],
       // tsc already resolves every identifier, and no-undef cannot see type-only
       // declarations — leaving it on only produces false positives here.
       'no-undef': 'off',

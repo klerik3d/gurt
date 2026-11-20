@@ -2,10 +2,16 @@
 // §5.2, §7): the phase, the round, the findings and — for an end — the reason,
 // as plain data. Pure, so the pane draws it and a test pins the wording
 // (scripts/review-block.test.mjs); the loop itself is `loopStep`'s.
-import type { DeliveredStep, EndReason, LoopEnd, LoopPhase, LoopState } from './reviewLoop'
-import { approvalRepos, loopIsLive } from './reviewLoop'
-import type { ReviewFinding } from './types'
-import { findingRef } from './types'
+import {
+  approvalRepos,
+  loopIsLive,
+  type DeliveredStep,
+  type EndReason,
+  type LoopEnd,
+  type LoopPhase,
+  type LoopState
+} from './reviewLoop'
+import { findingRef, type ReviewFinding } from './types'
 
 /** Why a loop ended `needs-you`, in the sentence the pane and the
  *  notification both can use. Exhaustive on purpose: a new reason is a compile

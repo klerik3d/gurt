@@ -1,6 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import type { JSX } from 'react'
-import type { CredentialEntry } from '../../../../shared/credentials'
+import { useCallback, useEffect, useRef, useState, type JSX } from 'react'
 import {
   credentialKindLabel,
   mcpCredentials,
@@ -8,18 +6,9 @@ import {
   oauthBoundElsewhere,
   oauthSignedOut,
   resolveMcpSecret,
-  signedOutError
+  signedOutError,
+  type CredentialEntry
 } from '../../../../shared/credentials'
-import type {
-  McpDef,
-  McpEntryDraft,
-  McpEntryKind,
-  McpEnvRow,
-  McpProbeResult,
-  McpRegistryEntry,
-  McpSnippetResult,
-  McpValue
-} from '../../../../shared/mcp'
 import {
   LOCAL_MCP_NOTICE,
   canonicalMcpUrl,
@@ -36,7 +25,15 @@ import {
   normalizeMcpEntry,
   parseMcpSnippet,
   pastedSecret,
-  validateMcpEntry
+  validateMcpEntry,
+  type McpDef,
+  type McpEntryDraft,
+  type McpEntryKind,
+  type McpEnvRow,
+  type McpProbeResult,
+  type McpRegistryEntry,
+  type McpSnippetResult,
+  type McpValue
 } from '../../../../shared/mcp'
 import { useOutsideClose } from '../../hooks'
 import { confirmDialog } from '../../dialog'

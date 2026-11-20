@@ -21,8 +21,13 @@
 import { createHash } from 'node:crypto'
 import type { GurtApi, WriteMethod } from '../shared/api'
 import type { EnvConfig, RepoConfig } from '../shared/types'
-import type { McpRegistryEntry } from '../shared/mcp'
-import { isLocalMcpEntry, mcpCredentialUses, mcpEntryKind, normalizeMcpEntry } from '../shared/mcp'
+import {
+  isLocalMcpEntry,
+  mcpCredentialUses,
+  mcpEntryKind,
+  normalizeMcpEntry,
+  type McpRegistryEntry
+} from '../shared/mcp'
 import { canonicalJson } from '../shared/envConfig'
 import { sanitizeSkillSelection } from '../shared/skills'
 import { normalizeNotificationPrefs } from '../shared/notifications'

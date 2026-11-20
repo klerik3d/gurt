@@ -7,8 +7,15 @@
 import type { RepoConfig } from './types'
 import { canonicalRepoId } from './repoId'
 import { AGENT_MANIFESTS } from './agents'
-import type { McpHeader, McpHttpEntry, McpLocalEntry } from './mcp'
-import { headerValueProblem, isHeaderName, isMcpCredentialRef, sameMcpUrl } from './mcp'
+import {
+  headerValueProblem,
+  isHeaderName,
+  isMcpCredentialRef,
+  sameMcpUrl,
+  type McpHeader,
+  type McpHttpEntry,
+  type McpLocalEntry
+} from './mcp'
 
 export type CredentialKind =
   | 'git-token'

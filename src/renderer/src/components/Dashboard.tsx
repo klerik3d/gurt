@@ -3,14 +3,26 @@ import { usePreference, z } from '../persisted'
 // The dashboard: what the agents have spent, what is running, and what finished
 // while you were elsewhere. Read-only over state the rest of the app already
 // owns — the one thing it adds is the usage ledger (see shared/usage.ts).
-import { useEffect, useState } from 'react'
-import type { JSX } from 'react'
-import type { RepoChanges, SessionActivity, SessionInfo, SessionStatus, Tree } from '../../../shared/types'
-import { sessionStatus } from '../../../shared/types'
-import type { PlanHold, PlanUsage, PlanWindow } from '../../../shared/planUsage'
-import { LIMIT_DEFAULTS, STALE_AFTER_MS, formatResetAt, planHold, windowElapsedPercent } from '../../../shared/planUsage'
-import type { TurnRecord } from '../../../shared/usage'
-import { formatDuration } from '../../../shared/usage'
+import { useEffect, useState, type JSX } from 'react'
+import {
+  sessionStatus,
+  type RepoChanges,
+  type SessionActivity,
+  type SessionInfo,
+  type SessionStatus,
+  type Tree
+} from '../../../shared/types'
+import {
+  LIMIT_DEFAULTS,
+  STALE_AFTER_MS,
+  formatResetAt,
+  planHold,
+  windowElapsedPercent,
+  type PlanHold,
+  type PlanUsage,
+  type PlanWindow
+} from '../../../shared/planUsage'
+import { formatDuration, type TurnRecord } from '../../../shared/usage'
 import { agentDef } from '../../../shared/agents'
 import { HOST_DOT, SESSION_DOT, hostWorking } from '../status'
 import { agentKind, agentName, useAgents } from '../useAgents'

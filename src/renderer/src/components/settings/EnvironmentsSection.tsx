@@ -1,7 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import type { JSX } from 'react'
-import type { EnvConfig, RepoConfig, Tree } from '../../../../shared/types'
-import { BASE_ENV_NAME, DEFAULT_BASE_IMAGE } from '../../../../shared/types'
+import { useCallback, useEffect, useRef, useState, type JSX } from 'react'
+import {
+  BASE_ENV_NAME,
+  DEFAULT_BASE_IMAGE,
+  type EnvConfig,
+  type RepoConfig,
+  type Tree
+} from '../../../../shared/types'
 import type { EnvImageStatus } from '../../../../shared/api'
 import { formatEnvLines, parseEnvLines, validateEnvConfig } from '../../../../shared/envConfig'
 import { useOutsideClose } from '../../hooks'

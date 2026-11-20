@@ -2,8 +2,7 @@
 // branch, computed on the host from git alone — no forge APIs, no state outside
 // the clone, works with containers stopped.
 // See docs/requirements-changes-thread.md.
-import { promises as fs } from 'node:fs'
-import { existsSync } from 'node:fs'
+import { existsSync, promises as fs } from 'node:fs'
 import path from 'node:path'
 import type { ChangedFile, DiffPair, DiffTarget, RepoChanges, ThreadCommit } from '../shared/types'
 import type { GitCommitOptions, GitPushOptions, UpdateStrategy } from '../shared/api'

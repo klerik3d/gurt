@@ -23,10 +23,15 @@ import { randomBytes } from 'node:crypto'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import type { AcpHttpMcpServer, EnvRef, McpSelection } from '../../shared/types'
-import type { CredentialEntry } from '../../shared/credentials'
-import { resolveMcpHeaders } from '../../shared/credentials'
-import type { McpHttpEntry, McpRegistryEntry } from '../../shared/mcp'
-import { isLocalMcpEntry, mcpCredentialIds, mcpEntries, resolveMcpSelection } from '../../shared/mcp'
+import { resolveMcpHeaders, type CredentialEntry } from '../../shared/credentials'
+import {
+  isLocalMcpEntry,
+  mcpCredentialIds,
+  mcpEntries,
+  resolveMcpSelection,
+  type McpHttpEntry,
+  type McpRegistryEntry
+} from '../../shared/mcp'
 import {
   PROXY_CONFIG_VERSION,
   sanitizeDomainPolicy,

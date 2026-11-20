@@ -27,7 +27,8 @@ import type {
   SessionSnapshot,
   SkillSelection,
   StoredProposal,
-  Tree
+  Tree,
+  ChatEntry
 } from './types'
 import type { CredentialEntry, CredentialsFile } from './credentials'
 import type { SessionTraffic } from './proxy'
@@ -42,7 +43,6 @@ import type { HotkeyMap } from './hotkeys'
 import type { Appearance, ColorScheme } from './appearance'
 import type { GcResult, GcSettings } from './gc'
 import type { ArchiveSettings, ScopeArchive } from './archive'
-import type { ChatEntry } from './types'
 import type { DoctorReport, DoctorRow, FirstRunResult, WelcomeMode } from './doctor'
 
 import type { TerminalInfo, TerminalSnapshot } from './terminal'

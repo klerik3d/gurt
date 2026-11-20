@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { HotkeyMap } from '../../shared/hotkeys'
-import { HOTKEY_DEFAULTS } from '../../shared/hotkeys'
+import { HOTKEY_DEFAULTS, type HotkeyMap } from '../../shared/hotkeys'
 import { logErr } from './log'
 
 // Shared hotkeys cache, same shape as useAgents.ts: App's global keydown

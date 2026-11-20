@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { Tree } from '../../../../shared/types'
-import type { SkillEntry } from '../../../../shared/skills'
-import { skillNameProblem, skillTemplate, validateSkillDoc } from '../../../../shared/skills'
+import {
+  skillNameProblem,
+  skillTemplate,
+  validateSkillDoc,
+  type SkillEntry
+} from '../../../../shared/skills'
 import { confirmDialog } from '../../dialog'
 import { Modal } from '../Modal'
 import { run } from '../../async'

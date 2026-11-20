@@ -1,5 +1,13 @@
-import { createContext, useContext, useEffect, useState } from 'react'
-import type { ComponentPropsWithoutRef, KeyboardEvent, MouseEvent, ReactNode } from 'react'
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useState,
+  type ComponentPropsWithoutRef,
+  type KeyboardEvent,
+  type MouseEvent,
+  type ReactNode
+} from 'react'
 import { parsePathRef, scopeCandidates, type PathRef } from '../../shared/fileLinks'
 import type { FileJump } from './useFiles'
 import { showToast } from './toast'

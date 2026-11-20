@@ -5,16 +5,7 @@
 // Everything that decides identity — which ref belongs to which scope — runs
 // under one per-workspace lock. Gurt is a single instance (index.ts takes the
 // single-instance lock), so an in-process chain is the whole of the locking.
-import type { EnvRef, SessionInfo, Tree } from '../shared/types'
-import { defaultEnvName } from '../shared/types'
-import type {
-  ProactiveAgentView,
-  ProactiveConfig,
-  ProactiveOrigin,
-  ProactiveRun,
-  ProactiveRunOutcome,
-  ProactiveState
-} from '../shared/proactive'
+import { defaultEnvName, type EnvRef, type SessionInfo, type Tree } from '../shared/types'
 import {
   PROACTIVE_DEFAULTS,
   PROACTIVE_RUNS_KEPT,
@@ -22,7 +13,13 @@ import {
   nextRunDue,
   normalizeRefs,
   sanitizeProactiveConfig,
-  scopeSlug
+  scopeSlug,
+  type ProactiveAgentView,
+  type ProactiveConfig,
+  type ProactiveOrigin,
+  type ProactiveRun,
+  type ProactiveRunOutcome,
+  type ProactiveState
 } from '../shared/proactive'
 import type { Bus } from './bus'
 import type { ProactiveHooks, ProposeScopeInput } from './mcp/gurtServer'

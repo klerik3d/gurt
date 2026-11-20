@@ -18,7 +18,7 @@ import { envBuildInFlight, run } from './provision'
 import { createLogger } from './log'
 import * as store from './store'
 import { gurtRoot } from './paths'
-import { type GcResult, type GcSettings } from '../shared/gc'
+import type { GcResult, GcSettings } from '../shared/gc'
 
 const log = createLogger('gc')
 const DOCKER_TIMEOUT_MS = 120_000

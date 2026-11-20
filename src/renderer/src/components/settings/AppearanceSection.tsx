@@ -1,5 +1,4 @@
-import { useEffect, useState } from 'react'
-import type { JSX } from 'react'
+import { useEffect, useState, type JSX } from 'react'
 import type { Appearance, TextSize, ThemeMode } from '../../../../shared/appearance'
 import { ChoiceGroup, type Choice } from '../ChoiceGroup'
 import { logErr } from '../../log'

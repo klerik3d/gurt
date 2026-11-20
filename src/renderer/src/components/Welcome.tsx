@@ -14,11 +14,16 @@
 //
 // The five forms this replaces are still there and still work; what this
 // removes is having to know their order on a machine gurt has never seen.
-import { useCallback, useEffect, useRef, useState } from 'react'
-import type { JSX } from 'react'
+import { useCallback, useEffect, useRef, useState, type JSX } from 'react'
 import { AGENT_MANIFESTS, DEFAULT_AGENT_KIND, agentDef } from '../../../shared/agents'
-import type { DoctorReport, DoctorRow, FirstRunResult, WelcomeMode } from '../../../shared/doctor'
-import { pendingRows, WELCOME_MODE_DEFAULT } from '../../../shared/doctor'
+import {
+  pendingRows,
+  WELCOME_MODE_DEFAULT,
+  type DoctorReport,
+  type DoctorRow,
+  type FirstRunResult,
+  type WelcomeMode
+} from '../../../shared/doctor'
 import { OAUTH_PROVIDER_CHOICES } from '../../../shared/credentials'
 import { Icon, Logo } from './icons'
 import { AgentMark } from './tags'

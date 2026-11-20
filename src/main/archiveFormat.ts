@@ -1,7 +1,6 @@
 // Versioned, streaming gzip container. Files are chunked, checksummed and never
 // followed through symlinks. Extraction writes links last into a fresh directory.
-import { createReadStream, createWriteStream } from 'node:fs'
-import { promises as fs } from 'node:fs'
+import { createReadStream, createWriteStream, promises as fs } from 'node:fs'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { Readable } from 'node:stream'

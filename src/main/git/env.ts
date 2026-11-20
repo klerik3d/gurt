@@ -23,8 +23,12 @@
 // vars — which would silently fall back to ambient auth. Every host git call
 // must spread `gitArgs` into its argv and run under `env`.
 import type { RepoConfig } from '../../shared/types'
-import type { CredentialEntry, CredResolution } from '../../shared/credentials'
-import { resolveCredential, credentialIdentity } from '../../shared/credentials'
+import {
+  resolveCredential,
+  credentialIdentity,
+  type CredentialEntry,
+  type CredResolution
+} from '../../shared/credentials'
 import { canonicalRepoId } from '../../shared/repoId'
 import { getWorkspace } from '../store'
 import { listCredentials } from '../credentials'

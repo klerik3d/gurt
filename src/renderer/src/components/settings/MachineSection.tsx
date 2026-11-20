@@ -1,10 +1,14 @@
-import { useEffect, useState } from 'react'
-import type { JSX } from 'react'
-import { PREPARE_LOG_KEY, WELCOME_MODES } from '../../../../shared/doctor'
+import { useEffect, useState, type JSX } from 'react'
+import { PREPARE_LOG_KEY, WELCOME_MODES, type WelcomeMode } from '../../../../shared/doctor'
 import { logErr } from '../../log'
-import type { WelcomeMode } from '../../../../shared/doctor'
-import type { GcResult, GcSettings } from '../../../../shared/gc'
-import { GC_DISK_MAX, GC_DISK_MIN, GC_HOURS_MAX, GC_HOURS_MIN } from '../../../../shared/gc'
+import {
+  GC_DISK_MAX,
+  GC_DISK_MIN,
+  GC_HOURS_MAX,
+  GC_HOURS_MIN,
+  type GcResult,
+  type GcSettings
+} from '../../../../shared/gc'
 import { MachineChecklist } from '../Welcome'
 import { run } from '../../async'
 

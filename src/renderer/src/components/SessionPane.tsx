@@ -1,6 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { PromptImage, SessionSnapshot, Tree } from '../../../shared/types'
-import { missingRepoReason, repoMode, sessionRole, sessionStatus } from '../../../shared/types'
+import {
+  missingRepoReason,
+  repoMode,
+  sessionRole,
+  sessionStatus,
+  type PromptImage,
+  type SessionSnapshot,
+  type Tree
+} from '../../../shared/types'
 import { agentKind, agentName, useAgents } from '../useAgents'
 import { useMcpEntries, useMcpFailures } from '../useMcp'
 import { useReviewBlock } from '../useReviewBlock'

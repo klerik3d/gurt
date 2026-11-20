@@ -18,8 +18,11 @@
 import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http'
 import { z } from 'zod'
-import type { CredentialEntry } from '../../shared/credentials'
-import { credentialIdentity, DEFAULT_TOKEN_USER } from '../../shared/credentials'
+import {
+  credentialIdentity,
+  DEFAULT_TOKEN_USER,
+  type CredentialEntry
+} from '../../shared/credentials'
 import { canonicalRepoId } from '../../shared/repoId'
 import { listCredentials } from '../credentials'
 import { listenEphemeral } from '../listen'

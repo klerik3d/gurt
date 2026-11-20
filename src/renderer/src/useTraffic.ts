@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { SessionTraffic } from '../../shared/proxy'
-import { emptyTraffic } from '../../shared/proxy'
+import { emptyTraffic, type SessionTraffic } from '../../shared/proxy'
 import { logErr } from './log'
 
 // What one session's proxy has been seen doing (docs/requirements-mcp-proxy.md

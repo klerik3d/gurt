@@ -1,7 +1,12 @@
 import { taskKey } from '../../../shared/keys'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { HostBusy, SessionActivity, SessionStatus, Tree } from '../../../shared/types'
-import { sessionStatus } from '../../../shared/types'
+import {
+  sessionStatus,
+  type HostBusy,
+  type SessionActivity,
+  type SessionStatus,
+  type Tree
+} from '../../../shared/types'
 import { bindingLabel } from '../../../shared/hotkeys'
 import { agentKind, agentName, useAgents } from '../useAgents'
 import { useHotkeys } from '../useHotkeys'
