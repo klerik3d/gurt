@@ -1088,10 +1088,25 @@ export async function prepareReplacementVolumes(
 ): Promise<void> {
   const info = await inspectImage(image)
   if (!info) throw new Error(`image ${image} is not available locally`)
-  await Promise.all([
-    ensureNodeRuntimeVolume(info.arch, log, session),
-    agent ? ensureAdaptersVolume(agent, info.arch, log, session) : undefined
+  await ensureBothVolumes(info.arch, agent, log, session)
+}
+
+/** Both volumes, concurrently, but rejecting only once *both* have settled:
+ *  a failed fill must not return control while the other is still running
+ *  `docker` behind the caller's back. Returns the adapters volume's name. */
+async function ensureBothVolumes(
+  arch: string,
+  agent: Pick<AgentManifest, 'adapterPackages' | 'bin'> | undefined,
+  log: LogSink,
+  session: string
+): Promise<{ node: string; adapters: string | undefined }> {
+  const [node, adapters] = await Promise.allSettled([
+    ensureNodeRuntimeVolume(arch, log, session),
+    agent ? ensureAdaptersVolume(agent, arch, log, session) : Promise.resolve(undefined)
   ])
+  if (node.status === 'rejected') throw node.reason
+  if (adapters.status === 'rejected') throw adapters.reason
+  return { node: node.value, adapters: adapters.value }
 }
 
 /**
@@ -1404,10 +1419,7 @@ export async function createContainer(
   const user = info.user || 'root'
   // Both are one-time fills (a ready volume costs one probe per app process);
   // concurrent, since a warm start pays only the two probes.
-  const [volume, adapters] = await Promise.all([
-    ensureNodeRuntimeVolume(info.arch, log, spec.session),
-    spec.agent ? ensureAdaptersVolume(spec.agent, info.arch, log, spec.session) : undefined
-  ])
+  const { node: volume, adapters } = await ensureBothVolumes(info.arch, spec.agent, log, spec.session)
   const mounts: ContainerMount[] = [
     ...spec.mounts,
     { type: 'volume', source: volume, target: NODE_MOUNT, readonly: true },
