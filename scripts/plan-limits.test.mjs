@@ -1,4 +1,4 @@
-// The plan-limit gate end to end, on a real kernel (src/main/sessions.ts
+// The plan-limit gate end to end, on a real kernel (src/main/sessions/wake.ts
 // `limitHold`, src/shared/planUsage.ts `planHold`):
 //
 //   - a queued draft on an account at its limit stays queued, says why, and

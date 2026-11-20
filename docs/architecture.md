@@ -43,8 +43,26 @@ that in turn builds the app core via `createKernel()` (`src/main/kernel.ts`).
 there, plus its implementation in `ipc.ts` and its operator-exposure annotation
 in `METHODS` (a compile error until it has one), is the whole wiring; preload
 derives from it.
-`src/main/sessions.ts` is the heart of the session lifecycle
-(start/stop/queue/persistence).
+`src/main/sessions/` is the heart of the session lifecycle
+(start/stop/queue/persistence); `src/main/sessions.ts` only re-exports it.
+`SessionManager` (`manager.ts`) is a facade: it owns the `Map<id, Session>`
+and the process-wide state, keeps the public surface, and delegates to
+modules that each get a narrow context interface over it (no module imports
+the manager, so the dependencies run one way: `types` → `pure`, `modes`,
+`turnContract` → the stateful modules → `manager`):
+
+- `types.ts`, `pure.ts`, `modes.ts`, `turnContract.ts` — shared types and the
+  stateless rules (nudge prompts, `postTurnDecision`, mode matching, backoff).
+- `queue.ts` — clone claims, the FIFO queue, task caps, review-loop holds and
+  the scheduler pass (`scheduleSync`).
+- `wake.ts` — watcher wakes and plan-limit holds (`wakePass`, `onLimited`).
+- `connection.ts`, `start.ts` — the ACP adapter per session, and the start
+  sequence (MCP servers, skills, start config).
+- `turns.ts`, `prompts.ts`, `agentEvents.ts` — a turn and its drain loop, the
+  prompt queue's outside face, and what the agent says back.
+- `persistence.ts`, `lifecycle.ts`, `drafts.ts` — `sessions.json` and the logs,
+  deleting/renaming/archiving sessions, and draft
+  creation/copy/rewind/branch.
 
 Historical specs and design notes live in this folder — see its [index](README.md).
 
