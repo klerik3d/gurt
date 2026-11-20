@@ -2,21 +2,15 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   missingRepoReason,
   repoMode,
-  sessionRole,
-  sessionStatus,
   type PromptImage,
   type SessionSnapshot,
   type Tree
 } from '../../../shared/types'
-import { agentKind, agentName, useAgents } from '../useAgents'
-import { useMcpEntries, useMcpFailures } from '../useMcp'
+import { useMcpFailures } from '../useMcp'
 import { useReviewBlock } from '../useReviewBlock'
-import { resolveMcpSelection } from '../../../shared/mcp'
 import { alertDialog } from '../dialog'
 import { logErr } from '../log'
-import { SESSION_DOT } from '../status'
-import { Dot } from './icons'
-import { AgentMark, EnvRepoMarks, hasNetMark, McpFailBanner, McpMarks, NetMark, RoleMark } from './tags'
+import { McpFailBanner } from './tags'
 import { TrafficPanel } from './Network'
 import { Chat, ImageThumbs, pastedImages, readImages, type ComposerNote } from './Chat'
 import { ConfigTab } from './ConfigTab'
@@ -31,7 +25,6 @@ export function SessionPane({
   snapshot,
   sessionId,
   queuePosition,
-  seen,
   log,
   composerNote,
   onSelect,
@@ -41,10 +34,6 @@ export function SessionPane({
   snapshot?: SessionSnapshot | undefined
   sessionId: string
   queuePosition?: number | undefined
-  /** Whether this session's last turn reads as already looked at — the sidebar
-   *  can hand it back as unread while it sits open, so the header cannot just
-   *  assume that being on screen means seen. */
-  seen?: boolean | undefined
   log: string[]
   /** A line above a started session's composer — see `Chat`. */
   composerNote?: ComposerNote | undefined
@@ -70,7 +59,6 @@ export function SessionPane({
           tree={tree}
           snapshot={snapshot}
           sessionId={sessionId}
-          seen={seen}
           log={log}
           composerNote={composerNote}
           onSelect={onSelect}
@@ -110,42 +98,10 @@ function Header({
   onDeleted: () => void
 }) {
   const { info } = snapshot
-  const agents = useAgents()
-  const mcpOffered = useMcpEntries(info.workspace)
-  const mcp = resolveMcpSelection(info.mcp, mcpOffered)
-  // Only ever a draft/queued/starting session here — a started one renders as
-  // `Chat` — so no read state can reach this mark.
-  const dot = SESSION_DOT[sessionStatus(info)]
   return (
     <div className="chat-head">
       <TabBar active={activeTab} onChange={onTab} />
       <span className="spacer" />
-      <Dot tone={dot.tone} pulse={dot.pulse} hollow={dot.hollow} />
-      <span className="chat-title">
-        {info.task} / {info.title}
-      </span>
-      <span className="tag">{info.state}</span>
-      <span className="chat-pill">
-        <RoleMark role={sessionRole(info)} />
-        <EnvRepoMarks env={info.env} repos={info.repos} task={info.task} session={info} />
-        {/* Own element, not a bare string: adjacent text nodes collapse into one
-            flex item and lose the row's gap. */}
-        {info.agent && (
-          <span>
-            · <AgentMark kind={agentKind(agents, info.agent)} name={agentName(agents, info.agent)} />
-          </span>
-        )}
-        {mcp.length > 0 && (
-          <span>
-            · <McpMarks resolved={mcp} />
-          </span>
-        )}
-        {hasNetMark(info.network) && (
-          <span>
-            · <NetMark network={info.network} />
-          </span>
-        )}
-      </span>
       <ContainerTerminalButton info={info} />
       <SessionMenu info={info} onSelect={onSelect} onDeleted={onDeleted} />
     </div>

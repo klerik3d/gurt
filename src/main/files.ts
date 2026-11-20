@@ -85,6 +85,44 @@ export async function renameTaskFile(ws: string, task: string, relative: string,
   throw new Error('A file with this name already exists')
 }
 
+/** A name for `name` in `directory` that nothing occupies: `a.txt` → `a copy.txt` → `a copy 2.txt`. */
+async function freeName(directory: string, name: string): Promise<string> {
+  const dot = name.lastIndexOf('.')
+  const [stem, ext] = dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, '']
+  for (let n = 0; ; n++) {
+    const candidate = n === 0 ? name : `${stem} copy${n > 1 ? ` ${n}` : ''}${ext}`
+    try { await fs.lstat(path.join(directory, candidate)) } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return candidate
+      throw error
+    }
+  }
+}
+
+/** Copies host files and folders (`sources`, absolute paths — from the system
+ * clipboard or another scope row) into a folder of the scope. Existing names
+ * are kept: the copy gets a free "copy" name. Returns the new scope-relative paths. */
+export async function pasteTaskFiles(ws: string, task: string, directory: string, sources: string[]): Promise<string[]> {
+  if (!Array.isArray(sources) || !sources.length || sources.length > 500 || sources.some((s) => typeof s !== 'string' || !path.isAbsolute(s)))
+    throw new Error('Nothing to paste')
+  const { absolute } = await resolveFile(ws, task, directory)
+  if (!(await fs.lstat(absolute)).isDirectory()) throw new Error('Paste target is not a folder')
+  const target = await fs.realpath(absolute)
+  const created: string[] = []
+  for (const source of sources) {
+    const stat = await fs.lstat(source)
+    if (stat.isSymbolicLink() || !(stat.isFile() || stat.isDirectory())) throw new Error(`Cannot copy ${path.basename(source)}`)
+    if (path.basename(source) === '.git') throw new Error('Git internals cannot be pasted')
+    const from = await fs.realpath(source)
+    if (stat.isDirectory() && (target === from || target.startsWith(from + path.sep))) throw new Error('Cannot copy a folder into itself')
+    const name = await freeName(absolute, path.basename(source))
+    await fs.cp(source, path.join(absolute, name), {
+      recursive: true, errorOnExist: true, force: false
+    })
+    created.push(`${directory}/${name}`)
+  }
+  return created
+}
+
 export async function deleteTaskFile(ws: string, task: string, relative: string): Promise<void> {
   if (!relative.includes('/')) throw new Error('Repository roots cannot be deleted')
   const { absolute } = await resolveFile(ws, task, relative)

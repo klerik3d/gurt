@@ -1239,7 +1239,6 @@ export default function App() {
                   snapshot={snapshots[selection.id]}
                   sessionId={selection.id}
                   queuePosition={positions[selection.id]}
-                  seen={activity[selection.id]?.seen}
                   log={logs[selection.id] ?? []}
                   onSelect={selectSession}
                   onDeleted={() => setSelection(null)}
@@ -1267,7 +1266,6 @@ export default function App() {
                   tree={tree}
                   snapshot={snapshots[openRun.id]}
                   sessionId={openRun.id}
-                  seen={activity[openRun.id]?.seen}
                   log={logs[openRun.id] ?? []}
                   composerNote={
                     openAgent.activeRun === openRun.id
@@ -1309,7 +1307,6 @@ export default function App() {
                       tree={tree}
                       snapshot={snapshots[id]}
                       sessionId={id}
-                      seen={activity[id]?.seen}
                       log={logs[id] ?? []}
                       composerNote={composerNote}
                       onSelect={selectSession}
@@ -1414,13 +1411,13 @@ export default function App() {
           </span>
         )}
         <span className="spacer" />
-        {activeInfo && activeContainer && (
-          <>
-            <span className="foot-env">
-              <EnvRepoMarks env={activeInfo.env} repos={activeInfo.repos} task={activeInfo.task} session={activeInfo} />
-              <span>{containerDot(activeContainer.status).label}</span>
-            </span>
-          </>
+        {/* A draft has no container yet, but its environment and repositories
+            are already chosen — the footer shows them as it does for a started session. */}
+        {activeInfo && (
+          <span className="foot-env">
+            <EnvRepoMarks env={activeInfo.env} repos={activeInfo.repos} task={activeInfo.task} session={activeInfo} />
+            {activeContainer && <span>{containerDot(activeContainer.status).label}</span>}
+          </span>
         )}
       </div>
 

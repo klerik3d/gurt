@@ -134,6 +134,10 @@ export interface GurtApi {
   taskFilePath(ws: string, task: string, path: string): Promise<string>
   renameTaskFile(ws: string, task: string, path: string, name: string): Promise<string>
   deleteTaskFile(ws: string, task: string, path: string): Promise<void>
+  /** Copies absolute host paths into a scope folder; returns the new scope-relative paths. */
+  pasteTaskFiles(ws: string, task: string, directory: string, sources: string[]): Promise<string[]>
+  /** Files and folders currently on the system clipboard (copied in a file manager). */
+  clipboardFilePaths(): Promise<string[]>
   listTaskFiles(ws: string, task: string, directory: string): Promise<FileEntry[]>
   readTaskFile(ws: string, task: string, path: string): Promise<FileDocument>
   /** An image file of the scope for the file view, as a `data:` URL. */
@@ -609,6 +613,8 @@ const METHODS = {
   taskFilePath: 'none',
   renameTaskFile: 'none',
   deleteTaskFile: 'none',
+  pasteTaskFiles: 'none',
+  clipboardFilePaths: 'none',
   listTaskFiles: 'none',
   readTaskFile: 'none',
   readTaskImage: 'none',
