@@ -3,7 +3,7 @@
 // domain-shaped lives in kernel.ts and below.
 import { app, clipboard, dialog, ipcMain, shell } from 'electron'
 import { API_METHODS, type GurtApi } from '../shared/api'
-import { defaultEnvName, isSessionRole, roleIsLoopOwned, writeRepos } from '../shared/types'
+import { defaultEnvName, isSessionRole, roleIsManagerOwned, writeRepos } from '../shared/types'
 import { MCP_DEFS, isLocalMcpEntry, mcpEntryKind } from '../shared/mcp'
 import { broadcast } from './broadcast'
 import { assertRepoModes, createKernel } from './kernel'
@@ -61,6 +61,9 @@ const OPAQUE_ARGS = new Set<keyof GurtApi>([
   'addSkill',
   'updateSkill',
   'sessionPrompt',
+  // A watcher's settings carry a free-text label.
+  'watcherUpdate',
+  'watcherRearm',
   'sessionEditPrompt',
   'sessionEditDraft',
   'renameSession',
@@ -316,6 +319,15 @@ export function registerIpc(): void {
     proactiveCreate: (ws, name) => kernel.proactive.create(ws, name),
     proactiveUpdate: (ws, name, patch) => kernel.proactive.update(ws, name, patch),
     proactiveRunNow: (ws, name) => kernel.proactive.runNow(ws, name),
+    watcherCreate: (ws, name) => kernel.watchers.create(ws, name),
+    watcherDuplicate: (ws, name) => kernel.watchers.duplicate(ws, name),
+    watcherUpdate: (ws, name, patch) => kernel.watchers.update(ws, name, patch),
+    watcherStart: (ws, name) => kernel.watchers.start(ws, name),
+    watcherStop: (ws, name) => kernel.watchers.stop(ws, name),
+    watcherRearm: (ws, name, patch) => kernel.watchers.rearm(ws, name, patch),
+    watcherWakeNow: async (ws, name) => kernel.watchers.wakeNow(ws, name),
+    watcherCheckNow: async (ws, name) => kernel.watchers.checkNow(ws, name),
+    watcherCancelWake: async (ws, name) => kernel.watchers.cancelWake(ws, name),
     renameTask: (ws, name, newName) => kernel.renameTask(ws, name, newName),
     taskDirtyRepos: (ws, name) => kernel.taskDirtyRepos(ws, name),
     setTaskMaxConcurrentSessions: (ws, name, max) =>
@@ -384,9 +396,13 @@ export function registerIpc(): void {
         throw new Error(`task "${ref.task}" not found in "${ref.workspace}"`)
       if (role !== undefined && !isSessionRole(role))
         throw new Error(`unknown session role "${String(role)}"`)
-      // Only the review loop creates a reviewer (docs/requirements-review-loop.md §4).
-      if (role !== undefined && roleIsLoopOwned(role))
-        throw new Error(`a ${role} is created only by the review loop`)
+      // Only the review loop creates a reviewer (docs/requirements-review-loop.md
+      // §4) and only the watcher manager a watcher (docs/requirements-watchers.md §4).
+      if (role !== undefined && roleIsManagerOwned(role))
+        throw new Error(role === 'watcher' ? 'a watcher is created only by the Watchers mode' : `a ${role} is created only by the review loop`)
+      // A watcher's scope holds exactly its one session; the tree never lists its tasks.
+      if (kernel.watchers.isWatcher(ref.workspace, ref.task))
+        throw new Error(`"${ref.task}" is a watcher — it holds exactly one session`)
       assertRepoModes(repoModes)
       // A fresh draft (App.tsx) names no agent up front — it falls back to the
       // workspace's default, same as an agent's own `create_session` request
@@ -429,11 +445,13 @@ export function registerIpc(): void {
     // Same boot gate as createSession — see the comment there.
     sessionRun: async (id) => {
       await kernel.ready
+      if (kernel.watchers.ofSession(id)) throw new Error('start a watcher with Start in the Watchers mode')
       await kernel.assertReviewBlock(id)
       kernel.sessions.run(id)
     },
     sessionEnqueue: async (id) => {
       await kernel.ready
+      if (kernel.watchers.ofSession(id)) throw new Error('start a watcher with Start in the Watchers mode')
       // The Review block's start gate: the Config tab disables Run for the same
       // reasons (docs/requirements-review-loop.md §3).
       await kernel.assertReviewBlock(id)
@@ -447,7 +465,12 @@ export function registerIpc(): void {
     sessionRecreate: async (id) => kernel.sessions.recreateSession(id),
     sessionRewind: async (id, entryId) => kernel.sessions.rewindSession(id, entryId),
     sessionBranch: async (id, entryId) => kernel.sessions.branchSession(id, entryId),
-    sessionDelete: async (id) => kernel.sessions.deleteSession(id),
+    sessionDelete: async (id) => {
+      // A watcher is its one session: deleting it alone would leave a scope
+      // that cannot run. Delete the watcher from its panel (removeTask).
+      if (kernel.watchers.ofSession(id)) throw new Error('this is a watcher — delete it from the Watchers mode')
+      kernel.sessions.deleteSession(id)
+    },
     sessionSnapshot: async (id) => {
       // A restored selection asks once, before boot may have loaded its session.
       await kernel.ready
@@ -455,6 +478,8 @@ export function registerIpc(): void {
       // reads its own awaiting/turn state directly — clears its pending
       // notifications the same way (§4.2), not just an explicit panel dismiss.
       kernel.notifications.markSessionRead(id)
+      // Opening a watcher clears its "needs attention" (docs/requirements-watchers.md §11).
+      kernel.watchers.seen(id)
       return kernel.sessions.snapshot(id)
     },
     // The session's own `internal` flag is the fallback, so a pane that opens

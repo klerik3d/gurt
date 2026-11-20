@@ -25,6 +25,8 @@ import { FilesPane } from './components/FilesPane'
 import { FilesSidebar } from './components/FilesSidebar'
 import { ProactiveSidebar } from './components/ProactiveSidebar'
 import { ProactivePane } from './components/ProactivePane'
+import { WatcherSidebar } from './components/WatcherSidebar'
+import { WatcherPane } from './components/WatcherPane'
 import { useFiles } from './useFiles'
 import { DiffOpener, FileOpener, type OpenScopeDiff, type OpenScopeFile } from './fileLinks'
 import { useScopeList } from './useScopeList'
@@ -62,7 +64,7 @@ export type Selection =
 export const VIEWS = ['work', 'dashboard', 'archive', 'settings'] as const
 export type View = (typeof VIEWS)[number]
 
-export const WORK_MODES = ['sessions', 'diff', 'files', 'proactive'] as const
+export const WORK_MODES = ['sessions', 'diff', 'files', 'proactive', 'watchers'] as const
 export type WorkMode = (typeof WORK_MODES)[number]
 
 // Draggable sidebar width, persisted across launches.
@@ -122,6 +124,9 @@ export default function App() {
    *  is the agent, which the scopes sidebar does not list. */
   const [proactiveRun, setProactiveRun] = usePreference<string | null>('proactiveRun', null, z.string().nullable())
   const [newProactive, setNewProactive] = useState(false)
+  /** The watcher open in the Watchers mode, by name within the workspace. */
+  const [watcherName, setWatcherName] = usePreference<string | null>('watcherName', null, z.string().nullable())
+  const [newWatcher, setNewWatcher] = useState(false)
   const [diffFile, setDiffFile] = usePreference<DiffFileSelection | null>('diffFile', null, diffFileSchema)
   const [settingsSection, setSettingsSection] = usePreference<SettingsSection>('settingsSection', 'environments', z.enum(SETTINGS_SECTIONS))
   const [snapshots, setSnapshots] = useState<Record<string, SessionSnapshot>>({})
@@ -395,7 +400,7 @@ export default function App() {
    *  clicking the sidebar's "+" is itself the way out of it. */
   const firstRun =
     !!tree &&
-    tree.workspaces.every((w) => w.proactive.length === 0 && w.tasks.every((t) => t.sessions.length === 0))
+    tree.workspaces.every((w) => w.proactive.length === 0 && w.watchers.length === 0 && w.tasks.every((t) => t.sessions.length === 0))
   // `welcomeShows` is shared with main's own tests, so the rule cannot be
   // stated twice and drift: `always` every launch, `auto` while the store has
   // never produced a session, `never` only through the command palette.
@@ -487,11 +492,18 @@ export default function App() {
     const owner = treeRef.current?.workspaces.find(
       (w) =>
         w.tasks.some((t) => t.sessions.some((s) => s.id === id)) ||
-        w.proactive.some((a) => a.sessions.some((s) => s.id === id))
+        w.proactive.some((a) => a.sessions.some((s) => s.id === id)) ||
+        w.watchers.some((x) => x.sessionId === id)
     )
     if (owner) setCurWs(owner.name)
+    // A watcher (from its sidebar or a notification) opens inside the Watchers
+    // mode: the Sessions sidebar does not list it.
+    const watcher = owner?.watchers.find((x) => x.sessionId === id)
     const agent = owner?.proactive.find((a) => a.sessions.some((s) => s.id === id))
-    if (agent) {
+    if (watcher) {
+      setWorkMode('watchers')
+      setWatcherName(watcher.name)
+    } else if (agent) {
       // A proactive agent's run (from its sidebar, its Runs list or a
       // notification) opens inside the Proactive mode, under its agent; the
       // template is the agent's own pane.
@@ -511,16 +523,17 @@ export default function App() {
     setNotifications((prev) =>
       prev.map((n) => (n.sessionId === id && !n.read ? { ...n, read: true } : n))
     )
-  }, [setView, setWorkMode, setSelection, setCurWs, setProactiveAgent, setProactiveRun])
+  }, [setView, setWorkMode, setSelection, setCurWs, setProactiveAgent, setProactiveRun, setWatcherName])
 
   // Reload the open session (the selected one, or the run open in the
   // Proactive mode) on restore as well as explicit navigation.
+  const openWatcherSession = watcherName ? ws?.watchers.find((x) => x.name === watcherName)?.sessionId ?? null : null
   const openSessionId =
     view !== 'work'
       ? null
       : workMode === 'sessions'
         ? selection?.type === 'session' ? selection.id : null
-        : workMode === 'proactive' ? proactiveRun : null
+        : workMode === 'proactive' ? proactiveRun : workMode === 'watchers' ? openWatcherSession : null
   useEffect(() => {
     if (!openSessionId) return
     let cancelled = false
@@ -775,6 +788,9 @@ export default function App() {
       } else if (bindingMatchesEvent(hotkeys.gotoProactive, e)) {
         e.preventDefault()
         if (!e.repeat) toggleWorkSidebar('proactive')
+      } else if (bindingMatchesEvent(hotkeys.gotoWatchers, e)) {
+        e.preventDefault()
+        if (!e.repeat) toggleWorkSidebar('watchers')
       } else if (bindingMatchesEvent(hotkeys.gotoArchive, e)) {
         e.preventDefault()
         setView('archive')
@@ -907,6 +923,7 @@ export default function App() {
   // always in sync.
   const openAgent = proactiveAgent ? ws?.proactive.find((a) => a.name === proactiveAgent) : undefined
   const openProactive = openAgent ? openAgent.name : null
+  const openWatcher = watcherName ? ws?.watchers.find((x) => x.name === watcherName) : undefined
   // A run still kept (not collected, not deleted); otherwise the agent's pane.
   const openRun =
     proactiveRun && openAgent?.sessions.some((s) => s.id === proactiveRun && !s.template)
@@ -923,6 +940,8 @@ export default function App() {
           ? `${diffTask?.task ? `${diffTask.task} · ` : ''}diff`
           : workMode === 'files'
             ? `${fileScope?.task ? `${fileScope.task} · ` : ''}files`
+          : workMode === 'watchers'
+            ? `${openWatcher ? `${openWatcher.name} · ` : ''}watchers`
           : workMode === 'proactive'
             ? `${openProactive ? `${openProactive} · ` : ''}${openRun ? `${openRun.title} · ` : ''}proactive`
           : activeInfo
@@ -1108,6 +1127,16 @@ export default function App() {
             <Icon name="history" size={18} />
             {modHeld && <span className="ab-badge">{bindingRestLabel(hotkeys.gotoProactive)}</span>}
           </button>
+          <button
+            className={`ab-item ${view === 'work' && workMode === 'watchers' && leftSidebarVisible ? 'active' : ''}`}
+            title={`Watchers · ${bindingLabel(hotkeys.gotoWatchers)}`}
+            aria-label="Watchers"
+            aria-pressed={view === 'work' && workMode === 'watchers' && leftSidebarVisible}
+            onClick={() => toggleWorkSidebar('watchers')}
+          >
+            <Icon name="bell" size={18} />
+            {modHeld && <span className="ab-badge">{bindingRestLabel(hotkeys.gotoWatchers)}</span>}
+          </button>
           <button className={`ab-item ${view === 'archive' ? 'active' : ''}`} title={`Archive · ${bindingLabel(hotkeys.gotoArchive)}`}
             aria-label="Archive" aria-pressed={view === 'archive'} onClick={() => setView('archive')}>
             <Icon name="archive" size={18} />
@@ -1127,7 +1156,7 @@ export default function App() {
         {view === 'work' && (
           <>
             <div className="left-sidebar" hidden={!leftSidebarVisible}>
-              <div className="scope-sidebar-content" hidden={workMode === 'files' || workMode === 'proactive'}>
+              <div className="scope-sidebar-content" hidden={workMode === 'files' || workMode === 'proactive' || workMode === 'watchers'}>
               <Sidebar
                 collapsed={sidebarCollapsed}
                 setCollapsed={setSidebarCollapsed}
@@ -1173,6 +1202,17 @@ export default function App() {
                 }}
                 onNewTask={() => { if (ws) setNewTask(ws.name) }}
               />}
+              {workMode === 'watchers' && (
+                <WatcherSidebar
+                  tree={tree}
+                  ws={ws?.name ?? null}
+                  width={sidebarWidth}
+                  selected={watcherName}
+                  onSelect={setWatcherName}
+                  onNew={() => setNewWatcher(true)}
+                  onRenamed={setWatcherName}
+                />
+              )}
               {workMode === 'proactive' && (
                 <ProactiveSidebar
                   tree={tree}
@@ -1256,6 +1296,37 @@ export default function App() {
                   }}
                   onDeleted={() => setProactiveAgent(null)}
                 />
+              )}
+              {workMode === 'watchers' && ws && openWatcher && (
+                <WatcherPane
+                  key={`${ws.name}/${openWatcher.name}`}
+                  tree={tree}
+                  ws={ws.name}
+                  name={openWatcher.name}
+                  snapshots={snapshots}
+                  renderSession={(id, composerNote) => (
+                    <SessionPane
+                      tree={tree}
+                      snapshot={snapshots[id]}
+                      sessionId={id}
+                      seen={activity[id]?.seen}
+                      log={logs[id] ?? []}
+                      composerNote={composerNote}
+                      onSelect={selectSession}
+                      onDeleted={() => setWatcherName(null)}
+                    />
+                  )}
+                  onDeleted={() => setWatcherName(null)}
+                  onDuplicated={(n) => setWatcherName(n)}
+                />
+              )}
+              {workMode === 'watchers' && !openWatcher && (
+                <div className="placeholder">
+                  <div className="placeholder-text">
+                    a watcher is one long-lived session that monitors an outside process and calls you
+                    when it needs you — pick one on the left, or add one with “+”
+                  </div>
+                </div>
               )}
               {workMode === 'proactive' && !openProactive && (
                 <div className="placeholder">
@@ -1407,6 +1478,22 @@ export default function App() {
               await window.gurt.createTask(newTask, name)
               setNewTask(null)
               selectTask(newTask, name)
+            } catch (e) {
+              void alertDialog(e instanceof Error ? e.message : String(e))
+            }
+          })}
+        />
+      )}
+      {newWatcher && ws && (
+        <NameModal
+          title={`New watcher in ${ws.name}`}
+          placeholder="watcher name, e.g. release-412"
+          onClose={() => setNewWatcher(false)}
+          onSubmit={run(async (name) => {
+            try {
+              await window.gurt.watcherCreate(ws.name, name)
+              setNewWatcher(false)
+              setWatcherName(name)
             } catch (e) {
               void alertDialog(e instanceof Error ? e.message : String(e))
             }

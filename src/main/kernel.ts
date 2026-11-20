@@ -10,7 +10,7 @@ import {
   isRepoMode,
   isSessionRole,
   repoMode,
-  roleIsLoopOwned,
+  roleIsManagerOwned,
   sessionRole,
   writeRepos,
   type AgentConfig,
@@ -43,6 +43,8 @@ import { resolveOAuthAccess } from './oauth'
 import { createPiiMask, type PiiManager } from './pii'
 import { createLogger, dropSessionLog, sessionLogLine } from './log'
 import { createProactive, type ProactiveManager } from './proactive'
+import { createWatchers, type WatcherManager } from './watchers'
+import type { PollerClock } from './watchPoller'
 import { createReviewLoop, type ReviewLoopClock, type ReviewLoopController, type ReviewLoopDeps } from './reviewLoop'
 import { dropApprovals, setApproval } from './approvals'
 
@@ -93,6 +95,9 @@ export interface Kernel {
   /** Proactive agents: their schedule, their runs and the tools those runs
    *  use (docs/design-proactive-agents.md). */
   proactive: ProactiveManager
+  /** Watchers: one long-lived session each, woken by its own wakeups
+   *  (docs/requirements-watchers.md). */
+  watchers: WatcherManager
   /** The review loop's controller (docs/requirements-review-loop.md §5): ties
    *  the settled turns, the check, the reviewer and the delivery together. */
   reviewLoop: ReviewLoopController
@@ -177,6 +182,7 @@ async function defaultEnvsForRepo(ws: string, repo: string): Promise<string[]> {
 /** Seams a test drives time through; the app passes none. */
 export interface KernelOptions {
   reviewLoop?: { clock?: Partial<ReviewLoopClock>; approvalSeam?: ReviewLoopDeps['approvalSeam'] }
+  watchers?: { clock?: Partial<PollerClock> }
 }
 
 export function createKernel(options: KernelOptions = {}): Kernel {
@@ -247,6 +253,7 @@ export function createKernel(options: KernelOptions = {}): Kernel {
       // Same lazy read as `admin`: the proactive manager is built below, over
       // this session manager.
       proactiveFor: (ws, agent, sessionId) => proactive.hooksFor(ws, agent, sessionId),
+      watcherFor: (ws, task, sessionId) => watchers.hooksFor(ws, task, sessionId),
       checkDraftTarget: assertDraftTarget,
       // The findings a loop executor's next `complete` must answer (§4.2) —
       // the controller owns the loop; read at call time like `admin` above.
@@ -310,6 +317,21 @@ export function createKernel(options: KernelOptions = {}): Kernel {
     bus,
     sessions,
     stopContainer: (id) => containers.stop(id, 'idle')
+  })
+
+  const watchers = createWatchers({
+    bus,
+    sessions,
+    stopContainer: (id) => containers.stop(id, 'idle'),
+    poll: {
+      exec: (sessionId, argv, cwd) => containers.spawnExec(sessionId, argv, cwd),
+      containerUp: (sessionId) => containers.status(sessionId) === 'running',
+      // A poll is killed by stopping the container, confirmed by an inspect.
+      stopContainer: (sessionId) => containers.stop(sessionId, 'idle', true),
+      containerRunning: (sessionId) => containers.isRunning(sessionId),
+      idle: (sessionId) => idle(sessionId),
+      ...(options.watchers?.clock ? { clock: options.watchers.clock } : {})
+    }
   })
 
   // The review loop: a bus subscriber like the proactive manager, created over
@@ -519,6 +541,8 @@ export function createKernel(options: KernelOptions = {}): Kernel {
       for (const task of ws.tasks) allTasks.push({ ws: ws.name, task: task.name })
       // A proactive agent's scope holds sessions too: its template and runs.
       for (const agent of ws.proactive) allTasks.push({ ws: ws.name, task: agent.name })
+      // So does a watcher's: its one session.
+      for (const w of ws.watchers) allTasks.push({ ws: ws.name, task: w.name })
     }
     // Before the scheduler's first pass, same reason as above.
     sessions.loadTaskCaps(
@@ -554,6 +578,9 @@ export function createKernel(options: KernelOptions = {}): Kernel {
     // Before the queue resumes: a run left queued by the previous app life is
     // no run of this one, and must not start with its tools closed.
     await proactive.load(t)
+    // Same reason: attended work waits for the user, the watcher's own wake
+    // turns go on, and nothing drains before this has sorted them (§10).
+    await watchers.load(t)
     // The loops' files, before the scheduler's first pass (§8's boot).
     await reviewLoop.load(allTasks)
     // Replay, deadlines, intents, resume (§8) — before the first pass too, so a
@@ -607,6 +634,7 @@ export function createKernel(options: KernelOptions = {}): Kernel {
     planUsage,
     pii,
     proactive,
+    watchers,
     reviewLoop,
 
     async tree(): Promise<Tree> {
@@ -614,6 +642,7 @@ export function createKernel(options: KernelOptions = {}): Kernel {
       for (const ws of t.workspaces) {
         for (const task of ws.tasks) task.sessions = sessions.listForTask(ws.name, task.name)
         ws.proactive = proactive.views(ws.name)
+        ws.watchers = watchers.views(ws.name)
       }
       return t
     },
@@ -623,6 +652,7 @@ export function createKernel(options: KernelOptions = {}): Kernel {
       // First, while its sessions still exist: an agent's run in progress ends
       // as cancelled, a raised scope frees its refs.
       await proactive.onScopeDeleted(ws, task)
+      watchers.onScopeDeleted(ws, task)
       // Its loops go with it, before the sessions are dropped: a late write
       // would recreate the directory.
       reviewLoop.dropScope(ws, task)
@@ -643,6 +673,7 @@ export function createKernel(options: KernelOptions = {}): Kernel {
         terminals.dropScope(ws)
         sessions.dropWorkspaceSessions(ws)
         proactive.dropWorkspace(ws)
+        watchers.dropWorkspace(ws)
         await store.removeWorkspaceDir(ws)
         bus.emit('tree.changed', undefined)
       })
@@ -671,6 +702,7 @@ export function createKernel(options: KernelOptions = {}): Kernel {
           sessions.renameTask(ws, task, newName)
           if (isAgent) await proactive.onAgentRenamed(ws, task, newName)
           else proactive.onScopeRenamed(ws, task, newName)
+          watchers.onRenamed(ws, task, newName)
           bus.emit('tree.changed', undefined)
         })
       } finally {
@@ -692,8 +724,13 @@ export function createKernel(options: KernelOptions = {}): Kernel {
       const info = sessions.snapshot(sessionId)?.info
       // A reviewer is the review loop's alone (docs/requirements-review-loop.md
       // §4): no edit makes a session one, or turns one into something else.
-      if (patch.role !== undefined && (roleIsLoopOwned(patch.role) || (info && roleIsLoopOwned(sessionRole(info)))))
-        throw new Error('a reviewer is created only by the review loop, and keeps its role')
+      // Nor is a watcher (docs/requirements-watchers.md §4).
+      if (patch.role !== undefined && (roleIsManagerOwned(patch.role) || (info && roleIsManagerOwned(sessionRole(info)))))
+        throw new Error(
+          patch.role === 'watcher' || (info && sessionRole(info) === 'watcher')
+            ? 'a watcher is created only by the Watchers mode, and keeps its role'
+            : 'a reviewer is created only by the review loop, and keeps its role'
+        )
       if (info) await assertDraftTarget(info.workspace, patch.repos ?? [], patch.env, patch.agent)
       // The Review block (§3) belongs to an executor draft and is shaped here;
       // whether it may *start* is `assertReviewBlock`'s, since a half-made block

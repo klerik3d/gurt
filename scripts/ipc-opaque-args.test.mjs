@@ -173,6 +173,13 @@ const SAFE_ARGS = new Set([
   'proactiveCreate',
   'proactiveUpdate',
   'proactiveRunNow',
+  'watcherCreate',
+  'watcherDuplicate',
+  'watcherStart',
+  'watcherStop',
+  'watcherWakeNow',
+  'watcherCheckNow',
+  'watcherCancelWake',
   'envBuildImage',
   // Session and container lifecycle: a session id, sometimes an option id.
   'stopContainer',

@@ -1,6 +1,82 @@
 # Requirements: watchers — one long-lived session that watches an outside process
 
-Status: planned · Target: gurt Electron MVP (this repo)
+Status: **phase 2 (`watch`) is implemented** on top of phase 1: the poller
+(`src/main/watchPoller.ts`), the tool, its pure rules in `src/shared/watchers.ts`,
+the composer row's watch form and Check now; tests in `scripts/watcher-watch.test.mjs`
+(§18 item 9). Phase 2 deviations: a poll's cwd is the first repo, else `/workspaces`
+(there is no `workspaceFolder`); an unconfirmed stop three times sets `attention`
+(error) and notifies `blind`, rather than a separate *failed* status; a watch
+that fires while paused is put back as a due wakeup (its output is not kept); stdout
+used for `changed` is the 4 KiB tail. Not verified against a real container or UI.
+**Phase 3 is partly done: Duplicate** (§14) — `watcherDuplicate`, a button in the
+pane; the copy is `<name>-copy[-N]`, an unstarted draft with the same settings,
+start prompt, MCP, skills, network and agent, and none of the run; test in
+`scripts/watchers.test.mjs`. The cache hint (§13) is done too: `AgentManifest.promptCacheSeconds` (claude-code: 300)
+and a line in a watcher's instructions when the kind states one. Still not done from
+phase 3: start-prompt parameters (§19, undecided: editing the copy's prompt serves),
+drafting by other sessions and proactive agents, operator access, the cache hint for
+other agent kinds. Not verified in the UI.
+Earlier status: **phase 1** was built and shipped (the mode, the role, wakeups, the
+turn contract, caps, Pause / Stop / Re-arm, restart recovery, notifications, the UI).
+Phase 2 (`watch` and its poller, §6) and phase 3 (Duplicate, parameters, drafting by
+other sessions, the cache hint, §14) are **decided out of scope for this work**: they
+stay in this document as the plan, and nothing below should be read as promised by
+the phase 1 release. · Target: gurt Electron MVP (this repo)
+
+> **Release status: experimental. The automated review did not converge.**
+> Phase 1 went through several automated review rounds (4 planned per cycle); every round
+> found further real races in the watcher state machine (wake delivery vs. Stop / Esc /
+> Cancel / limits / restart / config writes), and each was fixed with a test. The last
+> round's findings (Stop between taking a wake and `session/prompt`, queued messages of a
+> finished watcher after a restart, a late limit result after Stop) were fixed but **not
+> re-reviewed**. More findings of the same kind are likely. Ship it as experimental.
+>
+> **Not done:**
+>
+> - Phase 2 (`watch` and its poller, §6) and phase 3 (Duplicate, start-prompt parameters,
+>   drafting by other sessions and proactive agents, operator access, the cache hint,
+>   §13–§14): out of scope by decision.
+> - The Watchers smoke test (§18 item 10).
+> - Tests for: the IPC handlers themselves (`sessionDelete`, `sessionRun`, `sessionEnqueue`
+>   refusals — only the ownership lookup is tested), a Stop during provisioning (covered by
+>   a check, not by a test), a delayed `persistNow` during a Stop, the scheduler pass after
+>   a limit reset, a real restart in the middle of a wake turn, any UI.
+>
+> **Never verified:**
+>
+> - A real agent and Docker: wake turns across an idle container stop and `session/load`
+>   (§18 item 14), `finish_watch` through a live ACP/MCP connection, the container stop
+>   after the turn.
+> - The UI was never opened: `WatcherPane`, `WatcherSidebar`, the composer row, the
+>   Watchers mode wiring in `App.tsx`, the popup / panel / open-a-session lookups.
+> - Remote protocol: its vocabulary was widened (`watcher` notification type and role); no
+>   relay or mobile client has been checked against it.
+>
+> **Known weaknesses:**
+>
+> - The deadline fires up to ~1 s late (the scheduler timer adds a second).
+> - The failed-wake-turn counter (§7) is in memory: it resets on restart, which can grant
+>   one extra retry.
+> - A failed wake write is retried by a one-shot 30 s timer, not by the scheduler's clock.
+> - "Stopped" is checked in several places (`startSession`, `sendTurn`, the drain,
+>   `onLimited`, `recoverWatcher`) rather than in one; a path that was missed would be the
+>   next bug. Centralizing the check is the suggested refactor.
+> - Seven tests fail on the base branch in this environment as well (`env-image-build`,
+>   `proxy-server`), so they say nothing about this change.
+
+Implementation notes — where phase 1 differs from this document:
+
+- Not part of phase 1 (see the status above): `watch` and the poller (§6), Duplicate and
+  the rest of §14, the cache hint of §13 (`AgentManifest.promptCacheSeconds`).
+- Not built: the Watchers smoke test (§18 item 10).
+- Archiving (§2.3): a finished watcher's scope archives whole and restores as a watcher;
+  an active one, a single session of it, and automatic archiving are refused.
+- Tests: `scripts/watchers.test.mjs` covers §18 items 2–8 and 11 for phase 1 (pure rules,
+  the scope and its guards, the tools over HTTP, the timed prompt and its delivery, Pause /
+  Stop / Re-arm, archive and restore, the boot sort by origin). Item 13 is covered for the
+  kernel listing sites; the renderer ones are changed but have no UI test.
+- `NotificationType` gained `watcher` in the remote protocol package too
+  (`packages/remote-protocol`), and `RemoteSessionRole` gained `watcher`.
 
 This document is a work order for an implementing agent. Read
 `architecture.md` first, then `design-proactive-agents.md`: a watcher is built

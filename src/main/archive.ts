@@ -154,6 +154,11 @@ export class ArchiveManager {
       if (!store.taskExists(ws, task)) throw new Error('Scope no longer exists')
       const config = await store.getTask(ws, task)
       if (config.proactive) throw new Error('Proactive agents cannot be archived')
+      // A finished watcher archives whole (docs/requirements-watchers.md §2.3).
+      if (config.watcher) {
+        if (automatic) throw new Error('Watchers are not auto-archived')
+        if (!this.kernel.sessions.listForTask(ws, task)[0]?.watcher?.end) throw new Error('A watcher can be archived once it has finished')
+      }
       return this.kernel.sessions.withTaskFrozen(ws, task, () =>
         this.kernel.terminals.withScopeBlocked(ws, task, () => withTaskChangesPaused(ws, task, async () => {
           if (this.kernel.reviewLoop.live(ws, task))
@@ -201,6 +206,7 @@ export class ArchiveManager {
             await syncDirectory(store.wsDir(ws))
             await syncDirectory(root())
             await this.kernel.proactive.onScopeDeleted(ws, task)
+            this.kernel.watchers.onScopeDeleted(ws, task)
             await store.rmTree(retired).catch((e: unknown) => log.warn('archive.cleanup.fail', { err: e }))
             this.kernel.bus.emit('tree.changed', undefined)
             return meta
@@ -230,6 +236,7 @@ export class ArchiveManager {
       const { workspace: ws, task } = info
       this.protect(ws, task)
       if ((await store.getTask(ws, task)).proactive) throw new Error('Proactive runs cannot be archived separately')
+      if ((await store.getTask(ws, task)).watcher) throw new Error('A watcher cannot be archived')
       return this.kernel.sessions.withTaskFrozen(ws, task, async () => {
         if (this.kernel.reviewLoop.live(ws, task))
           throw new Error('A review loop is running in this scope; stop it or wait for it to end before archiving')
@@ -345,6 +352,7 @@ export class ArchiveManager {
         for (const r of stored) restored.push({ ...r, log: await store.readSessionLog(ws, task, r.info.id) })
         this.kernel.sessions.restore(restored)
         this.kernel.sessions.setTaskCap(ws, task, (await store.getTask(ws, task)).maxConcurrentSessions)
+        await this.kernel.watchers.adopt(ws, task)
         await syncDirectory(store.wsDir(ws))
         // The restored scope is durable before the compressed copy is removed.
         await this.removeFiles(id)

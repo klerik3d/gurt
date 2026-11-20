@@ -8,6 +8,7 @@ import {
   roleDraftsCrossTask,
   roleHasTurnContract,
   roleIsLoopOwned,
+  roleIsManagerOwned,
   roleReadsAdmin,
   sanitizeSessionNetwork,
   sessionRole,
@@ -59,6 +60,7 @@ import {
   type ModeWords,
   type Vocabulary
 } from '../shared/agentVocabulary'
+import { agentDef } from '../shared/agents'
 import type { CreateAction, SessionDraftPatch } from '../shared/api'
 import { taskKey } from '../shared/keys'
 import { sanitizeSkillSelection } from '../shared/skills'
@@ -69,7 +71,26 @@ import { isLimitReply, limitResetAt, turnOutcome, usageFields } from '../shared/
 import { formatResetAt, type PlanHold } from '../shared/planUsage'
 import { agentMain } from './agentPlugins'
 import type { Bus } from './bus'
-import type { AdminHooks, ProactiveHooks } from './mcp/gurtServer'
+import type { AdminHooks, ProactiveHooks, WatcherToolHooks } from './mcp/gurtServer'
+import {
+  WATCHER_FINAL_NUDGE_PROMPT,
+  WATCHER_NUDGE_PROMPT,
+  deadlineText,
+  isWakeOrigin,
+  prefaceFor,
+  wakeTaken,
+  wakeText,
+  watcherActive,
+  watcherTurnSatisfied,
+  type PendingWake,
+  type WakeLate,
+  type WakeOrigin,
+  type WatcherConfig,
+  type WatcherLevel,
+  type WatcherState,
+  watchWakeText,
+  withoutWatch
+} from '../shared/watchers'
 import type { ContainerStatusReason, SessionStateReason } from '../shared/events'
 import type { LaunchContext } from './containers'
 import type { PiiMask } from './pii'
@@ -317,8 +338,11 @@ interface PendingPrompt {
   auto?: boolean | undefined
   /** Set on the review loop's host messages (`hostPrompt`): the id of the
    *  intent that decided them (docs/requirements-review-loop.md §5.5). */
-  origin?: { loop: string } | undefined
+  origin?: { loop: string } | { limit: true; of: 'wake' | 'user' } | WakeOrigin | undefined
 }
+
+/** The loop intent of a prompt's origin, if it is a loop's host message. */
+const loopOf = (o: PendingPrompt['origin']): string | undefined => (o && 'loop' in o ? o.loop : undefined)
 
 /**
  * What the review loop's controller tells the session manager
@@ -343,6 +367,19 @@ export interface LoopHooks {
   /** A loop of this scope has not ended, or has ended and not yet notified
    *  (§5.6): the scope and its sessions are not archived meanwhile. */
   live(workspace: string, task: string): boolean
+}
+
+/**
+ * What the watcher manager tells the session manager (docs/requirements-
+ * watchers.md §5.1): the settings of a managed watcher, and who hears of the
+ * host's own decisions. With no hooks registered, the manager behaves exactly
+ * as it did before watchers existed.
+ */
+export interface WatcherHooks {
+  /** The settings of this session's watcher; undefined = not a managed one. */
+  config(sessionId: string): WatcherConfig | undefined
+  /** The host ended the watcher (`expired`) or it went blind: tell the user. */
+  notify(sessionId: string, level: WatcherLevel, text: string, reason: 'expired' | 'blind'): void
 }
 
 /** What an interrupted session sends once its limit resets. */
@@ -450,6 +487,29 @@ interface Session {
    *  never sent twice. Replaced by the next prompt the drain takes (typed
    *  ones clear it); persisted. */
   loopRan?: string | undefined
+  /** Where the turn in flight came from (docs/requirements-watchers.md §10):
+   *  persisted beside `interrupted`, like `loopRan`. */
+  ranOrigin?: 'wake' | 'user' | undefined
+  /** A watcher recovered at boot with approved work only: the manager resumes
+   *  it by itself, so it stays out of the Resume-sessions checklist. */
+  resumeOnBoot?: boolean | undefined
+  /** When the turn in flight started (watchers: a cancelled turn's own
+   *  schedule is dropped, §5.3) and when the user last pressed Esc. */
+  turnStartedAt?: number | undefined
+  cancelledAt?: number | undefined
+  /** Failed wake turns in a row (§7), and the note of the wake in flight. */
+  wakeFailures?: number | undefined
+  wakeNote?: string | undefined
+  /** The turn in flight is the watcher's own work (a wake or the start prompt):
+   *  a Stop that lands before its `session/prompt` is out cancels it (§3). */
+  turnGuard?: boolean | undefined
+  guardStart?: boolean | undefined
+  /** The wake prompt whose queueing write is still in flight. */
+  wakeWriting?: PendingPrompt | undefined
+  /** Why a due wake is held right now (the late-wake wording, §5.2). */
+  wakeHeld?: WakeLate | undefined
+  /** A watch's poll is in flight (§6.1): no turn starts until it ends. */
+  polling?: boolean | undefined
   modes?: SessionModes | undefined
   plan?: SessionSnapshot['plan'] | undefined
   commands?: SessionSnapshot['commands'] | undefined
@@ -503,7 +563,7 @@ const pendingInfo = (p: PendingPrompt): PendingPromptInfo => ({
   ...(p.context?.length ? { context: p.context } : {}),
   ...(p.images?.length ? { images: p.images.length } : {}),
   ...(p.auto ? { auto: true } : {}),
-  ...(p.origin ? { loop: p.origin.loop } : {})
+  ...(loopOf(p.origin) ? { loop: loopOf(p.origin)! } : {})
 })
 
 /** Capabilities the session manager needs from the container/mcp/store layers.
@@ -551,12 +611,16 @@ export interface SessionEvents {
       admin?: AdminHooks
       /** Present only for a proactive run (docs/design-proactive-agents.md §4). */
       proactive?: ProactiveHooks
+      /** Present only for a watcher (docs/requirements-watchers.md §4). */
+      watcher?: WatcherToolHooks
     }
   ) => Promise<AcpHttpMcpServer>
   /** A proactive run's tools, bound by the session manager to the run's own
    *  workspace, agent (= its scope) and session id — never to anything the
    *  agent says. */
   proactiveFor: (ws: string, agent: string, sessionId: string) => ProactiveHooks
+  /** A watcher's tools, bound to its own workspace, scope and session id. */
+  watcherFor: (ws: string, task: string, sessionId: string) => WatcherToolHooks
   /** The admin surface for one operator session — the workspace binding of
    *  docs/requirements-session-operator.md §3.2: the session manager passes
    *  its own workspace and id, never anything the agent said. The id is the
@@ -676,11 +740,19 @@ export const REVIEWER_NUDGE_PROMPT =
 /** The terminal tool of a role's turn contract (see `roleHasTurnContract`) —
  *  what its nudge asks for and its `incomplete` line names. */
 export const contractToolFor = (role: SessionRole): string =>
-  role === 'proactive' ? 'finish_run' : role === 'reviewer' ? 'submit_review' : 'complete'
+  role === 'proactive' ? 'finish_run' : role === 'reviewer' ? 'submit_review' : role === 'watcher' ? 'wake_me / watch / finish_watch' : 'complete'
 
 /** The nudge for a role's turn contract. */
-export const nudgePromptFor = (role: SessionRole): string =>
-  role === 'proactive' ? PROACTIVE_NUDGE_PROMPT : role === 'reviewer' ? REVIEWER_NUDGE_PROMPT : NUDGE_PROMPT
+export const nudgePromptFor = (role: SessionRole, final = false): string =>
+  role === 'proactive'
+    ? PROACTIVE_NUDGE_PROMPT
+    : role === 'reviewer'
+      ? REVIEWER_NUDGE_PROMPT
+      : role === 'watcher'
+        ? final
+          ? WATCHER_FINAL_NUDGE_PROMPT
+          : WATCHER_NUDGE_PROMPT
+        : NUDGE_PROMPT
 
 /** What a draft takes from whoever asks for it when the request says nothing
  *  — the spawning session for `create_session`, the template for a proactive
@@ -794,6 +866,8 @@ function assertNotTemplate(info: SessionInfo): void {
 function assertNotLoopOwned(info: SessionInfo): void {
   if (roleIsLoopOwned(sessionRole(info)))
     throw new Error("this is a review loop's reviewer — only the loop creates one, so it cannot be duplicated or recreated")
+  if (roleIsManagerOwned(sessionRole(info)))
+    throw new Error('this is a watcher — only the Watchers mode creates one, so it cannot be duplicated or recreated')
 }
 
 /**
@@ -907,6 +981,9 @@ export class SessionManager {
   private limitTimer: NodeJS.Timeout | undefined
   /** The review loop's controller, once it registers (`setLoopHooks`). */
   private loopHooks: LoopHooks | undefined
+  /** The watcher manager, once it registers (`setWatcherHooks`). */
+  private watcherHooks: WatcherHooks | undefined
+  private readonly bootAt = Date.now()
   /** Executors the review loop holds (docs/requirements-review-loop.md §5.5):
    *  runtime only — the controller places them again at boot, before the
    *  scheduler's first pass. */
@@ -975,6 +1052,7 @@ export class SessionManager {
         turns: 0,
         lastSettled: r.lastSettled,
         loopRan: r.loopRan,
+        ranOrigin: r.ranOrigin,
         turnSeq: turnSeqOf(r.lastSettled?.turnId),
         attached: false,
         loading: false,
@@ -985,7 +1063,7 @@ export class SessionManager {
       // Legacy records did not persist queued automatic continuations.
       const restored = this.sessions.get(r.info.id)!
       if (r.info.state === 'started' && r.info.limitedUntil && !restored.pending.length) {
-        restored.pending.push({ id: `p${++this.pendingSeq}`, queuedAt: r.info.lastActivityAt ?? '', text: LIMIT_CONTINUE_PROMPT, auto: true })
+        restored.pending.push({ id: `p${++this.pendingSeq}`, queuedAt: r.info.lastActivityAt ?? '', text: LIMIT_CONTINUE_PROMPT, auto: true, ...(r.info.role === 'watcher' ? { origin: { limit: true as const, of: r.ranOrigin === 'wake' ? 'wake' as const : 'user' as const } } : {}) })
       }
     }
   }
@@ -996,6 +1074,13 @@ export class SessionManager {
       this.agentConfigs.set(id, cfg)
       this.agentConfigWritten.set(id, JSON.stringify(cfg))
     }
+  }
+
+  /** The session's agent kind's prompt-cache lifetime, if its manifest states one. */
+  private cacheHint(s: Session): { cacheSeconds?: number } {
+    const kind = this.agentKinds.get(s.info.agent ?? '')
+    const seconds = kind ? agentDef(kind)?.promptCacheSeconds : undefined
+    return seconds ? { cacheSeconds: seconds } : {}
   }
 
   /** How this session's agent words its modes, tool titles and limit
@@ -1054,6 +1139,11 @@ export class SessionManager {
   /** Register the loop's controller (or drop it with `undefined`). */
   setLoopHooks(hooks: LoopHooks | undefined): void {
     this.loopHooks = hooks
+  }
+
+  /** Register the watcher manager (or drop it with `undefined`). */
+  setWatcherHooks(hooks: WatcherHooks | undefined): void {
+    this.watcherHooks = hooks
   }
 
   /** The loop owns this session (its executor or reviewer, loop not ended). */
@@ -1150,7 +1240,7 @@ export class SessionManager {
     const s = this.sessions.get(sessionId)
     if (!s) return false
     return (
-      s.pending.some((p) => p.origin?.loop === intent) ||
+      s.pending.some((p) => loopOf(p.origin) === intent) ||
       s.loopRan === intent ||
       s.entries.some((e) => e.kind === 'system' && e.loop === intent)
     )
@@ -1163,7 +1253,7 @@ export class SessionManager {
     const s = this.sessions.get(sessionId)
     if (!s) return 0
     const before = s.pending.length
-    s.pending = s.pending.filter((p) => p.origin === undefined)
+    s.pending = s.pending.filter((p) => !(p.origin && 'loop' in p.origin))
     const n = before - s.pending.length
     if (n) {
       this.schedulePersist(s.ref)
@@ -1186,12 +1276,17 @@ export class SessionManager {
    * the clock for the case nothing new arrives — a reset passing in silence.
    * A hold with no end is re-checked every minute.
    */
-  private armLimitTimer(holds: PlanHold[]): void {
+  private armLimitTimer(holds: PlanHold[], instants: number[] = []): void {
     clearTimeout(this.limitTimer)
     this.limitTimer = undefined
-    if (!holds.length) return
+    if (!holds.length && !instants.length) return
     const now = Date.now()
-    const due = Math.min(...holds.map((h) => (h.until ? Date.parse(h.until) - now : 60_000)))
+    // The wake and deadline instants of watchers are the same clock (§5.1):
+    // only future ones — a due-but-held item is the hold's business.
+    const due = Math.min(
+      ...holds.map((h) => (h.until ? Date.parse(h.until) - now : 60_000)),
+      ...instants.filter((t) => t > now).map((t) => t - now)
+    )
     this.limitTimer = setTimeout(() => this.schedule(), Math.min(5 * 60_000, Math.max(1_000, due + 1_000)))
     this.limitTimer.unref?.()
   }
@@ -1830,6 +1925,8 @@ export class SessionManager {
   branchSession(sessionId: string, entryId: number): SessionInfo {
     const source = this.sessions.get(sessionId)
     if (!source) throw new Error('unknown session')
+    // A watcher is its scope's one session (docs/requirements-watchers.md §4).
+    assertNotLoopOwned(source.info)
     const target = source.entries.find((e) => e.id === entryId)
     if (!target || target.kind !== 'user') throw new Error('a session can only be branched at a message of yours')
     const info = this.draftFrom(source.info)
@@ -2014,7 +2111,332 @@ export class SessionManager {
       // The pane may be showing a limit wait that just ended.
       this.bus.emit('session.changed', { sessionId: id })
     }
-    this.armLimitTimer(holds)
+    const instants = this.wakePass(holds)
+    this.armLimitTimer(holds, instants)
+  }
+
+  // --- watchers (docs/requirements-watchers.md §5) ---------------------------
+
+  /** Why a due wake cannot be sent right now, if it cannot (§5.2). */
+  private wakeBlock(s: Session): { why: WakeLate; hold?: PlanHold } | undefined {
+    if (s.info.state !== 'started') return { why: 'busy' }
+    if (s.recovering) return { why: 'busy' }
+    const hold = this.limitHold(s)
+    if (hold) return { why: { hold: hold.until ? formatResetAt(hold.until, Date.now()) : 'the next usage read' }, hold }
+    if (
+      s.pending.length ||
+      s.busy ||
+      s.draining ||
+      s.promptRunning ||
+      s.nudgePending ||
+      s.loading ||
+      s.recoveryStarting ||
+      s.polling
+    )
+      return { why: 'busy' }
+    return undefined
+  }
+
+  /**
+   * May the watcher's poller run a poll now (§6.1)? Never while a turn runs or
+   * is about to (a poll that overran would stop the container under it), while
+   * recovering, or while a wake is going out. A plan hold does not stop it:
+   * polls cost no tokens (§5.4), so whatever waits behind the hold does not
+   * count as "about to run".
+   */
+  canPoll(sessionId: string): boolean {
+    const s = this.sessions.get(sessionId)
+    if (!s || s.info.state !== 'started' || s.recovering || s.polling) return false
+    if (s.busy || s.draining || s.promptRunning || s.nudgePending || s.loading || s.recoveryStarting) return false
+    if (s.pending.length && !this.limitHold(s)) return false
+    return true
+  }
+
+  /** The poller's poll starts or ends. A prompt that arrived during one is
+   *  sent when it ends (§6.1). */
+  setPolling(sessionId: string, polling: boolean): void {
+    const s = this.sessions.get(sessionId)
+    if (!s || !!s.polling === polling) return
+    s.polling = polling || undefined
+    this.bus.emit('session.changed', { sessionId })
+    if (!polling) {
+      void this.drainPending(s)
+      this.schedule()
+    }
+  }
+
+  /**
+   * The wake half of the scheduler pass: a watcher whose wakeup or deadline is
+   * due gets its message queued — only when it could be sent now, in one write
+   * with the clearing of `wake` — and the instants still ahead go to the one
+   * timer. Holds that keep a due wake waiting feed the same timer.
+   */
+  private wakePass(holds: PlanHold[]): number[] {
+    const hooks = this.watcherHooks
+    const instants: number[] = []
+    if (!hooks) return instants
+    const now = Date.now()
+    for (const s of this.sessions.values()) {
+      const w = s.info.watcher
+      if (!watcherActive(w) || w.final) continue
+      const cfg = hooks.config(s.info.id)
+      if (!cfg?.wakeups) continue
+      const deadline = Date.parse(w.deadlineAt)
+      const wakeAt = s.info.wake ? Date.parse(s.info.wake.at) : undefined
+      const deadlineDue = deadline <= now
+      const wakeDue = wakeAt !== undefined && wakeAt <= now
+      // A watch that fired is a due wake whose message is not written yet (§5.4).
+      const fired = w.watch?.fired
+      if (!deadlineDue) instants.push(deadline)
+      if (wakeAt !== undefined && !wakeDue) instants.push(wakeAt)
+      if (!deadlineDue && !wakeDue && !fired) continue
+      if (s.pending.some((p) => isWakeOrigin(p.origin) && p.origin.final)) continue
+      const block = this.wakeBlock(s)
+      if (block) {
+        s.wakeHeld = block.why
+        if (block.hold) holds.push(block.hold)
+        continue
+      }
+      let origin: WakeOrigin
+      let text: string
+      if (deadlineDue) {
+        // The deadline wins: the wakeup is dropped, one final wake goes out.
+        origin = { wake: now.toString(), final: 'deadline' }
+        text = deadlineText(w.deadlineAt, now)
+      } else if (!wakeDue && fired && w.watch) {
+        const watch = w.watch
+        const last = w.wakeups + 1 >= cfg.maxWakeups
+        const late: WakeLate = Date.parse(fired.at) < this.bootAt ? 'restart' : s.wakeHeld ?? 'busy'
+        // `at` / `note` are what Pause puts back as the wakeup (§3): due at once.
+        origin = {
+          wake: watch.setAt,
+          at: fired.at,
+          note: `(watch ${fired.reason}) ${watch.note ?? ''}`.trim(),
+          ...(last ? { final: 'max-wakeups' as const } : {})
+        }
+        text = watchWakeText({ watch, fired, wakeups: w.wakeups, maxWakeups: cfg.maxWakeups, deadlineAt: w.deadlineAt, now, late })
+      } else {
+        const wake = s.info.wake!
+        const last = w.wakeups + 1 >= cfg.maxWakeups
+        const late: WakeLate =
+          wakeAt! < this.bootAt ? 'restart' : s.wakeHeld ?? 'busy'
+        origin = { wake: wake.setAt, at: wake.at, note: wake.note, ...(last ? { final: 'max-wakeups' as const } : {}) }
+        text = wakeText({ wake, wakeups: w.wakeups, maxWakeups: cfg.maxWakeups, deadlineAt: w.deadlineAt, now, late })
+      }
+      s.wakeHeld = undefined
+      // Captured before it is cleared: a failed write restores it. The watch
+      // goes with it: its output rides in the message (or the deadline ends it).
+      const wasWake = s.info.wake
+      const wasWatch = w.watch
+      s.info.wake = undefined
+      if (wasWatch) s.info.watcher = withoutWatch(w)
+      const prompt: PendingPrompt = { id: `p${++this.pendingSeq}`, queuedAt: new Date(now).toISOString(), text, auto: true, origin }
+      s.wakeWriting = prompt
+      s.pending.push(prompt)
+      this.push(s, { kind: 'system', text })
+      this.bus.emit('session.changed', { sessionId: s.info.id })
+      // One write for the queued message and the cleared wakeup (§5.1); the
+      // wake is delivered only once it is on disk. A failed write puts the
+      // wakeup back and withdraws the prompt, so the next pass retries it and
+      // a restart cannot find the old wake after it ran.
+      void this.persistNow(s).then(
+        () => {
+          // Only this write's own barrier: a newer wake may have set its own.
+          if (s.wakeWriting === prompt) s.wakeWriting = undefined
+          return this.drainPending(s)
+        },
+        (e: unknown) => {
+          log.error('internal.fail', { site: 'wake-persist', s: s.info.id, err: e })
+          if (s.wakeWriting === prompt) s.wakeWriting = undefined
+          // Only a transfer that still owns its prompt restores the wakeup: a
+          // Cancel / Esc during the write already withdrew both (§5.3).
+          const owned = s.pending.includes(prompt)
+          s.pending = s.pending.filter((p) => p !== prompt)
+          if (owned && !s.info.wake && !deadlineDue) s.info.wake = wasWake
+          const cur = s.info.watcher
+          if (owned && wasWatch && !deadlineDue && watcherActive(cur) && !cur.watch && !s.info.wake)
+            s.info.watcher = { ...cur, watch: wasWatch }
+          this.bus.emit('session.changed', { sessionId: s.info.id })
+          // Whatever was typed meanwhile goes now; the wake is retried later
+          // (bounded: one try per 30 s, not a spin).
+          void this.drainPending(s)
+          setTimeout(() => this.schedule(), 30_000).unref?.()
+        }
+      )
+    }
+    return instants
+  }
+
+  /** A watcher's own turn (a wake, the start prompt) is not sent once it has
+   *  been stopped — `session/cancel` has nothing to cancel before the request
+   *  went out (§3). Typed turns of a finished watcher are allowed. */
+  private assertNotStopped(s: Session): void {
+    if (s.turnGuard && s.info.watcher?.end) throw new Error('the watcher was stopped')
+  }
+
+  /** The wake prompts this session has queued, final ones included. */
+  private queuedWakes(s: Session): PendingPrompt[] {
+    return s.pending.filter((p) => isWakeOrigin(p.origin))
+  }
+
+  /** Watcher paused: no unattended turn of any kind (§3). */
+  private watcherPaused(s: Session): boolean {
+    if (!watcherActive(s.info.watcher)) return false
+    const cfg = this.watcherHooks?.config(s.info.id)
+    return !!cfg && !cfg.wakeups
+  }
+
+  /** A queued prompt that is the watcher's own unattended work. */
+  private isWakeWork(p: PendingPrompt): boolean {
+    return isWakeOrigin(p.origin) || (!!p.origin && 'limit' in p.origin && p.origin.of === 'wake')
+  }
+
+  /**
+   * Pause (§3): wake-origin work already queued is held. A queued `{ wake }`
+   * goes back into `wake`, uncounted; a deadline wake is dropped (the
+   * deadline is still due and Resume queues it again); a wake-origin limit
+   * `continue` stays, and the drain skips it while paused.
+   */
+  holdWakes(sessionId: string): void {
+    const s = this.sessions.get(sessionId)
+    if (!s) return
+    const kept: PendingPrompt[] = []
+    for (const p of s.pending) {
+      if (!isWakeOrigin(p.origin)) {
+        kept.push(p)
+        continue
+      }
+      if (p.origin.final === 'deadline') continue
+      if (!s.info.wake && p.origin.at)
+        s.info.wake = { at: p.origin.at, note: p.origin.note ?? '', setAt: p.origin.wake }
+    }
+    s.pending = kept
+    this.schedulePersist(s.ref)
+    this.bus.emit('session.changed', { sessionId })
+    this.schedule()
+  }
+
+  /** Apply a change to a watcher's session record: its state and wakeup. */
+  patchWatcher(
+    sessionId: string,
+    patch: { watcher?: WatcherState | undefined; wake?: PendingWake | undefined },
+    opts: { persist?: boolean } = {}
+  ): void {
+    const s = this.sessions.get(sessionId)
+    if (!s) throw new Error('unknown session')
+    if ('watcher' in patch) s.info.watcher = patch.watcher
+    if ('wake' in patch) s.info.wake = patch.wake
+    if (opts.persist !== false) this.schedulePersist(s.ref)
+    this.bus.emit('session.changed', { sessionId })
+    this.schedule()
+  }
+
+  /** Wake now (§5.3): the wakeup is due this instant; the pass gates it. */
+  wakeNow(sessionId: string): void {
+    const s = this.sessions.get(sessionId)
+    const w = s?.info.watcher
+    if (!s || !watcherActive(w)) throw new Error('this watcher is not active')
+    if (w.final) throw new Error('only finish_watch is left')
+    if (this.watcherPaused(s)) throw new Error('paused — resume it first')
+    if (this.queuedWakes(s).length) return
+    const now = new Date().toISOString()
+    if (w.watch && !s.info.wake) {
+      // Ends the watch and wakes the agent with its last output (§5.3).
+      if (!w.watch.fired)
+        s.info.watcher = { ...w, watch: { ...w.watch, fired: { at: now, reason: 'user', out: w.watch.last?.out ?? '' } } }
+      this.schedulePersist(s.ref)
+      this.bus.emit('session.changed', { sessionId })
+      this.schedule()
+      return
+    }
+    s.info.wake = { at: now, note: s.info.wake?.note ?? '(woken by you)', setAt: s.info.wake?.setAt ?? now }
+    this.schedulePersist(s.ref)
+    this.schedule()
+  }
+
+  /** End a watcher (§3, §7, §8): drops the wakeup and every queued wake. */
+  endWatcher(sessionId: string, end: NonNullable<WatcherState['end']>): void {
+    const s = this.sessions.get(sessionId)
+    const w = s?.info.watcher
+    if (!s || !w || w.end) return
+    s.info.watcher = { ...withoutWatch(w), end }
+    s.info.wake = undefined
+    s.pending = s.pending.filter((p) => !this.isWakeWork(p))
+    s.info.limitedUntil = s.pending.some((p) => p.auto) ? s.info.limitedUntil : undefined
+    this.push(s, { kind: 'system', text: `watcher finished · ${end.outcome} — ${end.summary}` })
+    this.schedulePersist(s.ref)
+    this.bus.emit('session.changed', { sessionId })
+    this.bus.emit('tree.changed', undefined)
+    this.schedule()
+  }
+
+  /** Sort a restored watcher's work by origin (§10) — called by the watcher
+   *  manager before the first scheduler pass. Attended work waits in the
+   *  Resume-sessions checklist; only the watcher's own wake turns go on. */
+  recoverWatcher(sessionId: string, paused: boolean): boolean {
+    const s = this.sessions.get(sessionId)
+    if (!s || !s.info.watcher || s.info.state !== 'started') return false
+    if (!watcherActive(s.info.watcher)) {
+      // A finished watcher can still be talked to: what was typed before the
+      // restart is attended work and waits for the user too (§10).
+      if (s.pending.length || s.interrupted) s.recovering = true
+      return false
+    }
+    const attended =
+      s.pending.some((p) => !this.isWakeWork(p)) || (!!s.interrupted && s.ranOrigin !== 'wake')
+    if (paused || attended) {
+      s.recovering = !!s.interrupted || attended || undefined
+      return false
+    }
+    // Approved work only: the manager resumes it itself.
+    if (!s.interrupted) return false
+    s.recovering = true
+    s.resumeOnBoot = true
+    return true
+  }
+
+  /** The watcher's turn failed (§7): retry once at the minimum delay, then
+   *  go loud. Only for a turn that came from a wake. */
+  private onWakeFailed(s: Session, reason: string): void {
+    const w = s.info.watcher
+    const cfg = this.watcherHooks?.config(s.info.id)
+    if (!watcherActive(w) || !cfg) return
+    if (w.final) {
+      this.endWatcher(s.info.id, { outcome: 'expired', summary: `the final turn failed: ${reason}`, at: new Date().toISOString(), by: 'host' })
+      this.watcherHooks?.notify(s.info.id, 'error', `watcher expired — the final turn failed: ${reason}`, 'expired')
+      return
+    }
+    s.wakeFailures = (s.wakeFailures ?? 0) + 1
+    if (s.wakeFailures === 1) {
+      if (s.info.wake) return
+      const at = new Date(Date.now() + cfg.minDelayMinutes * 60_000).toISOString()
+      s.info.wake = { at, setAt: new Date().toISOString(), note: `(retrying after a failed turn: ${reason}) ${s.wakeNote ?? ''}`.trim() }
+      this.push(s, { kind: 'system', text: `wake turn failed (${reason}) — retrying at ${formatResetAt(at, Date.now())}` })
+      this.schedulePersist(s.ref)
+      return
+    }
+    const text = `wake turns are failing: ${reason}`
+    s.info.watcher = { ...w, attention: { level: 'error', text, at: new Date().toISOString() } }
+    this.watcherHooks?.notify(s.info.id, 'error', text, 'blind')
+    this.schedulePersist(s.ref)
+  }
+
+  /** The nudge turn still scheduled nothing (§7): gone blind, or — after the
+   *  final wake — ended by the host. */
+  private onWatcherIncomplete(s: Session): void {
+    const w = s.info.watcher
+    if (!watcherActive(w)) return
+    const now = new Date().toISOString()
+    if (w.final) {
+      const last = [...s.entries].reverse().find((e) => e.kind === 'agent')
+      const summary = (last && 'text' in last ? last.text : 'no report').slice(0, 500) || 'no report'
+      this.endWatcher(s.info.id, { outcome: 'expired', summary, at: now, by: 'host' })
+      this.watcherHooks?.notify(s.info.id, 'warning', `watcher expired without a conclusion — ${summary}`, 'expired')
+      return
+    }
+    const text = 'stopped without scheduling its next look'
+    s.info.watcher = { ...w, attention: { level: 'warning', text, at: now } }
+    this.watcherHooks?.notify(s.info.id, 'warning', text, 'blind')
   }
 
   /**
@@ -2419,6 +2841,14 @@ export class SessionManager {
   private async startSession(sessionId: string, by: 'user' | 'scheduler'): Promise<void> {
     const s = this.sessions.get(sessionId)
     if (!s || s.info.state === 'starting' || s.info.state === 'started') return
+    // A watcher stopped while it waited in the queue never starts (§3).
+    if (s.info.role === 'watcher' && s.info.watcher?.end) {
+      s.info.state = 'draft'
+      s.info.queuedAt = undefined
+      this.bus.emit('tree.changed', undefined)
+      this.emitState(s, by)
+      return
+    }
     this.bus.emit('session.activity', { sessionId: s.info.id })
     s.info.state = 'starting'
     s.info.queuedAt = undefined
@@ -2480,6 +2910,12 @@ export class SessionManager {
       this.schedulePersist(s.ref)
       const startImages = s.startImages
       s.startImages = undefined
+      if (s.info.role === 'watcher') {
+        // Stopped while it was starting: the start prompt is never sent (§3).
+        if (s.info.watcher?.end) return
+        s.ranOrigin = 'user'
+        s.guardStart = true
+      }
       await this.runPrompt(s, s.info.startPrompt, undefined, startImages)
     } catch (e) {
       // Deleted while the start was in flight (the user saw the misconfigured
@@ -2614,6 +3050,7 @@ export class SessionManager {
         proposal: s.proposal,
         ...(s.lastSettled ? { lastSettled: structuredClone(s.lastSettled) } : {}),
         ...(s.loopRan ? { loopRan: s.loopRan } : {}),
+        ...(s.ranOrigin ? { ranOrigin: s.ranOrigin } : {}),
         interrupted: s.interrupted,
         pending: structuredClone(s.pending)
       }
@@ -2681,7 +3118,8 @@ export class SessionManager {
     if (this.loopHooks?.live(ws, task) === true) return true
     return this.sessionsFor(ws, task).some((s) => s.busy || s.draining || s.loading || s.promptRunning ||
       s.pendingPermissions.size > 0 || s.pending.length > 0 || s.recovering ||
-      s.info.state === 'starting' || s.info.state === 'queued' || !!s.info.limitedUntil || !!s.startImages?.length)
+      s.info.state === 'starting' || s.info.state === 'queued' || !!s.info.limitedUntil || !!s.startImages?.length ||
+      watcherActive(s.info.watcher))
   }
 
   /** Archive retirement preserves the log/history until the archive is verified. */
@@ -2713,7 +3151,7 @@ export class SessionManager {
   interruptedSessions(): InterruptedSession[] {
     // A loop's sessions are resumed by its controller (docs/requirements-review-
     // loop.md §8): enabling the loop was the approval, so no modal asks again.
-    return [...this.sessions.values()].filter((s) => s.recovering && s.info.state === 'started' && !this.loopOwned(s))
+    return [...this.sessions.values()].filter((s) => s.recovering && s.info.state === 'started' && !this.loopOwned(s) && !s.resumeOnBoot)
       .map(({ info }) => ({ id: info.id, title: info.title, workspace: info.workspace, task: info.task }))
   }
 
@@ -2731,11 +3169,16 @@ export class SessionManager {
     s.recoveryStarting = true
     const previous = [...s.pending]
     const wasInterrupted = s.interrupted
+    // The manager's own resume of an approved wake turn stays that (§10); a
+    // person's Resume in the checklist makes it attended work.
+    const keepsWake = s.resumeOnBoot && s.info.role === 'watcher' && s.ranOrigin === 'wake' && !this.watcherPaused(s)
+    s.resumeOnBoot = undefined
     try {
       if (s.interrupted) {
         s.pending.unshift({
           id: `p${++this.pendingSeq}`,
           auto: true,
+          ...(keepsWake ? { origin: { limit: true as const, of: 'wake' as const } } : {}),
           queuedAt: s.pending[0]?.queuedAt ?? new Date().toISOString(),
           text: 'The application restarted during your previous turn. Resume the unfinished task using the existing conversation. First inspect the current state: actions may already have completed. Do not repeat completed actions. Request any necessary permissions again.'
         })
@@ -3228,10 +3671,13 @@ export class SessionManager {
     }
     try {
       if (maskError) throw maskError
+      this.assertNotStopped(s)
       const conn = await this.attach(s)
       // A review-loop host message lands as a `system` entry — not a rewind point.
       if (promptEntry.kind === 'user') await this.events.snapshotCheckpoint?.(s.info, promptEntry.id)
       const preface = s.preface
+      // Everything above was asynchronous: a Stop may have landed meanwhile.
+      this.assertNotStopped(s)
       const result = await conn.peer.request(
         'session/prompt',
         {
@@ -3318,9 +3764,12 @@ export class SessionManager {
     return postTurnDecision({
       ...outcome,
       limited: !!outcome.limit,
-      turnComplete: s.turnComplete,
+      // A watcher's contract is its state, not a tool call of this turn (§7).
+      turnComplete: s.info.role === 'watcher' ? watcherTurnSatisfied(s.info, Date.now()) : s.turnComplete,
       isNudge,
-      hasContract: roleHasTurnContract(sessionRole(s.info))
+      hasContract:
+        roleHasTurnContract(sessionRole(s.info)) &&
+        (sessionRole(s.info) !== 'watcher' || watcherActive(s.info.watcher))
     })
   }
 
@@ -3378,6 +3827,13 @@ export class SessionManager {
       this.limitHold(s)?.until ??
       new Date(now + limitBackoffMs(s.limitStrikes)).toISOString()
     if (s.info.agent) this.bus.emit('agent.limited', { agent: s.info.agent, until })
+    // A turn the user stopped (the watcher ended during it) is not continued: the
+    // account's hold above stays, the automatic `continue` does not come back.
+    const ended = s.info.watcher?.end
+    if (ended && s.turnStartedAt !== undefined && Date.parse(ended.at) >= s.turnStartedAt) {
+      this.push(s, { kind: 'system', text: `limit reached — not continued, the watcher was stopped (resets ${formatResetAt(until, now)})` })
+      return until
+    }
     // A proactive run is not continued after the reset: its turn has ended, and
     // with it the run and its tools. The account hold above still applies; the
     // agent's next scheduled run starts once the queue lets it.
@@ -3387,7 +3843,15 @@ export class SessionManager {
     }
     s.info.limitedUntil = until
     if (!s.pending.length)
-      s.pending.push({ id: `p${++this.pendingSeq}`, queuedAt: new Date().toISOString(), text: LIMIT_CONTINUE_PROMPT, auto: true })
+      s.pending.push({
+        id: `p${++this.pendingSeq}`,
+        queuedAt: new Date().toISOString(),
+        text: LIMIT_CONTINUE_PROMPT,
+        auto: true,
+        // A watcher's continuation remembers whether the turn it continues was
+        // its own wake (approved work) or a person's (§10).
+        ...(s.info.role === 'watcher' ? { origin: { limit: true as const, of: s.ranOrigin === 'wake' ? ('wake' as const) : ('user' as const) } } : {})
+      })
     this.push(s, {
       kind: 'system',
       text: `limit reached — continues on its own after the reset (${formatResetAt(until, now)})`
@@ -3422,6 +3886,11 @@ export class SessionManager {
     loop?: string
   ): Promise<void> {
     s.promptRunning = true
+    const startedAt = Date.now()
+    s.turnStartedAt = startedAt
+    const fromWake = s.info.role === 'watcher' && s.ranOrigin === 'wake'
+    s.turnGuard = fromWake || (s.info.role === 'watcher' && !!s.guardStart)
+    s.guardStart = undefined
     // The logical turn: this prompt and its nudge (docs/requirements-review-
     // loop.md §5.1). Opened before the first await so the contract tools can
     // file into it once a round-trip is busy; closed in the `finally`, whatever
@@ -3440,25 +3909,57 @@ export class SessionManager {
         return
       }
       if (!first.threw) this.clearLimited(s)
+      if (fromWake && watcherActive(s.info.watcher)) {
+        const failed = first.threw || (!!first.stopReason && first.stopReason !== 'end_turn' && first.stopReason !== 'cancelled')
+        if (failed) this.onWakeFailed(s, first.threw ? 'the turn failed' : `stopped: ${first.stopReason}`)
+      }
       if (this.decideTurn(s, first, false) !== 'nudge') {
+        // The whole logical turn went through: the failure streak ends (§7).
+        if (fromWake && first.stopReason === 'end_turn') s.wakeFailures = 0
         how = turnHow(first, false)
         return
       }
-      const second = await this.sendTurn(s, nudgePromptFor(sessionRole(s.info)), 'system', true)
+      const second = await this.sendTurn(
+        s,
+        nudgePromptFor(sessionRole(s.info), !!s.info.watcher?.final),
+        'system',
+        true
+      )
       if (second.limit) {
         how = { limited: { until: this.onLimited(s, second.limit) }, incomplete: false }
         return
+      }
+      // The nudge turn failing leaves a watcher blind just as the first would (§7).
+      if (fromWake && watcherActive(s.info.watcher)) {
+        const failed = second.threw || (!!second.stopReason && second.stopReason !== 'end_turn' && second.stopReason !== 'cancelled')
+        if (failed) this.onWakeFailed(s, second.threw ? 'the turn failed' : `stopped: ${second.stopReason}`)
+        else if (second.stopReason === 'end_turn') s.wakeFailures = 0
       }
       const incomplete = this.decideTurn(s, second, true) === 'incomplete'
       if (incomplete) {
         this.push(s, { kind: 'system', text: `turn ended without ${contractToolFor(sessionRole(s.info))}` })
         s.info.incomplete = true
+        if (sessionRole(s.info) === 'watcher') this.onWatcherIncomplete(s)
         this.bus.emit('session.changed', { sessionId: s.info.id })
         this.schedulePersist(s.ref)
       }
       how = turnHow(second, incomplete)
     } finally {
       s.nudgePending = false
+      // A turn the user cancelled leaves nothing scheduled that it scheduled
+      // itself: its last `wake_me` may land after the cancel (§5.3).
+      if (s.info.watcher) {
+        if (s.cancelledAt && s.cancelledAt >= startedAt && s.info.wake && Date.parse(s.info.wake.setAt) >= startedAt) {
+          s.info.wake = undefined
+          this.schedulePersist(s.ref)
+        }
+        const cur = s.info.watcher
+        if (s.cancelledAt && s.cancelledAt >= startedAt && cur?.watch && Date.parse(cur.watch.setAt) >= startedAt) {
+          s.info.watcher = withoutWatch(cur)
+          this.schedulePersist(s.ref)
+        }
+        s.cancelledAt = undefined
+      }
       // An ordinary session drops `promptRunning` right here, with no write and
       // no event in between, exactly as before the loop (it is the update
       // deferral's and the drain's gate); only a loop session pays for the
@@ -3468,7 +3969,10 @@ export class SessionManager {
       // Whatever was typed while this turn ran goes next. A no-op when the drain
       // loop is what called this (it owns `draining` and continues on its own) —
       // this is here for the one turn it does not drive, the start prompt.
-      void this.drainPending(s)
+      void this.drainPending(s).then(() => {
+        // The end of a turn ends a hold a due wake waited on (§5.1).
+        if (s.info.watcher) this.schedule()
+      })
     }
   }
 
@@ -3616,6 +4120,8 @@ export class SessionManager {
     reviewLoop?: boolean
     admin?: AdminHooks
     proactive?: ProactiveHooks
+    watcher?: WatcherToolHooks
+    cacheSeconds?: number
   } {
     const role = sessionRole(s.info)
     return {
@@ -3635,7 +4141,11 @@ export class SessionManager {
       ...(roleReadsAdmin(role) ? { admin: this.events.adminFor(s.ref.workspace, s.info.id) } : {}),
       // Same binding for a proactive run: the agent is the scope the run lives
       // in, never a name the run supplies.
-      ...(role === 'proactive' ? { proactive: this.proactiveHooks(s) } : {})
+      ...(role === 'proactive' ? { proactive: this.proactiveHooks(s) } : {}),
+      // The watcher's tools, bound the same way (docs/requirements-watchers.md §4).
+      ...(role === 'watcher' ? { watcher: this.events.watcherFor(s.ref.workspace, s.ref.task, s.info.id) } : {}),
+      // §13: the agent kind's cache lifetime, for the watcher's instructions.
+      ...(role === 'watcher' ? this.cacheHint(s) : {})
     }
   }
 
@@ -3956,7 +4466,18 @@ export class SessionManager {
     // What the user types now is the continuation an interrupted session was
     // going to send on its own — it replaces the automatic "continue".
     const queuedAt = s.pending.find((p) => p.auto)?.queuedAt ?? new Date().toISOString()
-    s.pending = s.pending.filter((p) => !p.auto)
+    const w = s.info.watcher
+    if (watcherActive(w)) {
+      // A queued wake is replaced like the limit `continue` — it stays pending
+      // as the wakeup, uncounted, and its note rides in front of the typed
+      // message; a final wake is never replaced (§5.3).
+      const dropped = s.pending.find((p) => isWakeOrigin(p.origin) && !p.origin.final)
+      if (dropped && isWakeOrigin(dropped.origin) && dropped.origin.at && !s.info.wake)
+        s.info.wake = { at: dropped.origin.at, note: dropped.origin.note ?? '', setAt: dropped.origin.wake }
+      const line = prefaceFor(w, s.info.wake, Date.now())
+      if (line) s.preface = s.preface ? `${s.preface}\n${line}` : line
+      s.pending = s.pending.filter((p) => !p.auto || (isWakeOrigin(p.origin) && !!p.origin.final))
+    } else s.pending = s.pending.filter((p) => !p.auto)
     s.pending.push({
       id,
       queuedAt,
@@ -4014,7 +4535,7 @@ export class SessionManager {
     const s = this.sessions.get(sessionId)
     if (!s) throw new Error('unknown session')
     if (s.info.state !== 'started') throw new Error('session is not started')
-    if (s.pending.some((p) => p.origin?.loop === intent)) return
+    if (s.pending.some((p) => loopOf(p.origin) === intent)) return
     const id = `p${++this.pendingSeq}`
     s.pending.push({ id, text, auto: true, origin: { loop: intent } })
     await this.persistNow(s)
@@ -4054,14 +4575,28 @@ export class SessionManager {
         !this.repoHolder(s) &&
         !this.earlierQueueItem(s) &&
         !this.limitHold(s) &&
-        !this.deliveryActive(s)
+        !this.deliveryActive(s) &&
+        // A wake whose write has not landed is not delivered yet (§5.1).
+        s.pending[0] !== s.wakeWriting &&
+        // A poll in flight ends first (§6.1); `setPolling(false)` drains again.
+        !s.polling &&
+        // A paused watcher runs no unattended turn of any kind (§3).
+        !(this.isWakeWork(s.pending[0]!) && this.watcherPaused(s))
       ) {
         const next = s.pending.shift()!
         consumed = true
         s.interrupted = true
         // Beside `interrupted`, in the same write as the prompt's removal (§8).
-        s.loopRan = next.origin?.loop
-        await this.runPrompt(s, next.text, next.context, next.images, next.origin?.loop)
+        s.loopRan = loopOf(next.origin)
+        if (s.info.role === 'watcher') {
+          s.ranOrigin = this.isWakeWork(next) ? 'wake' : 'user'
+          // The wake counts when the drain takes it, in this same record (§5.1).
+          if (isWakeOrigin(next.origin) && watcherActive(s.info.watcher)) {
+            s.info.watcher = wakeTaken(s.info.watcher, next.origin)
+            s.wakeNote = next.origin.note
+          }
+        }
+        await this.runPrompt(s, next.text, next.context, next.images, loopOf(next.origin))
       }
     } catch (e) {
       log.error('internal.fail', { site: 'pending-drain', s: s.info.id, err: e })
@@ -4079,13 +4614,15 @@ export class SessionManager {
    *  was typed behind it. Images are dropped; see {@link PendingPromptInfo}. */
   clearPending(sessionId: string): PendingPromptInfo[] {
     const s = this.sessions.get(sessionId)
-    if (!s?.pending.length) return []
+    // A watcher drops its wakeup whether or not anything was queued (§5.3).
+    if (!s || (!s.pending.length && !s.info.watcher)) return []
     // Stopping the session stops its automatic continuation too; the "continue"
     // itself was never typed, so it does not go back to the composer.
     const out = s.pending.filter((p) => !p.auto).map(pendingInfo)
+    const finalQueued = s.pending.some((p) => isWakeOrigin(p.origin) && !!p.origin.final)
     s.pending = []
     this.schedulePersist(s.ref)
-    this.dropAutoContinue(s)
+    this.dropAuto(s, 'all', finalQueued)
     this.bus.emit('session.changed', { sessionId })
     // The composer's stop with something queued — a loop's message included —
     // is the user withdrawing it (§5.6: "cancels the loop's queued message").
@@ -4111,7 +4648,8 @@ export class SessionManager {
     this.schedulePersist(s.ref)
     // Cancelling the automatic "continue" is "do not resume this one by
     // yourself": the session-level hold goes with it (the account's stays).
-    if (gone?.auto) this.dropAutoContinue(s)
+    if (gone?.auto)
+      this.dropAuto(s, isWakeOrigin(gone.origin) ? 'wake' : 'limit', isWakeOrigin(gone.origin) && !!gone.origin.final)
     this.bus.emit('session.changed', { sessionId })
     // The loop first, then the scheduler — as in `clearPending`.
     this.human(s, 'cancel')
@@ -4119,10 +4657,37 @@ export class SessionManager {
     return gone && !gone.auto ? pendingInfo(gone) : undefined
   }
 
-  private dropAutoContinue(s: Session): void {
-    if (!s.info.limitedUntil) return
-    s.info.limitedUntil = undefined
+  /** Withdraw what the host would send by itself: the limit hold's `continue`
+   *  (`'limit'`), a watcher's wakeup (`'wake'`), or both (`'all'`, Esc / Stop).
+   *  At the end of a watcher's life (a final wake queued or taken) withdrawing
+   *  ends it as stopped — nothing else could finish it (§5.3). */
+  private dropAuto(s: Session, which: 'all' | 'limit' | 'wake', finalWithdrawn = false): void {
+    if (which !== 'wake' && s.info.limitedUntil) {
+      s.info.limitedUntil = undefined
+      this.schedulePersist(s.ref)
+    }
+    const w = s.info.watcher
+    if (which === 'limit' || !watcherActive(w)) return
+    const atEnd = finalWithdrawn || !!w.final
+    s.info.wake = undefined
+    if (w.watch) s.info.watcher = withoutWatch(w)
+    s.pending = s.pending.filter((p) => !isWakeOrigin(p.origin))
     this.schedulePersist(s.ref)
+    this.bus.emit('session.changed', { sessionId: s.info.id })
+    if (atEnd)
+      this.endWatcher(s.info.id, {
+        outcome: 'stopped',
+        summary: 'the last report was withdrawn',
+        at: new Date().toISOString(),
+        by: 'user'
+      })
+    else this.schedule()
+  }
+
+  /** The composer row's Cancel: withdraw the wakeup. */
+  cancelWake(sessionId: string): void {
+    const s = this.sessions.get(sessionId)
+    if (s) this.dropAuto(s, 'wake', this.queuedWakes(s).some((p) => isWakeOrigin(p.origin) && !!p.origin.final))
   }
 
   /**
@@ -4135,6 +4700,7 @@ export class SessionManager {
     const s = this.sessions.get(sessionId)
     if (!s) return
     if (by === 'user') this.human(s, 'cancel')
+    if (by === 'user' && s.info.watcher) s.cancelledAt = Date.now()
     const conn = this.connections.get(s.info.id)
     if (s.acpSessionId) conn?.peer.notify('session/cancel', { sessionId: s.acpSessionId })
     const wasAwaiting = s.pendingPermissions.size > 0

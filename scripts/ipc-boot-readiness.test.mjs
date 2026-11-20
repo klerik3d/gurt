@@ -53,6 +53,7 @@ test('initial selected-session snapshot waits for restore and preserves its conf
   const kernel = {
     ready,
     notifications: { markSessionRead: (id) => calls.push(`read:${id}`) },
+    watchers: { seen() {} },
     sessions: { snapshot: (id) => { calls.push(`snapshot:${id}`); return expected } }
   }
   const request = reads.snapshot(kernel, 'selected-session')
