@@ -6,8 +6,7 @@
 // The *state* (the wakeup, the counters, the deadline) lives on the session's
 // record in `sessions.json`, and the timed automatic prompt that sends the wake
 // is the session manager's — one mechanism with the plan-limit resume (§5.1).
-import type { EnvRef, Tree } from '../shared/types'
-import { defaultEnvName, repoMode } from '../shared/types'
+import { defaultEnvName, repoMode, type EnvRef, type Tree } from '../shared/types'
 import {
   WATCHER_DEFAULTS,
   parseWakeWhen,
