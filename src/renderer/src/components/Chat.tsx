@@ -2,22 +2,21 @@ import { useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNod
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { AnchorWithFileLink, CodeWithFileLink, DiffOpener, FileLinkScopeContext } from '../fileLinks'
-import {
-  sessionStatus,
-  type ChatEntry,
-  type ChatPermission,
-  type LoopNote,
-  type CommandInfo,
-  type PendingPromptInfo,
-  type PlanEntry,
-  type PromptCapabilities,
-  type PromptContext,
-  type PromptImage,
-  type SessionConfigOption,
-  type SessionModes,
-  type SessionNetwork,
-  type SessionSnapshot,
-  type Tree
+import type {
+  ChatEntry,
+  ChatPermission,
+  LoopNote,
+  CommandInfo,
+  PendingPromptInfo,
+  PlanEntry,
+  PromptCapabilities,
+  PromptContext,
+  PromptImage,
+  SessionConfigOption,
+  SessionModes,
+  SessionNetwork,
+  SessionSnapshot,
+  Tree
 } from '../../../shared/types'
 import { agentOptionView, withPickedValues } from '../../../shared/agentConfig'
 import { agentVocabulary, isBlanketMode } from '../../../shared/agentVocabulary'
@@ -26,7 +25,6 @@ import { useMcpFailures } from '../useMcp'
 import { usePiiEntries, usePiiPlan, usePiiStatus, usePiiView, type PiiView } from '../usePii'
 import { alertDialog, confirmDialog } from '../dialog'
 import { createLogger, logErr } from '../log'
-import { sessionDot } from '../status'
 import { Icon, Dot, InfoDot } from './icons'
 import { McpFailBanner } from './tags'
 import { NetButton } from './Network'
@@ -123,7 +121,6 @@ export function Chat({
   tree,
   snapshot,
   sessionId,
-  seen,
   log,
   composerNote,
   onSelect,
@@ -132,8 +129,6 @@ export function Chat({
   tree: Tree | null
   snapshot?: SessionSnapshot | undefined
   sessionId: string
-  /** Whether the last turn reads as already looked at — see `SessionPane`. */
-  seen?: boolean | undefined
   log: string[]
   composerNote?: ComposerNote | undefined
   /** Select another session — where a duplicate's fresh draft is handed to. */
@@ -320,7 +315,7 @@ export function Chat({
   }
 
   // Esc stops the current turn while the agent is working (replaces the Stop
-  // button). Ignore Esc raised from a text field so it can close its own popup,
+  // button). Ignore Esc raised from a text field (the composer excepted — focus stays there while the agent works) so it can close its own popup,
   // and while any modal/dialog is open — there Esc means "dismiss it", and both
   // listeners live on window, so this one must stand down explicitly.
   const busy = snapshot?.busy ?? false
@@ -335,7 +330,7 @@ export function Chat({
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
       const t = e.target as HTMLElement | null
-      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA') && !t.classList.contains('composer-input')) return
       if (document.querySelector('.modal-backdrop, .cmp-menu, .gear-pop')) return
       e.preventDefault()
       // Stop means stop. Anything queued behind this turn would otherwise fire
@@ -423,19 +418,12 @@ export function Chat({
     else blocks.push({ kind: 'strip', entries: [standIn] })
   }
 
-  // `busy` is the live flag, fresher than the copy on `info`.
-  const headDot = sessionDot(sessionStatus({ ...info, busy, seen }), info.hostBusy)
-
   return (
     <LoopViewContext.Provider value={loop}>
     <div className="chat">
       <div className="chat-head">
         <TabBar active={activeTab} onChange={setActiveTab} />
         <span className="spacer" />
-        <Dot tone={headDot.tone} pulse={headDot.pulse} hollow={headDot.hollow} />
-        <span className="chat-title">
-          {info.task} / {info.title}
-        </span>
         <span className="chat-pill">{sizeLabel}</span>
         <ContainerTerminalButton info={info} />
         {/* A session already running is exactly where "this was set up wrong"

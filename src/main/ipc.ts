@@ -41,6 +41,7 @@ import { sanitizeAppearance } from '../shared/appearance'
 import { machineDoctor, machinePrepare, startDockerApp } from './doctor'
 import { cancelFirstRunSignIn, firstRunSignIn, firstRunStart } from './firstRun'
 import { PREPARE_LOG_KEY, sanitizeWelcomeMode } from '../shared/doctor'
+import { clipboardFilePaths } from './clipboardFiles'
 import { checkForUpdates, deferUpdate, installUpdate, updateStatus } from './update'
 
 const log = createLogger('ipc')
@@ -338,6 +339,8 @@ export function registerIpc(): void {
     taskFilePath: files.taskFilePath,
     renameTaskFile: files.renameTaskFile,
     deleteTaskFile: files.deleteTaskFile,
+    pasteTaskFiles: files.pasteTaskFiles,
+    clipboardFilePaths: async () => clipboardFilePaths(),
     listTaskFiles: files.listTaskFiles,
     readTaskFile: files.readTaskFile,
     readTaskImage: files.readTaskImage,
@@ -631,7 +634,7 @@ export function registerIpc(): void {
   // and a rewind, which restores the session's write clones.
   const dropApprovalsFor = async (m: string, args: unknown[]): Promise<void> => {
     const [a0, a1, a2] = args
-    if (['writeTaskFile', 'renameTaskFile', 'deleteTaskFile'].includes(m)) {
+    if (['writeTaskFile', 'renameTaskFile', 'deleteTaskFile', 'pasteTaskFiles'].includes(m)) {
       if (typeof a0 === 'string' && typeof a1 === 'string' && typeof a2 === 'string' && a2.split('/')[0])
         await dropApprovals(a0, a1, [a2.split('/')[0]!])
     } else if (m === 'sessionRewind' && typeof a0 === 'string') {
@@ -652,7 +655,7 @@ export function registerIpc(): void {
         await dropApprovalsFor(m, args)
         const result = await (impl[m] as (...a: unknown[]) => unknown)(...args)
         if (['changesCommit', 'changesPush', 'changesUpdateFromMain', 'changesMergeToMain',
-          'writeTaskFile', 'renameTaskFile', 'deleteTaskFile'].includes(m) &&
+          'writeTaskFile', 'renameTaskFile', 'deleteTaskFile', 'pasteTaskFiles'].includes(m) &&
           typeof args[0] === 'string' && typeof args[1] === 'string')
           kernel.sessions.noteTaskActivity(args[0], args[1])
         log.debug('ipc.call', { method: m, ms: Date.now() - started, args: argCtx(m, args) })

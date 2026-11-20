@@ -18,9 +18,15 @@ import { RowContextMenu } from './RowContextMenu'
 import { confirmDialog } from '../dialog'
 import type { FilesController } from '../useFiles'
 import { FileTreeRow } from './FileTreeRow'
+import { showToast } from '../toast'
 
 type FolderState = { entries?: FileEntry[]; error?: string }
 type TreeRow = { task: string; path: string; name: string; kind: 'scope' | FileEntry['kind']; depth: number }
+/** The last in-app Copy. It wins over the system clipboard only while that is
+ *  unchanged since — a later copy elsewhere (files or text) takes over. */
+let internalCopy: { paths: string[]; signature: string } | null = null
+const clipboardSignature = async (files: string[]): Promise<string> =>
+  JSON.stringify([files, await navigator.clipboard.readText().catch(() => '')])
 const folderKey = (ws: string, task: string, path: string): string => JSON.stringify([ws, task, path])
 const folderSchema = z.array(z.string().refine((key) => {
   try {
@@ -139,13 +145,34 @@ export function FilesSidebar({ controller, tree, collapsed, setCollapse, changes
     setCursor(keyOf(row)); treeRef.current?.focus()
     setRenaming(false); setRename(row.name); setActionError(''); setMenu({ row, x, y })
   }
-  const action = async (kind: 'rename' | 'delete' | 'relative' | 'absolute') => {
+  const copyRow = async (row: TreeRow) => {
+    if (row.kind === 'scope' || row.kind === 'symlink') return
+    const paths = [await window.gurt.taskFilePath(name, row.task, row.path)]
+    internalCopy = { paths, signature: await clipboardSignature(await window.gurt.clipboardFilePaths()) }
+  }
+  const pasteInto = async (row: TreeRow) => {
+    if (row.kind === 'scope') return
+    const directory = row.kind === 'directory' ? row.path : row.path.slice(0, row.path.lastIndexOf('/'))
+    const system = await window.gurt.clipboardFilePaths()
+    const sources = internalCopy && internalCopy.signature === await clipboardSignature(system) ? internalCopy.paths : system
+    if (!sources.length) { showToast('Nothing to paste: copy files or folders first'); return }
+    try {
+      const created = await window.gurt.pasteTaskFiles(name, row.task, directory, sources)
+      const key = folderKey(name, row.task, directory)
+      setExpanded((prev) => [...new Set([...prev, key])])
+      generation.current++; loading.current.clear(); setFolders({}); setRevision(generation.current)
+      if (created[0]) setCursor(folderKey(name, row.task, created[0]))
+    } catch (error) { showToast(String(error).replace(/^Error: (Error invoking remote method '[^']*': )?/, '')) }
+  }
+  const action = async (kind: 'rename' | 'delete' | 'relative' | 'absolute' | 'copy' | 'paste') => {
     if (!menu || busy) return
     const { row } = menu
     const file = { ws: name, task: row.task, path: row.path }
     setBusy(true); setActionError('')
     try {
-      if (kind === 'relative' || kind === 'absolute') {
+      if (kind === 'copy') await copyRow(row)
+      else if (kind === 'paste') await pasteInto(row)
+      else if (kind === 'relative' || kind === 'absolute') {
         await navigator.clipboard.writeText(kind === 'absolute' ? await window.gurt.taskFilePath(name, row.task, row.path) : row.path.split('/').slice(1).join('/') || '.')
       } else {
         const affected = controller.tabs.filter((tab) => tab.file.ws === name && tab.file.task === row.task && (tab.file.path === row.path || tab.file.path.startsWith(row.path + '/')))
@@ -187,6 +214,10 @@ export function FilesSidebar({ controller, tree, collapsed, setCollapse, changes
       const row = rows[at]
       let next: TreeRow | undefined
       if ((event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) && row) { const rect = treeRef.current?.querySelector('.cursor')?.getBoundingClientRect(); event.preventDefault(); openMenu(row, rect?.left ?? 0, rect?.bottom ?? 0); return }
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && row && row.kind !== 'scope') {
+        if (event.key === 'c') { event.preventDefault(); void copyRow(row).catch((error: unknown) => showToast(String(error))); return }
+        if (event.key === 'v') { event.preventDefault(); void pasteInto(row); return }
+      }
       if (event.key === 'ArrowDown') next = rows[Math.min(at + 1, rows.length - 1)]
       else if (event.key === 'ArrowUp') next = rows[Math.max(at - 1, 0)]
       else if (event.key === 'Home') next = rows[0]
@@ -214,15 +245,15 @@ export function FilesSidebar({ controller, tree, collapsed, setCollapse, changes
             onToggle={() => { setCursor(key); treeRef.current?.focus(); toggle(row, !open) }} /> : <FileTreeRow
             label={row.name} depth={row.depth}
             icon={row.path === ARTIFACTS ? 'archive' : expandable(row) ? 'folder' : imageType(row.path) ? 'image' : 'file'}
-            open={expandable(row) ? open : undefined} selected={selected} cursor={cursor === key}
+            open={expandable(row) && !(row.kind === 'directory' && folder?.entries && !folder.entries.length) ? open : undefined} selected={selected} cursor={cursor === key}
             id={`file-tree-row-${index}`} disabled={row.kind === 'symlink'}
             title={row.kind === 'symlink' ? `${row.path} · Symbolic links cannot be opened`
               : row.path === ARTIFACTS ? `${ARTIFACTS} · shared by every session of this scope (${CONTAINER_ROOT}/${ARTIFACTS}), not part of any repository`
               : row.path || row.task}
             onContextMenu={(event) => { event.preventDefault(); openMenu(row, event.clientX, event.clientY) }}
             onClick={() => activate(row)} />}
-          {open && (!folder || folder.error || !folder.entries?.length) && <div className={`sb-empty${folder?.error ? ' error' : ''}`} style={{ '--level': row.depth + 1 } as CSSProperties}>
-            {folder?.error ?? (!folder ? 'Loading…' : row.kind === 'scope' ? 'No repository clones yet' : 'Empty folder')}
+          {open && (!folder || folder.error || (row.kind === 'scope' && !folder.entries?.length)) && <div className={`sb-empty${folder?.error ? ' error' : ''}`} style={{ '--level': row.depth + 1 } as CSSProperties}>
+            {folder?.error ?? (!folder ? 'Loading…' : 'No repository clones yet')}
           </div>}
         </div>
       })}
@@ -231,6 +262,8 @@ export function FilesSidebar({ controller, tree, collapsed, setCollapse, changes
     </div>
     {menu && <RowContextMenu x={menu.x} y={menu.y} onClose={() => { if (!busy) setMenu(null) }}>
       {renaming ? <form onSubmit={(event) => { event.preventDefault(); void action('rename') }}><input aria-label="New file name" className="sb-rename" autoFocus value={rename} onChange={(event) => setRename(event.target.value)} /><button className="menu-item" disabled={busy || !rename.trim()} type="submit">Rename</button></form> : <button className="menu-item" disabled={busy || !menu.row.path.includes('/')} onClick={() => setRenaming(true)}>Rename</button>}
+      <button className="menu-item" disabled={busy} onClick={() => { void action('copy') }}>Copy</button>
+      <button className="menu-item" disabled={busy} onClick={() => { void action('paste') }}>Paste</button>
       <button className="menu-item" disabled={busy} onClick={() => { void action('relative') }}>Copy path from repository root</button>
       <button className="menu-item" disabled={busy} onClick={() => { void action('absolute') }}>Copy absolute path</button>
       <button className="menu-item danger" disabled={busy || !menu.row.path.includes('/')} onClick={() => { void action('delete') }}>Delete</button>

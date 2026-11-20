@@ -5,7 +5,11 @@ Expand a scope, repository and folders in the Scopes panel. Click a file to
 open it in a tab. The explorer loads folders on demand, shows dotfiles and
 untracked files, and excludes Git internals and Gurt's session/configuration
 metadata. Arrow keys navigate the tree; Enter opens a file or folds a folder.
-Refresh reloads the folder listings. Listings also refresh after agent turns
+Right-click a file or folder (or press Ctrl/Cmd+C, Ctrl/Cmd+V on the tree) to
+Copy and Paste: Paste puts the item copied in the explorer, or files and folders
+copied in the system file manager, into the selected folder (a file's own folder),
+renaming to `name copy` when the name is taken. A folder with nothing in it shows
+no chevron. Refresh reloads the folder listings. Listings also refresh after agent turns
 and when the application regains focus.
 
 Scopes share their row height, change indicators, folding and name/creation

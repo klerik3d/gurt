@@ -115,6 +115,8 @@ const SAFE_ARGS = new Set([
   'taskFilePath',
   'renameTaskFile',
   'deleteTaskFile',
+  'pasteTaskFiles',
+  'clipboardFilePaths',
   'getFileDiff',
   'getCommitDiff',
   'getDiffFiles',

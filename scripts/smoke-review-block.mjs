@@ -216,7 +216,7 @@ try {
   assert.match(await page.locator(PROBLEM).innerText(), /same agent and model/)
   await openChat()
   await page.fill('.draft-prompt', 'implement the thing')
-  await page.click('.chat-title') // blur -> sessionEditPrompt
+  await page.click('.chat-head') // blur -> sessionEditPrompt
   await page.waitForSelector('[data-testid="run-blocked"]', T)
   assert.ok(await page.locator(runBtn).isDisabled(), 'Run is disabled for the same agent and model')
   assert.match(await page.locator('[data-testid="run-blocked"]').innerText(), /same agent and model/)

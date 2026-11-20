@@ -159,7 +159,7 @@ console.log('draft configured on the Config tab OK')
 await page.click('.tab-btn:has-text("Chat")')
 await page.waitForSelector('.draft-prompt', { timeout: 5000 })
 await page.fill('.draft-prompt', 'say hello')
-await page.click('.chat-title') // blur the textarea -> sessionEditPrompt
+await page.click('.chat-head') // blur the textarea -> sessionEditPrompt
 await page.waitForSelector('.draft-body .btn-primary:not([disabled])', { timeout: 5000 })
 console.log('draft prompt saved, draft is runnable OK')
 

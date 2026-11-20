@@ -200,7 +200,7 @@ try {
   // --- every pick went straight to disk; no Save button was involved ---
   await page.click('.tab-btn:has-text("Chat")')
   await page.fill('.draft-prompt', 'review the uncommitted changes')
-  await page.click('.chat-title') // blur -> sessionEditPrompt
+  await page.click('.chat-head') // blur -> sessionEditPrompt
   const rec = await persisted(
     (r) => r.info.role === 'researcher' && r.info.startPrompt === 'review the uncommitted changes',
     'the researcher draft'

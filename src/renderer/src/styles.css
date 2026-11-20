@@ -1392,7 +1392,7 @@ textarea.input {
   display: flex;
   flex-direction: column;
   gap: 14px;
-  padding: 18px 7% 18px calc(7% + 24px);
+  padding: 18px max(7%, 40px) 18px calc(7% + 24px);
   min-height: 100%;
 }
 /* Each entry draws its own rail segment down to the next entry's dot, so the
@@ -5220,6 +5220,13 @@ button { user-select: none; }
 .toast-popup.has-copy,
 .notification-popup.has-copy {
   position: relative;
+}
+/* A message's copy button sits in the feed's right gutter, beside the text
+   rather than on top of it (the time label mirrors it in the left gutter). */
+.feed-inner > .msg > .copy-btn {
+  top: 0;
+  left: calc(100% + 2px);
+  right: auto;
 }
 .notif-row .copy-btn,
 .notification-popup .copy-btn {
