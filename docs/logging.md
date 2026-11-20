@@ -148,7 +148,7 @@ escaped, and `\n` written as `\\n`, so one record stays one line.
 | `agent.exit`              | INF   | `s`, `pid`, `code`, `signal`, `ms`                         |
 | `proc.spawn`              | DBG † | `cmd`, `argv`, `pid`                                       |
 | `proc.exit`               | DBG † | `cmd`, `pid`, `code`, `ms`                                 |
-| `provision.phase`         | INF   | `s`, `phase` (`clone` \| `image` \| `up`), `ms`            |
+| `provision.phase`         | INF   | `s` (absent for Settings → Prepare), `phase`, `ms` — one finished step of a start; phases below |
 | `provision.fail`          | ERR   | `s`, `phase`, `code`, `err`                                |
 | `container.status`        | INF   | `s`, `status`, `reason`                                    |
 | `container.stop` / `.remove` | INF | `s`, `c`, `reason`, `ms`                                  |
@@ -192,6 +192,27 @@ one slug stay distinguishable.
 `ipc.call`/`ipc.fail` log the call's arguments, redacted, at DBG. Methods whose
 arguments carry prose — `sessionPrompt`, `createSession`, `changesCommit`,
 `setCredentials`, … — log an argument *count* instead, never the values.
+
+### `provision.phase` phases
+
+One record per finished step of a session start (failed steps too), `ms` being
+the step's wall time. In the order a cold start runs them:
+
+| `phase` | What it times |
+| --- | --- |
+| `clone`, `image`, `up` | the clone, the env image (pull/build), and the whole `up` (the three of `ensureUncoalesced`) |
+| `node-volume-fill`, `adapters-volume-fill` | a fill of gurt's node runtime / an agent's adapters volume — logged **only when a fill runs** (a ready volume costs one probe per app process and logs nothing) |
+| `docker-create` | `docker create` + `docker start` of a new container, stale-bind retries included |
+| `docker-start` | `docker start` of a stopped container (restart path) |
+| `setup`, `start` | the env's `setup` script (new containers) and `start` script (create and restart) |
+| `exec-path-probe` | the login-shell `PATH` probe (once per container) |
+| `container-prepare` | the per-`up` check: skills link + gurt's node + the adapter bin |
+| `proxy-ensure`, `network-converge` | reserving the session's proxy scope; switching the container onto its network |
+| `oauth-write-file`, `client-config-write` | credential / client-config file writes before the adapter launches |
+| `acp-session-new` | the ACP `session/new` round trip |
+| `start-to-first-update` | end to end: the start was requested (`startSession`) → the first `session/update` the agent sends after the start prompt went out. Logged once per start; absent when the start fails first |
+
+`s` is absent on a fill run by Settings → Prepare.
 
 ## Robustness
 

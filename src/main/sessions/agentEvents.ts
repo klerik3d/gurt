@@ -30,6 +30,7 @@ import {
 import { agentMain } from '../agentPlugins'
 import type { Bus } from '../bus'
 import type { AdminHooks, ProactiveHooks, WatcherToolHooks } from '../mcp/gurtServer'
+import { logPhase } from '../provision'
 import { normalizeConfigOptions } from './modes'
 import { isTerminalToolStatus } from './pure'
 import { assertProposalFits, assertRepliesAnswer, assertVerdictFits } from './turnContract'
@@ -89,6 +90,10 @@ export function onSessionUpdate(mgr: AgentEventsCtx, params: unknown): void {
   if (!p?.update) return
   const s = mgr.bySessionId(p.sessionId)
   if (!s || s.loading) return
+  if (s.startTiming?.promptSent) {
+    logPhase(s.info.id, 'start-to-first-update', Date.now() - s.startTiming.since)
+    s.startTiming = undefined
+  }
   const raw = p.update
   switch (raw.sessionUpdate) {
     case 'agent_message_chunk':

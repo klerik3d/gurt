@@ -397,6 +397,12 @@ export interface SessionContainer {
    *  (`/workspaces/artifacts`). A container from before that mount existed is
    *  re-created rather than restarted, so every running session has it. */
   artifacts?: boolean
+  /** Name of the adapters volume (`gurt-adapters-<key>-<arch>`) mounted
+   *  read-only at `/opt/gurt/adapters`. The name carries the agent kind's
+   *  pins, so a container whose name no longer matches the current ones (a
+   *  pin bump, or a container from before the volume existed) is re-created
+   *  rather than restarted — a mount cannot be changed in place. */
+  adapters?: string
   /** Last provisioning failure. Cleared by assignment on the next transition —
    *  every status change either sets it or resets it. */
   error?: string | undefined

@@ -76,8 +76,6 @@ export async function connectionUncoalesced(mgr: ConnectionCtx, s: Session, ctx:
   if (existing && existing.containerId === ctx.containerId) return existing
   if (existing) mgr.connections.delete(key)
 
-  await mgr.events.installAdapter(ctx)
-
   const child = spawnAcpAdapter(
     ctx.exec,
     ctx.agent,
@@ -372,8 +370,8 @@ export function detach(mgr: ConnectionCtx, sessionId: string): void {
  * Wake a loop executor's container without attaching its agent — the review
  * loop's check needs the clone's toolchain, not the agent (§5.3). Gated like a
  * resume (`repoConflict`; the held executor is its own clone's holder, so only
- * a foreign claim refuses it), then `resolveLaunch`: the container up, the
- * adapter installed, the proxy scope converged, credentials in place — and no
+ * a foreign claim refuses it), then `resolveLaunch`: the container up, its
+ * adapter volume checked, the proxy scope converged, credentials in place — and no
  * `session/load`. Rejecting means the check cannot run.
  */
 export async function ensureContainerUp(mgr: ConnectionCtx, sessionId: string): Promise<void> {

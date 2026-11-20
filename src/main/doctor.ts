@@ -20,6 +20,7 @@ import {
   type DoctorRow,
   type DoctorRowId
 } from '../shared/doctor'
+import { AGENT_MANIFESTS } from '../shared/agents'
 import { hostPath } from './hostPath'
 import { createLogger } from './log'
 import { getBaseImage } from './store'
@@ -29,6 +30,9 @@ import {
   dockerCliPath,
   dockerDaemon,
   dockerImageExists,
+  adaptersVolumeKey,
+  adaptersVolumeName,
+  ensureAdaptersVolume,
   ensureNodeRuntimeVolume,
   run,
   type LogSink
@@ -83,6 +87,8 @@ export async function machineDoctor(
     daemon?: () => Promise<string | null>
     imageExists?: (ref: string) => Promise<boolean>
     images?: () => Promise<string[]>
+    /** How many agent adapter volumes do not exist yet (null: could not ask). */
+    adapterVolumesMissing?: () => Promise<number | null>
     platform?: NodeJS.Platform
     /** Called with each row the moment it is decided, before the next probe
      *  runs. The renderer draws the row list up front and fills it in from
@@ -94,6 +100,7 @@ export async function machineDoctor(
   const daemon = probes.daemon ?? (() => dockerDaemon())
   const imageExists = probes.imageExists ?? dockerImageExists
   const images = probes.images ?? prepareImages
+  const adaptersMissing = probes.adapterVolumesMissing ?? missingAdapterVolumes
   const platform = probes.platform ?? process.platform
 
   const rows: DoctorRow[] = []
@@ -152,21 +159,42 @@ export async function machineDoctor(
   const refs = await images()
   const present = await Promise.all(refs.map((ref) => imageExists(ref)))
   const missing = refs.filter((_, i) => !present[i])
+  // Only worth asking once the images are there (a volume is filled from one).
+  const volumesMissing = missing.length ? 0 : ((await adaptersMissing()) ?? 0)
   settle({
     ...rowOf(
       'images',
-      missing.length ? 'warn' : 'ok',
+      missing.length || volumesMissing ? 'warn' : 'ok',
       missing.length
         ? `${missing.length} image${missing.length === 1 ? '' : 's'} to pull — the first session ` +
           'pulls them anyway; Prepare does it now'
-        : // Deliberately not the word "ready": gurt still npm-installs the ACP
-          // adapter inside the container, over the network, on every first
-          // start (§5.2).
-          'images present — the first start still installs the agent adapter'
+        : volumesMissing
+          ? `images present, ${volumesMissing} agent adapter volume${volumesMissing === 1 ? '' : 's'} ` +
+            'to fill — the first start of that agent fills it (npm, once); Prepare does it now'
+          : // Deliberately not the word "ready": the row checks that the
+            // volumes exist, not that they are sound (§5.2).
+            'images and agent adapter volumes present'
     ),
-    ...(missing.length ? { action: 'prepare' as const } : {})
+    ...(missing.length || volumesMissing ? { action: 'prepare' as const } : {})
   })
   return { rows, ready: doctorReady(rows) }
+}
+
+/** Adapter volumes (one per distinct pin set, for the node image's arch) that
+ *  do not exist. null when the arch cannot be read — never a guess. */
+async function missingAdapterVolumes(): Promise<number | null> {
+  try {
+    const arch = (
+      await run('docker', ['image', 'inspect', '-f', '{{.Architecture}}', NODE_RUNTIME_IMAGE], () => {})
+    ).trim()
+    const names = new Map(AGENT_MANIFESTS.map((a) => [adaptersVolumeKey(a), adaptersVolumeName(a, arch)]))
+    const exist = await Promise.all(
+      [...names.values()].map((n) => run('docker', ['volume', 'inspect', n], () => {}).then(() => true, () => false))
+    )
+    return exist.filter((e) => !e).length
+  } catch {
+    return null
+  }
 }
 
 /** One pull at a time, deliberately: two `docker pull` progress streams
@@ -188,6 +216,15 @@ export async function machinePrepare(sink: LogSink): Promise<void> {
     await run('docker', ['image', 'inspect', '-f', '{{.Architecture}}', NODE_RUNTIME_IMAGE], () => {})
   ).trim()
   await ensureNodeRuntimeVolume(arch, sink)
+  // The adapters volumes, one per distinct pin set, so the first start of any
+  // agent kind does not npm-install either. One at a time, like the pulls.
+  const seen = new Set<string>()
+  for (const agent of AGENT_MANIFESTS) {
+    const key = adaptersVolumeKey(agent)
+    if (seen.has(key)) continue
+    seen.add(key)
+    await ensureAdaptersVolume(agent, arch, sink)
+  }
   sink('images ready')
 }
 

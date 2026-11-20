@@ -725,12 +725,13 @@ it too: it legitimately reaches the host through `host-gateway`.
    is attached to `gurt-s-<id>`, disconnect it and connect it to the
    default bridge. (Both operations work on a stopped container; they
    take effect at start.)
-2. `devcontainerUp` — unchanged. Image build, features, `onCreate` /
-   `updateContent` / `postCreate`, and on a resumed container
-   `postStart` / `postAttach`. All with normal internet access, because
+2. `ensure` — image build, the env's `setup` script, the `start` script,
+   the `PATH` probe and history links (on a resumed container: `start`). All with normal internet access, because
    all of them need it.
-3. `installAcpAdapter` (`npm install -g` of the adapter packages) and the
-   shim install — also on the open network, also because `npm` needs it.
+3. The container check (`prepareContainer`: skills link, node, adapter bin).
+   It needs no network — the ACP adapter is a read-only volume, not an
+   `npm install -g` — so it runs concurrently with steps 4–5 and the switch
+   does not wait for it.
 4. **Ensure the network and the proxy**: `gurt-s-<id>` created with the
    session's `internal` flag; `gurt-egress` ensured; the proxy started
    (§4.1) or reused if healthy.
@@ -806,14 +807,12 @@ and not in `ensure`.
 
 ### 7.3 The open-network window — a known, accepted caveat
 
-Steps 2 and 3 above run with **unrestricted egress**, in internal mode as
+Step 2 above runs with **unrestricted egress**, in internal mode as
 much as in the default one. That means:
 
-- devcontainer feature installers,
-- `onCreateCommand` / `updateContentCommand` / `postCreateCommand` — in
+- the env's `setup` and `start` scripts (`createContainer`) — in
   practice `npm install`, `pip install`, `bundle install`,
 - every `postinstall` script every transitive dependency ships,
-- and gurt's own `npm install -g` of the ACP adapter,
 
 execute as root or as the remote user, on the network, before any policy
 exists. A malicious `postinstall` in a transitive dependency has full

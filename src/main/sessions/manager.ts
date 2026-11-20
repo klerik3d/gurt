@@ -113,7 +113,7 @@ export class SessionManager {
   private readonly detachEpoch = new Map<string, number>()
   /** In-flight adapter spawn per session — concurrent callers (a prompt's
    *  attach racing a config change's) must share one, or the loser's spawn
-   *  leaks a second adapter process. Same shape as `installsInFlight` in
+   *  leaks a second adapter process. Same shape as `prepInFlight` in
    *  containers.ts. */
   private connectsInFlight = new Map<string, Promise<Connection>>()
   /** In-flight attach per session, for the same reason one level up: two

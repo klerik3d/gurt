@@ -3,7 +3,7 @@
 // argv and mounts per session shape, setup/start semantics, the id-after-setup
 // rule, every exec's target (-u/-w/-e PATH, container id), secrets never in
 // argv, file content through stdin, uid alignment, the node runtime volume,
-// the adapter install/launch, and boot reconcile. The setup *retry* contract
+// the adapters volume and its launch, and boot reconcile. The setup *retry* contract
 // lives in provision-hook-retry.test.mjs.
 //
 //   node scripts/docker-runtime.test.mjs
@@ -44,6 +44,9 @@ await bundle({
       export { ContainerManager, containerLayout, historyHostMounts } from ${S('src/main/containers.ts')}
       export { cloneDir, sessionHistoryDir } from ${S('src/main/store.ts')}
       export { agentDef } from ${S('src/shared/agents.ts')}
+      export { flushSync } from ${S('src/main/log.ts')}
+      export { machinePrepare } from ${S('src/main/doctor.ts')}
+      export { AGENT_MANIFESTS } from ${S('src/shared/agents.ts')}
     `,
     resolveDir: ROOT,
     loader: 'ts',
@@ -102,11 +105,13 @@ test('create: labels, init, keep-alive entrypoint, env, node volume read-only', 
   const r = await m.createContainer(
     spec({
       env: { name: 'e', image: 'img:1', env: { A: '1', B: 'two words' } },
-      mounts: [{ type: 'bind', source: dir, target: '/workspaces/repo' }]
+      mounts: [{ type: 'bind', source: dir, target: '/workspaces/repo' }],
+      agent: m.agentDef('claude-code')
     }),
     noop
   )
   assert.equal(r.containerId, 'cid-1')
+  assert.match(r.adapters, /^gurt-adapters-[0-9a-f]{12}-amd64$/)
   const [c] = fake.of('create')
   const a = c.args
   const pairs = (flag) => a.flatMap((x, i) => (x === flag ? [a[i + 1]] : []))
@@ -125,6 +130,10 @@ test('create: labels, init, keep-alive entrypoint, env, node volume read-only', 
   assert.ok(
     mounts.some((x) => /^type=volume,source=gurt-node-[0-9a-f]{12}-amd64,target=\/opt\/gurt\/node,readonly$/.test(x)),
     mounts.join('\n')
+  )
+  assert.ok(
+    mounts.includes(`type=volume,source=${r.adapters},target=/opt/gurt/adapters,readonly`),
+    'the agent’s adapters volume is mounted read-only'
   )
   // start follows the create, on the id it printed
   assert.deepEqual(fake.of('start')[0].args, ['start', 'cid-1'])
@@ -255,7 +264,7 @@ test('start runs on restart too, and reuses the cached PATH without probing', as
   // a missing cached PATH is probed again
   fake.reset()
   const p2 = await m.restartContainer({ ...t, path: undefined }, { name: 'e', image: 'x' }, [], noop)
-  assert.equal(p2, '/usr/local/bin:/usr/bin:/bin:/opt/gurt/node/bin:/home/dev/.gurt/npm/bin')
+  assert.equal(p2, '/usr/local/bin:/usr/bin:/bin:/opt/gurt/node/bin:/opt/gurt/adapters/bin')
 })
 
 test('a failing start script fails the start but keeps the container', async () => {
@@ -271,10 +280,10 @@ test('a failing start script fails the start but keeps the container', async () 
   assert.equal(fake.of('rm').length, 0, 'container kept')
 })
 
-test('the env probe: -lic, then PATH gets gurt’s node and npm bins appended', async () => {
+test('the env probe: -lic, then PATH gets gurt’s node and adapter bins appended', async () => {
   fake.ctl({ volumeExists: true, volumeReady: true })
   const r = await m.createContainer(spec(), noop)
-  assert.equal(r.path, '/usr/local/bin:/usr/bin:/bin:/opt/gurt/node/bin:/home/dev/.gurt/npm/bin')
+  assert.equal(r.path, '/usr/local/bin:/usr/bin:/bin:/opt/gurt/node/bin:/opt/gurt/adapters/bin')
   const probe = fake.execs().find((e) => e.cmd.join(' ').includes('__GURT_ENV__'))
   assert.ok(probe.cmd[2].includes('-lic'))
   assert.equal(probe.env.length, 0, 'the probe runs without our PATH')
@@ -319,7 +328,7 @@ test('ensure (repo-less operator): no patch names the container before setup has
   assert.equal(c.id, 'cid-1')
   assert.equal(c.remoteWorkspaceFolder, '/workspaces')
   assert.equal(c.user, 'dev')
-  assert.equal(c.path, '/usr/local/bin:/usr/bin:/bin:/opt/gurt/node/bin:/home/dev/.gurt/npm/bin')
+  assert.equal(c.path, '/usr/local/bin:/usr/bin:/bin:/opt/gurt/node/bin:/opt/gurt/adapters/bin')
   for (const p of patches.filter((p) => p.c?.id)) assert.ok(p.setupRan, JSON.stringify(p))
   assert.ok(patches.some((p) => p.c?.status === 'post' && !p.c.id), 'a `post` record without an id exists')
   assert.equal(fake.of('create').length, 1)
@@ -334,13 +343,11 @@ const T = { containerId: 'cid-7', user: 'dev', cwd: '/workspaces/repo', path: '/
 test('every exec targets the container id and carries -u, -w and PATH', async () => {
   const agent = m.agentDef('claude-code')
   await m.linkContainerHistory(T, 's1', 'claude-code', agent.historyPaths, noop)
-  await m.linkContainerSkills(T, '.claude/skills', noop)
-  await m.adapterPresent(T, agent)
-  await m.probeAdapterAndLinkSkills(T, agent, '.claude/skills', noop)
+  await m.prepareContainer(T, agent, '.claude/skills', noop)
   await m.writeContainerUserFile(T, '.x/y', 'z')
   fake.ctl({ volumeExists: true })
   const execs = fake.execs()
-  assert.ok(execs.length >= 6)
+  assert.ok(execs.length >= 3)
   for (const e of execs) {
     assert.equal(e.id, 'cid-7')
     assert.equal(e.user, 'dev')
@@ -481,23 +488,215 @@ test('node volume: an existing volume without .gurt-ready is emptied and refille
   assert.ok(!fake.of('run').some((c) => c.args.at(-1)?.includes('cp -a')))
 })
 
-// --- adapter install and launch ---------------------------------------------------------
+// --- adapters volume --------------------------------------------------------------------
 
-test('install: gurt’s node must run first (glibc message), then npm runs from the volume under a user prefix', async () => {
+test('adapters volume: name keyed by pins + node digest + arch; labels; filled once by npm install -g into /out', async () => {
+  const agent = m.agentDef('pi')
+  const logs = []
+  const name = await m.ensureAdaptersVolume(agent, 'arm64', (l) => logs.push(l), 's9')
+  assert.equal(name, m.adaptersVolumeName(agent, 'arm64'))
+  assert.match(name, /^gurt-adapters-[0-9a-f]{12}-arm64$/)
+  // the key follows the pins (order-insensitive) and the node digest, not the kind id
+  assert.equal(m.adaptersVolumeKey({ adapterPackages: [...agent.adapterPackages].reverse() }), m.adaptersVolumeKey(agent))
+  assert.notEqual(m.adaptersVolumeKey(m.agentDef('codex')), m.adaptersVolumeKey(agent))
+  assert.notEqual(m.adaptersVolumeKey({ adapterPackages: ['pi-acp@0.0.35'] }), m.adaptersVolumeKey({ adapterPackages: ['pi-acp@0.0.34'] }))
+  const create = fake.of('volume', 'create')[0].args
+  assert.deepEqual(create.slice(2, 6), ['--label', 'gurt.managed=1', '--label', 'gurt.kind=adapters'])
+  assert.equal(create.at(-1), name)
+  const fill = fake.of('run').find((c) => c.args.at(-1) === agent.adapterPackages.at(-1))
+  assert.ok(fill, 'a throwaway run with the packages as positional args')
+  const a = fill.args
+  assert.ok(a.includes('--rm') && a.includes('linux/arm64') && a.includes(m.NODE_RUNTIME_IMAGE))
+  assert.equal(a[a.indexOf('--entrypoint') + 1], 'sh')
+  assert.ok(a.includes('NPM_CONFIG_PREFIX=/out'))
+  assert.ok(a.includes('GURT_ADAPTER_BIN=pi-acp'))
+  assert.ok(a.includes(`type=volume,source=${name},target=/out`), 'writable only for the fill')
+  const script = a[a.indexOf('-c') + 1]
+  assert.match(script, /find \/out -mindepth 1 -delete/)
+  assert.match(script, /npm install -g .*"\$@"/)
+  assert.match(script, /-lname "\/\*"/, 'absolute bin links fail the fill')
+  assert.match(script, /touch \/out\/\.gurt-ready$/)
+  assert.deepEqual(a.slice(a.indexOf('-c') + 2), ['sh', ...agent.adapterPackages], '$0 is sh, the packages are $@')
+  assert.ok(!argvOf().includes('NPM_TOKEN'))
+  // the stale sweep ran after the first fill
+  assert.equal(fake.of('volume', 'ls').length, 1)
+  const before = fake.calls().length
+  assert.equal(await m.ensureAdaptersVolume(agent, 'arm64', noop), name)
+  assert.equal(fake.calls().length, before, 'a second ensure runs nothing')
+})
+
+test('adapters volume: an unmarked one is emptied and refilled; a ready one is left; a failed fill rejects and is retried', async () => {
+  const agent = m.agentDef('gemini')
+  fake.ctl({ volumeExists: true, volumeReady: false })
+  await m.ensureAdaptersVolume(agent, 's390x', noop)
+  assert.equal(fake.of('volume', 'create').length, 0)
+  assert.ok(fake.of('run').some((c) => c.args.includes(agent.adapterPackages[0])), 'refilled')
+  fake.reset({ volumeExists: true, volumeReady: true })
+  await m.ensureAdaptersVolume(agent, 'riscv64', noop)
+  assert.ok(!fake.of('run').some((c) => c.args.includes(agent.adapterPackages[0])), 'a ready volume is left')
+  // a fill that fails (npm network) rejects — the volume stays unmarked, the next call refills
+  fake.reset({ fillFails: 1, fillStderr: 'npm ERR! network\n' })
+  await assert.rejects(m.ensureAdaptersVolume(agent, 'mips64', noop), /exit|code|1/)
+  fake.reset({ volumeExists: true, volumeReady: false })
+  await m.ensureAdaptersVolume(agent, 'mips64', noop)
+  assert.ok(fake.of('run').some((c) => c.args.includes(agent.adapterPackages[0])))
+})
+
+test('adapters volume: concurrent callers share one fill', async () => {
+  const agent = m.agentDef('opencode')
+  await Promise.all([1, 2, 3].map(() => m.ensureAdaptersVolume(agent, 'ppc64le', noop)))
+  assert.equal(fake.of('volume', 'create').length, 1)
+  assert.equal(fake.of('run').filter((c) => c.args.includes(agent.adapterPackages[0])).length, 1)
+})
+
+test('stale adapters volumes: only ones no registered kind names are removed; an in-use one is kept quietly', async () => {
+  const keep = m.adaptersVolumeName(m.agentDef('claude-code'), 'amd64')
+  fake.ctl({ volumeNames: [keep, 'gurt-adapters-aaaaaaaaaaaa-amd64', 'gurt-adapters-bbbbbbbbbbbb-arm64', 'not-ours'], volumeRmFails: ['gurt-adapters-bbbbbbbbbbbb-arm64'] })
+  const logs = []
+  await m.removeStaleAdapterVolumes((l) => logs.push(l))
+  assert.deepEqual(fake.of('volume', 'rm').map((c) => c.args[2]), ['gurt-adapters-aaaaaaaaaaaa-amd64', 'gurt-adapters-bbbbbbbbbbbb-arm64'])
+  assert.deepEqual(logs, ['removed superseded adapters volume gurt-adapters-aaaaaaaaaaaa-amd64'])
+  assert.ok(fake.of('volume', 'ls')[0].args.includes('label=gurt.kind=adapters'))
+})
+
+test('phases: docker-create, setup, start, exec-path-probe and both volume fills are logged as provision.phase', async () => {
+  fake.ctl({ volumeExists: false, image: 'dev|sparc64' })
+  await m.createContainer(
+    spec({ session: 'sP', env: { name: 'e', image: 'img:1', setup: 'echo a', start: 'echo b' }, agent: m.agentDef('codex') }),
+    noop
+  )
+  m.flushSync()
+  const logFile = path.join(GURT_ROOT, 'logs', 'gurt.log')
+  const phases = fs
+    .readFileSync(logFile, 'utf8')
+    .split('\n')
+    .filter((l) => l.includes('provision.phase') && l.includes('sP'))
+    .map((l) => /phase[=":\s]+([a-z-]+)/.exec(l)?.[1])
+  for (const want of ['node-volume-fill', 'adapters-volume-fill', 'docker-create', 'setup', 'start', 'exec-path-probe'])
+    assert.ok(phases.includes(want), `${want} in ${phases}`)
+  // a restart times its own steps
+  await m.restartContainer({ containerId: 'c', user: 'dev', cwd: '/w' }, { name: 'e', image: 'x', start: 'echo b' }, [], noop, 'sR')
+  m.flushSync()
+  const restartPhases = fs.readFileSync(logFile, 'utf8').split('\n').filter((l) => l.includes('provision.phase') && l.includes('sR'))
+  assert.equal(restartPhases.length, 3, restartPhases.join('\n'))
+})
+
+// --- adapter launch ---------------------------------------------------------
+
+test('prepare: one exec links skills, checks gurt’s node and the adapter bin; a musl image fails with the glibc message', async () => {
   const agent = m.agentDef('claude-code')
-  fake.ctl({ exec: [{ match: '/opt/gurt/node/bin/node', codes: [127], stderr: 'not found\n' }] })
-  await assert.rejects(m.installAcpAdapter(T, agent, noop), /glibc.*Alpine/s)
-  assert.equal(fake.execs().length, 1, 'npm never ran')
+  const logs = []
+  await m.prepareContainer(T, agent, '.claude/skills', (l) => logs.push(l))
+  const [e] = fake.execs()
+  assert.equal(fake.execs().length, 1, 'one exec, no install')
+  assert.match(e.cmd[2], /ln -s \/gurt\/skills "\$HOME\/\.claude\/skills"/)
+  assert.ok(e.cmd[2].includes('/opt/gurt/node/bin/node --version'))
+  assert.ok(e.cmd[2].includes('[ -e "/opt/gurt/adapters/bin/claude-agent-acp" ]'))
+  assert.ok(!e.cmd[2].includes('npm'), 'nothing is installed any more')
+  assert.ok(logs.some((l) => l.includes('linked as ~/.claude/skills')))
+  // no skills owed: no link in the script
   fake.reset()
-  await m.installAcpAdapter(T, agent, noop)
-  const [pre, npm] = fake.execs()
-  assert.deepEqual(pre.cmd, ['/opt/gurt/node/bin/node', '--version'])
-  const script = npm.cmd[2]
-  assert.ok(script.includes('NPM_CONFIG_PREFIX="$HOME/.gurt/npm"'))
-  assert.ok(script.includes('/opt/gurt/node/bin/npm install -g'))
-  assert.ok(script.includes(`'${agent.adapterPackages[0]}'`))
-  assert.ok(script.includes('export PATH="/opt/gurt/node/bin:$PATH"'))
-  assert.ok(script.includes('.gurt/adapter-versions/claude-code'))
+  await m.prepareContainer(T, agent, null, noop)
+  assert.ok(!fake.execs()[0].cmd[2].includes('ln -s'))
+  // node does not run (bit 1) → the glibc/Alpine sentence; skills bit alone is not fatal
+  fake.reset({ exec: [{ match: '/opt/gurt/node/bin/node', codes: [2], stderr: 'not found\n' }] })
+  await assert.rejects(m.prepareContainer(T, agent, null, noop), /glibc.*Alpine/s)
+  fake.reset({ exec: [{ match: '/opt/gurt/node/bin/node', codes: [1] }] })
+  const logs2 = []
+  await m.prepareContainer(T, agent, '.claude/skills', (l) => logs2.push(l))
+  assert.ok(logs2.some((l) => l.includes('could not link')))
+  // the bin missing from the volume (bit 4)
+  fake.reset({ exec: [{ match: '/opt/gurt/node/bin/node', codes: [4] }] })
+  await assert.rejects(m.prepareContainer(T, agent, null, noop), /adapters volume has no claude-agent-acp/)
+})
+
+test('prepare: the real shell prints node’s own stderr and exits with the bit; codes outside the mask are not decoded', async () => {
+  const agent = m.agentDef('claude-code')
+  await m.prepareContainer(T, agent, null, noop)
+  const script = fake.execs()[0].cmd[2]
+  const home = fs.mkdtempSync(path.join(tmp, 'prep-'))
+  fs.mkdirSync(path.join(home, 'adapters/bin'), { recursive: true })
+  const badNode = path.join(home, 'node')
+  fs.writeFileSync(badNode, '#!/bin/sh\necho "loader: libstdc++.so.6 not found" >&2\nexit 127\n', { mode: 0o755 })
+  const patched = script.replaceAll('/opt/gurt/node/bin/node', badNode).replaceAll('/opt/gurt/adapters', path.join(home, 'adapters'))
+  let out = ''
+  let code = 0
+  try {
+    execFileSync('sh', ['-c', patched], { encoding: 'utf8' })
+  } catch (e) {
+    out = e.stdout
+    code = e.status
+  }
+  assert.equal(code, 2 + 4, 'node failed (2) and the bin is absent (4)')
+  // a bin without the seal (a fill that died half-way) is still "missing"
+  fs.writeFileSync(path.join(home, 'adapters/bin', agent.bin), '')
+  const goodNode = path.join(home, 'node-ok')
+  fs.writeFileSync(goodNode, '#!/bin/sh\necho v1\n', { mode: 0o755 })
+  const unsealed = script.replaceAll('/opt/gurt/node/bin/node', goodNode).replaceAll('/opt/gurt/adapters', path.join(home, 'adapters'))
+  assert.throws(() => execFileSync('sh', ['-c', unsealed], { stdio: 'pipe' }), (/** @type {any} */ e) => e.status === 4)
+  fs.writeFileSync(path.join(home, 'adapters/.gurt-ready'), '')
+  execFileSync('sh', ['-c', unsealed], { stdio: 'pipe' })
+  assert.match(out, /libstdc\+\+\.so\.6 not found/)
+  fake.reset({ exec: [{ match: '/opt/gurt/node/bin/node', codes: [127], stdout: 'sh: not found\n' }] })
+  await assert.rejects(m.prepareContainer(T, agent, null, noop), /container preparation failed \(exit 127\)/)
+})
+
+test('prepare via the manager: a volume emptied behind a cached "ready" is dropped from the cache, refilled and re-checked once', async () => {
+  withAgent()
+  const agent = m.agentDef('claude-code')
+  const name = `${m.adaptersVolumeName(agent, 'mips64el')}`
+  const sess = { id: 'rf1', workspace: 'wse', task: 'task', env: 'dev', repos: ['repo'], role: 'executor', agent: 'ag', container: adaptersRecord({ status: 'running', adapters: name }) }
+  const manager = managerFor(sess)
+  // Prepare cached the volume, it was removed while unused, create re-made it empty.
+  await m.ensureAdaptersVolume(agent, 'mips64el', noop)
+  fake.reset({ volumeExists: true, volumeReady: false, exec: [{ match: '/opt/gurt/node/bin/node', codes: [4, 0] }] })
+  manager.pendingPrepare.set('cid-old', { skillsDir: null })
+  const logs = []
+  manager.logFor = () => (l) => logs.push(l)
+  await manager.prepare({ agent, session: 'rf1', containerId: 'cid-old', exec: { containerId: 'cid-old', user: 'dev', cwd: '/w' } })
+  assert.ok(fake.of('run').some((c) => c.args.includes(agent.adapterPackages[0])), 'refilled')
+  assert.equal(fake.execs().length, 2, 'checked again once')
+  assert.ok(logs.some((l) => l.includes('is empty')))
+})
+
+test('ensure (outdated container): a failed fill for the replacement’s arch, or a missing replacement image, leaves the container and record alone', async () => {
+  withAgent()
+  seedWorkspace({ name: 'dev', image: 'img:1' })
+  const old = () => adaptersRecord({ status: 'running', adapters: 'gurt-adapters-aaaaaaaaaaaa-amd64' })
+  // the replacement image is another arch than the old volume's, and its fill fails
+  fake.reset({ psSession: 'cid-old\n', image: 'dev|ppc64', fillFails: 1, fillStderr: 'npm ERR! network\n' })
+  let sess = { id: 'ad6', workspace: 'wse', task: 'task', env: 'dev', repos: ['repo'], role: 'executor', agent: 'ag', container: old() }
+  await assert.rejects(managerFor(sess).ensure('ad6'), /failed/)
+  assert.equal(fake.of('rm').length, 0, 'not removed')
+  assert.equal(fake.of('create').length, 0)
+  assert.equal(sess.container.id, 'cid-old', 'the record still names it')
+  // the replacement image cannot be had
+  fake.reset({ psSession: 'cid-old\n', imageMissing: true })
+  sess = { id: 'ad7', workspace: 'wse', task: 'task', env: 'dev', repos: ['repo'], role: 'executor', agent: 'ag', container: old() }
+  await assert.rejects(managerFor(sess).ensure('ad7'), /not available locally/)
+  assert.equal(fake.of('rm').length, 0)
+  assert.equal(sess.container.id, 'cid-old')
+  // and once everything is ready, the old one goes and the new one comes
+  fake.reset({ psSession: 'cid-old\n', volumeExists: true, volumeReady: true })
+  sess = { id: 'ad8', workspace: 'wse', task: 'task', env: 'dev', repos: ['repo'], role: 'executor', agent: 'ag', container: old() }
+  const c = await managerFor(sess).ensure('ad8')
+  assert.deepEqual(fake.of('rm').map((x) => x.args.at(-1)), ['cid-old'])
+  assert.notEqual(c.id, 'cid-old')
+})
+
+test('prepare: a bin without the .gurt-ready seal is not accepted', async () => {
+  await m.prepareContainer(T, m.agentDef('claude-code'), null, noop)
+  assert.ok(fake.execs()[0].cmd[2].includes('/opt/gurt/adapters/.gurt-ready'))
+})
+
+test('machinePrepare fills the node volume and one adapters volume per distinct pin set', async () => {
+  fake.reset({ image: 'riscv32' })
+  await m.machinePrepare(noop)
+  const keys = new Set(m.AGENT_MANIFESTS.map((a) => m.adaptersVolumeKey(a)))
+  const creates = fake.of('volume', 'create').map((c) => c.args.at(-1))
+  assert.equal(creates.filter((n) => n.startsWith('gurt-adapters-')).length, keys.size)
+  assert.ok(creates.some((n) => n.startsWith('gurt-node-')))
+  assert.ok(creates.every((n) => n.endsWith('-riscv32')))
 })
 
 test('launch: a JS bin runs under gurt’s node, a non-JS bin is exec’d directly', async () => {
@@ -507,18 +706,18 @@ test('launch: a JS bin runs under gurt’s node, a non-JS bin is exec’d direct
   const [e] = fake.execs()
   const script = e.cmd[2]
   assert.deepEqual(e.cmd.slice(3), ['opencode', 'acp'])
-  // run the script for real against a temp HOME, with gurt's node swapped for a stub
+  // run the script for real against a temp adapters dir, with gurt's node swapped for a stub
   const home = fs.mkdtempSync(path.join(tmp, 'home-'))
-  const pkg = path.join(home, '.gurt/npm/lib/pkg')
-  fs.mkdirSync(path.join(home, '.gurt/npm/bin'), { recursive: true })
+  const pkg = path.join(home, 'adapters/lib/pkg')
+  fs.mkdirSync(path.join(home, 'adapters/bin'), { recursive: true })
   fs.mkdirSync(pkg, { recursive: true })
   const stubNode = path.join(home, 'node')
   fs.writeFileSync(stubNode, '#!/bin/sh\necho "NODE $@"\n', { mode: 0o755 })
   fs.writeFileSync(path.join(pkg, 'index.js'), '')
   fs.writeFileSync(path.join(pkg, 'opencode.exe'), '#!/bin/sh\necho "NATIVE $@"\n', { mode: 0o755 })
-  fs.symlinkSync(path.join(pkg, 'index.js'), path.join(home, '.gurt/npm/bin/jsbin'))
-  fs.symlinkSync(path.join(pkg, 'opencode.exe'), path.join(home, '.gurt/npm/bin/opencode'))
-  const patched = script.replaceAll('/opt/gurt/node/bin/node', stubNode)
+  fs.symlinkSync(path.join(pkg, 'index.js'), path.join(home, 'adapters/bin/jsbin'))
+  fs.symlinkSync(path.join(pkg, 'opencode.exe'), path.join(home, 'adapters/bin/opencode'))
+  const patched = script.replaceAll('/opt/gurt/node/bin/node', stubNode).replaceAll('/opt/gurt/adapters', path.join(home, 'adapters'))
   const run = (bin, ...args) =>
     execFileSync('sh', ['-c', patched, bin, ...args], { env: { HOME: home, PATH: '/usr/bin:/bin' } }).toString().trim()
   assert.equal(run('jsbin', '--x'), `NODE ${path.join(fs.realpathSync(pkg), 'index.js')} --x`)
@@ -667,6 +866,88 @@ test('ensure (stopped container from before the artifacts bind): re-created with
   assert.ok(mounts.includes(`type=bind,source=${artifacts},target=/workspaces/artifacts`), mounts.join(' | '))
   assert.ok(fs.statSync(artifacts).isDirectory(), 'the bind source exists on the host')
   assert.equal(c.artifacts, true, 'the record says so, so the next start restarts it')
+})
+
+// --- adapters volume: a container is reused only while it mounts the current one ---
+
+const withAgent = (kind = 'claude-code') =>
+  fs.writeFileSync(path.join(GURT_ROOT, 'agents.json'), JSON.stringify({ ag: { kind, label: 'A', credentialId: '' } }))
+const adaptersRecord = (over = {}) => ({
+  status: 'stopped', id: 'cid-old', remoteWorkspaceFolder: '/workspaces/repo', user: 'dev', path: '/x',
+  repos: ['repo'], artifacts: true, ...over
+})
+
+test('ensure (agent session): a fresh create mounts the adapters volume and records its name', async () => {
+  withAgent()
+  seedWorkspace({ name: 'dev', image: 'img:1' })
+  fake.ctl({ volumeExists: true, volumeReady: true })
+  const sess = { id: 'ad1', workspace: 'wse', task: 'task', env: 'dev', repos: ['repo'], role: 'executor', agent: 'ag' }
+  const c = await managerFor(sess).ensure('ad1')
+  assert.match(c.adapters, /^gurt-adapters-[0-9a-f]{12}-amd64$/)
+  assert.ok(createMounts().includes(`type=volume,source=${c.adapters},target=/opt/gurt/adapters,readonly`))
+  assert.equal(sess.container.adapters, c.adapters)
+})
+
+test('ensure (stopped container that mounts the current adapters volume): restarted in place', async () => {
+  withAgent()
+  seedWorkspace({ name: 'dev', image: 'img:1' })
+  fake.ctl({ volumeExists: true, volumeReady: true })
+  const adapters = m.adaptersVolumeName(m.agentDef('claude-code'), 'amd64')
+  const sess = { id: 'ad2', workspace: 'wse', task: 'task', env: 'dev', repos: ['repo'], role: 'executor', agent: 'ag', container: adaptersRecord({ adapters }) }
+  const c = await managerFor(sess).ensure('ad2')
+  assert.equal(fake.of('create').length, 0)
+  assert.deepEqual(fake.of('start')[0].args, ['start', 'cid-old'])
+  assert.equal(c.adapters, adapters, 'the record keeps naming the volume')
+})
+
+test('ensure (container from before the volume, or from before a pin bump): removed and re-created with the current one', async () => {
+  withAgent()
+  seedWorkspace({ name: 'dev', image: 'img:1' })
+  for (const [i, adapters] of [[0, undefined], [1, 'gurt-adapters-aaaaaaaaaaaa-amd64']]) {
+    fake.reset({ volumeExists: true, volumeReady: true, psSession: 'cid-old\n' })
+    const sess = { id: `ad3${i}`, workspace: 'wse', task: 'task', env: 'dev', repos: ['repo'], role: 'executor', agent: 'ag', container: adaptersRecord(adapters ? { adapters } : {}) }
+    const logs = []
+    const manager = new m.ContainerManager({
+      bus: { emit: (n, e) => n === 'provision.log' && logs.push(e.line) },
+      session: () => sess,
+      sessions: () => [sess],
+      patchContainer: (id, c) => { sess.container = c },
+      isSessionIdle: () => true,
+      detach: noop
+    })
+    const c = await manager.ensure(sess.id)
+    assert.deepEqual(fake.of('rm').map((x) => x.args.at(-1)), ['cid-old'], 'the stale container is removed')
+    assert.equal(fake.of('start').filter((x) => x.args[1] === 'cid-old').length, 0)
+    assert.equal(fake.of('create').length, 1)
+    assert.equal(c.adapters, m.adaptersVolumeName(m.agentDef('claude-code'), 'amd64'))
+    assert.ok(logs.some((l) => l.includes('adapters volume')), logs.join('\n'))
+  }
+})
+
+test('ensure (a RUNNING container without the current adapters volume is not reused either)', async () => {
+  withAgent()
+  seedWorkspace({ name: 'dev', image: 'img:1' })
+  fake.ctl({ volumeExists: true, volumeReady: true, psSession: 'cid-old\n' })
+  const sess = { id: 'ad4', workspace: 'wse', task: 'task', env: 'dev', repos: ['repo'], role: 'executor', agent: 'ag', container: adaptersRecord({ status: 'running' }) }
+  const c = await managerFor(sess).ensure('ad4')
+  assert.equal(fake.of('create').length, 1)
+  assert.notEqual(c.id, 'cid-old')
+})
+
+test('ensure: the container check is owed once per up, consumed by prepare (skills + node + bin in one exec)', async () => {
+  withAgent()
+  seedWorkspace({ name: 'dev', image: 'img:1' })
+  fake.ctl({ volumeExists: true, volumeReady: true })
+  const sess = { id: 'ad5', workspace: 'wse', task: 'task', env: 'dev', repos: ['repo'], role: 'executor', agent: 'ag' }
+  const manager = managerFor(sess)
+  const c = await manager.ensure('ad5')
+  const target = { agent: m.agentDef('claude-code'), session: 'ad5', containerId: c.id, exec: { containerId: c.id, user: 'dev', cwd: '/workspaces/repo', path: c.path } }
+  const before = fake.execs().length
+  await manager.prepare(target)
+  await manager.prepare(target)
+  assert.equal(fake.execs().length - before, 1, 'one exec, then nothing owed')
+  // the path carries the adapters bin
+  assert.ok(c.path.endsWith(':/opt/gurt/node/bin:/opt/gurt/adapters/bin'))
 })
 
 test('ensure (stopped record whose container is gone): a fresh create, not a start', async () => {

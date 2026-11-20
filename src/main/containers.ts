@@ -34,7 +34,6 @@ import { oauthAuthFile } from './oauth/materialize'
 import { containerGitEnv } from './git/config'
 import * as store from './store'
 import {
-  adapterPresent,
   containerTerminalCommand,
   assertDockerCli,
   assertDockerDaemon,
@@ -47,12 +46,17 @@ import {
   dockerSessionContainersDetailed,
   dockerStop,
   ensureClone,
-  installAcpAdapter,
   prepareEnvImage,
   restartContainer,
   spawnDockerExec,
-  linkContainerSkills,
-  probeAdapterAndLinkSkills,
+  prepareContainer,
+  AdapterMissingError,
+  forgetReadyVolume,
+  ensureAdaptersVolume,
+  prepareReplacementVolumes,
+  adaptersVolumeKey,
+  adaptersKeyOfVolume,
+  timedPhase,
   linkContainerHistory,
   writeContainerUserFile,
   SKILLS_MOUNT,
@@ -157,9 +161,9 @@ export function containerLayout(
 }
 
 /**
- * What the adapter install needs to address one container — the half of
- * {@link LaunchContext} that exists *before* the session's network is switched,
- * because the install itself needs the open network (§7.1 step 3).
+ * What the container check needs to address one container — the half of
+ * {@link LaunchContext} that exists *before* the session's network is switched
+ * (§7.1 step 3).
  */
 export interface AdapterTarget {
   agent: AgentManifest
@@ -217,22 +221,15 @@ export class ContainerManager {
   // filesystem. A container id is minted by Docker and never reused, so this
   // cannot address a container that has been replaced — and `forget` drops the
   // entry when one is destroyed, so it does not grow without bound either.
-  /** Container ids the agent's adapter packages are installed in. */
-  private adapterInstalled = new Set<string>()
-  /** In-flight adapter install per container id. npm rewrites a global package
-   *  non-atomically (delete, then re-extract), so two overlapping `npm install
-   *  -g` into one filesystem leave a window where an adapter spawned after the
-   *  first install imports the second one's half-written files. Concurrent
-   *  callers must share one install, the way `ensureInFlight` shares one up. */
-  private installsInFlight = new Map<string, Promise<void>>()
-  /** A skills link `ensureUncoalesced` owes a container it just brought up
-   *  (fresh or resumed), keyed by container id — consumed by `installAdapter`,
-   *  which runs right after in every caller (`ensure` has none but
-   *  `resolveLaunch`), so the two land in one `docker exec` instead of
-   *  two (`probeAdapterAndLinkSkills`). Cleared by `forget` alongside
-   *  `adapterInstalled`, so a container that never reaches `installAdapter`
-   *  (removed mid-start, teardown) cannot leak an entry here. */
-  private pendingSkillsLink = new Map<string, string>()
+  /** What `ensureUncoalesced` owes a container it just brought up (fresh or
+   *  resumed), keyed by container id — consumed by `prepareContainer`, the one
+   *  `docker exec` that links the skills (`skillsDir`, null when the session
+   *  mounted none) and checks the node runtime and the adapter bin. Cleared by
+   *  `forget`, so a container that never reaches `resolveLaunch` (removed
+   *  mid-start, teardown) cannot leak an entry here. */
+  private pendingPrepare = new Map<string, { skillsDir: string | null }>()
+  /** In-flight preparation per container id: concurrent launches share one. */
+  private prepInFlight = new Map<string, Promise<void>>()
   /** Container is stopped after its session sits idle this long. */
   private readonly IDLE_STOP_MS = 10 * 60_000
   private idleTimers = new Map<string, NodeJS.Timeout>()
@@ -246,13 +243,8 @@ export class ContainerManager {
   /** Times a provisioning step and logs its duration in the same structured
    *  style as `ensureUncoalesced`'s clone/image/up phases — "which step is
    *  slow" is the first question a slow warm start raises. */
-  private async timed<T>(sessionId: string, phase: string, fn: () => Promise<T>): Promise<T> {
-    const since = Date.now()
-    try {
-      return await fn()
-    } finally {
-      log.info('provision.phase', { s: sessionId, phase, ms: Date.now() - since })
-    }
+  private timed<T>(sessionId: string, phase: string, fn: () => Promise<T>): Promise<T> {
+    return timedPhase(sessionId, phase, fn)
   }
 
   private refOf(info: SessionInfo): EnvRef {
@@ -365,6 +357,16 @@ export class ContainerManager {
     await assertDockerDaemon()
     const provisionLog = this.logFor(sessionId)
 
+    // The session's agent kind, resolved now: its adapters volume is part of
+    // the container's mount list (fixed at create time), so a container
+    // without the *current* volume is not one this start may reuse.
+    const agentId = info.agent || (await store.getWorkspace(info.workspace)).defaultAgent
+    const kind = agentId ? (await store.getAgents())[agentId]?.kind : undefined
+    const agent = kind ? agentDef(kind) : undefined
+    const wantAdapters = agent ? adaptersVolumeKey(agent) : undefined
+    const adaptersCurrent = (c: SessionContainer): boolean =>
+      wantAdapters === undefined || adaptersKeyOfVolume(c.adapters) === wantAdapters
+
     // Its own container, still up → just reuse it. (Probe the daemon: a Docker
     // restart leaves a persisted `running` record describing an exited container.)
     // `path` is part of the record's usable shape: the exec PATH is probed once
@@ -376,6 +378,7 @@ export class ContainerManager {
       owned.remoteWorkspaceFolder &&
       owned.path &&
       sameRepos(owned.repos, info.repos) &&
+      adaptersCurrent(owned) &&
       (await dockerRunning(owned.id))
     )
       return owned
@@ -397,7 +400,16 @@ export class ContainerManager {
     // A container this session owns but can no longer use — it was built for a
     // different repo set. A stopped one on the same repo set is restarted in
     // place, so only a repo change forces a rebuild.
-    if (owned?.id && owned.repos.length && !sameRepos(owned.repos, info.repos)) {
+    // The same goes for one whose adapters volume is not the current one: a
+    // container from before the volume existed, or from before a pin bump. A
+    // mount cannot be added to or swapped in a live container, so it is
+    // re-created — what the old in-container `npm install -g` redid in place.
+    const adaptersStale = !!owned?.id && !adaptersCurrent(owned)
+    // An outdated container on the same repos is removed only once its
+    // replacement's image and volumes are ready (below, `retire`): a pull,
+    // build or first-use npm failure must leave the session as it was.
+    const retireLater = adaptersStale && !!owned?.id && sameRepos(owned.repos, info.repos) ? owned.id : undefined
+    if (owned?.id && !retireLater && ((owned.repos.length && !sameRepos(owned.repos, info.repos)) || adaptersStale)) {
       this.deps.detach(sessionId)
       this.forget(owned.id)
       await dockerRemove(owned.id, provisionLog)
@@ -425,7 +437,11 @@ export class ContainerManager {
     // is a fresh create — the mount list is fixed at create time, so a
     // container from before the artifacts bind existed is re-created once.
     const existing =
-      owned?.id && sameRepos(owned.repos, info.repos) && owned.artifacts && (await dockerContainerExists(owned.id))
+      owned?.id &&
+      sameRepos(owned.repos, info.repos) &&
+      owned.artifacts &&
+      adaptersCurrent(owned) &&
+      (await dockerContainerExists(owned.id))
         ? owned
         : undefined
     if (owned?.id && !existing) {
@@ -438,7 +454,14 @@ export class ContainerManager {
     // as soon as the container exists and its setup script starts running.
     this.setStatus(
       sessionId,
-      { repos: info.repos, ...(existing ?? {}), status: 'building', error: undefined },
+      {
+        repos: info.repos,
+        // An outdated container awaiting its replacement stays named until
+        // the replacement is ready — a failed start must not orphan it.
+        ...(existing ?? (retireLater ? owned : {})),
+        status: 'building',
+        error: undefined
+      },
       'user'
     )
     // Each provisioning step is timed on its own — "which phase is slow" is the
@@ -476,10 +499,8 @@ export class ContainerManager {
       // falling back to the workspace default the way the create path does
       // (ipc.ts). An id that resolves to nothing mounts nothing — gurt cannot
       // link a directory for an agent it cannot name.
-      const agentId = info.agent || ws.defaultAgent
-      const kind = agentId ? (await store.getAgents())[agentId]?.kind : undefined
-      const skillsDir = (kind ? agentDef(kind)?.skillsDir : null) ?? null
-      const historyPaths = (kind ? agentDef(kind)?.historyPaths : undefined) ?? []
+      const skillsDir = agent?.skillsDir ?? null
+      const historyPaths = agent?.historyPaths ?? []
       if (info.skills?.length && skillsDir === null)
         provisionLog(
           `[skills] agent "${kind ?? agentId ?? 'unknown'}" does not read skills — selection not mounted`
@@ -523,6 +544,7 @@ export class ContainerManager {
       const bindSources = mounts.filter((m) => m.type === 'bind').map((m) => m.source)
 
       let execT: ExecTarget
+      let adapters = existing?.adapters
       if (existing) {
         // Restart in place. Whatever image the container was created from is
         // what it keeps, so nothing is pulled or built. It still runs on the
@@ -539,7 +561,7 @@ export class ContainerManager {
           cwd: existing.remoteWorkspaceFolder ?? workdir,
           ...(existing.path ? { path: existing.path } : {})
         }
-        const execPath = await restartContainer(t, envCfg, bindSources, provisionLog)
+        const execPath = await restartContainer(t, envCfg, bindSources, provisionLog, sessionId)
         execT = { ...t, path: execPath }
       } else {
         enter('image')
@@ -549,9 +571,16 @@ export class ContainerManager {
           anchor?.dir ?? null,
           provisionLog
         )
+        if (retireLater) {
+          provisionLog("re-creating the container to mount the agent's adapters volume")
+          await prepareReplacementVolumes(image, agent, provisionLog, sessionId)
+          this.deps.detach(sessionId)
+          this.forget(retireLater)
+          await dockerRemove(retireLater, provisionLog)
+        }
         enter('up')
         const created = await createContainer(
-          { session: sessionId, image, env: envCfg, workdir, mounts, skipSetup },
+          { session: sessionId, image, env: envCfg, workdir, mounts, skipSetup, ...(agent ? { agent } : {}) },
           provisionLog,
           {
             // The container exists and its setup script starts: flip to `post`.
@@ -559,7 +588,7 @@ export class ContainerManager {
             // one thing that must never be written.
             onCreated: () =>
               this.setStatus(sessionId, { repos: info.repos, artifacts: true, status: 'post' }, 'user'),
-            onSetupDone: (id, user) =>
+            onSetupDone: (id, user, adapters) =>
               this.setStatus(
                 sessionId,
                 {
@@ -568,12 +597,14 @@ export class ContainerManager {
                   status: 'post',
                   id,
                   user,
-                  remoteWorkspaceFolder: workdir
+                  remoteWorkspaceFolder: workdir,
+                  ...(adapters ? { adapters } : {})
                 },
                 'user'
               )
           }
         )
+        adapters = created.adapters
         execT = {
           containerId: created.containerId,
           user: created.user,
@@ -584,11 +615,12 @@ export class ContainerManager {
       // Owed after the container is up, before anything reports it usable: the
       // agent resolves its skills and its history at startup. The history
       // link runs here; the skills link is deferred instead of run inline —
-      // `installAdapter` is the only caller ever reached right after this one
-      // (only `resolveLaunch` calls `ensure`), and consuming the debt there
-      // merges it into the same `docker exec` as the adapter probe.
-      if (skillsDir !== null && skillMounts.length)
-        this.pendingSkillsLink.set(execT.containerId, skillsDir)
+      // `prepareContainer` is the only caller ever reached right after this
+      // one (only `resolveLaunch` calls `ensure`), and consuming the debt
+      // there merges it into the same `docker exec` as the node/adapter check.
+      this.pendingPrepare.set(execT.containerId, {
+        skillsDir: skillsDir !== null && skillMounts.length ? skillsDir : null
+      })
       if (historyMounts.length)
         await linkContainerHistory(execT, sessionId, kind ?? 'unknown', historyPaths, provisionLog)
       // Deleted mid-start: this container was born after its session's delete
@@ -607,7 +639,8 @@ export class ContainerManager {
         user: execT.user,
         ...(execT.path ? { path: execT.path } : {}),
         repos: info.repos,
-        artifacts: true
+        artifacts: true,
+        ...(adapters ? { adapters } : {})
       }
       this.setStatus(sessionId, next, 'user')
       enter()
@@ -673,9 +706,7 @@ export class ContainerManager {
    * container network — reserving/starting the session's proxy, which runs on
    * whatever network it runs on regardless of where the session's container
    * currently sits. Split from {@link convergeProxyNetwork} so `resolveLaunch`
-   * can run this alongside the adapter install (step 3): both only need the
-   * container's *current* (open) network, and neither is the thing that closes
-   * it.
+   * can run this alongside the container check (step 3).
    */
   private async ensureProxyScope(info: SessionInfo): Promise<ProxyRuntime> {
     const provisionLog = this.logFor(info.id)
@@ -697,8 +728,7 @@ export class ContainerManager {
    * `docker inspect`, and one left half-attached by a crash is corrected
    * rather than compounded.
    *
-   * Must run strictly after the adapter install settles (§7.1 step 3 needs the
-   * open network `installAdapter` still has); every caller of this is one step
+   * Every caller of this is one step
    * away from launching an agent, and an agent launched into a container still
    * on the default bridge has the unrestricted egress the session was created
    * to deny — so the last thing that happens here is asking whether the switch
@@ -809,14 +839,11 @@ export class ContainerManager {
       containerId: c.id,
       exec
     }
-    // Step 3 of the provisioning sequence (§7.1), and the reason it runs
-    // alongside the proxy reservation rather than in the connection path:
-    // `npm install -g` needs the open network, and step 5 is what takes it
-    // away in internal mode — so the network switch waits for the install,
-    // but reserving the proxy's scope does not (`installAdapterAndProxy`).
-    // The connection path calls `installAdapter` again and hits the
-    // per-container cache.
-    const proxy = await this.installAdapterAndProxy(info, c.id, target)
+    // Steps 3–5 of the provisioning sequence (§7.1): the container check, the
+    // proxy reservation and the network switch. Nothing here needs the open
+    // network any more (the adapter is a mounted volume, not an install), so
+    // the switch happens as soon as the proxy's scope is reserved.
+    const proxy = await this.prepareAndProxy(info, c.id, target)
     // The async half of the credential seam (docs/requirements-oauth-
     // credentials.md §2, §5.2): an oauth link resolves to a *live* access
     // token, refreshed (single-flight, persisted) right here — after
@@ -876,77 +903,67 @@ export class ContainerManager {
     }
   }
 
-  /** Install the agent's adapter packages in the session's container, once per
-   *  container. Idempotent: a stop/start keeps the same container (and its
-   *  filesystem), a replacement gets a new id and so reinstalls. The in-memory
-   *  set only fast-paths that answer within one app process — a fresh process
-   *  probes the container itself before reinstalling into it.
-   *
-   *  Also the sole consumer of a skills link `ensureUncoalesced` left pending
-   *  for this container (see `pendingSkillsLink`): whichever branch below
-   *  actually talks to the container folds it in, so the skills bind is
-   *  relinked exactly when it always was — once per `up` — regardless of
-   *  which branch that turns out to be. */
-  installAdapter(ctx: AdapterTarget): Promise<void> {
-    const pendingSkillsDir = this.pendingSkillsLink.get(ctx.containerId)
-    if (pendingSkillsDir !== undefined) this.pendingSkillsLink.delete(ctx.containerId)
-    if (this.adapterInstalled.has(ctx.containerId)) {
-      if (pendingSkillsDir === undefined) return Promise.resolve()
-      // The adapter was probed/installed earlier in this app process (a
-      // stopped container resumed without an app restart) — nothing to merge
-      // the skills link into, so it runs on its own.
-      return this.timed(ctx.session, 'skills-link', () =>
-        linkContainerSkills(ctx.exec, pendingSkillsDir, this.logFor(ctx.session))
-      )
-    }
-    const inflight = this.installsInFlight.get(ctx.containerId)
+  /** What an `up` owes the container before its adapter may launch (see
+   *  {@link prepareContainer}): once per `up`, consumed from `pendingPrepare`.
+   *  Concurrent callers share one run; a container already prepared (or one
+   *  reused as it was, with nothing owed) costs nothing. */
+  private prepare(ctx: AdapterTarget): Promise<void> {
+    const inflight = this.prepInFlight.get(ctx.containerId)
     if (inflight) return inflight
-    const p = (async () => {
-      const provisionLog = this.logFor(ctx.session)
-      const present = await this.timed(
-        ctx.session,
-        pendingSkillsDir !== undefined ? 'adapter-probe+skills-link' : 'adapter-probe',
-        () =>
-          pendingSkillsDir !== undefined
-            ? probeAdapterAndLinkSkills(ctx.exec, ctx.agent, pendingSkillsDir, provisionLog)
-            : adapterPresent(ctx.exec, ctx.agent)
-      )
-      if (present) provisionLog(`${ctx.agent.bin} already installed in container`)
-      else
-        await this.timed(ctx.session, 'adapter-install', () =>
-          installAcpAdapter(ctx.exec, ctx.agent, provisionLog)
-        )
-      this.adapterInstalled.add(ctx.containerId)
-    })()
-    this.installsInFlight.set(ctx.containerId, p)
-    p.finally(() => this.installsInFlight.delete(ctx.containerId)).catch(() => {})
+    const owed = this.pendingPrepare.get(ctx.containerId)
+    if (owed === undefined) return Promise.resolve()
+    this.pendingPrepare.delete(ctx.containerId)
+    const provisionLog = this.logFor(ctx.session)
+    const p = this.timed(ctx.session, 'container-prepare', async () => {
+      try {
+        await prepareContainer(ctx.exec, ctx.agent, owed.skillsDir, provisionLog)
+      } catch (e) {
+        // The volume this container mounts lost its contents behind a cached
+        // "ready" (removed while unused, then re-created empty by `create`):
+        // drop the cache, refill through the usual probe, check once more.
+        const name = this.container(ctx.session)?.adapters
+        const arch = name?.split('-').at(-1)
+        if (!(e instanceof AdapterMissingError) || !name || !arch) throw e
+        provisionLog(`adapters volume ${name} is empty — refilling it`)
+        forgetReadyVolume(name)
+        await ensureAdaptersVolume(ctx.agent, arch, provisionLog, ctx.session)
+        await prepareContainer(ctx.exec, ctx.agent, owed.skillsDir, provisionLog)
+      }
+    }).catch((e: unknown) => {
+      // Still owed: the next launch attempt must check again, not skip it.
+      this.pendingPrepare.set(ctx.containerId, owed)
+      throw e
+    })
+    this.prepInFlight.set(ctx.containerId, p)
+    p.finally(() => this.prepInFlight.delete(ctx.containerId)).catch(() => {})
     return p
   }
 
   /**
-   * `resolveLaunch`'s steps 3–5 (§7.1): the adapter install and the proxy
-   * scope reservation share the container's *current* network — neither
-   * closes it — so they run concurrently; only the network switch onto the
-   * proxy (and, in internal mode, confirming it) waits for the install to
-   * settle, since that switch is what ends the open-network window step 3
-   * needs (§7.1 step 3, §7.3).
+   * `resolveLaunch`'s steps 3–5 (§7.1): the container check and the proxy
+   * scope reservation + network switch run concurrently. Neither needs the
+   * open network — the adapter is a read-only volume — so the window that
+   * began at `create` ends with `setup`/`start` and the switch onto the proxy
+   * (and, in internal mode, confirming it) waits for nothing but the proxy's
+   * own scope.
    *
    * Both branches are awaited to completion either way (`allSettled`, not
-   * `all`) so neither error is lost to an unhandled rejection — the install's
-   * error wins when both fail, matching the order they used to run in.
+   * `all`) so neither error is lost to an unhandled rejection — the check's
+   * error wins when both fail (a musl image explains more than a refused
+   * switch does).
    */
-  private async installAdapterAndProxy(
+  private async prepareAndProxy(
     info: SessionInfo,
     containerId: string,
     target: AdapterTarget
   ): Promise<ProxyRuntime> {
-    const [installResult, scopeResult] = await Promise.allSettled([
-      this.installAdapter(target),
-      this.ensureProxyScope(info)
+    const [prepResult, proxyResult] = await Promise.allSettled([
+      this.prepare(target),
+      this.ensureProxyScope(info).then((scope) => this.convergeProxyNetwork(info, containerId, scope))
     ])
-    if (installResult.status === 'rejected') throw installResult.reason
-    if (scopeResult.status === 'rejected') throw scopeResult.reason
-    return this.convergeProxyNetwork(info, containerId, scopeResult.value)
+    if (prepResult.status === 'rejected') throw prepResult.reason
+    if (proxyResult.status === 'rejected') throw proxyResult.reason
+    return proxyResult.value
   }
 
   /**
@@ -966,8 +983,7 @@ export class ContainerManager {
 
   /** Drop every host-side record derived from a container that is going away. */
   private forget(containerId: string): void {
-    this.adapterInstalled.delete(containerId)
-    this.pendingSkillsLink.delete(containerId)
+    this.pendingPrepare.delete(containerId)
   }
 
   /**

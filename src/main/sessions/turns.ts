@@ -172,6 +172,9 @@ export async function sendTurn(mgr: TurnsCtx, s: Session,
     const preface = s.preface
     // Everything above was asynchronous: a Stop may have landed meanwhile.
     mgr.assertNotStopped(s)
+    // The start's own prompt: the end-to-end start phase ends at the first
+    // update the agent sends back for it (`onSessionUpdate`).
+    if (s.startTiming) s.startTiming.promptSent = true
     const result = await conn.peer.request(
       'session/prompt',
       {

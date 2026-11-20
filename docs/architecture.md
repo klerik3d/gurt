@@ -365,13 +365,25 @@ by an older build, is removed before a new one is created.
    once into a docker volume (`gurt-node-<digest>-<arch>`, labelled
    `gurt.kind=node-runtime`; refilled if its `.gurt-ready` marker is missing)
    and mounted read-only at `/opt/gurt/node` in every container. It is a glibc
-   build: musl/Alpine env images are unsupported.
+   build: musl/Alpine env images are unsupported. The agent kind's **ACP adapter
+   packages** get the same treatment: one volume per pin set
+   (`gurt-adapters-<hash of the kind's adapterPackages + node digest>-<arch>`,
+   labelled `gurt.kind=adapters`), filled once by a throwaway `docker run --rm`
+   of the node runtime image doing `npm install -g` into `/out`
+   (`NPM_CONFIG_PREFIX=/out`), sealed with `.gurt-ready`, and mounted read-only at
+   `/opt/gurt/adapters`. A start never installs anything; a volume superseded by
+   a pin bump is removed (Docker refuses while a container still mounts it, so GC
+   retries). Settings → Prepare fills both volumes ahead of the first start.
 4. `docker create` + `start` on Docker's default bridge: labels
    `gurt.session=<id>`, `gurt.managed=1`, `gurt.runtime=docker`; `--init` and a
    keep-alive entrypoint (the image's own ENTRYPOINT/CMD does not run); the env's
    `env`; the mounts — every repo, one or several, read-write or read-only by role,
    at `/workspaces/<name>` (so file paths do not depend on the repo count), plus
-   skills `/gurt/skills` (read-only), history `/gurt/history`, the node volume.
+   skills `/gurt/skills` (read-only), history `/gurt/history`, the node volume and
+   the agent's adapters volume (both read-only). A container that does not mount
+   the *current* adapters volume (made before it existed, or before a pin bump)
+   is removed and re-created rather than restarted — the mount list is fixed at
+   create time — and the record names the volume (`SessionContainer.adapters`).
    The container belongs to the starting session; its own stopped container is
    restarted in place (`docker start`), another session's is never taken.
 5. in order, on the open network: the user is the image's `Config.User`, else root
@@ -383,18 +395,17 @@ by an older build, is removed before a new one is created.
    the container id is written to the session record only *after* setup
    succeeded; the **`start`** script runs on every start (create and restart);
    then the exec `PATH` is probed once per container (`$SHELL -lic`, with gurt's
-   node and npm bins *appended*, so the project's toolchain wins) and cached on
-   the record.
-6. on the first connection into a container, the session's ACP adapter is
-   npm-installed globally (`NPM_CONFIG_PREFIX=$HOME/.gurt/npm`, by gurt's npm) via
-   `docker exec` — the packages and the launch command are the kind's
-   manifest's (`adapterPackages`, `bin`, `binArgs` in
-   `src/plugins/agents/<id>/manifest.ts`), all pinned to exact versions — cached
-   per **container id**, so a container that is stopped and restarted keeps its
-   install and a replaced one reinstalls; a version marker in the container
-   triggers a reinstall when a pin changes. The adapter is launched with gurt's
-   own node (`/opt/gurt/node/bin/node <resolved script>`; a bin that is not JS is
-   exec'd directly).
+   node bin and the adapters' bin *appended*, so the project's toolchain wins)
+   and cached on the record.
+6. on every `up` (create or restart) one `docker exec` runs
+   (`prepareContainer`): the skills link (when skills are mounted), gurt's node
+   `--version` (the glibc check) and a test that the adapters volume holds the
+   kind's `bin`. Nothing is installed or downloaded. The adapter is launched
+   from the volume with gurt's own node (`/opt/gurt/node/bin/node <script
+   resolved under /opt/gurt/adapters/bin>`; a bin that is not JS is exec'd
+   directly). The packages and the launch command are the kind's manifest's
+   (`adapterPackages`, `bin`, `binArgs` in `src/plugins/agents/<id>/manifest.ts`),
+   all pinned to exact versions.
 7. the session's own Docker network (`gurt-s-<id>`, labelled
    `gurt.session=<id>`) and its **proxy container** are ensured, and the
    container is switched onto that network with no restart (`docker network
@@ -403,13 +414,14 @@ by an older build, is removed before a new one is created.
    stock `node:22-alpine` running one bind-mounted script (`gurt.proxy=<id>`),
    sitting on the session network *and* on a shared `gurt-egress` bridge, and it
    is where every MCP call and — in `internal` sessions — every byte of egress
-   goes. Everything above runs on the open network, because the image build,
-   the `setup` script and the adapter install all need it
-   (requirements-mcp-proxy.md §7.3); the provisioning log records the
-   switch. An `internal` session verifies its isolation after the switch and
+   goes. Everything above runs on the open network, because the image build and
+   the `setup`/`start` scripts need it (requirements-mcp-proxy.md §7.3; the
+   adapter no longer does — it is a mounted volume); the switch waits only for
+   the proxy's scope, not for step 6, and the provisioning log records it. An `internal` session verifies its isolation after the switch and
    fails the start if it cannot be confirmed.
 8. ACP `session/new`, then the session's `startPrompt` is sent as the first
-   prompt. ACP (JSON-RPC over stdio) runs through `docker exec -i`; **secrets
+   prompt. Each step is timed as a `provision.phase` (docs/logging.md),
+   `acp-session-new` and the end-to-end `start-to-first-update` included. ACP (JSON-RPC over stdio) runs through `docker exec -i`; **secrets
    never ride in argv**: the agent secret, the proxy variables, the git identity
    and the launch env are passed as `-e NAME` with the values in the docker
    client's own environment (an oauth sign-in for a kind whose plugin names a

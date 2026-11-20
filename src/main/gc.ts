@@ -14,7 +14,7 @@
 // touched. Images in use are never removed: `docker rmi` without -f refuses.
 import { statfs } from 'node:fs/promises'
 import type { ContainerManager } from './containers'
-import { envBuildInFlight, run } from './provision'
+import { envBuildInFlight, removeStaleAdapterVolumes, run } from './provision'
 import { createLogger } from './log'
 import * as store from './store'
 import { gurtRoot } from './paths'
@@ -174,6 +174,9 @@ async function pass(containers: ContainerManager, s: GcSettings): Promise<GcResu
   } catch (e) {
     log.warn('gc.images.fail', { err: e })
   }
+  // Adapters volumes a pin bump superseded: refused (and kept) while a
+  // container still mounts one, so this is what finally takes the last one.
+  await removeStaleAdapterVolumes(() => {})
   if (!s.pruneBuildCache) return done()
   try {
     const out = await docker(

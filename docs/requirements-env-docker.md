@@ -120,17 +120,27 @@ Adapters are npm packages and need Node regardless of the env image.
   A volume without `.gurt-ready` is emptied and refilled. `arch` is the env
   image's architecture (`docker image inspect -f '{{.Architecture}}'`).
 - Mounted into every session container read-only at `/opt/gurt/node`.
-- Adapter install: `npm install -g` with `NPM_CONFIG_PREFIX=$HOME/.gurt/npm`,
-  run by `/opt/gurt/node/bin/npm`. The version marker stays where it is.
+- Adapter packages: one more volume per agent kind,
+  `gurt-adapters-<hash12>-<arch>` — the hash is over the kind's `adapterPackages`
+  pins and the node runtime digest (labels `gurt.managed=1`,
+  `gurt.kind=adapters`) — filled once by
+  `docker run --rm --platform <arch> -e NPM_CONFIG_PREFIX=/out <vol>:/out NODE_RUNTIME_IMAGE sh -c 'npm install -g <pins> && … && touch /out/.gurt-ready'`
+  (the same emptied-and-refilled rule for a volume without the marker; concurrent
+  fills of one volume are serialised in-process). Mounted into every session
+  container of that kind read-only at `/opt/gurt/adapters`. Nothing is
+  `npm install`ed in a session container; no version marker exists. Superseded
+  volumes (a pin bump) are removed like superseded env images; Docker refuses
+  while a container still mounts one, GC retries.
 - Adapter launch uses gurt's node explicitly
   (`/opt/gurt/node/bin/node <resolved bin script>`) so a project's own, older
   Node on PATH cannot break it. If a plugin's `bin` is not a JS file, exec it
-  directly. Check every plugin under `src/plugins/agents/`.
-- `/opt/gurt/node/bin` and `$HOME/.gurt/npm/bin` are **appended** to the
+  directly. Bins resolve from `/opt/gurt/adapters/bin`. Check every plugin
+  under `src/plugins/agents/`.
+- `/opt/gurt/node/bin` and `/opt/gurt/adapters/bin` are **appended** to the
   agent's PATH (the project's toolchain wins for the agent's own commands).
-- After the first install, `node --version` failing in the container is a
-  start error that quotes its stderr and says the image needs a glibc distro
-  (musl/alpine is unsupported, §12).
+- `node --version` failing in the container (checked once per `up`, in the same
+  `docker exec` as the skills link) is a start error that quotes its stderr and
+  says the image needs a glibc distro (musl/alpine is unsupported, §12).
 - The operator special case (`bundledOperatorImage`) is deleted: every env gets
   the same runtime.
 - Verify, before settling the runtime image, that its node runs in: both
@@ -153,7 +163,8 @@ Adapters are npm packages and need Node regardless of the env image.
     gets workdir `/workspaces` with no repo mounts. The empty wrapper dir is no
     longer mounted;
   - skills `/gurt/skills` (ro), history `/gurt/history` (rw), node runtime
-    `/opt/gurt/node` (ro, volume).
+    `/opt/gurt/node` (ro, volume), the agent's adapters `/opt/gurt/adapters`
+    (ro, volume).
 - `remoteWorkspaceFolder` = the workdir, computed by gurt (no CLI result).
 - Stale-bind handling (`STALE_BIND_RE`, `warmBindPaths`, backoff, 3 attempts)
   stays, matched against `docker create`/`start` stderr — it is a Docker
@@ -179,7 +190,7 @@ Adapters are npm packages and need Node regardless of the env image.
 4. **Env probe** (replaces `userEnvProbe`): once per container id, after
    setup: `$SHELL -lic` printing `PATH` behind a marker, 10 s timeout, fall
    back to `-lc`, then to the image PATH. Cached on the session's container
-   record; passed as `-e PATH=<probed>:/opt/gurt/node/bin:$HOME/.gurt/npm/bin`
+   record; passed as `-e PATH=<probed>:/opt/gurt/node/bin:/opt/gurt/adapters/bin`
    on every exec.
 5. The container id is written to the session record **only after** setup
    succeeded. Any `gurt.session=<id>` container not named by the record is
@@ -200,16 +211,16 @@ One helper replaces `execArgs`/`runNodeCli`:
 - File writes (`writeContainerUserFile`: oauth auth files, client config) pipe
   the content through **stdin** into `sh -c 'umask 077 && mkdir -p … && cat > …'`
   instead of `GURT_PROVISION_FILE` in argv.
-- Users: `linkContainerSkills`, `linkContainerHistory`, adapter probe/install,
+- Users: `prepareContainer` (skills link + node/adapter check), `linkContainerHistory`,
   `spawnAcpAdapter`, `spawnInContainer` (PII-masked fs/terminal),
   terminal (`containerTerminalCommand` → `docker exec -it … "${SHELL:-/bin/sh}" -l`).
-- `probeAdapterAndLinkSkills` / `pendingSkillsLink` may be split back into
-  plain steps if that is simpler; their only reason was CLI boot cost.
+- The skills link and the node/adapter check share one `docker exec`
+  (`prepareContainer`, owed once per `up` via `pendingPrepare`).
 
 ### 3.6 Network, proxy, teardown, reconcile
 
-Unchanged: created on `bridge`, setup and adapter install on the open network,
-then `convergeProxyNetwork`; `internal` isolation assertion; stop/remove/GC
+Unchanged: created on `bridge`, setup/start on the open network, then
+`convergeProxyNetwork` (which no longer waits for any adapter step); `internal` isolation assertion; stop/remove/GC
 via docker; boot `reconcile()`. Addition to reconcile: a `gurt.session`
 container **without** `gurt.runtime=docker` is a pre-migration container —
 removed (when the store is not degraded) and its record reset, so the session
@@ -283,7 +294,7 @@ Dockerfile content runs in the builder, as today — it was never held). So:
 - `JsonEditor` goes. Badge/build button unchanged.
 
 Text: Network.tsx:276 and tags.tsx:316 ("devcontainer features, postCreate")
-→ "image build, setup script, the agent install"; ConfigTab starter tooltip
+→ "image build, setup script"; ConfigTab starter tooltip
 "for a project with no devcontainer yet" → "for a project with no env yet";
 `doctor.ts` detail ("installs the node feature") → the node runtime volume.
 `doctor prepareImages` also pulls `NODE_RUNTIME_IMAGE` and fills the volume.
@@ -435,6 +446,84 @@ top); what is described here is the final state.
   `gemini` are JS (`dist/index.js`, `bundle/gemini.js`); `opencode` is
   `bin/opencode.exe`, a stub replaced by the native binary in `postinstall`, so it is
   exec'd directly.
+- **Adapters volume (replaces the per-container `npm install -g`).** Evidence
+  (465 session starts in `gurt.log`): `provision.phase adapter-install` was
+  median 9.3 s, p90 20.8 s, max 31 min and ~70 % of all provisioning time; the
+  rest of a cold start is ~2 s. Code: `ensureAdaptersVolume`,
+  `adaptersVolumeKey/Name`, `removeStaleAdapterVolumes`, `prepareContainer`
+  (provision.ts); the record field `SessionContainer.adapters`; `createContainer`
+  takes `spec.agent`. Details that are not obvious from §3.2:
+  - The key hashes the sorted pins + the node digest; the arch is the name's last
+    segment. A throwaway fill runs in the node runtime image itself, so the node,
+    npm, libc (glibc) and postinstall environment are exactly what the
+    in-container install used. The script verifies, before sealing, that
+    `bin/<agent.bin>` exists and that no link in `bin/` is absolute (an `/out/…`
+    target would dangle at `/opt/gurt/adapters`), then `chmod -R a+rX`.
+  - **Every plugin runs from the read-only mount; no fallback is kept.** Checked
+    by installing the five pinned kinds with `NPM_CONFIG_PREFIX` set, copying
+    the prefix elsewhere, making it read-only and running each bin through the
+    launch script: `claude-agent-acp`, `codex-acp`, `pi-acp` answered an ACP
+    `initialize`; `opencode acp` too (its `bin/opencode.exe` is the native
+    binary, hard-linked from the platform package by `postinstall` at fill time —
+    inside the same volume, so it survives the mount); `gemini --version` and
+    `pi --version` ran. Every `bin/` link is relative. pi-acp spawns the sibling
+    `pi` CLI by name, which is why `/opt/gurt/adapters/bin` is on the exec PATH.
+  - libc/arch: glibc only (as before — musl is the §12 non-goal), and the volume
+    is keyed by arch. The fill's platform is the env image's. opencode's
+    `postinstall` picks its x64 build (AVX2 vs baseline) from `/proc/cpuinfo` at
+    **fill** time; fill and run are the same daemon, as with the old install.
+  - Failure handling: an outdated container is removed only after its
+    replacement's env image is prepared and both volumes are filled for *that*
+    image's arch (`prepareReplacementVolumes`); until then the record keeps
+    naming it, so a pull, build or npm failure leaves the session as it was.
+    The mounted-volume check also requires `.gurt-ready`, so a bin left by a
+    fill that died half-way is not accepted. A volume removed while unused after a Prepare is
+    re-created empty by `docker create`; `prepareContainer` then reports the
+    missing bin, the cached readiness is dropped and the volume is refilled and
+    re-checked once. Node's own loader error is printed into the exec output, so
+    the glibc message quotes it.
+  - A container is reused only while its recorded `adapters` volume key equals
+    the current one. Otherwise — every container made before this change, and
+    every container across a pin bump — it is removed and re-created (the mount
+    list cannot change on a live container). This replaces the old in-place
+    reinstall on a pin bump and costs that session's container state outside the
+    bind mounts (the `setup` script re-runs). The same check guards the
+    "still running, reuse it" early return.
+  - `installAdapter`/`installAcpAdapter`/`adapterPresent`/the version marker/
+    `probeAdapterAndLinkSkills` are deleted. What remains per `up` is one
+    ~100 ms `docker exec` (`prepareContainer`): skills link, `node --version`,
+    `[ -e /opt/gurt/adapters/bin/<bin> ]`.
+  - **Open-network window.** The adapter was the only reason the network switch
+    waited. `installAdapterAndProxy` is now `prepareAndProxy`: the container check
+    runs concurrently with `ensureProxyScope` → `convergeProxyNetwork`. The
+    switch point is in `resolveLaunch`, i.e. after `ensure` returned: on a fresh
+    start the window therefore still covers `create`, `setup`, `start`, the
+    login-shell `PATH` probe and the history links, and ends once the proxy's
+    scope exists. It is not moved to right after `setup` on purpose: the `start`
+    script runs on every start and may rely on the network (it always has), so
+    that would change existing behaviour; only the adapter's own need is gone (requirements-mcp-proxy.md §7.1/§7.3 updated). In internal mode the
+    isolation assertion is unchanged and still precedes the adapter spawn.
+  - `machinePrepare` fills the node volume, then one adapters volume per distinct
+    pin set, sequentially; the doctor's Images row also offers Prepare when the
+    images are present but an adapters volume does not exist. GC calls `removeStaleAdapterVolumes` after the image
+    sweep.
+  - Timings (INF `provision.phase`, docs/logging.md): `docker-create`, `setup`,
+    `start`, `exec-path-probe`, `docker-start` (restart), `node-volume-fill`,
+    `adapters-volume-fill` (only when a fill actually runs), `container-prepare`,
+    `acp-session-new`, and `start-to-first-update` (start requested → the first
+    `session/update` after the start prompt went out).
+  - Tests: `scripts/docker-runtime.test.mjs` (adapters volume naming/fill/refill/
+    sweep, mount, record, recreate-on-mismatch, `prepareContainer`, phases),
+    `scripts/prepare-and-proxy.test.mjs` (was `proxy-adapter-parallel`),
+    `scripts/start-phases.test.mjs`; `scripts/lib/fake-docker.mjs` learned
+    `volume ls/rm` and failing fills.
+  - **Not run:** no docker daemon here, so the real `docker run` fill, the
+    mount at `/opt/gurt/adapters`, the stale sweep against a real daemon and
+    `npm run smoke` are unverified; the plugin check above ran the real npm
+    installs with the host's glibc node 26 (aarch64), not inside
+    `NODE_RUNTIME_IMAGE`. The expected effect — `adapter-install` (median 9.3 s)
+    gone from every start after the first fill, one cold fill per pin set per
+    machine — is arithmetic from the log, not a measurement.
 - **Reconcile (§3.6)** removes a `gurt.session` container without
   `gurt.runtime=docker`, resets its record (skipped when the store is degraded).
   Nothing sweeps the CLI era's host files (`~/.gurt/<ws>/.devcontainers/`,
@@ -460,7 +549,7 @@ top); what is described here is the final state.
   `prepare-terminal.mjs` comment; smokes use the new env form and no longer seed
   `.devcontainer/`; docs listed in §10 updated.
 - **Logging.** The container lifecycle (build, pull, create, start, the
-  setup/start scripts, the adapter install) traces at INF (`RunOpts.level`), the
+  setup/start scripts, the volume fills) traces at INF (`RunOpts.level`), the
   probes stay DBG; docs/logging.md says so.
 - Test seam: `GURT_STALE_BACKOFF_SCALE` scales the stale-bind waits (tests set 0).
 
@@ -507,7 +596,7 @@ sessions start; old-form envs are invalid until filled in again).
 Whether the volume's node runs in both bundled envs,
 `mcr.microsoft.com/devcontainers/base:ubuntu`, `python:3`, `ubuntu:24.04` and
 `debian:bookworm-slim` (`libstdc++`/`libatomic`) could not be checked. If one of
-them lacks a library, the start fails at the adapter install with the
+them lacks a library, the start fails at `prepareContainer` with the
 "needs a glibc distro" message quoting node's own stderr.
 
 ### Things to look at

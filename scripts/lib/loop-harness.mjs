@@ -95,7 +95,7 @@ export async function loopHarness(name, opts = {}) {
     // runner with docker and network it went on to real `docker` and `git`
     // calls. The session then stayed `starting` past the tests' 3 s waits,
     // holding its repo for every test after it. Every successful launch needs
-    // docker anyway (`ensure`, then the adapter install by `docker exec`), so
+    // docker anyway (`ensure`, then the container check by `docker exec`), so
     // none could succeed here.
     kernel.containers.resolveLaunch = async () => {
       throw new Error('no containers in the loop harness')

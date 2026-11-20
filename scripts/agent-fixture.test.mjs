@@ -169,14 +169,14 @@ test('launch: bin, args and secret env from the manifest; no skills, no history 
   containers.ensure = async () => ({ status: 'running', id: 'c0ffee0123456789ab', remoteWorkspaceFolder: '/workspaces/r' })
   /** @type {any} */
   let installed
-  containers.installAdapterAndProxy = async (_info, _id, target) => {
+  containers.prepareAndProxy = async (_info, _id, target) => {
     installed = target
     return { session: info.id, token: 't', containerId: 'c0ffee0123456789ab', network: 'n', base: 'http://gurt-proxy:8100', internal: false }
   }
 
   const ctx = await containers.resolveLaunch(info.id)
   assert.equal(ctx.agent, m.agentDef(KIND))
-  assert.equal(installed.agent, m.agentDef(KIND), 'the adapter install gets the same manifest')
+  assert.equal(installed.agent, m.agentDef(KIND), 'the container check gets the same manifest')
   assert.equal(ctx.secret, 'fx-secret')
   assert.equal(ctx.secretEnv, 'FIXTURE_API_KEY')
   assert.equal(ctx.env, undefined, 'no launch env of its own')
