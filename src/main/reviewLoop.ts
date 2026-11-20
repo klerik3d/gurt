@@ -31,12 +31,13 @@
 // be known whether it happened the loop prefers not to repeat it (a message
 // that may have reached the agent). Notifications retry until marked (§8).
 import type { EnvRef, LoopNote, ReviewFinding, SessionInfo, StoredVerdict } from '../shared/types'
-import { findingRef, sessionRole, writeRepos } from '../shared/types'
+import { REVIEW_MAX_ROUNDS, findingRef, sessionRole, writeRepos } from '../shared/types'
 import {
   REVIEW_LOOP,
   buildReviewerPrompt,
   initialLoopState,
   loopIsLive,
+  loopExtendable,
   loopRearmable,
   loopStep,
   openRefs,
@@ -125,6 +126,9 @@ export interface ReviewLoopController {
   state(executorId: string): LoopState | undefined
   /** "Stop loop" (§5.6): ends a live loop `cancelled`. Throws when it cannot. */
   stopLoop(executorId: string): Promise<void>
+  /** "One more round" (§5.2): an exhausted loop's limit goes up by one and the
+   *  executor gets the last verdict's findings. Throws when it cannot. */
+  extendLoop(executorId: string): Promise<void>
   /** The open findings `complete` must answer (`SessionEvents.openFindings`). */
   openFindings(sessionId: string): string[]
   /** The user approved or withdrew an approval in this scope (the Diff view):
@@ -565,6 +569,10 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
         note(id, 'Changes approved — delivering', { tone: 'ok' })
       for (const d of after.delivered.slice(before.delivered.length))
         note(id, `gurt ${deliveredText([d])}`, { tone: 'ok' })
+      if (before.phase === 'ended' && after.phase === 'fixing')
+        note(id, `Round limit raised to ${after.config.maxRounds} — the executor fixes R${after.round}’s findings`, {
+          tone: 'info'
+        })
       if (after.end && !before.end) {
         // A reviewer block still running when the loop ends never got a verdict.
         const open = after.reviewer ? entryByCall(id, reviewCall(after.round)) : undefined
@@ -576,6 +584,9 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
         const text = done ? `Review loop finished: ${line.headline}` : `Waiting for you — ${line.headline.replace(/^ended — /, '')}`
         note(id, [text, line.detail].filter(Boolean).join('\n'), {
           tone,
+          // The chat offers "One more round" under this note while it is the
+          // loop's current end and the loop may still have one (§5.2).
+          ...(after.end.outcome === 'exhausted' && after.endId ? { extend: after.endId } : {}),
           ...(line.findings.length
             ? {
                 findings: line.findings.map(({ ref, finding: f }) => ({
@@ -1317,6 +1328,25 @@ export function createReviewLoop(deps: ReviewLoopDeps): ReviewLoopController {
       // Ended first, so the cancelled turn's settle finds a finished loop.
       apply(id, { kind: 'human', on: 'executor', did: 'stop' })
       sessions.cancel(id, 'host')
+    },
+    async extendLoop(id) {
+      const st = loops.get(id)
+      if (!st) throw new Error('this session has no review loop')
+      if (!loopExtendable(st)) {
+        if (st.end?.outcome === 'exhausted' && st.config.maxRounds >= REVIEW_MAX_ROUNDS.ceiling)
+          throw new Error(`the loop is at ${REVIEW_MAX_ROUNDS.ceiling} rounds, the most it can have`)
+        throw new Error('only a loop that ran out of rounds can have one more')
+      }
+      // The deadline is not reset: a loop already past it would only end
+      // `time-cap` at the next tick.
+      if (st.deadline !== undefined && clock.now() >= Date.parse(st.deadline))
+        throw new Error('the loop’s time is up — type a message to start the loop over')
+      // A message the user already typed is the next task (it starts the loop
+      // over); the extra round must not take its place.
+      const snap = sessions.snapshot(id)
+      if (runtimes.get(id)?.rearm || snap?.busy || snap?.pending?.length)
+        throw new Error('the session already has a message of yours to run')
+      apply(id, { kind: 'extend' })
     },
     async approvalChanged(ws, task) {
       // Every live loop of the scope, not only the ones waiting now: a settle

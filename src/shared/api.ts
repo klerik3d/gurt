@@ -415,6 +415,10 @@ export interface GurtApi {
    *  cancels its running turn and stops a running check or reviewer. Nothing is
    *  committed. Refused while the loop is delivering. */
   reviewLoopStop(executorId: string): Promise<void>
+  /** "One more round" (§5.2): raises an exhausted loop's round limit by one
+   *  (up to `REVIEW_MAX_ROUNDS.ceiling`) and sends the executor the last
+   *  verdict's findings. Refused for any other loop. */
+  reviewLoopExtend(executorId: string): Promise<void>
   /** Empty this session's prompt queue and return what was in it, so the caller
    *  can put the text back in the composer instead of losing it (see
    *  {@link PendingPromptInfo}). */
@@ -682,6 +686,7 @@ const METHODS = {
   // the operator cannot read), and stopping it drives another agent.
   reviewLoopState: 'none',
   reviewLoopStop: 'none',
+  reviewLoopExtend: 'none',
   sessionClearPending: 'none',
   sessionCancelPending: 'none',
   sessionSetMode: 'none',

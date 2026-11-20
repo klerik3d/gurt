@@ -8,8 +8,7 @@ import type { SessionInfo } from '../../../shared/types'
 import { alertDialog, confirmDialog } from '../dialog'
 import { useOutsideClose } from '../hooks'
 import { Icon } from './icons'
-import { LoopDot, LoopMenuSection, useReviewLoop } from './ReviewLoopLine'
-import type { SessionSnapshot } from '../../../shared/types'
+import { LoopDot, LoopMenuSection, type LoopView } from './ReviewLoopLine'
 
 /** What either action needs to know about its target — a tree row carries this
  *  much, so the sidebar doesn't have to hold a snapshot to offer them. */
@@ -91,16 +90,16 @@ export function SessionMenu({
   info,
   onSelect,
   onDeleted,
-  version
+  loop
 }: {
-  info: SessionTarget & Partial<Pick<SessionInfo, 'review' | 'reviewOf'>>
+  info: SessionTarget
   onSelect: (id: string) => void
   onDeleted: () => void
-  /** The open session's snapshot — a new one is a reason to re-read its loop. */
-  version?: SessionSnapshot | undefined
+  /** The review loop the session is part of — read by the chat that shows
+   *  the menu; a session that has not started has none. */
+  loop?: LoopView | undefined
 }): JSX.Element {
   const [open, setOpen] = useState(false)
-  const loop = useReviewLoop(info, version)
   const ref = useRef<HTMLDivElement>(null)
   useOutsideClose(open, ref, () => setOpen(false))
 

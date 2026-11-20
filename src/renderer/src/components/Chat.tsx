@@ -32,6 +32,7 @@ import { McpFailBanner } from './tags'
 import { NetButton } from './Network'
 import { ConfigTab } from './ConfigTab'
 import { SessionMenu } from './SessionActions'
+import { LoopViewContext, useReviewLoop } from './ReviewLoopLine'
 import { ToolStrip, useNow, type StripEntry } from './ToolStrip'
 import { TabBar, useSessionTab } from './SessionTabs'
 import { ContainerTerminalButton } from './ContainerTerminalButton'
@@ -160,6 +161,8 @@ export function Chat({
   const piiStatus = usePiiStatus(sessionId)
   const entries = usePiiEntries(useEntryTimes(sessionId, snapshot?.entries), pii)
   const plan = usePiiPlan(snapshot?.plan, pii)
+  // Read once for the header's menu and the feed's notes ("One more round").
+  const loop = useReviewLoop(snapshot?.info ?? { id: sessionId }, snapshot)
   // Real usage (ACP `usage_update`) wins when the adapter sends it; otherwise fall
   // back to a rough word-count estimate over the log — not every adapter reports
   // usage yet (e.g. codex-acp).
@@ -422,6 +425,7 @@ export function Chat({
   const headDot = sessionDot(sessionStatus({ ...info, busy, seen }), info.hostBusy)
 
   return (
+    <LoopViewContext.Provider value={loop}>
     <div className="chat">
       <div className="chat-head">
         <TabBar active={activeTab} onChange={setActiveTab} />
@@ -435,7 +439,7 @@ export function Chat({
         {/* A session already running is exactly where "this was set up wrong"
             is noticed — duplicate/delete belong on this header, not only on the
             draft pane the session has left behind. */}
-        <SessionMenu info={info} onSelect={onSelect} onDeleted={onDeleted} version={snapshot} />
+        <SessionMenu info={info} onSelect={onSelect} onDeleted={onDeleted} loop={loop} />
         {(busy || pendingCount > 0) && <span className="chat-hint mono">esc to stop</span>}
       </div>
 
@@ -524,6 +528,7 @@ export function Chat({
         </>
       )}
     </div>
+    </LoopViewContext.Provider>
   )
 }
 
@@ -752,6 +757,29 @@ function OpenDiffLink() {
   )
 }
 
+/** Under the note of a loop that ran out of rounds: give it one more (§5.2).
+ *  Only while that end is the loop's current one and it may still have one —
+ *  an earlier loop's note, or one already extended, offers nothing. */
+function ExtendLink({ end }: { end: string }) {
+  const loop = useContext(LoopViewContext)
+  const [sent, setSent] = useState(false)
+  if (!loop?.extendable || loop.endId !== end) return null
+  return (
+    <button
+      type="button"
+      className="host-link host-action"
+      data-testid="loop-extend-link"
+      disabled={sent}
+      onClick={() => {
+        setSent(true)
+        void loop.extend().finally(() => setSent(false))
+      }}
+    >
+      One more round →
+    </button>
+  )
+}
+
 /** The loop's own words in the chat: a verdict, a hand-over to the user, a
  *  delivery step. Findings are one line until opened — except that a blocker
  *  is not something to hide. */
@@ -776,6 +804,7 @@ function LoopNoteMsg({ entry, note }: { entry: ChatEntry & { kind: 'system' }; n
         </div>
         {rest.length > 0 && <div className="host-note-detail">{linkify(rest.join('\n'))}</div>}
         {note.openDiff && <OpenDiffLink />}
+        {note.extend !== undefined && <ExtendLink end={note.extend} />}
         {open && findings.length > 0 && (
           <ul className="rv-findings">
             {findings.map((f) => (

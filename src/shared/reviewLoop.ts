@@ -119,6 +119,9 @@ export type LoopEvent =
   | { kind: 'delivered'; step: DeliveredStep }
   | { kind: 'delivery-failed'; error: string }
   | { kind: 'fault'; error: string }
+  /** "One more round" (§5.2): the user raises an exhausted loop's limit by one
+   *  and the executor gets the last verdict's findings to fix. */
+  | { kind: 'extend' }
 
 export type EndReason =
   | 'no-progress'
@@ -246,6 +249,9 @@ export interface LoopState {
   /** Turns started that the loop counted. */
   turns: { executor: number; reviewer: number }
   end?: LoopEnd | undefined
+  /** The id of the `end` intent of {@link end}: which end a chat note speaks
+   *  of, so "One more round" is offered under the current one only. */
+  endId?: string | undefined
   /** Set by the controller once the `end` intent has notified. */
   notified?: boolean | undefined
 }
@@ -324,6 +330,15 @@ export function rearmLoop(prev: LoopState, config: ReviewLoopConfig, lastTurn: s
   }
 }
 
+/** An ended loop the user may give one more round (§5.2): it ran out of
+ *  rounds, its end is notified with nothing left to do, and the limit is below
+ *  {@link REVIEW_MAX_ROUNDS.ceiling}. */
+export const loopExtendable = (s: LoopState): boolean =>
+  loopRearmable(s) &&
+  s.end?.outcome === 'exhausted' &&
+  s.config.maxRounds < REVIEW_MAX_ROUNDS.ceiling &&
+  !!s.rounds.find((r) => r.round === s.round)?.verdict
+
 /** The open set as the refs `complete`'s `replies` answer ("R1.F2"); empty
  *  once a settled turn carried the replies (§4.2). */
 export const openRefs = (s: LoopState): string[] =>
@@ -378,12 +393,15 @@ export function settledOutcome(on: 'executor' | 'reviewer', t: SettledTurn): Set
  * starts any of them (§8).
  */
 export function loopStep(state: LoopState, event: LoopEvent): { state: LoopState; actions: LoopIntent[] } {
-  if (state.phase === 'ended') return { state, actions: [] }
+  // An ended loop takes one event: the user's "One more round".
+  if (state.phase === 'ended' && event.kind !== 'extend') return { state, actions: [] }
   const s = structuredClone(state)
   const out: LoopIntentBody[] = []
   if (!apply(s, event, out)) return { state, actions: [] }
   const actions = out.map((body): LoopIntent => ({ id: `${s.executor}.${s.nextIntent++}`, ...body }))
   s.intents.push(...actions)
+  const ended = actions.find((a) => a.kind === 'end')
+  if (ended) s.endId = ended.id
   return { state: s, actions }
 }
 
@@ -487,6 +505,24 @@ function apply(s: LoopState, e: LoopEvent, out: LoopIntentBody[]): boolean {
     case 'fault':
       deleteReviewer(s, out)
       return end(s, out, { outcome: 'failed', error: e.error, delivered: s.delivered })
+    case 'extend': {
+      if (!loopExtendable(s)) return false
+      const v = s.rounds.find((r) => r.round === s.round)!.verdict!
+      // Back to where `request_changes` below the limit would have left it:
+      // fixing the last verdict's findings, with the history kept — so
+      // oscillation and disagreement still see every earlier round. The
+      // deadline stays as it was.
+      s.config = { ...s.config, maxRounds: s.config.maxRounds + 1 }
+      s.phase = 'fixing'
+      s.end = undefined
+      s.endId = undefined
+      s.notified = undefined
+      s.open = v.findings
+      s.openAnswered = false
+      s.fixFrom = s.reviewedHash
+      out.push({ kind: 'message', text: findingsMessage(s.round, s.config.maxRounds, v) })
+      return true
+    }
   }
 }
 
