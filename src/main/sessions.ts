@@ -60,6 +60,7 @@ import {
   type ModeWords,
   type Vocabulary
 } from '../shared/agentVocabulary'
+import { agentDef } from '../shared/agents'
 import type { CreateAction, SessionDraftPatch } from '../shared/api'
 import { taskKey } from '../shared/keys'
 import { sanitizeSkillSelection } from '../shared/skills'
@@ -1073,6 +1074,13 @@ export class SessionManager {
       this.agentConfigs.set(id, cfg)
       this.agentConfigWritten.set(id, JSON.stringify(cfg))
     }
+  }
+
+  /** The session's agent kind's prompt-cache lifetime, if its manifest states one. */
+  private cacheHint(s: Session): { cacheSeconds?: number } {
+    const kind = this.agentKinds.get(s.info.agent ?? '')
+    const seconds = kind ? agentDef(kind)?.promptCacheSeconds : undefined
+    return seconds ? { cacheSeconds: seconds } : {}
   }
 
   /** How this session's agent words its modes, tool titles and limit
@@ -4113,6 +4121,7 @@ export class SessionManager {
     admin?: AdminHooks
     proactive?: ProactiveHooks
     watcher?: WatcherToolHooks
+    cacheSeconds?: number
   } {
     const role = sessionRole(s.info)
     return {
@@ -4134,7 +4143,9 @@ export class SessionManager {
       // in, never a name the run supplies.
       ...(role === 'proactive' ? { proactive: this.proactiveHooks(s) } : {}),
       // The watcher's tools, bound the same way (docs/requirements-watchers.md §4).
-      ...(role === 'watcher' ? { watcher: this.events.watcherFor(s.ref.workspace, s.ref.task, s.info.id) } : {})
+      ...(role === 'watcher' ? { watcher: this.events.watcherFor(s.ref.workspace, s.ref.task, s.info.id) } : {}),
+      // §13: the agent kind's cache lifetime, for the watcher's instructions.
+      ...(role === 'watcher' ? this.cacheHint(s) : {})
     }
   }
 

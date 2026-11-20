@@ -7,7 +7,7 @@
 // record in `sessions.json`, and the timed automatic prompt that sends the wake
 // is the session manager's — one mechanism with the plan-limit resume (§5.1).
 import type { EnvRef, Tree } from '../shared/types'
-import { defaultEnvName } from '../shared/types'
+import { defaultEnvName, repoMode } from '../shared/types'
 import {
   WATCHER_DEFAULTS,
   parseWakeWhen,
@@ -75,6 +75,9 @@ export interface WatcherManager {
   /** The watcher a session belongs to. */
   ofSession(sessionId: string): { ws: string; name: string } | undefined
   create(ws: string, name: string): Promise<void>
+  /** Relaunch (§14): a new, unstarted watcher with the same settings and
+   *  start prompt, none of the conversation. Returns the new name. */
+  duplicate(ws: string, name: string): Promise<string>
   update(ws: string, name: string, patch: Partial<WatcherConfig>): Promise<void>
   start(ws: string, name: string): Promise<void>
   stop(ws: string, name: string): Promise<void>
@@ -343,6 +346,46 @@ export function createWatchers(deps: WatcherDeps): WatcherManager {
         entries.set(key(ws, name), { ws, name, config })
         log.info('watcher.create', { ws, watcher: name })
         bus.emit('tree.changed', undefined)
+      }),
+
+    duplicate: (ws, name) =>
+      locked(ws, async () => {
+        const src = sessionOf(entryOf(ws, name))
+        // Free across every kind of scope in the workspace, by the store's own rules.
+        const free = (n: string): boolean => {
+          try {
+            store.validateNewTaskName(ws, n)
+            return !entries.has(key(ws, n))
+          } catch {
+            return false
+          }
+        }
+        let copyName = `${name}-copy`
+        for (let n = 2; !free(copyName); n++) {
+          if (n > 1000) throw new Error(`no free name for a copy of "${name}"`)
+          copyName = `${name}-copy-${n}`
+        }
+        // sanitizeWatcherConfig is also the deep copy.
+        const config = sanitizeWatcherConfig({ ...entryOf(ws, name).config }, WATCHER_DEFAULTS)
+        await store.createTask(ws, copyName, { watcher: config })
+        sessions.createSession(
+          { workspace: ws, task: copyName, env: src.env },
+          [...src.repos],
+          src.agent ?? '',
+          src.startPrompt,
+          'draft',
+          src.mcp ? [...src.mcp] : [],
+          src.autoAllow ?? true,
+          { ...(src.configValues ?? {}) },
+          'watcher',
+          src.skills?.map((k) => ({ ...k })),
+          src.network,
+          Object.fromEntries(src.repos.map((r) => [r, repoMode(src, r)]))
+        )
+        entries.set(key(ws, copyName), { ws, name: copyName, config })
+        log.info('watcher.duplicate', { ws, watcher: copyName, from: name })
+        bus.emit('tree.changed', undefined)
+        return copyName
       }),
 
     update: (ws, name, patch) =>

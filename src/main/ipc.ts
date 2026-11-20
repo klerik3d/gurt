@@ -320,6 +320,7 @@ export function registerIpc(): void {
     proactiveUpdate: (ws, name, patch) => kernel.proactive.update(ws, name, patch),
     proactiveRunNow: (ws, name) => kernel.proactive.runNow(ws, name),
     watcherCreate: (ws, name) => kernel.watchers.create(ws, name),
+    watcherDuplicate: (ws, name) => kernel.watchers.duplicate(ws, name),
     watcherUpdate: (ws, name, patch) => kernel.watchers.update(ws, name, patch),
     watcherStart: (ws, name) => kernel.watchers.start(ws, name),
     watcherStop: (ws, name) => kernel.watchers.stop(ws, name),

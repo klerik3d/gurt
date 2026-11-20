@@ -222,6 +222,18 @@ const WATCHER_INSTRUCTIONS =
   '- For long logs, write them to the artifacts directory and say where,\n' +
   '  rather than pasting them.'
 
+/** §13: with a known cache lifetime, say which waits are cheap. The number
+ *  comes from the agent kind's manifest, never from the core. */
+function cacheHint(seconds: number | undefined): string {
+  if (!seconds || seconds < 60) return ''
+  const minutes = Math.floor(seconds / 60)
+  const cheap = Math.max(1, minutes - 1)
+  return (
+    `\n- Your provider caches the conversation for about ${minutes} minutes: a look within ` +
+    `about ${cheap} minutes is cheap; otherwise prefer 15 minutes or more.`
+  )
+}
+
 /** What each mode means to the agent that has to work with it. */
 const MODE_TEXT: Record<RepoMode, string> = {
   write: 'writable — you hold its working tree exclusively while you run',
@@ -259,7 +271,7 @@ export const ARTIFACTS_TEXT =
 export function instructionsFor(
   role: SessionRole,
   mounts: readonly { repo: string; mode: RepoMode }[] = [],
-  opts: { reviewLoop?: boolean | undefined } = {}
+  opts: { reviewLoop?: boolean | undefined; cacheSeconds?: number | undefined } = {}
 ): string {
   const base =
     role === 'proactive'
@@ -267,7 +279,7 @@ export function instructionsFor(
       : role === 'reviewer'
         ? REVIEWER_INSTRUCTIONS
         : role === 'watcher'
-          ? WATCHER_INSTRUCTIONS
+          ? WATCHER_INSTRUCTIONS + cacheHint(opts.cacheSeconds)
           : role === 'researcher'
           ? RESEARCHER_INSTRUCTIONS
           : role === 'inspector'
@@ -576,6 +588,8 @@ export interface GurtHooks {
   proactive?: ProactiveHooks
   /** Present only for a watcher. */
   watcher?: WatcherToolHooks
+  /** The agent kind's prompt-cache lifetime, for a watcher's instructions. */
+  cacheSeconds?: number | undefined
 }
 
 /** What the agent may pass `get_provisioning_log` — the one admin tool with no
@@ -950,7 +964,7 @@ function registerWatcherTools(server: McpServer, w: WatcherToolHooks): void {
 function makeMcpServer(hooks: GurtHooks): McpServer {
   const server = new McpServer(
     { name: 'gurt', version: '0.1.0' },
-    { instructions: instructionsFor(hooks.role, hooks.mounts, { reviewLoop: hooks.reviewLoop }) }
+    { instructions: instructionsFor(hooks.role, hooks.mounts, { reviewLoop: hooks.reviewLoop, cacheSeconds: hooks.cacheSeconds }) }
   )
   if (hooks.role === 'executor')
     server.registerTool(
@@ -1116,6 +1130,7 @@ export async function ensureGurtServer(
     role: hooks.role,
     ...(hooks.mounts ? { mounts: hooks.mounts } : {}),
     ...(hooks.reviewLoop ? { reviewLoop: true } : {}),
+    ...(hooks.cacheSeconds ? { cacheSeconds: hooks.cacheSeconds } : {}),
     onComplete: (p) => rec.hooks.onComplete(p),
     onSubmitReview: (v) => rec.hooks.onSubmitReview(v),
     onCreateSession: (req) => rec.hooks.onCreateSession(req),

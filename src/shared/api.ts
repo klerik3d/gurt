@@ -562,6 +562,9 @@ export interface GurtApi {
   /** Create a watcher (docs/requirements-watchers.md §2): a scope named `name`
    *  holding one draft session of role `watcher`. */
   watcherCreate(ws: string, name: string): Promise<void>
+  /** Relaunch: a new unstarted watcher with the same settings and start prompt
+   *  (docs/requirements-watchers.md §14). Resolves to its name. */
+  watcherDuplicate(ws: string, name: string): Promise<string>
   /** Change a watcher's settings; omitted keys stay. Pause is `wakeups: false`. */
   watcherUpdate(ws: string, name: string, patch: Partial<WatcherConfig>): Promise<void>
   /** Start the watcher (the user's approval for its unattended wake turns). */
@@ -776,6 +779,7 @@ const METHODS = {
   proactiveRunNow: 'none',
   // Watchers: the same — reading their state can become `read` later (§14).
   watcherCreate: 'none',
+  watcherDuplicate: 'none',
   watcherUpdate: 'none',
   watcherStart: 'none',
   watcherStop: 'none',

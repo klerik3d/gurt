@@ -906,3 +906,44 @@ test('a limited result after Stop leaves no automatic continue', async () => {
   assert.equal(info(id).limitedUntil, undefined)
   assert.equal(live.pending.length, 0, 'no continue queued')
 })
+
+// --- Duplicate (§14) -----------------------------------------------------------
+test('duplicate: a new unstarted watcher with the same settings and start prompt, none of the run', async () => {
+  const src = await stage('dup-src')
+  await kernel.watchers.update(ws, 'dup-src', { maxWakeups: 7, label: 'release 41' })
+  src.live.info.startPrompt = 'watch CI of v41'
+  const name = await kernel.watchers.duplicate(ws, 'dup-src')
+  assert.equal(name, 'dup-src-copy')
+  assert.equal(await kernel.watchers.duplicate(ws, 'dup-src'), 'dup-src-copy-2', 'names stay unique')
+  assert.ok(kernel.watchers.isWatcher(ws, name))
+  const copy = kernel.sessions.listForTask(ws, name)
+  assert.equal(copy.length, 1)
+  assert.equal(copy[0].role, 'watcher')
+  assert.equal(copy[0].state, 'draft')
+  assert.equal(copy[0].startPrompt, 'watch CI of v41')
+  assert.equal(copy[0].watcher, undefined, 'no run state')
+  const view = (await kernel.tree()).workspaces[0].watchers.find((x) => x.name === name)
+  assert.equal(view.config.maxWakeups, 7)
+  assert.equal(JSON.parse(fs.readFileSync(path.join(GURT_ROOT, ws, name, 'task.json'), 'utf8')).watcher.maxWakeups, 7)
+  assert.equal(copy[0].autoAllow, true)
+  assert.equal(info(src.id).state, 'started', 'the original is untouched')
+  await assert.rejects(() => kernel.watchers.duplicate(ws, 'nope'), /no watcher/)
+  // An ordinary scope holding the first candidate does not block the copy.
+  fs.mkdirSync(path.join(GURT_ROOT, ws, 'dup-src2-copy'), { recursive: true })
+  fs.writeFileSync(path.join(GURT_ROOT, ws, 'dup-src2-copy', 'task.json'), JSON.stringify({ createdAt: new Date().toISOString() }))
+  await stage('dup-src2')
+  assert.equal(await kernel.watchers.duplicate(ws, 'dup-src2'), 'dup-src2-copy-2')
+})
+
+test('duplicate keeps manual permission mode', async () => {
+  const src = await stage('dup-manual')
+  src.live.info.autoAllow = false
+  const name = await kernel.watchers.duplicate(ws, 'dup-manual')
+  assert.equal(kernel.sessions.listForTask(ws, name)[0].autoAllow, false)
+})
+
+test('cache hint: the watcher instructions name the lifetime only when the kind states one', () => {
+  assert.doesNotMatch(m.instructionsFor('watcher'), /caches the conversation/)
+  assert.match(m.instructionsFor('watcher', [], { cacheSeconds: 300 }), /about 5 minutes: a look within about 4 minutes is cheap; otherwise prefer 15 minutes or more/)
+  assert.doesNotMatch(m.instructionsFor('executor', [], { cacheSeconds: 300 }), /caches the conversation/)
+})

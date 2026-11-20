@@ -174,6 +174,7 @@ const SAFE_ARGS = new Set([
   'proactiveUpdate',
   'proactiveRunNow',
   'watcherCreate',
+  'watcherDuplicate',
   'watcherStart',
   'watcherStop',
   'watcherWakeNow',

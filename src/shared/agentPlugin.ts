@@ -60,6 +60,10 @@ export interface AgentManifest {
    */
   id: string
   label: string
+  /** How long the provider keeps this kind's prompt prefix cached between
+   *  turns, in seconds, when known. Only a hint for a watcher's instructions
+   *  (docs/requirements-watchers.md §13); absent = unverified, no hint. */
+  promptCacheSeconds?: number
   /** Whose product this is — shown beside the label in Settings → Clients'
    *  provider picker, and searched by it. */
   vendor: string

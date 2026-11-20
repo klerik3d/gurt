@@ -1317,6 +1317,7 @@ export default function App() {
                     />
                   )}
                   onDeleted={() => setWatcherName(null)}
+                  onDuplicated={(n) => setWatcherName(n)}
                 />
               )}
               {workMode === 'watchers' && !openWatcher && (

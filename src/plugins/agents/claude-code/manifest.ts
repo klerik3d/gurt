@@ -8,6 +8,7 @@ import type { AgentManifest } from '../../../shared/agentPlugin'
 export const manifest: AgentManifest = {
   id: 'claude-code',
   label: 'claude code',
+  promptCacheSeconds: 300,
   vendor: 'Anthropic',
   // The provider's actual logo (nominative use: it only ever labels "this
   // session runs Claude", unmodified, never as gurt's own mark). Path data from

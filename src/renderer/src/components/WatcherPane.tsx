@@ -50,7 +50,8 @@ export function WatcherPane({
   name,
   snapshots,
   renderSession,
-  onDeleted
+  onDeleted,
+  onDuplicated
 }: {
   tree: Tree | null
   ws: string
@@ -59,6 +60,8 @@ export function WatcherPane({
   /** The watcher's session in the ordinary session view. */
   renderSession: (sessionId: string, composerNote: ComposerNote) => ReactNode
   onDeleted: () => void
+  /** The copy's name, to open it. */
+  onDuplicated: (name: string) => void
 }) {
   const view = tree?.workspaces.find((w) => w.name === ws)?.watchers.find((w) => w.name === name)
   const sessionId = view?.sessionId
@@ -152,6 +155,9 @@ export function WatcherPane({
       { title: 'Stop watcher', confirmText: 'Stop', danger: true }
     )
     if (ok) await window.gurt.watcherStop(ws, name)
+  }
+  const duplicate = async (): Promise<void> => {
+    onDuplicated(await window.gurt.watcherDuplicate(ws, name))
   }
   const del = async (): Promise<void> => {
     const ok = await confirmDialog(`Delete the watcher "${name}"? Its conversation and container go with it.`, {
@@ -255,6 +261,9 @@ export function WatcherPane({
           Re-arm
         </button>
       )}
+      <button className="icon-sq bordered" title="duplicate: a new unstarted watcher with the same settings and start prompt" onClick={run(duplicate)}>
+        <Icon name="copy" size={13} />
+      </button>
       <button className="icon-sq bordered" title="delete this watcher" onClick={run(del)}>
         <Icon name="trash" size={13} />
       </button>

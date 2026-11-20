@@ -8,6 +8,14 @@ the composer row's watch form and Check now; tests in `scripts/watcher-watch.tes
 (error) and notifies `blind`, rather than a separate *failed* status; a watch
 that fires while paused is put back as a due wakeup (its output is not kept); stdout
 used for `changed` is the 4 KiB tail. Not verified against a real container or UI.
+**Phase 3 is partly done: Duplicate** (§14) — `watcherDuplicate`, a button in the
+pane; the copy is `<name>-copy[-N]`, an unstarted draft with the same settings,
+start prompt, MCP, skills, network and agent, and none of the run; test in
+`scripts/watchers.test.mjs`. The cache hint (§13) is done too: `AgentManifest.promptCacheSeconds` (claude-code: 300)
+and a line in a watcher's instructions when the kind states one. Still not done from
+phase 3: start-prompt parameters (§19, undecided: editing the copy's prompt serves),
+drafting by other sessions and proactive agents, operator access, the cache hint for
+other agent kinds. Not verified in the UI.
 Earlier status: **phase 1** was built and shipped (the mode, the role, wakeups, the
 turn contract, caps, Pause / Stop / Re-arm, restart recovery, notifications, the UI).
 Phase 2 (`watch` and its poller, §6) and phase 3 (Duplicate, parameters, drafting by
