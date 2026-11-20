@@ -89,7 +89,7 @@ await kernel.ready
 const admin = m.createAdminSurface(kernel)
 
 // The operator's server for workspace `w`, hooks bound exactly as the session
-// manager binds them (sessions.ts `gurtHooks`).
+// manager binds them (sessions/agentEvents.ts `gurtHooks`).
 const TOKEN = 'test-token'
 const server = m.buildGurtHttpServer(TOKEN, {
   role: 'operator',

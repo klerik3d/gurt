@@ -1,5 +1,5 @@
 // The composer's prompt queue: what happens to a message sent to a session that
-// cannot run it yet (src/main/sessions.ts, `drainPending`).
+// cannot run it yet (src/main/sessions/turns.ts, `drainPending`).
 //
 // The composer no longer refuses those sends — it accepts them and shows what
 // is waiting, so the queue is now the thing that must not lose a message. Two

@@ -128,7 +128,7 @@ test('the reviewer is held to submit_review: nudged for it, marked incomplete wi
 // --- adapter exit code -----------------------------------------------------
 test('a turn that ended on a provider limit is never nudged', () => {
   // The nudge would only be refused too; the session resumes on its own after
-  // the reset instead (sessions.ts, `onLimited`).
+  // the reset instead (sessions/wake.ts, `onLimited`).
   assert.equal(decide({ limited: true }), 'none')
   assert.equal(decide({ limited: true, isNudge: true }), 'none')
   assert.equal(decide({ limited: false }), 'nudge')
