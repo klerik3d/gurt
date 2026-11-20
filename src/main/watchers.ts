@@ -10,10 +10,14 @@ import type { EnvRef, Tree } from '../shared/types'
 import { defaultEnvName } from '../shared/types'
 import {
   WATCHER_DEFAULTS,
+  parseWakeWhen,
   sanitizeWatcherConfig,
   wakeAtFor,
   wakeRefusal,
+  watchSetText,
   watcherActive,
+  withoutWatch,
+  type ActiveWatch,
   type WatcherConfig,
   type WatcherLevel,
   type WatcherState,
@@ -25,6 +29,8 @@ import type { SessionManager } from './sessions'
 import * as store from './store'
 import { createLogger } from './log'
 import { keyedChain } from './keyedChain'
+import { createWatchPoller, type PollerClock } from './watchPoller'
+import type { ExecChild } from './reviewCheck'
 
 const log = createLogger('watchers')
 
@@ -41,6 +47,17 @@ export interface WatcherDeps {
   sessions: SessionManager
   /** Stop a finished watcher's container — nothing will prompt it again. */
   stopContainer: (sessionId: string) => Promise<void>
+  /** The poller (§6.1), over the same container paths as the review loop's checks. */
+  poll: {
+    exec(sessionId: string, argv: string[], cwd: string): ExecChild
+    containerUp(sessionId: string): boolean
+    /** `docker stop` the session's container — how a poll is killed. */
+    stopContainer(sessionId: string): Promise<void>
+    containerRunning(sessionId: string): Promise<boolean | null>
+    /** The keep-alive stopped: the container may idle out again. */
+    idle(sessionId: string): void
+    clock?: Partial<PollerClock>
+  }
 }
 
 interface Entry {
@@ -64,6 +81,8 @@ export interface WatcherManager {
   /** The pane's Re-arm (§3): the same act as Start, for a finished watcher. */
   rearm(ws: string, name: string, patch?: Partial<WatcherConfig>): Promise<void>
   wakeNow(ws: string, name: string): void
+  /** "Check now": poll at once, without waking the agent (§5.3). */
+  checkNow(ws: string, name: string): void
   cancelWake(ws: string, name: string): void
   /** The watcher was opened: its attention flag clears (§11). */
   seen(sessionId: string): void
@@ -131,6 +150,27 @@ export function createWatchers(deps: WatcherDeps): WatcherManager {
     sessions.patchWatcher(sessionId, { watcher: { ...w, attention: { level, text, at: new Date().toISOString() } } })
   }
 
+  const poller = createWatchPoller({
+    bus,
+    sessions,
+    exec: (...a) => deps.poll.exec(...a),
+    containerUp: (...a) => deps.poll.containerUp(...a),
+    stopContainer: (...a) => deps.poll.stopContainer(...a),
+    containerRunning: (...a) => deps.poll.containerRunning(...a),
+    paused: (id) => {
+      const e = byId(id)
+      return !e || !e.config.wakeups
+    },
+    idle: (...a) => deps.poll.idle(...a),
+    fault: (id, text) => {
+      setAttention(id, 'error', text)
+      notify(id, 'error', text, 'blind')
+    },
+    ...(deps.poll.clock ? { clock: deps.poll.clock } : {})
+  })
+  // Every change to a session's state may start, retarget or end its watch.
+  bus.on('session.changed', ({ sessionId }) => poller.reconcile(sessionId))
+
   sessions.setWatcherHooks({
     config: (id) => byId(id)?.config,
     notify: (id, level, text, reason) => notify(id, level, text, reason)
@@ -140,6 +180,7 @@ export function createWatchers(deps: WatcherDeps): WatcherManager {
     if (phase === 'started') notified.delete(sessionId)
   })
   bus.on('session.deleted', ({ sessionId }) => {
+    poller.drop(sessionId)
     notified.delete(sessionId)
     stopAfterTurn.delete(sessionId)
   })
@@ -165,12 +206,48 @@ export function createWatchers(deps: WatcherDeps): WatcherManager {
         if (refusal) return { scheduled: false, note: refusal.text }
         const at = wakeAtFor(in_minutes, e.config, w.deadlineAt, now)
         const prev = sessions.sessionInfo(sessionId)?.wake
-        sessions.patchWatcher(sessionId, { wake: { at: at.at, note, setAt: new Date(now).toISOString() } })
+        // A wakeup and a watch do not coexist: the new one replaces the other (§6.4).
+        sessions.patchWatcher(sessionId, {
+          wake: { at: at.at, note, setAt: new Date(now).toISOString() },
+          ...(w.watch ? { watcher: withoutWatch(w) } : {})
+        })
         return {
           scheduled: true,
+          ...(w.watch ? { replaced_watch: w.watch.command } : {}),
           wake_at: at.at,
           note: at.text,
           ...(prev ? { replaced: { at: prev.at, note: prev.note } } : {}),
+          wakeups_left: Math.max(0, e.config.maxWakeups - w.wakeups),
+          deadline: w.deadlineAt
+        }
+      },
+
+      watch: async ({ command, every_seconds, wake_when, timeout_minutes, note }) => {
+        const { e, w } = live()
+        const now = Date.now()
+        const refusal = wakeRefusal(w, e.config, now)
+        if (refusal?.kind === 'error') throw new Error(refusal.text)
+        if (refusal) return { scheduled: false, note: refusal.text }
+        if (parseWakeWhen(wake_when) === undefined) throw new Error('wake_when must be changed, exit0 or regex:<valid regular expression>')
+        // The timeout is clamped like a wakeup: it is the wake that bounds the watch.
+        const timeout = wakeAtFor(timeout_minutes, e.config, w.deadlineAt, now)
+        const prev = sessions.sessionInfo(sessionId)?.wake
+        const watch: ActiveWatch = {
+          command,
+          everySeconds: every_seconds,
+          wakeWhen: wake_when,
+          timeoutAt: timeout.at,
+          setAt: new Date(now).toISOString(),
+          polls: 0,
+          failedInARow: 0,
+          ...(note ? { note } : {})
+        }
+        sessions.patchWatcher(sessionId, { wake: undefined, watcher: { ...w, watch } })
+        return {
+          watching: true,
+          note: `${watchSetText(watch, now)}${timeout.clamped ? ` — timeout ${timeout.text.split(' — ')[1] ?? 'clamped'}` : ''}; the first check follows when this turn ends`,
+          ...(prev ? { replaced: { at: prev.at, note: prev.note } } : {}),
+          ...(w.watch ? { replaced_watch: w.watch.command } : {}),
           wakeups_left: Math.max(0, e.config.maxWakeups - w.wakeups),
           deadline: w.deadlineAt
         }
@@ -220,6 +297,8 @@ export function createWatchers(deps: WatcherDeps): WatcherManager {
           // own wake turns go on by themselves (§10).
           if (sessions.recoverWatcher(id, !e.config.wakeups))
             sessions.resumeInterrupted(id).catch((err: unknown) => log.error('internal.fail', { site: 'watcher-resume', s: id, err }))
+          // A watch goes on polling after a restart, with its baseline (§10).
+          poller.reconcile(id)
         }
       }
     },
@@ -306,6 +385,7 @@ export function createWatchers(deps: WatcherDeps): WatcherManager {
           if (prev.wakeups && !next.wakeups) sessions.holdWakes(info.id)
         }
         sessions.schedule()
+        poller.reconcile(info.id)
         bus.emit('tree.changed', undefined)
       }),
 
@@ -371,6 +451,8 @@ export function createWatchers(deps: WatcherDeps): WatcherManager {
       }),
 
     wakeNow: (ws, name) => sessions.wakeNow(sessionOf(entryOf(ws, name)).id),
+
+    checkNow: (ws, name) => poller.checkNow(sessionOf(entryOf(ws, name)).id),
 
     cancelWake: (ws, name) => sessions.cancelWake(sessionOf(entryOf(ws, name)).id),
 

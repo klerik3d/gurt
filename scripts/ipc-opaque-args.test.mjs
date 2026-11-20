@@ -177,6 +177,7 @@ const SAFE_ARGS = new Set([
   'watcherStart',
   'watcherStop',
   'watcherWakeNow',
+  'watcherCheckNow',
   'watcherCancelWake',
   'envBuildImage',
   // Session and container lifecycle: a session id, sometimes an option id.

@@ -94,6 +94,8 @@ export interface WatcherState {
   wakeups: number
   /** The final wake has been taken: only `finish_watch` is offered from now on. */
   final?: WatcherFinal
+  /** Phase 2 (§6): the one active `watch`. */
+  watch?: ActiveWatch
   end?: {
     outcome: WatcherOutcome
     summary: string
@@ -105,6 +107,40 @@ export interface WatcherState {
 }
 
 export type WatcherLevel = 'info' | 'warning' | 'error'
+
+/** Why a watch woke the agent (§6.2); `user` is the pane's Wake now. */
+export type WatchReason = 'condition' | 'timeout' | 'broken' | 'user'
+
+/** The one active watch (§6.3), persisted on `WatcherState.watch`. */
+export interface ActiveWatch {
+  command: string
+  everySeconds: number
+  /** `changed`, `exit0` or `regex:<re>`. */
+  wakeWhen: string
+  timeoutAt: string
+  note?: string
+  setAt: string
+  /** `changed` only: the first successful poll's stdout. */
+  baseline?: string
+  polls: number
+  failedInARow: number
+  last?: { at: string; exit: number | null; out: string; err: string }
+  /** Fired, but its wake could not be sent yet (§5.4): polling has stopped. */
+  fired?: { at: string; reason: WatchReason; out: string }
+}
+
+/** The poller's limits (§6.1). */
+export const WATCH_LIMITS = {
+  /** One poll's runtime, then the container is stopped. */
+  pollMs: 60_000,
+  outBytes: 4 * 1024,
+  errBytes: 1024,
+  /** Failed polls in a row before the agent is woken to fix its command. */
+  brokenAfter: 5,
+  /** The regex is tested against at most this much stdout. */
+  regexInput: 4 * 1024,
+  regexSource: 200
+} as const
 
 /** The origin a wake prompt carries in the queue (§5.1). */
 export interface WakeOrigin {
@@ -187,6 +223,21 @@ export function wakeAtFor(
 /** Why a late wake was late — the agent has to know it missed time (§5.2). */
 export type WakeLate = 'restart' | 'busy' | { hold: string }
 
+/** "now 14:31", and why it is late when it is by more than a minute. */
+function nowText(now: number, lateMs: number, late: WakeLate | undefined): string {
+  let text = `now ${clockText(new Date(now).toISOString(), now)}`
+  if (lateMs > 60_000) {
+    const reason =
+      late === 'restart' || late === undefined
+        ? 'Gurt was not running'
+        : late === 'busy'
+          ? 'a turn was still running'
+          : `waited for the plan limit reset (${late.hold})`
+    text += ` — late: ${reason}`
+  }
+  return text
+}
+
 /** The message the agent is woken with (§5.2). */
 export function wakeText(o: {
   wake: PendingWake
@@ -199,17 +250,7 @@ export function wakeText(o: {
   const { wake, now } = o
   const n = o.wakeups + 1
   const lateMs = now - Date.parse(wake.at)
-  const nowText = clockText(new Date(now).toISOString(), now)
-  let nowPart = `now ${nowText}`
-  if (lateMs > 60_000) {
-    const reason =
-      o.late === 'restart' || o.late === undefined
-        ? 'Gurt was not running'
-        : o.late === 'busy'
-          ? 'a turn was still running'
-          : `waited for the plan limit reset (${o.late.hold})`
-    nowPart += ` — late: ${reason}`
-  }
+  const nowPart = nowText(now, lateMs, o.late)
   const last = n >= o.maxWakeups ? ' This is your last wakeup: report and call `finish_watch`.' : ''
   return (
     `⏰ Wakeup ${n}/${o.maxWakeups}. Your note: "${wake.note}". Set at ${clockText(wake.setAt, now)} ` +
@@ -223,9 +264,18 @@ export const deadlineText = (deadlineAt: string, now: number): string =>
 
 /** The message for a typed turn, put in front of it (§5.3): the pending wake
  *  stays, or only `finish_watch` is left. */
-export function prefaceFor(state: Pick<WatcherState, 'final'>, wake: PendingWake | undefined, now: number): string | undefined {
+export function prefaceFor(
+  state: Pick<WatcherState, 'final' | 'watch'>,
+  wake: PendingWake | undefined,
+  now: number
+): string | undefined {
   if (state.final)
     return `(Only \`finish_watch\` is left: ${state.final === 'deadline' ? 'the deadline has passed' : 'no wakeups are left'}.)`
+  if (!wake && state.watch && !state.watch.fired)
+    return (
+      `(Your watch \`${cut(state.watch.command, 120)}\` is still active${state.watch.note ? `: "${state.watch.note}"` : ''}. ` +
+      'Keep it, replace it with `wake_me` or `watch`, or finish.)'
+    )
   if (!wake) return undefined
   return (
     `(Your wakeup at ${clockText(wake.at, now)} is still pending: "${wake.note}". ` +
@@ -235,10 +285,19 @@ export function prefaceFor(state: Pick<WatcherState, 'final'>, wake: PendingWake
 
 export const WATCHER_NUDGE_PROMPT =
   'You ended your turn without scheduling your next look. Call `wake_me` ' +
-  'with a note, or `finish_watch` if the monitoring is over, and do nothing else.'
+  '(or `watch`) with a note, or `finish_watch` if the monitoring is over, and ' +
+  'do nothing else.'
 
 export const WATCHER_FINAL_NUDGE_PROMPT =
   'Call `finish_watch` now with your report, and do nothing else.'
+
+/** The state without its watch (a wakeup replaces it, the end drops it). */
+export function withoutWatch(w: WatcherState): WatcherState {
+  const { watch: _watch, ...rest } = w
+  return rest
+}
+
+const cut = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
 
 /** Is the watcher active — started and not finished (§3)? */
 export const watcherActive = (w: WatcherState | undefined): w is WatcherState => !!w && !w.end
@@ -256,7 +315,7 @@ export function watcherTurnSatisfied(
   const w = s.watcher
   if (!w || w.end) return true
   if (w.final) return false
-  if (s.wake) return true
+  if (s.wake || w.watch) return true
   return Date.parse(w.deadlineAt) <= now
 }
 
@@ -299,6 +358,7 @@ export type WatcherPhrase = {
     | 'recovering'
     | 'paused'
     | 'waiting'
+    | 'watching'
     | 'sleeping'
     | 'idle'
     | 'finished'
@@ -343,10 +403,27 @@ export function watcherStatus(v: WatcherStatusInput, now: number): WatcherPhrase
     return {
       status: 'paused',
       tone: 'grey',
-      text: v.wake && Date.parse(v.wake.at) <= now ? `paused — wakeup was due ${clockText(v.wake.at, now)}` : 'paused'
+      text:
+        v.wake && Date.parse(v.wake.at) <= now
+          ? `paused — wakeup was due ${clockText(v.wake.at, now)}`
+          : w.watch
+            ? 'paused — watch kept'
+            : 'paused'
     }
   }
   if (v.held && v.wake) return { status: 'waiting', tone: 'yellow', text: `wake due ${clockText(v.wake.at, now)} — ${v.held}` }
+  if (v.held && w.watch?.fired)
+    return { status: 'waiting', tone: 'yellow', text: `watch fired ${clockText(w.watch.fired.at, now)} — ${v.held}` }
+  if (w.watch) {
+    const next = w.watch.last ? Date.parse(w.watch.last.at) + w.watch.everySeconds * 1000 : now
+    return {
+      status: 'watching',
+      tone: 'green',
+      text: w.watch.fired
+        ? 'watch fired'
+        : `watching · ${w.watch.polls} checks${w.watch.last ? ` · next check ${formatCountdown(next - now)}` : ''}`
+    }
+  }
   if (v.wake) return { status: 'sleeping', tone: 'green', text: `sleeping until ${clockText(v.wake.at, now)}` }
   return { status: 'idle', tone: 'grey', text: 'nothing scheduled' }
 }
@@ -365,4 +442,150 @@ export function watcherStatusOf(info: SessionInfo, config: Pick<WatcherConfig, '
     },
     now
   )
+}
+
+// --- watch (phase 2, §6) ------------------------------------------------------
+
+export type WakeWhen = { kind: 'changed' } | { kind: 'exit0' } | { kind: 'regex'; re: RegExp }
+
+/** Parse `wake_when`; undefined when it is none of the three or the regex does
+ *  not compile (§4.1). */
+export function parseWakeWhen(raw: string): WakeWhen | undefined {
+  if (raw === 'changed' || raw === 'exit0') return { kind: raw }
+  if (!raw.startsWith('regex:')) return undefined
+  const src = raw.slice('regex:'.length)
+  if (!src || src.length > WATCH_LIMITS.regexSource) return undefined
+  try {
+    return { kind: 'regex', re: new RegExp(src, 'm') }
+  } catch {
+    return undefined
+  }
+}
+
+/** One poll, as the poller measured it. `exit` is null for a poll that ran past
+ *  its limit or could not run at all. */
+export interface PollResult {
+  at: string
+  exit: number | null
+  out: string
+  err: string
+}
+
+/** A failed poll (§6.2): for `exit0` only one that never gave an exit code
+ *  (non-zero is its "not yet"), for the others any non-zero exit as well. */
+export const pollFailed = (cond: WakeWhen, poll: PollResult): boolean =>
+  cond.kind === 'exit0' ? poll.exit === null : poll.exit !== 0
+
+export interface WatchVerdict {
+  /** Set when the agent is to be woken. */
+  reason?: Exclude<WatchReason, 'user'>
+  baseline?: string
+  failedInARow: number
+}
+
+/**
+ * What one poll means (§6.2). A condition beats the timeout; a failed poll can
+ * never satisfy a condition; five failed polls in a row wake the agent to fix
+ * its command ("broken").
+ */
+export function watchFired(
+  watch: Pick<ActiveWatch, 'wakeWhen' | 'timeoutAt' | 'baseline' | 'failedInARow'>,
+  poll: PollResult,
+  now: number,
+  /** How a `regex:` condition is tested. The poller passes a time-limited one
+   *  (agent-supplied patterns can backtrack exponentially); the default is a
+   *  plain `RegExp.test`, for pure callers and tests with trusted patterns. */
+  testRegex: (re: RegExp, input: string) => boolean = (re, input) => re.test(input)
+): WatchVerdict {
+  const cond = parseWakeWhen(watch.wakeWhen)
+  const timedOut = Date.parse(watch.timeoutAt) <= now
+  const base = watch.baseline
+  if (!cond) return { reason: 'broken', failedInARow: watch.failedInARow + 1, ...(base !== undefined ? { baseline: base } : {}) }
+  const out = poll.out.trim()
+  if (pollFailed(cond, poll)) {
+    const failedInARow = watch.failedInARow + 1
+    const v: WatchVerdict = { failedInARow, ...(base !== undefined ? { baseline: base } : {}) }
+    if (failedInARow >= WATCH_LIMITS.brokenAfter) v.reason = 'broken'
+    else if (timedOut) v.reason = 'timeout'
+    return v
+  }
+  const v: WatchVerdict = { failedInARow: 0 }
+  if (cond.kind === 'changed' && base === undefined) {
+    // The first successful poll is the baseline, never a change.
+    v.baseline = out
+    if (timedOut) v.reason = 'timeout'
+    return v
+  }
+  if (base !== undefined) v.baseline = base
+  const met =
+    cond.kind === 'exit0' ? poll.exit === 0 : cond.kind === 'changed' ? out !== base : testRegex(cond.re, out.slice(-WATCH_LIMITS.regexInput))
+  if (met) v.reason = 'condition'
+  else if (timedOut) v.reason = 'timeout'
+  return v
+}
+
+const byteLength = (s: string): number => new TextEncoder().encode(s).length
+
+/** The last `max` bytes of `s` (UTF-8 safe at the cut). */
+export function tailBytes(s: string, max: number): string {
+  const buf = new TextEncoder().encode(s)
+  if (buf.length <= max) return s
+  let from = buf.length - max
+  while (from < buf.length && (buf[from]! & 0xc0) === 0x80) from++
+  return new TextDecoder().decode(buf.subarray(from))
+}
+
+/** Output for a wake message: at most `max` bytes, cut from the head. */
+export function cutHead(s: string, max: number): string {
+  const total = byteLength(s)
+  if (total <= max) return s
+  const kept = tailBytes(s, max)
+  return `…[${total - byteLength(kept)} bytes cut]\n${kept}`
+}
+
+/** What a watch's wake says it was. */
+function firedWhat(w: ActiveWatch, reason: WatchReason): string {
+  switch (reason) {
+    case 'condition':
+      return `Watch fired (${w.wakeWhen})`
+    case 'timeout':
+      return `Watch timed out (${w.wakeWhen} never held)`
+    case 'broken':
+      return `Watch is broken (${WATCH_LIMITS.brokenAfter} failed checks in a row)`
+    case 'user':
+      return 'Watch ended by you (Wake now)'
+  }
+}
+
+/** The message a firing watch wakes the agent with (§6.2). */
+export function watchWakeText(o: {
+  watch: ActiveWatch
+  fired: NonNullable<ActiveWatch['fired']>
+  wakeups: number
+  maxWakeups: number
+  deadlineAt: string
+  now: number
+  late?: WakeLate | undefined
+}): string {
+  const { watch: w, fired, now } = o
+  const n = o.wakeups + 1
+  const lateMs = now - Date.parse(fired.at)
+  const exit = w.last ? (w.last.exit === null ? 'no exit: timed out or could not run' : `exit ${w.last.exit}`) : 'no poll yet'
+  let body = cutHead(fired.out, WATCH_LIMITS.outBytes)
+  if (fired.reason === 'broken' && w.last?.err) body += `${body ? '\n' : ''}[stderr] ${tailBytes(w.last.err, WATCH_LIMITS.errBytes)}`
+  const fence = '`'.repeat(Math.max(3, ...(body.match(/`+/g) ?? []).map((m) => m.length + 1)))
+  const last = n >= o.maxWakeups ? ' This is your last wakeup: report and call `finish_watch`.' : ''
+  return (
+    `👁 ${firedWhat(w, fired.reason)} at ${clockText(fired.at, now)} after ${w.polls} checks — wakeup ${n}/${o.maxWakeups}, ` +
+    `${nowText(now, lateMs, o.late)}.\n` +
+    (w.note ? `Your note: "${w.note}".\n` : '') +
+    `\`${cut(w.command, 300)}\`\n` +
+    `Last output (${exit}):\n${fence}\n${body}\n${fence}\n` +
+    `Deadline ${clockText(o.deadlineAt, now)}.${last}`
+  )
+}
+
+/** `watch(...)`'s answer to the agent. */
+export function watchSetText(w: ActiveWatch, now: number): string {
+  return `watching \`${cut(w.command, 120)}\` every ${w.everySeconds} s for ${w.wakeWhen}; times out ${clockText(w.timeoutAt, now)}`
 }

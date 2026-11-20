@@ -572,7 +572,9 @@ export interface GurtApi {
   watcherRearm(ws: string, name: string, patch?: Partial<WatcherConfig>): Promise<void>
   /** Wake it now instead of at the wakeup's time. */
   watcherWakeNow(ws: string, name: string): Promise<void>
-  /** Withdraw the pending wakeup. */
+  /** Poll the watch at once, without waking the agent. */
+  watcherCheckNow(ws: string, name: string): Promise<void>
+  /** Withdraw the pending wakeup or the watch. */
   watcherCancelWake(ws: string, name: string): Promise<void>
 }
 
@@ -779,6 +781,7 @@ const METHODS = {
   watcherStop: 'none',
   watcherRearm: 'none',
   watcherWakeNow: 'none',
+  watcherCheckNow: 'none',
   watcherCancelWake: 'none'
 } as const satisfies Record<keyof GurtApi, Exposure>
 

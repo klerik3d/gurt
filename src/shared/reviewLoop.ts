@@ -173,6 +173,8 @@ export interface CheckResult {
   ms: number
   /** The ring's last lines (§5.3). */
   tail: string[]
+  /** Only when the run kept stderr apart (a watcher's poll): then `tail` is stdout alone. */
+  stderr?: string[] | undefined
   timedOut?: boolean | undefined
 }
 

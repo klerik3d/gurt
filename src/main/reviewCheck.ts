@@ -186,6 +186,11 @@ export interface CheckRequest {
    *  when they changed. Never called once the run has resolved. A throw is
    *  swallowed: a live view must not break the check. */
   onProgress?: (lines: string[]) => void
+  /** A watcher's poll (docs/requirements-watchers.md §6.1): runs here instead
+   *  of /workspaces/<repo> (`repo` is then only a label), and keeps stderr
+   *  apart from stdout. */
+  cwd?: string
+  splitStreams?: boolean
 }
 
 /** The container was stopped and confirmed not running, or it was not. */
@@ -238,7 +243,7 @@ export class CheckRunner {
   /** Run one repo's check to the end (§5.3). Never rejects. */
   async run(req: CheckRequest): Promise<CheckRun> {
     if (!INTENT_RE.test(req.intent)) return { status: 'failed-to-run', error: `invalid check intent id "${req.intent}"` }
-    if (!REPO_RE.test(req.repo) || req.repo === '.' || req.repo === '..')
+    if (!req.cwd && (!REPO_RE.test(req.repo) || req.repo === '.' || req.repo === '..'))
       return { status: 'failed-to-run', error: `invalid repo name "${req.repo}"` }
     if (this.active.has(req.intent)) return { status: 'failed-to-run', error: `check ${req.intent} is already running` }
     // Registered before the first await: a cancel that lands while the
@@ -257,9 +262,19 @@ export class CheckRunner {
   private async runRegistered(req: CheckRequest, a: Active, closeIt: () => void, stopRequested: Promise<void>): Promise<CheckRun> {
     const started = this.o.now()
     const ring = new LineRing()
+    const errRing = req.splitStreams ? new LineRing() : undefined
     const result = (extra: Partial<CheckResult> = {}, code = -1): CheckResult => {
       ring.end()
-      return { repo: req.repo, command: req.command, code, ms: this.o.now() - started, tail: ring.lines(), ...extra }
+      errRing?.end()
+      return {
+        repo: req.repo,
+        command: req.command,
+        code,
+        ms: this.o.now() - started,
+        tail: ring.lines(),
+        ...(errRing ? { stderr: errRing.lines() } : {}),
+        ...extra
+      }
     }
     try {
       await this.deps.ensureContainerUp()
@@ -271,7 +286,7 @@ export class CheckRunner {
 
     let child: ExecChild
     try {
-      child = this.deps.exec(loginShell(req.command), `${CONTAINER_ROOT}/${req.repo}`)
+      child = this.deps.exec(loginShell(req.command), req.cwd ?? `${CONTAINER_ROOT}/${req.repo}`)
     } catch (e) {
       return { status: 'failed-to-run', error: `could not start the check: ${errText(e)}` }
     }
@@ -279,12 +294,14 @@ export class CheckRunner {
     let spawnError: string | undefined
     a.child = child
     const progress = this.progress(req, ring, started)
-    const onData = (d: Buffer): void => {
+    child.stdout?.on('data', (d: Buffer) => {
       ring.push(d)
       progress.touch()
-    }
-    child.stdout?.on('data', onData)
-    child.stderr?.on('data', onData)
+    })
+    child.stderr?.on('data', (d: Buffer) => {
+      ;(errRing ?? ring).push(d)
+      progress.touch()
+    })
     child.on('error', (e) => {
       spawnError ??= e.message
       a.exited = true

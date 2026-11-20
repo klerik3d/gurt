@@ -6,6 +6,7 @@ import {
   formatCountdown,
   watcherActive,
   watcherStatusOf,
+  type ActiveWatch,
   type WatcherConfig
 } from '../../../shared/watchers'
 import { LabelTag } from './tags'
@@ -16,6 +17,26 @@ import { ConfigTab } from './ConfigTab'
 import type { ComposerNote } from './Chat'
 import { Dot, Icon, InfoDot } from './icons'
 import { WATCHER_TONE } from './WatcherSidebar'
+
+/** "Watching `cmd` every 60 s for exit0 · 21 checks · last "RUNNING" 14:31 · times out in 12:00" (§5.3). */
+function watchLine(watch: ActiveWatch, now: number): string {
+  const cmd = watch.command.length > 60 ? `${watch.command.slice(0, 59)}…` : watch.command
+  const last = watch.last
+    ? ` · last ${last0(watch.last)} ${clockText(watch.last.at, now)}`
+    : ''
+  if (watch.fired) return `Watch fired (${watch.fired.reason}) ${clockText(watch.fired.at, now)} — waiting to wake the agent`
+  return (
+    `Watching \`${cmd}\` every ${watch.everySeconds} s for ${watch.wakeWhen} · ${watch.polls} checks${last}` +
+    ` · times out in ${formatCountdown(Date.parse(watch.timeoutAt) - now)}`
+  )
+}
+
+const last0 = (l: NonNullable<ActiveWatch['last']>): string => {
+  if (l.exit === null) return 'failed'
+  const first = l.out.trim().split('\n').pop() ?? ''
+  const short = first.length > 24 ? `${first.slice(0, 23)}…` : first
+  return short ? `"${short}"` : `exit ${l.exit}`
+}
 
 type NumberKey = keyof typeof WATCHER_BOUNDS
 const NUMBER_KEYS = Object.keys(WATCHER_BOUNDS) as NumberKey[]
@@ -82,6 +103,7 @@ export function WatcherPane({
   const draft = !info || info.state === 'draft'
   const phrase = info ? watcherStatusOf(info, config, now) : { status: 'draft' as const, tone: 'hollow' as const, text: 'not started' }
   const wake = info?.wake
+  const watch = w?.watch
 
   const guard = (p: Promise<unknown>): void => void p.catch((e: unknown) => alertDialog(String(e)))
   const update = (patch: Partial<WatcherConfig>): void => guard(window.gurt.watcherUpdate(ws, name, patch))
@@ -145,7 +167,8 @@ export function WatcherPane({
   const stateLine = (): string => {
     if (!w) return phrase.text
     if (w.end) return `Finished · ${w.end.outcome} — ${w.end.summary}`
-    if (!config.wakeups) return wake ? `Paused — wakeup was due ${clockText(wake.at, now)}` : 'Paused'
+    if (!config.wakeups) return wake ? `Paused — wakeup was due ${clockText(wake.at, now)}` : watch ? 'Paused — watch kept' : 'Paused'
+    if (watch) return watchLine(watch, now)
     if (wake) {
       const left = Date.parse(wake.at) - now
       return `${left > 0 ? `Sleeping until ${clockText(wake.at, now)} (in ${formatCountdown(left)})` : `Wake due ${clockText(wake.at, now)}`} — ${wake.note}`
@@ -153,10 +176,19 @@ export function WatcherPane({
     return phrase.text
   }
 
-  /** The row above the composer (§5.3): the wakeup, Wake now / Cancel, Resume. */
+  /** The row above the composer (§5.3): the wakeup or the watch, Wake now /
+   *  Check now / Cancel, Resume. */
   const composerNote: ComposerNote = {
-    text: w?.end ? `finished · ${w.end.outcome} — ${w.end.summary}` : !config.wakeups ? `⏸ ${stateLine()}` : wake ? `⏰ ${stateLine()}` : stateLine(),
-    hint: 'A typed message wakes the watcher early and leaves a pending wakeup in place. Esc or Cancel withdraws the wakeup; Pause stops every unattended turn.',
+    text: w?.end
+      ? `finished · ${w.end.outcome} — ${w.end.summary}`
+      : !config.wakeups
+        ? `⏸ ${stateLine()}`
+        : watch
+          ? `👁 ${stateLine()}`
+          : wake
+            ? `⏰ ${stateLine()}`
+            : stateLine(),
+    hint: 'A typed message wakes the watcher early and leaves a pending wakeup or watch in place. Esc or Cancel withdraws it; Pause stops every unattended turn and every poll.',
     actions: !active
       ? []
       : !config.wakeups
@@ -168,8 +200,23 @@ export function WatcherPane({
               disabled: !!w?.final,
               onClick: () => guard(window.gurt.watcherWakeNow(ws, name))
             },
-            ...(wake
-              ? [{ label: 'Cancel', title: 'withdraw the pending wakeup', onClick: () => guard(window.gurt.watcherCancelWake(ws, name)) }]
+            ...(watch && !watch.fired
+              ? [
+                  {
+                    label: 'Check now',
+                    title: 'poll the command now, without waking the agent',
+                    onClick: () => guard(window.gurt.watcherCheckNow(ws, name))
+                  }
+                ]
+              : []),
+            ...(wake || watch
+              ? [
+                  {
+                    label: 'Cancel',
+                    title: watch ? 'withdraw the watch' : 'withdraw the pending wakeup',
+                    onClick: () => guard(window.gurt.watcherCancelWake(ws, name))
+                  }
+                ]
               : [])
           ]
   }

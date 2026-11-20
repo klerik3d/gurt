@@ -21,6 +21,7 @@ import { listenEphemeral } from '../listen'
 import { createLogger } from '../log'
 import { buildStatelessMcpHttpServer } from './httpEndpoint'
 import { ARTIFACTS, CONTAINER_ROOT } from '../../shared/files'
+import { parseWakeWhen } from '../../shared/watchers'
 
 const log = createLogger('mcp')
 
@@ -198,9 +199,13 @@ const WATCHER_INSTRUCTIONS =
   'You are a WATCHER. You monitor a process outside this machine and report on\n' +
   'it. You never change code, and your repositories, if any, are read-only.\n' +
   'Every turn: look, report in ONE TO THREE LINES (what changed, not what you\n' +
-  'already said), then end with exactly one of `wake_me` or `finish_watch`,\n' +
+  'already said), then end with exactly one of `wake_me`, `watch` or\n' +
+  '`finish_watch`,\n' +
   'as the very last thing you do. The host keeps the time and wakes you with\n' +
   'your note; nothing happens between wakes.\n' +
+  '- Prefer `watch` for anything a shell command can detect (a job status via\n' +
+  '  curl, a file, an exit code): the host polls it for free, with no turn.\n' +
+  '  Use `wake_me` when only your own judgment can tell.\n' +
   '- The note is for you: write what to check and what you expect ("tests\n' +
   '  should be running; if the job is still building, the env build is stuck").\n' +
   '- `notify_user` only when a person has to act or the outcome is known, and\n' +
@@ -537,6 +542,13 @@ export interface ProactiveHooks {
 export interface WatcherToolHooks {
   wakeMe(input: { in_minutes: number; note: string }): Promise<unknown>
   cancelWakeup(): Promise<unknown>
+  watch(input: {
+    command: string
+    every_seconds: number
+    wake_when: string
+    timeout_minutes: number
+    note?: string | undefined
+  }): Promise<unknown>
   notifyUser(input: { text: string; level: 'info' | 'warning' | 'error' }): Promise<unknown>
   finishWatch(input: { summary: string; outcome: 'success' | 'failure' | 'inconclusive' }): Promise<unknown>
 }
@@ -867,8 +879,42 @@ function registerWatcherTools(server: McpServer, w: WatcherToolHooks): void {
     wrap((a: { in_minutes: number; note: string }) => w.wakeMe(a))
   )
   server.registerTool(
+    'watch',
+    {
+      description:
+        'Poll a shell command every `every_seconds` (the host runs it in your container, no turn is ' +
+        'spent) and wake you when `wake_when` holds: `exit0` (the command exits 0), `changed` (its ' +
+        'stdout differs from the first successful poll) or `regex:<re>` (its stdout matches). You are ' +
+        'also woken at `timeout_minutes`, or when the command is broken (5 failed polls in a row). ' +
+        'Replaces the pending wakeup or an earlier watch. Call it last in the turn.',
+      inputSchema: z.strictObject({
+        command: z.string().trim().min(1).max(2_000),
+        every_seconds: z.number().int().min(30).max(3_600),
+        wake_when: z.union([
+          z.literal('changed'),
+          z.literal('exit0'),
+          z
+            .string()
+            .regex(/^regex:.{1,200}$/s)
+            .refine((v) => parseWakeWhen(v) !== undefined, 'not a valid regular expression')
+        ]),
+        timeout_minutes: z.number().positive().max(10_080),
+        note: z.string().trim().max(500).optional()
+      })
+    },
+    wrap(
+      (a: {
+        command: string
+        every_seconds: number
+        wake_when: string
+        timeout_minutes: number
+        note?: string | undefined
+      }) => w.watch(a)
+    )
+  )
+  server.registerTool(
     'cancel_wakeup',
-    { description: 'Drop the pending wakeup. A turn still has to end with `wake_me` or `finish_watch`.', inputSchema: z.strictObject({}) },
+    { description: 'Drop the pending wakeup. A turn still has to end with `wake_me`, `watch` or `finish_watch`.', inputSchema: z.strictObject({}) },
     wrap(() => w.cancelWakeup())
   )
   server.registerTool(
@@ -1102,6 +1148,7 @@ export async function ensureGurtServer(
           watcher: {
             wakeMe: (input) => rec.hooks.watcher!.wakeMe(input),
             cancelWakeup: () => rec.hooks.watcher!.cancelWakeup(),
+            watch: (input) => rec.hooks.watcher!.watch(input),
             notifyUser: (input) => rec.hooks.watcher!.notifyUser(input),
             finishWatch: (input) => rec.hooks.watcher!.finishWatch(input)
           } satisfies WatcherToolHooks

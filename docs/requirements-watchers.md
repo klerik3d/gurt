@@ -1,6 +1,14 @@
 # Requirements: watchers — one long-lived session that watches an outside process
 
-Status: **phase 1 only** is being built and shipped (the mode, the role, wakeups, the
+Status: **phase 2 (`watch`) is implemented** on top of phase 1: the poller
+(`src/main/watchPoller.ts`), the tool, its pure rules in `src/shared/watchers.ts`,
+the composer row's watch form and Check now; tests in `scripts/watcher-watch.test.mjs`
+(§18 item 9). Phase 2 deviations: a poll's cwd is the first repo, else `/workspaces`
+(there is no `workspaceFolder`); an unconfirmed stop three times sets `attention`
+(error) and notifies `blind`, rather than a separate *failed* status; a watch
+that fires while paused is put back as a due wakeup (its output is not kept); stdout
+used for `changed` is the 4 KiB tail. Not verified against a real container or UI.
+Earlier status: **phase 1** was built and shipped (the mode, the role, wakeups, the
 turn contract, caps, Pause / Stop / Re-arm, restart recovery, notifications, the UI).
 Phase 2 (`watch` and its poller, §6) and phase 3 (Duplicate, parameters, drafting by
 other sessions, the cache hint, §14) are **decided out of scope for this work**: they

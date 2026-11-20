@@ -44,6 +44,7 @@ import { createPiiMask, type PiiManager } from './pii'
 import { createLogger, dropSessionLog, sessionLogLine } from './log'
 import { createProactive, type ProactiveManager } from './proactive'
 import { createWatchers, type WatcherManager } from './watchers'
+import type { PollerClock } from './watchPoller'
 import { createReviewLoop, type ReviewLoopClock, type ReviewLoopController, type ReviewLoopDeps } from './reviewLoop'
 import { dropApprovals, setApproval } from './approvals'
 
@@ -181,6 +182,7 @@ async function defaultEnvsForRepo(ws: string, repo: string): Promise<string[]> {
 /** Seams a test drives time through; the app passes none. */
 export interface KernelOptions {
   reviewLoop?: { clock?: Partial<ReviewLoopClock>; approvalSeam?: ReviewLoopDeps['approvalSeam'] }
+  watchers?: { clock?: Partial<PollerClock> }
 }
 
 export function createKernel(options: KernelOptions = {}): Kernel {
@@ -320,7 +322,16 @@ export function createKernel(options: KernelOptions = {}): Kernel {
   const watchers = createWatchers({
     bus,
     sessions,
-    stopContainer: (id) => containers.stop(id, 'idle')
+    stopContainer: (id) => containers.stop(id, 'idle'),
+    poll: {
+      exec: (sessionId, argv, cwd) => containers.spawnExec(sessionId, argv, cwd),
+      containerUp: (sessionId) => containers.status(sessionId) === 'running',
+      // A poll is killed by stopping the container, confirmed by an inspect.
+      stopContainer: (sessionId) => containers.stop(sessionId, 'idle', true),
+      containerRunning: (sessionId) => containers.isRunning(sessionId),
+      idle: (sessionId) => idle(sessionId),
+      ...(options.watchers?.clock ? { clock: options.watchers.clock } : {})
+    }
   })
 
   // The review loop: a bus subscriber like the proactive manager, created over

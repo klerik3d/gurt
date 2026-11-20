@@ -86,7 +86,9 @@ import {
   type WakeOrigin,
   type WatcherConfig,
   type WatcherLevel,
-  type WatcherState
+  type WatcherState,
+  watchWakeText,
+  withoutWatch
 } from '../shared/watchers'
 import type { ContainerStatusReason, SessionStateReason } from '../shared/events'
 import type { LaunchContext } from './containers'
@@ -505,6 +507,8 @@ interface Session {
   wakeWriting?: PendingPrompt | undefined
   /** Why a due wake is held right now (the late-wake wording, §5.2). */
   wakeHeld?: WakeLate | undefined
+  /** A watch's poll is in flight (§6.1): no turn starts until it ends. */
+  polling?: boolean | undefined
   modes?: SessionModes | undefined
   plan?: SessionSnapshot['plan'] | undefined
   commands?: SessionSnapshot['commands'] | undefined
@@ -2111,9 +2115,46 @@ export class SessionManager {
     if (s.recovering) return { why: 'busy' }
     const hold = this.limitHold(s)
     if (hold) return { why: { hold: hold.until ? formatResetAt(hold.until, Date.now()) : 'the next usage read' }, hold }
-    if (s.pending.length || s.busy || s.draining || s.promptRunning || s.nudgePending || s.loading || s.recoveryStarting)
+    if (
+      s.pending.length ||
+      s.busy ||
+      s.draining ||
+      s.promptRunning ||
+      s.nudgePending ||
+      s.loading ||
+      s.recoveryStarting ||
+      s.polling
+    )
       return { why: 'busy' }
     return undefined
+  }
+
+  /**
+   * May the watcher's poller run a poll now (§6.1)? Never while a turn runs or
+   * is about to (a poll that overran would stop the container under it), while
+   * recovering, or while a wake is going out. A plan hold does not stop it:
+   * polls cost no tokens (§5.4), so whatever waits behind the hold does not
+   * count as "about to run".
+   */
+  canPoll(sessionId: string): boolean {
+    const s = this.sessions.get(sessionId)
+    if (!s || s.info.state !== 'started' || s.recovering || s.polling) return false
+    if (s.busy || s.draining || s.promptRunning || s.nudgePending || s.loading || s.recoveryStarting) return false
+    if (s.pending.length && !this.limitHold(s)) return false
+    return true
+  }
+
+  /** The poller's poll starts or ends. A prompt that arrived during one is
+   *  sent when it ends (§6.1). */
+  setPolling(sessionId: string, polling: boolean): void {
+    const s = this.sessions.get(sessionId)
+    if (!s || !!s.polling === polling) return
+    s.polling = polling || undefined
+    this.bus.emit('session.changed', { sessionId })
+    if (!polling) {
+      void this.drainPending(s)
+      this.schedule()
+    }
   }
 
   /**
@@ -2136,9 +2177,11 @@ export class SessionManager {
       const wakeAt = s.info.wake ? Date.parse(s.info.wake.at) : undefined
       const deadlineDue = deadline <= now
       const wakeDue = wakeAt !== undefined && wakeAt <= now
+      // A watch that fired is a due wake whose message is not written yet (§5.4).
+      const fired = w.watch?.fired
       if (!deadlineDue) instants.push(deadline)
       if (wakeAt !== undefined && !wakeDue) instants.push(wakeAt)
-      if (!deadlineDue && !wakeDue) continue
+      if (!deadlineDue && !wakeDue && !fired) continue
       if (s.pending.some((p) => isWakeOrigin(p.origin) && p.origin.final)) continue
       const block = this.wakeBlock(s)
       if (block) {
@@ -2152,6 +2195,18 @@ export class SessionManager {
         // The deadline wins: the wakeup is dropped, one final wake goes out.
         origin = { wake: now.toString(), final: 'deadline' }
         text = deadlineText(w.deadlineAt, now)
+      } else if (!wakeDue && fired && w.watch) {
+        const watch = w.watch
+        const last = w.wakeups + 1 >= cfg.maxWakeups
+        const late: WakeLate = Date.parse(fired.at) < this.bootAt ? 'restart' : s.wakeHeld ?? 'busy'
+        // `at` / `note` are what Pause puts back as the wakeup (§3): due at once.
+        origin = {
+          wake: watch.setAt,
+          at: fired.at,
+          note: `(watch ${fired.reason}) ${watch.note ?? ''}`.trim(),
+          ...(last ? { final: 'max-wakeups' as const } : {})
+        }
+        text = watchWakeText({ watch, fired, wakeups: w.wakeups, maxWakeups: cfg.maxWakeups, deadlineAt: w.deadlineAt, now, late })
       } else {
         const wake = s.info.wake!
         const last = w.wakeups + 1 >= cfg.maxWakeups
@@ -2161,9 +2216,12 @@ export class SessionManager {
         text = wakeText({ wake, wakeups: w.wakeups, maxWakeups: cfg.maxWakeups, deadlineAt: w.deadlineAt, now, late })
       }
       s.wakeHeld = undefined
-      // Captured before it is cleared: a failed write restores it.
+      // Captured before it is cleared: a failed write restores it. The watch
+      // goes with it: its output rides in the message (or the deadline ends it).
       const wasWake = s.info.wake
+      const wasWatch = w.watch
       s.info.wake = undefined
+      if (wasWatch) s.info.watcher = withoutWatch(w)
       const prompt: PendingPrompt = { id: `p${++this.pendingSeq}`, queuedAt: new Date(now).toISOString(), text, auto: true, origin }
       s.wakeWriting = prompt
       s.pending.push(prompt)
@@ -2187,6 +2245,9 @@ export class SessionManager {
           const owned = s.pending.includes(prompt)
           s.pending = s.pending.filter((p) => p !== prompt)
           if (owned && !s.info.wake && !deadlineDue) s.info.wake = wasWake
+          const cur = s.info.watcher
+          if (owned && wasWatch && !deadlineDue && watcherActive(cur) && !cur.watch && !s.info.wake)
+            s.info.watcher = { ...cur, watch: wasWatch }
           this.bus.emit('session.changed', { sessionId: s.info.id })
           // Whatever was typed meanwhile goes now; the wake is retried later
           // (bounded: one try per 30 s, not a spin).
@@ -2248,12 +2309,16 @@ export class SessionManager {
   }
 
   /** Apply a change to a watcher's session record: its state and wakeup. */
-  patchWatcher(sessionId: string, patch: { watcher?: WatcherState | undefined; wake?: PendingWake | undefined }): void {
+  patchWatcher(
+    sessionId: string,
+    patch: { watcher?: WatcherState | undefined; wake?: PendingWake | undefined },
+    opts: { persist?: boolean } = {}
+  ): void {
     const s = this.sessions.get(sessionId)
     if (!s) throw new Error('unknown session')
     if ('watcher' in patch) s.info.watcher = patch.watcher
     if ('wake' in patch) s.info.wake = patch.wake
-    this.schedulePersist(s.ref)
+    if (opts.persist !== false) this.schedulePersist(s.ref)
     this.bus.emit('session.changed', { sessionId })
     this.schedule()
   }
@@ -2267,6 +2332,15 @@ export class SessionManager {
     if (this.watcherPaused(s)) throw new Error('paused — resume it first')
     if (this.queuedWakes(s).length) return
     const now = new Date().toISOString()
+    if (w.watch && !s.info.wake) {
+      // Ends the watch and wakes the agent with its last output (§5.3).
+      if (!w.watch.fired)
+        s.info.watcher = { ...w, watch: { ...w.watch, fired: { at: now, reason: 'user', out: w.watch.last?.out ?? '' } } }
+      this.schedulePersist(s.ref)
+      this.bus.emit('session.changed', { sessionId })
+      this.schedule()
+      return
+    }
     s.info.wake = { at: now, note: s.info.wake?.note ?? '(woken by you)', setAt: s.info.wake?.setAt ?? now }
     this.schedulePersist(s.ref)
     this.schedule()
@@ -2277,7 +2351,7 @@ export class SessionManager {
     const s = this.sessions.get(sessionId)
     const w = s?.info.watcher
     if (!s || !w || w.end) return
-    s.info.watcher = { ...w, end }
+    s.info.watcher = { ...withoutWatch(w), end }
     s.info.wake = undefined
     s.pending = s.pending.filter((p) => !this.isWakeWork(p))
     s.info.limitedUntil = s.pending.some((p) => p.auto) ? s.info.limitedUntil : undefined
@@ -3871,6 +3945,11 @@ export class SessionManager {
           s.info.wake = undefined
           this.schedulePersist(s.ref)
         }
+        const cur = s.info.watcher
+        if (s.cancelledAt && s.cancelledAt >= startedAt && cur?.watch && Date.parse(cur.watch.setAt) >= startedAt) {
+          s.info.watcher = withoutWatch(cur)
+          this.schedulePersist(s.ref)
+        }
         s.cancelledAt = undefined
       }
       // An ordinary session drops `promptRunning` right here, with no write and
@@ -4488,6 +4567,8 @@ export class SessionManager {
         !this.deliveryActive(s) &&
         // A wake whose write has not landed is not delivered yet (§5.1).
         s.pending[0] !== s.wakeWriting &&
+        // A poll in flight ends first (§6.1); `setPolling(false)` drains again.
+        !s.polling &&
         // A paused watcher runs no unattended turn of any kind (§3).
         !(this.isWakeWork(s.pending[0]!) && this.watcherPaused(s))
       ) {
@@ -4578,6 +4659,7 @@ export class SessionManager {
     if (which === 'limit' || !watcherActive(w)) return
     const atEnd = finalWithdrawn || !!w.final
     s.info.wake = undefined
+    if (w.watch) s.info.watcher = withoutWatch(w)
     s.pending = s.pending.filter((p) => !isWakeOrigin(p.origin))
     this.schedulePersist(s.ref)
     this.bus.emit('session.changed', { sessionId: s.info.id })

@@ -325,6 +325,7 @@ export function registerIpc(): void {
     watcherStop: (ws, name) => kernel.watchers.stop(ws, name),
     watcherRearm: (ws, name, patch) => kernel.watchers.rearm(ws, name, patch),
     watcherWakeNow: async (ws, name) => kernel.watchers.wakeNow(ws, name),
+    watcherCheckNow: async (ws, name) => kernel.watchers.checkNow(ws, name),
     watcherCancelWake: async (ws, name) => kernel.watchers.cancelWake(ws, name),
     renameTask: (ws, name, newName) => kernel.renameTask(ws, name, newName),
     taskDirtyRepos: (ws, name) => kernel.taskDirtyRepos(ws, name),

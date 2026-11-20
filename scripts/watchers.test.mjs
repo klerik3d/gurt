@@ -283,7 +283,7 @@ test('wake_me after the deadline in a running turn is a non-error and schedules 
   assert.equal(info(id).wake, undefined)
 })
 
-test('the role\'s tool set over real HTTP: four tools, no complete, no create_session', async () => {
+test('the role\'s tool set over real HTTP: five tools, no complete, no create_session', async () => {
   const calls = []
   const hooks = {
     role: 'watcher',
@@ -291,6 +291,7 @@ test('the role\'s tool set over real HTTP: four tools, no complete, no create_se
     watcher: {
       wakeMe: async (a) => (calls.push(['wake_me', a]), { ok: true }),
       cancelWakeup: async () => ({}),
+      watch: async (a) => (calls.push(['watch', a]), { ok: true }),
       notifyUser: async () => ({}),
       finishWatch: async () => ({})
     }
@@ -310,7 +311,7 @@ test('the role\'s tool set over real HTTP: four tools, no complete, no create_se
   }
   try {
     const list = await rpc('tools/list', {})
-    assert.deepEqual(list.result.tools.map((t) => t.name).sort(), ['cancel_wakeup', 'finish_watch', 'notify_user', 'wake_me'])
+    assert.deepEqual(list.result.tools.map((t) => t.name).sort(), ['cancel_wakeup', 'finish_watch', 'notify_user', 'wake_me', 'watch'])
     const bad = await rpc('tools/call', { name: 'wake_me', arguments: { in_minutes: 5, note: 'n', extra: 1 } }, 2)
     assert.ok(bad.error || bad.result?.isError, 'strict schemas: unknown keys are rejected')
     const ok = await rpc('tools/call', { name: 'wake_me', arguments: { in_minutes: 5, note: 'n' } }, 3)
