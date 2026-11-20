@@ -1,10 +1,12 @@
 import { spawn, type ChildProcess } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { StringDecoder } from 'node:string_decoder'
 import { existsSync, promises as fs } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { DEFAULT_BASE_IMAGE, type EnvConfig, type EnvRef, type RepoConfig } from '../shared/types'
 import type { AgentManifest } from '../shared/agentPlugin'
+import { AGENT_MANIFESTS } from '../shared/agents'
 import { envImageTag, insideRoot, validateEnvConfig } from '../shared/envConfig'
 import type { EnvImageStatus } from '../shared/api'
 import { cloneDir, getWorkspace, historySlug, taskDir } from './store'
@@ -17,6 +19,35 @@ import { createLogger } from './log'
 
 // Named `procLog` because most functions here take a `log: LogSink` sink.
 const procLog = createLogger('proc')
+// `provision.phase` belongs to the container component's channel, wherever the
+// phase is timed (the manager's own phases log there).
+const phaseLog = createLogger('containers')
+
+/** Log one finished provisioning phase (docs/logging.md `provision.phase`). */
+export function logPhase(session: string | undefined, phase: string, ms: number): void {
+  phaseLog.info('provision.phase', { ...(session ? { s: session } : {}), phase, ms })
+}
+
+/**
+ * Time one provisioning step and log it as `provision.phase` — the single
+ * shape every phase of a session start shares (docs/logging.md), whether the
+ * step lives here or in the container manager (`ContainerManager.timed`
+ * delegates to this). Logged on failure too: a step that failed after 30 s is
+ * the number that matters most. `session` is absent for host-wide work
+ * (Settings "Prepare").
+ */
+export async function timedPhase<T>(
+  session: string | undefined,
+  phase: string,
+  fn: () => Promise<T>
+): Promise<T> {
+  const since = Date.now()
+  try {
+    return await fn()
+  } finally {
+    logPhase(session, phase, Date.now() - since)
+  }
+}
 
 /** Cap on the unterminated remainder buffered between chunks in `lineBuffer`. A
  *  process that never emits '\n' must not grow it without bound — matches the
@@ -597,10 +628,21 @@ export async function prepareEnvImage(
 /** `docker pull` when the image is not in the local store; the output goes to
  *  the provisioning log (phase `image`). */
 export async function pullIfMissing(image: string, log: LogSink): Promise<void> {
-  if (await dockerImageExists(image)) return
-  log(`pulling ${image} ...`)
-  await run('docker', ['pull', image], log, { level: 'info' })
+  // Shared by concurrent callers: the node volume and the adapters volume both
+  // fill from the same image, and two `docker pull` streams of it would
+  // interleave in one line-oriented log.
+  const inflight = pullsInFlight.get(image)
+  if (inflight) return inflight
+  const p = (async () => {
+    if (await dockerImageExists(image)) return
+    log(`pulling ${image} ...`)
+    await run('docker', ['pull', image], log, { level: 'info' })
+  })()
+  pullsInFlight.set(image, p)
+  p.finally(() => pullsInFlight.delete(image)).catch(() => {})
+  return p
 }
+const pullsInFlight = new Map<string, Promise<void>>()
 
 /** Remote HEAD commit of `repo`, resolved with the same credentials as clones. */
 async function remoteHead(repo: RepoConfig): Promise<string> {
@@ -901,28 +943,80 @@ export async function dockerContainerExists(containerId: string): Promise<boolea
   )
 }
 
-// --- node runtime volume (§3.2) ---
+// --- node runtime + adapters volumes (§3.2) ---
 
-const nodeVolumeName = (arch: string): string =>
-  `gurt-node-${/sha256:([0-9a-f]{12})/.exec(NODE_RUNTIME_IMAGE)?.[1] ?? 'unpinned'}-${arch}`
+/** The node runtime image's 12-hex digest — part of both volume names, so a
+ *  bumped pin makes new volumes instead of mutating the ones containers mount. */
+const nodeDigest = (): string => /sha256:([0-9a-f]{12})/.exec(NODE_RUNTIME_IMAGE)?.[1] ?? 'unpinned'
+
+const nodeVolumeName = (arch: string): string => `gurt-node-${nodeDigest()}-${arch}`
+
+/** Where the agent kind's adapter packages are mounted (read-only volume). */
+export const ADAPTERS_MOUNT = '/opt/gurt/adapters'
+
+/**
+ * The part of an adapters volume's name that says *what is in it*: the agent
+ * kind's pinned `adapterPackages` plus the node runtime image they were
+ * installed (and so built — native addons, postinstall) with. Order-insensitive
+ * and independent of the kind's id, so two kinds pinning the same packages
+ * share a volume. Arch is the name's last segment, not part of the key.
+ */
+export function adaptersVolumeKey(agent: Pick<AgentManifest, 'adapterPackages'>): string {
+  return createHash('sha256')
+    .update(JSON.stringify([[...agent.adapterPackages].sort(), nodeDigest()]))
+    .digest('hex')
+    .slice(0, 12)
+}
+
+/** The key an adapters volume's name carries (see {@link adaptersVolumeKey}). */
+export const adaptersKeyOfVolume = (name: string | undefined): string | undefined =>
+  name === undefined ? undefined : /^gurt-adapters-([0-9a-f]{12})-/.exec(name)?.[1]
+
+export const adaptersVolumeName = (agent: Pick<AgentManifest, 'adapterPackages'>, arch: string): string =>
+  `gurt-adapters-${adaptersVolumeKey(agent)}-${arch}`
 
 /** Volumes verified ready in this app process — the `.gurt-ready` check is one
  *  container run, paid once per process, not per start. */
-const readyNodeVolumes = new Set<string>()
-const nodeVolumesInFlight = new Map<string, Promise<string>>()
+const readyVolumes = new Set<string>()
+const volumesInFlight = new Map<string, Promise<string>>()
+
+/** `npm install -g` of an agent's packages over a slow link is the longest
+ *  thing a fill does; bounded so a hung registry cannot hang a start forever. */
+const VOLUME_FILL_TIMEOUT_MS = 15 * 60_000
+
+interface VolumeFill {
+  name: string
+  /** `gurt.kind` label value. */
+  kind: 'node-runtime' | 'adapters'
+  arch: string
+  /** What the log line says it is filling. */
+  what: string
+  /** `provision.phase` name of the fill itself (not of the readiness probe). */
+  phase: string
+  session: string | undefined
+  /** `sh -c` script run in the throwaway container with the volume at `/out`;
+   *  must end by creating `/out/.gurt-ready`. */
+  script: string
+  /** Positional args of the script (`$@`). */
+  args?: string[]
+  /** Env of the throwaway container (never a secret). */
+  env?: Record<string, string>
+}
 
 /**
- * The docker volume holding gurt's Node, filled once from
- * {@link NODE_RUNTIME_IMAGE}. A volume without `.gurt-ready` (a fill that died
- * half-way) is emptied and refilled. Concurrent callers share one fill.
+ * The shared mechanics of gurt's two volumes: created once with labels, filled
+ * by a throwaway `docker run --rm` of the node runtime image, sealed with
+ * `.gurt-ready`. A volume without the marker (a fill that died half-way) is
+ * emptied and refilled — the scripts start with `find /out -mindepth 1
+ * -delete`. Concurrent callers share one fill, in-process.
  */
-export function ensureNodeRuntimeVolume(arch: string, log: LogSink): Promise<string> {
-  const name = nodeVolumeName(arch)
-  if (readyNodeVolumes.has(name)) return Promise.resolve(name)
-  const inflight = nodeVolumesInFlight.get(name)
+function ensureVolume(v: VolumeFill, log: LogSink): Promise<string> {
+  const { name } = v
+  if (readyVolumes.has(name)) return Promise.resolve(name)
+  const inflight = volumesInFlight.get(name)
   if (inflight) return inflight
   const p = (async () => {
-    const platform = `linux/${arch}`
+    const platform = `linux/${v.arch}`
     const probe = (): Promise<boolean> =>
       run(
         'docker',
@@ -944,33 +1038,182 @@ export function ensureNodeRuntimeVolume(arch: string, log: LogSink): Promise<str
       () => false
     )
     if (exists && (await probe())) return name
-    if (!exists)
+    await timedPhase(v.session, v.phase, async () => {
+      if (!exists)
+        await run(
+          'docker',
+          ['volume', 'create', '--label', 'gurt.managed=1', '--label', `gurt.kind=${v.kind}`, name],
+          log
+        )
+      log(`filling ${v.what} ${name} from ${NODE_RUNTIME_IMAGE.split('@')[0]} ...`)
+      await pullIfMissing(NODE_RUNTIME_IMAGE, log)
       await run(
         'docker',
-        ['volume', 'create', '--label', 'gurt.managed=1', '--label', 'gurt.kind=node-runtime', name],
-        log
+        [
+          'run', '--rm', '--platform', platform, '--entrypoint', 'sh',
+          ...Object.entries(v.env ?? {}).flatMap(([k, val]) => ['-e', `${k}=${val}`]),
+          '--mount', mountArg({ type: 'volume', source: name, target: '/out' }),
+          NODE_RUNTIME_IMAGE, '-c', v.script, ...(v.args ? ['sh', ...v.args] : [])
+        ],
+        log,
+        { level: 'info', timeoutMs: VOLUME_FILL_TIMEOUT_MS }
       )
-    log(`filling gurt's node runtime volume ${name} from ${NODE_RUNTIME_IMAGE.split('@')[0]} ...`)
-    await pullIfMissing(NODE_RUNTIME_IMAGE, log)
-    await run(
-      'docker',
-      [
-        'run', '--rm', '--platform', platform, '--entrypoint', 'sh',
-        '--mount', mountArg({ type: 'volume', source: name, target: '/out' }),
-        NODE_RUNTIME_IMAGE, '-c',
-        'find /out -mindepth 1 -delete && cp -a /usr/local/. /out/ && touch /out/.gurt-ready'
-      ],
-      log,
-      { level: 'info' }
-    )
+    })
     return name
   })().then((n) => {
-    readyNodeVolumes.add(n)
+    readyVolumes.add(n)
     return n
   })
-  nodeVolumesInFlight.set(name, p)
-  p.finally(() => nodeVolumesInFlight.delete(name)).catch(() => {})
+  volumesInFlight.set(name, p)
+  p.finally(() => volumesInFlight.delete(name)).catch(() => {})
   return p
+}
+
+/** Forget that a volume was verified ready, so the next `ensure*` probes it
+ *  (and refills it when its marker is gone). */
+export const forgetReadyVolume = (name: string): void => {
+  readyVolumes.delete(name)
+}
+
+/**
+ * Ensure both volumes for the architecture of `image` — what a re-creation
+ * needs before the old container may be touched. Throws when the image is not
+ * available or a fill fails.
+ */
+export async function prepareReplacementVolumes(
+  image: string,
+  agent: Pick<AgentManifest, 'adapterPackages' | 'bin'> | undefined,
+  log: LogSink,
+  session: string
+): Promise<void> {
+  const info = await inspectImage(image)
+  if (!info) throw new Error(`image ${image} is not available locally`)
+  await ensureBothVolumes(info.arch, agent, log, session)
+}
+
+/** Both volumes, concurrently, but rejecting only once *both* have settled:
+ *  a failed fill must not return control while the other is still running
+ *  `docker` behind the caller's back. Returns the adapters volume's name. */
+async function ensureBothVolumes(
+  arch: string,
+  agent: Pick<AgentManifest, 'adapterPackages' | 'bin'> | undefined,
+  log: LogSink,
+  session: string
+): Promise<{ node: string; adapters: string | undefined }> {
+  const [node, adapters] = await Promise.allSettled([
+    ensureNodeRuntimeVolume(arch, log, session),
+    agent ? ensureAdaptersVolume(agent, arch, log, session) : Promise.resolve(undefined)
+  ])
+  if (node.status === 'rejected') throw node.reason
+  if (adapters.status === 'rejected') throw adapters.reason
+  return { node: node.value, adapters: adapters.value }
+}
+
+/**
+ * The docker volume holding gurt's Node, filled once from
+ * {@link NODE_RUNTIME_IMAGE}. A volume without `.gurt-ready` (a fill that died
+ * half-way) is emptied and refilled. Concurrent callers share one fill.
+ */
+export function ensureNodeRuntimeVolume(arch: string, log: LogSink, session?: string): Promise<string> {
+  return ensureVolume(
+    {
+      name: nodeVolumeName(arch),
+      kind: 'node-runtime',
+      arch,
+      what: "gurt's node runtime volume",
+      phase: 'node-volume-fill',
+      session,
+      script: 'find /out -mindepth 1 -delete && cp -a /usr/local/. /out/ && touch /out/.gurt-ready'
+    },
+    log
+  )
+}
+
+/**
+ * The fill script of an adapters volume. `npm install -g` runs with
+ * `NPM_CONFIG_PREFIX=/out` (set by the caller), in the node runtime image —
+ * the same glibc node, npm and postinstall environment the in-container
+ * install used to have, so opencode's native binary and any arch-specific
+ * optional dependency are resolved for this arch and libc exactly as before.
+ * Before sealing, the fill proves the two things a read-only mount at another
+ * path depends on: the agent's bin resolves, and every link in `bin/` is
+ * relative (an absolute one would point at `/out/…`, which does not exist at
+ * runtime). `chmod a+rX` because the container user is whoever the image says.
+ */
+const ADAPTERS_FILL_SCRIPT = [
+  'set -e',
+  'find /out -mindepth 1 -delete',
+  'if [ "$#" -gt 0 ]; then npm install -g --no-audit --no-fund --no-update-notifier "$@"; fi',
+  'mkdir -p /out/bin',
+  'if [ "$#" -gt 0 ] && [ ! -e "/out/bin/$GURT_ADAPTER_BIN" ]; then echo "adapter bin $GURT_ADAPTER_BIN was not installed" >&2; exit 1; fi',
+  'if [ -n "$(find /out/bin -type l -lname "/*")" ]; then echo "an adapter bin links to an absolute path; it would not resolve at the mount" >&2; exit 1; fi',
+  'chmod -R a+rX /out',
+  'touch /out/.gurt-ready'
+].join('\n')
+
+/**
+ * The read-only volume holding one agent kind's ACP adapter packages
+ * (`gurt-adapters-<key>-<arch>`), installed once with gurt's npm and mounted at
+ * {@link ADAPTERS_MOUNT} in every container of that kind — what replaced the
+ * `npm install -g` that every new container used to run over the network. A
+ * pin bump (or a new node runtime) is a new volume; the superseded ones are
+ * removed by {@link removeStaleAdapterVolumes}.
+ */
+export async function ensureAdaptersVolume(
+  agent: Pick<AgentManifest, 'adapterPackages' | 'bin'>,
+  arch: string,
+  log: LogSink,
+  session?: string
+): Promise<string> {
+  const name = adaptersVolumeName(agent, arch)
+  const fresh = !readyVolumes.has(name)
+  const out = await ensureVolume(
+    {
+      name,
+      kind: 'adapters',
+      arch,
+      what: `the adapters volume (${agent.adapterPackages.join(', ') || 'none'})`,
+      phase: 'adapters-volume-fill',
+      session,
+      script: ADAPTERS_FILL_SCRIPT,
+      args: agent.adapterPackages,
+      env: { NPM_CONFIG_PREFIX: '/out', GURT_ADAPTER_BIN: agent.bin }
+    },
+    log
+  )
+  if (fresh) await removeStaleAdapterVolumes(log)
+  return out
+}
+
+/**
+ * Remove adapters volumes no registered agent kind's current pins name — the
+ * superseded ones, each pin bump leaves one behind (the way env images are
+ * swept, `removeStaleEnvImages`). No `-f`: a volume a container still mounts
+ * is refused by Docker and stays until that container is gone; GC calls this
+ * again. Best-effort — never fails a start over cleanup.
+ */
+export async function removeStaleAdapterVolumes(log: LogSink): Promise<void> {
+  try {
+    const current = new Set(AGENT_MANIFESTS.map(adaptersVolumeKey))
+    const out = await run(
+      'docker',
+      ['volume', 'ls', '-q', '--filter', 'label=gurt.kind=adapters'],
+      () => {},
+      { timeoutMs: PROBE_TIMEOUT_MS }
+    )
+    for (const name of out.split('\n').map((l) => l.trim()).filter(Boolean)) {
+      const key = /^gurt-adapters-([0-9a-f]{12})-/.exec(name)?.[1]
+      if (!key || current.has(key)) continue
+      await run('docker', ['volume', 'rm', name], () => {}, { timeoutMs: PROBE_TIMEOUT_MS })
+        .then(() => {
+          readyVolumes.delete(name)
+          log(`removed superseded adapters volume ${name}`)
+        })
+        .catch(() => {})
+    }
+  } catch {
+    /* cleanup only */
+  }
 }
 
 // --- create / start ---
@@ -1046,8 +1289,11 @@ export interface ContainerSpec {
   env: EnvConfig
   /** Container-side working directory of every exec. */
   workdir: string
-  /** Every mount except the node runtime volume, which is added here. */
+  /** Every mount except the node runtime and adapters volumes, added here. */
   mounts: ContainerMount[]
+  /** The session's agent kind: its adapters volume is mounted read-only at
+   *  {@link ADAPTERS_MOUNT}. Absent: no adapters mount (no agent to launch). */
+  agent?: Pick<AgentManifest, 'adapterPackages' | 'bin'>
   /** The role mounts read-only: its `setup` script is skipped (§3.4 step 2). */
   skipSetup: boolean
 }
@@ -1055,8 +1301,11 @@ export interface ContainerSpec {
 export interface CreatedContainer {
   containerId: string
   user: string
-  /** The PATH every exec carries (probed, plus gurt's node and npm bins). */
+  /** The PATH every exec carries (probed, plus gurt's node and adapter bins). */
   path: string
+  /** Name of the adapters volume mounted — recorded so a pin bump (a different
+   *  name) is seen as a container that must be re-created. */
+  adapters?: string
 }
 
 /** How many times a failed `setup` gets a fresh container: the usual cause is a
@@ -1113,13 +1362,14 @@ const PROBE_MARK = '__GURT_ENV__'
  * what the user's toolchain (nvm, pyenv, …) puts there, which a plain exec
  * never sees — so ask a login shell (`-lic`, 10 s; then `-lc`; then the image's
  * own PATH), and *append* gurt's node and npm bins: the project's toolchain
- * wins for the agent's own commands, gurt's node only fills the gap.
+ * wins for the agent's own commands, gurt's node only fills the gap. The
+ * adapters' `bin/` is appended too: an adapter may spawn a sibling bin of its
+ * own packages by name (pi-acp runs `pi`).
  */
 export async function probeExecPath(t: ExecTarget, log: LogSink): Promise<string> {
   const printer = `printf '%s' "${PROBE_MARK}$HOME${PROBE_MARK}$PATH${PROBE_MARK}"`
   const bare: ExecTarget = { ...t }
   delete bare.path
-  let home = ''
   let probed = ''
   const attempts: string[][] = [
     loginShell(printer, '-lic'),
@@ -1132,7 +1382,6 @@ export async function probeExecPath(t: ExecTarget, log: LogSink): Promise<string
     )
     const m = r && r.code === 0 ? r.stdout.match(/__GURT_ENV__(.*?)__GURT_ENV__(.*?)__GURT_ENV__/s) : null
     if (m && m[2]) {
-      home = m[1] ?? ''
       probed = m[2]
       break
     }
@@ -1141,9 +1390,7 @@ export async function probeExecPath(t: ExecTarget, log: LogSink): Promise<string
     log('could not read the container PATH — using the system default')
     probed = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
   }
-  // A login shell always has a HOME; the guess only covers a probe that read nothing.
-  const homeDir = home || (t.user === 'root' || t.user === '0' ? '/root' : `/home/${t.user.split(':')[0]}`)
-  return `${probed}:${NODE_MOUNT}/bin:${homeDir}/.gurt/npm/bin`
+  return `${probed}:${NODE_MOUNT}/bin:${ADAPTERS_MOUNT}/bin`
 }
 
 /**
@@ -1162,15 +1409,21 @@ export async function probeExecPath(t: ExecTarget, log: LogSink): Promise<string
 export async function createContainer(
   spec: ContainerSpec,
   log: LogSink,
-  hooks: { onCreated?: () => void; onSetupDone?: (containerId: string, user: string) => void } = {}
+  hooks: {
+    onCreated?: () => void
+    onSetupDone?: (containerId: string, user: string, adapters?: string) => void
+  } = {}
 ): Promise<CreatedContainer> {
   const info = await inspectImage(spec.image)
   if (!info) throw new Error(`image ${spec.image} is not available locally`)
   const user = info.user || 'root'
-  const volume = await ensureNodeRuntimeVolume(info.arch, log)
+  // Both are one-time fills (a ready volume costs one probe per app process);
+  // concurrent, since a warm start pays only the two probes.
+  const { node: volume, adapters } = await ensureBothVolumes(info.arch, spec.agent, log, spec.session)
   const mounts: ContainerMount[] = [
     ...spec.mounts,
-    { type: 'volume', source: volume, target: NODE_MOUNT, readonly: true }
+    { type: 'volume', source: volume, target: NODE_MOUNT, readonly: true },
+    ...(adapters ? [{ type: 'volume' as const, source: adapters, target: ADAPTERS_MOUNT, readonly: true }] : [])
   ]
   const bindSources = mounts.filter((m) => m.type === 'bind').map((m) => m.source)
   const createArgs = [
@@ -1189,22 +1442,24 @@ export async function createContainer(
   let setupRetries = 0
   for (;;) {
     let containerId = ''
-    await withStaleBindRetry(
-      bindSources,
-      log,
-      async (watch) => {
-        containerId = (
-          await run('docker', createArgs, watch, { timeoutMs: PROBE_TIMEOUT_MS * 2, level: 'info' })
-        ).trim()
-        await run('docker', ['start', containerId], watch, {
-          timeoutMs: PROBE_TIMEOUT_MS * 2,
-          level: 'info'
-        })
-      },
-      async () => {
-        if (containerId) await dockerRemove(containerId, log)
-        containerId = ''
-      }
+    await timedPhase(spec.session, 'docker-create', () =>
+      withStaleBindRetry(
+        bindSources,
+        log,
+        async (watch) => {
+          containerId = (
+            await run('docker', createArgs, watch, { timeoutMs: PROBE_TIMEOUT_MS * 2, level: 'info' })
+          ).trim()
+          await run('docker', ['start', containerId], watch, {
+            timeoutMs: PROBE_TIMEOUT_MS * 2,
+            level: 'info'
+          })
+        },
+        async () => {
+          if (containerId) await dockerRemove(containerId, log)
+          containerId = ''
+        }
+      )
     ).catch(async (e: unknown) => {
       if (containerId) await dockerRemove(containerId, log)
       throw e
@@ -1217,7 +1472,7 @@ export async function createContainer(
         log('read-only mount session: skipping the setup script (this role does not install dependencies)')
       else {
         log('running the setup script ...')
-        const r = await runScript(target, spec.env.setup, log)
+        const r = await timedPhase(spec.session, 'setup', () => runScript(target, spec.env.setup!, log))
         if (r.code !== 0) {
           await dockerRemove(containerId, log)
           if (setupRetries < MAX_SETUP_RETRIES) {
@@ -1233,14 +1488,14 @@ export async function createContainer(
         }
       }
     }
-    hooks.onSetupDone?.(containerId, user)
+    hooks.onSetupDone?.(containerId, user, adapters)
     if (spec.env.start?.trim()) {
       log('running the start script ...')
-      const r = await runScript(target, spec.env.start, log)
+      const r = await timedPhase(spec.session, 'start', () => runScript(target, spec.env.start!, log))
       if (r.code !== 0) throw startScriptError(r)
     }
-    const path = await probeExecPath(target, log)
-    return { containerId, user, path }
+    const path = await timedPhase(spec.session, 'exec-path-probe', () => probeExecPath(target, log))
+    return { containerId, user, path, ...(adapters ? { adapters } : {}) }
   }
 }
 
@@ -1258,15 +1513,16 @@ export async function restartContainer(
   t: ExecTarget,
   env: EnvConfig,
   bindSources: string[],
-  log: LogSink
+  log: LogSink,
+  session?: string
 ): Promise<string> {
-  await dockerStart(t.containerId, bindSources, log)
+  await timedPhase(session, 'docker-start', () => dockerStart(t.containerId, bindSources, log))
   if (env.start?.trim()) {
     log('running the start script ...')
-    const r = await runScript(t, env.start, log)
+    const r = await timedPhase(session, 'start', () => runScript(t, env.start!, log))
     if (r.code !== 0) throw startScriptError(r)
   }
-  return t.path ?? (await probeExecPath(t, log))
+  return t.path ?? (await timedPhase(session, 'exec-path-probe', () => probeExecPath(t, log)))
 }
 
 /**
@@ -1275,47 +1531,9 @@ export async function restartContainer(
  * A fixed absolute path rather than the `$HOME/<skillsDir>` the agent
  * actually reads, because the remote user — hence the home directory — is the
  * image's choice, not gurt's, and a mount target cannot name it.
- * {@link linkContainerSkills} closes the gap once the container is up.
+ * {@link prepareContainer} closes the gap once the container is up.
  */
 export const SKILLS_MOUNT = '/gurt/skills'
-
-/**
- * Point the agent's own skills directory — `AgentManifest.skillsDir`, `$HOME`-
- * relative, e.g. claude-code's `.claude/skills` — at the read-only bind
- * (docs/requirements-skills.md §5). Where the link lands is the agent kind's
- * to say; callers skip both the mount and this link for a kind whose
- * `skillsDir` is `null`.
- *
- * Run by gurt through `docker exec`, deliberately not as part of the env's
- * `setup` script: a read-only role has its setup stripped (see
- * `createContainer`), so a script-based delivery would skip exactly the roles
- * most likely to be handed a read-only procedure. Writes into the container's
- * home, which is writable for every role — only the repo mounts and this bind
- * are read-only.
- *
- * Replaces whatever was at that path: the enabled set is the whole set the
- * session sees, which is the promise the picker makes. Idempotent, and re-run
- * after every container start.
- */
-export async function linkContainerSkills(
-  t: ExecTarget,
-  skillsDir: string,
-  log: LogSink
-): Promise<void> {
-  const parent = path.posix.dirname(skillsDir)
-  const { code } = await dockerExec(
-    t,
-    [
-      'sh', '-c',
-      `mkdir -p "$HOME/${parent}" && rm -rf "$HOME/${skillsDir}" && ln -s ${SKILLS_MOUNT} "$HOME/${skillsDir}"`
-    ],
-    log
-  )
-  // Not fatal: the skills are mounted either way, and a session that starts
-  // without them beats one that does not start. The line above says which.
-  if (code !== 0) log(`could not link ${SKILLS_MOUNT} into the agent's home (exit ${code})`)
-  else log(`skills mounted read-only at ${SKILLS_MOUNT}, linked as ~/${skillsDir}`)
-}
 
 /**
  * Where a session's agent history is bound inside its container — the
@@ -1327,7 +1545,7 @@ export const HISTORY_MOUNT = '/gurt/history'
 /**
  * Link every entry of the agent kind's `historyPaths` (`AgentManifest`) into the
  * container's home, pointed at its own subdirectory of the read-write history
- * bind — `linkContainerHistory`, a sibling of {@link linkContainerSkills}.
+ * bind — `linkContainerHistory`, a sibling of the skills link in {@link prepareContainer}.
  * One `sh -c` per entry, same shape as the skills link:
  *
  * ```sh
@@ -1376,79 +1594,80 @@ export async function linkContainerHistory(
     log(`could not link ${HISTORY_MOUNT} entry ~/${f.entry} into the agent's home (exit ${f.code})`)
 }
 
-/** Path, relative to the container `$HOME`, of the marker file that records
- *  which exact pin was last installed for an agent — keyed by agent id so
- *  unrelated agents in the same container never collide. */
-function adapterMarkerPath(agent: AgentManifest): string {
-  return `.gurt/adapter-versions/${agent.id}`
-}
-
-/** The marker's expected content for the *current* pin. Comparing the
- *  installed marker against this (not just the binary's presence on PATH) is
- *  what makes a pin bump reinstall into a container that already has an
- *  older version from before the bump. */
-function adapterMarkerValue(agent: AgentManifest): string {
-  return agent.adapterPackages.join(',')
-}
-
-/** True when the agent's adapter binary is on PATH inside the container
- *  *and* the version marker left by the last successful install matches the
- *  currently pinned `adapterPackages` exactly. The host-side installed-cache
- *  dies with the app process while the install itself lives in the container,
- *  and this probe is what keeps a fresh process from reinstalling over it — a
- *  reinstall skipped is also a reinstall that cannot rewrite the package under
- *  a live spawn. The version check on top of the PATH check is what makes a
- *  pin bump apply to a container provisioned under the old pin. */
-export async function adapterPresent(t: ExecTarget, agent: AgentManifest): Promise<boolean> {
-  const marker = adapterMarkerPath(agent)
-  const expected = adapterMarkerValue(agent)
-  const { code } = await dockerExec(
+/**
+ * The one `docker exec` an `up` owes before the adapter may launch: link the
+ * skills, prove gurt's glibc node runs in *this* image, and
+ * prove the adapters volume holds the agent's bin. Replaces the per-container
+ * adapter probe + `npm install -g`: nothing is installed any more, so this is a
+ * ~100 ms check, not a 9 s download.
+ *
+ * The skills link points the agent's own skills directory —
+ * `AgentManifest.skillsDir`, `$HOME`-relative, e.g. claude-code's
+ * `.claude/skills` — at the read-only bind (docs/requirements-skills.md §5);
+ * `skillsDir` is null when the session mounted none (or its kind reads none).
+ * Run by gurt through `docker exec`, deliberately not as part of the env's
+ * `setup` script: a read-only role has its setup stripped (see
+ * `createContainer`), so a script-based delivery would skip exactly the roles
+ * most likely to be handed a read-only procedure. It replaces whatever was at
+ * that path: the enabled set is the whole set the session sees. Idempotent,
+ * and owed after every container start.
+ *
+ * The node check stays because "node: not found" out of an adapter's launch is
+ * the worst place to learn that the env image is musl (Alpine): the volume's
+ * node is a glibc build (§12). The exit code packs three independent outcomes
+ * since one shell reports one status: bit 0 = skills link failed (non-fatal,
+ * as with {@link linkContainerHistory}), bit 1 = node does not run (fatal),
+ * bit 2 = the adapter bin is missing from the volume (fatal).
+ */
+export async function prepareContainer(
+  t: ExecTarget,
+  agent: Pick<AgentManifest, 'bin'>,
+  skillsDir: string | null,
+  log: LogSink
+): Promise<void> {
+  const link =
+    skillsDir === null
+      ? 'rc=0'
+      : `mkdir -p "$HOME/${path.posix.dirname(skillsDir)}" && rm -rf "$HOME/${skillsDir}" && ` +
+        `ln -s ${SKILLS_MOUNT} "$HOME/${skillsDir}" && rc=0 || rc=1`
+  const { code, tail } = await dockerExec(
     t,
     [
       'sh', '-c',
-      `command -v ${agent.bin} >/dev/null 2>&1 && [ "$(cat "$HOME/${marker}" 2>/dev/null)" = "${expected}" ]`
+      `${link}\n` +
+        // Node's own stderr (the loader's "not found" / "no such file") is the
+        // diagnosis: print it on failure so it reaches the exec's output tail.
+        `out=$(${NODE_MOUNT}/bin/node --version 2>&1) || { rc=$((rc + 2)); printf '%s\\n' "$out"; }\n` +
+        // `-e` follows the link: a dangling bin (a half-written volume) fails too.
+        // Sealed too: a bin without `.gurt-ready` is a fill that died half-way.
+        `{ [ -e "${ADAPTERS_MOUNT}/bin/${agent.bin}" ] && [ -f "${ADAPTERS_MOUNT}/.gurt-ready" ]; } || rc=$((rc + 4))\n` +
+        `exit $rc`
     ],
     () => {}
   )
-  return code === 0
+  // Outside the bitmask (127 from a missing sh, a timeout's -1, a signal): not
+  // a combination of the three outcomes — decoding bits would misreport it.
+  if (code < 0 || code > 7) throw new Error(`container preparation failed (exit ${code})`)
+  if (skillsDir !== null) {
+    if (code & 1) log(`could not link ${SKILLS_MOUNT} into the agent's home`)
+    else log(`skills mounted read-only at ${SKILLS_MOUNT}, linked as ~/${skillsDir}`)
+  }
+  if (code & 2)
+    throw new Error(
+      `gurt's Node runtime does not run in this image (exit ${code}` +
+        `${tail.length ? `: ${tail.slice(-3).join(' | ')}` : ''}). ` +
+        'The env image needs a glibc distro (Debian, Ubuntu, …) — musl/Alpine images are not supported.'
+    )
+  if (code & 4) throw new AdapterMissingError(agent.bin)
 }
 
-/**
- * Merges {@link linkContainerSkills} and {@link adapterPresent} into one
- * `docker exec`: in the session-start chain that mounts skills, the two run
- * back to back right after a container start
- * (`ContainerManager.installAdapter` consumes the pending link left by
- * `ensureUncoalesced`). The exit code packs both independent outcomes, since
- * one shell reports only one status: bit 0 is the adapter probe (0 = present,
- * the same sense `adapterPresent` itself returns), bit 1 is whether the skills
- * link failed — non-fatal either way, exactly as `linkContainerSkills` treats
- * it on its own.
- */
-export async function probeAdapterAndLinkSkills(
-  t: ExecTarget,
-  agent: AgentManifest,
-  skillsDir: string,
-  log: LogSink
-): Promise<boolean> {
-  const parent = path.posix.dirname(skillsDir)
-  const marker = adapterMarkerPath(agent)
-  const expected = adapterMarkerValue(agent)
-  const { code } = await dockerExec(
-    t,
-    [
-      'sh', '-c',
-      `skills_rc=0\n` +
-        `mkdir -p "$HOME/${parent}" && rm -rf "$HOME/${skillsDir}" && ` +
-        `ln -s ${SKILLS_MOUNT} "$HOME/${skillsDir}" || skills_rc=1\n` +
-        `if command -v ${agent.bin} >/dev/null 2>&1 && ` +
-        `[ "$(cat "$HOME/${marker}" 2>/dev/null)" = "${expected}" ]; then adapter_rc=0; else adapter_rc=1; fi\n` +
-        `exit $(( skills_rc * 2 + adapter_rc ))`
-    ],
-    log
-  )
-  if ((code & 2) !== 0) log(`could not link ${SKILLS_MOUNT} into the agent's home`)
-  else log(`skills mounted read-only at ${SKILLS_MOUNT}, linked as ~/${skillsDir}`)
-  return (code & 1) === 0
+/** The adapters volume mounted in the container does not hold the agent's bin
+ *  — emptied or removed behind a cached "ready", or half-written. */
+export class AdapterMissingError extends Error {
+  constructor(bin: string) {
+    super(`the adapters volume has no ${bin} (${ADAPTERS_MOUNT}/bin)`)
+    this.name = 'AdapterMissingError'
+  }
 }
 
 /**
@@ -1476,58 +1695,6 @@ export async function writeContainerUserFile(
   if (code !== 0) throw new Error(`could not write ~/${relPath} in the container (exit ${code})`)
 }
 
-/** Sentinel exit code for "the install itself succeeded but recording the
- *  version marker did not" — outside the range `npm install` itself ever
- *  exits with, so it can share the one exec's exit code with npm's own
- *  without the two being confused. */
-const MARKER_WRITE_FAILED = 90
-
-export async function installAcpAdapter(
-  t: ExecTarget,
-  agent: AgentManifest,
-  log: LogSink
-): Promise<void> {
-  // gurt's node must run in *this* image: it is a glibc build, so a musl
-  // (alpine) env fails here, and "node: not found" out of an npm shebang is
-  // the worst place to learn that.
-  const node = await dockerExec(t, [`${NODE_MOUNT}/bin/node`, '--version'], () => {})
-  if (node.code !== 0)
-    throw new Error(
-      `gurt's Node runtime does not run in this image (exit ${node.code}` +
-        `${node.tail.length ? `: ${node.tail.slice(-3).join(' | ')}` : ''}). ` +
-        'The env image needs a glibc distro (Debian, Ubuntu, …) — musl/Alpine images are not supported.'
-    )
-  log(`installing ${agent.adapterPackages.join(', ')} in container ...`)
-  // One exec for both `npm install -g` and recording the version marker
-  // `adapterPresent` compares against on the next probe — the marker is
-  // written only when the install exits 0 (`&&`, never on the `exit "$rc"`
-  // branch above it). gurt's node leads PATH for this exec alone, so npm's own
-  // `#!/usr/bin/env node` and any package's postinstall use it, not a project's
-  // older one; the prefix keeps the install out of the image's own tree.
-  const marker = adapterMarkerPath(agent)
-  const parent = path.posix.dirname(marker)
-  const { code } = await dockerExec(
-    t,
-    [
-      'sh', '-c',
-      `export PATH="${NODE_MOUNT}/bin:$PATH" NPM_CONFIG_PREFIX="$HOME/.gurt/npm"\n` +
-        `${NODE_MOUNT}/bin/npm install -g ${agent.adapterPackages.map((p) => `'${p}'`).join(' ')}\n` +
-        `rc=$?\n` +
-        `if [ "$rc" -ne 0 ]; then exit "$rc"; fi\n` +
-        `mkdir -p "$HOME/${parent}" && printf '%s' '${adapterMarkerValue(agent)}' > "$HOME/${marker}" ` +
-        `&& exit 0\n` +
-        `exit ${MARKER_WRITE_FAILED}`
-    ],
-    log,
-    { level: 'info' }
-  )
-  if (code === MARKER_WRITE_FAILED) {
-    log('could not record adapter version marker — next probe will reinstall')
-    return
-  }
-  if (code !== 0) throw new Error(`ACP adapter install failed (exit ${code})`)
-}
-
 /**
  * The shell that launches an adapter with gurt's own node (§3.2): `$0` is the
  * bin name, the rest its args. A JS bin runs as `node <resolved script>`, so a
@@ -1535,7 +1702,7 @@ export async function installAcpAdapter(
  * that is not JS (opencode's native binary) is exec'd directly.
  */
 const LAUNCH_SCRIPT =
-  'f=$(readlink -f "$HOME/.gurt/npm/bin/$0" 2>/dev/null) || f=""\n' +
+  `f=$(readlink -f "${ADAPTERS_MOUNT}/bin/$0" 2>/dev/null) || f=""\n` +
   '[ -n "$f" ] || { echo "$0 is not installed" >&2; exit 127; }\n' +
   'case "$f" in\n' +
   `  *.js|*.mjs|*.cjs) exec ${NODE_MOUNT}/bin/node "$f" "$@" ;;\n` +

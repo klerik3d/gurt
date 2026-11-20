@@ -251,6 +251,12 @@ export interface Session {
   /** Wall clock of the current run's start, and the turns it has served — the
    *  two numbers `session.end` reports when the adapter goes away. */
   startedAt?: number | undefined
+  /** The `start-to-first-update` phase in flight: set when a start is
+   *  requested, `promptSent` flips when the start prompt goes out, and the
+   *  first `session/update` after that logs the elapsed time and clears it.
+   *  Cleared when the start settles either way, so a later prompt never
+   *  reports a start's duration. */
+  startTiming?: { since: number; promptSent: boolean } | undefined
   turns: number
   /** `stopReason` of the last finished turn, for the same record. */
   lastStopReason?: string | undefined
@@ -279,8 +285,6 @@ export interface SessionEvents {
    *  This also ensures the session's network and proxy, and switches the
    *  container onto them, before the agent exists. */
   resolveLaunch: (sessionId: string) => Promise<LaunchContext>
-  /** Install the agent's adapter packages in the session's container. */
-  installAdapter: (ctx: LaunchContext) => Promise<void>
   /** Ensure the host MCP servers for this selection are up; return ACP descriptors. */
   resolveMcpServers: (
     ref: EnvRef,

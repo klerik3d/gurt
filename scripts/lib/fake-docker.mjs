@@ -82,7 +82,15 @@ if (a[0] === 'image' && a[1] === 'inspect') {
   done(0)
 }
 if (a[0] === 'volume' && a[1] === 'inspect') done(ctl.volumeExists ? 0 : 1)
+// ctl.volumeNames: what 'volume ls' lists; ctl.volumeRmFails: names 'volume rm' refuses.
+if (a[0] === 'volume' && a[1] === 'ls') { out((ctl.volumeNames || []).join('\\n') + '\\n'); done(0) }
+if (a[0] === 'volume' && a[1] === 'rm') {
+  if ((ctl.volumeRmFails || []).includes(a[2])) { err('volume is in use\\n'); done(1) }
+  done(0)
+}
 if (a[0] === 'run' && a.includes('--entrypoint') && flag('--entrypoint') === 'test') done(ctl.volumeReady ? 0 : 1)
+// ctl.fillFails: a volume fill ('run --entrypoint sh') exits with this code, stderr ctl.fillStderr.
+if (a[0] === 'run' && flag('--entrypoint') === 'sh' && ctl.fillFails) { err(ctl.fillStderr || 'fill failed\\n'); done(ctl.fillFails) }
 if (a[0] === 'ps') {
   if (ctl.psExit) done(ctl.psExit)
   const j = a.join(' ')

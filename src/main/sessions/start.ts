@@ -28,6 +28,7 @@ import { scopeKeeper } from '../oauth/keeper'
 import type { PiiMask } from '../pii'
 import { servePiiRewrite, stopPiiRewrite } from '../piiRewrite'
 import { resolveProxyPlan, type ResolvedProxyPlan } from '../proxy/config'
+import { timedPhase } from '../provision'
 import { nextModeId, normalizeConfigOptions, normalizeModes } from './modes'
 import { ACP_REQUEST_TIMEOUT_MS, assertNotTemplate } from './pure'
 import type { Connection, Session, SessionEvents } from './types'
@@ -276,6 +277,7 @@ export async function startSession(mgr: StartCtx, sessionId: string, by: 'user' 
   s.info.queuedAt = undefined
   s.startError = undefined
   s.startedAt = Date.now()
+  s.startTiming = { since: s.startedAt, promptSent: false }
   s.turns = 0
   mgr.bus.emit('tree.changed', undefined)
   mgr.emitState(s, by)
@@ -309,15 +311,17 @@ export async function startSession(mgr: StartCtx, sessionId: string, by: 'user' 
     // ride it so the very first turn already runs on them; any other picks
     // (e.g. fast mode) are reconciled below, before the prompt.
     const meta = mgr.startMeta(ctx.agent, s.info.configValues)
-    const result = await conn.peer.request(
-      'session/new',
-      {
-        cwd: ctx.remoteWorkspaceFolder,
-        mcpServers,
-        ...(meta ? { _meta: meta } : {})
-      },
-      SESSION_NEW_RESULT,
-      { timeoutMs: ACP_REQUEST_TIMEOUT_MS }
+    const result = await timedPhase(s.info.id, 'acp-session-new', () =>
+      conn.peer.request(
+        'session/new',
+        {
+          cwd: ctx.remoteWorkspaceFolder,
+          mcpServers,
+          ...(meta ? { _meta: meta } : {})
+        },
+        SESSION_NEW_RESULT,
+        { timeoutMs: ACP_REQUEST_TIMEOUT_MS }
+      )
     )
     s.acpSessionId = result.sessionId
     s.modes = normalizeModes(result.modes) ?? s.modes
@@ -356,6 +360,8 @@ export async function startSession(mgr: StartCtx, sessionId: string, by: 'user' 
     mgr.schedulePersist(s.ref)
     // A failed start must not block the queue — let the next item try.
     mgr.schedule()
+  } finally {
+    s.startTiming = undefined
   }
 }
 

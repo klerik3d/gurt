@@ -75,6 +75,7 @@ const healthy = (over = {}) => ({
   daemon: async () => '27.3.1',
   imageExists: async () => true,
   images: async () => ['node:22-bookworm-slim@sha256:aaa', 'node:22-alpine@sha256:bbb'],
+  adapterVolumesMissing: async () => 0,
   platform: 'linux',
   ...over
 })
@@ -96,9 +97,19 @@ test('a machine with everything reports three green rows and is ready', async ()
   // writes into app.start, at the moment it can still be acted on.
   assert.equal(row(r, 'docker-cli').detail, '/usr/local/bin/docker')
   assert.equal(row(r, 'docker-daemon').detail, '27.3.1')
-  // And never the word "ready": the ACP adapter still installs over the
-  // network on the first start (§5.2).
-  assert.match(row(r, 'images').detail, /still installs the agent adapter/)
+  // And never the word "ready": the row checks the volumes exist, not that they are sound (§5.2).
+  assert.match(row(r, 'images').detail, /images and agent adapter volumes present/)
+  assert.doesNotMatch(row(r, 'images').detail, /ready/)
+})
+
+test('images present but adapter volumes missing: warn, offers Prepare, never gates', async () => {
+  const r = await m.machineDoctor(healthy({ adapterVolumesMissing: async () => 2 }))
+  assert.equal(row(r, 'images').state, 'warn')
+  assert.equal(row(r, 'images').action, 'prepare')
+  assert.equal(row(r, 'images').gates, false)
+  assert.match(row(r, 'images').detail, /2 agent adapter volumes to fill/)
+  const unknown = await m.machineDoctor(healthy({ adapterVolumesMissing: async () => null }))
+  assert.equal(row(unknown, 'images').state, 'ok', 'could not ask: no false alarm')
 })
 
 // --- 1. skipping is not passing --------------------------------------------

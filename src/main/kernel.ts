@@ -241,7 +241,6 @@ export function createKernel(options: KernelOptions = {}): Kernel {
         containers
           .release(sessionId, reason)
           .catch((e: unknown) => log.error('internal.fail', { site: 'container-release', s: sessionId, reason, err: e })),
-      installAdapter: (ctx) => containers.installAdapter(ctx),
       resolveMcpServers,
       stopMcpServers,
       resolveGurtServer: ensureGurtServer,

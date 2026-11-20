@@ -428,8 +428,8 @@ const containers = new m.ContainerManager({
  * Steps 4 and 5 for one session, straight at the seams `resolveLaunch` calls
  * them from — the last thing that runs before the agent is spawned into
  * `CONTAINER`. Two calls, not one: `resolveLaunch` runs the proxy-scope half
- * (step 4) alongside the adapter install and only converges the network
- * (step 5) once that install settles, so this test drives the same two seams
+ * (step 4) alongside the container check and converges the network
+ * (step 5) as soon as that scope exists, so this test drives the same two seams
  * in sequence rather than the single method that used to wrap them.
  */
 const ensureProxy = async (id, network) => {

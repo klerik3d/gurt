@@ -534,23 +534,15 @@ first start regardless of what is pulled, and both are minutes:
   ghcr.io and its install script runs. See §12 question 5 — this may be
   removable for the operator env specifically, which would collapse the
   step to nothing.
-- **The ACP adapter.** `npm install -g <agent.adapterPackages>` inside
-  the container (provision.ts:1235, driven by
-  `ContainerManager.installAdapter`), cached per container id, so it
-  runs once per container and again for every replaced one.
+- **The ACP adapter.** Since the adapters volume
+  (requirements-env-docker.md §3.2), nothing is installed per container: the
+  agent kind's packages are `npm install -g`ed once into a volume
+  (`gurt-adapters-<hash>-<arch>`), by Prepare or by the first start that needs
+  it. The row only checks images, not the volumes.
 
-The adapter install is a **deliberate, recorded compromise, not an
-oversight**: warming it would mean baking the adapter into an image, and
-the adapter is pinned per agent kind and bumped with gurt releases, so
-that image would be a fifth thing to build, tag by content and keep in
-step with `AGENT_DEFS`. The right eventual shape is a derived operator
-image tagged by content the way `envImageTag` already tags env builds —
-named here so it is a decision someone takes later, rather than a
-surprise someone rediscovers on the next cold machine.
-
-The row's success detail therefore reads `images present — the first
-start still installs the node feature and the agent adapter`, rather
-than anything that sounds like "ready".
+The row's success detail therefore reads `images present — an agent adapter
+volume is filled on first use (Prepare does it ahead)`, rather than anything
+that sounds like "ready".
 
 ### 5.3 Progress, and how it is shown
 

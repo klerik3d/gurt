@@ -1,29 +1,26 @@
 // `resolveLaunch`'s steps 3-5 (docs/requirements-mcp-proxy.md §7.1):
-// the adapter install (step 3) and reserving the session's proxy scope (the
-// first half of step 4) both only need the container's *current* network —
-// neither one is what closes it — so `ContainerManager.installAdapterAndProxy`
-// runs them concurrently. The network switch onto the proxy (the second half
-// of step 4, and step 5) is what actually ends the open-network window step 3
-// needs, so it must not start until the install settles.
+// the container check (`ContainerManager.prepare` — skills link, node and
+// adapter-bin probe) and reserving the session's proxy scope + switching its
+// network (`prepareAndProxy`) run concurrently. Nothing in the check needs the
+// network — the adapter is a read-only volume, not an `npm install` — so the
+// open-network window ends as soon as the proxy's scope exists, and the switch
+// must NOT wait for the check.
 //
-// Two invariants, in the order they matter:
-//   1. The switch never runs before the install finishes — running it early
-//      would put the container behind the proxy while `npm install -g` is
-//      still relying on the open network, silently breaking §7.1's ordering.
-//   2. The proxy-scope reservation is not serialized behind the install —
-//      that concurrency is the entire point of the change (a faster warm
-//      start), so a regression that accidentally re-serializes them should
-//      fail this file even though it would not fail any behavioral check.
-//   3. Both branches' errors still reach the caller — parallelizing must not
-//      turn a failure into a silently swallowed rejection.
+// Invariants, in the order they matter:
+//   1. The check and the proxy scope start together (same tick) — a
+//      regression that serializes them costs every start the sum.
+//   2. The switch needs the proxy scope and nothing else: it runs while the
+//      check is still pending (the window the old `npm install -g` held open
+//      is gone).
+//   3. Both branches' errors still reach the caller, the check's winning when
+//      both fail; a proxy failure means no switch (no runtime to converge on).
 //
-// Driven straight at the seam `resolveLaunch` calls
-// (`installAdapterAndProxy`), with `installAdapter` and `proxies.ensure`
-// stubbed under manual control (so the ordering is asserted by construction,
-// not by timers) and a fake `docker` on PATH answering only the network
-// commands the switch itself makes.
+// Driven straight at the seam `resolveLaunch` calls (`prepareAndProxy`), with
+// `prepare` and `proxies.ensure` stubbed under manual control (ordering is
+// asserted by construction, not by timers) and a fake `docker` on PATH
+// answering only the network commands the switch itself makes.
 //
-//   node scripts/proxy-adapter-parallel.test.mjs
+//   node scripts/prepare-and-proxy.test.mjs
 import { test, after } from 'node:test'
 import { bundle } from './lib/bundle.mjs'
 import { pathToFileURL, fileURLToPath } from 'node:url'
@@ -36,10 +33,10 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const S = (rel) => JSON.stringify(path.join(ROOT, rel))
 
 // store.ts reads GURT_ROOT at module load — set it before the import.
-const GURT_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'gurt-proxy-adapter-parallel-'))
+const GURT_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'gurt-prepare-and-proxy-'))
 process.env.GURT_ROOT = GURT_ROOT
 
-const outfile = path.join(os.tmpdir(), `gurt-proxy-adapter-parallel-${process.pid}.mjs`)
+const outfile = path.join(os.tmpdir(), `gurt-prepare-and-proxy-${process.pid}.mjs`)
 await bundle({
   stdin: {
     contents: `
@@ -57,7 +54,7 @@ await bundle({
 const m = await import(pathToFileURL(outfile).href)
 
 // --- a fake `docker` on PATH, answering only network inspect/connect -------
-const BIN = fs.mkdtempSync(path.join(os.tmpdir(), 'gurt-proxy-adapter-parallel-bin-'))
+const BIN = fs.mkdtempSync(path.join(os.tmpdir(), 'gurt-prepare-and-proxy-bin-'))
 const STATE = path.join(BIN, 'daemon.json')
 const FAKE = path.join(BIN, 'fake-docker.cjs')
 
@@ -136,19 +133,19 @@ function deferred(order, label) {
   return { promise, release, fail }
 }
 
-/** One session's worth of the seam's inputs — `installAdapter` is stubbed on
+/** One session's worth of the seam's inputs — `prepare` is stubbed on
  *  the instance per call, `proxies.ensure` at the module level (the same
  *  thing `resolveLaunch`'s own `ensureProxyScope` reaches through). Each stub
  *  records its `:start` marker only when the code under test actually calls
  *  it, so a regression that re-serializes the two shows up as a wrong order
  *  in `order`, not just a wrong final state. */
-function run(sessionId, { installFails = false, proxyFails = false } = {}) {
+function run(sessionId, { prepareFails = false, proxyFails = false } = {}) {
   const order = []
-  const install = deferred(order, 'install')
+  const prepare = deferred(order, 'prepare')
   const proxyScope = deferred(order, 'proxy')
-  containers.installAdapter = () => {
-    order.push('install:start')
-    return install.promise
+  containers.prepare = () => {
+    order.push('prepare:start')
+    return prepare.promise
   }
   m.proxies.ensure = () => {
     order.push('proxy:start')
@@ -156,13 +153,10 @@ function run(sessionId, { installFails = false, proxyFails = false } = {}) {
   }
   const info = { id: sessionId, workspace: ws, task, env: 'dev', repos: ['alpha'], network: { internal: false } }
   const target = { agent: {}, session: sessionId, containerId: CONTAINER, hostWorkspaceFolder: '/x', configArgs: [] }
-  const p = containers.installAdapterAndProxy(info, CONTAINER, target)
-  // Both branches have already run their synchronous prefix by now — nothing
-  // async happens between `Promise.allSettled`'s argument evaluation and the
-  // `await` that suspends it, so a call that actually serialized them (install
-  // fully awaited before `ensureProxyScope` even runs) would not have reached
-  // the second stub yet and this would read `['install:start']`.
-  assert.deepEqual(order, ['install:start', 'proxy:start'], 'both start together, in the same tick')
+  const p = containers.prepareAndProxy(info, CONTAINER, target)
+  // Both branches have already run their synchronous prefix by now, so a call
+  // that serialized them would not have reached the second stub yet.
+  assert.deepEqual(order, ['prepare:start', 'proxy:start'], 'both start together, in the same tick')
   return {
     order,
     result: p,
@@ -174,56 +168,52 @@ function run(sessionId, { installFails = false, proxyFails = false } = {}) {
       base: 'http://127.0.0.1:1/',
       internal: false
     })),
-    settleInstall: () => (installFails ? install.fail(new Error('install failed')) : install.release())
+    settlePrepare: () => (prepareFails ? prepare.fail(new Error('prepare failed')) : prepare.release())
   }
 }
 
-test('the proxy scope resolves independently of the install — no serialization', async () => {
+test('the check and the proxy scope start together', async () => {
   daemon(['bridge'])
-  const { order, result, settleProxy, settleInstall } = run('s1')
+  const { order, result, settleProxy, settlePrepare } = run('s1')
+  settlePrepare()
   settleProxy()
-  await Promise.resolve() // let the settled branch's microtasks land
-  assert.ok(order.includes('proxy:end'), 'the proxy branch finished on its own')
-  assert.deepEqual(attached(), ['bridge'], 'and the network switch has not started — install is still pending')
-  settleInstall()
   await result
-  assert.deepEqual(order, ['install:start', 'proxy:start', 'proxy:end', 'install:end'])
+  assert.deepEqual(order.slice(0, 2), ['prepare:start', 'proxy:start'])
 })
 
-test('the network switch waits for the install to settle, not just to start', async () => {
+test('the network switch needs only the proxy scope — it runs while the check is still pending', async () => {
   daemon(['bridge'])
-  const { result, settleProxy, settleInstall } = run('s2')
+  const { result, settleProxy, settlePrepare } = run('s2')
   settleProxy()
-  await Promise.resolve()
-  assert.deepEqual(attached(), ['bridge'], 'proxy alone does not trigger the switch')
-  settleInstall()
+  // the switch is a few async docker calls; wait for it without settling the check
+  for (let i = 0; i < 200 && attached().join() !== 'gurt-s-s2'; i++) await new Promise((r) => setTimeout(r, 10))
+  assert.deepEqual(attached(), ['gurt-s-s2'], 'switched with the check still pending — no open-network hold-up')
+  settlePrepare()
   const runtime = await result
   assert.equal(runtime.session, 's2')
-  assert.deepEqual(attached(), ['gurt-s-s2'], 'the switch ran only after the install resolved')
 })
 
-test('an install failure fails the whole call, and the switch never runs', async () => {
+test('a check failure fails the whole call', async () => {
   daemon(['bridge'])
-  const { result, settleProxy, settleInstall } = run('s3', { installFails: true })
+  const { result, settleProxy, settlePrepare } = run('s3', { prepareFails: true })
   settleProxy()
-  settleInstall()
-  await assert.rejects(() => result, /install failed/)
-  assert.deepEqual(attached(), ['bridge'], 'no switch — the invariant is: install runs, switch does not, on failure')
+  settlePrepare()
+  await assert.rejects(() => result, /prepare failed/)
 })
 
-test('a proxy-scope failure fails the call too, with the install having succeeded', async () => {
+test('a proxy-scope failure fails the call too, and no switch happens', async () => {
   daemon(['bridge'])
-  const { result, settleProxy, settleInstall } = run('s4', { proxyFails: true })
-  settleInstall()
+  const { result, settleProxy, settlePrepare } = run('s4', { proxyFails: true })
+  settlePrepare()
   settleProxy()
   await assert.rejects(() => result, /proxy failed/)
-  assert.deepEqual(attached(), ['bridge'], 'still no switch — there is no proxy runtime to converge onto')
+  assert.deepEqual(attached(), ['bridge'], 'no switch — there is no proxy runtime to converge onto')
 })
 
-test('when both fail, the install error is the one that surfaces — same precedence as before', async () => {
+test('when both fail, the check error is the one that surfaces', async () => {
   daemon(['bridge'])
-  const { result, settleProxy, settleInstall } = run('s5', { installFails: true, proxyFails: true })
+  const { result, settleProxy, settlePrepare } = run('s5', { prepareFails: true, proxyFails: true })
   settleProxy()
-  settleInstall()
-  await assert.rejects(() => result, /install failed/)
+  settlePrepare()
+  await assert.rejects(() => result, /prepare failed/)
 })
