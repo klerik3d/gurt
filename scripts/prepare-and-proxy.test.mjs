@@ -97,7 +97,14 @@ after(() => {
 })
 
 const daemon = (networks) => fs.writeFileSync(STATE, JSON.stringify({ networks }))
-const attached = () => JSON.parse(fs.readFileSync(STATE, 'utf8')).networks
+// The fake docker rewrites STATE non-atomically: a read can land on a truncated file.
+const attached = () => {
+  try {
+    return JSON.parse(fs.readFileSync(STATE, 'utf8')).networks
+  } catch {
+    return []
+  }
+}
 
 const bus = m.createBus()
 const containers = new m.ContainerManager({
