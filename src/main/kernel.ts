@@ -42,6 +42,8 @@ import { createLogger, dropSessionLog, sessionLogLine } from './log'
 import { createProactive, type ProactiveManager } from './proactive'
 import { createWatchers, type WatcherManager } from './watchers'
 import type { PollerClock } from './watchPoller'
+import { createRpm, type Rpm } from '../rpm/main'
+import { createCheckPort, createGitPort, createNotifyPort, createSessionsPort, createStorePort } from './rpmPorts'
 
 const log = createLogger('kernel')
 // Same scope as sessions.ts/containers.ts's own loggers (`sessions`,
@@ -84,6 +86,9 @@ export interface Kernel {
   /** Watchers: one long-lived session each, woken by its own wakeups
    *  (docs/requirements-watchers.md). */
   watchers: WatcherManager
+  /** RPM — the review process manager (t3v2 §3): loaded with the sessions,
+   *  before the scheduler's first pass. */
+  rpm: Rpm
   /** store.buildTree + session overlay. */
   tree(): Promise<Tree>
   deleteTask(ws: string, task: string): Promise<void>
@@ -385,6 +390,20 @@ export function createKernel(options: KernelOptions = {}): Kernel {
     (id) => sessions.sessionInfo(id)
   )
 
+  // RPM over its ports (t3v2 §4). Built now, so its tools and its quiet rule
+  // are in place before the first session attaches or the first event fires;
+  // its journals are read in the boot restore below.
+  const rpm = createRpm({
+    sessions: createSessionsPort(sessions, { bus, stopContainer: (id) => containers.stop(id, 'idle') }),
+    git: createGitPort(),
+    check: createCheckPort(containers, sessions),
+    notify: createNotifyPort(notifications),
+    store: createStorePort()
+  })
+  sessions.setRpmTools(rpm.tools)
+  notifications.setQuiets((id) => rpm.quiets(id))
+  rpm.onChange((e) => bus.emit('rpm', e))
+
   // Usage ledger: files every finished turn against the agent instance that
   // served it. Wired here, next to notifications, for the same reason — both
   // are pure bus subscribers that must exist before the first event fires.
@@ -503,6 +522,10 @@ export function createKernel(options: KernelOptions = {}): Kernel {
       }
       sessions.restore(restored)
     }
+    // RPM's journals, right after the sessions they belong to and before
+    // anything can schedule: a live run holds its executor's clones (t3v2 §8.2).
+    progress(58, 'loading review runs')
+    await rpm.load().catch((e: unknown) => log.error('internal.fail', { site: 'rpm-load', err: e }))
     // Docker is the registry: correct the restored container records against it
     // (and reap orphans) before anything tries to exec into one.
     progress(60, 'checking containers against Docker')
@@ -517,6 +540,10 @@ export function createKernel(options: KernelOptions = {}): Kernel {
     // Same reason: attended work waits for the user, the watcher's own wake
     // turns go on, and nothing drains before this has sorted them (§10).
     await watchers.load(t)
+    // After Docker is reconciled: recovery stops and checks containers (§8.2).
+    progress(92, 'recovering review runs')
+    await rpm.recover().catch((e: unknown) => log.error('internal.fail', { site: 'rpm-recover', err: e }))
+    rpm.start()
     progress(96, 'resuming queue')
     sessions.schedule()
     reapForQueue()
@@ -544,6 +571,7 @@ export function createKernel(options: KernelOptions = {}): Kernel {
     pii,
     proactive,
     watchers,
+    rpm,
 
     async tree(): Promise<Tree> {
       const t = await store.buildTree()

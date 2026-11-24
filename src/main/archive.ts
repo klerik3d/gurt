@@ -163,6 +163,10 @@ export class ArchiveManager {
         this.kernel.terminals.withScopeBlocked(ws, task, () => withTaskChangesPaused(ws, task, async () => {
           if (this.kernel.sessions.taskHasPendingWork(ws, task))
             throw new Error('Finish or cancel queued/running work and remove unsent draft images before archiving this scope')
+          // A review step (check, reviewer, executor's fix) is work in flight too (t3v2 §12).
+          // TODO(rpm): a live run between steps should be closed with `end archived` here.
+          if (this.kernel.rpm.stepRunning(ws, task))
+            throw new Error('A review step is running in this scope; wait for it or stop the review before archiving')
           if (automatic && !(await this.eligible(ws, task))) throw new Error('Scope is no longer eligible for auto-archive')
           this.kernel.terminals.dropScope(ws, task)
           this.report('Stopping containers…')
@@ -238,6 +242,8 @@ export class ArchiveManager {
       return this.kernel.sessions.withTaskFrozen(ws, task, async () => {
         if (this.kernel.sessions.taskHasPendingWork(ws, task))
           throw new Error('Finish or cancel queued and running work in this scope before archiving')
+        if (this.kernel.rpm.stepRunning(ws, task))
+          throw new Error('A review step is running in this scope; wait for it or stop the review before archiving')
         this.report('Stopping container…')
         await this.kernel.containers.release(sessionId, 'archived')
         await this.kernel.sessions.flushTask(ws, task)

@@ -91,7 +91,11 @@ const OPAQUE_ARGS = new Set<keyof GurtApi>([
   // it — a config payload, opaque for the same reason as an MCP entry.
   'setPiiSettings',
   // A sample typed to see what gets masked — PII by intent.
-  'testPii'
+  'testPii',
+  // RPM: your notes and verdict comments are prose for the executor.
+  'rpmNote',
+  'rpmVerdict',
+  'rpmSeverity'
 ])
 
 /** Args for the DBG trace: a count for the opaque methods, the (redacted,
@@ -133,6 +137,7 @@ export function registerIpc(): void {
   kernel.bus.on('notification.read', (e) => broadcast('notification-read', e))
   kernel.bus.on('usage.changed', () => broadcast('usage-changed'))
   kernel.bus.on('boot.progress', (p) => broadcast('boot-progress', p))
+  kernel.bus.on('rpm', (e) => broadcast('rpm', e))
 
   // Plan limits move with usage from every surface of an account, not just gurt's own
   // turns — so keep them fresh in the background instead of waiting for the
@@ -591,7 +596,16 @@ export function registerIpc(): void {
     getPiiTable: async (sessionId) => kernel.pii.table(sessionId),
     getPiiAnalyzer: () => kernel.pii.analyzer(),
     restartPiiAnalyzer: () => kernel.pii.restartAnalyzer(),
-    testPii: (text) => kernel.pii.test(text)
+    testPii: (text) => kernel.pii.test(text),
+    // RPM (t3v2 §3.2): reads answer from memory once the journals are loaded.
+    rpmRuns: async (executor) => { await kernel.ready; return kernel.rpm.runs(executor) },
+    rpmState: async (executor, run) => { await kernel.ready; return kernel.rpm.state(executor, run) },
+    rpmConfig: async (executor) => { await kernel.ready; return kernel.rpm.config(executor) },
+    rpmSetConfig: async (executor, patch) => { await kernel.ready; return kernel.rpm.setConfig(executor, patch) },
+    rpmVerdict: async (executor, id, to, comment) => { await kernel.ready; return kernel.rpm.verdict(executor, id, to, comment) },
+    rpmSeverity: async (executor, id, to, comment) => { await kernel.ready; return kernel.rpm.severity(executor, id, to, comment) },
+    rpmNote: async (executor, text) => { await kernel.ready; return kernel.rpm.note(executor, text) },
+    rpmCommand: async (executor, cmd) => { await kernel.ready; return kernel.rpm.command(executor, cmd) }
   }
 
   // Renderer records: validated, rate-limited and truncated inside `logRenderer`

@@ -192,4 +192,7 @@ export interface DomainEvents {
   /** A session was copied into a new draft (Duplicate, Recreate): RPM copies
    *  its config (t3v2 §4.1 `onCopied`). */
   'session.copied': { from: string; to: string }
+  /** RPM's state of an executor's run changed (`Rpm.onChange`, t3v2 §3.2):
+   *  the renderer re-reads `rpmState`. */
+  rpm: { executor: string; run: number }
 }

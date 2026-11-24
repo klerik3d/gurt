@@ -61,7 +61,8 @@ const api: Record<string, unknown> = {
   onPiiTable: subscribe('pii-table'),
   onMcpFail: subscribe('mcp-fail'),
   onHotkeyCycleWorkspace: subscribe('hotkey-cycle-workspace'),
-  onColorScheme: subscribe('color-scheme')
+  onColorScheme: subscribe('color-scheme'),
+  onRpm: subscribe('rpm')
 }
 for (const m of API_METHODS) api[m] = (...args: unknown[]) => ipcRenderer.invoke(`api:${m}`, ...args)
 

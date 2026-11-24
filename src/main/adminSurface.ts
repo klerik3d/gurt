@@ -98,6 +98,12 @@ export function createAdminSurface(kernel: Kernel): AdminSurface {
     }
   }
 
+  /** A session of the bound workspace, or the same refusal as for a missing one. */
+  const ownSession = (ws: string, id: string): string => {
+    if (kernel.sessions.sessionInfo(id)?.workspace !== ws) throw new Error(`unknown session "${id}"`)
+    return id
+  }
+
   /** The ws-bound read set. Compile-checked to cover the `read` annotations
    *  exactly (see the module header) — the `ws` each entry receives is the
    *  bound one, injected by `call()` below for `bindWs` methods. */
@@ -168,7 +174,11 @@ export function createAdminSurface(kernel: Kernel): AdminSurface {
     // identical, from every other read here, to one that will not start for a
     // reason in the configuration (docs/requirements-first-run.md §8).
     machineDoctor: () => machineDoctor(),
-    getWelcomeMode: () => store.getWelcomeMode()
+    getWelcomeMode: () => store.getWelcomeMode(),
+    // A review run is read only for an executor in the bound workspace.
+    rpmRuns: async (id) => kernel.rpm.runs(ownSession(ws, id)),
+    rpmState: async (id, run) => kernel.rpm.state(ownSession(ws, id), run),
+    rpmConfig: async (id) => kernel.rpm.config(ownSession(ws, id))
   })
 
   const writes = createAdminWrites(kernel)

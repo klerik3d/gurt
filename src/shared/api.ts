@@ -48,6 +48,7 @@ import type { TerminalInfo, TerminalSnapshot } from './terminal'
 import type { FileDocument, FileEntry, FileImage, FileNavigation, FileNavigationResult } from './files'
 import type { ProactiveConfig } from './proactive'
 import type { WatcherConfig } from './watchers'
+import type { RpmCommand, RpmConfig, RpmState, RunSummary, Severity, VerdictTo } from '../rpm/core'
 
 export type CreateAction = 'run' | 'queue' | 'draft'
 
@@ -559,6 +560,20 @@ export interface GurtApi {
   watcherCheckNow(ws: string, name: string): Promise<void>
   /** Withdraw the pending wakeup or the watch. */
   watcherCancelWake(ws: string, name: string): Promise<void>
+  // RPM — review process manager (t3v2 §3.2). Every method takes the executor's id.
+  /** The executor's review runs, oldest first. */
+  rpmRuns(executor: string): Promise<RunSummary[]>
+  /** A run's state; `run` omitted = the last one. */
+  rpmState(executor: string, run?: number): Promise<RpmState | undefined>
+  /** The executor's review settings (a draft's too). */
+  rpmConfig(executor: string): Promise<RpmConfig>
+  rpmSetConfig(executor: string, patch: Partial<RpmConfig>): Promise<void>
+  /** Your verdict on a finding of the live run. */
+  rpmVerdict(executor: string, id: string, to: VerdictTo, comment?: string): Promise<void>
+  rpmSeverity(executor: string, id: string, to: Severity, comment?: string): Promise<void>
+  /** A note for the executor's next message. */
+  rpmNote(executor: string, text: string): Promise<void>
+  rpmCommand(executor: string, cmd: RpmCommand): Promise<void>
 }
 
 /**
@@ -762,7 +777,16 @@ const METHODS = {
   watcherRearm: 'none',
   watcherWakeNow: 'none',
   watcherCheckNow: 'none',
-  watcherCancelWake: 'none'
+  watcherCancelWake: 'none',
+  // RPM (t3v2 §3.2): reading a run is a diagnostic, everything else is the user's.
+  rpmRuns: 'read',
+  rpmState: 'read',
+  rpmConfig: 'read',
+  rpmSetConfig: 'none',
+  rpmVerdict: 'none',
+  rpmSeverity: 'none',
+  rpmNote: 'none',
+  rpmCommand: 'none'
 } as const satisfies Record<keyof GurtApi, Exposure>
 
 /** Runtime method list; `api:<method>` is the IPC channel per entry. */
@@ -828,4 +852,6 @@ export interface GurtEvents {
    *  `prefers-color-scheme`, which `nativeTheme.themeSource` does not reach
    *  on Linux. */
   'color-scheme': ColorScheme
+  /** An executor's review run changed — `useRpm` re-reads `rpmState`. */
+  rpm: DomainEvents['rpm']
 }

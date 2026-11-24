@@ -489,4 +489,31 @@ export const ADMIN_TOOLS: readonly AdminToolDef[] = [
     params: ["mode"],
     input: { "mode": z.enum(["auto", "always", "never"]) }
   },
+  {
+    name: "rpm_runs",
+    method: "rpmRuns",
+    exposure: "read",
+    description: "The executor's review runs, oldest first.",
+    bindWs: false,
+    params: ["executor"],
+    input: { "executor": z.string() }
+  },
+  {
+    name: "rpm_state",
+    method: "rpmState",
+    exposure: "read",
+    description: "A run's state; `run` omitted = the last one.",
+    bindWs: false,
+    params: ["executor","run"],
+    input: { "executor": z.string(), "run": z.number().optional() }
+  },
+  {
+    name: "rpm_config",
+    method: "rpmConfig",
+    exposure: "read",
+    description: "The executor's review settings (a draft's too).",
+    bindWs: false,
+    params: ["executor"],
+    input: { "executor": z.string() }
+  },
 ]
