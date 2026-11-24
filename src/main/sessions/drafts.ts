@@ -287,6 +287,7 @@ export function duplicateSession(mgr: DraftsCtx, sessionId: string): SessionInfo
   // The copy is recognisable as one instead of taking the next free
   // role-index name — the source is usually still in the tree right above it.
   mgr.renameSession(info.id, `${source.title} (copy)`)
+  mgr.bus.emit('session.copied', { from: sessionId, to: info.id })
   log.info('session.duplicated', { s: info.id, from: sessionId })
   return info
 }
@@ -322,6 +323,8 @@ export function recreateSession(mgr: DraftsCtx, sessionId: string): SessionInfo 
   const at = [...mgr.sessions.keys()].indexOf(sessionId)
   const info = mgr.draftFrom(source)
   mgr.renameSession(info.id, source.title)
+  // Before the source goes: RPM copies its config from it.
+  mgr.bus.emit('session.copied', { from: sessionId, to: info.id })
   mgr.deleteSession(sessionId)
   // Back into the original's slot (the tree lists a task's sessions in this
   // map's order), so the row does not jump to the bottom of its task. Before

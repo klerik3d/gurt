@@ -3,12 +3,21 @@ import type { PlanHold } from '../../shared/planUsage'
 import {
   missingRepoReason,
   repoMode,
+  sessionRole,
   type SessionInfo
 } from '../../shared/types'
 import type { Bus } from '../bus'
 import { createLogger } from '../log'
 import { claimsCollide } from './pure'
 import type { Claim, Session } from './types'
+
+/** RPM's hold on an executor's write clones (`SessionsPort.hold`, t3v2 §6.2):
+ *  kept whether or not its container is up, taken with the executor's title. */
+export interface CloneHold {
+  info: Pick<SessionInfo, 'id' | 'title'>
+  claims: Claim[]
+}
+type Holder = { holder: { info: Pick<SessionInfo, 'id' | 'title'> }; repo: string }
 
 const log = createLogger('sessions')
 
@@ -22,6 +31,7 @@ export interface QueueCtx {
   activeSessionCount(ws: string, task: string): number
   armLimitTimer(holds: PlanHold[], instants?: number[]): void
   readonly bus: Bus
+  readonly cloneHolds: Map<string, CloneHold>
   claims(s: Session): Claim[]
   drainPending(s: Session): Promise<void>
   earlierQueueItem(s: Session): Session | undefined
@@ -54,13 +64,18 @@ export function queuedSessions(mgr: QueueCtx): Session[] {
     .sort((a, b) => mgr.queueTime(a).localeCompare(mgr.queueTime(b)))
 }
 
-/** Earlier work keeps its place on shared clones, including during a limit hold. */
+/** Earlier work keeps its place on shared clones, including during a limit hold.
+ *  Except behind the session's own RPM hold: a held executor's own work never
+ *  queues behind a session that waits *because of that hold* — the two would
+ *  wait for each other. */
 export function earlierQueueItem(mgr: QueueCtx, s: Session): Session | undefined {
   const claims = mgr.claims(s)
+  const held = mgr.cloneHolds.get(s.info.id)
   for (const other of mgr.queuedSessions()) {
     if (other === s) break
     const theirs = mgr.claims(other)
     if (!claimsCollide(theirs, claims)) continue
+    if (held && claimsCollide(theirs, held.claims)) continue
     return other
   }
   return undefined
@@ -79,6 +94,8 @@ export function pendingBlocked(mgr: QueueCtx, s: Session): string | undefined {
   if (!s.pending.length || s.busy) return undefined
   const hold = s.info.state === 'started' ? mgr.limitHold(s) : undefined
   if (hold) return mgr.holdText(hold)
+  const rpm = holdConflict(mgr, s)
+  if (rpm) return holdText(rpm)
   const earlier = mgr.earlierQueueItem(s)
   if (earlier) return `waiting behind session "${earlier.info.title}"`
   const conflict = mgr.repoConflict(s)
@@ -92,6 +109,8 @@ export function pendingBlocked(mgr: QueueCtx, s: Session): string | undefined {
 export function queuedWaiting(mgr: QueueCtx, s: Session): string | undefined {
   const hold = mgr.limitHold(s)
   if (hold) return mgr.holdText(hold)
+  const rpm = holdConflict(mgr, s)
+  if (rpm) return holdText(rpm)
   const earlier = mgr.earlierQueueItem(s)
   return earlier ? `waiting behind session "${earlier.info.title}"` : undefined
 }
@@ -131,7 +150,7 @@ export function scheduleSync(mgr: QueueCtx): void {
     }
     const tkey = taskKey(s.ref.workspace, s.ref.task)
     const cap = mgr.taskCaps.get(tkey)
-    if (cap !== undefined) {
+    if (cap !== undefined && !capExempt(s)) {
       const running = mgr.activeSessionCount(s.ref.workspace, s.ref.task) + (startedThisPass.get(tkey) ?? 0)
       if (running >= cap) {
         still.add(s.info.id)
@@ -229,6 +248,8 @@ export function claims(s: Session): Claim[] {
 export function repoConflict(mgr: QueueCtx, s: Session): { holder: { info: Pick<SessionInfo, 'id' | 'title'> }; repo: string } | undefined {
   const mine = mgr.claims(s)
   if (!mine.length) return undefined
+  const rpm = holdConflict(mgr, s)
+  if (rpm) return rpm
   for (const o of mgr.sessions.values()) {
     if (o.info.id === s.info.id || !mgr.holdsClone(o)) continue
     for (const theirs of mgr.claims(o)) {
@@ -255,9 +276,45 @@ export function isActive(s: Session): boolean {
   return s.info.state === 'starting' || busyContainer
 }
 
-/** Holds its clones right now — {@link isActive}. */
+/** Holds its clones right now — {@link isActive}, or RPM holds them for it
+ *  (its container may be down). Not what the task cap counts. */
 export function holdsClone(mgr: QueueCtx, s: Session): boolean {
-  return mgr.isActive(s)
+  return mgr.isActive(s) || mgr.cloneHolds.has(s.info.id)
+}
+
+/** Another executor's RPM hold over one of this session's clones — whether or
+ *  not its container is up. The session's own hold is never in its way. */
+export function holdConflict(mgr: QueueCtx, s: Session): Holder | undefined {
+  const mine = mgr.claims(s)
+  for (const [id, held] of mgr.cloneHolds) {
+    if (id === s.info.id) continue
+    for (const theirs of held.claims) {
+      const c = mine.find((m) => m.key === theirs.key)
+      if (c && (c.exclusive || theirs.exclusive)) return { holder: held, repo: c.repo }
+    }
+  }
+  return undefined
+}
+
+/** The wait on an RPM hold, as the others see it (t4v1 task 6). */
+export const holdText = (c: Holder): string => `review of "${c.holder.info.title}" holds ${c.repo}`
+
+/** A reviewer never waits for its scope's `maxConcurrentSessions` (t3v2 §6.4):
+ *  the executor it reviews may hold the only slot. It still counts as active. */
+export const capExempt = (s: Session): boolean => sessionRole(s.info) === 'reviewer'
+
+/** Take RPM's hold on an executor's write clones. Idempotent. */
+export function holdClones(mgr: QueueCtx, sessionId: string): void {
+  if (mgr.cloneHolds.has(sessionId)) return
+  const s = mgr.sessions.get(sessionId)
+  if (!s) throw new Error('unknown session')
+  mgr.cloneHolds.set(sessionId, { info: { id: sessionId, title: s.info.title }, claims: mgr.claims(s) })
+}
+
+/** Drop the hold and let the queue move. */
+export function releaseClones(mgr: QueueCtx, sessionId: string): void {
+  if (!mgr.cloneHolds.delete(sessionId)) return
+  mgr.schedule()
 }
 
 /** Sessions of `(ws, task)` currently active (see {@link isActive}) —
@@ -343,7 +400,7 @@ export function holdersBlockingQueue(mgr: QueueCtx): string[] {
     }
     want(s)
     const tkey = taskKey(s.ref.workspace, s.ref.task)
-    if (mgr.taskCaps.has(tkey)) wantedTasks.add(tkey)
+    if (mgr.taskCaps.has(tkey) && !capExempt(s)) wantedTasks.add(tkey)
   }
   if (!wantedRepos.size && !wantedTasks.size) return []
   const out: string[] = []
@@ -351,6 +408,8 @@ export function holdersBlockingQueue(mgr: QueueCtx): string[] {
     // A queued holder is the scheduler's business, not the reaper's: it owns
     // a container it is about to start into.
     if (o.info.state === 'queued' || o.info.state === 'starting' || o.busy || o.nudgePending) continue
+    // RPM holds it (a step is running or waits): a handoff would stop it.
+    if (mgr.cloneHolds.has(o.info.id)) continue
     // Only a fully-up container is stoppable — one still building/post is
     // mid-provision, and `starting` above already covers its session.
     if (o.info.container?.status !== 'running') continue
@@ -373,7 +432,7 @@ export function startNowOrQueue(mgr: QueueCtx, sessionId: string): void {
   const s = mgr.sessions.get(sessionId)
   if (!s) return
   const cap = mgr.taskCaps.get(taskKey(s.ref.workspace, s.ref.task))
-  if (cap !== undefined && mgr.activeSessionCount(s.ref.workspace, s.ref.task) >= cap) {
+  if (cap !== undefined && !capExempt(s) && mgr.activeSessionCount(s.ref.workspace, s.ref.task) >= cap) {
     mgr.enqueue(sessionId)
     return
   }

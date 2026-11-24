@@ -830,6 +830,12 @@ export interface ChatText {
    *  `session/fork` names as its fork point on a rewind. Absent when the
    *  adapter sends none. */
   acpMessageId?: string
+  /** A user message's logical turn (`SettledTurn.turnId`, executor and
+   *  reviewer only): what `SessionsPort.userPrompts`/`checkpointBefore` key on. */
+  turn?: string
+  /** The write clones' snapshot taken right before this user message was sent
+   *  (checkpoints.ts), patched in once it is written. */
+  checkpoint?: { repo: string; commit: string }[]
 }
 
 export interface ChatToolCall {
@@ -890,7 +896,7 @@ export type SessionLogRecord =
       seq: number
       type: 'patch'
       id: number
-      patch: { status?: string; title?: string; detail?: string; chosen?: string; endAt?: number }
+      patch: { status?: string; title?: string; detail?: string; chosen?: string; endAt?: number; checkpoint?: { repo: string; commit: string }[] }
     }
   /** Rewind: every entry with an id above `afterId` is dropped from the fold.
    *  The file stays append-only — the rewound tail is still on disk, and later
@@ -1147,7 +1153,7 @@ export interface PersistedPrompt {
   images?: PromptImage[] | undefined
   auto?: boolean | undefined
   /** Who queued an `auto` prompt, when it was not gurt's own plain "continue". */
-  origin?: { limit: true; of: 'wake' | 'user' } | WakeOrigin | { rpm: string } | undefined
+  origin?: { limit: true; of: 'wake' | 'user' } | WakeOrigin | { rpm: string; line?: RpmChatLine | undefined } | undefined
   /** The "continue" of a cut executor/reviewer turn (`PendingPrompt.continues`). */
   continues?: true | undefined
 }
@@ -1174,6 +1180,12 @@ export interface PersistedSession {
   /** A limited executor/reviewer turn its "continue" carries on (origin, RPM
    *  key, accepted calls) — `Session.carry`. */
   carry?: { origin: 'user' | 'rpm' | 'other'; key?: string | undefined; tools?: { name: string; payload: unknown }[] | undefined } | undefined
+  /** Keys of the RPM messages (`SessionsPort.send`) the queue handed to a turn,
+   *  oldest first, the last `RPM_TAKEN_MAX` — `sent(id, key)` answers `taken`
+   *  for them. Written beside `interrupted`. */
+  rpmTaken?: string[] | undefined
+  /** A reviewer's start line (`createReviewer`): its start prompt shows as it. */
+  startLine?: RpmChatLine | undefined
   /** Legacy pre-log format; migrated to the JSONL log on restore. */
   entries?: ChatEntry[] | undefined
 }

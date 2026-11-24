@@ -189,4 +189,7 @@ export interface DomainEvents {
    *  notifications subscriber drops its ring entries and per-session
    *  bookkeeping so both don't grow for the process lifetime. */
   'session.deleted': { sessionId: string }
+  /** A session was copied into a new draft (Duplicate, Recreate): RPM copies
+   *  its config (t3v2 §4.1 `onCopied`). */
+  'session.copied': { from: string; to: string }
 }

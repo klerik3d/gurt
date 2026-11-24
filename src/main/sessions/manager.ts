@@ -80,7 +80,8 @@ import type {
   TurnTrack,
   WatcherHooks
 } from './types'
-import type { RpmTools, SettledTurn } from '../../rpm/main'
+import type { RpmTools, SessionFacts, SettledTurn } from '../../rpm/main'
+import type { RpmChatLine } from '../../rpm/core'
 import * as queue from './queue'
 import * as wake from './wake'
 import * as connection from './connection'
@@ -91,6 +92,8 @@ import * as prompts from './prompts'
 import * as persistence from './persistence'
 import * as drafts from './drafts'
 import * as lifecycle from './lifecycle'
+import * as rpm from './rpm'
+import type { CloneHold } from './queue'
 
 /** One context object per manager instance and module: the modules take what they
  *  need through it (see the `*Ctx` interfaces), built over the manager's live
@@ -150,6 +153,8 @@ export class SessionManager {
   private watcherHooks: WatcherHooks | undefined
   /** RPM's model tools, once it registers (`setRpmTools`). */
   private rpmTools: RpmTools | undefined
+  /** RPM's holds on executors' write clones (`holdClones`), by executor id. */
+  private cloneHolds = new Map<string, CloneHold>()
   private readonly bootAt = Date.now()
 
   constructor(
@@ -244,6 +249,19 @@ export class SessionManager {
     const t = this.sessions.get(sessionId)?.lastSettled
     return t && structuredClone(t)
   }
+
+  // --- RPM's actions (t3v2 §4.1 SessionsPort; adapter: rpmPorts/sessions.ts) ---
+
+  rpmFacts(sessionId: string): SessionFacts | undefined { return rpm.facts(SessionManager.rpmCtx(this), sessionId) }
+  rpmSend(sessionId: string, m: { key: string; text: string; line: RpmChatLine }): Promise<void> { return rpm.send(SessionManager.rpmCtx(this), sessionId, m) }
+  rpmSent(sessionId: string, key: string): 'queued' | 'taken' | 'unknown' { return rpm.sent(SessionManager.rpmCtx(this), sessionId, key) }
+  rpmChatLine(sessionId: string, line: RpmChatLine): number | undefined { return rpm.chatLine(SessionManager.rpmCtx(this), sessionId, line) }
+  createReviewer(r: Parameters<typeof rpm.createReviewer>[1]): Promise<string> { return rpm.createReviewer(SessionManager.rpmCtx(this), r) }
+  userPrompts(sessionId: string, afterTurnId?: string): string[] { return rpm.userPrompts(SessionManager.rpmCtx(this), sessionId, afterTurnId) }
+  checkpointBefore(sessionId: string, turnId: string): { repo: string; commit: string }[] | undefined { return rpm.checkpointBefore(SessionManager.rpmCtx(this), sessionId, turnId) }
+  /** Keep the executor's write clones its own while RPM's run lives, even with its container down. */
+  holdClones(sessionId: string): void { return queue.holdClones(SessionManager.queueCtx(this), sessionId) }
+  releaseClones(sessionId: string): void { return queue.releaseClones(SessionManager.queueCtx(this), sessionId) }
 
   ensureContainerUp(sessionId: string): Promise<void> { return connection.ensureContainerUp(SessionManager.connectionCtx(this), sessionId) }
 
@@ -591,8 +609,9 @@ export class SessionManager {
     entryKind: 'user' | 'system',
     isNudge: boolean,
     context?: PromptContext[],
-    images?: PromptImage[]): Promise<TurnResult> {
-    return turns.sendTurn(SessionManager.turnsCtx(this), s, text, entryKind, isNudge, context, images)
+    images?: PromptImage[],
+    line?: RpmChatLine): Promise<TurnResult> {
+    return turns.sendTurn(SessionManager.turnsCtx(this), s, text, entryKind, isNudge, context, images, line)
   }
 
   private reportTurn(s: Session,
@@ -842,6 +861,22 @@ export class SessionManager {
     }))
   }
 
+  private static rpmCtx(m: SessionManager): rpm.RpmCtx {
+    return cachedCtx(m, 'rpm', () => ({
+      get bus() { return m.bus },
+      createSession: (ref, repos, agentId, startPrompt, action, mcp, autoAllow, configValues, role, skills, network, repoModes) => m.createSession(ref, repos, agentId, startPrompt, action, mcp, autoAllow, configValues, role, skills, network, repoModes),
+      drainPending: (s) => m.drainPending(s),
+      inheritanceOf: (info) => m.inheritanceOf(info),
+      limitHold: (s) => m.limitHold(s),
+      get pendingSeq() { return m.pendingSeq },
+      set pendingSeq(v) { m.pendingSeq = v },
+      persistNow: (s) => m.persistNow(s),
+      push: (s, entry) => m.push(s, entry),
+      get sessions() { return m.sessions },
+      startNowOrQueue: (sessionId) => m.startNowOrQueue(sessionId)
+    }))
+  }
+
   private static persistenceCtx(m: SessionManager): persistence.PersistenceCtx {
     return cachedCtx(m, 'persistence', () => ({
       drainPending: (s) => m.drainPending(s),
@@ -900,6 +935,7 @@ export class SessionManager {
   private static turnsCtx(m: SessionManager): turns.TurnsCtx {
     return cachedCtx(m, 'turns', () => ({
       get agentKinds() { return m.agentKinds },
+      append: (s, record) => m.append(s, record),
       assertNotStopped: (s) => m.assertNotStopped(s),
       attach: (s) => m.attach(s),
       get bus() { return m.bus },
@@ -924,7 +960,7 @@ export class SessionManager {
       settleTurn: (s, turn, outcome) => m.settleTurn(s, turn, outcome),
       schedule: () => m.schedule(),
       schedulePersist: (ref) => m.schedulePersist(ref),
-      sendTurn: (s, text, entryKind, isNudge, context, images) => m.sendTurn(s, text, entryKind, isNudge, context, images),
+      sendTurn: (s, text, entryKind, isNudge, context, images, line) => m.sendTurn(s, text, entryKind, isNudge, context, images, line),
       get sessions() { return m.sessions },
       vocabulary: (s) => m.vocabulary(s),
       watcherPaused: (s) => m.watcherPaused(s),
@@ -955,7 +991,7 @@ export class SessionManager {
       push: (s, entry) => m.push(s, entry),
       pushConfigOption: (s, conn, configId, value) => m.pushConfigOption(s, conn, configId, value),
       repoConflict: (s) => m.repoConflict(s),
-      runPrompt: (s, text, context, images) => m.runPrompt(s, text, context, images),
+      runPrompt: (s, text, context, images, origin) => m.runPrompt(s, text, context, images, origin),
       schedule: () => m.schedule(),
       schedulePersist: (ref) => m.schedulePersist(ref),
       get sessions() { return m.sessions },
@@ -1021,6 +1057,7 @@ export class SessionManager {
       activeSessionCount: (ws, task) => m.activeSessionCount(ws, task),
       armLimitTimer: (holds, instants) => m.armLimitTimer(holds, instants),
       get bus() { return m.bus },
+      get cloneHolds() { return m.cloneHolds },
       claims: (s) => m.claims(s),
       drainPending: (s) => m.drainPending(s),
       earlierQueueItem: (s) => m.earlierQueueItem(s),

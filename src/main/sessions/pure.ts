@@ -42,7 +42,7 @@ export const turnOriginOf = (p: Pick<PendingPrompt, 'auto' | 'origin' | 'continu
   p.continues
     ? { origin: 'other', continues: true }
     : p.origin && 'rpm' in p.origin
-    ? { origin: 'rpm', key: p.origin.rpm }
+    ? { origin: 'rpm', key: p.origin.rpm, ...(p.origin.line ? { line: p.origin.line } : {}) }
     : p.auto
       ? { origin: 'other' }
       : { origin: 'user' }
@@ -52,6 +52,10 @@ export const turnOriginOf = (p: Pick<PendingPrompt, 'auto' | 'origin' | 'continu
  *  keep their place and run first, each a turn of its own. */
 export const keptWhenTyping = (p: Pick<PendingPrompt, 'auto' | 'origin' | 'continues'>): boolean =>
   !p.auto || !!p.continues || !!(p.origin && 'rpm' in p.origin)
+
+/** How many taken RPM keys a session remembers (`Session.rpmTaken`): far more
+ *  than one run's steps, so a retried key of a live run is always found. */
+export const RPM_TAKEN_MAX = 500
 
 /** What an interrupted session sends once its limit resets. */
 export const LIMIT_CONTINUE_PROMPT = 'continue'

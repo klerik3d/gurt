@@ -30,7 +30,7 @@ import { resolveProxyPlan, type ResolvedProxyPlan } from '../proxy/config'
 import { timedPhase } from '../provision'
 import { nextModeId, normalizeConfigOptions, normalizeModes } from './modes'
 import { ACP_REQUEST_TIMEOUT_MS, assertNotTemplate } from './pure'
-import type { Connection, Session, SessionEvents } from './types'
+import type { Connection, Session, SessionEvents, TurnOrigin } from './types'
 
 // Starting a session: the MCP servers and skills it gets, the config the agent is
 // given once its ACP session exists, and the start sequence itself.
@@ -69,7 +69,7 @@ export interface StartCtx {
   push(s: Session, entry: ChatEntryBase): ChatEntry
   pushConfigOption(s: Session, conn: Connection, configId: string, value: string | boolean): Promise<void>
   repoConflict(s: Session): { holder: { info: Pick<SessionInfo, 'id' | 'title'> }; repo: string } | undefined
-  runPrompt(s: Session, text: string, context?: PromptContext[], images?: PromptImage[]): Promise<void>
+  runPrompt(s: Session, text: string, context?: PromptContext[], images?: PromptImage[], origin?: TurnOrigin): Promise<void>
   schedule(): void
   schedulePersist(ref: EnvRef): void
   readonly sessions: Map<string, Session>
@@ -340,7 +340,13 @@ export async function startSession(mgr: StartCtx, sessionId: string, by: 'user' 
       s.ranOrigin = 'user'
       s.guardStart = true
     }
-    await mgr.runPrompt(s, s.info.startPrompt, undefined, startImages)
+    // A reviewer's start prompt is RPM's message (t3v2 §6.4): it settles with
+    // the review's key and shows as RPM's line.
+    const rev = s.info.reviewerOf
+    const line = s.startLine
+    s.startLine = undefined
+    await mgr.runPrompt(s, s.info.startPrompt, undefined, startImages,
+      rev ? { origin: 'rpm', key: rev.key, ...(line ? { line } : {}) } : undefined)
   } catch (e) {
     // Deleted while the start was in flight (the user saw the misconfigured
     // session go up and pulled it). The delete already took down everything

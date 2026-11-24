@@ -77,6 +77,8 @@ export function restore(mgr: PersistenceCtx, records: RestoredSession[]): void {
       lastSettled: r.lastSettled,
       turnSeq: Math.max(r.turnSeq ?? 0, turnSeqOf(r.lastSettled?.turnId)),
       carry: r.carry,
+      rpmTaken: r.rpmTaken,
+      startLine: r.startLine,
       attached: false,
       loading: false,
       pendingPermissions: new Map(),
@@ -111,6 +113,8 @@ export function recordsFor(mgr: PersistenceCtx, ws: string, task: string): Persi
       ...(s.lastSettled ? { lastSettled: structuredClone(s.lastSettled) } : {}),
       ...(s.turnSeq ? { turnSeq: s.turnSeq } : {}),
       ...(s.carry ? { carry: structuredClone(s.carry) } : {}),
+      ...(s.rpmTaken?.length ? { rpmTaken: [...s.rpmTaken] } : {}),
+      ...(s.startLine ? { startLine: structuredClone(s.startLine) } : {}),
       interrupted: s.interrupted,
       pending: structuredClone(s.pending)
     }

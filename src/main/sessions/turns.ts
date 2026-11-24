@@ -23,10 +23,12 @@ import type { Bus } from '../bus'
 import { createLogger } from '../log'
 import type { PiiMask } from '../pii'
 import type { SettledTurn } from '../../rpm/main'
-import { roleSettlesTurns, turnOriginOf } from './pure'
+import { chatLineSummary, type RpmChatLine } from '../../rpm/core'
+import { RPM_TAKEN_MAX, roleSettlesTurns, turnOriginOf } from './pure'
 import { contractToolFor, nudgePromptFor, postTurnDecision } from './turnContract'
 import type {
   Connection,
+  NewLogRecord,
   PendingPrompt,
   PostTurnAction,
   Session,
@@ -47,6 +49,7 @@ const log = createLogger('sessions')
  *  operations it calls back into. */
 export interface TurnsCtx {
   readonly agentKinds: Map<string, string>
+  append(s: Session, record: NewLogRecord): void
   assertNotStopped(s: Session): void
   attach(s: Session): Promise<Connection>
   readonly bus: Bus
@@ -71,7 +74,7 @@ export interface TurnsCtx {
   settleTurn(s: Session, turn: TurnTrack, outcome: SettledTurn['outcome']): Promise<void>
   schedule(): void
   schedulePersist(ref: EnvRef): void
-  sendTurn(s: Session, text: string, entryKind: 'user' | 'system', isNudge: boolean, context?: PromptContext[], images?: PromptImage[]): Promise<TurnResult>
+  sendTurn(s: Session, text: string, entryKind: 'user' | 'system', isNudge: boolean, context?: PromptContext[], images?: PromptImage[], line?: RpmChatLine): Promise<TurnResult>
   readonly sessions: Map<string, Session>
   vocabulary(s: Session): Vocabulary
   watcherPaused(s: Session): boolean
@@ -109,7 +112,9 @@ export async function sendTurn(mgr: TurnsCtx, s: Session,
   entryKind: 'user' | 'system',
   isNudge: boolean,
   context?: PromptContext[],
-  images?: PromptImage[]): Promise<TurnResult> {
+  images?: PromptImage[],
+  /** An RPM message (t3v2 §10.2): the chat shows this line, not a user message. */
+  line?: RpmChatLine): Promise<TurnResult> {
   mgr.bus.emit('session.activity', { sessionId: s.info.id })
   // The one outbound seam (§2.1): from here on the agent only ever sees
   // tokens, and the timeline records the same tokenized text — the chat view
@@ -125,7 +130,16 @@ export async function sendTurn(mgr: TurnsCtx, s: Session,
       maskError = e instanceof Error ? e : new Error(String(e))
     }
   }
-  const promptEntry = mgr.push(s, { kind: entryKind, text: outbound })
+  // A message the user typed (or the start prompt) that opens a logical turn —
+  // not a cut turn's "continue", not the app's own prompt.
+  const userTurn = !line && entryKind === 'user' && s.turn?.origin === 'user' && !s.turn.carried ? s.turn.id : undefined
+  // An RPM message is the host's, not the user's: a system line, no
+  // checkpoint. A user message carries its logical turn for RPM's
+  // `userPrompts` / `checkpointBefore`.
+  // TODO(rpm): `line.text` rides unmasked inside the entry's `rpm`.
+  const promptEntry = line
+    ? mgr.push(s, { kind: 'system', text: line.text !== undefined ? outbound : chatLineSummary(line), rpm: line })
+    : mgr.push(s, { kind: entryKind, text: outbound, ...(userTurn ? { turn: userTurn } : {}) })
   // Prompt start: the turn is incomplete until `complete` fires; clear any
   // prior violation overlay.
   s.turnComplete = false
@@ -159,7 +173,10 @@ export async function sendTurn(mgr: TurnsCtx, s: Session,
     mgr.assertNotStopped(s)
     const conn = await mgr.attach(s)
     // A nudge lands as a `system` entry — not a rewind point.
-    if (promptEntry.kind === 'user') await mgr.events.snapshotCheckpoint?.(s.info, promptEntry.id)
+    if (promptEntry.kind === 'user') {
+      const checkpoint = await mgr.events.snapshotCheckpoint?.(s.info, promptEntry.id)
+      if (checkpoint && userTurn) mgr.append(s, { type: 'patch', id: promptEntry.id, patch: { checkpoint } })
+    }
     const preface = s.preface
     // Everything above was asynchronous: a Stop may have landed meanwhile.
     mgr.assertNotStopped(s)
@@ -336,7 +353,7 @@ export async function runPrompt(mgr: TurnsCtx, s: Session,
   // Until the body says how it ended, it threw.
   let outcome: SettledTurn['outcome'] = 'failed'
   try {
-    const first = await mgr.sendTurn(s, text, 'user', false, context, images)
+    const first = await mgr.sendTurn(s, text, 'user', false, context, images, carried ? undefined : origin.line)
     if (first.limit) {
       mgr.onLimited(s, first.limit)
       outcome = 'limited'
@@ -514,6 +531,10 @@ export async function drainPending(mgr: TurnsCtx, s: Session): Promise<void> {
       const next = s.pending.shift()!
       consumed = true
       s.interrupted = true
+      // Taken into a turn: `SessionsPort.sent` answers `taken` from here on,
+      // written with `interrupted` by the turn's first persist.
+      if (next.origin && 'rpm' in next.origin)
+        s.rpmTaken = [...(s.rpmTaken ?? []), next.origin.rpm].slice(-RPM_TAKEN_MAX)
       if (s.info.role === 'watcher') {
         s.ranOrigin = mgr.isWakeWork(next) ? 'wake' : 'user'
         // The wake counts when the drain takes it, in this same record (§5.1).

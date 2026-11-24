@@ -36,6 +36,7 @@ import type { AdminHooks, ProactiveHooks, RpmToolHooks, WatcherToolHooks } from 
 import type { JsonRpcPeer } from '../jsonrpc'
 import type { AcpClient } from '../acpClient'
 import type { SettledTurn } from '../../rpm/main'
+import type { RpmChatLine } from '../../rpm/core'
 
 /**
  * One ACP adapter process, owned by one session and running inside that
@@ -79,7 +80,7 @@ export interface PendingPrompt {
   auto?: boolean | undefined
   /** `{ rpm: key }`: an RPM host message (`SessionsPort.send`, t3v2 §4.1) —
    *  the turn it starts settles with `origin: 'rpm'` and this key. */
-  origin?: { limit: true; of: 'wake' | 'user' } | WakeOrigin | { rpm: string } | undefined
+  origin?: { limit: true; of: 'wake' | 'user' } | WakeOrigin | { rpm: string; line?: RpmChatLine | undefined } | undefined
   /** The "continue" of an executor's or reviewer's turn a limit cut: it alone
    *  carries that turn on (`Session.carry`); first in the queue, kept when the
    *  user types. */
@@ -94,6 +95,8 @@ export interface TurnOrigin {
   tools?: { name: string; payload: unknown }[] | undefined
   /** Started by a cut turn's "continue" (`PendingPrompt.continues`). */
   continues?: boolean | undefined
+  /** RPM's chat line for the prompt: it shows as this instead of a user message. */
+  line?: RpmChatLine | undefined
 }
 
 /** The logical turn in flight of an executor or reviewer — a prompt plus its
@@ -202,6 +205,11 @@ export interface Session {
    *  origin, key and accepted calls, and settles as that step. Persisted with
    *  `lastSettled`. */
   carry?: TurnOrigin | undefined
+  /** Keys of the RPM messages the drain took into a turn, oldest first
+   *  (`SessionsPort.sent` → `taken`); persisted beside `interrupted`. */
+  rpmTaken?: string[] | undefined
+  /** A reviewer's start line: its start prompt shows as it (`createReviewer`). */
+  startLine?: RpmChatLine | undefined
   /** A watcher recovered at boot with approved work only: the manager resumes
    *  it by itself, so it stays out of the Resume-sessions checklist. */
   resumeOnBoot?: boolean | undefined
@@ -323,7 +331,7 @@ export interface SessionEvents {
    *  user entry is sent — the point a rewind to it restores. Rejects when a
    *  clone cannot be snapshotted (the turn fails before the agent is asked).
    *  Absent = no checkpoints: nothing is snapshotted. */
-  snapshotCheckpoint?: (info: SessionInfo, entryId: number) => Promise<void>
+  snapshotCheckpoint?: (info: SessionInfo, entryId: number) => Promise<{ repo: string; commit: string }[] | void>
   /** Rewind the session's writable clones to their snapshot at `entryId`, after
    *  saving each one's current state as a safety checkpoint (all of them durable
    *  before any clone is touched), then drop the checkpoints the rewind made
