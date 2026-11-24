@@ -133,7 +133,9 @@ function world(name, { executor = [], reviewer = [], check = [], checks = [{ rep
       chatLine(id, line) {
         w.lines.push({ id, line })
         return w.lines.length
-      }
+      },
+      // Entry id = position in w.lines + 1, as chatLine returns it.
+      chatRefs: (id) => w.lines.flatMap((l, i) => (l.id === id ? [{ executor: l.line.executor, run: l.line.run, seq: l.line.seq, items: l.line.items.map((x) => x.id), entryId: i + 1 }] : []))
     },
     git: {
       trees: async (_ws, _task, repos) => repos.map((repo) => ({ repo, head: 'c0ffee', tree: `tree${w.tree}` })),
@@ -283,6 +285,22 @@ test('run в · "can\'t" calls you at once; F2 waits; defer → documented → R
   assert.equal(w.notes[0].text, 'Review waits for you · 1 finding')
   assert.deepEqual(w.notes[0].open, { filter: 'you', finding: 'F1' })
   assert.ok(w.lines.some((l) => l.id === 'e1' && l.line.to === 'you' && l.line.items[0]?.id === 'F1'))
+  // The history links each move to its message: R1's review in r1's chat, the executor's turn in e1's.
+  const [created, cant] = s.findings.find((f) => f.id === 'F1').history
+  const at = (ref) => w.lines[ref.entryId - 1]
+  assert.equal(created.chat.sessionId, 'r1')
+  assert.equal(at(created.chat).line.from, 'reviewer')
+  assert.equal(at(created.chat).line.seq, created.seq)
+  assert.equal(cant.chat.sessionId, 'e1')
+  assert.equal(at(cant.chat).line.from, 'executor')
+  assert.equal(at(cant.chat).line.seq, cant.seq)
+  // One turn, two lines with its seq: F1 (can't) opens the line to you, F2 (fixed) the line to the reviewer.
+  assert.equal(at(cant.chat).line.to, 'you')
+  assert.deepEqual(at(cant.chat).line.items.map((x) => x.id), ['F1'])
+  const fixed = s.findings.find((f) => f.id === 'F2').history.find((x) => x.by === 'executor')
+  assert.equal(fixed.seq, cant.seq)
+  assert.equal(at(fixed.chat).line.to, 'reviewer')
+  assert.deepEqual(at(fixed.chat).line.items.map((x) => x.id), ['F2'])
 
   await w.rpm.verdict('e1', 'F1', 'defer', 'in docs/todo.md')
   s = await w.rest()
@@ -388,6 +406,28 @@ test('run ж · something new every round → budget → F3 to minor → mark', 
   s = await w.rest()
   assert.equal(w.phase(s), 'passed')
   assert.deepEqual(w.errors, [])
+})
+
+test('Continue on a call (resume while not paused): budget → go on; reviewer failed → a new review', async () => {
+  const w = world('continue', {
+    reviewer: [{ findings: [['major', 'one']] }, { verify: [['F1', true]], findings: [['major', 'two']] }, { verify: [['F2', true]], findings: [['major', 'three']] }, 'fail', { verify: [['F3', true]] }],
+    executor: [{ edit: true, replies: [['F1', 'fixed']] }, { edit: true, replies: [['F2', 'fixed']] }, { edit: true, replies: [['F3', 'fixed']] }]
+  })
+  await started(w)
+  let s = await w.rest()
+  assert.equal(s.status.why, 'budget')
+  assert.equal(s.config.reviews, 3)
+  // The Review tab's Continue: the run is called, not paused.
+  await w.rpm.command('e1', 'resume')
+  s = await w.rest()
+  assert.equal(w.phase(s), 'called')
+  assert.equal(s.status.why, 'reviewer-failed')
+  await w.rpm.command('e1', 'resume')
+  s = await w.rest()
+  assert.equal(w.phase(s), 'passed')
+  assert.equal(w.ops('createReviewer').length, 5)
+  // Neither paused nor called: nothing to resume.
+  await assert.rejects(w.rpm.command('e1', 'resume'), /The run is over/)
 })
 
 test('stop in the middle of a check: the check is stopped, end stopped, clones released', async () => {

@@ -49,7 +49,7 @@ function ports(root) {
       info: (id) => facts[id],
       list: () => Object.keys(facts),
       // The engine's side of the port (task 9): no-ops here, the engine has its own test.
-      hold() {}, release() {}, keepAlive() {}, chatLine() {}, stopContainer: async () => {},
+      hold() {}, release() {}, keepAlive() {}, chatLine() {}, chatRefs: () => [], stopContainer: async () => {},
       sent: () => 'unknown', lastSettled: () => undefined
     },
     git: { trees: async () => trees, diff: async () => ({ text: '', truncated: false, files: [] }) },
@@ -141,7 +141,7 @@ test('your entries: the §3.1 errors', async () => {
   await assert.rejects(rpm.verdict('e1', 'F1', 'must'), /does not change/)
   await assert.rejects(rpm.severity('e1', 'F1', 'major'), /does not change/)
   await assert.rejects(rpm.note('e1', '   '), /empty/)
-  await assert.rejects(rpm.command('e1', 'resume'), /not paused/)
+  await assert.rejects(rpm.command('e1', 'resume'), /neither paused nor waiting for you/)
   await assert.rejects(rpm.verdict('x1', 'F1', 'must'), /no review run/)
 })
 

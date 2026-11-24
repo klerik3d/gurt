@@ -6,11 +6,14 @@ import {
   fold,
   move,
   view,
+  type ChatRef,
   type Entry,
   type EntryOf,
+  type HistoryItem,
   type ReviewMark,
   type RpmCommand,
   type RpmConfig,
+  type RpmState,
   type RunSummary,
   type Severity,
   type VerdictTo
@@ -71,6 +74,52 @@ export function createRpmImpl(ports: RpmPorts, opts?: { clock?: Clock; warn?: (m
     }
   }
 
+  /** `HistoryItem.chat` (t3v2 §3.2): a reviewer's move → its `review` line in the reviewer's chat, an
+   *  executor's move → its `turn` line in the executor's chat. Matched by (executor, run, seq) and the
+   *  finding: a turn writes one line to the reviewer and another to you, both with the turn's seq. */
+  const withChat = (state: RpmState): RpmState => {
+    const bySeq = new Map(state.journal.map((e) => [e.seq, e]))
+    const refs = new Map<string, ReturnType<RpmPorts['sessions']['chatRefs']>>()
+    const refsOf = (id: string) => {
+      let r = refs.get(id)
+      if (!r) refs.set(id, (r = ports.sessions.chatRefs(id)))
+      return r
+    }
+    let reviewerOfKey: Map<string, string> | undefined
+    const reviewer = (key: string): string | undefined => {
+      if (!reviewerOfKey) {
+        reviewerOfKey = new Map()
+        for (const id of ports.sessions.list()) {
+          const k = ports.sessions.info(id)?.reviewerOf?.key
+          if (k) reviewerOfKey.set(k, id)
+        }
+      }
+      return reviewerOfKey.get(key)
+    }
+    const chatOf = (id: string, h: HistoryItem): ChatRef | undefined => {
+      const e = bySeq.get(h.seq)
+      const session =
+        h.by === 'reviewer' && e?.kind === 'review' ? reviewer(`${state.executor}:${state.run}:${e.step}`)
+        : h.by === 'executor' && e?.kind === 'turn' ? state.executor
+        : undefined
+      if (!session) return undefined
+      const same = refsOf(session).filter((r) => r.executor === state.executor && r.run === state.run && r.seq === h.seq)
+      // The line that names this finding; a review line names only some (new ones, verified ones) — then the first.
+      const ref = same.find((r) => r.items.includes(id)) ?? same[0]
+      return ref && { sessionId: session, entryId: ref.entryId }
+    }
+    return {
+      ...state,
+      findings: state.findings.map((f) => ({
+        ...f,
+        history: f.history.map((h) => {
+          const chat = h.chat ?? chatOf(f.id, h)
+          return chat ? { ...h, chat } : h
+        })
+      }))
+    }
+  }
+
   const liveFor = (sessionId: string): boolean => journals.live(sessionId) !== undefined
 
   return {
@@ -87,7 +136,7 @@ export function createRpmImpl(ports: RpmPorts, opts?: { clock?: Clock; warn?: (m
     runs: (executor) => journals.runs(executor).map(summary),
     state(executor, n) {
       const rec = n === undefined ? journals.last(executor) : journals.runs(executor).find((r) => r.n === n)
-      return rec ? engine.decorate(view(fold(rec.entries), rec.entries)) : undefined
+      return rec ? withChat(engine.decorate(view(fold(rec.entries), rec.entries))) : undefined
     },
     config: (executor) => journals.config(executor),
     async setConfig(executor, patch) {
@@ -127,7 +176,9 @@ export function createRpmImpl(ports: RpmPorts, opts?: { clock?: Clock; warn?: (m
     command: (executor, cmd: RpmCommand) =>
       yours(executor, (run) => {
         if (cmd === 'pause' && run.paused) throw new Error('The run is already paused.')
-        if (cmd === 'resume' && !run.paused) throw new Error('The run is not paused.')
+        // Resume is also Continue on a call (t3v2 §12, t2v3 B): like any entry of yours it lifts
+        // `called`, and the boundary after it goes on or repeats the failed step.
+        if (cmd === 'resume' && !run.paused && !run.called && !run.failed) throw new Error('The run is neither paused nor waiting for you.')
         if (!['pause', 'resume', 'stop', 'rerun-check', 'rerun-review'].includes(cmd)) throw new Error(`Unknown command: ${String(cmd)}.`)
         return { by: 'you', kind: 'command', cmd }
       }),

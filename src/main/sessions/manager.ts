@@ -256,6 +256,7 @@ export class SessionManager {
   rpmSend(sessionId: string, m: { key: string; text: string; line: RpmChatLine }): Promise<void> { return rpm.send(SessionManager.rpmCtx(this), sessionId, m) }
   rpmSent(sessionId: string, key: string): 'queued' | 'taken' | 'unknown' { return rpm.sent(SessionManager.rpmCtx(this), sessionId, key) }
   rpmChatLine(sessionId: string, line: RpmChatLine): number | undefined { return rpm.chatLine(SessionManager.rpmCtx(this), sessionId, line) }
+  rpmChatRefs(sessionId: string): { executor: string; run: number; seq: number; items: string[]; entryId: number }[] { return rpm.chatRefs(SessionManager.rpmCtx(this), sessionId) }
   createReviewer(r: Parameters<typeof rpm.createReviewer>[1]): Promise<string> { return rpm.createReviewer(SessionManager.rpmCtx(this), r) }
   userPrompts(sessionId: string, afterTurnId?: string): string[] { return rpm.userPrompts(SessionManager.rpmCtx(this), sessionId, afterTurnId) }
   checkpointBefore(sessionId: string, turnId: string): { repo: string; commit: string }[] | undefined { return rpm.checkpointBefore(SessionManager.rpmCtx(this), sessionId, turnId) }

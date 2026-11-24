@@ -30,11 +30,13 @@ import { NetButton } from './Network'
 import { ConfigTab } from './ConfigTab'
 import { SessionMenu } from './SessionActions'
 import { ToolStrip, type StripEntry } from './ToolStrip'
-import { TabBar, useSessionTab } from './SessionTabs'
+import { TabBar, reviewOf, useSessionTab } from './SessionTabs'
+import { ReviewTab } from '../../../rpm/ui'
 import { ContainerTerminalButton } from './ContainerTerminalButton'
 import { CopyButton } from './CopyButton'
 import { run } from '../async'
 import { stamp } from '../time'
+import { clearChatJump, useChatJump } from '../chatJump'
 
 const log = createLogger('chat')
 
@@ -133,7 +135,7 @@ export function Chat({
   onSelect: (id: string) => void
   onDeleted: () => void
 }) {
-  const [activeTab, setActiveTab] = useSessionTab(sessionId)
+  const [activeTab, setActiveTab] = useSessionTab(sessionId, !!(snapshot && reviewOf(snapshot.info)))
   const feedRef = useRef<HTMLDivElement>(null)
   const innerRef = useRef<HTMLDivElement>(null)
   /** Follow-the-tail flag: true until the user scrolls away from the bottom. */
@@ -310,6 +312,32 @@ export function Chat({
     })
   }
 
+  // A link elsewhere (the Review tab's history) asked for this chat at an
+  // entry: show the Chat tab, then scroll to it once it is rendered.
+  const jump = useChatJump(sessionId)
+  useEffect(() => {
+    if (!jump) return
+    if (activeTab !== 'chat') {
+      setActiveTab('chat')
+      return
+    }
+    const feed = feedRef.current
+    const node = feed?.querySelector<HTMLElement>(`[data-eid="${jump.entryId}"]`)
+    if (!feed || !node) {
+      // Not in the log (yet): the snapshot may still be on its way; drop it once it is here.
+      if (hasSnapshot) clearChatJump(jump)
+      return
+    }
+    stickRef.current = false
+    feed.scrollTo({
+      top: Math.max(0, node.offsetTop - PIN_BAR_CLEARANCE - PIN_LAND_GAP),
+      behavior: prefersReducedMotion() ? 'auto' : 'smooth'
+    })
+    clearChatJump(jump)
+    // setActiveTab is a fresh closure every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jump, activeTab, hasSnapshot, entries.length])
+
   // Esc stops the current turn while the agent is working (replaces the Stop
   // button). Ignore Esc raised from a text field (the composer excepted — focus stays there while the agent works) so it can close its own popup,
   // and while any modal/dialog is open — there Esc means "dismiss it", and both
@@ -417,7 +445,7 @@ export function Chat({
   return (
     <div className="chat">
       <div className="chat-head">
-        <TabBar active={activeTab} onChange={setActiveTab} />
+        <TabBar active={activeTab} onChange={setActiveTab} review={reviewOf(info)} />
         <span className="spacer" />
         <span className="chat-pill">{sizeLabel}</span>
         <ContainerTerminalButton info={info} />
@@ -434,6 +462,8 @@ export function Chat({
       <McpFailBanner failures={mcpFailures} />
 
       {activeTab === 'config' && <ConfigTab tree={tree} snapshot={snapshot} />}
+
+      {activeTab === 'review' && <ReviewTab executor={sessionId} />}
 
       {activeTab === 'logs' && (
         <pre className="env-log">{log.length ? log.join('\n') : 'no logs yet'}</pre>
@@ -708,7 +738,7 @@ function Msg({
       return <PermissionMsg entry={entry} sessionId={sessionId} />
     case 'system':
       return (
-        <div className="msg msg-tool has-copy">
+        <div className="msg msg-tool has-copy" data-eid={entry.id}>
           <CopyButton text={entry.text} title="copy message" />
           <MsgTime at={entry.at} />
           <span className="msg-dot msg-dot-sm msg-dot-idle" />

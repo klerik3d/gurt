@@ -189,6 +189,11 @@ test('info and chatLine', () => {
   assert.equal(e.kind, 'system')
   assert.deepEqual(e.rpm, LINE(9))
   assert.equal(port.chatLine('nope', LINE(9)), undefined)
+  // chatRefs: the RPM lines of the log with their entry ids (HistoryItem.chat).
+  const l = LINE(9)
+  assert.ok(port.chatRefs('e1').some((r) => r.entryId === id && r.seq === l.seq && r.run === l.run && r.executor === l.executor &&
+    JSON.stringify(r.items) === JSON.stringify(l.items.map((x) => x.id))))
+  assert.deepEqual(port.chatRefs('nope'), [])
 })
 
 test('a key stays taken after later keys complete, and after a restart', async () => {

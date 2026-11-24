@@ -52,6 +52,7 @@ export function createSessionsPort(sessions: SessionManager, deps: SessionsPortD
       timer.unref?.()
       alive.set(executor, timer)
     },
-    chatLine: (id, line) => sessions.rpmChatLine(id, line)
+    chatLine: (id, line) => sessions.rpmChatLine(id, line),
+    chatRefs: (id) => sessions.rpmChatRefs(id)
   }
 }

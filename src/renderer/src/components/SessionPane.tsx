@@ -14,10 +14,12 @@ import { TrafficPanel } from './Network'
 import { Chat, ImageThumbs, pastedImages, readImages, type ComposerNote } from './Chat'
 import { ConfigTab } from './ConfigTab'
 import { SessionMenu, deleteSession, duplicateSession } from './SessionActions'
-import { TabBar, useSessionTab, type SessionTab } from './SessionTabs'
+import { TabBar, reviewOf, useSessionTab, type SessionTab } from './SessionTabs'
 import { ContainerTerminalButton } from './ContainerTerminalButton'
 import { FileLinkScopeProvider } from '../fileLinks'
 import { run } from '../async'
+import { ReviewTab } from '../../../rpm/ui'
+import { ReviewHost } from './ReviewHost'
 
 export function SessionPane({
   tree,
@@ -54,28 +56,32 @@ export function SessionPane({
   if (snapshot.info.state === 'started')
     return (
       <FileLinkScopeProvider scope={linkScope}>
-        <Chat
-          tree={tree}
-          snapshot={snapshot}
-          sessionId={sessionId}
-          log={log}
-          composerNote={composerNote}
-          onSelect={onSelect}
-          onDeleted={onDeleted}
-        />
+        <ReviewHost info={snapshot.info} tree={tree} onSelect={onSelect}>
+          <Chat
+            tree={tree}
+            snapshot={snapshot}
+            sessionId={sessionId}
+            log={log}
+            composerNote={composerNote}
+            onSelect={onSelect}
+            onDeleted={onDeleted}
+          />
+        </ReviewHost>
       </FileLinkScopeProvider>
     )
 
   return (
-    <NonStartedPane
-      tree={tree}
-      snapshot={snapshot}
-      sessionId={sessionId}
-      queuePosition={queuePosition}
-      log={log}
-      onSelect={onSelect}
-      onDeleted={onDeleted}
-    />
+    <ReviewHost info={snapshot.info} tree={tree} onSelect={onSelect}>
+      <NonStartedPane
+        tree={tree}
+        snapshot={snapshot}
+        sessionId={sessionId}
+        queuePosition={queuePosition}
+        log={log}
+        onSelect={onSelect}
+        onDeleted={onDeleted}
+      />
+    </ReviewHost>
   )
 }
 
@@ -99,7 +105,7 @@ function Header({
   const { info } = snapshot
   return (
     <div className="chat-head">
-      <TabBar active={activeTab} onChange={onTab} />
+      <TabBar active={activeTab} onChange={onTab} review={reviewOf(info)} />
       <span className="spacer" />
       <ContainerTerminalButton info={info} />
       <SessionMenu info={info} onSelect={onSelect} onDeleted={onDeleted} />
@@ -128,7 +134,7 @@ function NonStartedPane({
   const mcpFailures = useMcpFailures(sessionId)
   const [text, setText] = useState(info.startPrompt)
   const [images, setImagesState] = useState<PromptImage[]>(draftImages.get(sessionId) ?? [])
-  const [activeTab, setActiveTab] = useSessionTab(sessionId)
+  const [activeTab, setActiveTab] = useSessionTab(sessionId, !!reviewOf(info))
   // Run flips `info.state` away from 'draft', which normally swaps this whole
   // body out on its own — but that swap rides the same IPC round trip the
   // click kicked off, so for a beat the draft view (and its button) just sits
@@ -203,6 +209,8 @@ function NonStartedPane({
       {activeTab === 'chat' && <TrafficPanel sessionId={sessionId} network={info.network} />}
 
       {activeTab === 'config' && <ConfigTab tree={tree} snapshot={snapshot} />}
+
+      {activeTab === 'review' && <ReviewTab executor={sessionId} />}
 
       {activeTab === 'logs' && (
         <pre className="env-log">{log.length ? log.join('\n') : 'no logs yet'}</pre>

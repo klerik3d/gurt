@@ -78,6 +78,10 @@ export interface SessionsPort {
   keepAlive(executor: string, on: boolean): void
   /** RPM's service line in the session's chat; written to its log. Returns the entry id. */
   chatLine(id: string, line: RpmChatLine): number | undefined
+  /** Task 11: RPM's lines in the session's chat log (`ChatSystem.rpm`, from `send`, `createReviewer`,
+   *  `chatLine`) with their entry ids — what `HistoryItem.chat` points at (t3v2 §3.2). `items` = the
+   *  finding ids the line names: one journal entry can give several lines (a turn: to the reviewer, to you). */
+  chatRefs(id: string): { executor: string; run: number; seq: number; items: string[]; entryId: number }[]
 }
 
 // --- §4.2 GitPort, CheckPort, NotifyPort, StorePort -------------------------------

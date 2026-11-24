@@ -64,7 +64,7 @@ import { run } from '../async'
  *  of the older pickers): the row says it opens a popup and whether it is open,
  *  and focus comes back to it when the menu closes with focus still in it (a
  *  choice made, Escape) instead of vanishing with the item. */
-function PickRow({
+export function PickRow({
   open,
   onToggle,
   onClose,
@@ -228,7 +228,7 @@ const repoChipLabel = (r: RepoConfig): string => (r.local ? r.name : shortRepoUr
  *  the session's own picks. `values` are
  *  the picks over what the agent reports; `kind` decides how the kind presents
  *  its options (`AgentOptionView`). */
-function OptionBlock({
+export function OptionBlock({
   opt,
   values,
   kind,

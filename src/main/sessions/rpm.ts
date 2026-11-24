@@ -72,6 +72,17 @@ export async function send(mgr: RpmCtx, sessionId: string, m: { key: string; tex
   }
 }
 
+/** RPM's lines in the session's chat log, with their entry ids (`SessionsPort.chatRefs`). */
+export function chatRefs(mgr: RpmCtx, sessionId: string): { executor: string; run: number; seq: number; items: string[]; entryId: number }[] {
+  const s = mgr.sessions.get(sessionId)
+  if (!s) return []
+  return s.entries.flatMap((e) =>
+    e.kind === 'system' && e.rpm
+      ? [{ executor: e.rpm.executor, run: e.rpm.run, seq: e.rpm.seq, items: e.rpm.items.map((i) => i.id), entryId: e.id }]
+      : []
+  )
+}
+
 /** RPM's service line in the session's chat (t3v2 §10.2); its entry id. */
 export function chatLine(mgr: RpmCtx, sessionId: string, line: RpmChatLine): number | undefined {
   const s = mgr.sessions.get(sessionId)
