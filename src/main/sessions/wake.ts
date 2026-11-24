@@ -470,7 +470,10 @@ export function onLimited(mgr: WakeCtx, s: Session, limit: { resetAt?: string | 
   } else if (!s.pending.length)
     s.pending.push({
       id: `p${++mgr.pendingSeq}`,
-      queuedAt: new Date().toISOString(),
+      // The continuation is the interrupted turn's own work: it keeps the place
+      // the turn had in the queue (when it started), not the moment the limit hit
+      // — otherwise a session queued behind it while it ran overtakes it.
+      queuedAt: new Date(s.turnStartedAt ?? Date.now()).toISOString(),
       text: LIMIT_CONTINUE_PROMPT,
       auto: true,
       // A watcher's continuation remembers whether the turn it continues was
