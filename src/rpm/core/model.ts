@@ -249,6 +249,8 @@ export interface RunningStep {
   full?: boolean
   /** The tree when the step began (task 3: rule 5 compares the executor's turn with it). */
   tree: TreeId
+  /** Task 9: true for a `rerun` step, so a restart that interrupts it asks for the rerun again. */
+  rerun?: true
 }
 
 /** The fold of one run's journal — internal to RPM. Task 3 may add fields,

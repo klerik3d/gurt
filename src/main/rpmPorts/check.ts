@@ -75,7 +75,8 @@ export function createCheckPort(
           case 'stopped':
             return toRun(run.result)
           case 'unconfirmed':
-            throw new Error(run.detail)
+            // The engine keeps the clones held until a confirmed stop (task 9).
+            throw Object.assign(new Error(run.detail), { unconfirmed: true })
           case 'failed-to-run':
             throw new Error(run.error)
         }
@@ -88,6 +89,8 @@ export function createCheckPort(
         }
       }
     },
+
+    stopContainer: (executor) => runnerOf(executor).stopContainer(),
 
     commands(ws, repos) {
       const config = reposOf(ws)

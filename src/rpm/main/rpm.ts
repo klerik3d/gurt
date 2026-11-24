@@ -1,11 +1,12 @@
-// createRpm (t3v2 §3.1) without the engine (task 9): the journals and config on
-// disk, your entries (verdict, severity, note, command, config), the reads
-// (runs, state, marks), what other parts of the app ask (owns, quiets,
-// stepRunning) and the model tools. `recover`, `start` and `stop` do nothing yet.
+// createRpm (t3v2 §3.1): the journals and config on disk, your entries
+// (verdict, severity, note, command, config), the reads (runs, state, marks),
+// what other parts of the app ask (owns, quiets, stepRunning), the model tools,
+// and the engine (engine.ts): subscriptions, steps, recovery.
 import {
   fold,
   move,
   view,
+  type Entry,
   type EntryOf,
   type ReviewMark,
   type RpmCommand,
@@ -15,6 +16,7 @@ import {
   type VerdictTo
 } from '../core'
 import type { Clock, Rpm } from './api'
+import { Engine } from './engine'
 import { Journals, type RunRec } from './journals'
 import type { RpmPorts } from './ports'
 import { createTools } from './tools'
@@ -37,14 +39,19 @@ export function createRpmImpl(ports: RpmPorts, opts?: { clock?: Clock; warn?: (m
   const clock = opts?.clock ?? systemClock
   const warn = opts?.warn ?? ((msg: string) => console.warn(msg))
   const journals = new Journals(ports, clock, warn)
+  const engine = new Engine(ports, journals, clock, warn)
 
-  /** Your entry into the live run: checked inside the executor's write queue. */
-  function yours(executor: string, build: (run: ReturnType<typeof fold>) => Parameters<Journals['append']>[2]): Promise<void> {
-    return journals.serial(executor, async () => {
+  /** Your entry into the live run: checked inside the executor's write queue; then the engine acts on it. */
+  async function yours(executor: string, build: (run: ReturnType<typeof fold>) => Parameters<Journals['append']>[2]): Promise<void> {
+    const entry = await journals.serial(executor, async (): Promise<Entry> => {
       const live = journals.live(executor)
       if (!live) throw new Error(journals.last(executor) ? 'The run is over.' : 'There is no review run for this session.')
-      await journals.append(executor, live.rec, build(live.state))
+      const e = await journals.append(executor, live.rec, build(live.state))
+      // Stop acts in this same write: nothing queued behind it may start a step first.
+      if (e.kind === 'command' && e.cmd === 'stop') await engine.stopLocked(executor)
+      return e
     })
+    await engine.afterYou(executor, entry)
   }
 
   const finding = (run: ReturnType<typeof fold>, id: string) => {
@@ -71,21 +78,16 @@ export function createRpmImpl(ports: RpmPorts, opts?: { clock?: Clock; warn?: (m
       for (const id of ports.sessions.list()) {
         if (ports.sessions.info(id)?.role === 'executor') journals.get(id)
       }
+      engine.holdLive()
     },
-    async recover() {
-      // TODO(rpm): task 9 (§8.2).
-    },
-    start() {
-      // TODO(rpm): task 9 — subscriptions and the reviewer's plan-limit poll.
-    },
-    stop() {
-      // TODO(rpm): task 9.
-    },
+    recover: () => engine.recover(),
+    start: () => engine.start(),
+    stop: () => engine.stop(),
 
     runs: (executor) => journals.runs(executor).map(summary),
     state(executor, n) {
       const rec = n === undefined ? journals.last(executor) : journals.runs(executor).find((r) => r.n === n)
-      return rec ? view(fold(rec.entries), rec.entries) : undefined
+      return rec ? engine.decorate(view(fold(rec.entries), rec.entries)) : undefined
     },
     config: (executor) => journals.config(executor),
     async setConfig(executor, patch) {
@@ -98,6 +100,8 @@ export function createRpmImpl(ports: RpmPorts, opts?: { clock?: Clock; warn?: (m
         if (live) await journals.append(executor, live.rec, { by: 'you', kind: 'config', patch })
         else journals.emit(executor, journals.last(executor)?.n ?? 0)
       })
+      // A patch is your entry: at a boundary it is acted on now (e.g. `end disabled`).
+      await engine.boundary(executor)
     },
     verdict: (executor, id, to: VerdictTo, comment) =>
       yours(executor, (run) => {
@@ -125,7 +129,6 @@ export function createRpmImpl(ports: RpmPorts, opts?: { clock?: Clock; warn?: (m
         if (cmd === 'pause' && run.paused) throw new Error('The run is already paused.')
         if (cmd === 'resume' && !run.paused) throw new Error('The run is not paused.')
         if (!['pause', 'resume', 'stop', 'rerun-check', 'rerun-review'].includes(cmd)) throw new Error(`Unknown command: ${String(cmd)}.`)
-        // TODO(rpm): task 9 acts on it — stop interrupts the step and writes `end stopped`, the rest decide at the boundary.
         return { by: 'you', kind: 'command', cmd }
       }),
 

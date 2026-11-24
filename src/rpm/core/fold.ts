@@ -79,6 +79,7 @@ function apply(run: RunState, e: Entry): void {
       run.lastStep = e.step
       run.step = {
         step: e.step, what: e.what, key: e.key, tree: e.tree,
+        ...(e.rule === 'rerun' && { rerun: true as const }),
         ...(e.session !== undefined && { session: e.session }),
         ...(e.items !== undefined && { items: e.items }),
         ...(e.full !== undefined && { full: e.full })
@@ -88,7 +89,8 @@ function apply(run: RunState, e: Entry): void {
       delete run.failed
       if (e.rule === 'rerun') delete run.rerun
       if (e.what === 'executor') {
-        run.pendingNotes = []
+        // A 3в step carries only the check's output (t1v6 §6): notes wait for the next findings message.
+        if (e.rule !== '3в') run.pendingNotes = []
         // Only the items this step carries reach the executor; a fix-check step carries none.
         const carried = e.items ?? []
         run.fresh = run.fresh.filter((id) => !carried.includes(id))
@@ -142,6 +144,10 @@ function apply(run: RunState, e: Entry): void {
       break
     }
     case 'fail':
+      // A rerun you asked for, cut by a restart, is still asked for (it runs at the next boundary).
+      if (e.reason === 'interrupted' && run.step?.step === e.step && run.step.rerun && run.step.what !== 'executor') {
+        run.rerun = run.step.what
+      }
       settle(e.step)
       if (e.reason === 'reviewer-failed' || e.reason === 'reviewer-gone') run.failed = 'reviewer-failed'
       else if (e.reason === 'check-error') run.failed = 'check-error'

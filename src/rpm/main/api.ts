@@ -1,5 +1,4 @@
-// RPM's public interface for the app (t3v2 §3.1, §4.3). `createRpm` works
-// without the engine (task 8); the engine and recovery come in task 9.
+// RPM's public interface for the app (t3v2 §3.1, §4.3).
 import type { SessionRole } from '../../shared/types'
 import type { ReviewMark, RpmCommand, RpmConfig, RpmState, RpmToolDef, RunSummary, Severity, VerdictTo } from '../core'
 import type { RpmPorts } from './ports'
@@ -63,6 +62,5 @@ export interface Rpm {
 }
 
 export function createRpm(ports: RpmPorts, opts?: { clock?: Clock }): Rpm {
-  // TODO(rpm): task 9 — the engine and recovery.
   return createRpmImpl(ports, opts)
 }

@@ -196,8 +196,8 @@ function checkOutput(runs: CheckRun[]): string {
   return out.join('\n')
 }
 
-// TODO(rpm): notes written during the check loop are dropped: fold clears
-// pendingNotes on every executor step, 3в included, and this text carries none.
+// Notes are not in it: they wait in pendingNotes (fold keeps them over 3в
+// steps) until the next executorMessage.
 export function checkMessage(runs: CheckRun[]): string {
   return [
     'gurt review: the check failed. Make it pass — nothing else for now.',

@@ -26,6 +26,8 @@ export class Journals {
   private execs = new Map<string, ExecRec>()
   private chains = new Map<string, Promise<unknown>>()
   private listeners = new Set<(e: { executor: string; run: number }) => void>()
+  /** The last directory seen per executor: a deleted session has no facts any more (task 9: its directory is removed). */
+  private dirs = new Map<string, string>()
 
   constructor(
     private ports: RpmPorts,
@@ -33,10 +35,13 @@ export class Journals {
     private warn: (msg: string) => void
   ) {}
 
-  /** `<store>/<executor>` now, or undefined when the session is unknown. */
+  /** `<store>/<executor>` now; for a session that is gone, the last one seen; else undefined. */
   dirOf(executor: string): string | undefined {
     const f = this.ports.sessions.info(executor)
-    return f ? path.join(this.ports.store.dir(f.ws, f.task), executor) : undefined
+    if (!f) return this.dirs.get(executor)
+    const dir = path.join(this.ports.store.dir(f.ws, f.task), executor)
+    this.dirs.set(executor, dir)
+    return dir
   }
 
   /** The executor's record, read from disk on first use. An unknown session gives an empty record (not cached). */
@@ -56,6 +61,7 @@ export class Journals {
 
   forget(executor: string): void {
     this.execs.delete(executor)
+    this.dirs.delete(executor)
   }
 
   private read(executor: string, dir: string): ExecRec {

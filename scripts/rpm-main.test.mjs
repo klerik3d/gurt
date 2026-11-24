@@ -45,7 +45,13 @@ function ports(root) {
   const trees = [{ repo: 'app', head: 'h1', tree: 't1' }]
   return {
     trees,
-    sessions: { info: (id) => facts[id], list: () => Object.keys(facts) },
+    sessions: {
+      info: (id) => facts[id],
+      list: () => Object.keys(facts),
+      // The engine's side of the port (task 9): no-ops here, the engine has its own test.
+      hold() {}, release() {}, keepAlive() {}, chatLine() {}, stopContainer: async () => {},
+      sent: () => 'unknown', lastSettled: () => undefined
+    },
     git: { trees: async () => trees, diff: async () => ({ text: '', truncated: false, files: [] }) },
     check: { run: () => { throw new Error('no') }, commands: () => [] },
     notify: { notify: () => {} },

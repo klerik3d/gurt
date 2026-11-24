@@ -98,8 +98,13 @@ export interface CheckPort {
   /** Login shell in the executor's container, cwd /workspaces/<repo>, tail ring 60 lines / 8 KB, timeout 20 min.
    *  This is the existing CheckRunner. */
   run(executor: string, repo: string, command: string): { done: Promise<CheckRun>; stop(): Promise<{ ok: boolean; detail?: string }> }
+  // `done` rejects when the check could not run, or when its container (after a timeout or a stop) could not
+  // be confirmed stopped; the latter rejects with an Error carrying `unconfirmed: true` (task 9: the clones stay held).
   /** The repos' check commands now (RepoConfig.check). */
   commands(ws: string, repos: string[]): { repo: string; command: string }[]
+  /** Stop the executor's container and confirm through `docker inspect` that it is down (task 9: a check
+   *  whose handle is gone — after a restart — or whose stop was not confirmed). */
+  stopContainer(executor: string): Promise<{ ok: boolean; detail?: string }>
 }
 
 export interface NotifyPort {

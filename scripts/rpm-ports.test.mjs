@@ -305,3 +305,29 @@ test('CheckPort: commands from RepoConfig.check; run in the executor container m
   })
   await assert.rejects(down.run('ex', 'alpha', 'npm test').done, /no docker/)
 })
+
+test('CheckPort: a stop docker cannot confirm rejects `done` with unconfirmed: true; stopContainer confirms through inspect', async () => {
+  let running = true
+  const hanging = () => {
+    const c = /** @type {any} */ (new EventEmitter())
+    c.stdout = new EventEmitter()
+    c.stderr = new EventEmitter()
+    c.kill = () => {
+      setImmediate(() => c.emit('close', null))
+      return true
+    }
+    return c
+  }
+  const containers = { status: () => 'running', spawnExec: () => hanging(), stop: async () => {}, isRunning: async () => running }
+  const check = m.createCheckPort(containers, { ensureContainerUp: async () => {} })
+  const h = check.run('ex', 'alpha', 'sleep 1000')
+  const caught = h.done.catch((e) => e)
+  await new Promise((r) => setImmediate(r))
+  assert.equal((await h.stop()).ok, false)
+  const err = await caught
+  assert.ok(err instanceof Error)
+  assert.equal(/** @type {{ unconfirmed?: boolean }} */ (err).unconfirmed, true)
+  assert.equal((await check.stopContainer('ex')).ok, false)
+  running = false
+  assert.deepEqual(await check.stopContainer('ex'), { ok: true })
+})
