@@ -17,6 +17,8 @@ Rules:
 - A control that is not a `<button>` (`.input:disabled`) sets
   `opacity: var(--op-disabled)` itself. No raw number.
 - An override that equals the base value is deleted, not repeated.
+- No inline `style={{ opacity }}` on disabled controls in TSX; the token
+  covers them.
 - Not covered: pending states (`.wc-row.wc-pending`, 0.45) and decorative
   opacities (watermarks, hover fades, pulses).
 
