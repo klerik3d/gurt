@@ -18,7 +18,6 @@ import type {
   PublishResult,
   PublishSpec,
   RepoConfig,
-  ReviewLoopConfig,
   PendingPromptInfo,
   SessionInfo,
   SessionNetwork,
@@ -49,7 +48,6 @@ import type { TerminalInfo, TerminalSnapshot } from './terminal'
 import type { FileDocument, FileEntry, FileImage, FileNavigation, FileNavigationResult } from './files'
 import type { ProactiveConfig } from './proactive'
 import type { WatcherConfig } from './watchers'
-import type { LoopState } from './reviewLoop'
 
 export type CreateAction = 'run' | 'queue' | 'draft'
 
@@ -112,11 +110,6 @@ export interface SessionDraftPatch {
   startPrompt?: string
   /** Config-option picks (model, effort, …), keyed by option id. */
   configValues?: Record<string, string | boolean>
-  /** The executor draft's Review block (docs/requirements-review-loop.md §3):
-   *  a block turns the loop on, `null` turns it off on purpose (the anchor's
-   *  `review.enabled` default then stays off for this draft), absent leaves it
-   *  as it is. Never part of `AgentSessionRequest`: only the user sets it. */
-  review?: ReviewLoopConfig | null
 }
 
 export interface GurtApi {
@@ -331,11 +324,6 @@ export interface GurtApi {
   /** Local repos only: fast-forward the local origin's default branch to the
    *  task branch — their delivery, in place of a pull request. */
   changesMergeToMain(ws: string, task: string, repo: string): Promise<void>
-  /** Approve the repo's uncommitted changes as they are now (`approved`), or
-   *  withdraw the approval. Any later change to the clone drops it
-   *  (`RepoChanges.approved`); a review loop with manual approval delivers
-   *  only approved changes. */
-  changesApprove(ws: string, task: string, repo: string, approved: boolean): Promise<void>
   /** Newest change proposal for this env, if any — the commit form prefills from it. */
   latestProposal(ws: string, task: string, repo: string): Promise<StoredProposal | undefined>
   /** Open the browser at the forge's compare URL (impl: `prUrl` + `shell.openExternal`). */
@@ -412,18 +400,6 @@ export interface GurtApi {
     images?: PromptImage[]
   ): Promise<void>
   sessionCancel(id: string): Promise<void>
-  /** The review loop of an executor session (docs/requirements-review-loop.md
-   *  §8): its phase, round, findings, check results and end. Undefined when the
-   *  session has no loop. */
-  reviewLoopState(executorId: string): Promise<LoopState | undefined>
-  /** "Stop loop" (§5.6): ends the executor's live review loop `cancelled`,
-   *  cancels its running turn and stops a running check or reviewer. Nothing is
-   *  committed. Refused while the loop is delivering. */
-  reviewLoopStop(executorId: string): Promise<void>
-  /** "One more round" (§5.2): raises an exhausted loop's round limit by one
-   *  (up to `REVIEW_MAX_ROUNDS.ceiling`) and sends the executor the last
-   *  verdict's findings. Refused for any other loop. */
-  reviewLoopExtend(executorId: string): Promise<void>
   /** Empty this session's prompt queue and return what was in it, so the caller
    *  can put the text back in the composer instead of losing it (see
    *  {@link PendingPromptInfo}). */
@@ -687,7 +663,6 @@ const METHODS = {
   changesPush: 'none', //       writes to repos and remotes
   changesUpdateFromMain: 'none',
   changesMergeToMain: 'none', // writes to repos and remotes
-  changesApprove: 'none', //    the user's own sign-off; lets a loop ship
   latestProposal: 'none', //    repo content
   changesOpenPr: 'none', //     host browser
   changesOpenTerminal: 'none', // host GUI
@@ -709,11 +684,6 @@ const METHODS = {
   sessionTraffic: 'read', //    blocked hosts — the diagnostic the operator exists for
   sessionPrompt: 'none', //     driving another agent
   sessionCancel: 'none', //     driving another agent
-  // The loop's state carries findings quoted from the diff (repo content, which
-  // the operator cannot read), and stopping it drives another agent.
-  reviewLoopState: 'none',
-  reviewLoopStop: 'none',
-  reviewLoopExtend: 'none',
   sessionClearPending: 'none',
   sessionCancelPending: 'none',
   sessionSetMode: 'none',

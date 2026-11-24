@@ -10,7 +10,6 @@ import {
   type ChatEntryBase,
   type PermissionOption,
   type RepoMode,
-  type ReviewVerdict,
   type SessionRole,
   type StoredProposal
 } from '../../shared/types'
@@ -33,12 +32,11 @@ import type { AdminHooks, ProactiveHooks, WatcherToolHooks } from '../mcp/gurtSe
 import { logPhase } from '../provision'
 import { normalizeConfigOptions } from './modes'
 import { isTerminalToolStatus } from './pure'
-import { assertProposalFits, assertRepliesAnswer, assertVerdictFits } from './turnContract'
+import { assertProposalFits } from './turnContract'
 import type { NewLogRecord, Session, SessionEvents } from './types'
 
 // What the agent says back: ACP `session/update` notifications and permission
-// requests, and the calls its `gurt` tools make into the host (`complete`,
-// `submit_review`, ...).
+// requests, and the calls its `gurt` tools make into the host (`complete`, ...).
 
 /** What agentEvents.ts needs of the session manager: its state and the manager's own
  *  operations it calls back into. */
@@ -52,7 +50,6 @@ export interface AgentEventsCtx {
   createAgentDraft(spawnerId: string, req: AgentSessionRequest): Promise<{ sessionId: string; title: string }>
   readonly events: SessionEvents
   onComplete(sessionId: string, p: ChangeProposal): void
-  onSubmitReview(sessionId: string, v: ReviewVerdict): void
   proactiveHooks(s: Session): ProactiveHooks
   push(s: Session, entry: ChatEntryBase): ChatEntry
   readonly sessions: Map<string, Session>
@@ -263,23 +260,8 @@ export function onComplete(mgr: AgentEventsCtx, sessionId: string, p: ChangeProp
   // Before anything is recorded: a refused call is the agent's to correct
   // (an `isError` tool result), not a turn that completed.
   assertProposalFits(writeRepos(s.info), p)
-  // §4.2 of docs/requirements-review-loop.md: the first `complete` with
-  // `changes` after a verdict answers its open set. Which set is open — and
-  // when the settled turn carrying the replies closes it — is the loop's to
-  // say; without one, `replies` is accepted and ignored.
-  if (p.outcome === 'changes') assertRepliesAnswer(mgr.events.openFindings?.(sessionId) ?? [], p.replies)
-  // A loop session's tool call counts only inside a round-trip (§5.1): one
-  // landing outside `busy` — a straggler of the previous turn while the next
-  // prompt is still being masked, or in the gap before the nudge — belongs to
-  // no turn, so it neither completes the turn nor is filed in it. An ordinary
-  // session has no logical turn and keeps counting every call.
-  const inTurn = s.turn !== undefined && s.busy
-  if (!s.turn || inTurn) s.turnComplete = true
+  s.turnComplete = true
   const stored: StoredProposal = { ...p, at: new Date().toISOString() }
-  // The logical turn's artifact (§5.1): the last call of the turn wins, any
-  // outcome. The turn spans a prompt and its nudge, but only their round-trips
-  // take calls.
-  if (s.turn && inTurn) s.turn.complete = stored
   let text: string
   if (p.outcome === 'changes') {
     s.proposal = stored
@@ -299,44 +281,6 @@ export function onComplete(mgr: AgentEventsCtx, sessionId: string, p: ChangeProp
     mgr.bus.emit('session.proposal', { sessionId, ref: s.ref, proposal: s.proposal })
 }
 
-/**
- * A reviewer's `submit_review` landed (docs/requirements-review-loop.md
- * §4.1): the turn is complete and its verdict stored — the last call of a
- * turn wins — filed under the round the reviewer is (`reviewOf`) and the
- * turn it came in. Validates and returns at once (§2): the loop reads the
- * verdict when the turn settles, never inside this call.
- */
-export function onSubmitReview(mgr: AgentEventsCtx, sessionId: string, v: ReviewVerdict): void {
-  const s = mgr.sessions.get(sessionId)
-  if (!s) return
-  // Before anything is recorded, like `complete`'s repo rule: a refused call
-  // is the agent's to correct.
-  assertVerdictFits(s.info.repos, v)
-  // As in `onComplete`: only a call inside a round-trip belongs to the turn
-  // (§5.1) — a stale approval landing while the next prompt is masked must
-  // not survive a nudge the agent then ignores.
-  const open = s.turn !== undefined && s.busy ? s.turn : undefined
-  if (!s.turn || open) s.turnComplete = true
-  s.verdict = {
-    ...v,
-    at: new Date().toISOString(),
-    round: s.info.reviewOf?.round ?? 0,
-    // The logical turn's id (`SettledTurn.turnId`); a call outside a
-    // round-trip carries the one before the turn in flight (`turnSeq` already
-    // counts that one) and is never filed under it.
-    turnId: open?.id ?? `${sessionId}:${s.turn ? s.turnSeq - 1 : s.turnSeq}`
-  }
-  if (open) open.verdict = s.verdict
-  const n = v.findings.length
-  mgr.push(s, {
-    kind: 'system',
-    text:
-      v.verdict === 'approve'
-        ? 'submit_review: approve'
-        : `submit_review: request_changes — ${n} finding${n === 1 ? '' : 's'}`
-  })
-}
-
 /** What the session's `gurt` server may do on its behalf: the role (which
  *  decides its tool set and instructions) plus the callbacks that route into
  *  this manager. Rebuilt on every start/attach, so a re-ensured server always
@@ -345,9 +289,7 @@ export function gurtHooks(mgr: AgentEventsCtx, s: Session): {
   role: SessionRole
   mounts: { repo: string; mode: RepoMode }[]
   onComplete: (p: ChangeProposal) => void
-  onSubmitReview: (v: ReviewVerdict) => void
   onCreateSession: (req: AgentSessionRequest) => Promise<{ sessionId: string; title: string }>
-  reviewLoop?: boolean
   admin?: AdminHooks
   proactive?: ProactiveHooks
   watcher?: WatcherToolHooks
@@ -358,11 +300,7 @@ export function gurtHooks(mgr: AgentEventsCtx, s: Session): {
     role,
     mounts: s.info.repos.map((repo) => ({ repo, mode: repoMode(s.info, repo) })),
     onComplete: (p) => mgr.onComplete(s.info.id, p),
-    onSubmitReview: (v) => mgr.onSubmitReview(s.info.id, v),
     onCreateSession: (req) => mgr.createAgentDraft(s.info.id, req),
-    // A loop executor's instructions say gurt checks, reviews and ships
-    // (docs/requirements-review-loop.md §5.5); frozen at start like the role.
-    ...(s.info.review ? { reviewLoop: true } : {}),
     // The workspace is bound here, from the session's own record — the one
     // parameter the agent can never express (§3.2 of
     // docs/requirements-session-operator.md).

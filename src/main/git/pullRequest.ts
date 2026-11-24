@@ -1,13 +1,10 @@
 // Host-side "push, then open a GitHub pull request" — extracted from the github
-// MCP tool `create_pull_request` (mcp/githubServer.ts) so the review loop's
-// delivery (docs/requirements-review-loop.md §6) and the tool run the very
-// same code: the tool keeps its behaviour and its local-repo refusal, the loop
-// adds `--draft`. No credential ever enters a container — everything here runs
-// on the host under the repo's resolved access (git/env.ts).
+// MCP tool `create_pull_request` (mcp/githubServer.ts), with its local-repo
+// refusal. No credential ever enters a container — everything here runs on the
+// host under the repo's resolved access (git/env.ts).
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { hostGitAccessForRepo, type HostGitAccess } from './env'
-import { hardenGit } from './harden'
 import { providerForHost } from './providers'
 
 const pexec = promisify(execFile)
@@ -105,14 +102,6 @@ export const localRepoNoPr = (repo: string): string =>
 export interface PullRequestOptions {
   title: string
   body?: string | undefined
-  /** `gh pr create --draft` (the loop's `draftPr`); the MCP tool never sets it. */
-  draft?: boolean | undefined
-  /** Push `HEAD` first (default, the MCP tool's contract). The loop's `push`
-   *  rung has already pushed, so it passes false. */
-  push?: boolean | undefined
-  /** The review loop's call (§6, §10): no human, an agent-writable clone — `gh`
-   *  runs `git status` there, so it gets the hardened git env. */
-  unattended?: boolean | undefined
 }
 
 export type PullRequestResult =
@@ -136,22 +125,20 @@ export async function openPullRequest(
 ): Promise<PullRequestResult> {
   const got = await requireForgeAccess(ws, repo)
   if ('error' in got) return { ok: false, text: got.error }
-  const access = opts.unattended ? await hardenGit(dir, got.access) : got.access
+  const access = got.access
   if (access.mode === 'local') return { ok: false, text: localRepoNoPr(repo) }
-  if (opts.push !== false) {
-    const push = await runHost(
-      'git',
-      ['-C', dir, ...access.gitArgs, 'push', '-u', 'origin', 'HEAD'],
-      dir,
-      access.env
-    )
-    if (!push.ok) return { ok: false, text: push.text }
-  }
+  const push = await runHost(
+    'git',
+    ['-C', dir, ...access.gitArgs, 'push', '-u', 'origin', 'HEAD'],
+    dir,
+    access.env
+  )
+  if (!push.ok) return { ok: false, text: push.text }
   const gh = await forgeCliEnv(access)
   if (gh.error) return { ok: false, text: gh.error }
   const created = await runHost(
     'gh',
-    ['pr', 'create', '--title', opts.title, '--body', opts.body ?? '', ...(opts.draft === true ? ['--draft'] : [])],
+    ['pr', 'create', '--title', opts.title, '--body', opts.body ?? ''],
     dir,
     gh.env!
   )
@@ -160,32 +147,3 @@ export async function openPullRequest(
     : { ok: false, text: created.text }
 }
 
-/** An open pull request for `branch`, found with `gh pr view` — the recovery
- *  probe of §8 (`gh` refuses a second PR for a branch). A closed or merged one
- *  does not count; `gh` finding none is `undefined`, not an error. */
-export async function findOpenPullRequest(
-  ws: string,
-  repo: string,
-  dir: string,
-  branch: string
-): Promise<{ url: string } | undefined | { error: string }> {
-  const got = await requireForgeAccess(ws, repo)
-  if ('error' in got) return { error: got.error }
-  // Only the loop probes (unattended, §8): `gh` shells out to git in the clone.
-  const gh = await forgeCliEnv(await hardenGit(dir, got.access))
-  if (gh.error) return { error: gh.error }
-  const view = await runHost('gh', ['pr', 'view', branch, '--json', 'url,state'], dir, gh.env!)
-  if (!view.ok) {
-    // `gh` exits 1 with "no pull requests found for branch" when there is none;
-    // anything else (auth, network) is a real failure and must not read as "none".
-    if (/no pull requests? found/i.test(view.text)) return undefined
-    return { error: view.text }
-  }
-  try {
-    const pr = JSON.parse(view.stdout) as { url?: unknown; state?: unknown }
-    if (pr.state === 'OPEN' && typeof pr.url === 'string') return { url: pr.url }
-  } catch {
-    return { error: `gh pr view printed no JSON: ${view.text.slice(0, 300)}` }
-  }
-  return undefined
-}

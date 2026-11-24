@@ -4,8 +4,7 @@
 // idle auto-stop policy in kernel.ts.
 import { randomUUID } from 'node:crypto'
 import type { Bus } from './bus'
-import { findingRef, type EnvRef, type ReviewFinding, type SessionInfo } from '../shared/types'
-import type { LoopEnd } from '../shared/reviewLoop'
+import type { EnvRef, SessionInfo } from '../shared/types'
 import {
   NOTIFICATION_RING_CAP,
   type NotificationPrefs,
@@ -16,59 +15,6 @@ import { sendExternal } from './notify-external'
 import { createLogger } from './log'
 
 const log = createLogger('notifications')
-
-/** The most findings an `awaiting` detail lists before "… and N more". */
-const FINDINGS_SHOWN = 3
-
-const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`
-
-function findingsText(rounds: number, open: readonly ReviewFinding[]): string {
-  if (!open.length) return ''
-  const shown = open
-    .slice(0, FINDINGS_SHOWN)
-    .map((f) => `${findingRef(rounds, f.id)} [${f.severity}] ${f.file}: ${f.claim}`)
-  const more = open.length > shown.length ? `; … and ${open.length - shown.length} more` : ''
-  return ` — unresolved: ${shown.join('; ')}${more}`
-}
-
-/** §7's mapping of a loop's end onto the four existing types: `ready` →
- *  `proposal`; `exhausted` and every needs-you reason (`taken-over` and
- *  `cancelled` included) → `awaiting`, with the reason and the unresolved
- *  findings; `failed` → `error`. Exported for the unit test. */
-export function loopEndNotification(
-  end: LoopEnd,
-  rounds: number,
-  subject?: string
-): { type: NotificationType; detail: string } {
-  const delivered = (d: readonly { step: string; repo: string; ref: string; note?: string | undefined }[]): string =>
-    d.length ? `; delivered: ${d.map((x) => `${x.step} ${x.repo} ${x.ref}${x.note ? ` (${x.note})` : ''}`).join(', ')}` : ''
-  switch (end.outcome) {
-    case 'ready': {
-      const n = end.notes.length
-      return {
-        type: 'proposal',
-        detail:
-          `review loop clean after ${plural(rounds, 'round')}${subject ? ` — ${subject}` : ''}` +
-          (delivered(end.delivered) || '; nothing delivered') +
-          (n ? `; ${plural(n, 'minor/nit finding')}` : '')
-      }
-    }
-    case 'exhausted':
-      return {
-        type: 'awaiting',
-        detail: `review loop out of rounds (${rounds})${findingsText(rounds, end.open)}`
-      }
-    case 'needs-you':
-      return {
-        type: 'awaiting',
-        detail:
-          `review loop stopped: ${end.reason}${end.detail ? ` (${end.detail})` : ''}` +
-          `${findingsText(rounds, end.open)}${delivered(end.delivered)}`
-      }
-    case 'failed':
-      return { type: 'error', detail: `review loop failed: ${end.error}${delivered(end.delivered)}` }
-  }
-}
 
 export interface Notifications {
   /** Oldest first. */
@@ -88,11 +34,7 @@ export interface Notifications {
 export function createNotifications(
   bus: Bus,
   initialPrefs: NotificationPrefs,
-  sessionInfo: (id: string) => SessionInfo | undefined,
-  /** The session's turn and proposal notifications belong to its review loop
-   *  (docs/requirements-review-loop.md §7): true from its first turn until the
-   *  loop's end has been notified. */
-  loopSpeaksFor: (id: string) => boolean = () => false
+  sessionInfo: (id: string) => SessionInfo | undefined
 ): Notifications {
   let prefs = initialPrefs
   const ring: NotificationRecord[] = []
@@ -196,16 +138,10 @@ export function createNotifications(
     if (sessionInfo(sessionId)?.role === 'proactive') return
     // A watcher's wake turn is not a turn anybody is waiting to read either.
     if (sessionInfo(sessionId)?.role === 'watcher') return
-    // Nor is a review loop's reviewer: it exists for one verdict (§7); and its
-    // executor's turn is the controller's to announce while the loop runs.
-    if (sessionInfo(sessionId)?.role === 'reviewer' || loopSpeaksFor(sessionId)) return
     push('turn-ended', sessionId, ref, 'turn finished, nothing to review')
   })
 
   bus.on('session.proposal', ({ sessionId, ref, proposal }) => {
-    // A loop session's proposals are intermediate (checked, reviewed, fixed):
-    // the one `proposal` notification is the loop's `ready` (§7).
-    if (loopSpeaksFor(sessionId)) return
     if (turnOutcome.get(sessionId) === 'error') return // error already claimed this turn
     if (turnOpen.has(sessionId)) turnOutcome.set(sessionId, 'proposal')
     // A session writing several repos may carry only per-repo commits.
@@ -231,20 +167,6 @@ export function createNotifications(
   // A watcher asks for attention (docs/requirements-watchers.md §11).
   bus.on('watcher.notify', ({ sessionId, ref, level, text }) => {
     push('watcher', sessionId, ref, text, level)
-  })
-
-  // The review loop's own voice (§7): an ordinary `turn-ended` for a dormant
-  // `no_changes` turn, or the mapping of its end.
-  bus.on('review.loop', ({ sessionId, ref, notice }) => {
-    if (notice.kind === 'turn-ended') {
-      push('turn-ended', sessionId, ref, 'turn finished, nothing to review')
-      return
-    }
-    const n = loopEndNotification(notice.end, notice.rounds, notice.subject)
-    // The end may arrive while the turn it cancelled is still open: that turn's
-    // own end must not add a second notification.
-    if (turnOpen.has(sessionId)) turnOutcome.set(sessionId, n.type)
-    push(n.type, sessionId, ref, n.detail)
   })
 
   bus.on('session.state', ({ sessionId, ref, reason, err }) => {

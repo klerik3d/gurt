@@ -1,5 +1,4 @@
 import {
-  roleIsLoopOwned,
   roleIsManagerOwned,
   sessionRole,
   type PendingPromptInfo,
@@ -25,9 +24,6 @@ const SIGNUM: Record<string, number> = {
 export const adapterExitCode = (code: number | null, signal: NodeJS.Signals | null): number =>
   code ?? (signal ? 128 + (SIGNUM[signal] ?? 0) : -1)
 
-/** The loop intent of a prompt's origin, if it is a loop's host message. */
-export const loopOf = (o: PendingPrompt['origin']): string | undefined => (o && 'loop' in o ? o.loop : undefined)
-
 /** What an interrupted session sends once its limit resets. */
 export const LIMIT_CONTINUE_PROMPT = 'continue'
 
@@ -46,13 +42,6 @@ export function limitBackoffMs(strikes: number): number {
 export const claimsCollide = (a: readonly Claim[], b: readonly Claim[]): boolean =>
   a.some((x) => b.some((y) => x.key === y.key && (x.exclusive || y.exclusive)))
 
-/** The `<n>` of a settled turn's `<sessionId>:<n>` — where a restored session's
- *  turn counter resumes, so an id is never handed out twice. */
-export const turnSeqOf = (turnId: string | undefined): number => {
-  const n = Number(turnId?.slice(turnId.lastIndexOf(':') + 1))
-  return Number.isInteger(n) && n > 0 ? n : 0
-}
-
 /** The wire form of a queued prompt: everything but the images, which stay
  *  here (see {@link PendingPromptInfo}). */
 export const pendingInfo = (p: PendingPrompt): PendingPromptInfo => ({
@@ -61,8 +50,7 @@ export const pendingInfo = (p: PendingPrompt): PendingPromptInfo => ({
   ...(p.queuedAt ? { queuedAt: p.queuedAt } : {}),
   ...(p.context?.length ? { context: p.context } : {}),
   ...(p.images?.length ? { images: p.images.length } : {}),
-  ...(p.auto ? { auto: true } : {}),
-  ...(loopOf(p.origin) ? { loop: loopOf(p.origin)! } : {})
+  ...(p.auto ? { auto: true } : {})
 })
 
 /** A tool call that will not change status again. */
@@ -85,24 +73,11 @@ export function assertNotTemplate(info: SessionInfo): void {
     throw new Error("this is a proactive agent's template — it never runs itself; use the agent's Run now")
 }
 
-/** A reviewer is the review loop's alone (docs/requirements-review-loop.md
- *  §4): only the loop creates one, so nothing copies it. */
-export function assertNotLoopOwned(info: SessionInfo): void {
-  if (roleIsLoopOwned(sessionRole(info)))
-    throw new Error("this is a review loop's reviewer — only the loop creates one, so it cannot be duplicated or recreated")
+/** Only its manager creates a watcher, so nothing copies it. */
+export function assertNotManagerOwned(info: SessionInfo): void {
   if (roleIsManagerOwned(sessionRole(info)))
     throw new Error('this is a watcher — only the Watchers mode creates one, so it cannot be duplicated or recreated')
 }
-
-/**
- * A session the review loop's machinery may touch: a loop-enabled executor
- * (`review`) or a loop's reviewer (`reviewOf`). Everything the loop added to the
- * session manager's hot paths — the durable settled-turn record, `session.settled`,
- * `session.human` — is for these alone; every other session behaves exactly as it
- * did before the loop existed (docs/requirements-review-loop.md §13, "Fixes").
- */
-export const isLoopSession = (info: Pick<SessionInfo, 'review' | 'reviewOf'>): boolean =>
-  info.review !== undefined || info.reviewOf !== undefined
 
 /** Bound on ACP control-plane calls (initialize, session/new, session/load,
  *  set_config_option): they answer in seconds when the adapter is healthy, and

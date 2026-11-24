@@ -1051,7 +1051,6 @@ textarea.input {
 }
 .sb-task { --level: 0; }
 .sb-session { --level: 1; }
-.sb-session.nested { --level: 2; }
 .sb-task:hover, .sb-session:hover, .file-tree-row:hover,
 .sb-task.selected, .sb-session.selected, .file-tree-row.selected,
 .sb-tree:focus-visible .cursor {
@@ -1157,12 +1156,6 @@ textarea.input {
 .sb-fold {
   display: flex;
   width: var(--row-chev);
-  flex: none;
-}
-.sb-review-count {
-  font-family: var(--mono);
-  font-size: var(--fs-11);
-  color: var(--faint);
   flex: none;
 }
 .sb-session-name {
@@ -2346,8 +2339,7 @@ textarea.input {
   font-size: var(--fs-11);
   color: var(--faint);
 }
-/* Review loop (docs/requirements-review-loop.md): the Config tab's checkbox
-   row, and the status line above a loop session's chat. */
+/* A checkbox row. */
 .rv-check {
   display: flex;
   align-items: center;
@@ -2362,148 +2354,7 @@ textarea.input {
   width: 100%;
   text-align: left;
 }
-.menu-status {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 7px 12px;
-  font-size: var(--fs-12);
-  color: var(--dim);
-  cursor: default;
-}
-.menu-status-text {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-.session-menu .icon-sq {
-  position: relative;
-}
-.menu-loop-dot {
-  position: absolute;
-  top: 2px;
-  right: 2px;
-}
 
-/* What gurt itself ran — the review loop's check, reviewer, verdicts — set
-   apart from the model's own tool rows by the badge. */
-.host-block,
-.host-note {
-  border: 1px solid var(--border2);
-  border-radius: var(--r-md);
-  background: var(--app);
-  font-size: var(--fs-12);
-  min-width: 0;
-}
-/* Status tints the shared neutral border, never replaces it: a full-strength
-   red or green outline reads as neon next to the other blocks. */
-.host-block[data-status='failed'],
-.host-note[data-tone='error'] {
-  border-color: color-mix(in srgb, var(--red) 35%, var(--border2));
-}
-.host-note[data-tone='ok'] {
-  border-color: color-mix(in srgb, var(--green) 35%, var(--border2));
-}
-.host-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 11px;
-}
-.host-badge {
-  font-size: var(--fs-10);
-  letter-spacing: var(--ls-label);
-  text-transform: uppercase;
-  color: var(--yellow);
-  border: 1px solid var(--border2);
-  border-radius: var(--r-sm);
-  padding: 0 5px;
-  flex: none;
-}
-.host-label,
-.host-state {
-  font-size: var(--fs-11);
-  color: var(--faint);
-}
-.host-cmd {
-  padding: 0 11px 7px;
-  font-size: var(--fs-12);
-  color: var(--text);
-  overflow-wrap: anywhere;
-}
-.host-note-text {
-  color: var(--text);
-  flex: 1;
-  min-width: 0;
-}
-.host-note-detail {
-  padding: 0 11px 7px;
-  color: var(--dim);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-.host-link {
-  text-decoration: none;
-  color: var(--accent);
-  overflow-wrap: anywhere;
-}
-.host-link:hover {
-  text-decoration: underline;
-}
-.host-action {
-  display: block;
-  border: 0;
-  background: transparent;
-  font: inherit;
-  cursor: pointer;
-  padding: 0 11px 7px;
-  text-align: left;
-}
-.host-note .rv-findings {
-  padding: 2px 11px 8px;
-}
-.host-toggle {
-  border: 0;
-  background: transparent;
-  color: var(--faint);
-  font-size: var(--fs-11);
-  cursor: pointer;
-  padding: 0 11px 6px;
-}
-.host-head .host-toggle {
-  padding: 0;
-}
-.host-toggle:hover {
-  color: var(--text);
-}
-.rv-findings {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-.rv-findings li {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 4px 8px;
-  color: var(--dim);
-}
-.rv-sev {
-  font-family: var(--mono);
-  font-size: var(--fs-10);
-  color: var(--yellow);
-}
-.rv-sev-blocker,
-.rv-sev-major {
-  color: var(--red);
-}
-.rv-sev-nit {
-  color: var(--faint);
-}
 /* Section label plus the round 'i' that carries its explanation. */
 .seclabel-row {
   display: flex;
@@ -4451,11 +4302,6 @@ textarea.input {
   background: transparent;
   border-color: var(--green);
 }
-.diff-approved {
-  flex: none;
-  color: var(--green);
-  font-size: var(--fs-11);
-}
 .diff-counts {
   display: inline-flex;
   flex: none;
@@ -5082,9 +4928,6 @@ button { user-select: none; }
 .git-commit-panel .fld { margin: 0; }
 .git-commit-panel .commit-message { min-height: 65px; width: 100%; resize: vertical; }
 .git-commit-hint { color: var(--dim); font-size: var(--fs-10); }
-.git-approve { display: flex; align-items: center; gap: 8px; }
-.git-approve-state { flex: 1; color: var(--dim); font-size: var(--fs-11); }
-.git-approve.approved .git-approve-state { color: var(--green); }
 .git-commit-buttons { display: flex; gap: 6px; flex-wrap: wrap; }
 .git-commit-buttons .btn { flex: 1; white-space: nowrap; }
 .git-parameters { font-size: var(--fs-11); }

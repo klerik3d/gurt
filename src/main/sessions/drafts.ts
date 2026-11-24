@@ -2,7 +2,6 @@ import { randomUUID } from 'node:crypto'
 import type { AgentManifest } from '../../shared/agentPlugin'
 import type { SessionDraftPatch } from '../../shared/api'
 import type { SessionStateReason } from '../../shared/events'
-import { MCP_DEFS } from '../../shared/mcp'
 import { sanitizeSkillSelection } from '../../shared/skills'
 import { branchPrompt, rewindPreface } from '../../shared/transcript'
 import {
@@ -32,7 +31,7 @@ import type { LaunchContext } from '../containers'
 import { createLogger } from '../log'
 import type { PiiMask } from '../pii'
 import { normalizeConfigOptions, normalizeModes } from './modes'
-import { ACP_REQUEST_TIMEOUT_MS, assertNotLoopOwned, isDefaultSessionTitle } from './pure'
+import { ACP_REQUEST_TIMEOUT_MS, assertNotManagerOwned, isDefaultSessionTitle } from './pure'
 import type {
   Connection,
   CreateAction,
@@ -159,7 +158,6 @@ export function createSession(mgr: DraftsCtx, ref: EnvRef,
     draining: false,
     turnComplete: false,
     turns: 0,
-    turnSeq: 0,
     attached: false,
     loading: false,
     pendingPermissions: new Map(),
@@ -215,19 +213,6 @@ export function editDraft(mgr: DraftsCtx, sessionId: string, patch: SessionDraft
   if (patch.startPrompt !== undefined) s.info.startPrompt = patch.startPrompt
   if (patch.configValues !== undefined)
     s.info.configValues = Object.keys(patch.configValues).length ? patch.configValues : undefined
-  // The Review block (docs/requirements-review-loop.md §3): a draft's own,
-  // frozen the moment it leaves draft like every other pick here. A block
-  // turns the loop on; `null` turns it off *on purpose*, which the anchor's
-  // `review.enabled` default must not undo.
-  if (patch.review !== undefined) {
-    if (patch.review === null) {
-      s.info.review = undefined
-      s.info.reviewOff = true
-    } else {
-      s.info.review = { ...patch.review, ...(patch.review.configValues ? { configValues: { ...patch.review.configValues } } : {}) }
-      s.info.reviewOff = undefined
-    }
-  }
   // absent leaves repos unchanged; never touches the env. Re-pointing repos,
   // their modes, env or role releases the draft's container if a failed
   // start left one — it was provisioned for the old target (a mode decides
@@ -260,14 +245,6 @@ export function editDraft(mgr: DraftsCtx, sessionId: string, patch: SessionDraft
     if (isDefaultSessionTitle(s.info.title, prevRole))
       s.info.title = mgr.defaultTitleForRole(s.ref, patch.role, s.info.id)
     s.info.role = patch.role
-    // The Review block is an executor's (docs/requirements-review-loop.md
-    // §3): a draft that stops being one drops it rather than carry a loop
-    // that nothing would run (`Kernel.editDraft` already refuses a block in
-    // a patch that makes the draft something else).
-    if (patch.role !== 'executor') {
-      s.info.review = undefined
-      s.info.reviewOff = undefined
-    }
   }
   // Structural like repos/env/role, not a runtime knob: the skills bind is
   // part of the container's mount list, decided when it is created. A failed
@@ -304,7 +281,7 @@ export function editDraft(mgr: DraftsCtx, sessionId: string, patch: SessionDraft
 export function duplicateSession(mgr: DraftsCtx, sessionId: string): SessionInfo {
   const source = mgr.sessions.get(sessionId)?.info
   if (!source) throw new Error('unknown session')
-  assertNotLoopOwned(source)
+  assertNotManagerOwned(source)
   const info = mgr.draftFrom(source)
   // The copy is recognisable as one instead of taking the next free
   // role-index name — the source is usually still in the tree right above it.
@@ -339,7 +316,7 @@ export function recreateSession(mgr: DraftsCtx, sessionId: string): SessionInfo 
   const s = mgr.sessions.get(sessionId)
   if (!s) throw new Error('unknown session')
   if (s.info.state === 'draft') throw new Error('session is already a draft')
-  assertNotLoopOwned(s.info)
+  assertNotManagerOwned(s.info)
   const source = s.info
   const at = [...mgr.sessions.keys()].indexOf(sessionId)
   const info = mgr.draftFrom(source)
@@ -471,7 +448,7 @@ export function branchSession(mgr: DraftsCtx, sessionId: string, entryId: number
   const source = mgr.sessions.get(sessionId)
   if (!source) throw new Error('unknown session')
   // A watcher is its scope's one session (docs/requirements-watchers.md §4).
-  assertNotLoopOwned(source.info)
+  assertNotManagerOwned(source.info)
   const target = source.entries.find((e) => e.id === entryId)
   if (!target || target.kind !== 'user') throw new Error('a session can only be branched at a message of yours')
   const info = mgr.draftFrom(source.info)
@@ -510,11 +487,6 @@ export function draftFrom(mgr: DraftsCtx, source: SessionInfo): SessionInfo {
     sanitizeSessionNetwork(source.network),
     Object.fromEntries(source.repos.map((r) => [r, repoMode(source, r)]))
   )
-  // The Review block comes along (docs/requirements-review-loop.md §3), as
-  // a copy of its own; a block switched off on purpose stays off.
-  if (source.review)
-    copy.review = { ...source.review, ...(source.review.configValues ? { configValues: { ...source.review.configValues } } : {}) }
-  if (source.reviewOff) copy.reviewOff = true
   return copy
 }
 
@@ -536,50 +508,6 @@ export function spawnRun(mgr: DraftsCtx, templateId: string, title: string): Ses
   if (!t?.info.template) throw new Error('the proactive agent has no template')
   const info = mgr.draftFrom(t.info)
   mgr.renameSession(info.id, title)
-  mgr.enqueue(info.id)
-  return info
-}
-
-/**
- * Create one round's reviewer for a loop executor and enqueue it, as
- * {@link spawnRun} starts a proactive run (docs/requirements-review-loop.md
- * §5.4): in the executor's scope, with its env and inheritance
- * ({@link inheritanceOf}: auto-allow, skills, network, MCP) but the Review
- * block's agent and config values; the executor's repos, all `read`; every
- * built-in MCP server capped at `read-only` (no `git_push` /
- * `create_pull_request`); `reviewOf` naming the intent; the title
- * `review <round> — <executor title>`; and the caller's prompt, which is the
- * reviewer's whole input.
- *
- * Persisted *before* it is enqueued, so a crash between the two leaves a
- * draft carrying `reviewOf.intent` that the next boot adopts instead of
- * creating a second reviewer (§8). Exempt from the scope's cap
- * ({@link capExempt}); still subject to its account's plan hold.
- */
-export async function createReviewer(mgr: DraftsCtx, executorId: string,
-  req: { round: number; intent: string; prompt: string }): Promise<SessionInfo> {
-  const ex = mgr.sessions.get(executorId)
-  if (!ex) throw new Error('unknown session')
-  const block = ex.info.review
-  if (!block) throw new Error('this session is not in a review loop')
-  const inherit = mgr.inheritanceOf(ex.info)
-  const info = mgr.createSession(
-    ex.ref,
-    [...ex.info.repos],
-    block.agent,
-    req.prompt,
-    'draft',
-    (inherit.mcp ?? []).map((m) => (MCP_DEFS.some((d) => d.id === m.id) ? { ...m, mode: 'read-only' as const } : { ...m })),
-    inherit.autoAllow ?? true,
-    { ...(block.configValues ?? {}) },
-    'reviewer',
-    inherit.skills?.map((k) => ({ ...k })),
-    sanitizeSessionNetwork(inherit.network),
-    Object.fromEntries(ex.info.repos.map((r) => [r, 'read' as const]))
-  )
-  info.reviewOf = { executor: executorId, round: req.round, intent: req.intent }
-  mgr.renameSession(info.id, `review ${req.round} — ${ex.info.title}`)
-  await mgr.persistNow(mgr.sessions.get(info.id)!)
   mgr.enqueue(info.id)
   return info
 }

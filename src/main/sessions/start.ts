@@ -14,7 +14,6 @@ import {
   type PromptContext,
   type PromptImage,
   type RepoMode,
-  type ReviewVerdict,
   type SessionInfo,
   type SessionRole
 } from '../../shared/types'
@@ -55,9 +54,7 @@ export interface StartCtx {
     role: SessionRole
     mounts: { repo: string; mode: RepoMode }[]
     onComplete: (p: ChangeProposal) => void
-    onSubmitReview: (v: ReviewVerdict) => void
     onCreateSession: (req: AgentSessionRequest) => Promise<{ sessionId: string; title: string }>
-    reviewLoop?: boolean
     admin?: AdminHooks
     proactive?: ProactiveHooks
     watcher?: WatcherToolHooks
@@ -71,7 +68,7 @@ export interface StartCtx {
   push(s: Session, entry: ChatEntryBase): ChatEntry
   pushConfigOption(s: Session, conn: Connection, configId: string, value: string | boolean): Promise<void>
   repoConflict(s: Session): { holder: { info: Pick<SessionInfo, 'id' | 'title'> }; repo: string } | undefined
-  runPrompt(s: Session, text: string, context?: PromptContext[], images?: PromptImage[], loop?: string): Promise<void>
+  runPrompt(s: Session, text: string, context?: PromptContext[], images?: PromptImage[]): Promise<void>
   schedule(): void
   schedulePersist(ref: EnvRef): void
   readonly sessions: Map<string, Session>

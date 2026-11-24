@@ -34,7 +34,6 @@ export type RemoteSessionRole =
   | 'inspector'
   | 'operator'
   | 'proactive'
-  | 'reviewer'
   | 'watcher'
 
 /** One session row of the tree. */

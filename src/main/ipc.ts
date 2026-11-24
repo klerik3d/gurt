@@ -3,7 +3,7 @@
 // domain-shaped lives in kernel.ts and below.
 import { app, clipboard, dialog, ipcMain, shell } from 'electron'
 import { API_METHODS, type GurtApi } from '../shared/api'
-import { defaultEnvName, isSessionRole, roleIsManagerOwned, writeRepos } from '../shared/types'
+import { defaultEnvName, isSessionRole, roleIsManagerOwned } from '../shared/types'
 import { MCP_DEFS, isLocalMcpEntry, mcpEntryKind } from '../shared/mcp'
 import { broadcast } from './broadcast'
 import { assertRepoModes, createKernel } from './kernel'
@@ -28,7 +28,6 @@ import {
 import { traffic } from './proxy/traffic'
 import * as store from './store'
 import * as changes from './changes'
-import { dropApprovals, withApprovals } from './approvals'
 import * as files from './files'
 import { normalizeGcSettings } from '../shared/gc'
 import { runGc } from './gc'
@@ -193,7 +192,7 @@ export function registerIpc(): void {
     },
     removeWorkspace: (name) => kernel.deleteWorkspace(name),
     addRepo: async (ws, repo) => {
-      await store.addRepo(ws, await kernel.checkRepoReview(ws, repo))
+      await store.addRepo(ws, kernel.cleanRepo(repo))
       kernel.bus.emit('tree.changed', undefined)
     },
     createLocalRepo: async (ws, name) => {
@@ -220,7 +219,7 @@ export function registerIpc(): void {
       }
     },
     updateRepo: async (ws, repo) => {
-      await store.updateRepo(ws, await kernel.checkRepoReview(ws, repo))
+      await store.updateRepo(ws, kernel.cleanRepo(repo))
       kernel.bus.emit('tree.changed', undefined)
     },
     removeRepo: async (ws, name) => {
@@ -347,7 +346,7 @@ export function registerIpc(): void {
     findTaskFile: files.findTaskFile,
     writeTaskFile: files.writeTaskFile,
     navigateTaskFile: files.navigateTaskFile,
-    getTaskChanges: async (ws, task, opts) => withApprovals(ws, task, await changes.getTaskChanges(ws, task, opts ?? {})),
+    getTaskChanges: (ws, task, opts) => changes.getTaskChanges(ws, task, opts ?? {}),
     getFileDiff: (ws, task, repo, file) => changes.getFileDiff(ws, task, repo, file),
     getCommitDiff: (ws, task, repo, sha) => changes.getCommitDiff(ws, task, repo, sha),
     getDiffFiles: (ws, task, repo, target) => changes.getDiffFiles(ws, task, repo, target),
@@ -358,10 +357,6 @@ export function registerIpc(): void {
     changesUpdateFromMain: (ws, task, repo, strategy) =>
       changes.updateFromMain(ws, task, repo, strategy),
     changesMergeToMain: (ws, task, repo) => changes.mergeToMain(ws, task, repo),
-    changesApprove: async (ws, task, repo, approved) => {
-      await kernel.ready
-      return kernel.approveChanges(ws, task, repo, approved === true)
-    },
     latestProposal: async (ws, task, repo) => kernel.sessions.latestProposal(ws, task, repo),
     changesOpenPr: async (ws, task, repo) => {
       await shell.openExternal(await kernel.prUrl(ws, task, repo))
@@ -399,10 +394,9 @@ export function registerIpc(): void {
         throw new Error(`task "${ref.task}" not found in "${ref.workspace}"`)
       if (role !== undefined && !isSessionRole(role))
         throw new Error(`unknown session role "${String(role)}"`)
-      // Only the review loop creates a reviewer (docs/requirements-review-loop.md
-      // §4) and only the watcher manager a watcher (docs/requirements-watchers.md §4).
+      // Only the watcher manager creates a watcher (docs/requirements-watchers.md §4).
       if (role !== undefined && roleIsManagerOwned(role))
-        throw new Error(role === 'watcher' ? 'a watcher is created only by the Watchers mode' : `a ${role} is created only by the review loop`)
+        throw new Error(`a ${role} is created only by the Watchers mode`)
       // A watcher's scope holds exactly its one session; the tree never lists its tasks.
       if (kernel.watchers.isWatcher(ref.workspace, ref.task))
         throw new Error(`"${ref.task}" is a watcher — it holds exactly one session`)
@@ -449,15 +443,11 @@ export function registerIpc(): void {
     sessionRun: async (id) => {
       await kernel.ready
       if (kernel.watchers.ofSession(id)) throw new Error('start a watcher with Start in the Watchers mode')
-      await kernel.assertReviewBlock(id)
       kernel.sessions.run(id)
     },
     sessionEnqueue: async (id) => {
       await kernel.ready
       if (kernel.watchers.ofSession(id)) throw new Error('start a watcher with Start in the Watchers mode')
-      // The Review block's start gate: the Config tab disables Run for the same
-      // reasons (docs/requirements-review-loop.md §3).
-      await kernel.assertReviewBlock(id)
       kernel.sessions.enqueue(id)
     },
     sessionCancelQueue: async (id) => kernel.sessions.cancelQueue(id),
@@ -498,18 +488,6 @@ export function registerIpc(): void {
     sessionClearPending: async (id) => kernel.sessions.clearPending(id),
     sessionCancelPending: async (id, promptId) => kernel.sessions.cancelPending(id, promptId),
     sessionCancel: async (id) => kernel.sessions.cancel(id),
-    reviewLoopState: async (id) => {
-      await kernel.ready
-      return kernel.reviewLoop.state(id)
-    },
-    reviewLoopStop: async (id) => {
-      await kernel.ready
-      return kernel.reviewLoop.stopLoop(id)
-    },
-    reviewLoopExtend: async (id) => {
-      await kernel.ready
-      return kernel.reviewLoop.extendLoop(id)
-    },
     sessionSetMode: (id, modeId) => kernel.sessions.setMode(id, modeId),
     sessionSetConfigOption: async (id, configId, value) => {
       await kernel.ready
@@ -628,21 +606,6 @@ export function registerIpc(): void {
     e.returnValue = logLevel
   })
 
-  // Manual approval (docs/requirements-review-loop.md §13): a write gurt
-  // carries out in a clone drops that repo's approval first, whatever the
-  // content ends up as — the Files view's writes (paths are `<repo>/<path>`)
-  // and a rewind, which restores the session's write clones.
-  const dropApprovalsFor = async (m: string, args: unknown[]): Promise<void> => {
-    const [a0, a1, a2] = args
-    if (['writeTaskFile', 'renameTaskFile', 'deleteTaskFile', 'pasteTaskFiles'].includes(m)) {
-      if (typeof a0 === 'string' && typeof a1 === 'string' && typeof a2 === 'string' && a2.split('/')[0])
-        await dropApprovals(a0, a1, [a2.split('/')[0]!])
-    } else if (m === 'sessionRewind' && typeof a0 === 'string') {
-      const info = kernel.sessions.sessionInfo(a0)
-      if (info) await dropApprovals(info.workspace, info.task, writeRepos(info))
-    }
-  }
-
   // One wrapper for the whole API surface: every call is timed, every rejection
   // is recorded once — here, at the boundary — and then rethrown unchanged so
   // the renderer still sees the original error.
@@ -652,7 +615,6 @@ export function registerIpc(): void {
       try {
         if (kernel.archive.blocksCall(m, args))
           throw new Error('This scope is being archived or restored; wait for it to finish')
-        await dropApprovalsFor(m, args)
         const result = await (impl[m] as (...a: unknown[]) => unknown)(...args)
         if (['changesCommit', 'changesPush', 'changesUpdateFromMain', 'changesMergeToMain',
           'writeTaskFile', 'renameTaskFile', 'deleteTaskFile', 'pasteTaskFiles'].includes(m) &&

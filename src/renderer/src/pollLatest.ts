@@ -1,7 +1,7 @@
 /**
  * Read now and then every `intervalMs`, handing each answer to `apply` — but
  * never an answer older than one already handed over. Reads overlap (a slow one
- * is still out when the next tick fires), so replies can come back in another
+ * is still out when the next tick fires), so responses can come back in another
  * order than they were asked in; the late reply of an earlier read must not
  * put an earlier state back over a newer one. A reply to a read that is not the
  * newest is still used when nothing newer has landed, so a stream of fast ticks

@@ -87,7 +87,7 @@ fs.writeFileSync(
 // checkpoints, docs/requirements-session-log.md), and a missing clone fails the
 // turn before the agent is asked anything. The tests below that drive
 // `runPrompt` through a stubbed `attach` need that turn to get as far as the
-// agent, so each repo gets an empty clone — as in scripts/lib/loop-harness.mjs.
+// agent, so each repo gets an empty clone.
 for (const repo of ['alpha', 'beta'])
   execFileSync('git', ['init', '-q', path.join(GURT_ROOT, ws, task, repo)], { stdio: 'ignore' })
 fs.writeFileSync(path.join(GURT_ROOT, ws, task, 'task.json'), JSON.stringify({}))

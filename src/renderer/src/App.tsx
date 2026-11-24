@@ -13,7 +13,7 @@ import {
   type Tree
 } from '../../shared/types'
 import { NOTIFICATION_RING_CAP, type NotificationRecord } from '../../shared/notifications'
-import { containerDot, hostWorking, sessionDot } from './status'
+import { containerDot, sessionDot } from './status'
 import { Icon, Logo } from './components/icons'
 import { EnvRepoMarks } from './components/tags'
 import { Sidebar, NameModal, DeleteWorkspaceModal, scopeNamesOf } from './components/Sidebar'
@@ -824,7 +824,7 @@ export default function App() {
   // (pushed on every session change) so the sidebar's run/wait/idle marks stay live.
   const activity: Record<string, SessionActivity> = {}
   for (const [id, snap] of Object.entries(snapshots))
-    activity[id] = { busy: snap.info.busy, hostBusy: snap.info.hostBusy, awaitingInput: snap.info.awaitingInput }
+    activity[id] = { busy: snap.info.busy, awaitingInput: snap.info.awaitingInput }
   // Read state rides the same overlay, so every status mark in the app splits
   // `idle` into seen/unseen from one source. Keyed off the tree rather than the
   // snapshots: a session with no live snapshot still has a mark worth reading.
@@ -850,7 +850,7 @@ export default function App() {
       for (const s of t.sessions) {
         const st = sessionStatus({ ...s, ...activity[s.id] })
         // gurt's own check on a session counts as work going on.
-        if (st === 'running' || st === 'starting' || hostWorking(st, activity[s.id]?.hostBusy)) runningCount++
+        if (st === 'running' || st === 'starting') runningCount++
         else if (st === 'waiting') needYouCount++
       }
 
@@ -950,7 +950,7 @@ export default function App() {
               ? selection.task
               : null
 
-  const crumbDot = view === 'work' && workMode === 'sessions' && activeStatus ? sessionDot(activeStatus, activity[activeInfo?.id ?? '']?.hostBusy) : null
+  const crumbDot = view === 'work' && workMode === 'sessions' && activeStatus ? sessionDot(activeStatus) : null
 
   return (
     <FileOpener.Provider value={openScopeFile}>

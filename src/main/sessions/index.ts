@@ -2,24 +2,20 @@
 // What this file lists is the module's public surface: consumers import it
 // through `src/main/sessions.ts`.
 export { SessionManager } from './manager'
-export { adapterExitCode, isDefaultSessionTitle, isLoopSession, limitBackoffMs, LIMIT_CONTINUE_PROMPT } from './pure'
+export { adapterExitCode, isDefaultSessionTitle, limitBackoffMs, LIMIT_CONTINUE_PROMPT } from './pure'
 export { desiredModeId, nextModeId, normalizeModes } from './modes'
 export {
   assertProposalFits,
-  assertRepliesAnswer,
-  assertVerdictFits,
   contractToolFor,
   nudgePromptFor,
   NUDGE_PROMPT,
   PROACTIVE_NUDGE_PROMPT,
   postTurnDecision,
-  proposalForRepo,
-  REVIEWER_NUDGE_PROMPT
+  proposalForRepo
 } from './turnContract'
 export type {
   CreateAction,
   DraftInheritance,
-  LoopHooks,
   PostTurnAction,
   PreparedDraft,
   RestoredSession,

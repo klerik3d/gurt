@@ -2,14 +2,13 @@ import { taskKey } from '../../shared/keys'
 import type {
   EnvRef,
   PersistedSession,
-  SessionContainer,
-  SessionInfo
+  SessionContainer
 } from '../../shared/types'
 import type { Bus } from '../bus'
 import { createLogger } from '../log'
 import type { PiiMask } from '../pii'
 import { stopPiiRewrite } from '../piiRewrite'
-import type { Claim, Session, SessionEvents } from './types'
+import type { Session, SessionEvents } from './types'
 
 const log = createLogger('sessions')
 
@@ -25,7 +24,6 @@ export interface LifecycleCtx {
   clearCheckpoints(s: Session): Promise<void>
   detach(sessionId: string): void
   readonly events: SessionEvents
-  readonly loopHolds: Map<string, { info: Pick<SessionInfo, 'id' | 'title'>; claims: Claim[]; }>
   readonly mask: PiiMask
   readonly persistTimers: Map<string, NodeJS.Timeout>
   recordsFor(ws: string, task: string): PersistedSession[]
@@ -93,7 +91,6 @@ export function dropTaskSessions(mgr: LifecycleCtx, ws: string, task: string): v
     mgr.mask.drop(id)
     stopPiiRewrite(id)
     mgr.sessions.delete(id)
-    mgr.loopHolds.delete(id)
     mgr.bus.emit('session.deleted', { sessionId: id })
   }
   mgr.bus.emit('tree.changed', undefined)
@@ -115,7 +112,6 @@ export function dropWorkspaceSessions(mgr: LifecycleCtx, ws: string): void {
     mgr.mask.drop(id)
     stopPiiRewrite(id)
     mgr.sessions.delete(id)
-    mgr.loopHolds.delete(id)
     mgr.bus.emit('session.deleted', { sessionId: id })
   }
   mgr.bus.emit('tree.changed', undefined)
@@ -131,7 +127,6 @@ export async function dropArchivedSession(mgr: LifecycleCtx, id: string): Promis
   mgr.mask.drop(id)
   stopPiiRewrite(id)
   mgr.sessions.delete(id)
-  mgr.loopHolds.delete(id)
   mgr.schedulePersist(s.ref)
   mgr.bus.emit('session.deleted', { sessionId: id })
   mgr.bus.emit('tree.changed', undefined)

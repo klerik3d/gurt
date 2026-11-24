@@ -7,7 +7,6 @@ import type { SessionInfo } from '../../../shared/types'
 import { alertDialog, confirmDialog } from '../dialog'
 import { useOutsideClose } from '../hooks'
 import { Icon } from './icons'
-import { LoopDot, LoopMenuSection, type LoopView } from './ReviewLoopLine'
 
 /** What either action needs to know about its target — a tree row carries this
  *  much, so the sidebar doesn't have to hold a snapshot to offer them. */
@@ -88,15 +87,11 @@ export async function recreateSession(
 export function SessionMenu({
   info,
   onSelect,
-  onDeleted,
-  loop
+  onDeleted
 }: {
   info: SessionTarget
   onSelect: (id: string) => void
   onDeleted: () => void
-  /** The review loop the session is part of — read by the chat that shows
-   *  the menu; a session that has not started has none. */
-  loop?: LoopView | undefined
 }): JSX.Element {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
@@ -110,11 +105,9 @@ export function SessionMenu({
         onClick={() => setOpen((o) => !o)}
       >
         <Icon name="dots" size={15} />
-        {loop && <LoopDot loop={loop} />}
       </button>
       {open && (
         <div className="menu session-menu-pop">
-          {loop && <LoopMenuSection loop={loop} onDone={() => setOpen(false)} />}
           <div
             className="menu-item"
             onMouseDown={(e) => {

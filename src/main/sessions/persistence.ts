@@ -6,7 +6,7 @@ import {
   type PersistedSession
 } from '../../shared/types'
 import { createLogger } from '../log'
-import { LIMIT_CONTINUE_PROMPT, turnSeqOf } from './pure'
+import { LIMIT_CONTINUE_PROMPT } from './pure'
 import type { RestoredSession, Session, SessionEvents } from './types'
 
 const log = createLogger('sessions')
@@ -22,7 +22,6 @@ export interface PersistenceCtx {
   readonly events: SessionEvents
   flushLog(s: Session): void
   flushSessions(sessions: Session[]): Promise<void>
-  loopOwned(s: Session): boolean
   pendingSeq: number
   persistNow(s: Session): Promise<void>
   readonly persistTimers: Map<string, NodeJS.Timeout>
@@ -74,10 +73,7 @@ export function restore(mgr: PersistenceCtx, records: RestoredSession[]): void {
       draining: false,
       turnComplete: false,
       turns: 0,
-      lastSettled: r.lastSettled,
-      loopRan: r.loopRan,
       ranOrigin: r.ranOrigin,
-      turnSeq: turnSeqOf(r.lastSettled?.turnId),
       attached: false,
       loading: false,
       pendingPermissions: new Map(),
@@ -108,8 +104,6 @@ export function recordsFor(mgr: PersistenceCtx, ws: string, task: string): Persi
       acpSessionId: s.acpSessionId,
       preface: s.preface,
       proposal: s.proposal,
-      ...(s.lastSettled ? { lastSettled: structuredClone(s.lastSettled) } : {}),
-      ...(s.loopRan ? { loopRan: s.loopRan } : {}),
       ...(s.ranOrigin ? { ranOrigin: s.ranOrigin } : {}),
       interrupted: s.interrupted,
       pending: structuredClone(s.pending)
@@ -222,16 +216,12 @@ export async function resumeInterrupted(mgr: PersistenceCtx, id: string): Promis
 }
 
 export function interruptedSessions(mgr: PersistenceCtx): InterruptedSession[] {
-  // A loop's sessions are resumed by its controller (docs/requirements-review-
-  // loop.md §8): enabling the loop was the approval, so no modal asks again.
-  return [...mgr.sessions.values()].filter((s) => s.recovering && s.info.state === 'started' && !mgr.loopOwned(s) && !s.resumeOnBoot)
+  return [...mgr.sessions.values()].filter((s) => s.recovering && s.info.state === 'started' && !s.resumeOnBoot)
     .map(({ info }) => ({ id: info.id, title: info.title, workspace: info.workspace, task: info.task }))
 }
 
 export function hasUnfinishedWork(mgr: PersistenceCtx): boolean {
-  // Not a loop's own: an update restart does not wait for a loop, whose
-  // controller resumes it afterwards (§8).
-  return [...mgr.sessions.values()].some((s) => !mgr.loopOwned(s) && (s.busy || s.draining || s.loading || s.promptRunning ||
+  return [...mgr.sessions.values()].some((s) => (s.busy || s.draining || s.loading || s.promptRunning ||
     s.pendingPermissions.size > 0 || s.pending.length > 0 || s.recovering ||
     s.info.state === 'starting' || s.info.state === 'queued' || !!s.info.limitedUntil))
 }

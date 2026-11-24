@@ -201,7 +201,6 @@ function Repository({ ws, task, repo: r, layout, nav, activePath, activeTarget }
           title={isActionable(r) ? 'Uncommitted or unpushed changes' : isDelivered(r) ? 'Pushed · awaiting merge' : 'No changes'}
         />
         <span className="spacer" />
-        {r.approved && <span className="diff-approved" title="Uncommitted changes approved as they are">✓</span>}
         <span className="diff-counts mono" title="Uncommitted tracked lines">
           <span className="ins">+{r.insertions}</span>
           <span className="del">−{r.deletions}</span>
@@ -253,14 +252,6 @@ function Repository({ ws, task, repo: r, layout, nav, activePath, activeTarget }
             document.getElementById(commitInputId(ws, task, r.repo))?.focus()
           }}>
             <Icon name="plus" size={13} /> Commit changes…
-          </button>
-          <button className="menu-item diff-menu-action" disabled={busy || !r.dirty}
-            title="A review loop with manual approval ships only approved changes; any later change drops the approval"
-            onClick={run(async () => {
-              setMenu(null)
-              await act(() => window.gurt.changesApprove(ws, task, r.repo, !r.approved))
-            })}>
-            <Icon name="check" size={13} /> {r.approved ? 'Withdraw approval' : 'Approve changes'}
           </button>
           <button
             className="menu-item diff-menu-action"

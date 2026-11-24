@@ -1,6 +1,8 @@
 # Requirements: review loop — implement → check → review → fix, unattended
 
-Status: planned · Target: gurt Electron MVP (this repo)
+Status: **removed — superseded by RPM** (review process manager). The code
+was cut out in RPM task 1; the last commit that has it is `debb2ce`. Kept for
+history only — nothing here describes the current code.
 
 This document is a work order for an implementing agent. Read
 `architecture.md` first. The decisions in it are the owner's unless marked

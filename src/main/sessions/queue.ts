@@ -3,14 +3,12 @@ import type { PlanHold } from '../../shared/planUsage'
 import {
   missingRepoReason,
   repoMode,
-  roleIsLoopOwned,
-  sessionRole,
   type SessionInfo
 } from '../../shared/types'
 import type { Bus } from '../bus'
 import { createLogger } from '../log'
 import { claimsCollide } from './pure'
-import type { Claim, LoopHooks, Session } from './types'
+import type { Claim, Session } from './types'
 
 const log = createLogger('sessions')
 
@@ -24,9 +22,7 @@ export interface QueueCtx {
   activeSessionCount(ws: string, task: string): number
   armLimitTimer(holds: PlanHold[], instants?: number[]): void
   readonly bus: Bus
-  capExempt(s: Session): boolean
   claims(s: Session): Claim[]
-  deliveryActive(s: Session): boolean
   drainPending(s: Session): Promise<void>
   earlierQueueItem(s: Session): Session | undefined
   enqueue(sessionId: string): void
@@ -35,10 +31,6 @@ export interface QueueCtx {
   holdText(h: PlanHold): string
   isActive(s: Session): boolean
   limitHold(s: Session): PlanHold | undefined
-  loopHoldConflict(s: Session): { holder: { info: Pick<SessionInfo, 'id' | 'title'> }; repo: string } | undefined
-  readonly loopHolds: Map<string, { info: Pick<SessionInfo, 'id' | 'title'>; claims: Claim[]; }>
-  loopHoldText(c: { holder: { info: Pick<SessionInfo, 'id' | 'title'> }; repo: string }, does: 'sends' | 'starts'): string
-  readonly loopHooks: LoopHooks | undefined
   noteQueued(s: Session, reason: string, by?: string): void
   readonly queuedReasons: Map<string, string>
   queuedSessions(): Session[]
@@ -62,23 +54,13 @@ export function queuedSessions(mgr: QueueCtx): Session[] {
     .sort((a, b) => mgr.queueTime(a).localeCompare(mgr.queueTime(b)))
 }
 
-/** Earlier work keeps its place on shared clones, including during a limit hold.
- *
- *  Except behind the session's own review-loop hold
- *  (docs/requirements-review-loop.md §5.5): a held executor's own work — the
- *  loop's host messages, the continuation or restart prompt of its own turns —
- *  never queues behind a session that cannot start *because of that hold*.
- *  That session waits for the loop, the loop waits for this prompt, and both
- *  would sit out the loop's deadline. Once the hold is released, FIFO
- *  applies again. */
+/** Earlier work keeps its place on shared clones, including during a limit hold. */
 export function earlierQueueItem(mgr: QueueCtx, s: Session): Session | undefined {
   const claims = mgr.claims(s)
-  const held = mgr.loopHolds.get(s.info.id)
   for (const other of mgr.queuedSessions()) {
     if (other === s) break
     const theirs = mgr.claims(other)
     if (!claimsCollide(theirs, claims)) continue
-    if (held && claimsCollide(theirs, held.claims)) continue
     return other
   }
   return undefined
@@ -97,14 +79,6 @@ export function pendingBlocked(mgr: QueueCtx, s: Session): string | undefined {
   if (!s.pending.length || s.busy) return undefined
   const hold = s.info.state === 'started' ? mgr.limitHold(s) : undefined
   if (hold) return mgr.holdText(hold)
-  // A review loop's gates before the place in the queue. They hold whatever
-  // position this message has: a delivery runs to its end (§5.6) and a loop
-  // hold lasts until the loop lets go (§5.5). An earlier item on the same
-  // clone is waiting for the same gate, so "waiting behind" it would point at
-  // a session that cannot move either. Once the gate lifts, FIFO decides.
-  if (mgr.deliveryActive(s)) return 'the review loop is delivering — this sends when it has finished'
-  const loop = mgr.loopHoldConflict(s)
-  if (loop) return mgr.loopHoldText(loop, 'sends')
   const earlier = mgr.earlierQueueItem(s)
   if (earlier) return `waiting behind session "${earlier.info.title}"`
   const conflict = mgr.repoConflict(s)
@@ -113,24 +87,13 @@ export function pendingBlocked(mgr: QueueCtx, s: Session): string | undefined {
 }
 
 /** What a queued session is waiting for, when the answer is not the generic
- *  "its turn / its clone": an account at its limit, a review loop's hold on
- *  its clone (named: a loop can hold it for up to its deadline), or an
- *  earlier item on its clone. */
+ *  "its turn / its clone": an account at its limit, or an earlier item on its
+ *  clone. */
 export function queuedWaiting(mgr: QueueCtx, s: Session): string | undefined {
   const hold = mgr.limitHold(s)
   if (hold) return mgr.holdText(hold)
-  const loop = mgr.loopHoldConflict(s)
-  if (loop) return mgr.loopHoldText(loop, 'starts')
   const earlier = mgr.earlierQueueItem(s)
   return earlier ? `waiting behind session "${earlier.info.title}"` : undefined
-}
-
-/** "The review loop of session "x" holds "alpha" — …": the wait on a loop
- *  hold, said as one. A hold kept after its executor was deleted (§5.6) has
- *  no session to name. */
-export function loopHoldText(mgr: QueueCtx, c: { holder: { info: Pick<SessionInfo, 'id' | 'title'> }; repo: string }, does: 'sends' | 'starts'): string {
-  const who = mgr.sessions.has(c.holder.info.id) ? `the review loop of session "${c.holder.info.title}"` : 'a review loop'
-  return `${who} holds "${c.repo}" — this ${does} when the loop lets go`
 }
 
 export function scheduleSync(mgr: QueueCtx): void {
@@ -168,7 +131,7 @@ export function scheduleSync(mgr: QueueCtx): void {
     }
     const tkey = taskKey(s.ref.workspace, s.ref.task)
     const cap = mgr.taskCaps.get(tkey)
-    if (cap !== undefined && !mgr.capExempt(s)) {
+    if (cap !== undefined) {
       const running = mgr.activeSessionCount(s.ref.workspace, s.ref.task) + (startedThisPass.get(tkey) ?? 0)
       if (running >= cap) {
         still.add(s.info.id)
@@ -266,29 +229,11 @@ export function claims(s: Session): Claim[] {
 export function repoConflict(mgr: QueueCtx, s: Session): { holder: { info: Pick<SessionInfo, 'id' | 'title'> }; repo: string } | undefined {
   const mine = mgr.claims(s)
   if (!mine.length) return undefined
-  const loop = mgr.loopHoldConflict(s)
-  if (loop) return loop
   for (const o of mgr.sessions.values()) {
     if (o.info.id === s.info.id || !mgr.holdsClone(o)) continue
     for (const theirs of mgr.claims(o)) {
       const c = mine.find((m) => m.key === theirs.key)
       if (c && (c.exclusive || theirs.exclusive)) return { holder: o, repo: c.repo }
-    }
-  }
-  return undefined
-}
-
-/** {@link repoConflict}'s first half: another executor's review-loop hold
- *  (docs/requirements-review-loop.md §5.5) over one of this session's clones
- *  — the holder whether or not its container is up, and whether or not the
- *  session still exists. The session's own hold is never in its way. */
-export function loopHoldConflict(mgr: QueueCtx, s: Session): { holder: { info: Pick<SessionInfo, 'id' | 'title'> }; repo: string } | undefined {
-  const mine = mgr.claims(s)
-  for (const [id, held] of mgr.loopHolds) {
-    if (id === s.info.id) continue
-    for (const theirs of held.claims) {
-      const c = mine.find((m) => m.key === theirs.key)
-      if (c && (c.exclusive || theirs.exclusive)) return { holder: held, repo: c.repo }
     }
   }
   return undefined
@@ -310,13 +255,9 @@ export function isActive(s: Session): boolean {
   return s.info.state === 'starting' || busyContainer
 }
 
-/** {@link isActive}, or held by the review loop: a held executor keeps its
- *  claims with its container down (docs/requirements-review-loop.md §5.5), so
- *  no other session takes the clone out from under a loop that will wake it.
- *  Deliberately not what the task cap counts — held with its container down
- *  it costs no slot — nor what the queue handoff may stop. */
+/** Holds its clones right now — {@link isActive}. */
 export function holdsClone(mgr: QueueCtx, s: Session): boolean {
-  return mgr.isActive(s) || mgr.loopHolds.has(s.info.id)
+  return mgr.isActive(s)
 }
 
 /** Sessions of `(ws, task)` currently active (see {@link isActive}) —
@@ -326,14 +267,6 @@ export function activeSessionCount(mgr: QueueCtx, ws: string, task: string): num
   for (const o of mgr.sessions.values())
     if (o.ref.workspace === ws && o.ref.task === task && mgr.isActive(o)) n++
   return n
-}
-
-/** A review loop's reviewer never waits on its scope's
- *  `maxConcurrentSessions` (docs/requirements-review-loop.md §5.4): the idle
- *  executor it reviews still occupies a slot, so at a cap of 1 it would queue
- *  forever. It still counts as active for every other session. */
-export function capExempt(s: Session): boolean {
-  return roleIsLoopOwned(sessionRole(s.info))
 }
 
 /** Seed the per-task cap cache from disk. Called once at boot, before the
@@ -358,8 +291,7 @@ export function setTaskCap(mgr: QueueCtx, ws: string, task: string, max: number 
  * The session currently claiming this clone, addressed by (task, repo) rather
  * than by another session — a writer before any reader. Same "able to touch
  * it" rule as {@link repoConflict}: an idle session whose container is down
- * holds nothing and is not reported — unless the review loop holds it
- * ({@link holdsClone}).
+ * holds nothing and is not reported.
  */
 export function repoHolderFor(mgr: QueueCtx, ws: string, task: string, repo: string): SessionInfo | undefined {
   const want = `${taskKey(ws, task)}/${repo}`
@@ -411,9 +343,7 @@ export function holdersBlockingQueue(mgr: QueueCtx): string[] {
     }
     want(s)
     const tkey = taskKey(s.ref.workspace, s.ref.task)
-    // A queued reviewer waits for a plan hold at most, never for a slot, so
-    // it must not make the handoff stop its executor for one.
-    if (mgr.taskCaps.has(tkey) && !mgr.capExempt(s)) wantedTasks.add(tkey)
+    if (mgr.taskCaps.has(tkey)) wantedTasks.add(tkey)
   }
   if (!wantedRepos.size && !wantedTasks.size) return []
   const out: string[] = []
@@ -421,9 +351,6 @@ export function holdersBlockingQueue(mgr: QueueCtx): string[] {
     // A queued holder is the scheduler's business, not the reaper's: it owns
     // a container it is about to start into.
     if (o.info.state === 'queued' || o.info.state === 'starting' || o.busy || o.nudgePending) continue
-    // The loop's executor keeps its container up for the check and the next
-    // turn (docs/requirements-review-loop.md §5.5) — a handoff would stop it.
-    if (mgr.loopHolds.has(o.info.id)) continue
     // Only a fully-up container is stoppable — one still building/post is
     // mid-provision, and `starting` above already covers its session.
     if (o.info.container?.status !== 'running') continue
@@ -446,7 +373,7 @@ export function startNowOrQueue(mgr: QueueCtx, sessionId: string): void {
   const s = mgr.sessions.get(sessionId)
   if (!s) return
   const cap = mgr.taskCaps.get(taskKey(s.ref.workspace, s.ref.task))
-  if (cap !== undefined && !mgr.capExempt(s) && mgr.activeSessionCount(s.ref.workspace, s.ref.task) >= cap) {
+  if (cap !== undefined && mgr.activeSessionCount(s.ref.workspace, s.ref.task) >= cap) {
     mgr.enqueue(sessionId)
     return
   }
@@ -459,62 +386,3 @@ export function startNowOrQueue(mgr: QueueCtx, sessionId: string): void {
   void mgr.startSession(sessionId, 'user')
 }
 
-/** The loop owns this session (its executor or reviewer, loop not ended). */
-export function loopOwned(mgr: QueueCtx, s: Session): boolean {
-  return mgr.loopHooks?.owns(s.info.id) === true
-}
-
-/** A loop's delivery is under way on something this session touches (§5.6):
- *  what is queued here waits. Only the delivering executor itself and the
- *  sessions whose clone claims overlap its (the scheduler's own notion,
- *  {@link claims}) are held — a repo-free inspector, or a session reading
- *  another repo of the same task, is no part of the delivery and must not wait
- *  on it. */
-export function deliveryActive(mgr: QueueCtx, s: Session): boolean {
-  const delivering = mgr.loopHooks?.delivering(s.ref.workspace, s.ref.task)
-  if (!delivering?.length) return false
-  const mine = mgr.claims(s)
-  return delivering.some((id) => {
-    if (id === s.info.id) return true
-    const ex = mgr.sessions.get(id)
-    return (mgr.loopHolds.get(id)?.claims ?? (ex ? mgr.claims(ex) : [])).some((c) => mine.some((m) => m.key === c.key))
-  })
-}
-
-/**
- * Take the loop hold on an executor: it keeps its clones even with its
- * container down, nothing queues a handoff against it, and it stops counting
- * against the task cap while its container is down. Idempotent.
- *
- * **Ordering.** The hold must exist before `sendTurn` emits `session.turn`
- * `ended` for the turn it protects — the kernel's queue handoff runs on that
- * event, in the same synchronous dispatch, and would stop the container of a
- * session the loop has not classified yet. The controller therefore takes it
- * on `session.turn` `started` of the executor's first turn (the start prompt
- * included): `sendTurn` emits `started` before its first `await`, minutes
- * ahead of any `ended`, and the nudge turn's own `ended` is covered by the
- * same hold — it is never dropped between a turn and its nudge.
- */
-export function holdForLoop(mgr: QueueCtx, sessionId: string, stored?: { ws: string; task: string; repos: string[] }): void {
-  if (mgr.loopHolds.has(sessionId)) return
-  const s = mgr.sessions.get(sessionId)
-  if (!s && !stored) throw new Error('unknown session')
-  // §5.5–§5.6: the controller owns the reservation, independent of session deletion.
-  mgr.loopHolds.set(sessionId, {
-    info: { id: sessionId, title: s?.info.title ?? 'review loop' },
-    claims: stored ? stored.repos.map((repo) => ({ key: `${taskKey(stored.ws, stored.task)}/${repo}`, repo, exclusive: true })) : mgr.claims(s!)
-  })
-}
-
-/** Drop the hold; true when there was one. Dropping it only stops the
- *  reservation — the executor's turn is over or not, and its container may be
- *  up with its idle timer cancelled by the keep-alive pings. Whoever releases
- *  (the kernel's `releaseLoopHold`) re-runs the idle handling and
- *  `schedule()` afterwards. */
-export function releaseLoopHold(mgr: QueueCtx, sessionId: string): boolean {
-  return mgr.loopHolds.delete(sessionId)
-}
-
-export function isLoopHeld(mgr: QueueCtx, sessionId: string): boolean {
-  return mgr.loopHolds.has(sessionId)
-}

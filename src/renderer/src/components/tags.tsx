@@ -88,11 +88,6 @@ export const ROLE_INFO: Record<SessionRole, { label: string; hint: string; icon:
     label: 'watcher',
     hint: 'a watcher: one long-lived session that monitors an outside process, wakes itself with wake_me and calls you when something needs you — repos read-only, only its manager creates it',
     icon: 'history'
-  },
-  reviewer: {
-    label: 'reviewer',
-    hint: 'one round of a review loop: reads the executor’s change (repos read-only) and delivers a verdict with findings — only the loop creates one',
-    icon: 'eye'
   }
 }
 

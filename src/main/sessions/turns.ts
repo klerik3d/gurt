@@ -1,6 +1,5 @@
 import type { Vocabulary } from '../../shared/agentVocabulary'
 import type { PlanHold } from '../../shared/planUsage'
-import type { SettledTurn } from '../../shared/reviewLoop'
 import {
   roleHasTurnContract,
   sessionRole,
@@ -23,24 +22,20 @@ import { PROMPT_RESULT } from '../acp'
 import type { Bus } from '../bus'
 import { createLogger } from '../log'
 import type { PiiMask } from '../pii'
-import { isLoopSession, loopOf } from './pure'
-import { contractToolFor, nudgePromptFor, postTurnDecision, turnHow } from './turnContract'
+import { contractToolFor, nudgePromptFor, postTurnDecision } from './turnContract'
 import type {
   Connection,
-  LoopHooks,
   PendingPrompt,
   PostTurnAction,
   Session,
   SessionEvents,
-  TurnHow,
-  TurnResult,
-  TurnTrack
+  TurnResult
 } from './types'
 
 const log = createLogger('sessions')
 
 // Turns: one prompt round-trip (`sendTurn`), the logical turn around it with its
-// nudge and its classification (`runPrompt`, `settleTurn`), and the drain loop
+// nudge (`runPrompt`), and the drain loop
 // that feeds a session's queue into them (docs/requirements-turn-contract.md,
 // docs/requirements-session-queue.md).
 
@@ -53,13 +48,11 @@ export interface TurnsCtx {
   readonly bus: Bus
   clearLimited(s: Session): void
   decideTurn(s: Session, outcome: TurnResult, isNudge: boolean): PostTurnAction
-  deliveryActive(s: Session): boolean
   drainPending(s: Session): Promise<void>
   earlierQueueItem(s: Session): Session | undefined
   readonly events: SessionEvents
   isWakeWork(p: PendingPrompt): boolean
   limitHold(s: Session): PlanHold | undefined
-  readonly loopHooks: LoopHooks | undefined
   readonly mask: PiiMask
   maskEnabled(): boolean
   onLimited(s: Session, limit: { resetAt?: string | undefined }): string
@@ -70,12 +63,11 @@ export interface TurnsCtx {
   push(s: Session, entry: ChatEntryBase): ChatEntry
   repoHolder(s: Session): { info: Pick<SessionInfo, 'id' | 'title'> } | undefined
   reportTurn(s: Session, startedAt: number, outcome: TurnResult, detail?: string): void
-  runPrompt(s: Session, text: string, context?: PromptContext[], images?: PromptImage[], loop?: string): Promise<void>
+  runPrompt(s: Session, text: string, context?: PromptContext[], images?: PromptImage[]): Promise<void>
   schedule(): void
   schedulePersist(ref: EnvRef): void
-  sendTurn(s: Session, text: string, entryKind: 'user' | 'system', isNudge: boolean, context?: PromptContext[], images?: PromptImage[], loop?: string): Promise<TurnResult>
+  sendTurn(s: Session, text: string, entryKind: 'user' | 'system', isNudge: boolean, context?: PromptContext[], images?: PromptImage[]): Promise<TurnResult>
   readonly sessions: Map<string, Session>
-  settleTurn(s: Session, turn: TurnTrack, how: TurnHow): Promise<void>
   vocabulary(s: Session): Vocabulary
   watcherPaused(s: Session): boolean
   withLimit(s: Session, outcome: TurnResult, detail: string | undefined, firstEntry: number): TurnResult
@@ -112,10 +104,7 @@ export async function sendTurn(mgr: TurnsCtx, s: Session,
   entryKind: 'user' | 'system',
   isNudge: boolean,
   context?: PromptContext[],
-  images?: PromptImage[],
-  /** The review loop's intent id, when this turn is one of its host messages
-   *  (shown as a `system` entry that carries it). */
-  loop?: string): Promise<TurnResult> {
+  images?: PromptImage[]): Promise<TurnResult> {
   mgr.bus.emit('session.activity', { sessionId: s.info.id })
   // The one outbound seam (§2.1): from here on the agent only ever sees
   // tokens, and the timeline records the same tokenized text — the chat view
@@ -131,10 +120,7 @@ export async function sendTurn(mgr: TurnsCtx, s: Session,
       maskError = e instanceof Error ? e : new Error(String(e))
     }
   }
-  const promptEntry = mgr.push(
-    s,
-    loop === undefined ? { kind: entryKind, text: outbound } : { kind: 'system', text: outbound, loop }
-  )
+  const promptEntry = mgr.push(s, { kind: entryKind, text: outbound })
   // Prompt start: the turn is incomplete until `complete` fires; clear any
   // prior violation overlay.
   s.turnComplete = false
@@ -167,7 +153,7 @@ export async function sendTurn(mgr: TurnsCtx, s: Session,
     if (maskError) throw maskError
     mgr.assertNotStopped(s)
     const conn = await mgr.attach(s)
-    // A review-loop host message lands as a `system` entry — not a rewind point.
+    // A nudge lands as a `system` entry — not a rewind point.
     if (promptEntry.kind === 'user') await mgr.events.snapshotCheckpoint?.(s.info, promptEntry.id)
     const preface = s.preface
     // Everything above was asynchronous: a Stop may have landed meanwhile.
@@ -315,29 +301,17 @@ export function withLimit(mgr: TurnsCtx, s: Session, outcome: TurnResult, detail
 export async function runPrompt(mgr: TurnsCtx, s: Session,
   text: string,
   context?: PromptContext[],
-  images?: PromptImage[],
-  loop?: string): Promise<void> {
+  images?: PromptImage[]): Promise<void> {
   s.promptRunning = true
   const startedAt = Date.now()
   s.turnStartedAt = startedAt
   const fromWake = s.info.role === 'watcher' && s.ranOrigin === 'wake'
   s.turnGuard = fromWake || (s.info.role === 'watcher' && !!s.guardStart)
   s.guardStart = undefined
-  // The logical turn: this prompt and its nudge (docs/requirements-review-
-  // loop.md §5.1). Opened before the first await so the contract tools can
-  // file into it once a round-trip is busy; closed in the `finally`, whatever
-  // happened. Only a loop session has one — the record, its write and its
-  // event are the loop's, and any other session's turn ends as it always did.
-  const turn: TurnTrack | undefined = isLoopSession(s.info)
-    ? { id: `${s.info.id}:${++s.turnSeq}` }
-    : undefined
-  s.turn = turn
-  // Until the body says how it ended, it threw.
-  let how: TurnHow = { failed: { stopReason: 'error' }, incomplete: false }
   try {
-    const first = await mgr.sendTurn(s, text, 'user', false, context, images, loop)
+    const first = await mgr.sendTurn(s, text, 'user', false, context, images)
     if (first.limit) {
-      how = { limited: { until: mgr.onLimited(s, first.limit) }, incomplete: false }
+      mgr.onLimited(s, first.limit)
       return
     }
     if (!first.threw) mgr.clearLimited(s)
@@ -348,7 +322,6 @@ export async function runPrompt(mgr: TurnsCtx, s: Session,
     if (mgr.decideTurn(s, first, false) !== 'nudge') {
       // The whole logical turn went through: the failure streak ends (§7).
       if (fromWake && first.stopReason === 'end_turn') s.wakeFailures = 0
-      how = turnHow(first, false)
       return
     }
     const second = await mgr.sendTurn(
@@ -358,7 +331,7 @@ export async function runPrompt(mgr: TurnsCtx, s: Session,
       true
     )
     if (second.limit) {
-      how = { limited: { until: mgr.onLimited(s, second.limit) }, incomplete: false }
+      mgr.onLimited(s, second.limit)
       return
     }
     // The nudge turn failing leaves a watcher blind just as the first would (§7).
@@ -367,15 +340,13 @@ export async function runPrompt(mgr: TurnsCtx, s: Session,
       if (failed) mgr.onWakeFailed(s, second.threw ? 'the turn failed' : `stopped: ${second.stopReason}`)
       else if (second.stopReason === 'end_turn') s.wakeFailures = 0
     }
-    const incomplete = mgr.decideTurn(s, second, true) === 'incomplete'
-    if (incomplete) {
+    if (mgr.decideTurn(s, second, true) === 'incomplete') {
       mgr.push(s, { kind: 'system', text: `turn ended without ${contractToolFor(sessionRole(s.info))}` })
       s.info.incomplete = true
       if (sessionRole(s.info) === 'watcher') mgr.onWatcherIncomplete(s)
       mgr.bus.emit('session.changed', { sessionId: s.info.id })
       mgr.schedulePersist(s.ref)
     }
-    how = turnHow(second, incomplete)
   } finally {
     s.nudgePending = false
     // A turn the user cancelled leaves nothing scheduled that it scheduled
@@ -392,12 +363,7 @@ export async function runPrompt(mgr: TurnsCtx, s: Session,
       }
       s.cancelledAt = undefined
     }
-    // An ordinary session drops `promptRunning` right here, with no write and
-    // no event in between, exactly as before the loop (it is the update
-    // deferral's and the drain's gate); only a loop session pays for the
-    // settled-turn record (`settleTurn` drops it after its write).
-    if (turn) await mgr.settleTurn(s, turn, how)
-    else s.promptRunning = false
+    s.promptRunning = false
     // Whatever was typed while this turn ran goes next. A no-op when the drain
     // loop is what called this (it owns `draining` and continues on its own) —
     // this is here for the one turn it does not drive, the start prompt.
@@ -406,50 +372,6 @@ export async function runPrompt(mgr: TurnsCtx, s: Session,
       if (s.info.watcher) mgr.schedule()
     })
   }
-}
-
-/**
- * The end of a logical turn, once gurt has classified how it ended
- * (docs/requirements-review-loop.md §5.1, §8): record it as `lastSettled` and
- * persist it, *then* emit `session.settled` — the bus replays nothing, so a
- * loop that misses the event reads the record at boot. A failed write is
- * logged and the event still goes out: the live loop must not hang on a disk
- * error, and only the replay after a crash is lost.
- *
- * A deleted session settles to nobody (`session.deleted` is its event).
- * `promptRunning` drops after the write and before the emit, so a subscriber
- * that queues a host message from the handler finds the session free.
- */
-export async function settleTurn(mgr: TurnsCtx, s: Session, turn: TurnTrack, how: TurnHow): Promise<void> {
-  if (s.turn === turn) s.turn = undefined
-  const settled: SettledTurn = {
-    turnId: turn.id,
-    ...(turn.complete ? { complete: turn.complete } : {}),
-    ...(turn.verdict ? { verdict: turn.verdict } : {}),
-    ...how
-  }
-  const previous = s.lastSettled
-  s.lastSettled = settled
-  // §5.1/§8: never hand the controller an input absent from durable storage.
-  // Bounded retries absorb transient writes; exhaustion faults with the hold.
-  let durable = false
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      await mgr.persistNow(s)
-      durable = true
-      break
-    } catch (err) {
-      log.error('session.persist.fail', { err })
-    }
-  }
-  s.promptRunning = false
-  if (!durable) {
-    s.lastSettled = previous
-    mgr.loopHooks?.storageFault?.(s.info.id)
-    return
-  }
-  if (mgr.sessions.get(s.info.id) === s)
-    mgr.bus.emit('session.settled', { sessionId: s.info.id, ref: s.ref, turn: settled })
 }
 
 /**
@@ -471,10 +393,6 @@ export async function drainPending(mgr: TurnsCtx, s: Session): Promise<void> {
     // clone is elsewhere, and attaching would only fail with it.
     // Case three: the account is at its limit — what is waiting would only be
     // refused, so it stays put until the hold lifts (`schedule()` again).
-    // Case four: a review loop is delivering in this scope — its steps are
-    // irreversible, so a typed message waits and runs after the loop has
-    // ended (docs/requirements-review-loop.md §5.6, "During delivery"); the
-    // controller calls `schedule()` when it does.
     while (
       s.pending.length &&
       !s.busy &&
@@ -482,7 +400,6 @@ export async function drainPending(mgr: TurnsCtx, s: Session): Promise<void> {
       !mgr.repoHolder(s) &&
       !mgr.earlierQueueItem(s) &&
       !mgr.limitHold(s) &&
-      !mgr.deliveryActive(s) &&
       // A wake whose write has not landed is not delivered yet (§5.1).
       s.pending[0] !== s.wakeWriting &&
       // A poll in flight ends first (§6.1); `setPolling(false)` drains again.
@@ -493,8 +410,6 @@ export async function drainPending(mgr: TurnsCtx, s: Session): Promise<void> {
       const next = s.pending.shift()!
       consumed = true
       s.interrupted = true
-      // Beside `interrupted`, in the same write as the prompt's removal (§8).
-      s.loopRan = loopOf(next.origin)
       if (s.info.role === 'watcher') {
         s.ranOrigin = mgr.isWakeWork(next) ? 'wake' : 'user'
         // The wake counts when the drain takes it, in this same record (§5.1).
@@ -503,7 +418,7 @@ export async function drainPending(mgr: TurnsCtx, s: Session): Promise<void> {
           s.wakeNote = next.origin.note
         }
       }
-      await mgr.runPrompt(s, next.text, next.context, next.images, loopOf(next.origin))
+      await mgr.runPrompt(s, next.text, next.context, next.images)
     }
   } catch (e) {
     log.error('internal.fail', { site: 'pending-drain', s: s.info.id, err: e })

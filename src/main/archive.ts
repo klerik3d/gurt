@@ -161,8 +161,6 @@ export class ArchiveManager {
       }
       return this.kernel.sessions.withTaskFrozen(ws, task, () =>
         this.kernel.terminals.withScopeBlocked(ws, task, () => withTaskChangesPaused(ws, task, async () => {
-          if (this.kernel.reviewLoop.live(ws, task))
-            throw new Error('A review loop is running in this scope; stop it or wait for it to end before archiving')
           if (this.kernel.sessions.taskHasPendingWork(ws, task))
             throw new Error('Finish or cancel queued/running work and remove unsent draft images before archiving this scope')
           if (automatic && !(await this.eligible(ws, task))) throw new Error('Scope is no longer eligible for auto-archive')
@@ -238,8 +236,6 @@ export class ArchiveManager {
       if ((await store.getTask(ws, task)).proactive) throw new Error('Proactive runs cannot be archived separately')
       if ((await store.getTask(ws, task)).watcher) throw new Error('A watcher cannot be archived')
       return this.kernel.sessions.withTaskFrozen(ws, task, async () => {
-        if (this.kernel.reviewLoop.live(ws, task))
-          throw new Error('A review loop is running in this scope; stop it or wait for it to end before archiving')
         if (this.kernel.sessions.taskHasPendingWork(ws, task))
           throw new Error('Finish or cancel queued and running work in this scope before archiving')
         this.report('Stopping container…')
@@ -341,6 +337,7 @@ export class ArchiveManager {
         const stored = JSON.parse(await fs.readFile(path.join(staging, 'sessions.json'), 'utf8')) as Awaited<ReturnType<typeof store.readSessions>>
         for (const r of stored) {
           if (this.kernel.sessions.sessionInfo(r.info.id)) throw new Error('A session from this archive already exists')
+          store.dropRemovedLoopData(r)
           delete r.info.container
           r.info.lastActivityAt = new Date().toISOString()
           r.info.archiveSeenAt = undefined
@@ -374,6 +371,7 @@ export class ArchiveManager {
         const sessionId = validId(record.info.id)
         if (this.kernel.sessions.sessionInfo(sessionId)) throw new Error('This session already exists')
         await this.kernel.sessions.flushTask(ws, task)
+        store.dropRemovedLoopData(record)
         delete record.info.container
         record.info.lastActivityAt = new Date().toISOString()
         record.info.archiveSeenAt = undefined

@@ -1,32 +1,42 @@
-// The review loop's check runner (docs/requirements-review-loop.md §5.3, §12
-// item 5): runs one repo's `check` command in the executor's container, as the
-// container user, from /workspaces/<repo>, through the login shell like the
+// The check runner: runs one repo's `check` command in a session container, as
+// the container user, from /workspaces/<repo>, through the login shell like the
 // env's `setup` script (`runScript`, provision.ts) — but not through
-// `dockerExec`: that accumulates all stdout in memory.
+// `dockerExec`: that accumulates all stdout in memory. The watchers' poller
+// uses it; review will.
 //
-// Killing a check is stopping the container (§5.3). Nothing inside the
-// container is trusted to supervise it: the agent controls that container, so a
-// pid file, a process group or a probe there can be forged, raced or escaped
-// (`setsid`, a detached child). What the agent cannot do is stop a container
-// from inside it. So on the timeout, on a cancel and on any end of the loop
-// while a check runs — and for a leftover found at boot — the runner asks the
-// host to stop the container and CONFIRMS it with a separate inspect; only then
-// does a run resolve `stopped`. Unconfirmable resolves the distinct
-// `unconfirmed` (the controller keeps its hold and retries; this module only
-// reports). The container restarts through the usual attach path when the next
-// host message needs it. A check that finishes by itself needs no termination.
+// Killing a check is stopping the container. Nothing inside the container is
+// trusted to supervise it: the agent controls that container, so a pid file, a
+// process group or a probe there can be forged, raced or escaped (`setsid`, a
+// detached child). What the agent cannot do is stop a container from inside
+// it. So on the timeout, on a cancel — and for a leftover found at boot — the
+// runner asks the host to stop the container and CONFIRMS it with a separate
+// inspect; only then does a run resolve `stopped`. Unconfirmable resolves the
+// distinct `unconfirmed` (the caller decides what to do; this module only
+// reports). A check that finishes by itself needs no termination.
 //
-// Residual boundary (§5.3, §10): a descendant that detaches and outlives a
-// NORMALLY finished check is not contained; the `tree-moved` rule (the hash at
-// the verdict must equal the reviewed hash) is what catches it modifying the
-// clone during a review.
+// Residual boundary: a descendant that detaches and outlives a NORMALLY
+// finished check is not contained.
 //
 // Everything that touches a container is injected (`CheckDeps`); the tests run
 // the same module over a fake exec. Nothing is ever written in the container.
 import { StringDecoder } from 'node:string_decoder'
-import { REVIEW_LOOP, type CheckResult } from '../shared/reviewLoop'
 import { loginShell } from './provision'
 import { CONTAINER_ROOT } from '../shared/files'
+
+export interface CheckResult {
+  repo: string
+  command: string
+  code: number
+  ms: number
+  /** The ring's last lines. */
+  tail: string[]
+  /** Only when the run kept stderr apart (a watcher's poll): then `tail` is stdout alone. */
+  stderr?: string[] | undefined
+  timedOut?: boolean | undefined
+}
+
+/** A check that runs longer than this is stopped. */
+export const CHECK_TIMEOUT_MS = 20 * 60_000
 
 // --- bounded capture (§5.3) -------------------------------------------------
 
@@ -173,7 +183,7 @@ export interface CheckOptions {
   progressDelay: (elapsedMs: number) => number
 }
 
-const DEFAULTS: CheckOptions = { timeoutMs: REVIEW_LOOP.checkTimeoutMs, exitWaitMs: 2_000, now: Date.now, progressDelay }
+const DEFAULTS: CheckOptions = { timeoutMs: CHECK_TIMEOUT_MS, exitWaitMs: 2_000, now: Date.now, progressDelay }
 
 export interface CheckRequest {
   /** The `check` intent's id (`<executor>.<n>`): what a cancel names. */

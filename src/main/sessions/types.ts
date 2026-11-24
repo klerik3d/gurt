@@ -5,14 +5,12 @@ import type {
   ChangeProposal,
   ChatEntry,
   EnvRef,
-  HostBusy,
   McpSelection,
   PersistedSession,
   PromptCapabilities,
   PromptContext,
   PromptImage,
   RepoMode,
-  ReviewVerdict,
   SessionConfigOption,
   SessionInfo,
   SessionLogRecord,
@@ -21,11 +19,9 @@ import type {
   SessionRole,
   SessionSnapshot,
   SkillSelection,
-  StoredProposal,
-  StoredVerdict
+  StoredProposal
 } from '../../shared/types'
 import type { CreateAction } from '../../shared/api'
-import type { SettledTurn } from '../../shared/reviewLoop'
 import type { PlanHold } from '../../shared/planUsage'
 import type {
   WakeLate,
@@ -78,39 +74,11 @@ export interface PendingPrompt {
   context?: PromptContext[] | undefined
   images?: PromptImage[] | undefined
   /** Put here by the app, not typed: the "continue" a limit-interrupted turn
-   *  sends once its account's hold lifts (see `onLimited`), or a review loop's
-   *  host message (`origin`). */
+   *  sends once its account's hold lifts (see `onLimited`). */
   auto?: boolean | undefined
-  /** Set on the review loop's host messages (`hostPrompt`): the id of the
-   *  intent that decided them (docs/requirements-review-loop.md §5.5). */
-  origin?: { loop: string } | { limit: true; of: 'wake' | 'user' } | WakeOrigin | undefined
+  origin?: { limit: true; of: 'wake' | 'user' } | WakeOrigin | undefined
 }
 
-
-/**
- * What the review loop's controller tells the session manager
- * (docs/requirements-review-loop.md §5.5, §5.6, §8) — registered with
- * {@link SessionManager.setLoopHooks}. Everything below is inert while none is:
- * with no hooks the manager behaves exactly as it did before the loop existed.
- * The loop *hold* is not here: the manager owns it ({@link
- * SessionManager.holdForLoop}), so it is in place the moment the controller
- * asks, without a second source of truth to keep in step.
- */
-export interface LoopHooks {
-  storageFault?(sessionId: string): void
-  /** The session belongs to a loop that has not ended — its executor or its
-   *  reviewer. The controller resumes these by itself after a restart, so they
-   *  stay out of the Resume-sessions modal and of the update-deferral. */
-  owns(sessionId: string): boolean
-  /** The executors of this scope whose loop is delivering (§5.6, "During
-   *  delivery"): the first irreversible step has started, so what is queued on
-   *  one of them — or on a session sharing a clone with one — waits until it
-   *  ends. Empty = none delivering. */
-  delivering(workspace: string, task: string): readonly string[]
-  /** A loop of this scope has not ended, or has ended and not yet notified
-   *  (§5.6): the scope and its sessions are not archived meanwhile. */
-  live(workspace: string, task: string): boolean
-}
 
 /**
  * What the watcher manager tells the session manager (docs/requirements-
@@ -167,9 +135,6 @@ export interface Session {
    *  Used to turn repo-relative context paths into absolute `file://` resource links. */
   remoteCwd?: string | undefined
   busy: boolean
-  /** Gurt itself is working on the session between its turns — the review
-   *  loop's automatic check (runtime only; see {@link SessionInfo.hostBusy}). */
-  hostBusy?: HostBusy | undefined
   interrupted?: boolean | undefined
   recovering?: boolean | undefined
   recoveryStarting?: boolean | undefined
@@ -191,29 +156,8 @@ export interface Session {
   turnComplete: boolean
   /** Latest change proposal (outcome=changes) from a `complete` call; last wins. */
   proposal?: StoredProposal | undefined
-  /** A reviewer's latest `submit_review` (docs/requirements-review-loop.md
-   *  §4.1); the last call of a turn wins. Runtime only for now. */
-  verdict?: StoredVerdict | undefined
-  /** The logical turn in flight — a prompt plus its nudge — from `runPrompt`'s
-   *  first line to its classification (§5.1). The contract tools file their
-   *  artifacts here; one that lands while it is unset belongs to no turn. */
-  turn?: TurnTrack | undefined
-  /** Logical turns started, for `SettledTurn.turnId` (`<sessionId>:<n>`).
-   *  Unlike `turns` (every `sendTurn`, reset at each container start) it only
-   *  ever grows: seeded at restore from `lastSettled`, so an id is never reused
-   *  across a restart. */
-  turnSeq: number
-  /** The last turn gurt finished classifying; persisted. */
-  lastSettled?: SettledTurn | undefined
-  /** The review-loop intent whose host message the drain last took off the
-   *  queue (docs/requirements-review-loop.md §8, the `message` row): written
-   *  with the prompt's removal from the queue and `interrupted`, in the same
-   *  `sessions.json`, so a message that may already have reached the agent is
-   *  never sent twice. Replaced by the next prompt the drain takes (typed
-   *  ones clear it); persisted. */
-  loopRan?: string | undefined
   /** Where the turn in flight came from (docs/requirements-watchers.md §10):
-   *  persisted beside `interrupted`, like `loopRan`. */
+   *  persisted beside `interrupted`. */
   ranOrigin?: 'wake' | 'user' | undefined
   /** A watcher recovered at boot with approved work only: the manager resumes
    *  it by itself, so it stays out of the Resume-sessions checklist. */
@@ -269,15 +213,6 @@ export interface Session {
   pendingPermissions: Map<number, (outcome: unknown) => void>
 }
 
-/** What the contract tools filed during the logical turn in flight. */
-export interface TurnTrack {
-  id: string
-  /** The turn's last `complete`, any outcome. */
-  complete?: StoredProposal | undefined
-  /** The turn's last `submit_review`. */
-  verdict?: StoredVerdict | undefined
-}
-
 /** Capabilities the session manager needs from the container/mcp/store layers.
  *  Notifications ride the domain bus instead. */
 export interface SessionEvents {
@@ -310,11 +245,7 @@ export interface SessionEvents {
       role: SessionRole
       mounts: { repo: string; mode: RepoMode }[]
       onComplete: (p: ChangeProposal) => void
-      onSubmitReview: (v: ReviewVerdict) => void
       onCreateSession: (req: AgentSessionRequest) => Promise<{ sessionId: string; title: string }>
-      /** An executor in a review loop (`SessionInfo.review` present): selects
-       *  its instructions variant (docs/requirements-review-loop.md §5.5). */
-      reviewLoop?: boolean
       /** Present only for an inspector or operator session — routes its admin
        *  tools into the ws-bound admin surface
        *  (docs/requirements-session-operator.md §3). */
@@ -343,11 +274,6 @@ export interface SessionEvents {
    *  reused for the drafts an agent asks for through `create_session` (which
    *  bypasses that boundary). */
   checkDraftTarget: (ws: string, repos: string[], env?: string, agent?: string) => Promise<void>
-  /** A review loop executor's open set (docs/requirements-review-loop.md
-   *  §4.2): the `findingRef` ids ("R1.F2") its next `complete` with
-   *  `changes` must answer, each exactly once. Absent, or an empty list = no
-   *  open set: `replies` is accepted and ignored. */
-  openFindings?: (sessionId: string) => readonly string[] | undefined
   /** Snapshot every writable clone of the session as it stands before this
    *  user entry is sent — the point a rewind to it restores. Rejects when a
    *  clone cannot be snapshotted (the turn fails before the agent is asked).
@@ -454,6 +380,3 @@ export interface TurnResult {
   limit?: { resetAt?: string | undefined } | undefined
 }
 
-/** What `runPrompt` knows of a logical turn's ending — the rest of {@link
- *  SettledTurn} is the artifacts the contract tools filed. */
-export type TurnHow = Pick<SettledTurn, 'limited' | 'cancelled' | 'failed' | 'incomplete'>
