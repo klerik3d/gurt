@@ -1,6 +1,6 @@
 import { taskKey } from '../../shared/keys'
 import { usePreference, readPreference, selectionSchema, diffFileSchema, z } from './persisted'
-import { useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import type { BootProgress } from '../../shared/api'
 import {
   applyLog,
@@ -29,6 +29,7 @@ import { WatcherSidebar } from './components/WatcherSidebar'
 import { WatcherPane } from './components/WatcherPane'
 import { useFiles } from './useFiles'
 import { DiffOpener, FileOpener, type OpenScopeDiff, type OpenScopeFile } from './fileLinks'
+import { requestReviewJump } from './reviewJump'
 import { useScopeList } from './useScopeList'
 import type { DiffFileSelection } from './components/DiffSidebar'
 import { SettingsPage, SETTINGS_SECTIONS, type SettingsSection } from './components/SettingsPage'
@@ -891,6 +892,12 @@ export default function App() {
   // file. The session stays selected when it is the scope's own — that keeps
   // the way back to the chat one click.
   const openFile = files.open
+  // A notification, clicked: its session; an RPM one leads to the executor's
+  // Review tab with its filter (t3v2 §11, t2v3 D).
+  const openNotificationTarget = useCallback((n: NotificationRecord) => {
+    if (n.open) requestReviewJump(n.open.sessionId, { ...(n.open.finding && { finding: n.open.finding }), ...(n.open.filter && { filter: n.open.filter }) })
+    selectSession(n.open?.sessionId ?? n.sessionId)
+  }, [selectSession])
   const openScopeFile = useCallback<OpenScopeFile>((fws, task, path, jump) => {
     if (fws !== diffTask?.ws || task !== diffTask.task) selectTask(fws, task)
     setView('work')
@@ -901,13 +908,33 @@ export default function App() {
   }, [diffTask?.ws, diffTask?.task, selectTask, setView, setWorkMode, setLeftSidebarVisible, openFile])
   // The review loop's "approve the changes" note, clicked: the Diff view of
   // that scope, where the uncommitted changes are read and approved.
-  const openScopeDiff = useCallback<OpenScopeDiff>((dws, task) => {
+  // RPM's "marked N files" (t2v3 D): the same, with the list filtered to those files.
+  const [diffOnly, setDiffOnly] = useState<{ ws: string; task: string; files: string[] } | null>(null)
+  const openScopeDiff = useCallback<OpenScopeDiff>((dws, task, only) => {
     if (dws !== diffTask?.ws || task !== diffTask.task) selectTask(dws, task)
     setView('work')
     setWorkMode('diff')
     setLeftSidebarVisible(true)
     setForceWelcome(false)
-  }, [diffTask?.ws, diffTask?.task, selectTask, setView, setWorkMode, setLeftSidebarVisible])
+    setDiffOnly(only ? { ws: dws, task, files: only } : null)
+    const first = only?.[0]
+    const cut = first ? first.indexOf('/') : -1
+    // TODO(rpm): a repo name with '/' in it splits wrong here; a marked file committed since is not in the list.
+    if (first && cut > 0) setDiffFile({ ws: dws, task, repo: first.slice(0, cut), path: first.slice(cut + 1) })
+  }, [diffTask?.ws, diffTask?.task, selectTask, setView, setWorkMode, setLeftSidebarVisible, setDiffFile])
+  useEffect(() => {
+    if (workMode !== 'diff') setDiffOnly(null)
+  }, [workMode])
+  const sidebarChanges = useMemo(() => {
+    const key = diffOnly && taskKey(diffOnly.ws, diffOnly.task)
+    const list = key ? changes[key] : undefined
+    if (!diffOnly || !key || !list) return changes
+    const keep = new Set(diffOnly.files)
+    const only = list
+      .map((r) => ({ ...r, files: r.files.filter((f) => keep.has(`${r.repo}/${f.path}`)) }))
+      .filter((r) => r.files.length)
+    return { ...changes, [key]: only }
+  }, [changes, diffOnly])
   const diffWorkspace = ws?.name
   useEffect(() => {
     if (view !== 'work' || workMode !== 'diff' || !diffWorkspace) return
@@ -1068,7 +1095,7 @@ export default function App() {
                 notifications={notifications}
                 tree={tree}
                 onClose={() => setNotifOpen(false)}
-                onSelectSession={selectSession}
+                onOpen={openNotificationTarget}
                 onMarkRead={markNotificationRead}
                 onMarkAllRead={markAllNotificationsRead}
                 onDismiss={dismissNotification}
@@ -1174,7 +1201,8 @@ export default function App() {
                   setDiffFile(file)
                 }}
                 onRefreshChanges={(w, t) => loadChanges(w, t, true)}
-                changes={changes}
+                changes={workMode === 'diff' ? sidebarChanges : changes}
+                diffFilter={workMode === 'diff' && diffOnly ? { files: diffOnly.files.length, onClear: () => setDiffOnly(null) } : null}
                 activity={activity}
                 focusSignal={focusTasksSignal}
                 readStateReady={readStateReady}
@@ -1546,7 +1574,7 @@ export default function App() {
           onOpen={(n) => {
             closePopup(n.id)
             markNotificationRead(n.id)
-            selectSession(n.sessionId)
+            openNotificationTarget(n)
           }}
         />
         <ToastHost />

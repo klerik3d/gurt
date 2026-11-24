@@ -6,9 +6,10 @@ import { RpmHostProvider, type ReviewerFieldsProps, type RpmHost } from '../../.
 import type { AgentConfig, AgentsFile, SessionConfigOption, SessionInfo, Tree } from '../../../shared/types'
 import { agentDef } from '../../../shared/agents'
 import { agentKind, agentName, useAgents } from '../useAgents'
-import { FileOpener } from '../fileLinks'
+import { DiffOpener, FileOpener } from '../fileLinks'
 import { confirmDialog } from '../dialog'
 import { requestChatJump } from '../chatJump'
+import { requestReviewJump } from '../reviewJump'
 import { AgentIcon, InfoDot } from './icons'
 import { AgentMark } from './tags'
 import { OptionBlock, PickRow } from './ConfigTab'
@@ -35,6 +36,12 @@ function reviewerProblem(agents: AgentsFile, denied: readonly string[], agent: s
 const deniedIn = (info: SessionInfo, tree: Tree | null): string[] =>
   tree?.workspaces.find((w) => w.name === info.workspace)?.deniedAgents ?? []
 
+function scopeOf(tree: Tree | null, sessionId: string): { ws: string; task: string } | undefined {
+  for (const w of tree?.workspaces ?? [])
+    for (const t of w.tasks) if (t.sessions.some((s) => s.id === sessionId)) return { ws: w.name, task: t.name }
+  return undefined
+}
+
 const SessionOf = createContext<{ info: SessionInfo; tree: Tree | null } | null>(null)
 
 /** Provides rpm/ui's host for one session pane. */
@@ -51,6 +58,7 @@ export function ReviewHost({
   children: ReactNode
 }) {
   const openScopeFile = useContext(FileOpener)
+  const openScopeDiff = useContext(DiffOpener)
   const agents = useAgents()
   const { workspace: ws, task } = info
   const denied = deniedIn(info, tree)
@@ -64,12 +72,24 @@ export function ReviewHost({
         requestChatJump(sessionId, entryId)
         if (sessionId !== info.id) onSelect(sessionId)
       },
+      openChatLine: (sessionId, line) => {
+        requestChatJump(sessionId, line)
+        if (sessionId !== info.id) onSelect(sessionId)
+      },
+      // The executor opens on its Review tab, focused (Chat's `useReviewJump`).
+      openReview: (executor, focus) => {
+        requestReviewJump(executor, focus)
+        if (executor !== info.id) onSelect(executor)
+      },
+      openDiff: (dws, dtask, files) => openScopeDiff?.(dws, dtask, files),
+      // A reviewer lives in its executor's scope, but look it up.
+      scopeOf: (executor) => scopeOf(tree, executor) ?? (executor === info.id ? { ws, task } : undefined),
       confirm: (text, opts) => confirmDialog(text, opts),
       reviewerProblem: (agent) => reviewerProblem(agents, deniedKey ? deniedKey.split('\n') : [], agent),
       InfoDot,
       ReviewerFields
     }),
-    [openScopeFile, ws, task, onSelect, agents, deniedKey, info.id]
+    [openScopeFile, openScopeDiff, tree, ws, task, onSelect, agents, deniedKey, info.id]
   )
   const scope = useMemo(() => ({ info, tree }), [info, tree])
   return (

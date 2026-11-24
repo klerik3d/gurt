@@ -3,9 +3,18 @@
 // once it is mounted and the entry is rendered.
 import { useSyncExternalStore } from 'react'
 
+/** An RPM handoff line in a chat log, by the journal entry it comes from (`ChatSystem.rpm`). */
+export interface RpmLineRef {
+  executor: string
+  run: number
+  seq: number
+}
+
 export interface ChatJump {
   sessionId: string
-  entryId: number
+  /** The entry, or the RPM line whose entry the Chat finds in its log. */
+  entryId?: number
+  line?: RpmLineRef
   /** Distinguishes two jumps to the same entry. */
   n: number
 }
@@ -15,8 +24,8 @@ let n = 0
 const listeners = new Set<() => void>()
 const notify = (): void => listeners.forEach((fn) => fn())
 
-export function requestChatJump(sessionId: string, entryId: number): void {
-  pending = { sessionId, entryId, n: ++n }
+export function requestChatJump(sessionId: string, at: number | RpmLineRef): void {
+  pending = typeof at === 'number' ? { sessionId, entryId: at, n: ++n } : { sessionId, line: at, n: ++n }
   notify()
 }
 

@@ -8,6 +8,7 @@ import {
   type Owner,
   type RpmCommand,
   type RpmFinding,
+  type ReviewMark,
   type RpmState,
   type Severity
 } from '../core'
@@ -236,4 +237,9 @@ export function sortFindings(list: RpmFinding[], key: SortKey, desc: boolean): R
     }
   }
   return [...list].sort((a, b) => (desc ? -cmp(a, b) : cmp(a, b)) || num(a.id) - num(b.id))
+}
+
+/** The marked files as `<repo>/<path>` — what "marked N files" opens in Diff (t2v3 D). */
+export function markFiles(mark: ReviewMark): string[] {
+  return mark.repos.flatMap((r) => r.files.map((f) => `${r.repo}/${f.path}`))
 }

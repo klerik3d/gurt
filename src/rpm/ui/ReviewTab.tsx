@@ -3,9 +3,10 @@
 // quick filters, the findings table with the expanded row, History and the
 // folded Settings. Standard components and metrics only — no dots, no header
 // badges, no coloured rails.
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { Entry, RpmCommand, RpmConfig, RpmFinding, RpmState, RunSummary, Severity, VerdictTo } from '../core'
-import { useRpmHost } from './host'
+import { FindingText } from './FindingPopup'
+import { useRpmHost, type ReviewFocus } from './host'
 import {
   FILTERS,
   OWNER_TONE,
@@ -17,6 +18,7 @@ import {
   entryLine,
   historyMove,
   inFilter,
+  markFiles,
   sortFindings,
   statusLine,
   where,
@@ -26,28 +28,66 @@ import {
 import { Settings, settingsSummary } from './Settings'
 import { useRpm, type RpmData } from './useRpm'
 
-export function ReviewTab({ executor }: { executor: string }) {
+/** `focus` (set by `RpmHost.openReview` through the app): the run, row and
+ *  filter to show; `onFocused` once they are shown (t2v3 D). */
+export function ReviewTab({
+  executor,
+  focus,
+  onFocused
+}: {
+  executor: string
+  focus?: ReviewFocus | undefined
+  onFocused?: (() => void) | undefined
+}) {
   // Everything local (run picked, filter, open row) belongs to one executor.
-  return <ReviewTabOf key={executor} executor={executor} />
+  return <ReviewTabOf key={executor} executor={executor} focus={focus} onFocused={onFocused} />
 }
 
 const errorText = (e: unknown): string => (e instanceof Error ? e.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '') : String(e))
 
-function ReviewTabOf({ executor }: { executor: string }) {
+function ReviewTabOf({
+  executor,
+  focus,
+  onFocused
+}: {
+  executor: string
+  focus: ReviewFocus | undefined
+  onFocused: (() => void) | undefined
+}) {
   const [run, setRun] = useState<number | undefined>(undefined)
   const data = useRpm(executor, run)
-  return <ReviewTabView executor={executor} data={data} onRun={setRun} />
+  const lastRun = data.runs[data.runs.length - 1]?.run
+  // A focus without a run means the last one: named here, so that a run
+  // already on screen (an older one) does not take it before the last loads.
+  const resolved = useMemo(() => resolveFocus(focus, data.loaded ? lastRun : undefined), [focus, data.loaded, lastRun])
+  useEffect(() => {
+    if (!focus) return
+    setRun(focus.run === undefined || focus.run === lastRun ? undefined : focus.run)
+    // Only a new focus moves the run; lastRun is read as it is then.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focus])
+  return <ReviewTabView executor={executor} data={data} onRun={setRun} focus={resolved} onFocused={onFocused} />
+}
+
+/** The focus with its run named: none = the last run (`lastRun`, undefined while unknown — then it waits). */
+export function resolveFocus(focus: ReviewFocus | undefined, lastRun: number | undefined): ReviewFocus | undefined {
+  if (!focus || focus.run !== undefined) return focus
+  return lastRun === undefined ? undefined : { ...focus, run: lastRun }
 }
 
 /** The tab over data already read — what `ReviewTab` shows (exported for the tests). */
 export function ReviewTabView({
   executor,
   data,
-  onRun
+  onRun,
+  focus,
+  onFocused
 }: {
   executor: string
   data: RpmData
   onRun: (run: number | undefined) => void
+  focus?: ReviewFocus | undefined
+  onFocused?: (() => void) | undefined
 }) {
   const { api } = useRpmHost()
   const [error, setError] = useState('')
@@ -71,7 +111,17 @@ export function ReviewTabView({
     <div className="ns-body rpm-tab">
       {err && <div className="error rpm-error">{err}</div>}
       {data.state ? (
-        <RunView executor={executor} state={data.state} runs={data.runs} config={data.config} onRun={onRun} act={act} onPatch={patch} />
+        <RunView
+          executor={executor}
+          state={data.state}
+          runs={data.runs}
+          config={data.config}
+          onRun={onRun}
+          act={act}
+          onPatch={patch}
+          focus={focus}
+          onFocused={onFocused}
+        />
       ) : (
         data.config && (
           <>
@@ -93,7 +143,9 @@ function RunView({
   config,
   onRun,
   act,
-  onPatch
+  onPatch,
+  focus,
+  onFocused
 }: {
   executor: string
   state: RpmState
@@ -102,13 +154,19 @@ function RunView({
   onRun: (run: number | undefined) => void
   act: (p: Promise<unknown>) => Promise<boolean>
   onPatch: (p: Partial<RpmConfig>) => void
+  focus?: ReviewFocus | undefined
+  onFocused?: (() => void) | undefined
 }) {
   const { api } = useRpmHost()
   // The badge counts what waits for you, so that is where the tab opens when
   // anything does (t2v3 B: the filter stands by itself).
-  const [filter, setFilter] = useState<Filter>(state.counts.you > 0 ? 'you' : 'all')
+  // A focus for another run waits for that run (the effect below).
+  const mine = focus && (focus.run === undefined || focus.run === state.run) ? focus : undefined
+  const [filter, setFilter] = useState<Filter>(
+    mine?.filter ?? (mine?.finding ? 'all' : state.counts.you > 0 ? 'you' : 'all')
+  )
   const [sort, setSort] = useState<{ key: SortKey; desc: boolean }>({ key: 'severity', desc: true })
-  const [open, setOpen] = useState<string | undefined>(undefined)
+  const [open, setOpen] = useState<string | undefined>(mine?.finding)
   const [historyOpen, setHistoryOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   // Something new waits for you while the tab is open: show it.
@@ -118,6 +176,24 @@ function RunView({
     if (you > 0 && prevYou.current === 0) setFilter('you')
     prevYou.current = you
   }, [you])
+
+  // A link asked for a row or a filter (t2v3 D): shown once the run it names is here.
+  const tableRef = useRef<HTMLTableElement>(null)
+  useEffect(() => {
+    if (!focus || (focus.run !== undefined && focus.run !== state.run)) return
+    if (focus.filter) setFilter(focus.filter)
+    else if (focus.finding) setFilter('all')
+    if (focus.finding) {
+      setOpen(focus.finding)
+      const id = focus.finding
+      requestAnimationFrame(() =>
+        tableRef.current?.querySelector(`[data-fid="${id}"]`)?.scrollIntoView?.({ block: 'nearest' })
+      )
+    }
+    onFocused?.()
+    // onFocused is a fresh closure every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focus, state.run])
 
   const shown = sortFindings(state.findings.filter((f) => inFilter(f, filter)), sort.key, sort.desc)
   const head = (key: SortKey, label: string, width?: number): ReactNode => (
@@ -147,7 +223,7 @@ function RunView({
       </div>
 
       {shown.length ? (
-        <table className="rpm-table">
+        <table className="rpm-table" ref={tableRef}>
           <thead>
             <tr>
               {head('id', 'id', 52)}
@@ -177,7 +253,7 @@ function RunView({
       )}
 
       <Fold label="History" meta={`${state.journal.length} entries`} open={historyOpen} onToggle={() => setHistoryOpen(!historyOpen)}>
-        <History journal={state.journal} />
+        <History executor={executor} run={state.run} journal={state.journal} />
       </Fold>
       <Fold
         label="Settings"
@@ -206,7 +282,7 @@ function StatusBar({
   onRun: (run: number | undefined) => void
   act: (p: Promise<unknown>) => Promise<boolean>
 }) {
-  const { api, confirm } = useRpmHost()
+  const { api, confirm, openDiff, scopeOf } = useRpmHost()
   const [output, setOutput] = useState(false)
   const [menu, setMenu] = useState<'runs' | 'more' | null>(null)
   const [note, setNote] = useState<string | null>(null)
@@ -238,8 +314,16 @@ function StatusBar({
         {line.marked !== undefined && (
           <>
             <span className="faint">·</span>
-            {/* TODO(rpm): task 12 links this to Diff with the marked files. */}
-            <span className="dim">marked {line.marked} {line.marked === 1 ? 'file' : 'files'}</span>
+            {state.mark ? (
+              <button type="button" className="btn-link rpm-link" onClick={() => {
+                  const scope = scopeOf(executor)
+                  if (scope) openDiff(scope.ws, scope.task, markFiles(state.mark!))
+                }}>
+                marked {line.marked} {line.marked === 1 ? 'file' : 'files'}
+              </button>
+            ) : (
+              <span className="dim">marked {line.marked} {line.marked === 1 ? 'file' : 'files'}</span>
+            )}
           </>
         )}
         {line.output && (
@@ -349,15 +433,18 @@ function StatusBar({
 function CheckOutput({ journal }: { journal: Entry[] }) {
   const check = [...journal].reverse().find((e) => e.kind === 'check')
   const fail = [...journal].reverse().find((e) => e.kind === 'fail')
-  const text =
-    check?.kind === 'check'
-      ? check.runs
-          .filter((r) => r.code !== 0 || !check.ok)
-          .map((r) => `${r.repo} $ ${r.command} → ${r.timedOut ? 'timed out' : `exit ${r.code}`}\n${r.tail.join('\n')}`)
-          .join('\n\n')
-      : ''
   const detail = fail?.kind === 'fail' && fail.reason === 'check-error' ? fail.detail : ''
-  return <pre className="env-log rpm-output">{[detail, text].filter(Boolean).join('\n\n') || 'no check output'}</pre>
+  return <pre className="env-log rpm-output">{[detail, checkText(check)].filter(Boolean).join('\n\n') || 'no check output'}</pre>
+}
+
+/** A check entry's failing commands with their output tail. */
+function checkText(check: Entry | undefined): string {
+  return check?.kind === 'check'
+    ? check.runs
+        .filter((r) => r.code !== 0 || !check.ok)
+        .map((r) => `${r.repo} $ ${r.command} → ${r.timedOut ? 'timed out' : `exit ${r.code}`}\n${r.tail.join('\n')}`)
+        .join('\n\n')
+    : ''
 }
 
 // --- the findings table --------------------------------------------------------------------
@@ -386,7 +473,7 @@ function FindingRow({
   }
   return (
     <>
-      <tr className={`rpm-row ${open ? 'open' : ''}`} onClick={onToggle}>
+      <tr className={`rpm-row ${open ? 'open' : ''}`} data-fid={f.id} onClick={onToggle}>
         <td className="mono">
           {f.id}
           {!open && <span className="faint"> ▸</span>}
@@ -485,7 +572,16 @@ function FindingRow({
 
 // --- History, folds, menus -----------------------------------------------------------------------
 
-function History({ journal }: { journal: Entry[] }) {
+/** Review → History (exported for the tests). */
+export function History({ executor, run, journal }: { executor: string; run: number; journal: Entry[] }) {
+  // A failed check's output opens on the spot (t2v3 D, "output").
+  const [outputs, setOutputs] = useState<ReadonlySet<number>>(new Set())
+  const toggle = (seq: number): void =>
+    setOutputs((o) => {
+      const next = new Set(o)
+      if (!next.delete(seq)) next.add(seq)
+      return next
+    })
   let reviews = 0
   return (
     <div className="rpm-hist">
@@ -496,8 +592,17 @@ function History({ journal }: { journal: Entry[] }) {
             <span className="rpm-t">{clock(e.at)}</span>
             <span className="rpm-w">{actorLabel(e.by, e.kind === 'review' ? reviews : undefined)}</span>
             <span>
-              {entryLine(e, reviews)}
+              <FindingText executor={executor} run={run} text={entryLine(e, reviews)} />
               {e.comment && <span className="dim"> — {e.comment}</span>}
+              {e.kind === 'check' && !e.ok && (
+                <>
+                  <span className="faint"> · </span>
+                  <button type="button" className="btn-link rpm-link" aria-expanded={outputs.has(e.seq)} onClick={() => toggle(e.seq)}>
+                    output {outputs.has(e.seq) ? '▾' : '▸'}
+                  </button>
+                </>
+              )}
+              {outputs.has(e.seq) && <pre className="env-log rpm-output">{checkText(e) || 'no check output'}</pre>}
             </span>
           </div>
         )

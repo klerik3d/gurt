@@ -31,12 +31,13 @@ import { ConfigTab } from './ConfigTab'
 import { SessionMenu } from './SessionActions'
 import { ToolStrip, type StripEntry } from './ToolStrip'
 import { TabBar, reviewOf, useSessionTab } from './SessionTabs'
-import { ReviewTab } from '../../../rpm/ui'
+import { ReviewTab, RpmChatLine } from '../../../rpm/ui'
 import { ContainerTerminalButton } from './ContainerTerminalButton'
 import { CopyButton } from './CopyButton'
 import { run } from '../async'
 import { stamp } from '../time'
 import { clearChatJump, useChatJump } from '../chatJump'
+import { clearReviewJump, useReviewJump } from '../reviewJump'
 
 const log = createLogger('chat')
 
@@ -322,7 +323,14 @@ export function Chat({
       return
     }
     const feed = feedRef.current
-    const node = feed?.querySelector<HTMLElement>(`[data-eid="${jump.entryId}"]`)
+    const line = jump.line
+    const eid =
+      jump.entryId ??
+      (line &&
+        entries.find(
+          (e) => e.kind === 'system' && e.rpm?.executor === line.executor && e.rpm.run === line.run && e.rpm.seq === line.seq
+        )?.id)
+    const node = eid === undefined ? null : feed?.querySelector<HTMLElement>(`[data-eid="${eid}"]`)
     if (!feed || !node) {
       // Not in the log (yet): the snapshot may still be on its way; drop it once it is here.
       if (hasSnapshot) clearChatJump(jump)
@@ -337,6 +345,18 @@ export function Chat({
     // setActiveTab is a fresh closure every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jump, activeTab, hasSnapshot, entries.length])
+
+  // A link elsewhere (an F-number, the badge, a notification) asked for this
+  // executor's Review tab, focused: show the tab; ReviewTab takes the focus.
+  const reviewJump = useReviewJump(sessionId)
+  const hasReview = !!(snapshot && reviewOf(snapshot.info))
+  useEffect(() => {
+    if (!reviewJump) return
+    if (hasReview) setActiveTab('review')
+    else if (hasSnapshot) clearReviewJump(reviewJump)
+    // setActiveTab is a fresh closure every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reviewJump, hasReview, hasSnapshot])
 
   // Esc stops the current turn while the agent is working (replaces the Stop
   // button). Ignore Esc raised from a text field (the composer excepted — focus stays there while the agent works) so it can close its own popup,
@@ -463,7 +483,9 @@ export function Chat({
 
       {activeTab === 'config' && <ConfigTab tree={tree} snapshot={snapshot} />}
 
-      {activeTab === 'review' && <ReviewTab executor={sessionId} />}
+      {activeTab === 'review' && (
+        <ReviewTab executor={sessionId} focus={reviewJump} onFocused={() => reviewJump && clearReviewJump(reviewJump)} />
+      )}
 
       {activeTab === 'logs' && (
         <pre className="env-log">{log.length ? log.join('\n') : 'no logs yet'}</pre>
@@ -737,6 +759,16 @@ function Msg({
       </div>
       return <PermissionMsg entry={entry} sessionId={sessionId} />
     case 'system':
+      // An RPM handoff (t3v2 §10.2, t2v3 C): a neutral dot like any service line.
+      if (entry.rpm)
+        return (
+          <div className="msg msg-tool has-copy" data-eid={entry.id}>
+            <CopyButton text={entry.rpm.text ?? entry.text} title="copy message" />
+            <MsgTime at={entry.at} />
+            <span className="msg-dot msg-dot-sm msg-dot-idle" />
+            <RpmChatLine line={entry.rpm} />
+          </div>
+        )
       return (
         <div className="msg msg-tool has-copy" data-eid={entry.id}>
           <CopyButton text={entry.text} title="copy message" />

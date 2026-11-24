@@ -40,7 +40,7 @@ export function NotificationsPanel({
   notifications,
   tree,
   onClose,
-  onSelectSession,
+  onOpen,
   onMarkRead,
   onMarkAllRead,
   onDismiss
@@ -48,7 +48,8 @@ export function NotificationsPanel({
   notifications: NotificationRecord[]
   tree: Tree | null
   onClose: () => void
-  onSelectSession: (id: string) => void
+  /** Go where the notification leads: its session, or RPM's Review target (`open`). */
+  onOpen: (n: NotificationRecord) => void
   onMarkRead: (id: string) => void
   onMarkAllRead: () => void
   onDismiss: (id: string) => void
@@ -74,7 +75,7 @@ export function NotificationsPanel({
 
   const open = (n: NotificationRecord) => {
     onMarkRead(n.id)
-    onSelectSession(n.sessionId)
+    onOpen(n)
     onClose()
   }
 

@@ -92,7 +92,8 @@ export function Sidebar({
   mode = 'sessions',
   diffFile,
   onSelectDiffFile,
-  onRefreshChanges
+  onRefreshChanges,
+  diffFilter
 }: {
   collapsed: Set<string>
   setCollapsed: React.Dispatch<React.SetStateAction<Set<string>>>
@@ -104,6 +105,8 @@ export function Sidebar({
   diffFile?: DiffFileSelection | null
   onSelectDiffFile: (file: DiffFileSelection) => void
   onRefreshChanges: (ws: string, task: string) => Promise<void>
+  /** Diff mode shows only some files (RPM's "marked N files", t2v3 D); `onClear` shows all again. */
+  diffFilter?: { files: number; onClear: () => void } | null
   tree: Tree | null
   scopeList: ScopeListController
   /** Name of the workspace currently shown; null while the tree loads. */
@@ -760,6 +763,14 @@ export function Sidebar({
 
       <ScopeFilter controller={scopeList} onFocusTree={() => treeRef.current?.focus()} />
       {mode === 'diff' && refreshError && <div className="error diff-refresh-error">{refreshError}</div>}
+      {mode === 'diff' && diffFilter && (
+        <div className="diff-filter-note faint">
+          only the {diffFilter.files} marked {diffFilter.files === 1 ? 'file' : 'files'} ·{' '}
+          <button type="button" className="btn-link" onClick={diffFilter.onClear}>
+            show all
+          </button>
+        </div>
+      )}
       <div className="sb-tree" ref={treeRef} tabIndex={0} role="tree" onKeyDown={onTreeKey}>
         {tasks.map((task) => {
           const tkey = taskKey(wsName, task.name)

@@ -5453,3 +5453,85 @@ button.chip-x {
   background: var(--hover);
   color: var(--text);
 }
+
+/* RPM handoff lines in chat (t2v3 C): who → whom → findings; ▾ opens the full text. */
+.rpm-line {
+  font-size: var(--fs-12);
+  color: var(--dim);
+  padding-top: 6px;
+  min-width: 0;
+}
+.rpm-line-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+.rpm-line-who {
+  color: var(--text);
+}
+.rpm-line-red .rpm-line-who,
+.rpm-line-fail {
+  color: var(--red);
+}
+.rpm-line-more {
+  color: var(--faint);
+  font-size: var(--fs-11);
+}
+.rpm-line-text {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--mono);
+  font-size: var(--fs-11);
+  color: var(--dim);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+}
+.rpm-ref {
+  white-space: nowrap;
+}
+.rpm-fid {
+  font-size: var(--fs-11);
+  color: var(--text);
+}
+.rpm-ref-label {
+  color: var(--dim);
+}
+
+/* The finding popup (t2v3 C). */
+.rpm-pop {
+  position: fixed;
+  width: 320px;
+  padding: 10px 12px;
+}
+.rpm-pop-body {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: var(--fs-12);
+}
+.rpm-pop-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.rpm-pop-claim {
+  color: var(--text);
+}
+.rpm-pop-body > .rpm-link {
+  align-self: flex-start;
+}
+.rpm-pop-comment {
+  color: var(--dim);
+}
+
+/* Diff filtered to RPM's marked files. */
+.diff-filter-note {
+  padding: 4px 12px 6px;
+  font-size: var(--fs-11);
+}
