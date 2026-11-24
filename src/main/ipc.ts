@@ -126,6 +126,14 @@ export function registerIpc(): void {
     // the session-log channel; the full fold comes from session:snapshot.
     if (snap) broadcast('session-changed', { ...snap, entries: undefined })
   })
+  // A state move (queued ↔ draft, started) also changes the open pane's
+  // snapshot — which Config view it shows, the live model/effort a start
+  // settled on — and several of them announce themselves only here and on
+  // `tree.changed`, which refreshes the sidebar but not the snapshot.
+  kernel.bus.on('session.state', ({ sessionId }) => {
+    const snap = kernel.sessions.snapshot(sessionId)
+    if (snap) broadcast('session-changed', { ...snap, entries: undefined })
+  })
   kernel.bus.on('session.log', (e) => broadcast('session-log', e))
   kernel.bus.on('session.turn', (e) => broadcast('session-turn', e))
   kernel.bus.on('provision.log', (e) => broadcast('provision-log', e))

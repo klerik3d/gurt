@@ -7,7 +7,6 @@ import {
   repoMode,
   roleForcesRead,
   sessionRole,
-  type AgentConfig,
   type McpMode,
   type RepoConfig,
   type RepoMode,
@@ -27,10 +26,10 @@ import {
   type McpEntry
 } from '../../../shared/mcp'
 import { resolveSkillSelection, type SkillEntry } from '../../../shared/skills'
-import { agentOptionView } from '../../../shared/agentConfig'
+import { agentOptionView, pickerValue, withPickedValues } from '../../../shared/agentConfig'
 import { agentVocabulary, isBlanketMode } from '../../../shared/agentVocabulary'
 import { agentDef } from '../../../shared/agents'
-import { agentKind, agentName, useAgents } from '../useAgents'
+import { agentKind, agentName, useAgentConfig, useAgents } from '../useAgents'
 import { useMcpEntries } from '../useMcp'
 import { useSkillEntries } from '../useSkills'
 import { NetworkPicker } from './Network'
@@ -240,7 +239,7 @@ export function OptionBlock({
   onPick: (opt: SessionConfigOption, value: string | boolean) => void
 }) {
   const view = agentOptionView(kind)
-  const effective = view.activeValue({ ...opt, currentValue: values[opt.id] ?? opt.currentValue })
+  const effective = view.activeValue({ ...opt, currentValue: pickerValue(opt, values) })
   const label =
     opt.category === 'model' ? 'MODEL' : opt.category === 'thought_level' ? 'EFFORT' : opt.name.toUpperCase()
   if (opt.type === 'select') {
@@ -315,7 +314,9 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
   const network = info.network ?? { internal: false }
   const autoAllow = info.autoAllow ?? true
   const configValues = info.configValues ?? {}
-  const [agentConfig, setAgentConfig] = useState<AgentConfig | null>(null)
+  // The chosen agent's cached config surface, so the model/effort/command
+  // controls can be offered before the container is up.
+  const agentConfig = useAgentConfig(info.agent)
   /** Global masking config; null until it loads. `ready` is what makes the
    *  chip usable at all (docs/requirements-pii-mask.md §5.2). */
   const [advancedOpen, setAdvancedOpen] = useState(false)
@@ -329,23 +330,6 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
   const agentList = Object.entries(agents)
     .filter(([id]) => !deniedAgents.includes(id))
     .map(([id, a]) => ({ id, label: a.label, kind: a.kind }))
-
-  // Load the chosen agent's cached config surface so the model/effort/command
-  // controls can be offered before the container is up.
-  useEffect(() => {
-    if (!info.agent) {
-      setAgentConfig(null)
-      return
-    }
-    let live = true
-    window.gurt
-      .getAgentConfig(info.agent)
-      .then((c) => live && setAgentConfig(c))
-      .catch(() => live && setAgentConfig(null))
-    return () => {
-      live = false
-    }
-  }, [info.agent])
 
   const latest = useRef(info)
   latest.current = info
@@ -921,12 +905,28 @@ function LiveConfig({ snapshot }: { snapshot: SessionSnapshot }) {
           {skills.length === 1 ? 'skill was' : 'skills were'} not mounted
         </div>
       )}
+      {/* A queued session has not started yet: everything here is still a
+          draft's, one step away — taking it off the queue makes it editable
+          in place (the pane follows the state, see main's `session.state`). */}
+      {info.state === 'queued' && (
+        <div className="cfg-queued">
+          <span className="hc-note">Queued — the settings are locked while it waits for its start.</span>
+          <button
+            type="button"
+            className="btn btn-sm"
+            onClick={run(() => window.gurt.sessionCancelQueue(info.id).catch((e: unknown) => alertDialog(String(e))))}
+          >
+            Back to draft to edit
+          </button>
+        </div>
+      )}
       {info.state === 'started' && (
         <LiveHarness
           sessionId={info.id}
           agentKind={agentKind(agents, info.agent)}
           modes={snapshot.modes}
           configOptions={snapshot.configOptions ?? []}
+          configValues={info.configValues}
         />
       )}
     </div>
@@ -940,18 +940,26 @@ function LiveHarness({
   sessionId,
   agentKind: kind,
   modes,
-  configOptions
+  configOptions,
+  configValues
 }: {
   sessionId: string
   agentKind?: string | undefined
   modes?: SessionModes | undefined
   configOptions: SessionConfigOption[]
+  /** The session's own picks — layered over an agent that never echoes a
+   *  choice back, exactly as the composer's gear popup does (`withPickedValues`). */
+  configValues?: Record<string, string | boolean> | undefined
 }) {
   const setMode = (id: string) =>
     window.gurt.sessionSetMode(sessionId, id).catch((e: unknown) => alertDialog(String(e)))
   const setConfig = (opt: SessionConfigOption, value: string | boolean) =>
     window.gurt.sessionSetConfigOption(sessionId, opt.id, value).catch((e: unknown) => alertDialog(String(e)))
-  const cfg = configOptions.filter((o) => o.category !== 'mode')
+  const cfg = withPickedValues(
+    configOptions.filter((o) => o.category !== 'mode'),
+    configValues,
+    kind
+  )
   const view = agentOptionView(kind)
   const sectionTitle = (o: SessionConfigOption) =>
     o.category === 'model' ? 'MODEL' : o.category === 'thought_level' ? 'EFFORT' : o.name.toUpperCase()

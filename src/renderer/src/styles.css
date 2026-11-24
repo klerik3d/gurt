@@ -1051,6 +1051,7 @@ textarea.input {
 }
 .sb-task { --level: 0; }
 .sb-session { --level: 1; }
+.sb-session.nested { --level: 2; }
 .sb-task:hover, .sb-session:hover, .file-tree-row:hover,
 .sb-task.selected, .sb-session.selected, .file-tree-row.selected,
 .sb-tree:focus-visible .cursor {
@@ -1158,6 +1159,12 @@ textarea.input {
   width: var(--row-chev);
   flex: none;
 }
+.sb-review-count {
+  font-family: var(--mono);
+  font-size: var(--fs-11);
+  color: var(--faint);
+  flex: none;
+}
 .sb-session-name {
   min-width: 0;
   white-space: nowrap;
@@ -1220,7 +1227,7 @@ textarea.input {
   padding: 5px 11px;
   cursor: pointer;
 }
-.tab-btn:hover {
+.tab-btn:hover:not(:disabled) {
   color: var(--text);
   background: var(--hover);
 }
@@ -2338,6 +2345,12 @@ textarea.input {
 .hc-note {
   font-size: var(--fs-11);
   color: var(--faint);
+}
+.cfg-queued {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
 }
 /* A checkbox row. */
 .rv-check {
@@ -5261,6 +5274,29 @@ button.chip-x {
 }
 .rpm-col {
   max-width: 560px;
+}
+/* The settings under the review switch: a plain group, disabled as one while
+   the review is off. Its controls dim through `button:disabled`; the labels
+   dim with them so the whole block reads as off, not just its chips. */
+.rpm-fields {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+.rpm-fields:disabled .seclabel {
+  opacity: var(--op-disabled);
+}
+.rpm-run-off {
+  margin-top: 18px;
+  opacity: var(--op-disabled);
+}
+.rpm-off {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  font-size: var(--fs-13);
 }
 .rpm-error {
   margin-bottom: 10px;

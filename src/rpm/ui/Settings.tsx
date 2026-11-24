@@ -17,6 +17,9 @@ export const INFO = {
   reviews: 'Reviews in a row without you; after that the loop asks you whether to go on.'
 }
 
+/** Under the switch while it is off — what "off" means here. */
+export const OFF_HINT = "Review is off: the executor's turns are not reviewed. Turn it on to change the settings below."
+
 const ATTEMPTS = [1, 2, 3, 4, 5]
 const REVIEWS = [1, 2, 3, 5, 10]
 
@@ -65,14 +68,23 @@ export function Settings({
         {label('Review', INFO.review)}
         {/* No review without a reviewer that can submit one (t2v3 A). */}
         {chips([false, true], config.enabled, (v) => (v ? 'on' : 'off'), (enabled) => onPatch({ enabled }), (v) => (v ? problem : undefined))}
+        {!config.enabled && <div className="rpm-hint faint">{OFF_HINT}</div>}
       </div>
-      <ReviewerFields
-        executor={executor}
-        value={config.reviewer}
-        info={INFO.reviewer}
-        problem={problem}
-        onChange={(reviewer) => onPatch({ reviewer })}
-      />
+      {/* Off: nothing below applies to anything, so nothing below takes a
+          pick — turning the review on is the way in (a disabled fieldset
+          disables every control inside it). Except the reviewer while it is
+          what refuses "on" (gone, denied, no gurt tools): picking another one
+          is the only way to turn the review on, so it stays open then. */}
+      <fieldset className="rpm-fields" disabled={!config.enabled && !problem}>
+        <ReviewerFields
+          executor={executor}
+          value={config.reviewer}
+          info={INFO.reviewer}
+          problem={problem}
+          onChange={(reviewer) => onPatch({ reviewer })}
+        />
+      </fieldset>
+      <fieldset className="rpm-fields" disabled={!config.enabled}>
       <div className="ns-section">
         {label('Threshold', INFO.threshold)}
         {chips<Severity>(SEVERITIES, config.threshold, String, (threshold) => onPatch({ threshold }))}
@@ -85,6 +97,7 @@ export function Settings({
         {label('Reviews', INFO.reviews)}
         {chips(REVIEWS, config.reviews, String, (reviews) => onPatch({ reviews }))}
       </div>
+      </fieldset>
     </div>
   )
 }

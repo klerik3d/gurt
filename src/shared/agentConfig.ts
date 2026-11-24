@@ -56,3 +56,24 @@ export function withPickedValues(
     return chips.some((c) => c.value === picked) ? { ...o, currentValue: picked } : o
   })
 }
+
+/**
+ * What a picker for a session that has not started yet shows as an option's
+ * value: the pick (`values`), else what an unpicked option starts on.
+ *
+ * The cached report it falls back to (`AgentConfig`) is the *last* live
+ * session's state — after a session of this agent switched model or effort,
+ * its `currentValue` is that session's choice, not what a fresh start without
+ * a pick gets. An agent that lists its own fallback as a `default` entry
+ * (claude-code's) starts an unpicked option there, so that is what is shown;
+ * any other report is the best there is.
+ */
+export function pickerValue(
+  opt: SessionConfigOption,
+  values: Record<string, string | boolean> | undefined
+): string | boolean {
+  const picked = values?.[opt.id]
+  if (picked !== undefined) return picked
+  if (opt.type === 'select' && opt.options?.some((o) => o.value === 'default')) return 'default'
+  return opt.currentValue
+}
