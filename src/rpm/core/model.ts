@@ -230,6 +230,8 @@ export interface RunningStep {
   session?: string
   items?: string[]
   full?: boolean
+  /** The tree when the step began (task 3: rule 5 compares the executor's turn with it). */
+  tree: TreeId
 }
 
 /** The fold of one run's journal — internal to RPM. Task 3 may add fields,
@@ -246,7 +248,7 @@ export interface RunState {
   paused: boolean
   called?: CallReason
   ended?: 'passed' | EndReason
-  lastCheck?: { tree: TreeId; ok: boolean; commands: { repo: string; command: string }[]; step: number }
+  lastCheck?: { tree: TreeId; ok: boolean; commands: { repo: string; command: string }[]; step: number; seq: number }
   /** n = review number R<n>. */
   lastReview?: { tree: TreeId; n: number }
   /** Reviews in the whole run. */
@@ -254,12 +256,34 @@ export interface RunState {
   /** Counters since your last entry (rules 3а, 3б, 5, 8). */
   sinceYou: { reviews: number; redChecks: number }
   /** replies = how many replies the turn carried. */
-  lastTurn?: { tree: TreeId; replies: number; step?: number }
+  lastTurn?: {
+    tree: TreeId
+    replies: number
+    step?: number
+    seq: number
+    /** Tree when the RPM step of this turn began; none for your turns. */
+    before?: TreeId
+  }
   /** Notes waiting for the executor's next RPM message. */
   pendingNotes: string[]
   rerun?: 'check' | 'review'
-  /** seq of entries that were not allowed and changed nothing. */
+  /** seq of entries that were not allowed and changed nothing (or, for a
+   *  review/turn, carried at least one move that was not allowed). */
   ignored: number[]
+  // --- added by task 3 -----------------------------------------------------------
+  /** Each move that was not allowed: the entry and the finding. */
+  ignoredMoves: { seq: number; id: string }[]
+  /** Ids of findings that have your verdict — tracked whatever the threshold. */
+  decided: string[]
+  /** seq of your last entry (`by: 'you'` or `turn { origin: 'user' }`); 0 = none yet. */
+  lastYou: number
+  /** The last step gave no usable result (a `fail`, a failed/blocked RPM turn):
+   *  `next` calls you with this reason. Cleared by your entry or the next step. */
+  failed?: CallReason
+  /** Findings that were stuck with you (disputed/cant) and that your verdict
+   *  sent back to the executor (must/defer), not yet carried by an executor
+   *  step: rule 6 waits for them (t1v6 §1 "остальные ждут", §7 run в). */
+  fresh: string[]
 }
 
 // --- what the models see ----------------------------------------------------------------

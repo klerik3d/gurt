@@ -1,0 +1,182 @@
+// The fold (t3v2 §2.2): a run's state from its journal and nothing else.
+//
+// - A move that is not allowed in the finding's state is kept in the journal
+//   but changes nothing: its seq goes to `ignored` (t1v6 §2).
+// - Your entries change the state at once (t3v2 §6.3); `next` only decides at
+//   a step boundary.
+// - Counters of rules 3а, 3б, 5, 8 run since your last entry. `turn { origin:
+//   'user' }` counts as your entry too, and lifts `called`.
+// - Findings are numbered F1, F2… in the order reviews raise them.
+import { move, ownerOf } from './machine'
+import type { Act, Actor, Entry, Finding, RunState } from './model'
+
+/** The id the next new finding of this run gets. */
+export function nextFindingId(run: Pick<RunState, 'findings'>): string {
+  return `F${run.findings.length + 1}`
+}
+
+export function fold(journal: readonly Entry[]): RunState {
+  const first = journal[0]
+  if (!first || first.kind !== 'start') throw new Error('rpm: a journal begins with a start entry')
+  const run: RunState = {
+    executor: first.executor,
+    run: first.run,
+    base: first.base,
+    config: first.config,
+    findings: [],
+    lastStep: 0,
+    paused: false,
+    reviews: 0,
+    sinceYou: { reviews: 0, redChecks: 0 },
+    pendingNotes: [],
+    ignored: [],
+    ignoredMoves: [],
+    decided: [],
+    lastYou: 0,
+    fresh: []
+  }
+  for (const e of journal.slice(1)) apply(run, e)
+  return run
+}
+
+function apply(run: RunState, e: Entry): void {
+  // TODO(rpm): entries after mark/end are folded as usual; the journal should not have any.
+  if (e.by === 'you' || (e.kind === 'turn' && e.origin === 'user')) {
+    run.lastYou = e.seq
+    run.sinceYou = { reviews: 0, redChecks: 0 }
+    delete run.called
+    delete run.failed
+  }
+  const doMove = (id: string, by: Actor, act: Act): void => {
+    const i = run.findings.findIndex((f) => f.id === id)
+    const f = run.findings[i]
+    const moved = f ? move(f, by, act, run.config) : 'not-allowed'
+    if (moved === 'not-allowed') {
+      if (!run.ignored.includes(e.seq)) run.ignored.push(e.seq)
+      run.ignoredMoves.push({ seq: e.seq, id })
+      return
+    }
+    run.findings[i] = moved
+  }
+  /** A result entry closes the running step it belongs to. */
+  const settle = (step: number | undefined): void => {
+    if (step !== undefined && run.step?.step === step) delete run.step
+  }
+
+  switch (e.kind) {
+    case 'start':
+      break
+    case 'step':
+      run.lastStep = e.step
+      run.step = {
+        step: e.step, what: e.what, key: e.key, tree: e.tree,
+        ...(e.session !== undefined && { session: e.session }),
+        ...(e.items !== undefined && { items: e.items }),
+        ...(e.full !== undefined && { full: e.full })
+      }
+      // A step starting ends any waiting: the call was answered or overridden.
+      delete run.called
+      delete run.failed
+      if (e.rule === 'rerun') delete run.rerun
+      if (e.what === 'executor') {
+        run.pendingNotes = []
+        // Only the items this step carries reach the executor; a fix-check step carries none.
+        const carried = e.items ?? []
+        run.fresh = run.fresh.filter((id) => !carried.includes(id))
+      }
+      break
+    case 'check':
+      settle(e.step)
+      run.lastCheck = { tree: e.tree, ok: e.ok, commands: e.runs.map((r) => ({ repo: r.repo, command: r.command })), step: e.step, seq: e.seq }
+      run.sinceYou.redChecks = e.ok ? 0 : run.sinceYou.redChecks + 1
+      break
+    case 'review': {
+      settle(e.step)
+      run.reviews += 1
+      run.sinceYou.reviews += 1
+      run.lastReview = { tree: e.tree, n: run.reviews }
+      for (const v of e.verify) doMove(v.id, 'reviewer', { verify: v.accept })
+      for (const nf of e.findings) {
+        // Numbered by order; the id in the entry is what the writer took from nextFindingId.
+        const f: Finding = {
+          id: nextFindingId(run),
+          severity: nf.severity,
+          ...(nf.file !== undefined && { file: nf.file }),
+          ...(nf.line !== undefined && { line: nf.line }),
+          claim: nf.claim,
+          scenario: nf.scenario,
+          state: 'open',
+          back: 'open',
+          attempts: 0,
+          raisedIn: run.reviews
+        }
+        run.findings.push(f)
+      }
+      break
+    }
+    case 'turn': {
+      const before = e.step !== undefined && run.step?.step === e.step ? run.step.tree : undefined
+      settle(e.step)
+      run.lastTurn = {
+        tree: e.tree, replies: e.replies.length, seq: e.seq,
+        ...(e.step !== undefined && { step: e.step }),
+        ...(before !== undefined && { before })
+      }
+      for (const r of e.replies) doMove(r.id, 'executor', r.act)
+      if (e.step !== undefined) {
+        // Only turns RPM started: your own turns are yours to judge.
+        if (e.outcome === 'failed') run.failed = 'executor-failed'
+        else if (e.outcome === 'blocked') run.failed = 'executor-blocked'
+        else if (e.outcome === 'cancelled') run.paused = true // Esc on an RPM turn pauses the run (t3v2 §6.3)
+      }
+      break
+    }
+    case 'fail':
+      settle(e.step)
+      if (e.reason === 'reviewer-failed' || e.reason === 'reviewer-gone') run.failed = 'reviewer-failed'
+      else if (e.reason === 'check-error') run.failed = 'check-error'
+      // 'interrupted' (a restart): nothing to call about, `next` decides afresh.
+      break
+    case 'verdict':
+    {
+      // Only a finding that was stuck with you rejoins the batch ahead of the
+      // review; a verdict on any other finding leaves the rules as they are.
+      const wasYours = ownerOf(run.findings.find((f) => f.id === e.id)?.state ?? 'closed') === 'you'
+      doMove(e.id, 'you', { verdict: e.to })
+      if (wasYours && e.to !== 'reject' && !run.fresh.includes(e.id)) run.fresh = [...run.fresh, e.id]
+      if (!run.decided.includes(e.id) && run.findings.some((f) => f.id === e.id)) run.decided.push(e.id)
+      break
+    }
+    case 'severity': {
+      const i = run.findings.findIndex((f) => f.id === e.id)
+      const f = run.findings[i]
+      if (f) run.findings[i] = { ...f, severity: e.to }
+      else run.ignored.push(e.seq)
+      break
+    }
+    case 'note':
+      run.pendingNotes = [...run.pendingNotes, e.text]
+      break
+    case 'config':
+      run.config = { ...run.config, ...e.patch }
+      break
+    case 'command':
+      if (e.cmd === 'pause') run.paused = true
+      else if (e.cmd === 'resume') run.paused = false
+      else if (e.cmd === 'rerun-check') run.rerun = 'check'
+      else if (e.cmd === 'rerun-review') run.rerun = 'review'
+      // 'stop': the engine interrupts the step and writes `end stopped`.
+      break
+    case 'call':
+      run.called = e.why
+      break
+    case 'mark':
+      delete run.step
+      run.ended = 'passed'
+      break
+    case 'end':
+      delete run.step
+      run.ended = e.why
+      break
+  }
+}
