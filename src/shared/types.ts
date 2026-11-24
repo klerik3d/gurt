@@ -3,6 +3,7 @@ import type { McpRegistryEntry } from './mcp'
 import type { ProactiveAgentView, ProactiveConfig, ProactiveOrigin } from './proactive'
 import type { PendingWake, WakeOrigin, WatcherConfig, WatcherState, WatcherView } from './watchers'
 import { sanitizeDomainPolicy, type DomainPolicy } from './proxy'
+import type { RpmChatLine } from '../rpm/core'
 
 /** How much of an MCP server's toolset the agent may use. */
 export type McpMode = 'read-only' | 'full'
@@ -829,6 +830,8 @@ export interface ChatToolCall {
 export interface ChatSystem {
   kind: 'system'
   text: string
+  /** An RPM handoff line (t3v2 §10.2); `text` is its short form. */
+  rpm?: RpmChatLine
 }
 
 export interface PermissionOption {
