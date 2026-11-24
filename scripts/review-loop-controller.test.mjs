@@ -1418,7 +1418,7 @@ test('takeover: deleting the executor, or the reviewer, ends `cancelled`', async
   kernel.sessions.deleteSession(a.id)
   await until(() => a.st()?.phase === 'ended', 'ended')
   assert.equal(a.st().end.reason, 'cancelled')
-  await until(() => reviewerOf(a) === undefined, 'the reviewer is deleted with it')
+  assert.ok(reviewerOf(a), 'the reviewer is kept when the executor is deleted')
   await until(() => a.st() === undefined, 'a deleted executor’s ended loop is forgotten')
   a.g.open()
   const b = await parkedInReview()

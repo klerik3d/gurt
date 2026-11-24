@@ -383,7 +383,8 @@ test('live, before delivering | a human acts: taken-over / cancelled; idle dorma
       for (const on of ['executor', 'reviewer']) {
         const r = run(s, { kind: 'human', on, did })
         assert.equal(endOf(r).reason, reason, `${s.phase} ${on} ${did}`)
-        assert.deepEqual(kinds(r.actions), s.phase === 'reviewing' ? ['delete-reviewer', 'end'] : ['end'])
+        const rk = did === 'delete' && on === 'executor' ? 'stop-reviewer' : 'delete-reviewer'
+        assert.deepEqual(kinds(r.actions), s.phase === 'reviewing' ? [rk, 'end'] : ['end'])
       }
     }
   }

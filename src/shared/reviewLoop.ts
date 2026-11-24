@@ -465,7 +465,10 @@ function apply(s: LoopState, e: LoopEvent, out: LoopIntentBody[]): boolean {
       // §5.6: before the first delivery step the owner's rule holds; once it
       // has started, human acts are applied after it (the controller's gate).
       if (!live || s.phase === 'delivering') return false
-      deleteReviewer(s, out)
+      // A deleted executor does not take its reviewer along: the reviewer is
+      // stopped and stays as the record of the review.
+      if (e.did === 'delete' && e.on === 'executor') stopReviewer(s, out)
+      else deleteReviewer(s, out)
       return end(s, out, needsYou(s, e.did === 'prompt' ? 'taken-over' : 'cancelled'))
     case 'tick': {
       // Delivery is short, host-side and bounded (§5.6): neither the deadline
@@ -742,6 +745,11 @@ function extendForHold(s: LoopState, nowIso: string, untilIso: string): void {
   if (add <= 0) return
   s.holdExtensionMs += add
   s.deadline = new Date(ms(s.deadline) + add).toISOString()
+}
+
+/** A running reviewer is stopped, its session kept. */
+function stopReviewer(s: LoopState, out: LoopIntentBody[]): void {
+  if (s.phase === 'reviewing' && s.reviewer !== undefined) out.push({ kind: 'stop-reviewer', sessionId: s.reviewer })
 }
 
 /** A reviewer still running at the end is deleted (§5.2, §5.6). */

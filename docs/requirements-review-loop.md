@@ -527,7 +527,7 @@ dormant `no_changes` settle or the loop's end:
 | --- | --- |
 | types into the executor's chat or the reviewer's | `taken-over` |
 | presses Esc on either, stops the container from the scope pane, cancels the loop's queued message, clicks "stop loop" | `cancelled` |
-| deletes the executor or the reviewer | `cancelled` |
+| deletes the executor or the reviewer | `cancelled` (a deleted executor's running reviewer is stopped, not deleted) |
 
 No auto-resume; nothing is committed (the owner's rule). The reviewer's chat is
 this document's addition: a steered reviewer is no longer independent. The
