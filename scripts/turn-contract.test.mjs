@@ -107,8 +107,10 @@ test('each contract role is nudged for its own tool', () => {
   // Exactly the contract roles: every other one is never nudged at all.
   assert.deepEqual(
     SESSION_ROLES.filter(roleHasTurnContract),
-    ['executor', 'proactive', 'watcher']
+    ['executor', 'proactive', 'reviewer', 'watcher']
   )
+  assert.equal(contractToolFor('reviewer'), 'submit_review')
+  assert.match(nudgePromptFor('reviewer'), /`submit_review`/)
 })
 
 // --- adapter exit code -----------------------------------------------------

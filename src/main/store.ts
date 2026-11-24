@@ -1545,8 +1545,8 @@ export async function readSessions(ws: string, task: string): Promise<PersistedS
 export function dropRemovedLoopData(r: PersistedSession): boolean {
   let changed = false
   const info = r.info as SessionInfo & Record<string, unknown>
-  // TODO(rpm): task 5 brings `reviewer` back — skip records with `reviewerOf` here.
-  if ((info['role'] as string | undefined) === 'reviewer') {
+  // An RPM reviewer (`reviewerOf`) is a live role; only the old loop's become researchers.
+  if ((info['role'] as string | undefined) === 'reviewer' && !info.reviewerOf) {
     r.info.role = 'researcher'
     r.info.repoModes = Object.fromEntries(r.info.repos.map((n) => [n, 'read' as const]))
     if (r.info.state === 'queued' || r.info.state === 'starting') {
@@ -1559,7 +1559,9 @@ export function dropRemovedLoopData(r: PersistedSession): boolean {
   }
   for (const k of ['review', 'reviewOff', 'reviewOf', 'hostBusy']) delete info[k]
   const rec = r as PersistedSession & Record<string, unknown>
-  delete rec['lastSettled']
+  // The old loop's settled turn had no `tools`; RPM's (t3v2 §4.1) stays.
+  const settled = rec['lastSettled'] as { tools?: unknown } | undefined
+  if (settled && !Array.isArray(settled.tools)) delete rec['lastSettled']
   delete rec['loopRan']
   if (r.pending?.some((p) => p.origin && 'loop' in p.origin)) {
     r.pending = r.pending.filter((p) => !(p.origin && 'loop' in p.origin))

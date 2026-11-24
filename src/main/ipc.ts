@@ -3,7 +3,7 @@
 // domain-shaped lives in kernel.ts and below.
 import { app, clipboard, dialog, ipcMain, shell } from 'electron'
 import { API_METHODS, type GurtApi } from '../shared/api'
-import { defaultEnvName, isSessionRole, roleIsManagerOwned } from '../shared/types'
+import { defaultEnvName, isSessionRole, roleIsManagerOwned, roleManagerName } from '../shared/types'
 import { MCP_DEFS, isLocalMcpEntry, mcpEntryKind } from '../shared/mcp'
 import { broadcast } from './broadcast'
 import { assertRepoModes, createKernel } from './kernel'
@@ -394,9 +394,10 @@ export function registerIpc(): void {
         throw new Error(`task "${ref.task}" not found in "${ref.workspace}"`)
       if (role !== undefined && !isSessionRole(role))
         throw new Error(`unknown session role "${String(role)}"`)
-      // Only the watcher manager creates a watcher (docs/requirements-watchers.md §4).
+      // Only the watcher manager creates a watcher (docs/requirements-watchers.md §4),
+      // only RPM a reviewer (t3v2 §6.4).
       if (role !== undefined && roleIsManagerOwned(role))
-        throw new Error(`a ${role} is created only by the Watchers mode`)
+        throw new Error(`a ${role} is created only by ${roleManagerName(role)}`)
       // A watcher's scope holds exactly its one session; the tree never lists its tasks.
       if (kernel.watchers.isWatcher(ref.workspace, ref.task))
         throw new Error(`"${ref.task}" is a watcher — it holds exactly one session`)

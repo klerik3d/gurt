@@ -19,20 +19,35 @@ export const PROACTIVE_NUDGE_PROMPT =
   'now with a short summary of this run (and the cursor to resume from, if ' +
   'any) and do nothing else.'
 
+/** The same for an RPM reviewer, whose terminal tool is `submit_review`
+ *  (t3v2 §5.2). */
+export const REVIEWER_NUDGE_PROMPT =
+  'You ended your turn without calling the `submit_review` tool. Call ' +
+  '`submit_review` now with your findings and the verification of the items ' +
+  'you were given, and do nothing else.'
+
 /** The terminal tool of a role's turn contract (see `roleHasTurnContract`) —
  *  what its nudge asks for and its `incomplete` line names. */
 export const contractToolFor = (role: SessionRole): string =>
-  role === 'proactive' ? 'finish_run' : role === 'watcher' ? 'wake_me / watch / finish_watch' : 'complete'
+  role === 'proactive'
+    ? 'finish_run'
+    : role === 'reviewer'
+      ? 'submit_review'
+      : role === 'watcher'
+        ? 'wake_me / watch / finish_watch'
+        : 'complete'
 
 /** The nudge for a role's turn contract. */
 export const nudgePromptFor = (role: SessionRole, final = false): string =>
   role === 'proactive'
     ? PROACTIVE_NUDGE_PROMPT
-    : role === 'watcher'
-      ? final
-        ? WATCHER_FINAL_NUDGE_PROMPT
-        : WATCHER_NUDGE_PROMPT
-      : NUDGE_PROMPT
+    : role === 'reviewer'
+      ? REVIEWER_NUDGE_PROMPT
+      : role === 'watcher'
+        ? final
+          ? WATCHER_FINAL_NUDGE_PROMPT
+          : WATCHER_NUDGE_PROMPT
+        : NUDGE_PROMPT
 
 /**
  * The host-side rules of a `complete` call that its schema cannot carry

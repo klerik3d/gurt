@@ -40,7 +40,7 @@ import type { SessionDraftPatch } from '../../shared/api'
 import { taskKey } from '../../shared/keys'
 import type { PlanHold } from '../../shared/planUsage'
 import type { Bus } from '../bus'
-import type { AdminHooks, ProactiveHooks, WatcherToolHooks } from '../mcp/gurtServer'
+import type { AdminHooks, ProactiveHooks, RpmToolHooks, WatcherToolHooks } from '../mcp/gurtServer'
 import {
   watcherActive,
   type PendingWake,
@@ -75,9 +75,12 @@ import type {
   RestoredSession,
   Session,
   SessionEvents,
+  TurnOrigin,
   TurnResult,
+  TurnTrack,
   WatcherHooks
 } from './types'
+import type { RpmTools, SettledTurn } from '../../rpm/main'
 import * as queue from './queue'
 import * as wake from './wake'
 import * as connection from './connection'
@@ -145,6 +148,8 @@ export class SessionManager {
   private limitTimer: NodeJS.Timeout | undefined
   /** The watcher manager, once it registers (`setWatcherHooks`). */
   private watcherHooks: WatcherHooks | undefined
+  /** RPM's model tools, once it registers (`setRpmTools`). */
+  private rpmTools: RpmTools | undefined
   private readonly bootAt = Date.now()
 
   constructor(
@@ -225,6 +230,19 @@ export class SessionManager {
   /** Register the watcher manager (or drop it with `undefined`). */
   setWatcherHooks(hooks: WatcherHooks | undefined): void {
     this.watcherHooks = hooks
+  }
+
+  /** RPM's model tools (t3v2 §4.3), or `undefined` for none. Sessions whose
+   *  `gurt` server is (re)built after this get them. */
+  setRpmTools(t: RpmTools | undefined): void {
+    this.rpmTools = t
+  }
+
+  /** The last classified turn of an executor or reviewer (persisted before
+   *  `session.settled`): what RPM replays at load (t3v2 §4.1). */
+  lastSettled(sessionId: string): SettledTurn | undefined {
+    const t = this.sessions.get(sessionId)?.lastSettled
+    return t && structuredClone(t)
   }
 
   ensureContainerUp(sessionId: string): Promise<void> { return connection.ensureContainerUp(SessionManager.connectionCtx(this), sessionId) }
@@ -592,9 +610,11 @@ export class SessionManager {
   private runPrompt(s: Session,
     text: string,
     context?: PromptContext[],
-    images?: PromptImage[]): Promise<void> {
-    return turns.runPrompt(SessionManager.turnsCtx(this), s, text, context, images)
+    images?: PromptImage[],
+    origin?: TurnOrigin): Promise<void> {
+    return turns.runPrompt(SessionManager.turnsCtx(this), s, text, context, images, origin)
   }
+  private settleTurn(s: Session, turn: TurnTrack, outcome: SettledTurn['outcome']): Promise<void> { return turns.settleTurn(SessionManager.turnsCtx(this), s, turn, outcome) }
 
   private onComplete(sessionId: string, p: ChangeProposal): void { return agentEvents.onComplete(SessionManager.agentEventsCtx(this), sessionId, p) }
 
@@ -607,6 +627,7 @@ export class SessionManager {
     proactive?: ProactiveHooks
     watcher?: WatcherToolHooks
     cacheSeconds?: number
+    rpm?: RpmToolHooks
   } {
     return agentEvents.gurtHooks(SessionManager.agentEventsCtx(this), s)
   }
@@ -867,6 +888,7 @@ export class SessionManager {
       createAgentDraft: (spawnerId, req) => m.createAgentDraft(spawnerId, req),
       get events() { return m.events },
       onComplete: (sessionId, p) => m.onComplete(sessionId, p),
+      get rpmTools() { return m.rpmTools },
       proactiveHooks: (s) => m.proactiveHooks(s),
       push: (s, entry) => m.push(s, entry),
       get sessions() { return m.sessions },
@@ -898,7 +920,8 @@ export class SessionManager {
       push: (s, entry) => m.push(s, entry),
       repoHolder: (s) => m.repoHolder(s),
       reportTurn: (s, startedAt, outcome, detail) => m.reportTurn(s, startedAt, outcome, detail),
-      runPrompt: (s, text, context, images) => m.runPrompt(s, text, context, images),
+      runPrompt: (s, text, context, images, origin) => m.runPrompt(s, text, context, images, origin),
+      settleTurn: (s, turn, outcome) => m.settleTurn(s, turn, outcome),
       schedule: () => m.schedule(),
       schedulePersist: (ref) => m.schedulePersist(ref),
       sendTurn: (s, text, entryKind, isNudge, context, images) => m.sendTurn(s, text, entryKind, isNudge, context, images),

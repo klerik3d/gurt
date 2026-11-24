@@ -21,7 +21,7 @@ import { SESSION_NEW_RESULT, SET_CONFIG_OPTION_RESULT } from '../acp'
 import { agentMain } from '../agentPlugins'
 import type { Bus } from '../bus'
 import type { LaunchContext } from '../containers'
-import type { AdminHooks, ProactiveHooks, WatcherToolHooks } from '../mcp/gurtServer'
+import type { AdminHooks, ProactiveHooks, RpmToolHooks, WatcherToolHooks } from '../mcp/gurtServer'
 import { oauthStoredAccess } from '../oauth'
 import { scopeKeeper } from '../oauth/keeper'
 import type { PiiMask } from '../pii'
@@ -59,6 +59,7 @@ export interface StartCtx {
     proactive?: ProactiveHooks
     watcher?: WatcherToolHooks
     cacheSeconds?: number
+    rpm?: RpmToolHooks
   }
   keepOAuthScopeFresh(s: Session, ctx: LaunchContext, selection: McpSelection[] | undefined, planOpts: Parameters<typeof resolveProxyPlan>[4], pushedPlan: ResolvedProxyPlan): void
   readonly mask: PiiMask

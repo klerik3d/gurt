@@ -18,6 +18,7 @@ import type { TurnRecord } from './usage'
 import type { PlanWindow } from './planUsage'
 import type { NotificationRecord } from './notifications'
 import type { HotkeyMap } from './hotkeys'
+import type { SettledTurn } from '../rpm/main'
 
 /** Why a container reached its new status — the "who asked for this" a status
  *  alone cannot answer. `user` covers both a user action and the scheduler
@@ -107,6 +108,9 @@ export interface DomainEvents {
   /** A `complete` call with outcome=changes stored a proposal — the seam the
    *  committer stage will consume. */
   'session.proposal': { sessionId: string; ref: EnvRef; proposal: StoredProposal }
+  /** An executor's or reviewer's logical turn ended and was classified
+   *  (t3v2 §4.1) — emitted after `lastSettled` is on disk. */
+  'session.settled': { sessionId: string; ref: EnvRef; turn: SettledTurn }
   /** A proactive agent's run ended (docs/design-proactive-agents.md §3):
    *  how, and the scopes it raised. `ref` is the run session's. */
   'proactive.run': {

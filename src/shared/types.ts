@@ -4,6 +4,7 @@ import type { ProactiveAgentView, ProactiveConfig, ProactiveOrigin } from './pro
 import type { PendingWake, WakeOrigin, WatcherConfig, WatcherState, WatcherView } from './watchers'
 import { sanitizeDomainPolicy, type DomainPolicy } from './proxy'
 import type { RpmChatLine } from '../rpm/core'
+import type { SettledTurn } from '../rpm/main'
 
 /** How much of an MCP server's toolset the agent may use. */
 export type McpMode = 'read-only' | 'full'
@@ -386,10 +387,15 @@ export type SessionState = 'draft' | 'queued' | 'starting' | 'started'
  *              `finish_watch`. Its repos are always read-only. Never picked:
  *              only the watcher manager creates it.
  *
- * Records of a removed `reviewer` role migrate to a researcher whose repos
- * are all mounted `read` (`readSessions`).
+ * reviewer   — one review of an RPM run (t3v2 §6.4): reads the executor's
+ *              change — every repo `read`, whatever the record says — and ends
+ *              every turn with `submit_review`. Never picked, never drafted:
+ *              only RPM creates one, with `SessionInfo.reviewerOf`.
+ *
+ * Records of the old loop's `reviewer` (no `reviewerOf`) migrate to a
+ * researcher whose repos are all mounted `read` (`readSessions`).
  */
-export type SessionRole = 'executor' | 'researcher' | 'inspector' | 'operator' | 'proactive' | 'watcher'
+export type SessionRole = 'executor' | 'researcher' | 'inspector' | 'operator' | 'proactive' | 'reviewer' | 'watcher'
 
 export const SESSION_ROLES: readonly SessionRole[] = [
   'executor',
@@ -397,13 +403,17 @@ export const SESSION_ROLES: readonly SessionRole[] = [
   'inspector',
   'operator',
   'proactive',
+  'reviewer',
   'watcher'
 ]
 
 /** Only a manager creates a session of this role — the watcher manager its
- *  watcher. The guards at every entrance
+ *  watcher, RPM its reviewer. The guards at every entrance
  *  (IPC create, draft edit, duplicate, recreate) refuse it for anyone else. */
-export const roleIsManagerOwned = (role: SessionRole): boolean => role === 'watcher'
+export const roleIsManagerOwned = (role: SessionRole): boolean => role === 'watcher' || role === 'reviewer'
+
+/** Who creates a manager-owned role — the refusal texts name it. */
+export const roleManagerName = (role: SessionRole): string => (role === 'reviewer' ? 'RPM' : 'the Watchers mode')
 
 /** The roles a user picks for an ordinary session — every one but
  *  `proactive`, which only a proactive agent's template carries, and the
@@ -450,8 +460,10 @@ export const DEFAULT_REPO_MODE: RepoMode = 'read-locked'
 export const legacyRepoMode = (role: SessionRole): RepoMode => (role === 'executor' ? 'write' : 'read')
 
 /** Every repo of this role is mounted `read`, whatever the record says: a
- *  proactive run's and a watcher's are read-only context. */
-export const roleForcesRead = (role: SessionRole): boolean => role === 'proactive' || role === 'watcher'
+ *  proactive run's and a watcher's are read-only context; a reviewer's are a
+ *  tool set's limit — it claims no clone, so it never waits on the executor. */
+export const roleForcesRead = (role: SessionRole): boolean =>
+  role === 'proactive' || role === 'watcher' || role === 'reviewer'
 
 /** How `repo` is mounted in this session. A proactive run's and a watcher's
  *  repos are always `read` ({@link roleForcesRead}). A record with no mode
@@ -501,7 +513,7 @@ export function normalizeRepoModes(
  *  An executor needs more — a `write` one (see
  *  {@link missingRepoReason}); every other role may start with none. */
 export const roleNeedsRepo = (role: SessionRole): boolean =>
-  role === 'executor' || role === 'researcher'
+  role === 'executor' || role === 'researcher' || role === 'reviewer'
 
 /** Why this session cannot start for lack of a repo, or undefined when it can.
  *  The one predicate behind every start gate and the container manager's anchor
@@ -521,7 +533,7 @@ export function missingRepoReason(s: Pick<SessionInfo, 'role' | 'repos' | 'repoM
  *  (docs/requirements-turn-contract.md), `finish_run` for a proactive run,
  *  `wake_me`/`finish_watch` for a watcher. */
 export const roleHasTurnContract = (role: SessionRole): boolean =>
-  role === 'executor' || role === 'proactive' || role === 'watcher'
+  role === 'executor' || role === 'proactive' || role === 'watcher' || role === 'reviewer'
 
 /** Gets the admin surface's read tools: the inspector and the operator. */
 export const roleReadsAdmin = (role: SessionRole): boolean => role === 'inspector' || role === 'operator'
@@ -724,6 +736,10 @@ export interface SessionInfo {
    *  that never runs itself — each run starts a copy of it. Not carried by
    *  copies. */
   template?: boolean
+  /** Present only on an RPM reviewer (t3v2 §6.4), which only RPM creates: the
+   *  executor it reviews and the step key that created it (how a restart
+   *  finds it instead of creating another). */
+  reviewerOf?: { executor: string; key: string } | undefined
 }
 
 /**
@@ -1131,7 +1147,9 @@ export interface PersistedPrompt {
   images?: PromptImage[] | undefined
   auto?: boolean | undefined
   /** Who queued an `auto` prompt, when it was not gurt's own plain "continue". */
-  origin?: { limit: true; of: 'wake' | 'user' } | WakeOrigin | undefined
+  origin?: { limit: true; of: 'wake' | 'user' } | WakeOrigin | { rpm: string } | undefined
+  /** The "continue" of a cut executor/reviewer turn (`PendingPrompt.continues`). */
+  continues?: true | undefined
 }
 
 export interface PersistedSession {
@@ -1147,6 +1165,15 @@ export interface PersistedSession {
    *  written beside `interrupted`, so a restart can tell a watcher's own wake
    *  turn (approved work) from attended work. */
   ranOrigin?: 'wake' | 'user' | undefined
+  /** An executor's or reviewer's last classified turn (t3v2 §4.1) — written
+   *  before `session.settled` is emitted, so RPM can replay a turn it missed. */
+  lastSettled?: SettledTurn | undefined
+  /** Logical turns started (executor, reviewer): where `turnId` numbering
+   *  resumes after a restart, so an id is never handed out twice. */
+  turnSeq?: number | undefined
+  /** A limited executor/reviewer turn its "continue" carries on (origin, RPM
+   *  key, accepted calls) — `Session.carry`. */
+  carry?: { origin: 'user' | 'rpm' | 'other'; key?: string | undefined; tools?: { name: string; payload: unknown }[] | undefined } | undefined
   /** Legacy pre-log format; migrated to the JSONL log on restore. */
   entries?: ChatEntry[] | undefined
 }

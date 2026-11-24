@@ -12,7 +12,7 @@ import {
   type WatcherState
 } from '../../shared/watchers'
 import type { Bus } from '../bus'
-import { pendingInfo } from './pure'
+import { keptWhenTyping, pendingInfo } from './pure'
 import type { Connection, PendingPrompt, Session } from './types'
 
 // The prompt queue as the outside sees it: typed prompts, and withdrawing or
@@ -68,7 +68,7 @@ export async function prompt(mgr: PromptsCtx, sessionId: string,
     const line = prefaceFor(w, s.info.wake, Date.now())
     if (line) s.preface = s.preface ? `${s.preface}\n${line}` : line
     s.pending = s.pending.filter((p) => !p.auto || (isWakeOrigin(p.origin) && !!p.origin.final))
-  } else s.pending = s.pending.filter((p) => !p.auto)
+  } else s.pending = s.pending.filter(keptWhenTyping)
   s.pending.push({
     id,
     queuedAt,

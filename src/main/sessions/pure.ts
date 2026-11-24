@@ -1,11 +1,12 @@
 import {
   roleIsManagerOwned,
+  roleManagerName,
   sessionRole,
   type PendingPromptInfo,
   type SessionInfo,
   type SessionRole
 } from '../../shared/types'
-import type { Claim, PendingPrompt } from './types'
+import type { Claim, PendingPrompt, TurnOrigin } from './types'
 
 /** A signal-killed child reports `code: null`; keep the exit code non-zero and
  *  shell-conventional (128 + signum) so "it died" is never read as "it exited
@@ -23,6 +24,34 @@ const SIGNUM: Record<string, number> = {
 }
 export const adapterExitCode = (code: number | null, signal: NodeJS.Signals | null): number =>
   code ?? (signal ? 128 + (SIGNUM[signal] ?? 0) : -1)
+
+/** The `<n>` of a settled turn's `<sessionId>:<n>` — where a restored session's
+ *  turn counter resumes, so an id is never handed out twice. */
+export const turnSeqOf = (turnId: string | undefined): number => {
+  const n = Number(turnId?.slice(turnId.lastIndexOf(':') + 1))
+  return Number.isInteger(n) && n > 0 ? n : 0
+}
+
+/** Executors and reviewers have classified turns (`SettledTurn`, t3v2 §4.1). */
+export const roleSettlesTurns = (role: SessionRole): boolean => role === 'executor' || role === 'reviewer'
+
+/** How the prompt that starts a turn classifies it: a cut turn's "continue"
+ *  (it carries that turn on, `Session.carry`), an RPM host message, the app's
+ *  own (`auto`: a wake, a plain "continue"), or the user's. */
+export const turnOriginOf = (p: Pick<PendingPrompt, 'auto' | 'origin' | 'continues'>): TurnOrigin =>
+  p.continues
+    ? { origin: 'other', continues: true }
+    : p.origin && 'rpm' in p.origin
+    ? { origin: 'rpm', key: p.origin.rpm }
+    : p.auto
+      ? { origin: 'other' }
+      : { origin: 'user' }
+
+/** A typed message replaces the app's queued prompts (a plain "continue")
+ *  except a cut turn's own "continue" and RPM's messages (t3v2 §4.1): those
+ *  keep their place and run first, each a turn of its own. */
+export const keptWhenTyping = (p: Pick<PendingPrompt, 'auto' | 'origin' | 'continues'>): boolean =>
+  !p.auto || !!p.continues || !!(p.origin && 'rpm' in p.origin)
 
 /** What an interrupted session sends once its limit resets. */
 export const LIMIT_CONTINUE_PROMPT = 'continue'
@@ -73,10 +102,11 @@ export function assertNotTemplate(info: SessionInfo): void {
     throw new Error("this is a proactive agent's template — it never runs itself; use the agent's Run now")
 }
 
-/** Only its manager creates a watcher, so nothing copies it. */
+/** Only its manager creates a watcher or a reviewer, so nothing copies it. */
 export function assertNotManagerOwned(info: SessionInfo): void {
-  if (roleIsManagerOwned(sessionRole(info)))
-    throw new Error('this is a watcher — only the Watchers mode creates one, so it cannot be duplicated or recreated')
+  const role = sessionRole(info)
+  if (roleIsManagerOwned(role))
+    throw new Error(`this is a ${role} — only ${roleManagerName(role)} creates one, so it cannot be duplicated or recreated`)
 }
 
 /** Bound on ACP control-plane calls (initialize, session/new, session/load,

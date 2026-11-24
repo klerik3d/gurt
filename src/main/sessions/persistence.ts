@@ -6,7 +6,7 @@ import {
   type PersistedSession
 } from '../../shared/types'
 import { createLogger } from '../log'
-import { LIMIT_CONTINUE_PROMPT } from './pure'
+import { LIMIT_CONTINUE_PROMPT, turnSeqOf } from './pure'
 import type { RestoredSession, Session, SessionEvents } from './types'
 
 const log = createLogger('sessions')
@@ -74,6 +74,9 @@ export function restore(mgr: PersistenceCtx, records: RestoredSession[]): void {
       turnComplete: false,
       turns: 0,
       ranOrigin: r.ranOrigin,
+      lastSettled: r.lastSettled,
+      turnSeq: Math.max(r.turnSeq ?? 0, turnSeqOf(r.lastSettled?.turnId)),
+      carry: r.carry,
       attached: false,
       loading: false,
       pendingPermissions: new Map(),
@@ -83,7 +86,7 @@ export function restore(mgr: PersistenceCtx, records: RestoredSession[]): void {
     // Legacy records did not persist queued automatic continuations.
     const restored = mgr.sessions.get(r.info.id)!
     if (r.info.state === 'started' && r.info.limitedUntil && !restored.pending.length) {
-      restored.pending.push({ id: `p${++mgr.pendingSeq}`, queuedAt: r.info.lastActivityAt ?? '', text: LIMIT_CONTINUE_PROMPT, auto: true, ...(r.info.role === 'watcher' ? { origin: { limit: true as const, of: r.ranOrigin === 'wake' ? 'wake' as const : 'user' as const } } : {}) })
+      restored.pending.push({ id: `p${++mgr.pendingSeq}`, queuedAt: r.info.lastActivityAt ?? '', text: LIMIT_CONTINUE_PROMPT, auto: true, ...(r.carry ? { continues: true as const } : {}), ...(r.info.role === 'watcher' ? { origin: { limit: true as const, of: r.ranOrigin === 'wake' ? 'wake' as const : 'user' as const } } : {}) })
     }
   }
 }
@@ -105,6 +108,9 @@ export function recordsFor(mgr: PersistenceCtx, ws: string, task: string): Persi
       preface: s.preface,
       proposal: s.proposal,
       ...(s.ranOrigin ? { ranOrigin: s.ranOrigin } : {}),
+      ...(s.lastSettled ? { lastSettled: structuredClone(s.lastSettled) } : {}),
+      ...(s.turnSeq ? { turnSeq: s.turnSeq } : {}),
+      ...(s.carry ? { carry: structuredClone(s.carry) } : {}),
       interrupted: s.interrupted,
       pending: structuredClone(s.pending)
     }

@@ -455,7 +455,19 @@ export function onLimited(mgr: WakeCtx, s: Session, limit: { resetAt?: string | 
     return until
   }
   s.info.limitedUntil = until
-  if (!s.pending.length)
+  // An executor's or reviewer's cut turn is no boundary (t3v2 §4.1, §12): its
+  // own "continue" goes first, ahead of whatever was queued meanwhile, and
+  // only it carries the cut turn on (`Session.carry`).
+  if (s.turn) {
+    if (!s.pending.some((p) => p.continues))
+      s.pending.unshift({
+        id: `p${++mgr.pendingSeq}`,
+        queuedAt: new Date().toISOString(),
+        text: LIMIT_CONTINUE_PROMPT,
+        auto: true,
+        continues: true
+      })
+  } else if (!s.pending.length)
     s.pending.push({
       id: `p${++mgr.pendingSeq}`,
       queuedAt: new Date().toISOString(),

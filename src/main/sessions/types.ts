@@ -32,9 +32,10 @@ import type {
 import type { ContainerStatusReason } from '../../shared/events'
 import type { ProxyConfig } from '../../shared/proxy'
 import type { LaunchContext } from '../containers'
-import type { AdminHooks, ProactiveHooks, WatcherToolHooks } from '../mcp/gurtServer'
+import type { AdminHooks, ProactiveHooks, RpmToolHooks, WatcherToolHooks } from '../mcp/gurtServer'
 import type { JsonRpcPeer } from '../jsonrpc'
 import type { AcpClient } from '../acpClient'
+import type { SettledTurn } from '../../rpm/main'
 
 /**
  * One ACP adapter process, owned by one session and running inside that
@@ -76,7 +77,36 @@ export interface PendingPrompt {
   /** Put here by the app, not typed: the "continue" a limit-interrupted turn
    *  sends once its account's hold lifts (see `onLimited`). */
   auto?: boolean | undefined
-  origin?: { limit: true; of: 'wake' | 'user' } | WakeOrigin | undefined
+  /** `{ rpm: key }`: an RPM host message (`SessionsPort.send`, t3v2 §4.1) —
+   *  the turn it starts settles with `origin: 'rpm'` and this key. */
+  origin?: { limit: true; of: 'wake' | 'user' } | WakeOrigin | { rpm: string } | undefined
+  /** The "continue" of an executor's or reviewer's turn a limit cut: it alone
+   *  carries that turn on (`Session.carry`); first in the queue, kept when the
+   *  user types. */
+  continues?: true | undefined
+}
+
+/** Where a logical turn came from, for its `SettledTurn`. */
+export interface TurnOrigin {
+  origin: 'user' | 'rpm' | 'other'
+  key?: string | undefined
+  /** Accepted RPM calls of a turn a limit cut, carried into its continuation. */
+  tools?: { name: string; payload: unknown }[] | undefined
+  /** Started by a cut turn's "continue" (`PendingPrompt.continues`). */
+  continues?: boolean | undefined
+}
+
+/** The logical turn in flight of an executor or reviewer — a prompt plus its
+ *  nudge — from `runPrompt`'s first line to its classification (t3v2 §4.1).
+ *  The contract tools and RPM's tools file into it. */
+export interface TurnTrack extends TurnOrigin {
+  id: string
+  /** Accepted RPM tool calls, in order. */
+  tools: { name: string; payload: unknown }[]
+  /** The turn's last `complete`, any outcome. */
+  complete?: StoredProposal | undefined
+  /** It carried on a cut turn (`Session.carry`), which it spends. */
+  carried?: boolean | undefined
 }
 
 
@@ -159,6 +189,19 @@ export interface Session {
   /** Where the turn in flight came from (docs/requirements-watchers.md §10):
    *  persisted beside `interrupted`. */
   ranOrigin?: 'wake' | 'user' | undefined
+  /** The logical turn in flight (executor, reviewer only). A tool call that
+   *  lands while it is unset belongs to no turn. */
+  turn?: TurnTrack | undefined
+  /** Logical turns started, for `SettledTurn.turnId` (`<sessionId>:<n>`);
+   *  only grows, persisted. */
+  turnSeq: number
+  /** The last classified turn; persisted. */
+  lastSettled?: SettledTurn | undefined
+  /** A turn a limit cut (settled `limited`, which is no boundary, t3v2 §4.1,
+   *  §12): its "continue" (`PendingPrompt.continues`) carries it on with its
+   *  origin, key and accepted calls, and settles as that step. Persisted with
+   *  `lastSettled`. */
+  carry?: TurnOrigin | undefined
   /** A watcher recovered at boot with approved work only: the manager resumes
    *  it by itself, so it stays out of the Resume-sessions checklist. */
   resumeOnBoot?: boolean | undefined
@@ -254,6 +297,8 @@ export interface SessionEvents {
       proactive?: ProactiveHooks
       /** Present only for a watcher (docs/requirements-watchers.md §4). */
       watcher?: WatcherToolHooks
+      /** RPM's tools, for an executor or reviewer while RPM has registered them. */
+      rpm?: RpmToolHooks
     }
   ) => Promise<AcpHttpMcpServer>
   /** A proactive run's tools, bound by the session manager to the run's own

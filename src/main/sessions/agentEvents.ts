@@ -28,11 +28,12 @@ import {
 } from '../acp'
 import { agentMain } from '../agentPlugins'
 import type { Bus } from '../bus'
-import type { AdminHooks, ProactiveHooks, WatcherToolHooks } from '../mcp/gurtServer'
+import type { AdminHooks, ProactiveHooks, RpmToolHooks, WatcherToolHooks } from '../mcp/gurtServer'
 import { logPhase } from '../provision'
 import { normalizeConfigOptions } from './modes'
-import { isTerminalToolStatus } from './pure'
-import { assertProposalFits } from './turnContract'
+import { isTerminalToolStatus, roleSettlesTurns } from './pure'
+import { assertProposalFits, contractToolFor } from './turnContract'
+import type { RpmTools } from '../../rpm/main'
 import type { NewLogRecord, Session, SessionEvents } from './types'
 
 // What the agent says back: ACP `session/update` notifications and permission
@@ -50,6 +51,7 @@ export interface AgentEventsCtx {
   createAgentDraft(spawnerId: string, req: AgentSessionRequest): Promise<{ sessionId: string; title: string }>
   readonly events: SessionEvents
   onComplete(sessionId: string, p: ChangeProposal): void
+  readonly rpmTools: RpmTools | undefined
   proactiveHooks(s: Session): ProactiveHooks
   push(s: Session, entry: ChatEntryBase): ChatEntry
   readonly sessions: Map<string, Session>
@@ -260,8 +262,12 @@ export function onComplete(mgr: AgentEventsCtx, sessionId: string, p: ChangeProp
   // Before anything is recorded: a refused call is the agent's to correct
   // (an `isError` tool result), not a turn that completed.
   assertProposalFits(writeRepos(s.info), p)
-  s.turnComplete = true
+  // An executor's call counts only inside a round-trip of its logical turn
+  // (t3v2 §4.1): a straggler landing outside `busy` belongs to no turn.
+  const inTurn = s.turn !== undefined && s.busy
+  if (!s.turn || inTurn) s.turnComplete = true
   const stored: StoredProposal = { ...p, at: new Date().toISOString() }
+  if (s.turn && inTurn) s.turn.complete = stored
   let text: string
   if (p.outcome === 'changes') {
     s.proposal = stored
@@ -294,6 +300,7 @@ export function gurtHooks(mgr: AgentEventsCtx, s: Session): {
   proactive?: ProactiveHooks
   watcher?: WatcherToolHooks
   cacheSeconds?: number
+  rpm?: RpmToolHooks
 } {
   const role = sessionRole(s.info)
   return {
@@ -313,8 +320,38 @@ export function gurtHooks(mgr: AgentEventsCtx, s: Session): {
     // The watcher's tools, bound the same way (docs/requirements-watchers.md §4).
     ...(role === 'watcher' ? { watcher: mgr.events.watcherFor(s.ref.workspace, s.ref.task, s.info.id) } : {}),
     // §13: the agent kind's cache lifetime, for the watcher's instructions.
-    ...(role === 'watcher' ? mgr.cacheHint(s) : {})
+    ...(role === 'watcher' ? mgr.cacheHint(s) : {}),
+    // RPM's tools (t3v2 §4.3): only while RPM has registered them.
+    ...rpmHooks(mgr, s, role)
   }
+}
+
+function rpmHooks(mgr: AgentEventsCtx, s: Session, role: SessionRole): { rpm?: RpmToolHooks } {
+  const t = mgr.rpmTools
+  if (!t || !roleSettlesTurns(role)) return {}
+  const defs = t.for(role)
+  const instructions = t.instructions(role)
+  if (!defs.length && !instructions) return {}
+  return { rpm: { defs, instructions, call: (name, input) => onRpmTool(mgr, s.info.id, name, input) } }
+}
+
+/**
+ * An RPM tool call (t3v2 §4.3, §5): only inside a round-trip of the session's
+ * logical turn; RPM checks it (`call` throws to refuse — the agent gets
+ * `isError`), and an accepted one is filed into the turn's `tools`, which
+ * `SettledTurn` carries. The role's contract tool (`submit_review` for a
+ * reviewer) completes the turn, as `complete` does an executor's.
+ */
+export function onRpmTool(mgr: AgentEventsCtx, sessionId: string, name: string, input: unknown): string {
+  const s = mgr.sessions.get(sessionId)
+  const t = mgr.rpmTools
+  if (!s || !t) throw new Error(`${name}: gurt's review is not available right now`)
+  const turn = s.turn !== undefined && s.busy ? s.turn : undefined
+  if (!turn) throw new Error(`${name}: no turn is running — call it during your turn, before you finish it`)
+  const r = t.call(sessionId, name, input)
+  turn.tools.push({ name, payload: r.payload })
+  if (contractToolFor(sessionRole(s.info)) === name) s.turnComplete = true
+  return r.text
 }
 
 /** A proactive run's tools, bound to its own workspace, agent and session.

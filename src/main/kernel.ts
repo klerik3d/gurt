@@ -10,6 +10,7 @@ import {
   isRepoMode,
   isSessionRole,
   roleIsManagerOwned,
+  roleManagerName,
   sessionRole,
   type RepoConfig,
   type Tree
@@ -625,10 +626,12 @@ export function createKernel(options: KernelOptions = {}): Kernel {
         throw new Error(`unknown session role "${String(patch.role)}"`)
       assertRepoModes(patch.repoModes)
       const info = sessions.snapshot(sessionId)?.info
-      // A watcher is its manager's alone (docs/requirements-watchers.md §4): no
-      // edit makes a session one, or turns one into something else.
-      if (patch.role !== undefined && (roleIsManagerOwned(patch.role) || (info && roleIsManagerOwned(sessionRole(info)))))
-        throw new Error('a watcher is created only by the Watchers mode, and keeps its role')
+      // A watcher or a reviewer is its manager's alone (docs/requirements-watchers.md
+      // §4, t3v2 §6.4): no edit makes a session one, or turns one into something else.
+      if (patch.role !== undefined) {
+        const owned = roleIsManagerOwned(patch.role) ? patch.role : info && roleIsManagerOwned(sessionRole(info)) ? sessionRole(info) : undefined
+        if (owned) throw new Error(`a ${owned} is created only by ${roleManagerName(owned)}, and keeps its role`)
+      }
       if (info) await assertDraftTarget(info.workspace, patch.repos ?? [], patch.env, patch.agent)
       // Names become directories under the session's scratch dir, so the shape
       // is checked here rather than at the copy. Resolvability is not: a name

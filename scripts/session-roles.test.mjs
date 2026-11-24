@@ -113,7 +113,7 @@ const hold = (id, repos) =>
 
 // --- the role predicates: the table of §4 -----------------------------------
 test('role table', () => {
-  const roles = ['executor', 'researcher', 'inspector', 'operator', 'proactive', 'watcher']
+  const roles = ['executor', 'researcher', 'inspector', 'operator', 'proactive', 'reviewer', 'watcher']
   assert.deepEqual(m.SESSION_ROLES, roles, 'every role is known')
   assert.deepEqual(
     roles.map((r) => [
@@ -128,6 +128,7 @@ test('role table', () => {
       [false, false, false, ['executor', 'researcher'], true],
       [false, true, false, ['operator'], true],
       [false, true, true, [], false],
+      [true, false, false, [], false],
       [true, false, false, [], false],
       [true, false, false, [], false]
     ],
@@ -215,8 +216,8 @@ test('draft role edits leave repos, modes and env alone', async () => {
   )
   await rejects(
     () => kernel.editDraft(draft.id, { role: 'reviewer' }),
-    /unknown session role/,
-    'the removed reviewer role is unknown'
+    /a reviewer is created only by RPM/,
+    'only RPM makes a reviewer'
   )
 })
 
