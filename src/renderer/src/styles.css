@@ -2867,17 +2867,13 @@ textarea.input {
   color: var(--dim);
   cursor: pointer;
 }
-.set-nav-item:hover:not(.disabled) {
+.set-nav-item:hover {
   background: var(--hover);
 }
 .set-nav-item.active {
   font-weight: 600;
   color: var(--text);
   background: var(--hover);
-}
-.set-nav-item.disabled {
-  color: var(--faint);
-  cursor: default;
 }
 .set-nav-sep {
   height: 1px;
