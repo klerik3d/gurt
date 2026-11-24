@@ -24,7 +24,7 @@ import {
 } from '../../../shared/planUsage'
 import { formatDuration, type TurnRecord } from '../../../shared/usage'
 import { agentDef } from '../../../shared/agents'
-import { HOST_DOT, SESSION_DOT, hostWorking } from '../status'
+import { SESSION_DOT } from '../status'
 import { agentKind, agentName, useAgents } from '../useAgents'
 import { markAllSeen, markSeen, useUsage } from '../reviewed'
 import { relativeTime } from '../time'
@@ -81,15 +81,12 @@ function useLimitThreshold(): number {
   return threshold
 }
 
-/** What the board files a session under: its status, or `checking` while
- *  gurt itself works on it after its turn ended (the review loop's automatic
- *  check) — that is still in progress, not done, however read. */
-export type BoardStatus = SessionStatus | 'checking'
+/** What the board files a session under: its status. */
+export type BoardStatus = SessionStatus
 
 /** Exported for scripts/dashboard-groups.test.mjs. */
 export function boardStatus(info: SessionInfo): BoardStatus {
-  const status = sessionStatus(info)
-  return hostWorking(status, info.hostBusy) ? 'checking' : status
+  return sessionStatus(info)
 }
 
 /** Every session in the tree, with the live overlay folded into its status. */
@@ -109,11 +106,10 @@ interface Row {
 const STATUS_RANK: Record<string, number> = {
   waiting: 0,
   running: 1,
-  checking: 2,
-  starting: 3,
-  queued: 4,
-  draft: 5,
-  idle: 6
+  starting: 2,
+  queued: 3,
+  draft: 4,
+  idle: 5
 }
 
 /**
@@ -126,7 +122,7 @@ const STATUS_RANK: Record<string, number> = {
  */
 export const COLUMNS = [
   { id: 'queue', label: 'DRAFT / QUEUE', statuses: ['queued', 'draft'] },
-  { id: 'active', label: 'IN PROGRESS', statuses: ['waiting', 'running', 'checking', 'starting'] },
+  { id: 'active', label: 'IN PROGRESS', statuses: ['waiting', 'running', 'starting'] },
   { id: 'done', label: 'DONE', statuses: ['idle'] }
 ] as const
 
@@ -147,13 +143,11 @@ export function summarize(rows: Row[]): string {
   const parts: string[] = []
   const waiting = n('waiting')
   const live = n('running') + n('starting')
-  const checking = n('checking')
   const queued = n('queued')
   const draft = n('draft')
   const done = n('idle')
   if (waiting) parts.push(`${waiting} needs you`)
   if (live) parts.push(`${live} running`)
-  if (checking) parts.push(`${checking} checking`)
   if (queued) parts.push(`${queued} queued`)
   if (draft) parts.push(`${draft} draft${draft > 1 ? 's' : ''}`)
   if (done) parts.push(`${done} to review`)
@@ -552,7 +546,6 @@ function WorkspaceBoardView({
     if (r.status === 'waiting') return 'waiting on a permission'
     if (r.status === 'queued') return `#${positions[r.info.id] ?? '?'} in queue`
     if (r.status === 'draft') return 'not started'
-    if (r.status === 'checking') return 'gurt is running the check'
     if (r.status === 'idle') return r.finishedAt ? relativeTime(r.finishedAt) : undefined
     const started = turnStarts[r.info.id]
     return started ? `${formatDuration(now - started)} in this turn` : undefined
@@ -648,7 +641,7 @@ function BoardCard({
   onOpen: () => void
   onTask: () => void
 }): JSX.Element {
-  const dot = row.status === 'checking' ? HOST_DOT[row.info.hostBusy ?? 'check'] : SESSION_DOT[row.status]
+  const dot = SESSION_DOT[row.status]
   const failed = turn?.outcome === 'error' || turn?.outcome === 'limited'
   // The clone's own state is the honest "is there work here" signal: a session
   // can end a clean turn and still leave nothing to review.

@@ -420,3 +420,42 @@ exists, nothing is implemented), any credential path back into the
 container (removed on purpose — see the banner), env for non-agent
 processes in the container (terminals do not inherit the identity
 injection — by design).
+
+## 12. Host git on a clone the agent writes (RPM)
+
+RPM's `GitPort` (`src/main/rpmPorts/git.ts`) runs git on the host over an
+executor's clone with no human watching: it snapshots the working tree
+(`trees`) and diffs it against the task's base commit (`diff`) for the
+reviewer. The clone's `.git` is in the agent's read-write bind, so its
+config and hooks are the agent's — and git runs programs they name (a
+`filter.<x>.clean` on `add -A`, `diff.external`, textconv, `core.fsmonitor`,
+hooks) as the desktop user. The agent can also rewrite that config at any
+moment, so "read the config, pin what is dangerous, then run git" races.
+
+Therefore git there never reads the clone's metadata:
+
+- every call runs against a throwaway git dir the host creates
+  (`git init --bare --template=`): its own config, no hooks;
+- the clone is only the work tree (`GIT_WORK_TREE`); its `.git/objects` is
+  attached read-only as an alternate; its `info/exclude` is copied as data;
+- HEAD is read from the clone's files by hand (`HEAD`, loose ref,
+  `packed-refs`); inherited `GIT_*` variables are dropped;
+- the host's own system/global config still applies (e.g. its LFS filter),
+  except `core.hooksPath`: it is pinned to an empty directory in the
+  throwaway dir, because a relative path there would resolve inside the
+  agent's work tree;
+
+A tree is what a commit would record: `read-tree HEAD`, then `add -A`. As in
+a commit, a file the agent committed counts even if `.gitignore` matches it;
+so moving HEAD to such a commit changes the tree and the diff. Intended.
+
+Accepted, not handled: git still reads the clone's object store, which the
+agent controls and could point (alternates, symlinks) at other git object
+stores on the host. git may read them, but nothing from them reaches the
+output: objects are addressed by content, the tree comes from the work tree,
+and the diff reads only the base commit (gurt's own checkpoint) and that
+tree. Ruling out even the read would need gurt to keep its own copy of the
+base snapshot — a change to `checkpoints.ts`, not planned.
+
+Not supported yet: reftable clones (read as having no commit), a `.git`
+file instead of a directory (the call fails).

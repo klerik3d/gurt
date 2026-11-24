@@ -19,11 +19,9 @@ import {
   type PromptContext,
   type PromptImage,
   type SessionContainer,
-  type HostBusy,
   type SessionInfo,
   type SessionNetwork,
   type RepoMode,
-  type ReviewVerdict,
   type SessionRole,
   type SessionSnapshot,
   type StoredProposal,
@@ -40,10 +38,9 @@ import {
 import { agentDef } from '../../shared/agents'
 import type { SessionDraftPatch } from '../../shared/api'
 import { taskKey } from '../../shared/keys'
-import type { SettledTurn } from '../../shared/reviewLoop'
 import type { PlanHold } from '../../shared/planUsage'
 import type { Bus } from '../bus'
-import type { AdminHooks, ProactiveHooks, WatcherToolHooks } from '../mcp/gurtServer'
+import type { AdminHooks, ProactiveHooks, RpmToolHooks, WatcherToolHooks } from '../mcp/gurtServer'
 import {
   watcherActive,
   type PendingWake,
@@ -71,19 +68,20 @@ import type {
   Connection,
   CreateAction,
   DraftInheritance,
-  LoopHooks,
   NewLogRecord,
   PendingPrompt,
   PostTurnAction,
   PreparedDraft,
   RestoredSession,
-  TurnHow,
   Session,
   SessionEvents,
+  TurnOrigin,
   TurnResult,
   TurnTrack,
   WatcherHooks
 } from './types'
+import type { RpmTools, SessionFacts, SettledTurn } from '../../rpm/main'
+import type { RpmChatLine } from '../../rpm/core'
 import * as queue from './queue'
 import * as wake from './wake'
 import * as connection from './connection'
@@ -94,6 +92,8 @@ import * as prompts from './prompts'
 import * as persistence from './persistence'
 import * as drafts from './drafts'
 import * as lifecycle from './lifecycle'
+import * as rpm from './rpm'
+import type { CloneHold } from './queue'
 
 /** One context object per manager instance and module: the modules take what they
  *  need through it (see the `*Ctx` interfaces), built over the manager's live
@@ -149,15 +149,13 @@ export class SessionManager {
   private agentAccounts = new Map<string, string>()
   /** The one re-check armed for the earliest limit hold to lift. */
   private limitTimer: NodeJS.Timeout | undefined
-  /** The review loop's controller, once it registers (`setLoopHooks`). */
-  private loopHooks: LoopHooks | undefined
   /** The watcher manager, once it registers (`setWatcherHooks`). */
   private watcherHooks: WatcherHooks | undefined
+  /** RPM's model tools, once it registers (`setRpmTools`). */
+  private rpmTools: RpmTools | undefined
+  /** RPM's holds on executors' write clones (`holdClones`), by executor id. */
+  private cloneHolds = new Map<string, CloneHold>()
   private readonly bootAt = Date.now()
-  /** Executors the review loop holds (docs/requirements-review-loop.md §5.5):
-   *  runtime only — the controller places them again at boot, before the
-   *  scheduler's first pass. */
-  private loopHolds = new Map<string, { info: Pick<SessionInfo, 'id' | 'title'>; claims: Claim[] }>()
 
   constructor(
     private events: SessionEvents,
@@ -177,7 +175,6 @@ export class SessionManager {
       clearCheckpoints: (s) => m.clearCheckpoints(s),
       detach: (sessionId) => m.detach(sessionId),
       get events() { return m.events },
-      get loopHolds() { return m.loopHolds },
       get mask() { return m.mask },
       get persistTimers() { return m.persistTimers },
       recordsFor: (ws, task) => m.recordsFor(ws, task),
@@ -234,36 +231,41 @@ export class SessionManager {
   }
 
   private limitHold(s: Session): PlanHold | undefined { return wake.limitHold(SessionManager.wakeCtx(this), s) }
-  planHoldOf(sessionId: string): PlanHold | undefined { return wake.planHoldOf(SessionManager.wakeCtx(this), sessionId) }
-
-  // --- review loop seams (docs/requirements-review-loop.md §5.4–§5.6) -------
-
-  /** Register the loop's controller (or drop it with `undefined`). */
-  setLoopHooks(hooks: LoopHooks | undefined): void {
-    this.loopHooks = hooks
-  }
 
   /** Register the watcher manager (or drop it with `undefined`). */
   setWatcherHooks(hooks: WatcherHooks | undefined): void {
     this.watcherHooks = hooks
   }
 
-  private loopOwned(s: Session): boolean { return queue.loopOwned(SessionManager.queueCtx(this), s) }
-  private deliveryActive(s: Session): boolean { return queue.deliveryActive(SessionManager.queueCtx(this), s) }
-  holdForLoop(sessionId: string, stored?: { ws: string; task: string; repos: string[] }): void { return queue.holdForLoop(SessionManager.queueCtx(this), sessionId, stored) }
-  releaseLoopHold(sessionId: string): boolean { return queue.releaseLoopHold(SessionManager.queueCtx(this), sessionId) }
-  isLoopHeld(sessionId: string): boolean { return queue.isLoopHeld(SessionManager.queueCtx(this), sessionId) }
-  ensureContainerUp(sessionId: string): Promise<void> { return connection.ensureContainerUp(SessionManager.connectionCtx(this), sessionId) }
+  /** RPM's model tools (t3v2 §4.3), or `undefined` for none. Sessions whose
+   *  `gurt` server is (re)built after this get them. */
+  setRpmTools(t: RpmTools | undefined): void {
+    this.rpmTools = t
+  }
 
-  /** The last logical turn gurt finished classifying (persisted before
-   *  `session.settled`): what a booting loop replays (§8). */
-  lastSettledOf(sessionId: string): SettledTurn | undefined {
+  /** The last classified turn of an executor or reviewer (persisted before
+   *  `session.settled`): what RPM replays at load (t3v2 §4.1). */
+  lastSettled(sessionId: string): SettledTurn | undefined {
     const t = this.sessions.get(sessionId)?.lastSettled
     return t && structuredClone(t)
   }
 
-  hostPromptSeen(sessionId: string, intent: string): boolean { return prompts.hostPromptSeen(SessionManager.promptsCtx(this), sessionId, intent) }
-  dropHostPrompts(sessionId: string): number { return prompts.dropHostPrompts(SessionManager.promptsCtx(this), sessionId) }
+  // --- RPM's actions (t3v2 §4.1 SessionsPort; adapter: rpmPorts/sessions.ts) ---
+
+  rpmFacts(sessionId: string): SessionFacts | undefined { return rpm.facts(SessionManager.rpmCtx(this), sessionId) }
+  rpmSend(sessionId: string, m: { key: string; text: string; line: RpmChatLine }): Promise<void> { return rpm.send(SessionManager.rpmCtx(this), sessionId, m) }
+  rpmSent(sessionId: string, key: string): 'queued' | 'taken' | 'unknown' { return rpm.sent(SessionManager.rpmCtx(this), sessionId, key) }
+  rpmChatLine(sessionId: string, line: RpmChatLine): number | undefined { return rpm.chatLine(SessionManager.rpmCtx(this), sessionId, line) }
+  rpmChatRefs(sessionId: string): { executor: string; run: number; seq: number; items: string[]; entryId: number }[] { return rpm.chatRefs(SessionManager.rpmCtx(this), sessionId) }
+  createReviewer(r: Parameters<typeof rpm.createReviewer>[1]): Promise<string> { return rpm.createReviewer(SessionManager.rpmCtx(this), r) }
+  userPrompts(sessionId: string, afterTurnId?: string): string[] { return rpm.userPrompts(SessionManager.rpmCtx(this), sessionId, afterTurnId) }
+  checkpointBefore(sessionId: string, turnId: string): { repo: string; commit: string }[] | undefined { return rpm.checkpointBefore(SessionManager.rpmCtx(this), sessionId, turnId) }
+  /** Keep the executor's write clones its own while RPM's run lives, even with its container down. */
+  holdClones(sessionId: string): void { return queue.holdClones(SessionManager.queueCtx(this), sessionId) }
+  releaseClones(sessionId: string): void { return queue.releaseClones(SessionManager.queueCtx(this), sessionId) }
+
+  ensureContainerUp(sessionId: string): Promise<void> { return connection.ensureContainerUp(SessionManager.connectionCtx(this), sessionId) }
+
   private holdText(h: PlanHold): string { return wake.holdText(h) }
   private armLimitTimer(holds: PlanHold[], instants: number[] = []): void { return wake.armLimitTimer(SessionManager.wakeCtx(this), holds, instants) }
 
@@ -316,7 +318,6 @@ export class SessionManager {
     return {
       ...s.info,
       busy: s.busy || undefined,
-      hostBusy: s.hostBusy,
       awaitingInput: s.pendingPermissions.size > 0 || undefined,
       pending: s.pending.length ? s.pending.map(pendingInfo) : undefined,
       queueWaiting: s.recovering ? 'waiting for resume' : this.pendingBlocked(s) ?? (s.info.state === 'queued' ? this.queuedWaiting(s) : undefined)
@@ -329,7 +330,6 @@ export class SessionManager {
   private queuePosition(sessionId: string): number | undefined { return queue.queuePosition(SessionManager.queueCtx(this), sessionId) }
   private pendingBlocked(s: Session): string | undefined { return queue.pendingBlocked(SessionManager.queueCtx(this), s) }
   private queuedWaiting(s: Session): string | undefined { return queue.queuedWaiting(SessionManager.queueCtx(this), s) }
-  private loopHoldText(c: { holder: { info: Pick<SessionInfo, 'id' | 'title'> }; repo: string }, does: 'sends' | 'starts'): string { return queue.loopHoldText(SessionManager.queueCtx(this), c, does) }
 
   snapshot(sessionId: string): SessionSnapshot | undefined {
     const s = this.sessions.get(sessionId)
@@ -484,12 +484,10 @@ export class SessionManager {
   private noteQueued(s: Session, reason: string, by?: string): void { return queue.noteQueued(SessionManager.queueCtx(this), s, reason, by) }
   private claims(s: Session): Claim[] { return queue.claims(s) }
   private repoConflict(s: Session): { holder: { info: Pick<SessionInfo, 'id' | 'title'> }; repo: string } | undefined { return queue.repoConflict(SessionManager.queueCtx(this), s) }
-  private loopHoldConflict(s: Session): { holder: { info: Pick<SessionInfo, 'id' | 'title'> }; repo: string } | undefined { return queue.loopHoldConflict(SessionManager.queueCtx(this), s) }
   private repoHolder(s: Session): { info: Pick<SessionInfo, 'id' | 'title'> } | undefined { return queue.repoHolder(SessionManager.queueCtx(this), s) }
   private isActive(s: Session): boolean { return queue.isActive(s) }
   private holdsClone(s: Session): boolean { return queue.holdsClone(SessionManager.queueCtx(this), s) }
   private activeSessionCount(ws: string, task: string): number { return queue.activeSessionCount(SessionManager.queueCtx(this), ws, task) }
-  private capExempt(s: Session): boolean { return queue.capExempt(s) }
   loadTaskCaps(entries: { ws: string; task: string; max?: number | undefined }[]): void { return queue.loadTaskCaps(SessionManager.queueCtx(this), entries) }
   setTaskCap(ws: string, task: string, max: number | undefined): void { return queue.setTaskCap(SessionManager.queueCtx(this), ws, task, max) }
   repoHolderFor(ws: string, task: string, repo: string): SessionInfo | undefined { return queue.repoHolderFor(SessionManager.queueCtx(this), ws, task, repo) }
@@ -554,9 +552,6 @@ export class SessionManager {
   }
 
   taskHasPendingWork(ws: string, task: string): boolean {
-    // A live review loop is work too: nothing is queued or running at the
-    // moment of a check, but the loop owns the clones (§5.6).
-    if (this.loopHooks?.live(ws, task) === true) return true
     return this.sessionsFor(ws, task).some((s) => s.busy || s.draining || s.loading || s.promptRunning ||
       s.pendingPermissions.size > 0 || s.pending.length > 0 || s.recovering ||
       s.info.state === 'starting' || s.info.state === 'queued' || !!s.info.limitedUntil || !!s.startImages?.length ||
@@ -616,10 +611,8 @@ export class SessionManager {
     isNudge: boolean,
     context?: PromptContext[],
     images?: PromptImage[],
-    /** The review loop's intent id, when this turn is one of its host messages
-     *  (shown as a `system` entry that carries it). */
-    loop?: string): Promise<TurnResult> {
-    return turns.sendTurn(SessionManager.turnsCtx(this), s, text, entryKind, isNudge, context, images, loop)
+    line?: RpmChatLine): Promise<TurnResult> {
+    return turns.sendTurn(SessionManager.turnsCtx(this), s, text, entryKind, isNudge, context, images, line)
   }
 
   private reportTurn(s: Session,
@@ -638,25 +631,23 @@ export class SessionManager {
     text: string,
     context?: PromptContext[],
     images?: PromptImage[],
-    loop?: string): Promise<void> {
-    return turns.runPrompt(SessionManager.turnsCtx(this), s, text, context, images, loop)
+    origin?: TurnOrigin): Promise<void> {
+    return turns.runPrompt(SessionManager.turnsCtx(this), s, text, context, images, origin)
   }
+  private settleTurn(s: Session, turn: TurnTrack, outcome: SettledTurn['outcome']): Promise<void> { return turns.settleTurn(SessionManager.turnsCtx(this), s, turn, outcome) }
 
-  private settleTurn(s: Session, turn: TurnTrack, how: TurnHow): Promise<void> { return turns.settleTurn(SessionManager.turnsCtx(this), s, turn, how) }
   private onComplete(sessionId: string, p: ChangeProposal): void { return agentEvents.onComplete(SessionManager.agentEventsCtx(this), sessionId, p) }
-  private onSubmitReview(sessionId: string, v: ReviewVerdict): void { return agentEvents.onSubmitReview(SessionManager.agentEventsCtx(this), sessionId, v) }
 
   private gurtHooks(s: Session): {
     role: SessionRole
     mounts: { repo: string; mode: RepoMode }[]
     onComplete: (p: ChangeProposal) => void
-    onSubmitReview: (v: ReviewVerdict) => void
     onCreateSession: (req: AgentSessionRequest) => Promise<{ sessionId: string; title: string }>
-    reviewLoop?: boolean
     admin?: AdminHooks
     proactive?: ProactiveHooks
     watcher?: WatcherToolHooks
     cacheSeconds?: number
+    rpm?: RpmToolHooks
   } {
     return agentEvents.gurtHooks(SessionManager.agentEventsCtx(this), s)
   }
@@ -664,11 +655,6 @@ export class SessionManager {
   private proactiveHooks(s: Session): ProactiveHooks { return agentEvents.proactiveHooks(SessionManager.agentEventsCtx(this), s) }
   markTemplate(sessionId: string): void { return drafts.markTemplate(SessionManager.draftsCtx(this), sessionId) }
   spawnRun(templateId: string, title: string): SessionInfo { return drafts.spawnRun(SessionManager.draftsCtx(this), templateId, title) }
-
-  createReviewer(executorId: string,
-    req: { round: number; intent: string; prompt: string }): Promise<SessionInfo> {
-    return drafts.createReviewer(SessionManager.draftsCtx(this), executorId, req)
-  }
 
   createAgentDraft(spawnerId: string,
     req: AgentSessionRequest): Promise<{ sessionId: string; title: string }> {
@@ -720,8 +706,6 @@ export class SessionManager {
     return prompts.prompt(SessionManager.promptsCtx(this), sessionId, text, context, images)
   }
 
-  private human(s: Session, did: 'prompt' | 'cancel'): void { return prompts.human(SessionManager.promptsCtx(this), s, did) }
-  hostPrompt(sessionId: string, text: string, intent: string): Promise<void> { return prompts.hostPrompt(SessionManager.promptsCtx(this), sessionId, text, intent) }
   private drainPending(s: Session): Promise<void> { return turns.drainPending(SessionManager.turnsCtx(this), s) }
   clearPending(sessionId: string): PendingPromptInfo[] { return prompts.clearPending(SessionManager.promptsCtx(this), sessionId) }
   cancelPending(sessionId: string, promptId: string): PendingPromptInfo | undefined { return prompts.cancelPending(SessionManager.promptsCtx(this), sessionId, promptId) }
@@ -798,35 +782,6 @@ export class SessionManager {
   }
 
   private bySessionId(acpSessionId: string): Session | undefined { return agentEvents.bySessionId(SessionManager.agentEventsCtx(this), acpSessionId) }
-
-  /** The review loop writes into the executor's chat: a block gurt ran itself
-   *  (`host` tool) or a note. Returns the entry's id, undefined for a session
-   *  that is gone. */
-  loopFeedPush(sessionId: string, entry: ChatEntryBase): number | undefined {
-    const s = this.sessions.get(sessionId)
-    return s ? this.push(s, entry).id : undefined
-  }
-
-  /** Mark (or clear) gurt's own work on the session between its turns — the
-   *  review loop's automatic check. Runtime only: the status marks blink on it,
-   *  and a restart drops it with the check it described. */
-  setHostBusy(sessionId: string, what: HostBusy | undefined): void {
-    const s = this.sessions.get(sessionId)
-    if (!s || s.hostBusy === what) return
-    s.hostBusy = what
-    this.bus.emit('session.changed', { sessionId })
-  }
-
-  /** Settle or update a block `loopFeedPush` wrote. */
-  loopFeedPatch(
-    sessionId: string,
-    entryId: number,
-    patch: { status?: string; title?: string; detail?: string; endAt?: number }
-  ): void {
-    const s = this.sessions.get(sessionId)
-    if (!s || !s.entries.some((e) => e.id === entryId)) return
-    this.append(s, { type: 'patch', id: entryId, patch })
-  }
 
   /** The ONE writer of the session log: assigns seq, applies, announces, persists. */
   private append(s: Session, record: NewLogRecord): void {
@@ -907,13 +862,28 @@ export class SessionManager {
     }))
   }
 
+  private static rpmCtx(m: SessionManager): rpm.RpmCtx {
+    return cachedCtx(m, 'rpm', () => ({
+      get bus() { return m.bus },
+      createSession: (ref, repos, agentId, startPrompt, action, mcp, autoAllow, configValues, role, skills, network, repoModes) => m.createSession(ref, repos, agentId, startPrompt, action, mcp, autoAllow, configValues, role, skills, network, repoModes),
+      drainPending: (s) => m.drainPending(s),
+      inheritanceOf: (info) => m.inheritanceOf(info),
+      limitHold: (s) => m.limitHold(s),
+      get pendingSeq() { return m.pendingSeq },
+      set pendingSeq(v) { m.pendingSeq = v },
+      persistNow: (s) => m.persistNow(s),
+      push: (s, entry) => m.push(s, entry),
+      get sessions() { return m.sessions },
+      startNowOrQueue: (sessionId) => m.startNowOrQueue(sessionId)
+    }))
+  }
+
   private static persistenceCtx(m: SessionManager): persistence.PersistenceCtx {
     return cachedCtx(m, 'persistence', () => ({
       drainPending: (s) => m.drainPending(s),
       get events() { return m.events },
       flushLog: (s) => m.flushLog(s),
       flushSessions: (sessions) => m.flushSessions(sessions),
-      loopOwned: (s) => m.loopOwned(s),
       get pendingSeq() { return m.pendingSeq },
       set pendingSeq(v) { m.pendingSeq = v },
       persistNow: (s) => m.persistNow(s),
@@ -933,7 +903,6 @@ export class SessionManager {
       drainPending: (s) => m.drainPending(s),
       dropAuto: (s, which, finalWithdrawn) => m.dropAuto(s, which, finalWithdrawn),
       endWatcher: (sessionId, end) => m.endWatcher(sessionId, end),
-      human: (s, did) => m.human(s, did),
       get pendingSeq() { return m.pendingSeq },
       set pendingSeq(v) { m.pendingSeq = v },
       persistNow: (s) => m.persistNow(s),
@@ -955,7 +924,7 @@ export class SessionManager {
       createAgentDraft: (spawnerId, req) => m.createAgentDraft(spawnerId, req),
       get events() { return m.events },
       onComplete: (sessionId, p) => m.onComplete(sessionId, p),
-      onSubmitReview: (sessionId, v) => m.onSubmitReview(sessionId, v),
+      get rpmTools() { return m.rpmTools },
       proactiveHooks: (s) => m.proactiveHooks(s),
       push: (s, entry) => m.push(s, entry),
       get sessions() { return m.sessions },
@@ -967,18 +936,17 @@ export class SessionManager {
   private static turnsCtx(m: SessionManager): turns.TurnsCtx {
     return cachedCtx(m, 'turns', () => ({
       get agentKinds() { return m.agentKinds },
+      append: (s, record) => m.append(s, record),
       assertNotStopped: (s) => m.assertNotStopped(s),
       attach: (s) => m.attach(s),
       get bus() { return m.bus },
       clearLimited: (s) => m.clearLimited(s),
       decideTurn: (s, outcome, isNudge) => m.decideTurn(s, outcome, isNudge),
-      deliveryActive: (s) => m.deliveryActive(s),
       drainPending: (s) => m.drainPending(s),
       earlierQueueItem: (s) => m.earlierQueueItem(s),
       get events() { return m.events },
       isWakeWork: (p) => m.isWakeWork(p),
       limitHold: (s) => m.limitHold(s),
-      get loopHooks() { return m.loopHooks },
       get mask() { return m.mask },
       maskEnabled: () => m.maskEnabled(),
       onLimited: (s, limit) => m.onLimited(s, limit),
@@ -989,12 +957,12 @@ export class SessionManager {
       push: (s, entry) => m.push(s, entry),
       repoHolder: (s) => m.repoHolder(s),
       reportTurn: (s, startedAt, outcome, detail) => m.reportTurn(s, startedAt, outcome, detail),
-      runPrompt: (s, text, context, images, loop) => m.runPrompt(s, text, context, images, loop),
+      runPrompt: (s, text, context, images, origin) => m.runPrompt(s, text, context, images, origin),
+      settleTurn: (s, turn, outcome) => m.settleTurn(s, turn, outcome),
       schedule: () => m.schedule(),
       schedulePersist: (ref) => m.schedulePersist(ref),
-      sendTurn: (s, text, entryKind, isNudge, context, images, loop) => m.sendTurn(s, text, entryKind, isNudge, context, images, loop),
+      sendTurn: (s, text, entryKind, isNudge, context, images, line) => m.sendTurn(s, text, entryKind, isNudge, context, images, line),
       get sessions() { return m.sessions },
-      settleTurn: (s, turn, how) => m.settleTurn(s, turn, how),
       vocabulary: (s) => m.vocabulary(s),
       watcherPaused: (s) => m.watcherPaused(s),
       withLimit: (s, outcome, detail, firstEntry) => m.withLimit(s, outcome, detail, firstEntry)
@@ -1024,7 +992,7 @@ export class SessionManager {
       push: (s, entry) => m.push(s, entry),
       pushConfigOption: (s, conn, configId, value) => m.pushConfigOption(s, conn, configId, value),
       repoConflict: (s) => m.repoConflict(s),
-      runPrompt: (s, text, context, images, loop) => m.runPrompt(s, text, context, images, loop),
+      runPrompt: (s, text, context, images, origin) => m.runPrompt(s, text, context, images, origin),
       schedule: () => m.schedule(),
       schedulePersist: (ref) => m.schedulePersist(ref),
       get sessions() { return m.sessions },
@@ -1090,9 +1058,8 @@ export class SessionManager {
       activeSessionCount: (ws, task) => m.activeSessionCount(ws, task),
       armLimitTimer: (holds, instants) => m.armLimitTimer(holds, instants),
       get bus() { return m.bus },
-      capExempt: (s) => m.capExempt(s),
+      get cloneHolds() { return m.cloneHolds },
       claims: (s) => m.claims(s),
-      deliveryActive: (s) => m.deliveryActive(s),
       drainPending: (s) => m.drainPending(s),
       earlierQueueItem: (s) => m.earlierQueueItem(s),
       enqueue: (sessionId) => m.enqueue(sessionId),
@@ -1101,10 +1068,6 @@ export class SessionManager {
       holdText: (h) => m.holdText(h),
       isActive: (s) => m.isActive(s),
       limitHold: (s) => m.limitHold(s),
-      loopHoldConflict: (s) => m.loopHoldConflict(s),
-      get loopHolds() { return m.loopHolds },
-      loopHoldText: (c, does) => m.loopHoldText(c, does),
-      get loopHooks() { return m.loopHooks },
       noteQueued: (s, reason, by) => m.noteQueued(s, reason, by),
       get queuedReasons() { return m.queuedReasons },
       queuedSessions: () => m.queuedSessions(),

@@ -182,6 +182,13 @@ const SAFE_ARGS = new Set([
   'watcherWakeNow',
   'watcherCheckNow',
   'watcherCancelWake',
+  // RPM: an executor id, a run number, a command, a settings patch (agent,
+  // options, threshold — no prose). Notes and verdict comments are opaque.
+  'rpmRuns',
+  'rpmState',
+  'rpmConfig',
+  'rpmSetConfig',
+  'rpmCommand',
   'envBuildImage',
   // Session and container lifecycle: a session id, sometimes an option id.
   'stopContainer',
@@ -196,9 +203,6 @@ const SAFE_ARGS = new Set([
   'sessionBranch',
   'sessionDelete',
   'sessionCancel',
-  'reviewLoopState', // an executor id
-  'reviewLoopStop', //  an executor id
-  'reviewLoopExtend', // an executor id
   // Session id and a queued-prompt id. The prompt text these *return* is
   // another matter, and the trace never logs return values.
   'sessionClearPending',
@@ -211,7 +215,6 @@ const SAFE_ARGS = new Set([
   'changesPush',
   'changesUpdateFromMain',
   'changesMergeToMain',
-  'changesApprove', //  repo keys and a flag
   'changesOpenPr',
   'changesOpenTerminal',
   'taskOpenTerminal',

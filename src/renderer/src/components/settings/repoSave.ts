@@ -14,8 +14,7 @@ export type RepoSaveResult =
 
 /**
  * Persist the Repos modal's `draft`. Creating a local repo takes its name only
- * (`createLocalRepo`), so the check command and the review defaults the form
- * collected go in as a second write — the same `updateRepo` an edit uses — on
+ * (`createLocalRepo`), so the check command the form collected goes in as a second write — the same `updateRepo` an edit uses — on
  * the entry that creation returned (its storage url and `local` flag are
  * gurt's, not the form's). Never throws.
  */
@@ -31,12 +30,7 @@ export async function saveRepo(
     else if (kind === 'add') await api.addRepo(ws, draft)
     else {
       created = await api.createLocalRepo(ws, draft.name)
-      if (draft.check || draft.review)
-        await api.updateRepo(ws, {
-          ...created,
-          ...(draft.check ? { check: draft.check } : {}),
-          ...(draft.review ? { review: draft.review } : {})
-        })
+      if (draft.check) await api.updateRepo(ws, { ...created, check: draft.check })
     }
     return { ok: true }
   } catch (e) {

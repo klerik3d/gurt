@@ -9,15 +9,12 @@ import {
   isBundledEnv,
   isRepoMode,
   isSessionRole,
-  repoMode,
   roleIsManagerOwned,
+  roleManagerName,
   sessionRole,
-  writeRepos,
-  type AgentConfig,
   type RepoConfig,
   type Tree
 } from '../shared/types'
-import { ladderOfRepos, sanitizeReviewBlock, validateReviewBlock } from '../shared/reviewBlock'
 import type { BootProgress, SessionDraftPatch } from '../shared/api'
 import { NOTIFICATION_DEFAULTS } from '../shared/notifications'
 import { sanitizeSkillSelection } from '../shared/skills'
@@ -45,8 +42,8 @@ import { createLogger, dropSessionLog, sessionLogLine } from './log'
 import { createProactive, type ProactiveManager } from './proactive'
 import { createWatchers, type WatcherManager } from './watchers'
 import type { PollerClock } from './watchPoller'
-import { createReviewLoop, type ReviewLoopClock, type ReviewLoopController, type ReviewLoopDeps } from './reviewLoop'
-import { dropApprovals, setApproval } from './approvals'
+import { createRpm, type Rpm } from '../rpm/main'
+import { createCheckPort, createGitPort, createNotifyPort, createSessionsPort, createStorePort } from './rpmPorts'
 
 const log = createLogger('kernel')
 // Same scope as sessions.ts/containers.ts's own loggers (`sessions`,
@@ -74,15 +71,6 @@ export interface Kernel {
   /** Where the boot restore currently is — the pull behind `getBootProgress`,
    *  for a window that opened after some `boot.progress` events already fired. */
   bootProgress(): BootProgress
-  /** End a review loop's hold on an executor (docs/requirements-review-loop.md
-   *  §5.5): drop it, then run the executor through the idle handling its pings
-   *  kept from arming — `noteIdle` when idle, then the queue handoff — and
-   *  re-run the scheduler. True when there was a hold. */
-  releaseLoopHold(sessionId: string): boolean
-  /** The Diff view's "Approve" on a repo's uncommitted changes, or its
-   *  withdrawal (docs/requirements-review-loop.md §13, "Manual approval"); a
-   *  review loop of the scope waiting for it goes on. */
-  approveChanges(ws: string, task: string, repo: string, approved: boolean): Promise<void>
   notifications: Notifications
   /** Per-turn agent accounting — what the dashboard's agent cards read. */
   usage: UsageLedger
@@ -98,9 +86,9 @@ export interface Kernel {
   /** Watchers: one long-lived session each, woken by its own wakeups
    *  (docs/requirements-watchers.md). */
   watchers: WatcherManager
-  /** The review loop's controller (docs/requirements-review-loop.md §5): ties
-   *  the settled turns, the check, the reviewer and the delivery together. */
-  reviewLoop: ReviewLoopController
+  /** RPM — the review process manager (t3v2 §3): loaded with the sessions,
+   *  before the scheduler's first pass. */
+  rpm: Rpm
   /** store.buildTree + session overlay. */
   tree(): Promise<Tree>
   deleteTask(ws: string, task: string): Promise<void>
@@ -122,15 +110,9 @@ export interface Kernel {
   setLimitSettings(settings: LimitSettings): Promise<void>
   /** sessions.editDraft behind a repo check — the UI constrains the choice, IPC must too. */
   editDraft(sessionId: string, patch: SessionDraftPatch): Promise<void>
-  /** The Review block's start gate (docs/requirements-review-loop.md §3): throws
-   *  the reason when the draft's block may not start — the same
-   *  `validateReviewBlock` the Config tab disables Run with. A draft without a
-   *  block, or a session past draft, passes. */
-  assertReviewBlock(sessionId: string): Promise<void>
-  /** Settings → Repos' gate for a repo's `check` and `review` defaults: the
-   *  reviewer must exist, not be denied in the workspace and receive gurt's
-   *  MCP server. Returns the repo with the defaults normalised. */
-  checkRepoReview(ws: string, repo: RepoConfig): Promise<RepoConfig>
+  /** Settings → Repos' shape for a repo: `check` trimmed (empty = none), and
+   *  nothing a removed field left behind. */
+  cleanRepo(repo: RepoConfig): RepoConfig
   /** Forge compare URL for the task branch; when the latest proposal carries a PR,
    *  its title/body ride along as url-encoded query params (the compare page picks
    *  them up). */
@@ -181,7 +163,6 @@ async function defaultEnvsForRepo(ws: string, repo: string): Promise<string[]> {
 
 /** Seams a test drives time through; the app passes none. */
 export interface KernelOptions {
-  reviewLoop?: { clock?: Partial<ReviewLoopClock>; approvalSeam?: ReviewLoopDeps['approvalSeam'] }
   watchers?: { clock?: Partial<PollerClock> }
 }
 
@@ -254,9 +235,6 @@ export function createKernel(options: KernelOptions = {}): Kernel {
       proactiveFor: (ws, agent, sessionId) => proactive.hooksFor(ws, agent, sessionId),
       watcherFor: (ws, task, sessionId) => watchers.hooksFor(ws, task, sessionId),
       checkDraftTarget: assertDraftTarget,
-      // The findings a loop executor's next `complete` must answer (§4.2) —
-      // the controller owns the loop; read at call time like `admin` above.
-      openFindings: (sessionId) => reviewLoop.openFindings(sessionId),
       // Rewind checkpoints: host git snapshots of the session's clones
       // (checkpoints.ts) — the refs and clone paths stay out of the manager.
       snapshotCheckpoint: snapshotSessionCheckpoint,
@@ -333,28 +311,6 @@ export function createKernel(options: KernelOptions = {}): Kernel {
     }
   })
 
-  // The review loop: a bus subscriber like the proactive manager, created over
-  // the same session manager. Its hold, delivery gate and ownership questions
-  // reach the session manager through the hooks (`setLoopHooks`).
-  const reviewLoop = createReviewLoop({
-    bus,
-    sessions,
-    exec: (sessionId, argv, cwd) => containers.spawnExec(sessionId, argv, cwd),
-    containerUp: (sessionId) => containers.status(sessionId) === 'running',
-    containerRunning: (sessionId) => containers.isRunning(sessionId),
-    // `idle`, not `user`: only the scope pane's stop is a human's (§5.6).
-    stopContainer: (sessionId) => containers.stop(sessionId, 'idle', true),
-    release: (sessionId) => kernel.releaseLoopHold(sessionId),
-    idle: (sessionId) => idle(sessionId),
-    ...(options.reviewLoop?.approvalSeam ? { approvalSeam: options.reviewLoop.approvalSeam } : {}),
-    ...(options.reviewLoop?.clock ? { clock: options.reviewLoop.clock } : {})
-  })
-  sessions.setLoopHooks({
-    storageFault: (id) => reviewLoop.storageFault(id),
-    owns: (sessionId) => reviewLoop.owns(sessionId),
-    delivering: (ws, task) => reviewLoop.delivering(ws, task),
-    live: (ws, task) => reviewLoop.live(ws, task)
-  })
 
   // --- log tap ------------------------------------------------------------
   // The lifecycle *is* the bus, so one subscription per event is the whole
@@ -365,17 +321,6 @@ export function createKernel(options: KernelOptions = {}): Kernel {
     sessionLog.info('session.state', { s: sessionId, task: ref.task, state, reason, err })
   })
   bus.on('session.turn', ({ sessionId, phase }) => sessionLog.info('session.turn', { s: sessionId, phase }))
-  // Manual approval (docs/requirements-review-loop.md §13): a turn of a
-  // session that writes a repo may have changed it — and may have undone the
-  // change before anyone looked — so the repo's approval goes, whatever the
-  // tree is now. Read-only sessions (a reviewer, a proactive run) drop nothing.
-  bus.on('session.turn', ({ sessionId, ref, phase }) => {
-    if (phase !== 'ended') return
-    const info = sessions.sessionInfo(sessionId)
-    if (!info) return
-    void dropApprovals(ref.workspace, ref.task, writeRepos(info)).catch((e: unknown) =>
-      log.warn('approval drop failed', { ws: ref.workspace, task: ref.task, err: e }))
-  })
   bus.on('session.awaiting', ({ sessionId, awaiting }) =>
     sessionLog.info('session.awaiting', { s: sessionId, awaiting })
   )
@@ -442,11 +387,22 @@ export function createKernel(options: KernelOptions = {}): Kernel {
   const notifications = createNotifications(
     bus,
     NOTIFICATION_DEFAULTS,
-    (id) => sessions.sessionInfo(id),
-    // The review loop speaks for its executor until its end is notified (§7);
-    // looked up lazily — the controller is built below.
-    (id) => reviewLoop.notifiesThrough(id)
+    (id) => sessions.sessionInfo(id)
   )
+
+  // RPM over its ports (t3v2 §4). Built now, so its tools and its quiet rule
+  // are in place before the first session attaches or the first event fires;
+  // its journals are read in the boot restore below.
+  const rpm = createRpm({
+    sessions: createSessionsPort(sessions, { bus, stopContainer: (id) => containers.stop(id, 'idle') }),
+    git: createGitPort(),
+    check: createCheckPort(containers, sessions),
+    notify: createNotifyPort(notifications),
+    store: createStorePort()
+  })
+  sessions.setRpmTools(rpm.tools)
+  notifications.setQuiets((id) => rpm.quiets(id))
+  rpm.onChange((e) => bus.emit('rpm', e))
 
   // Usage ledger: files every finished turn against the agent instance that
   // served it. Wired here, next to notifications, for the same reason — both
@@ -566,6 +522,10 @@ export function createKernel(options: KernelOptions = {}): Kernel {
       }
       sessions.restore(restored)
     }
+    // RPM's journals, right after the sessions they belong to and before
+    // anything can schedule: a live run holds its executor's clones (t3v2 §8.2).
+    progress(58, 'loading review runs')
+    await rpm.load().catch((e: unknown) => log.error('internal.fail', { site: 'rpm-load', err: e }))
     // Docker is the registry: correct the restored container records against it
     // (and reap orphans) before anything tries to exec into one.
     progress(60, 'checking containers against Docker')
@@ -580,16 +540,14 @@ export function createKernel(options: KernelOptions = {}): Kernel {
     // Same reason: attended work waits for the user, the watcher's own wake
     // turns go on, and nothing drains before this has sorted them (§10).
     await watchers.load(t)
-    // The loops' files, before the scheduler's first pass (§8's boot).
-    await reviewLoop.load(allTasks)
-    // Replay, deadlines, intents, resume (§8) — before the first pass too, so a
-    // reviewer of a loop past its deadline is never started to be deleted.
-    await reviewLoop.recover()
+    // After Docker is reconciled: recovery stops and checks containers (§8.2).
+    progress(92, 'recovering review runs')
+    await rpm.recover().catch((e: unknown) => log.error('internal.fail', { site: 'rpm-recover', err: e }))
+    rpm.start()
     progress(96, 'resuming queue')
     sessions.schedule()
     reapForQueue()
     proactive.start()
-    reviewLoop.start()
   }
   const ready = restoreSessions()
     .catch((e: unknown) => log.error('internal.fail', { site: 'session-restore', err: e }))
@@ -607,34 +565,13 @@ export function createKernel(options: KernelOptions = {}): Kernel {
     sessions,
     ready,
     bootProgress: () => lastProgress,
-    releaseLoopHold: (sessionId) => {
-      const had = sessions.releaseLoopHold(sessionId)
-      idle(sessionId)
-      sessions.schedule()
-      return had
-    },
-    async approveChanges(ws, task, repo, approved) {
-      // An agent mid-turn in the repo may still change it: its turn's end would
-      // drop the approval anyway, so say so instead of taking it.
-      const busy = approved
-        ? sessions.listForTask(ws, task).find((i) => writeRepos(i).includes(repo) && !sessions.isSessionIdle(i.id) && i.state === 'started')
-        : undefined
-      if (busy) throw new Error(`session "${busy.title}" is working in ${repo} — approve once its turn has ended`)
-      // A withdrawal is checked in the same lock the loop's decision to deliver
-      // takes: once delivery has started it is too late, and says so.
-      await setApproval(ws, task, repo, approved, () => {
-        if (!approved && reviewLoop.deliveringRepos(ws, task).includes(repo))
-          throw new Error(`the review loop is already delivering ${repo} — too late to withdraw the approval`)
-      })
-      await reviewLoop.approvalChanged(ws, task)
-    },
     notifications,
     usage,
     planUsage,
     pii,
     proactive,
     watchers,
-    reviewLoop,
+    rpm,
 
     async tree(): Promise<Tree> {
       const t = await store.buildTree()
@@ -652,9 +589,6 @@ export function createKernel(options: KernelOptions = {}): Kernel {
       // as cancelled, a raised scope frees its refs.
       await proactive.onScopeDeleted(ws, task)
       watchers.onScopeDeleted(ws, task)
-      // Its loops go with it, before the sessions are dropped: a late write
-      // would recreate the directory.
-      reviewLoop.dropScope(ws, task)
       await terminals.withScopeBlocked(ws, task, async () => {
         await containers.teardownTask(ws, task)
         terminals.dropScope(ws, task)
@@ -666,7 +600,6 @@ export function createKernel(options: KernelOptions = {}): Kernel {
 
     async deleteWorkspace(ws: string): Promise<void> {
       for (const task of await store.listTasks(ws)) sessions.assertTaskWritable(ws, task)
-      reviewLoop.dropWorkspace(ws)
       await terminals.withScopeBlocked(ws, undefined, async () => {
         await containers.teardownWorkspace(ws)
         terminals.dropScope(ws)
@@ -721,24 +654,13 @@ export function createKernel(options: KernelOptions = {}): Kernel {
         throw new Error(`unknown session role "${String(patch.role)}"`)
       assertRepoModes(patch.repoModes)
       const info = sessions.snapshot(sessionId)?.info
-      // A reviewer is the review loop's alone (docs/requirements-review-loop.md
-      // §4): no edit makes a session one, or turns one into something else.
-      // Nor is a watcher (docs/requirements-watchers.md §4).
-      if (patch.role !== undefined && (roleIsManagerOwned(patch.role) || (info && roleIsManagerOwned(sessionRole(info)))))
-        throw new Error(
-          patch.role === 'watcher' || (info && sessionRole(info) === 'watcher')
-            ? 'a watcher is created only by the Watchers mode, and keeps its role'
-            : 'a reviewer is created only by the review loop, and keeps its role'
-        )
-      if (info) await assertDraftTarget(info.workspace, patch.repos ?? [], patch.env, patch.agent)
-      // The Review block (§3) belongs to an executor draft and is shaped here;
-      // whether it may *start* is `assertReviewBlock`'s, since a half-made block
-      // is the normal state while it is being filled in.
-      if (patch.review) {
-        if ((patch.role ?? (info && sessionRole(info))) !== 'executor')
-          throw new Error('the Review block is for executor sessions')
-        patch = { ...patch, review: sanitizeReviewBlock(patch.review) }
+      // A watcher or a reviewer is its manager's alone (docs/requirements-watchers.md
+      // §4, t3v2 §6.4): no edit makes a session one, or turns one into something else.
+      if (patch.role !== undefined) {
+        const owned = roleIsManagerOwned(patch.role) ? patch.role : info && roleIsManagerOwned(sessionRole(info)) ? sessionRole(info) : undefined
+        if (owned) throw new Error(`a ${owned} is created only by ${roleManagerName(owned)}, and keeps its role`)
       }
+      if (info) await assertDraftTarget(info.workspace, patch.repos ?? [], patch.env, patch.agent)
       // Names become directories under the session's scratch dir, so the shape
       // is checked here rather than at the copy. Resolvability is not: a name
       // that could exist and does not is the draft's to show
@@ -751,54 +673,11 @@ export function createKernel(options: KernelOptions = {}): Kernel {
       )
     },
 
-    async assertReviewBlock(sessionId: string): Promise<void> {
-      const info = sessions.snapshot(sessionId)?.info
-      if (!info?.review || info.state !== 'draft') return
-      const [wsData, agents] = await Promise.all([store.getWorkspace(info.workspace), store.getAgents()])
-      const configs: Record<string, AgentConfig | null | undefined> = {}
-      for (const id of new Set([info.agent, info.review.agent].filter((a): a is string => !!a)))
-      {
-        // The Config tab's own read (`getAgentConfig`): the live report when a
-        // session has refreshed it this run, else the cache or the kind's seed.
-        const live = sessions.agentConfig(id, agents[id]?.kind)
-        configs[id] = live.updatedAt ? live : await store.getAgentConfig(id)
-      }
-      const ladder = ladderOfRepos(
-        info.repos.filter((r) => repoMode(info, r) === 'write'),
-        wsData.repos
-      )
-      const why = validateReviewBlock(
-        info.review,
-        { role: sessionRole(info), agent: info.agent, configValues: info.configValues },
-        { agents, deniedAgents: wsData.deniedAgents ?? [], configs },
-        ladder
-      )
-      if (why) throw new Error(`review loop: ${why}`)
-    },
-
-    async checkRepoReview(ws: string, repo: RepoConfig): Promise<RepoConfig> {
-      const { check, review, ...rest } = repo
+    cleanRepo(repo: RepoConfig): RepoConfig {
+      // `review` is a removed field an old renderer state may still carry.
+      const { check, review: _review, ...rest } = repo as RepoConfig & { review?: unknown }
       const cmd = typeof check === 'string' ? check.trim() : ''
-      if (!review) return { ...rest, ...(cmd ? { check: cmd } : {}) }
-      const { enabled, ...block } = review
-      const clean = sanitizeReviewBlock(block)
-      // Only the fields the user set are defaults; the sanitizer fills the rest
-      // for validation, not for storage.
-      if (clean.agent) {
-        const [wsData, agents] = await Promise.all([store.getWorkspace(ws), store.getAgents()])
-        const why = validateReviewBlock(clean, undefined, { agents, deniedAgents: wsData.deniedAgents ?? [], configs: {} })
-        if (why) throw new Error(`repo "${repo.name}" review defaults: ${why}`)
-      }
-      const out: NonNullable<RepoConfig['review']> = {
-        ...(typeof enabled === 'boolean' ? { enabled } : {}),
-        ...(clean.agent ? { agent: clean.agent } : {}),
-        ...(clean.agent && clean.configValues ? { configValues: clean.configValues } : {}),
-        ...(review.maxRounds !== undefined ? { maxRounds: clean.maxRounds } : {}),
-        ...(review.whenClean !== undefined ? { whenClean: clean.whenClean } : {}),
-        ...(review.draftPr !== undefined ? { draftPr: clean.draftPr } : {}),
-        ...(review.manualApproval !== undefined ? { manualApproval: clean.manualApproval } : {})
-      }
-      return { ...rest, ...(cmd ? { check: cmd } : {}), ...(Object.keys(out).length ? { review: out } : {}) }
+      return { ...rest, ...(cmd ? { check: cmd } : {}) }
     },
 
     async setLimitSettings(settings: LimitSettings): Promise<void> {

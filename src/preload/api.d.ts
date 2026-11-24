@@ -41,6 +41,8 @@ declare global {
        *  here — see `GurtEvents['hotkey-cycle-workspace']`. */
       onHotkeyCycleWorkspace(cb: (dir: GurtEvents['hotkey-cycle-workspace']) => void): () => void
       onColorScheme(cb: (scheme: GurtEvents['color-scheme']) => void): () => void
+      /** An executor's review run changed (t3v2 §3.2): re-read `rpmState`. */
+      onRpm(cb: (event: GurtEvents['rpm']) => void): () => void
     }
   }
 }

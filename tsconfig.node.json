@@ -23,5 +23,5 @@
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src/main/**/*", "src/preload/**/*", "src/shared/**/*", "src/plugins/**/*", "electron.vite.config.ts"]
+  "include": ["src/main/**/*", "src/preload/**/*", "src/shared/**/*", "src/plugins/**/*", "src/rpm/core/**/*", "src/rpm/main/**/*", "electron.vite.config.ts"]
 }

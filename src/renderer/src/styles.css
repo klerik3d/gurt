@@ -1051,7 +1051,6 @@ textarea.input {
 }
 .sb-task { --level: 0; }
 .sb-session { --level: 1; }
-.sb-session.nested { --level: 2; }
 .sb-task:hover, .sb-session:hover, .file-tree-row:hover,
 .sb-task.selected, .sb-session.selected, .file-tree-row.selected,
 .sb-tree:focus-visible .cursor {
@@ -1157,12 +1156,6 @@ textarea.input {
 .sb-fold {
   display: flex;
   width: var(--row-chev);
-  flex: none;
-}
-.sb-review-count {
-  font-family: var(--mono);
-  font-size: var(--fs-11);
-  color: var(--faint);
   flex: none;
 }
 .sb-session-name {
@@ -2346,8 +2339,7 @@ textarea.input {
   font-size: var(--fs-11);
   color: var(--faint);
 }
-/* Review loop (docs/requirements-review-loop.md): the Config tab's checkbox
-   row, and the status line above a loop session's chat. */
+/* A checkbox row. */
 .rv-check {
   display: flex;
   align-items: center;
@@ -2362,148 +2354,7 @@ textarea.input {
   width: 100%;
   text-align: left;
 }
-.menu-status {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 7px 12px;
-  font-size: var(--fs-12);
-  color: var(--dim);
-  cursor: default;
-}
-.menu-status-text {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-.session-menu .icon-sq {
-  position: relative;
-}
-.menu-loop-dot {
-  position: absolute;
-  top: 2px;
-  right: 2px;
-}
 
-/* What gurt itself ran — the review loop's check, reviewer, verdicts — set
-   apart from the model's own tool rows by the badge. */
-.host-block,
-.host-note {
-  border: 1px solid var(--border2);
-  border-radius: var(--r-md);
-  background: var(--app);
-  font-size: var(--fs-12);
-  min-width: 0;
-}
-/* Status tints the shared neutral border, never replaces it: a full-strength
-   red or green outline reads as neon next to the other blocks. */
-.host-block[data-status='failed'],
-.host-note[data-tone='error'] {
-  border-color: color-mix(in srgb, var(--red) 35%, var(--border2));
-}
-.host-note[data-tone='ok'] {
-  border-color: color-mix(in srgb, var(--green) 35%, var(--border2));
-}
-.host-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 11px;
-}
-.host-badge {
-  font-size: var(--fs-10);
-  letter-spacing: var(--ls-label);
-  text-transform: uppercase;
-  color: var(--yellow);
-  border: 1px solid var(--border2);
-  border-radius: var(--r-sm);
-  padding: 0 5px;
-  flex: none;
-}
-.host-label,
-.host-state {
-  font-size: var(--fs-11);
-  color: var(--faint);
-}
-.host-cmd {
-  padding: 0 11px 7px;
-  font-size: var(--fs-12);
-  color: var(--text);
-  overflow-wrap: anywhere;
-}
-.host-note-text {
-  color: var(--text);
-  flex: 1;
-  min-width: 0;
-}
-.host-note-detail {
-  padding: 0 11px 7px;
-  color: var(--dim);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-.host-link {
-  text-decoration: none;
-  color: var(--accent);
-  overflow-wrap: anywhere;
-}
-.host-link:hover {
-  text-decoration: underline;
-}
-.host-action {
-  display: block;
-  border: 0;
-  background: transparent;
-  font: inherit;
-  cursor: pointer;
-  padding: 0 11px 7px;
-  text-align: left;
-}
-.host-note .rv-findings {
-  padding: 2px 11px 8px;
-}
-.host-toggle {
-  border: 0;
-  background: transparent;
-  color: var(--faint);
-  font-size: var(--fs-11);
-  cursor: pointer;
-  padding: 0 11px 6px;
-}
-.host-head .host-toggle {
-  padding: 0;
-}
-.host-toggle:hover {
-  color: var(--text);
-}
-.rv-findings {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-.rv-findings li {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 4px 8px;
-  color: var(--dim);
-}
-.rv-sev {
-  font-family: var(--mono);
-  font-size: var(--fs-10);
-  color: var(--yellow);
-}
-.rv-sev-blocker,
-.rv-sev-major {
-  color: var(--red);
-}
-.rv-sev-nit {
-  color: var(--faint);
-}
 /* Section label plus the round 'i' that carries its explanation. */
 .seclabel-row {
   display: flex;
@@ -4451,11 +4302,6 @@ textarea.input {
   background: transparent;
   border-color: var(--green);
 }
-.diff-approved {
-  flex: none;
-  color: var(--green);
-  font-size: var(--fs-11);
-}
 .diff-counts {
   display: inline-flex;
   flex: none;
@@ -5082,9 +4928,6 @@ button { user-select: none; }
 .git-commit-panel .fld { margin: 0; }
 .git-commit-panel .commit-message { min-height: 65px; width: 100%; resize: vertical; }
 .git-commit-hint { color: var(--dim); font-size: var(--fs-10); }
-.git-approve { display: flex; align-items: center; gap: 8px; }
-.git-approve-state { flex: 1; color: var(--dim); font-size: var(--fs-11); }
-.git-approve.approved .git-approve-state { color: var(--green); }
 .git-commit-buttons { display: flex; gap: 6px; flex-wrap: wrap; }
 .git-commit-buttons .btn { flex: 1; white-space: nowrap; }
 .git-parameters { font-size: var(--fs-11); }
@@ -5394,4 +5237,301 @@ button.chip-x {
   min-height: 0;
   display: flex;
   flex-direction: column;
+}
+
+/* ---- RPM: the Review tab (src/rpm/ui, t2v3 A–B) ----
+   Standard metrics only; the one colour axis is whose move a finding waits for. */
+
+/* Count on a tab label — the notification badge, inline. */
+.tab-badge {
+  display: inline-block;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  margin-left: 5px;
+  border-radius: var(--r-sm);
+  background: var(--red);
+  color: var(--on-red);
+  font-family: var(--mono);
+  font-size: var(--fs-9);
+  font-weight: 600;
+  line-height: 14px;
+  text-align: center;
+  vertical-align: 1px;
+}
+.rpm-tab > .ns-section:first-child,
+.rpm-col > .ns-section:first-child {
+  margin-top: 0;
+}
+.rpm-col {
+  max-width: 560px;
+}
+.rpm-error {
+  margin-bottom: 10px;
+}
+.rpm-hint {
+  margin-top: 14px;
+  font-size: var(--fs-12);
+}
+.rpm-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: var(--fs-13);
+}
+.rpm-link {
+  font-size: inherit;
+  color: inherit;
+  text-decoration: underline dotted color-mix(in srgb, var(--accent) 60%, transparent);
+  text-underline-offset: 3px;
+}
+.rpm-link.mono {
+  font-size: var(--fs-11);
+}
+.rpm-output {
+  margin-top: 10px;
+  max-height: 260px;
+}
+.rpm-filters {
+  margin-top: 14px;
+}
+.rpm-n {
+  font-family: var(--mono);
+  font-size: var(--fs-11);
+  opacity: 0.75;
+  margin-left: 5px;
+}
+.rpm-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 10px;
+  font-size: var(--fs-13);
+}
+.rpm-table th {
+  text-align: left;
+  font-family: var(--mono);
+  font-weight: 500;
+  font-size: var(--fs-10);
+  letter-spacing: var(--ls-label);
+  text-transform: uppercase;
+  color: var(--faint);
+  padding: 6px 9px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+.rpm-table th.sorted {
+  color: var(--dim);
+}
+.rpm-table td {
+  padding: 7px 9px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.rpm-row {
+  cursor: pointer;
+}
+.rpm-row:hover > td {
+  background: var(--hover);
+}
+.rpm-row.open > td {
+  background: var(--panel);
+  border-bottom: 0;
+}
+.rpm-x > td {
+  background: var(--panel);
+  padding: 0 9px 12px 40px;
+}
+.rpm-sev {
+  font-family: var(--mono);
+  font-size: var(--fs-10);
+  letter-spacing: var(--ls-tight);
+  text-transform: uppercase;
+}
+.rpm-sev-blocker { color: var(--red); }
+.rpm-sev-major { color: var(--yellow); }
+.rpm-sev-minor { color: var(--dim); }
+.rpm-sev-nit { color: var(--faint); }
+.rpm-st-you { color: var(--yellow); font-size: var(--fs-12); }
+.rpm-st-ex { color: var(--accent); font-size: var(--fs-12); }
+.rpm-st-rv { color: var(--code); font-size: var(--fs-12); }
+.rpm-st-off { color: var(--faint); font-size: var(--fs-12); }
+.rpm-hist {
+  display: grid;
+  grid-template-columns: 40px 190px 1fr;
+  gap: 5px 12px;
+  font-size: var(--fs-12);
+  margin: 2px 0 12px;
+}
+.rpm-hist-row {
+  display: contents;
+}
+.rpm-t {
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: var(--fs-11);
+  padding-top: 1px;
+}
+.rpm-w {
+  color: var(--dim);
+}
+.rpm-hist-row.faint .rpm-w,
+.rpm-hist-row.faint > span {
+  color: var(--faint);
+}
+.rpm-acts {
+  display: flex;
+  gap: 7px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.rpm-acts .input {
+  flex: 1;
+  width: auto;
+  min-width: 200px;
+  height: 26px;
+  font-size: var(--fs-12);
+}
+.rpm-note {
+  margin-top: 10px;
+}
+.rpm-fold {
+  padding-top: 12px;
+  margin-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.rpm-fold-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+}
+.rpm-fold-meta {
+  font-size: var(--fs-12);
+}
+.rpm-fold-body {
+  margin-top: 12px;
+}
+.rpm-menu-wrap {
+  position: relative;
+  display: inline-flex;
+}
+.rpm-menu-btn {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.rpm-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 200px;
+}
+.rpm-menu-right {
+  left: auto;
+  right: 0;
+}
+.rpm-menu > button.menu-item {
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  font-family: inherit;
+}
+.rpm-menu > button.menu-item:hover,
+.rpm-menu > button.menu-item.active {
+  background: var(--hover);
+  color: var(--text);
+}
+
+/* RPM handoff lines in chat (t2v3 C): who → whom → findings; ▾ opens the full text. */
+.rpm-line {
+  font-size: var(--fs-12);
+  color: var(--dim);
+  padding-top: 6px;
+  min-width: 0;
+}
+.rpm-line-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+.rpm-line-who {
+  color: var(--text);
+}
+.rpm-line-red .rpm-line-who,
+.rpm-line-fail {
+  color: var(--red);
+}
+.rpm-line-more {
+  color: var(--faint);
+  font-size: var(--fs-11);
+}
+.rpm-line-text {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--mono);
+  font-size: var(--fs-11);
+  color: var(--dim);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+}
+.rpm-ref {
+  white-space: nowrap;
+}
+.rpm-fid {
+  font-size: var(--fs-11);
+  color: var(--text);
+}
+.rpm-ref-label {
+  color: var(--dim);
+}
+
+/* The finding popup (t2v3 C). */
+.rpm-pop {
+  position: fixed;
+  width: 320px;
+  padding: 10px 12px;
+}
+.rpm-pop-body {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: var(--fs-12);
+}
+.rpm-pop-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.rpm-pop-claim {
+  color: var(--text);
+}
+.rpm-pop-body > .rpm-link {
+  align-self: flex-start;
+}
+.rpm-pop-comment {
+  color: var(--dim);
+}
+
+/* Diff filtered to RPM's marked files. */
+.diff-filter-note {
+  padding: 4px 12px 6px;
+  font-size: var(--fs-11);
 }

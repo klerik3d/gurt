@@ -40,14 +40,12 @@ type UpdateDraft = (update: (draft: CommitDraft | undefined) => CommitDraft) => 
 
 /** The selected clone's commit form. Drafts belong to the sidebar so walking to
  * another repository and back preserves the message, including on failed git. */
-export function GitCommitPanel({ ws, task, repo, local, approved, draft, onDraft, busy, act }: {
+export function GitCommitPanel({ ws, task, repo, local, draft, onDraft, busy, act }: {
   ws: string
   task: string
   repo: string
   /** A local repo has no forge, so no pull request to open. */
   local: boolean
-  /** These uncommitted changes are approved as they are (`RepoChanges.approved`). */
-  approved: boolean
   draft: CommitDraft | undefined
   onDraft: UpdateDraft
   busy: boolean
@@ -114,7 +112,6 @@ export function GitCommitPanel({ ws, task, repo, local, approved, draft, onDraft
         }} />
     </label>
     <div className="git-commit-hint">Commits all changed files · Ctrl/⌘+Enter</div>
-    <ApproveRow ws={ws} task={task} repo={repo} approved={approved} busy={busy} act={act} />
     <details className="git-parameters">
       <summary>Parameters{commitOptions.signoff || commitOptions.noVerify || pushOptions.forceWithLease || pushOptions.followTags || pushOptions.noVerify ? ' · enabled' : ''}</summary>
       <fieldset className="git-options" disabled={busy}>
@@ -133,31 +130,6 @@ export function GitCommitPanel({ ws, task, repo, local, approved, draft, onDraft
         onClick={run(() => commit('pr'))}>Commit &amp; Create PR</button>}
     </div>
   </section>
-}
-
-/** Approve the uncommitted changes as they are now, or withdraw it. A review
- *  loop with manual approval ships only approved changes, and any edit after
- *  the approval drops it (docs/requirements-review-loop.md §13). */
-function ApproveRow({ ws, task, repo, approved, busy, act }: {
-  ws: string
-  task: string
-  repo: string
-  approved: boolean
-  busy: boolean
-  act: (fn: () => Promise<void>) => Promise<boolean>
-}) {
-  return <div className={`git-approve${approved ? ' approved' : ''}`}>
-    <span className="git-approve-state">
-      {approved ? '✓ Approved as it is now' : 'Not approved'}
-    </span>
-    <button className={`btn btn-sm${approved ? '' : ' btn-primary'}`} disabled={busy}
-      title={approved
-        ? 'Withdraw the approval of these changes'
-        : 'Approve these uncommitted changes as they are now — any later change drops the approval. A review loop waiting for it ships them.'}
-      onClick={run(() => act(() => window.gurt.changesApprove(ws, task, repo, !approved)))}>
-      {approved ? 'Withdraw' : 'Approve'}
-    </button>
-  </div>
 }
 
 /** Also available without dirty files: a rebase can require a lease-protected

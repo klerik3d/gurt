@@ -91,7 +91,7 @@ export const ROLE_INFO: Record<SessionRole, { label: string; hint: string; icon:
   },
   reviewer: {
     label: 'reviewer',
-    hint: 'one round of a review loop: reads the executor’s change (repos read-only) and delivers a verdict with findings — only the loop creates one',
+    hint: 'one review of an RPM run: reads the executor’s change (repos read-only) and reports findings with submit_review — only RPM creates one',
     icon: 'eye'
   }
 }

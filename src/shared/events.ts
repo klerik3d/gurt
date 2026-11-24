@@ -10,7 +10,6 @@ import type {
 import type { TerminalInfo, TerminalOutput } from './terminal'
 import type { ProactiveRunOutcome } from './proactive'
 import type { WatcherLevel } from './watchers'
-import type { ReviewLoopNotice, SettledTurn } from './reviewLoop'
 import type { DoctorRow } from './doctor'
 import type { PiiTable } from './pii'
 import type { SessionTraffic } from './proxy'
@@ -19,6 +18,7 @@ import type { TurnRecord } from './usage'
 import type { PlanWindow } from './planUsage'
 import type { NotificationRecord } from './notifications'
 import type { HotkeyMap } from './hotkeys'
+import type { SettledTurn } from '../rpm/core'
 
 /** Why a container reached its new status — the "who asked for this" a status
  *  alone cannot answer. `user` covers both a user action and the scheduler
@@ -95,25 +95,6 @@ export interface DomainEvents {
    *  auto-stop policy) can ignore it; consumers that want "the turn the user
    *  started is over" (the notifications subscriber's `turn-ended`) must not. */
   'session.turn': { sessionId: string; ref: EnvRef; phase: 'started' | 'ended'; final?: boolean }
-  /** One logical turn — a prompt plus its automatic nudge — finished and gurt
-   *  has classified how it ended, plan hold and `incomplete` included
-   *  (docs/requirements-review-loop.md §5.1). Emitted once per logical turn,
-   *  the start prompt and a thrown turn too, after `lastSettled` is persisted.
-   *  `session.turn` `ended` cannot carry this: it fires before that
-   *  classification. */
-  'session.settled': { sessionId: string; ref: EnvRef; turn: SettledTurn }
-  /** A person acted on a session: typed into it (`prompt`), or pressed Esc /
-   *  cancelled a queued message (`cancel`). Never from a host message or the
-   *  turn-contract nudge, and not from a host-side `cancel`
-   *  (docs/requirements-review-loop.md §5.6). Stopping a container and deleting
-   *  a session reach a subscriber as `container.status` (reason `user`) and
-   *  `session.deleted`. */
-  'session.human': { sessionId: string; ref: EnvRef; did: 'prompt' | 'cancel' }
-  /** The review loop of this executor has something to say
-   *  (docs/requirements-review-loop.md §5.1, §7): an ordinary `turn-ended` for
-   *  a dormant `no_changes` turn, or the loop's end with its `LoopEnd`.
-   *  `sessionId` is the executor's. Emitted by the controller only. */
-  'review.loop': { sessionId: string; ref: EnvRef; notice: ReviewLoopNotice }
   'session.awaiting': { sessionId: string; ref: EnvRef; awaiting: boolean }
   /** Coarse "snapshot changed" — the UI's re-render trigger. */
   'session.changed': { sessionId: string }
@@ -127,6 +108,9 @@ export interface DomainEvents {
   /** A `complete` call with outcome=changes stored a proposal — the seam the
    *  committer stage will consume. */
   'session.proposal': { sessionId: string; ref: EnvRef; proposal: StoredProposal }
+  /** An executor's or reviewer's logical turn ended and was classified
+   *  (t3v2 §4.1) — emitted after `lastSettled` is on disk. */
+  'session.settled': { sessionId: string; ref: EnvRef; turn: SettledTurn }
   /** A proactive agent's run ended (docs/design-proactive-agents.md §3):
    *  how, and the scopes it raised. `ref` is the run session's. */
   'proactive.run': {
@@ -205,4 +189,10 @@ export interface DomainEvents {
    *  notifications subscriber drops its ring entries and per-session
    *  bookkeeping so both don't grow for the process lifetime. */
   'session.deleted': { sessionId: string }
+  /** A session was copied into a new draft (Duplicate, Recreate): RPM copies
+   *  its config (t3v2 §4.1 `onCopied`). */
+  'session.copied': { from: string; to: string }
+  /** RPM's state of an executor's run changed (`Rpm.onChange`, t3v2 §3.2):
+   *  the renderer re-reads `rpmState`. */
+  rpm: { executor: string; run: number }
 }

@@ -100,7 +100,7 @@ export const ADMIN_TOOLS: readonly AdminToolDef[] = [
     description: "GurtApi.addRepo",
     bindWs: true,
     params: ["repo"],
-    input: { "repo": z.strictObject({ "name": z.string(), "url": z.string(), "credentialId": z.string().optional(), "local": z.literal(true).optional(), "check": z.string().optional(), "review": z.strictObject({ "agent": z.string().optional(), "configValues": z.record(z.string(), z.union([z.string(), z.boolean()])).optional(), "maxRounds": z.number().optional(), "whenClean": z.enum(["notify", "commit", "push", "pr", "merge"]).optional(), "draftPr": z.boolean().optional(), "manualApproval": z.boolean().optional(), "enabled": z.boolean().optional() }).optional() }) }
+    input: { "repo": z.strictObject({ "name": z.string(), "url": z.string(), "credentialId": z.string().optional(), "local": z.literal(true).optional(), "check": z.string().optional() }) }
   },
   {
     name: "create_local_repo",
@@ -145,7 +145,7 @@ export const ADMIN_TOOLS: readonly AdminToolDef[] = [
     description: "GurtApi.updateRepo",
     bindWs: true,
     params: ["repo"],
-    input: { "repo": z.strictObject({ "name": z.string(), "url": z.string(), "credentialId": z.string().optional(), "local": z.literal(true).optional(), "check": z.string().optional(), "review": z.strictObject({ "agent": z.string().optional(), "configValues": z.record(z.string(), z.union([z.string(), z.boolean()])).optional(), "maxRounds": z.number().optional(), "whenClean": z.enum(["notify", "commit", "push", "pr", "merge"]).optional(), "draftPr": z.boolean().optional(), "manualApproval": z.boolean().optional(), "enabled": z.boolean().optional() }).optional() }) }
+    input: { "repo": z.strictObject({ "name": z.string(), "url": z.string(), "credentialId": z.string().optional(), "local": z.literal(true).optional(), "check": z.string().optional() }) }
   },
   {
     name: "remove_repo",
@@ -488,5 +488,32 @@ export const ADMIN_TOOLS: readonly AdminToolDef[] = [
     bindWs: false,
     params: ["mode"],
     input: { "mode": z.enum(["auto", "always", "never"]) }
+  },
+  {
+    name: "rpm_runs",
+    method: "rpmRuns",
+    exposure: "read",
+    description: "The executor's review runs, oldest first.",
+    bindWs: false,
+    params: ["executor"],
+    input: { "executor": z.string() }
+  },
+  {
+    name: "rpm_state",
+    method: "rpmState",
+    exposure: "read",
+    description: "A run's state; `run` omitted = the last one.",
+    bindWs: false,
+    params: ["executor","run"],
+    input: { "executor": z.string(), "run": z.number().optional() }
+  },
+  {
+    name: "rpm_config",
+    method: "rpmConfig",
+    exposure: "read",
+    description: "The executor's review settings (a draft's too).",
+    bindWs: false,
+    params: ["executor"],
+    input: { "executor": z.string() }
   },
 ]

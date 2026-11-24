@@ -18,7 +18,6 @@ import type {
   PublishResult,
   PublishSpec,
   RepoConfig,
-  ReviewLoopConfig,
   PendingPromptInfo,
   SessionInfo,
   SessionNetwork,
@@ -49,7 +48,7 @@ import type { TerminalInfo, TerminalSnapshot } from './terminal'
 import type { FileDocument, FileEntry, FileImage, FileNavigation, FileNavigationResult } from './files'
 import type { ProactiveConfig } from './proactive'
 import type { WatcherConfig } from './watchers'
-import type { LoopState } from './reviewLoop'
+import type { RpmCommand, RpmConfig, RpmState, RunSummary, Severity, VerdictTo } from '../rpm/core'
 
 export type CreateAction = 'run' | 'queue' | 'draft'
 
@@ -112,11 +111,6 @@ export interface SessionDraftPatch {
   startPrompt?: string
   /** Config-option picks (model, effort, …), keyed by option id. */
   configValues?: Record<string, string | boolean>
-  /** The executor draft's Review block (docs/requirements-review-loop.md §3):
-   *  a block turns the loop on, `null` turns it off on purpose (the anchor's
-   *  `review.enabled` default then stays off for this draft), absent leaves it
-   *  as it is. Never part of `AgentSessionRequest`: only the user sets it. */
-  review?: ReviewLoopConfig | null
 }
 
 export interface GurtApi {
@@ -331,11 +325,6 @@ export interface GurtApi {
   /** Local repos only: fast-forward the local origin's default branch to the
    *  task branch — their delivery, in place of a pull request. */
   changesMergeToMain(ws: string, task: string, repo: string): Promise<void>
-  /** Approve the repo's uncommitted changes as they are now (`approved`), or
-   *  withdraw the approval. Any later change to the clone drops it
-   *  (`RepoChanges.approved`); a review loop with manual approval delivers
-   *  only approved changes. */
-  changesApprove(ws: string, task: string, repo: string, approved: boolean): Promise<void>
   /** Newest change proposal for this env, if any — the commit form prefills from it. */
   latestProposal(ws: string, task: string, repo: string): Promise<StoredProposal | undefined>
   /** Open the browser at the forge's compare URL (impl: `prUrl` + `shell.openExternal`). */
@@ -412,18 +401,6 @@ export interface GurtApi {
     images?: PromptImage[]
   ): Promise<void>
   sessionCancel(id: string): Promise<void>
-  /** The review loop of an executor session (docs/requirements-review-loop.md
-   *  §8): its phase, round, findings, check results and end. Undefined when the
-   *  session has no loop. */
-  reviewLoopState(executorId: string): Promise<LoopState | undefined>
-  /** "Stop loop" (§5.6): ends the executor's live review loop `cancelled`,
-   *  cancels its running turn and stops a running check or reviewer. Nothing is
-   *  committed. Refused while the loop is delivering. */
-  reviewLoopStop(executorId: string): Promise<void>
-  /** "One more round" (§5.2): raises an exhausted loop's round limit by one
-   *  (up to `REVIEW_MAX_ROUNDS.ceiling`) and sends the executor the last
-   *  verdict's findings. Refused for any other loop. */
-  reviewLoopExtend(executorId: string): Promise<void>
   /** Empty this session's prompt queue and return what was in it, so the caller
    *  can put the text back in the composer instead of losing it (see
    *  {@link PendingPromptInfo}). */
@@ -583,6 +560,20 @@ export interface GurtApi {
   watcherCheckNow(ws: string, name: string): Promise<void>
   /** Withdraw the pending wakeup or the watch. */
   watcherCancelWake(ws: string, name: string): Promise<void>
+  // RPM — review process manager (t3v2 §3.2). Every method takes the executor's id.
+  /** The executor's review runs, oldest first. */
+  rpmRuns(executor: string): Promise<RunSummary[]>
+  /** A run's state; `run` omitted = the last one. */
+  rpmState(executor: string, run?: number): Promise<RpmState | undefined>
+  /** The executor's review settings (a draft's too). */
+  rpmConfig(executor: string): Promise<RpmConfig>
+  rpmSetConfig(executor: string, patch: Partial<RpmConfig>): Promise<void>
+  /** Your verdict on a finding of the live run. */
+  rpmVerdict(executor: string, id: string, to: VerdictTo, comment?: string): Promise<void>
+  rpmSeverity(executor: string, id: string, to: Severity, comment?: string): Promise<void>
+  /** A note for the executor's next message. */
+  rpmNote(executor: string, text: string): Promise<void>
+  rpmCommand(executor: string, cmd: RpmCommand): Promise<void>
 }
 
 /**
@@ -687,7 +678,6 @@ const METHODS = {
   changesPush: 'none', //       writes to repos and remotes
   changesUpdateFromMain: 'none',
   changesMergeToMain: 'none', // writes to repos and remotes
-  changesApprove: 'none', //    the user's own sign-off; lets a loop ship
   latestProposal: 'none', //    repo content
   changesOpenPr: 'none', //     host browser
   changesOpenTerminal: 'none', // host GUI
@@ -709,11 +699,6 @@ const METHODS = {
   sessionTraffic: 'read', //    blocked hosts — the diagnostic the operator exists for
   sessionPrompt: 'none', //     driving another agent
   sessionCancel: 'none', //     driving another agent
-  // The loop's state carries findings quoted from the diff (repo content, which
-  // the operator cannot read), and stopping it drives another agent.
-  reviewLoopState: 'none',
-  reviewLoopStop: 'none',
-  reviewLoopExtend: 'none',
   sessionClearPending: 'none',
   sessionCancelPending: 'none',
   sessionSetMode: 'none',
@@ -792,7 +777,16 @@ const METHODS = {
   watcherRearm: 'none',
   watcherWakeNow: 'none',
   watcherCheckNow: 'none',
-  watcherCancelWake: 'none'
+  watcherCancelWake: 'none',
+  // RPM (t3v2 §3.2): reading a run is a diagnostic, everything else is the user's.
+  rpmRuns: 'read',
+  rpmState: 'read',
+  rpmConfig: 'read',
+  rpmSetConfig: 'none',
+  rpmVerdict: 'none',
+  rpmSeverity: 'none',
+  rpmNote: 'none',
+  rpmCommand: 'none'
 } as const satisfies Record<keyof GurtApi, Exposure>
 
 /** Runtime method list; `api:<method>` is the IPC channel per entry. */
@@ -858,4 +852,6 @@ export interface GurtEvents {
    *  `prefers-color-scheme`, which `nativeTheme.themeSource` does not reach
    *  on Linux. */
   'color-scheme': ColorScheme
+  /** An executor's review run changed — `useRpm` re-reads `rpmState`. */
+  rpm: DomainEvents['rpm']
 }

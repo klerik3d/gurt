@@ -17,7 +17,7 @@
 //      (`scripts/mcp-stdio.test.mjs`) without spawning anything.
 //   2. **Id remapping.** Overlapping HTTP calls can reuse a request id, e.g.
 //      during client reconnects. Every request is renumbered onto a bridge-wide
-//      sequence on the way down and restored on the way back, so replies reach
+//      sequence on the way down and restored on the way back, so responses reach
 //      the right caller within this session.
 //   3. **Spawning.** An `npm` entry is installed once under `~/.gurt/mcp/<id>/`
 //      and run with gurt's own node; a `command` entry is resolved against an

@@ -1,11 +1,10 @@
-import { useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { AnchorWithFileLink, CodeWithFileLink, DiffOpener, FileLinkScopeContext } from '../fileLinks'
+import { AnchorWithFileLink, CodeWithFileLink } from '../fileLinks'
 import type {
   ChatEntry,
   ChatPermission,
-  LoopNote,
   CommandInfo,
   PendingPromptInfo,
   PlanEntry,
@@ -30,13 +29,15 @@ import { McpFailBanner } from './tags'
 import { NetButton } from './Network'
 import { ConfigTab } from './ConfigTab'
 import { SessionMenu } from './SessionActions'
-import { LoopViewContext, useReviewLoop } from './ReviewLoopLine'
-import { ToolStrip, useNow, type StripEntry } from './ToolStrip'
-import { TabBar, useSessionTab } from './SessionTabs'
+import { ToolStrip, type StripEntry } from './ToolStrip'
+import { TabBar, reviewOf, useSessionTab } from './SessionTabs'
+import { ReviewTab, RpmChatLine } from '../../../rpm/ui'
 import { ContainerTerminalButton } from './ContainerTerminalButton'
 import { CopyButton } from './CopyButton'
 import { run } from '../async'
-import { durationLabel, stamp } from '../time'
+import { stamp } from '../time'
+import { clearChatJump, useChatJump } from '../chatJump'
+import { clearReviewJump, useReviewJump } from '../reviewJump'
 
 const log = createLogger('chat')
 
@@ -135,7 +136,7 @@ export function Chat({
   onSelect: (id: string) => void
   onDeleted: () => void
 }) {
-  const [activeTab, setActiveTab] = useSessionTab(sessionId)
+  const [activeTab, setActiveTab] = useSessionTab(sessionId, !!(snapshot && reviewOf(snapshot.info)))
   const feedRef = useRef<HTMLDivElement>(null)
   const innerRef = useRef<HTMLDivElement>(null)
   /** Follow-the-tail flag: true until the user scrolls away from the bottom. */
@@ -158,8 +159,6 @@ export function Chat({
   const piiStatus = usePiiStatus(sessionId)
   const entries = usePiiEntries(useEntryTimes(sessionId, snapshot?.entries), pii)
   const plan = usePiiPlan(snapshot?.plan, pii)
-  // Read once for the header's menu and the feed's notes ("One more round").
-  const loop = useReviewLoop(snapshot?.info ?? { id: sessionId }, snapshot)
   // Real usage (ACP `usage_update`) wins when the adapter sends it; otherwise fall
   // back to a rough word-count estimate over the log — not every adapter reports
   // usage yet (e.g. codex-acp).
@@ -314,6 +313,51 @@ export function Chat({
     })
   }
 
+  // A link elsewhere (the Review tab's history) asked for this chat at an
+  // entry: show the Chat tab, then scroll to it once it is rendered.
+  const jump = useChatJump(sessionId)
+  useEffect(() => {
+    if (!jump) return
+    if (activeTab !== 'chat') {
+      setActiveTab('chat')
+      return
+    }
+    const feed = feedRef.current
+    const line = jump.line
+    const eid =
+      jump.entryId ??
+      (line &&
+        entries.find(
+          (e) => e.kind === 'system' && e.rpm?.executor === line.executor && e.rpm.run === line.run && e.rpm.seq === line.seq
+        )?.id)
+    const node = eid === undefined ? null : feed?.querySelector<HTMLElement>(`[data-eid="${eid}"]`)
+    if (!feed || !node) {
+      // Not in the log (yet): the snapshot may still be on its way; drop it once it is here.
+      if (hasSnapshot) clearChatJump(jump)
+      return
+    }
+    stickRef.current = false
+    feed.scrollTo({
+      top: Math.max(0, node.offsetTop - PIN_BAR_CLEARANCE - PIN_LAND_GAP),
+      behavior: prefersReducedMotion() ? 'auto' : 'smooth'
+    })
+    clearChatJump(jump)
+    // setActiveTab is a fresh closure every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jump, activeTab, hasSnapshot, entries.length])
+
+  // A link elsewhere (an F-number, the badge, a notification) asked for this
+  // executor's Review tab, focused: show the tab; ReviewTab takes the focus.
+  const reviewJump = useReviewJump(sessionId)
+  const hasReview = !!(snapshot && reviewOf(snapshot.info))
+  useEffect(() => {
+    if (!reviewJump) return
+    if (hasReview) setActiveTab('review')
+    else if (hasSnapshot) clearReviewJump(reviewJump)
+    // setActiveTab is a fresh closure every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reviewJump, hasReview, hasSnapshot])
+
   // Esc stops the current turn while the agent is working (replaces the Stop
   // button). Ignore Esc raised from a text field (the composer excepted — focus stays there while the agent works) so it can close its own popup,
   // and while any modal/dialog is open — there Esc means "dismiss it", and both
@@ -419,17 +463,16 @@ export function Chat({
   }
 
   return (
-    <LoopViewContext.Provider value={loop}>
     <div className="chat">
       <div className="chat-head">
-        <TabBar active={activeTab} onChange={setActiveTab} />
+        <TabBar active={activeTab} onChange={setActiveTab} review={reviewOf(info)} />
         <span className="spacer" />
         <span className="chat-pill">{sizeLabel}</span>
         <ContainerTerminalButton info={info} />
         {/* A session already running is exactly where "this was set up wrong"
             is noticed — duplicate/delete belong on this header, not only on the
             draft pane the session has left behind. */}
-        <SessionMenu info={info} onSelect={onSelect} onDeleted={onDeleted} loop={loop} />
+        <SessionMenu info={info} onSelect={onSelect} onDeleted={onDeleted} />
         {(busy || pendingCount > 0) && <span className="chat-hint mono">esc to stop</span>}
       </div>
 
@@ -439,6 +482,10 @@ export function Chat({
       <McpFailBanner failures={mcpFailures} />
 
       {activeTab === 'config' && <ConfigTab tree={tree} snapshot={snapshot} />}
+
+      {activeTab === 'review' && (
+        <ReviewTab executor={sessionId} focus={reviewJump} onFocused={() => reviewJump && clearReviewJump(reviewJump)} />
+      )}
 
       {activeTab === 'logs' && (
         <pre className="env-log">{log.length ? log.join('\n') : 'no logs yet'}</pre>
@@ -518,7 +565,6 @@ export function Chat({
         </>
       )}
     </div>
-    </LoopViewContext.Provider>
   )
 }
 
@@ -541,7 +587,7 @@ const stripTime = (es: StripEntry[]): number | undefined => {
  *  so it stays in the log but not in the feed. */
 const isCompleteEcho = (e: ChatEntry): boolean => e.kind === 'system' && e.text.startsWith('complete: ')
 
-const isStripEntry = (e: ChatEntry): e is StripEntry => (e.kind === 'tool' && !e.host) || e.kind === 'thought'
+const isStripEntry = (e: ChatEntry): e is StripEntry => e.kind === 'tool' || e.kind === 'thought'
 
 /** Fold each run of consecutive tool calls / thoughts into one strip, so the
  *  feed reads as texts with a single icon row between them. */
@@ -642,179 +688,6 @@ export function ArchiveChat({ entries, sessionId }: { entries: ChatEntry[]; sess
   </div></div></div>
 }
 
-/** A command or tool gurt ran itself — the review loop's automatic check and
- *  its reviewer — in the same input/output block as a console command, but
- *  marked as the system's so it never reads as something the model did. The
- *  output stays open while it runs or has failed, folded once it passed.
- *  While a command runs, its output streams in (the check's latest lines, see
- *  `CHECK_PROGRESS`) under a ticking clock, so a long check visibly lives. */
-function HostTool({ entry }: { entry: ChatEntry & { kind: 'tool' } }) {
-  const [shown, setShown] = useState<boolean | undefined>(undefined)
-  const running = entry.status === 'in_progress' || entry.status === 'pending'
-  const failed = entry.status === 'failed'
-  const open = shown ?? (running || failed)
-  const now = useNow(running)
-  const took = entry.at != null && entry.endAt != null ? durationLabel(entry.endAt - entry.at) : undefined
-  const elapsed = running && entry.at != null ? durationLabel(now - entry.at) : undefined
-  const live = running && entry.toolKind === 'execute'
-  const out = useRef<HTMLPreElement>(null)
-  // Follow the stream like a terminal does — unless the reader scrolled up.
-  const pinned = useRef(true)
-  useLayoutEffect(() => {
-    const el = out.current
-    if (el && live && pinned.current) el.scrollTop = el.scrollHeight
-  }, [entry.detail, live, open])
-  return (
-    <div className="msg msg-tool">
-      <MsgTime at={entry.endAt ?? entry.at} />
-      <span className="msg-dot msg-dot-sm msg-dot-warn" />
-      <div className="host-block" data-status={failed ? 'failed' : running ? 'running' : 'ok'}>
-        <div className="host-head">
-          <span className="host-badge mono">gurt</span>
-          <span className="host-label mono">{entry.host}</span>
-          <span className="spacer" />
-          {running ? (
-            <>
-              <span className="host-state mono">running{elapsed ? ` · ${elapsed}` : ''}</span>
-              <Dot tone="yellow" pulse size={6} />
-            </>
-          ) : (
-            <span className="host-state mono">{failed ? 'failed' : 'done'}{took ? ` · ${took}` : ''}</span>
-          )}
-        </div>
-        <div className="host-cmd mono">
-          {entry.toolKind === 'execute' && <span className="faint">$ </span>}
-          {entry.title}
-        </div>
-        {(entry.detail || live) && (
-          <>
-            {open && (
-              <pre
-                ref={out}
-                className="tool-out mono"
-                onScroll={(e) => {
-                  const el = e.currentTarget
-                  pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 8
-                }}
-              >
-                {entry.detail || <span className="faint">no output yet…</span>}
-              </pre>
-            )}
-            <button type="button" className="host-toggle mono" onClick={() => setShown(!open)}>
-              {open ? 'hide output ▴' : 'show output ▾'}
-            </button>
-          </>
-        )}
-      </div>
-    </div>
-  )
-}
-
-/** A web address inside plain text, without the punctuation that closes the
- *  sentence around it ("… see https://x/1." links https://x/1). */
-const URL_RE = /https?:\/\/[^\s<>"']*[^\s<>"'.,;:!?)\]]/g
-
-/** Plain text with its web addresses made clickable — the PR the review loop
- *  opened, for one. The link leaves the app: `main/index.ts` hands any
- *  navigation away from the app's own page to the OS browser. */
-function linkify(text: string): ReactNode[] {
-  const out: ReactNode[] = []
-  let at = 0
-  for (const m of text.matchAll(URL_RE)) {
-    if (m.index > at) out.push(text.slice(at, m.index))
-    out.push(
-      <a key={m.index} className="host-link" href={m[0]} target="_blank" rel="noreferrer">
-        {m[0]}
-      </a>
-    )
-    at = m.index + m[0].length
-  }
-  if (at < text.length) out.push(text.slice(at))
-  return out
-}
-
-/** A note that asks the user to look at the scope's uncommitted changes links
- *  into the Diff view — where they are read and approved. Plain text outside a
- *  live scope (an archived session). */
-function OpenDiffLink() {
-  const scope = useContext(FileLinkScopeContext)
-  const open = useContext(DiffOpener)
-  if (!scope || !open) return null
-  return (
-    <button type="button" className="host-link host-action" onClick={() => open(scope.ws, scope.task)}>
-      Open the changes in the Diff view →
-    </button>
-  )
-}
-
-/** Under the note of a loop that ran out of rounds: give it one more (§5.2).
- *  Only while that end is the loop's current one and it may still have one —
- *  an earlier loop's note, or one already extended, offers nothing. */
-function ExtendLink({ end }: { end: string }) {
-  const loop = useContext(LoopViewContext)
-  const [sent, setSent] = useState(false)
-  if (!loop?.extendable || loop.endId !== end) return null
-  return (
-    <button
-      type="button"
-      className="host-link host-action"
-      data-testid="loop-extend-link"
-      disabled={sent}
-      onClick={() => {
-        setSent(true)
-        void loop.extend().finally(() => setSent(false))
-      }}
-    >
-      One more round →
-    </button>
-  )
-}
-
-/** The loop's own words in the chat: a verdict, a hand-over to the user, a
- *  delivery step. Findings are one line until opened — except that a blocker
- *  is not something to hide. */
-function LoopNoteMsg({ entry, note }: { entry: ChatEntry & { kind: 'system' }; note: LoopNote }) {
-  const findings = note.findings ?? []
-  const [shown, setShown] = useState<boolean | undefined>(undefined)
-  const open = shown ?? findings.some((f) => f.severity === 'blocker')
-  const [head, ...rest] = entry.text.split('\n')
-  return (
-    <div className="msg msg-tool">
-      <MsgTime at={entry.at} />
-      <span className="msg-dot msg-dot-sm msg-dot-warn" />
-      <div className="host-note" data-tone={note.tone}>
-        <div className="host-head">
-          <span className="host-badge mono">gurt</span>
-          <span className="host-note-text">{linkify(head ?? '')}</span>
-          {findings.length > 0 && (
-            <button type="button" className="host-toggle mono" onClick={() => setShown(!open)}>
-              {open ? 'hide ▴' : 'show ▾'}
-            </button>
-          )}
-        </div>
-        {rest.length > 0 && <div className="host-note-detail">{linkify(rest.join('\n'))}</div>}
-        {note.openDiff && <OpenDiffLink />}
-        {note.extend !== undefined && <ExtendLink end={note.extend} />}
-        {open && findings.length > 0 && (
-          <ul className="rv-findings">
-            {findings.map((f) => (
-              <li key={f.ref}>
-                <span className="mono">{f.ref}</span>
-                <span className={`rv-sev rv-sev-${f.severity}`}>{f.severity}</span>
-                <span className="mono faint">
-                  {f.file}
-                  {f.line ? `:${f.line}` : ''}
-                </span>
-                <span>{f.claim}</span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-    </div>
-  )
-}
-
 function Msg({
   entry,
   sessionId,
@@ -878,18 +751,26 @@ function Msg({
       )
     case 'thought':
     case 'tool':
-      // The model's own are grouped into a `ToolStrip` by the feed; what gurt
-      // ran itself (the review loop's check and reviewer) is a block of its own.
-      return entry.kind === 'tool' && entry.host ? <HostTool entry={entry} /> : null
+      // Grouped into a `ToolStrip` by the feed.
+      return null
     case 'permission':
       if (readOnly) return <div className="msg msg-tool"><MsgTime at={entry.at} />
         <div className="msg-sys mono">{entry.title}{entry.chosen ? ` · ${entry.chosen}` : ' · unanswered'}</div>
       </div>
       return <PermissionMsg entry={entry} sessionId={sessionId} />
     case 'system':
-      if (entry.note) return <LoopNoteMsg entry={entry} note={entry.note} />
+      // An RPM handoff (t3v2 §10.2, t2v3 C): a neutral dot like any service line.
+      if (entry.rpm)
+        return (
+          <div className="msg msg-tool has-copy" data-eid={entry.id}>
+            <CopyButton text={entry.rpm.text ?? entry.text} title="copy message" />
+            <MsgTime at={entry.at} />
+            <span className="msg-dot msg-dot-sm msg-dot-idle" />
+            <RpmChatLine line={entry.rpm} />
+          </div>
+        )
       return (
-        <div className="msg msg-tool has-copy">
+        <div className="msg msg-tool has-copy" data-eid={entry.id}>
           <CopyButton text={entry.text} title="copy message" />
           <MsgTime at={entry.at} />
           <span className="msg-dot msg-dot-sm msg-dot-idle" />

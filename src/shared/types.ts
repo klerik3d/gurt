@@ -2,8 +2,8 @@
 import type { McpRegistryEntry } from './mcp'
 import type { ProactiveAgentView, ProactiveConfig, ProactiveOrigin } from './proactive'
 import type { PendingWake, WakeOrigin, WatcherConfig, WatcherState, WatcherView } from './watchers'
-import type { SettledTurn } from './reviewLoop'
 import { sanitizeDomainPolicy, type DomainPolicy } from './proxy'
+import type { RpmChatLine, SettledTurn } from '../rpm/core'
 
 /** How much of an MCP server's toolset the agent may use. */
 export type McpMode = 'read-only' | 'full'
@@ -80,11 +80,6 @@ export interface ChangeProposal {
   /** Only with outcome=blocked (required then). */
   reason?: string | undefined
   notes?: string | undefined
-  /** With any outcome: the executor's answers to a review loop's findings
-   *  (docs/requirements-review-loop.md §4.2). The first `complete` with
-   *  `changes` after a verdict must answer its open set — every finding exactly
-   *  once, no unknown id; with no open set they are accepted and ignored. */
-  replies?: FindingReply[] | undefined
 }
 
 /** One repo's own commit (and optional PR) texts inside a {@link ChangeProposal}. */
@@ -96,54 +91,6 @@ export interface RepoProposal {
 
 /** Stored proposal: the artifact + host receipt time (ISO). */
 export type StoredProposal = ChangeProposal & { at: string }
-
-/** One problem a review loop's reviewer reports (docs/requirements-review-loop.md
- *  §4.1). Optional members carry `| undefined` for the same reason as
- *  {@link ChangeProposal}'s: this is what `submit_review`'s zod schema
- *  produces. */
-export interface ReviewFinding {
-  /** Unique in the verdict, `[A-Za-z0-9_-]{1,16}`; shown — and answered — as
-   *  `R<round>.<id>` (see {@link findingRef}). */
-  id: string
-  /** `<repo>/<path>`, relative to /workspaces; the repo is one of the
-   *  reviewer's (a host rule, `assertVerdictFits`). */
-  file: string
-  line?: number | undefined
-  /** blocker — must not ship; major — a real defect to fix before merging;
-   *  minor — worth fixing; nit — taste. */
-  severity: 'blocker' | 'major' | 'minor' | 'nit'
-  claim: string
-  evidence?: string | undefined
-  suggestion?: string | undefined
-}
-
-/** A reviewer's turn report, submitted via `submit_review` (§4.1). Advisory
- *  data, never an approval of a merge. `request_changes` carries at least one
- *  blocker or major; `approve` none. */
-export interface ReviewVerdict {
-  version: 1
-  verdict: 'approve' | 'request_changes'
-  summary: string
-  findings: ReviewFinding[]
-}
-
-/** A verdict as the host records it: receipt time (ISO), the loop round of the
- *  reviewer that gave it (`SessionInfo.reviewOf.round`) and the turn it was
- *  given in (`<sessionId>:<n>`). */
-export type StoredVerdict = ReviewVerdict & { at: string; round: number; turnId: string }
-
-/** How a finding is named to the executor and in its replies: "R1.F2". */
-export const findingRef = (round: number, id: string): string => `R${round}.${id}`
-
-/** The executor's answer to one finding, inside `complete`'s `replies` (§4.2). */
-export interface FindingReply {
-  /** The finding's {@link findingRef}, e.g. "R1.F2". */
-  findingId: string
-  /** declined — won't do it; refuted — the claim is wrong. */
-  resolution: 'fixed' | 'declined' | 'refuted'
-  /** 1–2000 chars. */
-  note: string
-}
 
 /**
  * A user-defined agent profile: a named instance of a built-in agent *kind*
@@ -198,59 +145,10 @@ export interface RepoConfig {
    * ordinary repo the user registered by URL.
    */
   local?: true
-  /** Run by the review loop in the session container from
-   *  /workspaces/<name>, e.g. `npm run lint && npm test`
-   *  (docs/requirements-review-loop.md §3, §5.3). Absent = no check for this
-   *  repo. Lives with the repo, not the env. */
+  /** A check command run in the session container from /workspaces/<name>,
+   *  e.g. `npm run lint && npm test` — used by review. Absent = no check for
+   *  this repo. Lives with the repo, not the env. */
   check?: string | undefined
-  /** Defaults for a new executor draft's Review block, when this repo is its
-   *  anchor; `enabled` defaults off. */
-  review?: (Partial<ReviewLoopConfig> & { enabled?: boolean | undefined }) | undefined
-}
-
-/** What a clean review loop delivers (docs/requirements-review-loop.md §3, §6),
- *  lowest first: each rung includes the ones below it. `merge` is the local
- *  repos' rung, in place of push / pr. */
-export type ShipRung = 'notify' | 'commit' | 'push' | 'pr' | 'merge'
-
-export const SHIP_RUNGS: readonly ShipRung[] = ['notify', 'commit', 'push', 'pr', 'merge']
-
-/**
- * An executor draft's Review block (`SessionInfo.review`, §3): absent = no
- * loop. Frozen when the session starts, like skills. Never part of
- * `AgentSessionRequest` — an agent can neither enable the loop nor raise the
- * ladder.
- */
-export interface ReviewLoopConfig {
-  /** The reviewer's agent instance. */
-  agent: string
-  /** The reviewer's model/effort/… picks, keyed by `SessionConfigOption.id`,
-   *  from that agent's config surface — only what it reports. */
-  configValues?: Record<string, string | boolean> | undefined
-  /** Reviewers the loop may create; clamped to {@link REVIEW_MAX_ROUNDS}. */
-  maxRounds: number
-  whenClean: ShipRung
-  /** With `pr`: open it as a draft. */
-  draftPr: boolean
-  /** A human approves the uncommitted changes in the Diff view before the loop
-   *  delivers them (commit / push / PR / merge). Only `true` asks: a block
-   *  frozen before the field existed delivers as it always did. New blocks
-   *  are prefilled with {@link REVIEW_LOOP_DEFAULTS}' `true`. */
-  manualApproval?: boolean | undefined
-}
-
-/** `ReviewLoopConfig.maxRounds`' bounds and default (§3). `ceiling`: how far
- *  "One more round" may raise an exhausted loop's limit (§5.2). */
-export const REVIEW_MAX_ROUNDS = { min: 1, max: 5, default: 2, ceiling: 10 } as const
-
-/** A Review block's defaults when neither the anchor's `RepoConfig.review`
- *  nor the user says otherwise (§3); the reviewer agent has none — it is
- *  picked per draft. */
-export const REVIEW_LOOP_DEFAULTS: Required<Omit<ReviewLoopConfig, 'agent' | 'configValues'>> = {
-  maxRounds: REVIEW_MAX_ROUNDS.default,
-  whenClean: 'notify',
-  draftPr: true,
-  manualApproval: true
 }
 
 /** What publishing a local repo asks for (docs/requirements-new-projects.md §6). */
@@ -482,21 +380,19 @@ export type SessionState = 'draft' | 'queued' | 'starting' | 'started'
  *              Never picked for an ordinary session: it exists only as a
  *              proactive agent's template and the runs copied from it.
  *
- * reviewer   — one round's review in a review loop
- *              (docs/requirements-review-loop.md §4): reads the executor's
- *              change — every repo `read`, whatever the record says — and ends
- *              every turn with `submit_review`. Never picked, never drafted:
- *              only the loop creates one, with `SessionInfo.reviewOf`.
- *
  * watcher    — the one session of a watcher (docs/requirements-watchers.md):
  *              monitors an outside process, wakes itself with `wake_me` and
  *              ends every turn with `wake_me`, `cancel_wakeup`-less or
  *              `finish_watch`. Its repos are always read-only. Never picked:
  *              only the watcher manager creates it.
  *
- * The former user-picked `reviewer` is gone (repo-mounts §4): its records —
- * those without `reviewOf` — migrate to a researcher whose repos are mounted
- * `write`, exactly as they were.
+ * reviewer   — one review of an RPM run (t3v2 §6.4): reads the executor's
+ *              change — every repo `read`, whatever the record says — and ends
+ *              every turn with `submit_review`. Never picked, never drafted:
+ *              only RPM creates one, with `SessionInfo.reviewerOf`.
+ *
+ * Records of the old loop's `reviewer` (no `reviewerOf`) migrate to a
+ * researcher whose repos are all mounted `read` (`readSessions`).
  */
 export type SessionRole = 'executor' | 'researcher' | 'inspector' | 'operator' | 'proactive' | 'reviewer' | 'watcher'
 
@@ -510,19 +406,17 @@ export const SESSION_ROLES: readonly SessionRole[] = [
   'watcher'
 ]
 
-/** Only the review loop creates a session of this role (§4 of
- *  docs/requirements-review-loop.md): no user picks it, no agent drafts it, no
- *  duplicate or recreate copies it. */
-export const roleIsLoopOwned = (role: SessionRole): boolean => role === 'reviewer'
-
-/** Only a manager creates a session of this role — the review loop its
- *  reviewer, the watcher manager its watcher. The guards at every entrance
+/** Only a manager creates a session of this role — the watcher manager its
+ *  watcher, RPM its reviewer. The guards at every entrance
  *  (IPC create, draft edit, duplicate, recreate) refuse it for anyone else. */
-export const roleIsManagerOwned = (role: SessionRole): boolean => role === 'reviewer' || role === 'watcher'
+export const roleIsManagerOwned = (role: SessionRole): boolean => role === 'watcher' || role === 'reviewer'
+
+/** Who creates a manager-owned role — the refusal texts name it. */
+export const roleManagerName = (role: SessionRole): string => (role === 'reviewer' ? 'RPM' : 'the Watchers mode')
 
 /** The roles a user picks for an ordinary session — every one but
  *  `proactive`, which only a proactive agent's template carries, and the
- *  loop's own {@link roleIsLoopOwned} reviewer. */
+ *  manager-owned ones. */
 export const USER_SESSION_ROLES: readonly SessionRole[] = SESSION_ROLES.filter(
   (r) => r !== 'proactive' && !roleIsManagerOwned(r)
 )
@@ -565,14 +459,12 @@ export const DEFAULT_REPO_MODE: RepoMode = 'read-locked'
 export const legacyRepoMode = (role: SessionRole): RepoMode => (role === 'executor' ? 'write' : 'read')
 
 /** Every repo of this role is mounted `read`, whatever the record says: a
- *  proactive run's are read-only context; a reviewer's are a tool set's
- *  limit, not a mount pick — it claims no clone, so it never waits on the
- *  executor whose `write` claim the loop keeps (never `read-locked`: that would
- *  deadlock, docs/requirements-review-loop.md §4). */
+ *  proactive run's and a watcher's are read-only context; a reviewer's are a
+ *  tool set's limit — it claims no clone, so it never waits on the executor. */
 export const roleForcesRead = (role: SessionRole): boolean =>
-  role === 'proactive' || role === 'reviewer' || role === 'watcher'
+  role === 'proactive' || role === 'watcher' || role === 'reviewer'
 
-/** How `repo` is mounted in this session. A proactive run's and a reviewer's
+/** How `repo` is mounted in this session. A proactive run's and a watcher's
  *  repos are always `read` ({@link roleForcesRead}). A record with no mode
  *  map at all predates per-repo modes and reads through {@link legacyRepoMode},
  *  the way {@link sessionRole} folds a missing role; within a map, a repo
@@ -616,8 +508,8 @@ export function normalizeRepoModes(
   return out
 }
 
-/** Needs at least one repository to start at all: a researcher reads one, a
- *  reviewer reviews one. An executor needs more — a `write` one (see
+/** Needs at least one repository to start at all: a researcher reads one.
+ *  An executor needs more — a `write` one (see
  *  {@link missingRepoReason}); every other role may start with none. */
 export const roleNeedsRepo = (role: SessionRole): boolean =>
   role === 'executor' || role === 'researcher' || role === 'reviewer'
@@ -638,9 +530,9 @@ export function missingRepoReason(s: Pick<SessionInfo, 'role' | 'repos' | 'repoM
 /** Bound by a turn contract — offered a terminal tool and nudged when a turn
  *  ends without it: `complete` for an executor
  *  (docs/requirements-turn-contract.md), `finish_run` for a proactive run,
- *  `submit_review` for a reviewer (docs/requirements-review-loop.md §4). */
+ *  `wake_me`/`finish_watch` for a watcher. */
 export const roleHasTurnContract = (role: SessionRole): boolean =>
-  role === 'executor' || role === 'proactive' || role === 'reviewer' || role === 'watcher'
+  role === 'executor' || role === 'proactive' || role === 'watcher' || role === 'reviewer'
 
 /** Gets the admin surface's read tools: the inspector and the operator. */
 export const roleReadsAdmin = (role: SessionRole): boolean => role === 'inspector' || role === 'operator'
@@ -831,10 +723,6 @@ export interface SessionInfo {
   watcher?: WatcherState | undefined
   /** Runtime overlay (never persisted): the agent is processing a prompt right now. */
   busy?: boolean | undefined
-  /** Runtime overlay (never persisted): gurt itself is working on the session
-   *  between its turns — `check`: the review loop's automatic check runs in its
-   *  container. The status marks blink yellow on it (`sessionDot`). */
-  hostBusy?: HostBusy | undefined
   /** Runtime overlay (never persisted): a permission request awaits the user's decision. */
   awaitingInput?: boolean | undefined
   /** Runtime overlay (never persisted): the turn ended without a `complete` call and the
@@ -847,19 +735,10 @@ export interface SessionInfo {
    *  that never runs itself — each run starts a copy of it. Not carried by
    *  copies. */
   template?: boolean
-  /** An executor's Review block (docs/requirements-review-loop.md §3): present
-   *  = the session runs in a review loop. Frozen at start; the user's standing
-   *  approval for the reviewers and the delivery it runs. */
-  review?: ReviewLoopConfig | undefined
-  /** An executor draft whose Review block the user switched off on purpose:
-   *  the anchor repo's `review.enabled` default does not switch it back on
-   *  (the `skills: []` precedent, docs/requirements-skills.md §4.2). Cleared
-   *  when a block is set. Carried by copies with `review`. */
-  reviewOff?: true | undefined
-  /** Present only on a loop's reviewer (§4), which only the loop creates: the
-   *  executor it reviews, the round it is (1-based) and the loop intent that
-   *  created it — how a restart adopts it instead of creating another (§8). */
-  reviewOf?: { executor: string; round: number; intent: string } | undefined
+  /** Present only on an RPM reviewer (t3v2 §6.4), which only RPM creates: the
+   *  executor it reviews and the step key that created it (how a restart
+   *  finds it instead of creating another). */
+  reviewerOf?: { executor: string; key: string } | undefined
 }
 
 /**
@@ -870,15 +749,9 @@ export interface SessionInfo {
  */
 export interface SessionActivity {
   busy?: boolean | undefined
-  hostBusy?: HostBusy | undefined
   awaitingInput?: boolean | undefined
   seen?: boolean | undefined
 }
-
-/** What gurt itself does on a session between its turns (see
- *  {@link SessionInfo.hostBusy}). Not a {@link SessionStatus}: the session's
- *  own state is unchanged by it (its turn has ended), only its mark is. */
-export type HostBusy = 'check'
 
 /**
  * Fine-grained status shown in the session tree — the persisted {@link SessionState}
@@ -956,6 +829,12 @@ export interface ChatText {
    *  `session/fork` names as its fork point on a rewind. Absent when the
    *  adapter sends none. */
   acpMessageId?: string
+  /** A user message's logical turn (`SettledTurn.turnId`, executor and
+   *  reviewer only): what `SessionsPort.userPrompts`/`checkpointBefore` key on. */
+  turn?: string
+  /** The write clones' snapshot taken right before this user message was sent
+   *  (checkpoints.ts), patched in once it is written. */
+  checkpoint?: { repo: string; commit: string }[]
 }
 
 export interface ChatToolCall {
@@ -967,37 +846,13 @@ export interface ChatToolCall {
   toolKind?: string
   /** Flattened preview of tool output/diff content. */
   detail?: string
-  /** Set when gurt itself ran this, not the model — the review loop's
-   *  automatic check and its reviewer launch. The value says which ("auto-check
-   *  · api"). The chat draws it as its own block, never in the model's tool strip. */
-  host?: string
-}
-
-/** What the review loop reports into the executor's chat besides a tool block:
- *  a verdict, a hand-over to the user, a delivery step. */
-export interface LoopNote {
-  tone: 'info' | 'ok' | 'warn' | 'error'
-  /** The verdict's findings, when the note is one. */
-  findings?: { ref: string; severity: ReviewFinding['severity']; file: string; line?: number; claim: string }[]
-  /** The note asks the user to look at the scope's uncommitted changes: the
-   *  chat offers a link into the Diff view. */
-  openDiff?: true
-  /** The note is an `exhausted` end: the id of that end (`LoopState.endId`).
-   *  The chat offers "One more round" while it is still the loop's current end
-   *  and the loop may have one (`loopExtendable`). */
-  extend?: string
 }
 
 export interface ChatSystem {
   kind: 'system'
   text: string
-  /** The review loop's intent id when this is a host message it queued
-   *  (`SessionManager.hostPrompt`, docs/requirements-review-loop.md §5.5, §8)
-   *  — how a restart finds a message it already delivered. */
-  loop?: string
-  /** Set on the review loop's own notes (docs/requirements-review-loop.md §5):
-   *  the chat draws these as gurt's, apart from the model's words. */
-  note?: LoopNote
+  /** An RPM handoff line (t3v2 §10.2); `text` is its short form. */
+  rpm?: RpmChatLine
 }
 
 export interface PermissionOption {
@@ -1040,7 +895,7 @@ export type SessionLogRecord =
       seq: number
       type: 'patch'
       id: number
-      patch: { status?: string; title?: string; detail?: string; chosen?: string; endAt?: number }
+      patch: { status?: string; title?: string; detail?: string; chosen?: string; endAt?: number; checkpoint?: { repo: string; commit: string }[] }
     }
   /** Rewind: every entry with an id above `afterId` is dropped from the fold.
    *  The file stays append-only — the rewound tail is still on disk, and later
@@ -1225,10 +1080,6 @@ export interface PendingPromptInfo {
   /** Queued by the app, not typed: the "continue" a session cut off by a
    *  limit sends once the limit resets. Cancelling it cancels the resume. */
   auto?: true
-  /** The review loop's intent id when the app queued it for the loop
-   *  (`SessionManager.hostPrompt`, docs/requirements-review-loop.md §5.5);
-   *  always with `auto`. */
-  loop?: string
 }
 
 /** Context-window usage, from ACP's `usage_update` session/update variant.
@@ -1300,10 +1151,10 @@ export interface PersistedPrompt {
   context?: PromptContext[] | undefined
   images?: PromptImage[] | undefined
   auto?: boolean | undefined
-  /** Who queued an `auto` prompt, when it was not gurt's own "continue": the
-   *  review loop, by the id of the intent that decided it
-   *  (docs/requirements-review-loop.md §5.5, §8). */
-  origin?: { loop: string } | { limit: true; of: 'wake' | 'user' } | WakeOrigin | undefined
+  /** Who queued an `auto` prompt, when it was not gurt's own plain "continue". */
+  origin?: { limit: true; of: 'wake' | 'user' } | WakeOrigin | { rpm: string; line?: RpmChatLine | undefined } | undefined
+  /** The "continue" of a cut executor/reviewer turn (`PendingPrompt.continues`). */
+  continues?: true | undefined
 }
 
 export interface PersistedSession {
@@ -1315,18 +1166,25 @@ export interface PersistedSession {
   preface?: string | undefined
   /** Latest change proposal (outcome=changes) submitted via `complete`; last one wins. */
   proposal?: StoredProposal | undefined
-  /** The last logical turn gurt finished classifying
-   *  (docs/requirements-review-loop.md §5.1, §8) — written before
-   *  `session.settled` is emitted, so a loop that missed the event (the app
-   *  went down between the two) can replay it at boot. */
-  lastSettled?: SettledTurn | undefined
-  /** The review-loop intent whose host message was last taken off the queue
-   *  (docs/requirements-review-loop.md §8): the in-flight marker. */
-  loopRan?: string | undefined
   /** Where the turn in flight came from (docs/requirements-watchers.md §10):
    *  written beside `interrupted`, so a restart can tell a watcher's own wake
    *  turn (approved work) from attended work. */
   ranOrigin?: 'wake' | 'user' | undefined
+  /** An executor's or reviewer's last classified turn (t3v2 §4.1) — written
+   *  before `session.settled` is emitted, so RPM can replay a turn it missed. */
+  lastSettled?: SettledTurn | undefined
+  /** Logical turns started (executor, reviewer): where `turnId` numbering
+   *  resumes after a restart, so an id is never handed out twice. */
+  turnSeq?: number | undefined
+  /** A limited executor/reviewer turn its "continue" carries on (origin, RPM
+   *  key, accepted calls) — `Session.carry`. */
+  carry?: { origin: 'user' | 'rpm' | 'other'; key?: string | undefined; tools?: { name: string; payload: unknown }[] | undefined } | undefined
+  /** Keys of the RPM messages (`SessionsPort.send`) the queue handed to a turn,
+   *  oldest first, the last `RPM_TAKEN_MAX` — `sent(id, key)` answers `taken`
+   *  for them. Written beside `interrupted`. */
+  rpmTaken?: string[] | undefined
+  /** A reviewer's start line (`createReviewer`): its start prompt shows as it. */
+  startLine?: RpmChatLine | undefined
   /** Legacy pre-log format; migrated to the JSONL log on restore. */
   entries?: ChatEntry[] | undefined
 }
@@ -1386,10 +1244,6 @@ export interface RepoChanges {
   behind: number
   /** A prior update-from-main merge left conflicts unresolved (`MERGE_HEAD` present). */
   conflicted: boolean
-  /** The user approved exactly these uncommitted changes (HEAD and working
-   *  tree unchanged since) — what a review loop with manual approval waits for
-   *  before it delivers. Any change to the tree or HEAD drops it. */
-  approved?: true
 }
 
 /**

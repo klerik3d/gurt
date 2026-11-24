@@ -8,8 +8,7 @@ import type { ChangedFile, DiffPair, DiffTarget, RepoChanges, ThreadCommit } fro
 import type { GitCommitOptions, GitPushOptions, UpdateStrategy } from '../shared/api'
 import { run } from './provision'
 import { cloneDir, taskDir } from './store'
-import { hostGitAccessForRepo, unattendedGitAccessForRepo, type HostGitAccess } from './git/env'
-import { hardenGit, unattendedArgs } from './git/harden'
+import { hostGitAccessForRepo, type HostGitAccess } from './git/env'
 import { canonicalRepoId } from '../shared/repoId'
 import { scopeBranch } from '../shared/scopeName'
 import { createLogger } from './log'
@@ -36,8 +35,8 @@ const cloneChain = keyedChain()
 const cloneChains = new Map<string, Promise<unknown>>()
 const frozenScopes = new Set<string>()
 
-/** Exported for the review loop's host git (treeHash.ts, delivery.ts), which
- *  joins the same per-clone chain. Not re-entrant: never nest a call inside `fn`. */
+/** One host git operation at a time per clone; exported for checkpoints.ts,
+ *  which joins the same chain. Not re-entrant: never nest a call inside `fn`. */
 export function serialized<T>(dir: string, fn: () => Promise<T>): Promise<T> {
   if ([...frozenScopes].some((prefix) => dir.startsWith(prefix)))
     return Promise.reject(new Error('Scope repositories are being archived'))
@@ -72,18 +71,11 @@ export interface GitOpts {
 /**
  * Non-interactive host git in the clone dir; resolves stdout. Every call runs
  * under the repo's resolved access (§8) — env plus `-c` config args — so no
- * operation can silently reach ambient credentials. An `unattended` access (the
- * review loop's, no human present) is hardened first, on every call, because the
- * clone's config and hooks are the agent's to write: the clone's program-running
- * settings are pinned, hooks are off, `diff` runs no external driver and a
- * fetch / push runs no `uploadpack` / `receivepack` program of the clone's
- * (git/harden.ts; docs/requirements-review-loop.md §10). The Changes panel's own
- * calls are not: a human is present there.
+ * operation can silently reach ambient credentials.
  */
 export async function git(dir: string, access: HostGitAccess, args: string[], opts: GitOpts = {}): Promise<string> {
-  const a = access.unattended ? await hardenGit(dir, access) : access
-  return run('git', ['-C', dir, ...a.gitArgs, ...(access.unattended ? unattendedArgs(args) : args)], () => {}, {
-    env: a.env,
+  return run('git', ['-C', dir, ...access.gitArgs, ...args], () => {}, {
+    env: access.env,
     ...opts
   })
 }
@@ -467,19 +459,15 @@ export async function getCommitDiff(
   return git(cloneDir(ws, task, repo), await hostGitAccessForRepo(ws, repo), ['show', sha])
 }
 
-/** `unattended`: the review loop's call (§6) — hardened git, and no hooks (the
- *  loop passes `noVerify` too: `pre-commit` is skipped by flag, the rest by
- *  `core.hooksPath`). */
 export async function commit(
   ws: string,
   task: string,
   repo: string,
   message: string,
-  options: GitCommitOptions = {},
-  unattended = false
+  options: GitCommitOptions = {}
 ): Promise<void> {
   const dir = cloneDir(ws, task, repo)
-  const access = await (unattended ? unattendedGitAccessForRepo : hostGitAccessForRepo)(ws, repo)
+  const access = await hostGitAccessForRepo(ws, repo)
   await serialized(dir, async () => {
     await git(dir, access, ['add', '-A'])
     // The message is user/agent prose — never logged, matching ipc.ts's
@@ -497,11 +485,10 @@ export async function push(
   ws: string,
   task: string,
   repo: string,
-  options: GitPushOptions = {},
-  unattended = false
+  options: GitPushOptions = {}
 ): Promise<void> {
   const dir = cloneDir(ws, task, repo)
-  const access = await (unattended ? unattendedGitAccessForRepo : hostGitAccessForRepo)(ws, repo)
+  const access = await hostGitAccessForRepo(ws, repo)
   await serialized(dir, () =>
     git(dir, access, [
       'push', '-u',
@@ -548,9 +535,9 @@ export async function updateFromMain(
  * forge would refuse to merge it without one. Afterwards `origin/<def>` is
  * HEAD, the thread is empty and reads as integrated.
  */
-export async function mergeToMain(ws: string, task: string, repo: string, unattended = false): Promise<void> {
+export async function mergeToMain(ws: string, task: string, repo: string): Promise<void> {
   const dir = cloneDir(ws, task, repo)
-  const access = await (unattended ? unattendedGitAccessForRepo : hostGitAccessForRepo)(ws, repo)
+  const access = await hostGitAccessForRepo(ws, repo)
   if (access.mode !== 'local')
     throw new Error(`repo "${repo}" has a forge — deliver it through a pull request`)
   await serialized(dir, async () => {
@@ -562,7 +549,7 @@ export async function mergeToMain(ws: string, task: string, repo: string, unatte
       if (parseInt(behind.trim(), 10) > 0)
         throw new Error(`${branchFor(task)} is behind ${def} — update from ${def} first`)
     }
-    await git(dir, access, ['push', ...(unattended ? ['--no-verify'] : []), 'origin', `HEAD:refs/heads/${def}`], {
+    await git(dir, access, ['push', 'origin', `HEAD:refs/heads/${def}`], {
       timeoutMs: PUSH_TIMEOUT_MS
     })
     await git(dir, access, ['fetch', 'origin'], { timeoutMs: FETCH_TIMEOUT_MS })

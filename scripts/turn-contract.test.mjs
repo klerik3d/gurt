@@ -1,6 +1,5 @@
 // Pure-logic test for the turn-contract enforcement decision (§7.2 of
-// docs/requirements-turn-contract.md), and the contract each role is held to —
-// a review loop's reviewer included (§4 of docs/requirements-review-loop.md).
+// docs/requirements-turn-contract.md), and the contract each role is held to.
 // No docker, no electron: it bundles the pure `postTurnDecision` out of the
 // session manager and checks the matrix.
 //
@@ -82,7 +81,7 @@ test('post-turn decision', () => {
     'thrown nudge → none'
   )
 
-  // A role without the turn contract (researcher / reviewer) is never offered
+  // A role without the turn contract (researcher, inspector) is never offered
   // `complete` at all — nudging it would demand a tool that isn't there, so its
   // turns just end, nudge-turn bookkeeping included.
   assert.equal(
@@ -100,20 +99,7 @@ test('post-turn decision', () => {
 })
 
 // --- each contract role names its own tool -----------------------------------
-test('the reviewer is held to submit_review: nudged for it, marked incomplete without it', () => {
-  // `postTurnDecision` is role-blind: the role enters only as `hasContract`,
-  // which the reviewer now has — so it is nudged once, then marked incomplete.
-  const hasContract = roleHasTurnContract('reviewer')
-  assert.equal(hasContract, true)
-  assert.equal(decide({ hasContract }), 'nudge')
-  assert.equal(decide({ hasContract, isNudge: true }), 'incomplete')
-  assert.equal(decide({ hasContract, turnComplete: true }), 'none', 'a submit_review completes the turn')
-
-  // The nudge and the `incomplete` line name the role's own tool, never
-  // `complete` for a role that has none.
-  assert.equal(contractToolFor('reviewer'), 'submit_review')
-  assert.match(nudgePromptFor('reviewer'), /without calling the `submit_review` tool\. Call `submit_review` now/)
-  assert.doesNotMatch(nudgePromptFor('reviewer'), /`complete`/)
+test('each contract role is nudged for its own tool', () => {
   assert.equal(contractToolFor('proactive'), 'finish_run')
   assert.match(nudgePromptFor('proactive'), /`finish_run`/)
   assert.equal(contractToolFor('executor'), 'complete')
@@ -123,6 +109,8 @@ test('the reviewer is held to submit_review: nudged for it, marked incomplete wi
     SESSION_ROLES.filter(roleHasTurnContract),
     ['executor', 'proactive', 'reviewer', 'watcher']
   )
+  assert.equal(contractToolFor('reviewer'), 'submit_review')
+  assert.match(nudgePromptFor('reviewer'), /`submit_review`/)
 })
 
 // --- adapter exit code -----------------------------------------------------

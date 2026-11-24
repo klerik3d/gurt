@@ -29,8 +29,9 @@ export type OpenScopeFile = (ws: string, task: string, path: string, jump?: File
 
 export const FileOpener = createContext<OpenScopeFile | null>(null)
 
-/** Opens a scope's uncommitted changes in the Diff view, switching to it. */
-export type OpenScopeDiff = (ws: string, task: string) => void
+/** Opens a scope's uncommitted changes in the Diff view, switching to it;
+ *  `files` (`<repo>/<path>`) filters the list to those ("marked N files", t2v3 D). */
+export type OpenScopeDiff = (ws: string, task: string, files?: string[]) => void
 
 export const DiffOpener = createContext<OpenScopeDiff | null>(null)
 export const FileLinkScopeContext = createContext<FileLinkScope | null>(null)

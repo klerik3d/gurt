@@ -96,8 +96,12 @@ export async function sessionCheckpoints(info: SessionInfo, allRepos = false): P
 // paths and host git access stay on this side.
 
 /** Snapshot every writable clone of the session at this timeline entry. */
-export async function snapshotSessionCheckpoint(info: SessionInfo, entryId: number): Promise<void> {
-  for (const repo of await sessionCheckpoints(info)) await repo.snapshot(checkpointRef(info.id, entryId))
+export async function snapshotSessionCheckpoint(info: SessionInfo, entryId: number): Promise<{ repo: string; commit: string }[]> {
+  const out: { repo: string; commit: string }[] = []
+  const repos = writeRepos(info)
+  const clones = await sessionCheckpoints(info)
+  for (const [i, c] of clones.entries()) out.push({ repo: repos[i]!, commit: await c.snapshot(checkpointRef(info.id, entryId)) })
+  return out
 }
 
 /** Restore every writable clone to its snapshot at `entryId`. Each clone's

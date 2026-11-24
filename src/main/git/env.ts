@@ -54,10 +54,6 @@ export interface HostGitAccess {
   resolution: CredResolution | null
   /** Human-readable cause, set when mode === 'blocked'. */
   reason?: string
-  /** No human is present and the clone is agent-writable: `changes.git()`
-   *  pins the clone's program-running config and turns hooks off before every
-   *  call (git/harden.ts, the review loop's §6 / §10). */
-  unattended?: boolean
 }
 
 /** Base host git env: inherit everything (PATH etc.), but never prompt. */
@@ -150,8 +146,3 @@ export async function hostGitAccessForRepo(ws: string, repoName: string): Promis
   return hostGitAccess(repo, await listCredentials())
 }
 
-/** {@link hostGitAccessForRepo} for git the review loop runs without a human on
- *  the agent-writable clone: the same access, marked for hardening. */
-export async function unattendedGitAccessForRepo(ws: string, repoName: string): Promise<HostGitAccess> {
-  return { ...(await hostGitAccessForRepo(ws, repoName)), unattended: true }
-}

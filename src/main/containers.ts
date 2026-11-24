@@ -275,8 +275,8 @@ export class ContainerManager {
 
   /**
    * Spawn `argv` in the session's container as the container user, in `cwd`
-   * (default: the record's), with no tty and no stdin — the review loop's check
-   * runner (docs/requirements-review-loop.md §5.3). The target is read from the
+   * (default: the record's), with no tty and no stdin — the check runner
+   * (reviewCheck.ts). The target is read from the
    * record per call: the container may have been recreated since the caller was
    * built. Throws when there is no container to exec into (setup never
    * succeeded); the caller maps that to "cannot run".

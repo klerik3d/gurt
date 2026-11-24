@@ -1915,9 +1915,8 @@ export async function assertDockerDaemon(
 
 /** The daemon's word on whether a container runs: `true`/`false`, and `null`
  *  when it cannot say (daemon unreachable, timeout) — a "no such container" is
- *  a plain `false`. The review loop's check termination is confirmed with this
- *  (docs/requirements-review-loop.md §5.3): an unanswered question must not
- *  read as "stopped". */
+ *  a plain `false`. The check runner's termination is confirmed with this
+ *  (reviewCheck.ts): an unanswered question must not read as "stopped". */
 export function dockerInspectRunning(containerId: string): Promise<boolean | null> {
   return new Promise((resolve) => {
     const child = spawn('docker', ['inspect', '-f', '{{.State.Running}}', containerId])

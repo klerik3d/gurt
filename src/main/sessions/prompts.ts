@@ -12,11 +12,11 @@ import {
   type WatcherState
 } from '../../shared/watchers'
 import type { Bus } from '../bus'
-import { isLoopSession, loopOf, pendingInfo } from './pure'
+import { keptWhenTyping, pendingInfo } from './pure'
 import type { Connection, PendingPrompt, Session } from './types'
 
-// The prompt queue as the outside sees it: typed prompts, the host's own
-// (`hostPrompt`), and withdrawing or cancelling what is queued or running.
+// The prompt queue as the outside sees it: typed prompts, and withdrawing or
+// cancelling what is queued or running.
 
 /** What prompts.ts needs of the session manager: its state and the manager's own
  *  operations it calls back into. */
@@ -27,7 +27,6 @@ export interface PromptsCtx {
   drainPending(s: Session): Promise<void>
   dropAuto(s: Session, which: 'all' | 'limit' | 'wake', finalWithdrawn?: boolean): void
   endWatcher(sessionId: string, end: NonNullable<WatcherState['end']>): void
-  human(s: Session, did: 'prompt' | 'cancel'): void
   pendingSeq: number
   persistNow(s: Session): Promise<void>
   queuedWakes(s: Session): PendingPrompt[]
@@ -69,7 +68,7 @@ export async function prompt(mgr: PromptsCtx, sessionId: string,
     const line = prefaceFor(w, s.info.wake, Date.now())
     if (line) s.preface = s.preface ? `${s.preface}\n${line}` : line
     s.pending = s.pending.filter((p) => !p.auto || (isWakeOrigin(p.origin) && !!p.origin.final))
-  } else s.pending = s.pending.filter((p) => !p.auto)
+  } else s.pending = s.pending.filter(keptWhenTyping)
   s.pending.push({
     id,
     queuedAt,
@@ -79,13 +78,6 @@ export async function prompt(mgr: PromptsCtx, sessionId: string,
   })
   await mgr.persistNow(s)
   s.recovering = false
-  // A person typed: the review loop reads it as a takeover
-  // (docs/requirements-review-loop.md §5.6). After the message is accepted
-  // and before it runs, so the loop ends first and the message then runs as
-  // any other. Never from `hostPrompt` — the loop's own messages are not a
-  // human act. Only a loop session says so (`human`): anyone else's prompt
-  // adds no bus event.
-  mgr.human(s, 'prompt')
   void mgr.drainPending(s)
   // Still queued after the drain had its synchronous chance at it: nothing
   // else is going to announce it. A drain already in flight returns at its
@@ -100,71 +92,6 @@ export async function prompt(mgr: PromptsCtx, sessionId: string,
     // else will fire, and the message sits out the whole grace period.
     mgr.bus.emit('session.promptQueued', { sessionId: s.info.id })
   }
-}
-
-/** A person acted on a loop session (§5.6): tell the controller. Silent for
- *  every other session — no loop reads it, and an ordinary session's bus
- *  traffic stays what it was before the loop. */
-export function human(mgr: PromptsCtx, s: Session, did: 'prompt' | 'cancel'): void {
-  if (isLoopSession(s.info)) mgr.bus.emit('session.human', { sessionId: s.info.id, ref: s.ref, did })
-}
-
-/**
- * The review loop's message to its executor — red checks, findings, the
- * proposal repair (docs/requirements-review-loop.md §5.5). Queued exactly like
- * a typed prompt (persisted, run by {@link drainPending} one turn at a time)
- * with three differences: it is `auto`, so a typed message or a stop drops it
- * (`prompt`, `clearPending`); its turn shows as a `system` entry carrying
- * `intent`; and it never clears `recovering` nor emits `session.human` — a
- * session waiting to be resumed stays so, and the loop's own message is not a
- * human act. Resolves once persisted, like `prompt`.
- *
- * The intent id makes it idempotent: asking again for an id that is already
- * waiting does nothing.
- */
-export async function hostPrompt(mgr: PromptsCtx, sessionId: string, text: string, intent: string): Promise<void> {
-  mgr.assertSessionWritable(sessionId)
-  const s = mgr.sessions.get(sessionId)
-  if (!s) throw new Error('unknown session')
-  if (s.info.state !== 'started') throw new Error('session is not started')
-  if (s.pending.some((p) => loopOf(p.origin) === intent)) return
-  const id = `p${++mgr.pendingSeq}`
-  s.pending.push({ id, text, auto: true, origin: { loop: intent } })
-  await mgr.persistNow(s)
-  void mgr.drainPending(s)
-  // As in `prompt`: still waiting after the drain's synchronous chance — a
-  // turn in flight, a recovering session, a delivery in progress.
-  if (s.pending.some((p) => p.id === id)) mgr.bus.emit('session.changed', { sessionId: s.info.id })
-}
-
-/** The loop's message `intent` is already in this session: waiting in the
- *  queue, taken off it (the in-flight marker, {@link Session.loopRan}), or
- *  on the timeline as its `system` entry — any of the three means it is not
- *  to be sent again (§8). */
-export function hostPromptSeen(mgr: PromptsCtx, sessionId: string, intent: string): boolean {
-  const s = mgr.sessions.get(sessionId)
-  if (!s) return false
-  return (
-    s.pending.some((p) => loopOf(p.origin) === intent) ||
-    s.loopRan === intent ||
-    s.entries.some((e) => e.kind === 'system' && e.loop === intent)
-  )
-}
-
-/** Drop the review loop's queued host messages (`origin.loop`) from this
- *  session — the loop ended and must not leave a message to run later (§5.6).
- *  Typed messages stay. Returns how many went. */
-export function dropHostPrompts(mgr: PromptsCtx, sessionId: string): number {
-  const s = mgr.sessions.get(sessionId)
-  if (!s) return 0
-  const before = s.pending.length
-  s.pending = s.pending.filter((p) => !(p.origin && 'loop' in p.origin))
-  const n = before - s.pending.length
-  if (n) {
-    mgr.schedulePersist(s.ref)
-    mgr.bus.emit('session.changed', { sessionId })
-  }
-  return n
 }
 
 /** Take everything out of the queue and hand it back — the composer puts the
@@ -182,15 +109,6 @@ export function clearPending(mgr: PromptsCtx, sessionId: string): PendingPromptI
   mgr.schedulePersist(s.ref)
   mgr.dropAuto(s, 'all', finalQueued)
   mgr.bus.emit('session.changed', { sessionId })
-  // The composer's stop with something queued — a loop's message included —
-  // is the user withdrawing it (§5.6: "cancels the loop's queued message").
-  // Told before the scheduler acts on what the queue freed, as `prompt` tells
-  // the loop before it drains: the pass starts sessions and drains queues
-  // synchronously, and their `session.state` / `session.turn` events must
-  // reach the controller after the act that came first — whose end it writes
-  // at once (§5.6). Silent for a session without a loop, so this order
-  // changes nothing for one.
-  mgr.human(s, 'cancel')
   mgr.schedule()
   return out
 }
@@ -209,8 +127,6 @@ export function cancelPending(mgr: PromptsCtx, sessionId: string, promptId: stri
   if (gone?.auto)
     mgr.dropAuto(s, isWakeOrigin(gone.origin) ? 'wake' : 'limit', isWakeOrigin(gone.origin) && !!gone.origin.final)
   mgr.bus.emit('session.changed', { sessionId })
-  // The loop first, then the scheduler — as in `clearPending`.
-  mgr.human(s, 'cancel')
   mgr.schedule()
   return gone && !gone.auto ? pendingInfo(gone) : undefined
 }
@@ -250,14 +166,12 @@ export function cancelWake(mgr: PromptsCtx, sessionId: string): void {
 
 /**
  * Esc: cancel the running turn and any open permission request. A person's
- * act by default, announced as `session.human` (docs/requirements-review-loop.md
- * §5.6); the host cancelling a turn on its own account (a proactive run's
- * timeout, the review loop's deadline) passes `by: 'host'` and is not.
+ * act by default; the host cancelling a turn on its own account (a proactive
+ * run's timeout) passes `by: 'host'`.
  */
 export function cancel(mgr: PromptsCtx, sessionId: string, by: 'user' | 'host' = 'user'): void {
   const s = mgr.sessions.get(sessionId)
   if (!s) return
-  if (by === 'user') mgr.human(s, 'cancel')
   if (by === 'user' && s.info.watcher) s.cancelledAt = Date.now()
   const conn = mgr.connections.get(s.info.id)
   if (s.acpSessionId) conn?.peer.notify('session/cancel', { sessionId: s.acpSessionId })

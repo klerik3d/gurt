@@ -3,6 +3,7 @@ import globals from 'globals'
 import reactHooks from 'eslint-plugin-react-hooks'
 import tseslint from 'typescript-eslint'
 import agentPluginBoundaries from './scripts/lib/agent-plugin-boundaries.mjs'
+import rpmBoundaries from './scripts/lib/rpm-boundaries.mjs'
 
 export default tseslint.config(
   { ignores: ['out/**', 'dist/**', 'node_modules/**', 'resources/**'] },
@@ -50,12 +51,12 @@ export default tseslint.config(
   },
 
   {
-    files: ['src/main/**/*.ts', 'src/preload/**/*.ts', 'src/shared/**/*.ts', 'electron.vite.config.ts'],
+    files: ['src/main/**/*.ts', 'src/preload/**/*.ts', 'src/shared/**/*.ts', 'src/rpm/main/**/*.ts', 'electron.vite.config.ts'],
     languageOptions: { globals: globals.node }
   },
 
   {
-    files: ['src/renderer/**/*.{ts,tsx}'],
+    files: ['src/renderer/**/*.{ts,tsx}', 'src/rpm/ui/**/*.{ts,tsx}'],
     plugins: { 'react-hooks': reactHooks },
     languageOptions: { globals: globals.browser },
     rules: {
@@ -75,6 +76,15 @@ export default tseslint.config(
     files: ['src/**/*.{ts,tsx}'],
     plugins: { gurt: { rules: { 'agent-plugin-boundaries': agentPluginBoundaries } } },
     rules: { 'gurt/agent-plugin-boundaries': 'error' }
+  },
+
+  // RPM (t3v2 §1): src/rpm/{core,main,ui} are reached only through their
+  // index files, RPM takes nothing but types from the app, and core/ui stay
+  // free of Node. Decided on resolved paths — see the rule.
+  {
+    files: ['src/**/*.{ts,tsx}'],
+    plugins: { rpm: { rules: { boundaries: rpmBoundaries } } },
+    rules: { 'rpm/boundaries': 'error' }
   },
 
   // Test and smoke scripts: plain ESM run straight through node, not part of a

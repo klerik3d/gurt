@@ -2,9 +2,10 @@
 // docs/requirements-session-roles.md), without docker or an agent: what a role
 // still decides (its tool set and who it may draft), what it no longer decides
 // (mounts, locks, the repo count), and the on-disk migrations that turn a
-// pre-roles record into an explicit role and a legacy reviewer into a
-// researcher — while a review loop's reviewer (docs/requirements-review-loop.md
-// §4) stays one. The mount modes themselves are repo-mounts.test.mjs's.
+// pre-roles record into an explicit role and a record of the removed
+// `reviewer` role into a researcher that reads its repos, and drop the removed
+// review loop's fields and queued messages. The mount modes themselves are
+// repo-mounts.test.mjs's.
 //
 // Container state is staged through `sessions.patchContainer`, the seam the
 // container manager writes through — same trick as session-repo-gate.test.mjs,
@@ -33,7 +34,7 @@ await bundle({
     contents:
       `export { createKernel } from ${S('src/main/kernel.ts')}\n` +
       `export { readSessions } from ${S('src/main/store.ts')}\n` +
-      `export { sessionRole, repoMode, roleHasTurnContract, roleReadsAdmin, roleWritesAdmin, roleDraftsCrossTask, spawnableRoles, missingRepoReason, SESSION_ROLES, USER_SESSION_ROLES, roleIsLoopOwned, roleNeedsRepo } from ${S('src/shared/types.ts')}`,
+      `export { sessionRole, repoMode, roleHasTurnContract, roleReadsAdmin, roleWritesAdmin, roleDraftsCrossTask, spawnableRoles, missingRepoReason, SESSION_ROLES, USER_SESSION_ROLES, roleNeedsRepo } from ${S('src/shared/types.ts')}`,
     resolveDir: ROOT,
     loader: 'ts',
     sourcefile: 'entry.ts'
@@ -155,10 +156,7 @@ test('start needs: a write repo for an executor, a repo for a researcher, nothin
   assert.match(need('researcher', [], {}), /no repository/)
   assert.equal(need('researcher', ['alpha'], { alpha: 'read' }), undefined)
   for (const role of ['inspector', 'operator', 'proactive']) assert.equal(need(role, [], {}), undefined, role)
-  // A reviewer needs a repo to review — any mode: its mounts are `read` anyway.
-  assert.match(need('reviewer', [], {}), /no repository/)
-  assert.equal(need('reviewer', ['alpha'], { alpha: 'write' }), undefined)
-  assert.equal(m.roleNeedsRepo('reviewer'), true)
+  assert.equal(m.roleNeedsRepo('watcher'), false)
   const e = mk(['alpha'], 'executor', 'E-ro', { alpha: 'read-locked' })
   assert.throws(() => kernel.sessions.run(e.id), /mounted for write/, 'the run gate says why')
   assert.throws(() => kernel.sessions.enqueue(e.id), /mounted for write/, 'and so does the queue')
@@ -218,39 +216,9 @@ test('draft role edits leave repos, modes and env alone', async () => {
   )
   await rejects(
     () => kernel.editDraft(draft.id, { role: 'reviewer' }),
-    /created only by the review loop/,
-    'no edit makes a session a reviewer'
+    /a reviewer is created only by RPM/,
+    'only RPM makes a reviewer'
   )
-})
-
-// --- the review loop's reviewer: the loop's alone ---------------------------
-test('a reviewer is never picked, drafted, duplicated or recreated', async () => {
-  assert.ok(!m.USER_SESSION_ROLES.includes('reviewer'), 'not offered to the user')
-  assert.ok(!m.USER_SESSION_ROLES.includes('proactive'), 'like the proactive role')
-  assert.deepEqual(m.SESSION_ROLES.filter(m.roleIsLoopOwned), ['reviewer'])
-  for (const role of m.SESSION_ROLES)
-    assert.ok(!m.spawnableRoles(role).includes('reviewer'), `${role} never drafts a reviewer`)
-  const asker = mk(['alpha'], 'researcher', 'S-rv', { alpha: 'read' })
-  await rejects(
-    () => kernel.sessions.createAgentDraft(asker.id, { role: 'reviewer', repos: ['alpha'], prompt: 'p' }),
-    /may only draft: executor, researcher/,
-    'not even when an agent asks past the schema'
-  )
-
-  // Only the loop creates one — straight through the session manager.
-  const rv = mk(['alpha'], 'reviewer', 'review 1 — E')
-  kernel.sessions['sessions'].get(rv.id).info.reviewOf = { executor: executor.id, round: 1, intent: 'i1' }
-  assert.throws(() => kernel.sessions.duplicateSession(rv.id), /only the loop creates one/, 'duplicate refuses it')
-  kernel.sessions['sessions'].get(rv.id).info.state = 'started'
-  assert.throws(() => kernel.sessions.recreateSession(rv.id), /only the loop creates one/, 'and so does recreate')
-  assert.ok(kernel.sessions.snapshot(rv.id), 'the refused recreate deleted nothing')
-  kernel.sessions['sessions'].get(rv.id).info.state = 'draft'
-  await rejects(
-    () => kernel.editDraft(rv.id, { role: 'executor' }),
-    /keeps its role/,
-    'a reviewer is not turned into something else either'
-  )
-  kernel.sessions.deleteSession(rv.id)
 })
 
 let spawner
@@ -445,13 +413,19 @@ test('pre-roles migration', async () => {
       legacy('three', ['alpha'], 'reviewer'),
       legacy('four', [], 'operator'),
       legacy('five', ['beta'], 'proactive'),
-      // A review loop's reviewer is no legacy record: `reviewOf` says so.
+      // The removed review loop's reviewer, left queued at shutdown: a
+      // researcher like any other, and history — nothing runs it on its own.
       {
         info: {
           ...legacy('six', ['alpha'], 'reviewer').info,
-          repoModes: { alpha: 'read' },
+          state: 'queued',
+          queuedAt: '2026-01-01T00:00:00.000Z',
+          startPrompt: 'review round 1 of …',
+          repoModes: { alpha: 'write' },
           reviewOf: { executor: 'one', round: 1, intent: 'i1' }
-        }
+        },
+        interrupted: true,
+        pending: [{ id: 'p1', text: 'send your verdict now' }]
       }
     ])
   )
@@ -461,19 +435,23 @@ test('pre-roles migration', async () => {
   assert.equal(two.info.role, 'researcher', 'a discovery session becomes a researcher')
   assert.deepEqual(two.info.repoModes, { alpha: 'read', beta: 'read' }, '…reading both, locking nothing')
   assert.equal(three.info.role, 'researcher', 'a reviewer becomes a researcher')
-  assert.deepEqual(three.info.repoModes, { alpha: 'write' }, '…with the writable, locked clone it had')
+  assert.deepEqual(three.info.repoModes, { alpha: 'read' }, '…reading its repos')
   assert.deepEqual(four.info.repoModes, {}, 'an operator held nothing')
   assert.deepEqual(five.info.repoModes, { beta: 'read' }, 'a proactive run read its repos')
-  assert.equal(six.info.role, 'reviewer', 'a loop reviewer stays a reviewer')
-  assert.deepEqual(six.info.repoModes, { alpha: 'read' }, '…its modes untouched')
-  assert.deepEqual(six.info.reviewOf, { executor: 'one', round: 1, intent: 'i1' }, '…and its loop link kept')
+  assert.equal(six.info.role, 'researcher', 'a loop reviewer becomes a researcher too')
+  assert.deepEqual(six.info.repoModes, { alpha: 'read' }, '…every repo read, whatever the record said')
+  assert.ok(!('reviewOf' in six.info), '…and its loop link is dropped')
+  assert.equal(six.info.state, 'draft', '…a queued one goes back to draft: it never starts on its own')
+  assert.equal(six.info.queuedAt, undefined)
+  assert.equal(six.interrupted, false, '…is not offered for resume')
+  assert.deepEqual(six.pending, [], '…and keeps nothing queued')
   const migrated = fs.readFileSync(sessPath, 'utf8')
   assert.ok(migrated.includes('"role": "researcher"'), 'the role is written back to disk')
   assert.ok(migrated.includes('"repoModes"'), 'and so are the modes')
   assert.deepEqual(
     JSON.parse(migrated).filter((r) => r.info.role === 'reviewer').map((r) => r.info.id),
-    ['six'],
-    'no legacy reviewer is left on disk — only the loop’s'
+    [],
+    'no reviewer is left on disk'
   )
   await m.readSessions(ws, task2)
   assert.equal(
@@ -481,4 +459,55 @@ test('pre-roles migration', async () => {
     migrated,
     'the write-back happens exactly once'
   )
+})
+
+// --- the removed review loop's data (RPM task 1, t3v2 §13.4) -------------------
+test('a session saved by the removed review loop loads; its queued loop message is dropped, never sent', async () => {
+  const task4 = 'old-loop'
+  fs.mkdirSync(path.join(GURT_ROOT, ws, task4), { recursive: true })
+  const sessPath = path.join(GURT_ROOT, ws, task4, 'sessions.json')
+  fs.writeFileSync(
+    sessPath,
+    JSON.stringify([
+      {
+        info: {
+          id: 'old-ex',
+          env: 'dev',
+          repos: ['alpha'],
+          repoModes: { alpha: 'write' },
+          role: 'executor',
+          task: task4,
+          workspace: ws,
+          title: 'old executor',
+          agent: 'a1',
+          state: 'started',
+          startPrompt: 'hi',
+          review: { agent: 'a2', maxRounds: 2, whenClean: 'notify', draftPr: true },
+          reviewOff: true,
+          hostBusy: 'check'
+        },
+        lastSettled: { turnId: 'old-ex:3', incomplete: false },
+        loopRan: 'old-ex.4',
+        pending: [
+          { id: 'p1', text: 'findings R1.F1 …', auto: true, origin: { loop: 'old-ex.5' } },
+          { id: 'p2', text: 'typed by the user', queuedAt: '2026-01-01T00:00:00.000Z' }
+        ]
+      }
+    ])
+  )
+  const records = await m.readSessions(ws, task4)
+  assert.equal(records.length, 1, 'the session loads')
+  const [r] = records
+  assert.deepEqual(r.pending.map((p) => p.text), ['typed by the user'], 'the loop message is dropped, the typed one stays')
+  for (const k of ['review', 'reviewOff', 'hostBusy']) assert.ok(!(k in r.info), `${k} is ignored`)
+  assert.ok(!('lastSettled' in r) && !('loopRan' in r), 'the loop markers are ignored')
+  const onDisk = JSON.parse(fs.readFileSync(sessPath, 'utf8'))
+  assert.deepEqual(onDisk[0].pending.map((p) => p.text), ['typed by the user'], 'and the drop is written back')
+
+  // Restored into the session manager: nothing of the loop is queued to send.
+  kernel.sessions.restore(records.map((x) => ({ ...x, log: [] })))
+  const snap = kernel.sessions.snapshot('old-ex')
+  assert.ok(snap, 'the session is there')
+  assert.deepEqual((snap.info.pending ?? []).map((p) => p.text), ['typed by the user'])
+  kernel.sessions.deleteSession('old-ex')
 })

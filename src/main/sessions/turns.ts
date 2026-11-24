@@ -1,6 +1,5 @@
 import type { Vocabulary } from '../../shared/agentVocabulary'
 import type { PlanHold } from '../../shared/planUsage'
-import type { SettledTurn } from '../../shared/reviewLoop'
 import {
   roleHasTurnContract,
   sessionRole,
@@ -23,16 +22,18 @@ import { PROMPT_RESULT } from '../acp'
 import type { Bus } from '../bus'
 import { createLogger } from '../log'
 import type { PiiMask } from '../pii'
-import { isLoopSession, loopOf } from './pure'
-import { contractToolFor, nudgePromptFor, postTurnDecision, turnHow } from './turnContract'
+import type { SettledTurn } from '../../rpm/main'
+import { chatLineSummary, type RpmChatLine } from '../../rpm/core'
+import { RPM_TAKEN_MAX, roleSettlesTurns, turnOriginOf } from './pure'
+import { contractToolFor, nudgePromptFor, postTurnDecision } from './turnContract'
 import type {
   Connection,
-  LoopHooks,
+  NewLogRecord,
   PendingPrompt,
   PostTurnAction,
   Session,
   SessionEvents,
-  TurnHow,
+  TurnOrigin,
   TurnResult,
   TurnTrack
 } from './types'
@@ -40,7 +41,7 @@ import type {
 const log = createLogger('sessions')
 
 // Turns: one prompt round-trip (`sendTurn`), the logical turn around it with its
-// nudge and its classification (`runPrompt`, `settleTurn`), and the drain loop
+// nudge (`runPrompt`), and the drain loop
 // that feeds a session's queue into them (docs/requirements-turn-contract.md,
 // docs/requirements-session-queue.md).
 
@@ -48,18 +49,17 @@ const log = createLogger('sessions')
  *  operations it calls back into. */
 export interface TurnsCtx {
   readonly agentKinds: Map<string, string>
+  append(s: Session, record: NewLogRecord): void
   assertNotStopped(s: Session): void
   attach(s: Session): Promise<Connection>
   readonly bus: Bus
   clearLimited(s: Session): void
   decideTurn(s: Session, outcome: TurnResult, isNudge: boolean): PostTurnAction
-  deliveryActive(s: Session): boolean
   drainPending(s: Session): Promise<void>
   earlierQueueItem(s: Session): Session | undefined
   readonly events: SessionEvents
   isWakeWork(p: PendingPrompt): boolean
   limitHold(s: Session): PlanHold | undefined
-  readonly loopHooks: LoopHooks | undefined
   readonly mask: PiiMask
   maskEnabled(): boolean
   onLimited(s: Session, limit: { resetAt?: string | undefined }): string
@@ -70,12 +70,12 @@ export interface TurnsCtx {
   push(s: Session, entry: ChatEntryBase): ChatEntry
   repoHolder(s: Session): { info: Pick<SessionInfo, 'id' | 'title'> } | undefined
   reportTurn(s: Session, startedAt: number, outcome: TurnResult, detail?: string): void
-  runPrompt(s: Session, text: string, context?: PromptContext[], images?: PromptImage[], loop?: string): Promise<void>
+  runPrompt(s: Session, text: string, context?: PromptContext[], images?: PromptImage[], origin?: TurnOrigin): Promise<void>
+  settleTurn(s: Session, turn: TurnTrack, outcome: SettledTurn['outcome']): Promise<void>
   schedule(): void
   schedulePersist(ref: EnvRef): void
-  sendTurn(s: Session, text: string, entryKind: 'user' | 'system', isNudge: boolean, context?: PromptContext[], images?: PromptImage[], loop?: string): Promise<TurnResult>
+  sendTurn(s: Session, text: string, entryKind: 'user' | 'system', isNudge: boolean, context?: PromptContext[], images?: PromptImage[], line?: RpmChatLine): Promise<TurnResult>
   readonly sessions: Map<string, Session>
-  settleTurn(s: Session, turn: TurnTrack, how: TurnHow): Promise<void>
   vocabulary(s: Session): Vocabulary
   watcherPaused(s: Session): boolean
   withLimit(s: Session, outcome: TurnResult, detail: string | undefined, firstEntry: number): TurnResult
@@ -113,9 +113,8 @@ export async function sendTurn(mgr: TurnsCtx, s: Session,
   isNudge: boolean,
   context?: PromptContext[],
   images?: PromptImage[],
-  /** The review loop's intent id, when this turn is one of its host messages
-   *  (shown as a `system` entry that carries it). */
-  loop?: string): Promise<TurnResult> {
+  /** An RPM message (t3v2 §10.2): the chat shows this line, not a user message. */
+  line?: RpmChatLine): Promise<TurnResult> {
   mgr.bus.emit('session.activity', { sessionId: s.info.id })
   // The one outbound seam (§2.1): from here on the agent only ever sees
   // tokens, and the timeline records the same tokenized text — the chat view
@@ -131,10 +130,16 @@ export async function sendTurn(mgr: TurnsCtx, s: Session,
       maskError = e instanceof Error ? e : new Error(String(e))
     }
   }
-  const promptEntry = mgr.push(
-    s,
-    loop === undefined ? { kind: entryKind, text: outbound } : { kind: 'system', text: outbound, loop }
-  )
+  // A message the user typed (or the start prompt) that opens a logical turn —
+  // not a cut turn's "continue", not the app's own prompt.
+  const userTurn = !line && entryKind === 'user' && s.turn?.origin === 'user' && !s.turn.carried ? s.turn.id : undefined
+  // An RPM message is the host's, not the user's: a system line, no
+  // checkpoint. A user message carries its logical turn for RPM's
+  // `userPrompts` / `checkpointBefore`.
+  // TODO(rpm): `line.text` rides unmasked inside the entry's `rpm`.
+  const promptEntry = line
+    ? mgr.push(s, { kind: 'system', text: line.text !== undefined ? outbound : chatLineSummary(line), rpm: line })
+    : mgr.push(s, { kind: entryKind, text: outbound, ...(userTurn ? { turn: userTurn } : {}) })
   // Prompt start: the turn is incomplete until `complete` fires; clear any
   // prior violation overlay.
   s.turnComplete = false
@@ -167,8 +172,11 @@ export async function sendTurn(mgr: TurnsCtx, s: Session,
     if (maskError) throw maskError
     mgr.assertNotStopped(s)
     const conn = await mgr.attach(s)
-    // A review-loop host message lands as a `system` entry — not a rewind point.
-    if (promptEntry.kind === 'user') await mgr.events.snapshotCheckpoint?.(s.info, promptEntry.id)
+    // A nudge lands as a `system` entry — not a rewind point.
+    if (promptEntry.kind === 'user') {
+      const checkpoint = await mgr.events.snapshotCheckpoint?.(s.info, promptEntry.id)
+      if (checkpoint && userTurn) mgr.append(s, { type: 'patch', id: promptEntry.id, patch: { checkpoint } })
+    }
     const preface = s.preface
     // Everything above was asynchronous: a Stop may have landed meanwhile.
     mgr.assertNotStopped(s)
@@ -316,28 +324,39 @@ export async function runPrompt(mgr: TurnsCtx, s: Session,
   text: string,
   context?: PromptContext[],
   images?: PromptImage[],
-  loop?: string): Promise<void> {
+  /** Where the prompt came from; the start prompt is the user's. */
+  origin: TurnOrigin = { origin: 'user' }): Promise<void> {
   s.promptRunning = true
   const startedAt = Date.now()
   s.turnStartedAt = startedAt
   const fromWake = s.info.role === 'watcher' && s.ranOrigin === 'wake'
   s.turnGuard = fromWake || (s.info.role === 'watcher' && !!s.guardStart)
   s.guardStart = undefined
-  // The logical turn: this prompt and its nudge (docs/requirements-review-
-  // loop.md §5.1). Opened before the first await so the contract tools can
-  // file into it once a round-trip is busy; closed in the `finally`, whatever
-  // happened. Only a loop session has one — the record, its write and its
-  // event are the loop's, and any other session's turn ends as it always did.
-  const turn: TurnTrack | undefined = isLoopSession(s.info)
-    ? { id: `${s.info.id}:${++s.turnSeq}` }
+  // The logical turn of an executor or reviewer (t3v2 §4.1): this prompt and
+  // its nudge. Opened before the first await so tool calls can file into it;
+  // settled in the `finally`, whatever happened. Every other role's turn
+  // ends as it always did.
+  // A cut turn's "continue" carries that turn on (t3v2 §4.1, §12): its origin,
+  // key and accepted calls. Every other prompt is a turn of its own.
+  const carried = !!origin.continues && !!s.carry
+  const from = carried ? s.carry! : origin
+  const turn: TurnTrack | undefined = roleSettlesTurns(sessionRole(s.info))
+    ? {
+        id: `${s.info.id}:${++s.turnSeq}`,
+        origin: from.origin,
+        ...(from.key ? { key: from.key } : {}),
+        tools: structuredClone(from.tools ?? []),
+        ...(carried ? { carried: true } : {})
+      }
     : undefined
   s.turn = turn
   // Until the body says how it ended, it threw.
-  let how: TurnHow = { failed: { stopReason: 'error' }, incomplete: false }
+  let outcome: SettledTurn['outcome'] = 'failed'
   try {
-    const first = await mgr.sendTurn(s, text, 'user', false, context, images, loop)
+    const first = await mgr.sendTurn(s, text, 'user', false, context, images, carried ? undefined : origin.line)
     if (first.limit) {
-      how = { limited: { until: mgr.onLimited(s, first.limit) }, incomplete: false }
+      mgr.onLimited(s, first.limit)
+      outcome = 'limited'
       return
     }
     if (!first.threw) mgr.clearLimited(s)
@@ -348,7 +367,7 @@ export async function runPrompt(mgr: TurnsCtx, s: Session,
     if (mgr.decideTurn(s, first, false) !== 'nudge') {
       // The whole logical turn went through: the failure streak ends (§7).
       if (fromWake && first.stopReason === 'end_turn') s.wakeFailures = 0
-      how = turnHow(first, false)
+      if (turn) outcome = settledOutcome(s, turn, first, false)
       return
     }
     const second = await mgr.sendTurn(
@@ -358,7 +377,8 @@ export async function runPrompt(mgr: TurnsCtx, s: Session,
       true
     )
     if (second.limit) {
-      how = { limited: { until: mgr.onLimited(s, second.limit) }, incomplete: false }
+      mgr.onLimited(s, second.limit)
+      outcome = 'limited'
       return
     }
     // The nudge turn failing leaves a watcher blind just as the first would (§7).
@@ -368,6 +388,7 @@ export async function runPrompt(mgr: TurnsCtx, s: Session,
       else if (second.stopReason === 'end_turn') s.wakeFailures = 0
     }
     const incomplete = mgr.decideTurn(s, second, true) === 'incomplete'
+    if (turn) outcome = settledOutcome(s, turn, second, incomplete)
     if (incomplete) {
       mgr.push(s, { kind: 'system', text: `turn ended without ${contractToolFor(sessionRole(s.info))}` })
       s.info.incomplete = true
@@ -375,7 +396,6 @@ export async function runPrompt(mgr: TurnsCtx, s: Session,
       mgr.bus.emit('session.changed', { sessionId: s.info.id })
       mgr.schedulePersist(s.ref)
     }
-    how = turnHow(second, incomplete)
   } finally {
     s.nudgePending = false
     // A turn the user cancelled leaves nothing scheduled that it scheduled
@@ -392,11 +412,9 @@ export async function runPrompt(mgr: TurnsCtx, s: Session,
       }
       s.cancelledAt = undefined
     }
-    // An ordinary session drops `promptRunning` right here, with no write and
-    // no event in between, exactly as before the loop (it is the update
-    // deferral's and the drain's gate); only a loop session pays for the
-    // settled-turn record (`settleTurn` drops it after its write).
-    if (turn) await mgr.settleTurn(s, turn, how)
+    // An ordinary session drops `promptRunning` right here; an executor or
+    // reviewer after its settled turn is written (`settleTurn`).
+    if (turn) await mgr.settleTurn(s, turn, outcome)
     else s.promptRunning = false
     // Whatever was typed while this turn ran goes next. A no-op when the drain
     // loop is what called this (it owns `draining` and continues on its own) —
@@ -408,49 +426,70 @@ export async function runPrompt(mgr: TurnsCtx, s: Session,
   }
 }
 
+/** How a logical turn ended, from its last round-trip (its nudge, when it had
+ *  one): threw, the user's Esc, another non-`end_turn` stop, no contract tool,
+ *  or what the contract tool said — an executor's `complete` outcome, a
+ *  reviewer's accepted `submit_review` (`no_changes`: its result is in `tools`). */
+function settledOutcome(s: Session, turn: TurnTrack, last: TurnResult, incomplete: boolean): SettledTurn['outcome'] {
+  if (last.threw) return 'failed'
+  if (last.stopReason === 'cancelled') return 'cancelled'
+  if (last.stopReason && last.stopReason !== 'end_turn') return 'failed'
+  if (incomplete) return 'incomplete'
+  if (sessionRole(s.info) === 'reviewer') return s.turnComplete ? 'no_changes' : 'incomplete'
+  return turn.complete?.outcome ?? 'incomplete'
+}
+
 /**
- * The end of a logical turn, once gurt has classified how it ended
- * (docs/requirements-review-loop.md §5.1, §8): record it as `lastSettled` and
- * persist it, *then* emit `session.settled` — the bus replays nothing, so a
- * loop that misses the event reads the record at boot. A failed write is
- * logged and the event still goes out: the live loop must not hang on a disk
- * error, and only the replay after a crash is lost.
- *
- * A deleted session settles to nobody (`session.deleted` is its event).
+ * The end of an executor's or reviewer's logical turn (t3v2 §4.1): record it
+ * as `lastSettled` and persist it, *then* emit `session.settled` — the bus
+ * replays nothing, so RPM reads the record at boot if it missed the event.
  * `promptRunning` drops after the write and before the emit, so a subscriber
- * that queues a host message from the handler finds the session free.
+ * that queues a message from the handler finds the session free. A deleted
+ * session settles to nobody.
  */
-export async function settleTurn(mgr: TurnsCtx, s: Session, turn: TurnTrack, how: TurnHow): Promise<void> {
+export async function settleTurn(mgr: TurnsCtx, s: Session, turn: TurnTrack, outcome: SettledTurn['outcome']): Promise<void> {
   if (s.turn === turn) s.turn = undefined
   const settled: SettledTurn = {
+    sessionId: s.info.id,
     turnId: turn.id,
-    ...(turn.complete ? { complete: turn.complete } : {}),
-    ...(turn.verdict ? { verdict: turn.verdict } : {}),
-    ...how
+    origin: turn.origin,
+    ...(turn.key ? { key: turn.key } : {}),
+    outcome,
+    ...(outcome === 'blocked' && turn.complete?.reason ? { reason: turn.complete.reason } : {}),
+    tools: turn.tools
   }
-  const previous = s.lastSettled
   s.lastSettled = settled
-  // §5.1/§8: never hand the controller an input absent from durable storage.
-  // Bounded retries absorb transient writes; exhaustion faults with the hold.
-  let durable = false
-  for (let attempt = 0; attempt < 3; attempt++) {
+  // `limited` is no boundary: its "continue" carries this turn on. Written in
+  // the same record as `lastSettled`.
+  // TODO(rpm): a second turn cut while an earlier cut turn's "continue" still
+  // waits replaces that carry.
+  if (outcome === 'limited')
+    s.carry = { origin: turn.origin, ...(turn.key ? { key: turn.key } : {}), tools: structuredClone(turn.tools) }
+  else if (turn.carried) s.carry = undefined
+  // Never an event without the record on disk (t3v2 §4.1): retry until the
+  // write lands. The session holds its next turn meanwhile (`promptRunning`),
+  // so turns settle in order. A deleted session settles to nobody.
+  // TODO(rpm): no storage-fault signal to the UI while a disk keeps failing.
+  for (let attempt = 0; ; attempt++) {
+    if (mgr.sessions.get(s.info.id) !== s) {
+      s.promptRunning = false
+      return
+    }
     try {
       await mgr.persistNow(s)
-      durable = true
       break
     } catch (err) {
-      log.error('session.persist.fail', { err })
+      log.error('session.persist.fail', { err, attempt })
+      await new Promise((r) => setTimeout(r, SETTLE_RETRY_MS[Math.min(attempt, SETTLE_RETRY_MS.length - 1)]))
     }
   }
   s.promptRunning = false
-  if (!durable) {
-    s.lastSettled = previous
-    mgr.loopHooks?.storageFault?.(s.info.id)
-    return
-  }
   if (mgr.sessions.get(s.info.id) === s)
-    mgr.bus.emit('session.settled', { sessionId: s.info.id, ref: s.ref, turn: settled })
+    mgr.bus.emit('session.settled', { sessionId: s.info.id, ref: s.ref, turn: structuredClone(settled) })
 }
+
+/** Back-off between failed writes of a settled turn. */
+const SETTLE_RETRY_MS = [50, 200, 1000, 5000, 30000]
 
 /**
  * Run everything this session has waiting, one turn at a time, for as long as
@@ -471,18 +510,17 @@ export async function drainPending(mgr: TurnsCtx, s: Session): Promise<void> {
     // clone is elsewhere, and attaching would only fail with it.
     // Case three: the account is at its limit — what is waiting would only be
     // refused, so it stays put until the hold lifts (`schedule()` again).
-    // Case four: a review loop is delivering in this scope — its steps are
-    // irreversible, so a typed message waits and runs after the loop has
-    // ended (docs/requirements-review-loop.md §5.6, "During delivery"); the
-    // controller calls `schedule()` when it does.
     while (
       s.pending.length &&
       !s.busy &&
+      // The logical turn in flight (its nudge, its settle) ends first: the
+      // start prompt runs outside this loop, and `busy` drops between its
+      // round-trips.
+      !s.promptRunning &&
       s.info.state === 'started' &&
       !mgr.repoHolder(s) &&
       !mgr.earlierQueueItem(s) &&
       !mgr.limitHold(s) &&
-      !mgr.deliveryActive(s) &&
       // A wake whose write has not landed is not delivered yet (§5.1).
       s.pending[0] !== s.wakeWriting &&
       // A poll in flight ends first (§6.1); `setPolling(false)` drains again.
@@ -493,8 +531,10 @@ export async function drainPending(mgr: TurnsCtx, s: Session): Promise<void> {
       const next = s.pending.shift()!
       consumed = true
       s.interrupted = true
-      // Beside `interrupted`, in the same write as the prompt's removal (§8).
-      s.loopRan = loopOf(next.origin)
+      // Taken into a turn: `SessionsPort.sent` answers `taken` from here on,
+      // written with `interrupted` by the turn's first persist.
+      if (next.origin && 'rpm' in next.origin)
+        s.rpmTaken = [...(s.rpmTaken ?? []), next.origin.rpm].slice(-RPM_TAKEN_MAX)
       if (s.info.role === 'watcher') {
         s.ranOrigin = mgr.isWakeWork(next) ? 'wake' : 'user'
         // The wake counts when the drain takes it, in this same record (§5.1).
@@ -503,7 +543,7 @@ export async function drainPending(mgr: TurnsCtx, s: Session): Promise<void> {
           s.wakeNote = next.origin.note
         }
       }
-      await mgr.runPrompt(s, next.text, next.context, next.images, loopOf(next.origin))
+      await mgr.runPrompt(s, next.text, next.context, next.images, turnOriginOf(next))
     }
   } catch (e) {
     log.error('internal.fail', { site: 'pending-drain', s: s.info.id, err: e })
