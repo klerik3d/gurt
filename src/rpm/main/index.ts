@@ -2,3 +2,4 @@
 // the ports it requires (interfaces only) and createRpm.
 export * from './api'
 export * from './ports'
+export { treeId } from './trees'

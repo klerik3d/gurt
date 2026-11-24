@@ -18,7 +18,7 @@ import type { TurnRecord } from './usage'
 import type { PlanWindow } from './planUsage'
 import type { NotificationRecord } from './notifications'
 import type { HotkeyMap } from './hotkeys'
-import type { SettledTurn } from '../rpm/main'
+import type { SettledTurn } from '../rpm/core'
 
 /** Why a container reached its new status — the "who asked for this" a status
  *  alone cannot answer. `user` covers both a user action and the scheduler

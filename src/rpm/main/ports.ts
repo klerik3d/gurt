@@ -3,7 +3,7 @@
 // code — everything it knows about sessions, git, containers and
 // notifications comes through here.
 import type { SessionRole } from '../../shared/types'
-import type { CheckRun, FileChange, RepoTree, RpmChatLine, TurnOutcome } from '../core'
+import type { CheckRun, FileChange, RepoTree, RpmChatLine, SettledTurn } from '../core'
 
 export interface RpmPorts {
   sessions: SessionsPort
@@ -26,25 +26,17 @@ export interface SessionFacts {
   state: 'draft' | 'queued' | 'starting' | 'started'
   /** The session's account sits on a plan limit until then (ISO). */
   planHoldUntil?: string
+  /** An RPM reviewer: its executor and the step key it was created for (task 8: `submit_review` finds its run by it). */
+  reviewerOf?: { executor: string; key: string }
 }
 
-export interface SettledTurn {
-  sessionId: string
-  /** `<sessionId>:<n>`, numbers are never reused. */
-  turnId: string
-  origin: 'user' | 'rpm' | 'other'
-  /** When the turn was started by a `send` message. */
-  key?: string
-  /** limited: the turn was cut by a plan limit and will continue by itself — not a boundary. */
-  outcome: TurnOutcome | 'limited'
-  /** blocked: the reason from `complete`. */
-  reason?: string
-  /** Accepted RPM tool calls of the turn, in order (§5). */
-  tools: { name: string; payload: unknown }[]
-}
+/** Lives in rpm/core (task 8) so src/shared can take it without pulling node-side rpm/main into the renderer's typecheck. */
+export type { SettledTurn } from '../core'
 
 export interface SessionsPort {
   info(id: string): SessionFacts | undefined
+  /** Ids of every session (task 8: `Rpm.load` reads the journals of every executor). */
+  list(): string[]
   /** What the user typed to this session after turn `afterTurnId` (or from the start): the reviewer's task. */
   userPrompts(id: string, afterTurnId?: string): string[]
   /** The write repos' snapshot before the user message that started this turn (checkpoint): a commit per repo.

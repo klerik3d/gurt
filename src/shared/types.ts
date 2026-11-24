@@ -3,8 +3,7 @@ import type { McpRegistryEntry } from './mcp'
 import type { ProactiveAgentView, ProactiveConfig, ProactiveOrigin } from './proactive'
 import type { PendingWake, WakeOrigin, WatcherConfig, WatcherState, WatcherView } from './watchers'
 import { sanitizeDomainPolicy, type DomainPolicy } from './proxy'
-import type { RpmChatLine } from '../rpm/core'
-import type { SettledTurn } from '../rpm/main'
+import type { RpmChatLine, SettledTurn } from '../rpm/core'
 
 /** How much of an MCP server's toolset the agent may use. */
 export type McpMode = 'read-only' | 'full'

@@ -155,6 +155,7 @@ export function facts(mgr: RpmCtx, sessionId: string): SessionFacts | undefined 
     agent: s.info.agent ?? '',
     writeRepos: writeRepos(s.info),
     state: s.info.state,
-    ...(until ? { planHoldUntil: until } : {})
+    ...(until ? { planHoldUntil: until } : {}),
+    ...(s.info.reviewerOf ? { reviewerOf: { ...s.info.reviewerOf } } : {})
   }
 }

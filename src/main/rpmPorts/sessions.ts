@@ -19,6 +19,7 @@ export function createSessionsPort(sessions: SessionManager, deps: SessionsPortD
   const every = deps.keepAliveMs ?? 60_000
   return {
     info: (id) => sessions.rpmFacts(id),
+    list: () => sessions.allSessions().map((s) => s.id),
     userPrompts: (id, afterTurnId) => sessions.userPrompts(id, afterTurnId),
     checkpointBefore: (id, turnId) => sessions.checkpointBefore(id, turnId),
     onSettled: (fn: (t: SettledTurn) => void) => deps.bus.on('session.settled', (e) => fn(e.turn)),

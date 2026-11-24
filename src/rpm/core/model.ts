@@ -116,6 +116,23 @@ export interface CheckRun {
 
 export type TurnOutcome = 'changes' | 'no_changes' | 'blocked' | 'incomplete' | 'failed' | 'cancelled'
 
+/** A classified executor/reviewer turn (t3v2 §4.1). A port type: rpm/main re-exports it from ports.ts;
+ *  it lives here so src/shared can import it without the node-side rpm/main (task 8). */
+export interface SettledTurn {
+  sessionId: string
+  /** `<sessionId>:<n>`, numbers are never reused. */
+  turnId: string
+  origin: 'user' | 'rpm' | 'other'
+  /** When the turn was started by a `send` message. */
+  key?: string
+  /** limited: the turn was cut by a plan limit and will continue by itself — not a boundary. */
+  outcome: TurnOutcome | 'limited'
+  /** blocked: the reason from `complete`. */
+  reason?: string
+  /** Accepted RPM tool calls of the turn, in order (§5). */
+  tools: { name: string; payload: unknown }[]
+}
+
 export type CallReason =
   | 'findings' | 'idle-executor' | 'budget' | 'check-unchanged' | 'check-red'
   | 'executor-failed' | 'executor-blocked' | 'reviewer-failed' | 'check-error'
