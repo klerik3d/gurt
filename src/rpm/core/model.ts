@@ -284,6 +284,11 @@ export interface RunState {
    *  sent back to the executor (must/defer), not yet carried by an executor
    *  step: rule 6 waits for them (t1v6 §1 "остальные ждут", §7 run в). */
   fresh: string[]
+  // --- added by task 4 -----------------------------------------------------------
+  /** Per finding id: every transition and severity change with its comment
+   *  (t3v2 §10.1). `chat` is not filled by the fold. The texts for the models
+   *  take only `RunState`, and they show this history. */
+  history: Record<string, HistoryItem[]>
 }
 
 // --- what the models see ----------------------------------------------------------------

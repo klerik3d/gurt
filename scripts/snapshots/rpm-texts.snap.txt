@@ -1,0 +1,504 @@
+=== reviewerPrompt · R1 ===
+You review the work of another agent (the executor) on the task below. You only read: the repositories are mounted read-only.
+Finish the turn with one call of `submit_review`, as your last action.
+
+## Task
+
+Fix sum(): it subtracts.
+
+## Changes
+
+### app (/workspaces/app)
+
+- M src/sum.ts
+
+```diff
+--- a/src/sum.ts
++++ b/src/sum.ts
+@@ -1 +1 @@
+-export const sum = (a, b) => a - b
++export const sum = (a, b) => a + b
+```
+
+## Check
+
+The check passed: `npm test` in app.
+
+## What to send
+
+Read the whole change for problems the task or its users would hit. Each problem is one finding: severity, file (`<repo>/<path>`) and line when you can, the claim, and a scenario.
+No problems — send an empty `findings`.
+`verify` holds every item of the Verify list exactly once, and nothing else.
+
+Severity:
+- blocker — the change is broken: data loss, a crash or a security hole on a normal path, or the task is not done.
+- major — a real bug a user will hit: wrong result, a broken case of the task, a missing piece the task asked for.
+- minor — a rare edge case, a small inconsistency, a weak spot that works today.
+- nit — style, naming, wording, taste.
+
+Every finding needs a scenario: the concrete input or state, and the wrong result it leads to. No scenario — no finding.
+
+=== chat line · seq 4 · executor → reviewer R1 ===
+{
+  "executor": "e1",
+  "run": 1,
+  "seq": 4,
+  "from": "executor",
+  "to": "reviewer",
+  "review": 1,
+  "items": [],
+  "text": "You review the work of another agent (the executor) on the task below. You only read: the repositories are mounted read-only.\nFinish the turn with one call of `submit_review`, as your last action.\n\n## Task\n\nFix sum(): it subtracts.\n\n## Changes\n\n### app (/workspaces/app)\n\n- M src/sum.ts\n\n```diff\n--- a/src/sum.ts\n+++ b/src/sum.ts\n@@ -1 +1 @@\n-export const sum = (a, b) => a - b\n+export const sum = (a, b) => a + b\n```\n\n## Check\n\nThe check passed: `npm test` in app.\n\n## What to send\n\nRead the whole change for problems the task or its users would hit. Each problem is one finding: severity, file (`<repo>/<path>`) and line when you can, the claim, and a scenario.\nNo problems — send an empty `findings`.\n`verify` holds every item of the Verify list exactly once, and nothing else.\n\nSeverity:\n- blocker — the change is broken: data loss, a crash or a security hole on a normal path, or the task is not done.\n- major — a real bug a user will hit: wrong result, a broken case of the task, a missing piece the task asked for.\n- minor — a rare edge case, a small inconsistency, a weak spot that works today.\n- nit — style, naming, wording, taste.\n\nEvery finding needs a scenario: the concrete input or state, and the wrong result it leads to. No scenario — no finding.",
+  "kind": "handoff"
+}
+
+=== chat line · seq 5 · reviewer R1 → gurt · new F1 F2 F3 ===
+{
+  "executor": "e1",
+  "run": 1,
+  "seq": 5,
+  "from": "reviewer",
+  "review": 1,
+  "to": "gurt",
+  "items": [],
+  "more": "new F1 F2 F3",
+  "text": "F1 major app/src/sum.ts:1: sum() of negatives overflows the int range check\nF2 major app/src/sum.test.ts: No test for the fix\nF3 nit app/src/sum.ts:1: Name the parameters x and y",
+  "kind": "handoff"
+}
+
+=== chat line · seq 6 · Keep the public signature. queued ===
+{
+  "executor": "e1",
+  "run": 1,
+  "seq": 6,
+  "from": "you",
+  "to": "executor",
+  "items": [],
+  "more": "queued",
+  "text": "Keep the public signature.",
+  "kind": "note-queued"
+}
+
+=== executorMessage · step 3 ===
+gurt review: work on these findings.
+
+F1 · major · app/src/sum.ts:1
+  > sum() of negatives overflows the int range check
+  Scenario: sum(-2**31, -1) returns a positive number
+  The reviewer asks for a fix. Allowed replies: fixed, contested, cant.
+
+F2 · major · app/src/sum.test.ts
+  > No test for the fix
+  Scenario: reverting the fix keeps the suite green
+  The reviewer asks for a fix. Allowed replies: fixed, contested, cant.
+
+From the user:
+- Keep the public signature.
+
+Before `complete`, call `reply_findings` with one reply per finding: id, act, comment.
+- fixed — you changed the code
+- contested — the finding does not hold; say why
+- cant — you cannot do it; say why
+
+=== chat line · seq 7 · reviewer R1 → executor F1 F2 · +1 below threshold ===
+{
+  "executor": "e1",
+  "run": 1,
+  "seq": 7,
+  "from": "reviewer",
+  "review": 1,
+  "to": "executor",
+  "items": [
+    {
+      "id": "F1",
+      "label": "F1"
+    },
+    {
+      "id": "F2",
+      "label": "F2"
+    }
+  ],
+  "more": "+1 below threshold",
+  "text": "gurt review: work on these findings.\n\nF1 · major · app/src/sum.ts:1\n  > sum() of negatives overflows the int range check\n  Scenario: sum(-2**31, -1) returns a positive number\n  The reviewer asks for a fix. Allowed replies: fixed, contested, cant.\n\nF2 · major · app/src/sum.test.ts\n  > No test for the fix\n  Scenario: reverting the fix keeps the suite green\n  The reviewer asks for a fix. Allowed replies: fixed, contested, cant.\n\nFrom the user:\n- Keep the public signature.\n\nBefore `complete`, call `reply_findings` with one reply per finding: id, act, comment.\n- fixed — you changed the code\n- contested — the finding does not hold; say why\n- cant — you cannot do it; say why",
+  "kind": "handoff"
+}
+
+=== chat line · seq 8 · executor → reviewer F1 fixed F2 fixed ===
+{
+  "executor": "e1",
+  "run": 1,
+  "seq": 8,
+  "from": "executor",
+  "to": "reviewer",
+  "items": [
+    {
+      "id": "F1",
+      "label": "F1 fixed"
+    },
+    {
+      "id": "F2",
+      "label": "F2 fixed"
+    }
+  ],
+  "text": "F1 fixed: Clamped with Number.isSafeInteger.\nF2 fixed: Added sum.test.ts.",
+  "kind": "handoff"
+}
+
+=== reviewerPrompt · R2 ===
+You review the work of another agent (the executor) on the task below. You only read: the repositories are mounted read-only.
+Finish the turn with one call of `submit_review`, as your last action.
+
+## Task
+
+Fix sum(): it subtracts.
+
+## Changes
+
+### app (/workspaces/app)
+
+- M src/sum.ts
+
+```diff
+--- a/src/sum.ts
++++ b/src/sum.ts
+@@ -1 +1 @@
+-export const sum = (a, b) => a - b
++export const sum = (a, b) => a + b
+```
+The diff is cut short: read the rest of the files in /workspaces/app.
+
+## Check
+
+The check passed: `npm test` in app.
+
+## Findings so far
+
+Earlier reviews of this task raised these. Do not raise them again; the user's decisions stand.
+
+F1 · major · app/src/sum.ts:1 — the executor says it is fixed — to verify
+  > sum() of negatives overflows the int range check
+  Scenario: sum(-2**31, -1) returns a positive number
+  - reviewer: raised
+  - executor: fixed — "Clamped with Number.isSafeInteger."
+
+F2 · major · app/src/sum.test.ts — the executor says it is fixed — to verify
+  > No test for the fix
+  Scenario: reverting the fix keeps the suite green
+  - reviewer: raised
+  - executor: fixed — "Added sum.test.ts."
+
+F3 · nit · app/src/sum.ts:1 — open — waiting for the executor
+  > Name the parameters x and y
+  Scenario: a reader confuses a/b with arrays
+  - reviewer: raised
+
+## Verify
+
+Decide each item: `accept: true` or `false`, with a comment that says why.
+
+- F1: Is it fixed in the code now? The executor: "Clamped with Number.isSafeInteger."
+- F2: Is it fixed in the code now? The executor: "Added sum.test.ts."
+
+## What to send
+
+Read the whole change for problems the task or its users would hit. Each problem is one finding: severity, file (`<repo>/<path>`) and line when you can, the claim, and a scenario.
+No problems — send an empty `findings`.
+`verify` holds every item of the Verify list exactly once, and nothing else.
+
+Severity:
+- blocker — the change is broken: data loss, a crash or a security hole on a normal path, or the task is not done.
+- major — a real bug a user will hit: wrong result, a broken case of the task, a missing piece the task asked for.
+- minor — a rare edge case, a small inconsistency, a weak spot that works today.
+- nit — style, naming, wording, taste.
+
+Every finding needs a scenario: the concrete input or state, and the wrong result it leads to. No scenario — no finding.
+
+=== chat line · seq 11 · executor → reviewer R2 F1 fixed F2 fixed ===
+{
+  "executor": "e1",
+  "run": 1,
+  "seq": 11,
+  "from": "executor",
+  "to": "reviewer",
+  "review": 2,
+  "items": [
+    {
+      "id": "F1",
+      "label": "F1 fixed"
+    },
+    {
+      "id": "F2",
+      "label": "F2 fixed"
+    }
+  ],
+  "text": "You review the work of another agent (the executor) on the task below. You only read: the repositories are mounted read-only.\nFinish the turn with one call of `submit_review`, as your last action.\n\n## Task\n\nFix sum(): it subtracts.\n\n## Changes\n\n### app (/workspaces/app)\n\n- M src/sum.ts\n\n```diff\n--- a/src/sum.ts\n+++ b/src/sum.ts\n@@ -1 +1 @@\n-export const sum = (a, b) => a - b\n+export const sum = (a, b) => a + b\n```\nThe diff is cut short: read the rest of the files in /workspaces/app.\n\n## Check\n\nThe check passed: `npm test` in app.\n\n## Findings so far\n\nEarlier reviews of this task raised these. Do not raise them again; the user's decisions stand.\n\nF1 · major · app/src/sum.ts:1 — the executor says it is fixed — to verify\n  > sum() of negatives overflows the int range check\n  Scenario: sum(-2**31, -1) returns a positive number\n  - reviewer: raised\n  - executor: fixed — \"Clamped with Number.isSafeInteger.\"\n\nF2 · major · app/src/sum.test.ts — the executor says it is fixed — to verify\n  > No test for the fix\n  Scenario: reverting the fix keeps the suite green\n  - reviewer: raised\n  - executor: fixed — \"Added sum.test.ts.\"\n\nF3 · nit · app/src/sum.ts:1 — open — waiting for the executor\n  > Name the parameters x and y\n  Scenario: a reader confuses a/b with arrays\n  - reviewer: raised\n\n## Verify\n\nDecide each item: `accept: true` or `false`, with a comment that says why.\n\n- F1: Is it fixed in the code now? The executor: \"Clamped with Number.isSafeInteger.\"\n- F2: Is it fixed in the code now? The executor: \"Added sum.test.ts.\"\n\n## What to send\n\nRead the whole change for problems the task or its users would hit. Each problem is one finding: severity, file (`<repo>/<path>`) and line when you can, the claim, and a scenario.\nNo problems — send an empty `findings`.\n`verify` holds every item of the Verify list exactly once, and nothing else.\n\nSeverity:\n- blocker — the change is broken: data loss, a crash or a security hole on a normal path, or the task is not done.\n- major — a real bug a user will hit: wrong result, a broken case of the task, a missing piece the task asked for.\n- minor — a rare edge case, a small inconsistency, a weak spot that works today.\n- nit — style, naming, wording, taste.\n\nEvery finding needs a scenario: the concrete input or state, and the wrong result it leads to. No scenario — no finding.",
+  "kind": "handoff"
+}
+
+=== chat line · seq 12 · reviewer R2 → gurt F1 yes F2 no ===
+{
+  "executor": "e1",
+  "run": 1,
+  "seq": 12,
+  "from": "reviewer",
+  "review": 2,
+  "to": "gurt",
+  "items": [
+    {
+      "id": "F1",
+      "label": "F1 yes"
+    },
+    {
+      "id": "F2",
+      "label": "F2 no"
+    }
+  ],
+  "text": "F1 yes: Clamped.\nF2 no: The test does not cover negatives.",
+  "kind": "handoff"
+}
+
+=== executorMessage · step 6 ===
+gurt review: work on these findings.
+
+F2 · major · app/src/sum.test.ts
+  > No test for the fix
+  Scenario: reverting the fix keeps the suite green
+  The reviewer asks for a fix. Allowed replies: fixed, contested, cant.
+  Reviewer: "The test does not cover negatives."
+
+Before `complete`, call `reply_findings` with one reply per finding: id, act, comment.
+- fixed — you changed the code
+- contested — the finding does not hold; say why
+- cant — you cannot do it; say why
+
+=== chat line · seq 14 · reviewer R2 → executor F2 · +1 below threshold ===
+{
+  "executor": "e1",
+  "run": 1,
+  "seq": 14,
+  "from": "reviewer",
+  "review": 2,
+  "to": "executor",
+  "items": [
+    {
+      "id": "F2",
+      "label": "F2"
+    }
+  ],
+  "more": "+1 below threshold",
+  "text": "gurt review: work on these findings.\n\nF2 · major · app/src/sum.test.ts\n  > No test for the fix\n  Scenario: reverting the fix keeps the suite green\n  The reviewer asks for a fix. Allowed replies: fixed, contested, cant.\n  Reviewer: \"The test does not cover negatives.\"\n\nBefore `complete`, call `reply_findings` with one reply per finding: id, act, comment.\n- fixed — you changed the code\n- contested — the finding does not hold; say why\n- cant — you cannot do it; say why",
+  "kind": "handoff"
+}
+
+=== chat line · seq 15 · executor → reviewer F2 fixed ===
+{
+  "executor": "e1",
+  "run": 1,
+  "seq": 15,
+  "from": "executor",
+  "to": "reviewer",
+  "items": [
+    {
+      "id": "F2",
+      "label": "F2 fixed"
+    }
+  ],
+  "text": "F2 fixed: Negative cases added.",
+  "kind": "handoff"
+}
+
+=== reviewerPrompt · R3 ===
+You review the work of another agent (the executor) on the task below. You only read: the repositories are mounted read-only.
+Finish the turn with one call of `submit_review`, as your last action.
+
+## Task
+
+Fix sum(): it subtracts.
+
+## Changes
+
+### app (/workspaces/app)
+
+- M src/sum.ts
+
+```diff
+--- a/src/sum.ts
++++ b/src/sum.ts
+@@ -1 +1 @@
+-export const sum = (a, b) => a - b
++export const sum = (a, b) => a + b
+```
+
+## Check
+
+No check is configured for these repositories: tests were not run.
+
+## Findings so far
+
+Earlier reviews of this task raised these. Do not raise them again; the user's decisions stand.
+
+F1 · major · app/src/sum.ts:1 — closed — fixed and verified
+  > sum() of negatives overflows the int range check
+  Scenario: sum(-2**31, -1) returns a positive number
+  - reviewer: raised
+  - executor: fixed — "Clamped with Number.isSafeInteger."
+  - reviewer: accepted — "Clamped."
+
+F2 · major · app/src/sum.test.ts — the executor says it is fixed — to verify
+  > No test for the fix
+  Scenario: reverting the fix keeps the suite green
+  - reviewer: raised
+  - executor: fixed — "Added sum.test.ts."
+  - reviewer: not accepted — "The test does not cover negatives."
+  - executor: fixed — "Negative cases added."
+
+F3 · minor · app/src/sum.ts:1 — open — waiting for the executor
+  > Name the parameters x and y
+  Scenario: a reader confuses a/b with arrays
+  - reviewer: raised
+  - user: severity nit → minor — "style, not a bug"
+
+## Verify
+
+Decide each item: `accept: true` or `false`, with a comment that says why.
+
+- F2: Is it fixed in the code now? The executor: "Negative cases added."
+
+## What to send
+
+Read the whole change for problems the task or its users would hit. Each problem is one finding: severity, file (`<repo>/<path>`) and line when you can, the claim, and a scenario.
+No problems — send an empty `findings`.
+`verify` holds every item of the Verify list exactly once, and nothing else.
+
+Severity:
+- blocker — the change is broken: data loss, a crash or a security hole on a normal path, or the task is not done.
+- major — a real bug a user will hit: wrong result, a broken case of the task, a missing piece the task asked for.
+- minor — a rare edge case, a small inconsistency, a weak spot that works today.
+- nit — style, naming, wording, taste.
+
+Every finding needs a scenario: the concrete input or state, and the wrong result it leads to. No scenario — no finding.
+
+=== chat line · seq 18 · executor → reviewer R3 F2 fixed ===
+{
+  "executor": "e1",
+  "run": 1,
+  "seq": 18,
+  "from": "executor",
+  "to": "reviewer",
+  "review": 3,
+  "items": [
+    {
+      "id": "F2",
+      "label": "F2 fixed"
+    }
+  ],
+  "text": "You review the work of another agent (the executor) on the task below. You only read: the repositories are mounted read-only.\nFinish the turn with one call of `submit_review`, as your last action.\n\n## Task\n\nFix sum(): it subtracts.\n\n## Changes\n\n### app (/workspaces/app)\n\n- M src/sum.ts\n\n```diff\n--- a/src/sum.ts\n+++ b/src/sum.ts\n@@ -1 +1 @@\n-export const sum = (a, b) => a - b\n+export const sum = (a, b) => a + b\n```\n\n## Check\n\nNo check is configured for these repositories: tests were not run.\n\n## Findings so far\n\nEarlier reviews of this task raised these. Do not raise them again; the user's decisions stand.\n\nF1 · major · app/src/sum.ts:1 — closed — fixed and verified\n  > sum() of negatives overflows the int range check\n  Scenario: sum(-2**31, -1) returns a positive number\n  - reviewer: raised\n  - executor: fixed — \"Clamped with Number.isSafeInteger.\"\n  - reviewer: accepted — \"Clamped.\"\n\nF2 · major · app/src/sum.test.ts — the executor says it is fixed — to verify\n  > No test for the fix\n  Scenario: reverting the fix keeps the suite green\n  - reviewer: raised\n  - executor: fixed — \"Added sum.test.ts.\"\n  - reviewer: not accepted — \"The test does not cover negatives.\"\n  - executor: fixed — \"Negative cases added.\"\n\nF3 · minor · app/src/sum.ts:1 — open — waiting for the executor\n  > Name the parameters x and y\n  Scenario: a reader confuses a/b with arrays\n  - reviewer: raised\n  - user: severity nit → minor — \"style, not a bug\"\n\n## Verify\n\nDecide each item: `accept: true` or `false`, with a comment that says why.\n\n- F2: Is it fixed in the code now? The executor: \"Negative cases added.\"\n\n## What to send\n\nRead the whole change for problems the task or its users would hit. Each problem is one finding: severity, file (`<repo>/<path>`) and line when you can, the claim, and a scenario.\nNo problems — send an empty `findings`.\n`verify` holds every item of the Verify list exactly once, and nothing else.\n\nSeverity:\n- blocker — the change is broken: data loss, a crash or a security hole on a normal path, or the task is not done.\n- major — a real bug a user will hit: wrong result, a broken case of the task, a missing piece the task asked for.\n- minor — a rare edge case, a small inconsistency, a weak spot that works today.\n- nit — style, naming, wording, taste.\n\nEvery finding needs a scenario: the concrete input or state, and the wrong result it leads to. No scenario — no finding.",
+  "kind": "handoff"
+}
+
+=== chat line · seq 19 · reviewer R3 → gurt F2 yes ===
+{
+  "executor": "e1",
+  "run": 1,
+  "seq": 19,
+  "from": "reviewer",
+  "review": 3,
+  "to": "gurt",
+  "items": [
+    {
+      "id": "F2",
+      "label": "F2 yes"
+    }
+  ],
+  "text": "F2 yes: Covered.",
+  "kind": "handoff"
+}
+
+=== chat line · seq 20 · review passed marked 2 files ===
+{
+  "executor": "e1",
+  "run": 1,
+  "seq": 20,
+  "from": "rpm",
+  "to": "you",
+  "items": [],
+  "more": "marked 2 files",
+  "kind": "passed"
+}
+
+=== checkMessage ===
+gurt review: the check failed. Make it pass — nothing else for now.
+
+`npm test` in app (/workspaces/app): failed, exit code 1.
+```
+FAIL sum.test.ts
+  expected 3, got -1
+```
+
+Then `complete` as usual: gurt runs the check again.
+
+=== view · status and counts ===
+{
+  "status": {
+    "phase": "passed",
+    "files": 2,
+    "reviewsSinceYou": 1,
+    "lastCheck": {
+      "ok": true,
+      "redStreak": 0
+    }
+  },
+  "counts": {
+    "you": 0,
+    "executor": 0,
+    "reviewer": 0,
+    "final": 2,
+    "below": 1,
+    "all": 3
+  },
+  "live": false
+}
+
+=== view · F2 history ===
+[
+  {
+    "seq": 5,
+    "at": "2026-11-24T10:04:00Z",
+    "by": "reviewer",
+    "review": 1,
+    "to": "open"
+  },
+  {
+    "seq": 8,
+    "at": "2026-11-24T10:07:00Z",
+    "by": "executor",
+    "from": "open",
+    "to": "fixed",
+    "comment": "Added sum.test.ts."
+  },
+  {
+    "seq": 12,
+    "at": "2026-11-24T10:11:00Z",
+    "by": "reviewer",
+    "review": 2,
+    "from": "fixed",
+    "to": "open",
+    "comment": "The test does not cover negatives."
+  },
+  {
+    "seq": 15,
+    "at": "2026-11-24T10:14:00Z",
+    "by": "executor",
+    "from": "open",
+    "to": "fixed",
+    "comment": "Negative cases added."
+  },
+  {
+    "seq": 19,
+    "at": "2026-11-24T10:18:00Z",
+    "by": "reviewer",
+    "review": 3,
+    "from": "fixed",
+    "to": "closed",
+    "comment": "Covered."
+  }
+]

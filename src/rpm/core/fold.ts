@@ -8,7 +8,7 @@
 //   'user' }` counts as your entry too, and lifts `called`.
 // - Findings are numbered F1, F2… in the order reviews raise them.
 import { move, ownerOf } from './machine'
-import type { Act, Actor, Entry, Finding, RunState } from './model'
+import type { Act, Actor, Entry, Finding, HistoryItem, RunState } from './model'
 
 /** The id the next new finding of this run gets. */
 export function nextFindingId(run: Pick<RunState, 'findings'>): string {
@@ -33,7 +33,8 @@ export function fold(journal: readonly Entry[]): RunState {
     ignoredMoves: [],
     decided: [],
     lastYou: 0,
-    fresh: []
+    fresh: [],
+    history: {}
   }
   for (const e of journal.slice(1)) apply(run, e)
   return run
@@ -47,16 +48,24 @@ function apply(run: RunState, e: Entry): void {
     delete run.called
     delete run.failed
   }
-  const doMove = (id: string, by: Actor, act: Act): void => {
+  const log = (id: string, item: Omit<HistoryItem, 'seq' | 'at' | 'by'>, comment: string | undefined): void => {
+    const h = (run.history[id] ??= [])
+    h.push({ seq: e.seq, at: e.at, by: e.by, ...item, ...(comment ? { comment } : {}) })
+  }
+  const doMove = (id: string, by: Actor, act: Act, comment: string | undefined, review?: number): void => {
     const i = run.findings.findIndex((f) => f.id === id)
     const f = run.findings[i]
     const moved = f ? move(f, by, act, run.config) : 'not-allowed'
-    if (moved === 'not-allowed') {
+    const rev = review !== undefined ? { review } : {}
+    if (!f || moved === 'not-allowed') {
       if (!run.ignored.includes(e.seq)) run.ignored.push(e.seq)
       run.ignoredMoves.push({ seq: e.seq, id })
+      // An executor act names the state it asked for; a refused verify has no target.
+      if (f) log(id, { ...rev, from: f.state, ...(typeof act === 'string' && { to: act }), ignored: true }, comment)
       return
     }
     run.findings[i] = moved
+    log(id, { ...rev, from: f.state, to: moved.state }, comment)
   }
   /** A result entry closes the running step it belongs to. */
   const settle = (step: number | undefined): void => {
@@ -95,7 +104,7 @@ function apply(run: RunState, e: Entry): void {
       run.reviews += 1
       run.sinceYou.reviews += 1
       run.lastReview = { tree: e.tree, n: run.reviews }
-      for (const v of e.verify) doMove(v.id, 'reviewer', { verify: v.accept })
+      for (const v of e.verify) doMove(v.id, 'reviewer', { verify: v.accept }, v.comment, run.reviews)
       for (const nf of e.findings) {
         // Numbered by order; the id in the entry is what the writer took from nextFindingId.
         const f: Finding = {
@@ -111,6 +120,7 @@ function apply(run: RunState, e: Entry): void {
           raisedIn: run.reviews
         }
         run.findings.push(f)
+        log(f.id, { review: run.reviews, to: 'open' }, undefined)
       }
       break
     }
@@ -122,7 +132,7 @@ function apply(run: RunState, e: Entry): void {
         ...(e.step !== undefined && { step: e.step }),
         ...(before !== undefined && { before })
       }
-      for (const r of e.replies) doMove(r.id, 'executor', r.act)
+      for (const r of e.replies) doMove(r.id, 'executor', r.act, r.comment)
       if (e.step !== undefined) {
         // Only turns RPM started: your own turns are yours to judge.
         if (e.outcome === 'failed') run.failed = 'executor-failed'
@@ -142,7 +152,7 @@ function apply(run: RunState, e: Entry): void {
       // Only a finding that was stuck with you rejoins the batch ahead of the
       // review; a verdict on any other finding leaves the rules as they are.
       const wasYours = ownerOf(run.findings.find((f) => f.id === e.id)?.state ?? 'closed') === 'you'
-      doMove(e.id, 'you', { verdict: e.to })
+      doMove(e.id, 'you', { verdict: e.to }, e.comment)
       if (wasYours && e.to !== 'reject' && !run.fresh.includes(e.id)) run.fresh = [...run.fresh, e.id]
       if (!run.decided.includes(e.id) && run.findings.some((f) => f.id === e.id)) run.decided.push(e.id)
       break
@@ -150,8 +160,10 @@ function apply(run: RunState, e: Entry): void {
     case 'severity': {
       const i = run.findings.findIndex((f) => f.id === e.id)
       const f = run.findings[i]
-      if (f) run.findings[i] = { ...f, severity: e.to }
-      else run.ignored.push(e.seq)
+      if (f) {
+        run.findings[i] = { ...f, severity: e.to }
+        log(e.id, { severity: { from: f.severity, to: e.to } }, e.comment)
+      } else run.ignored.push(e.seq)
       break
     }
     case 'note':
