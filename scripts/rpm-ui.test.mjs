@@ -114,6 +114,47 @@ test('before the first run the tab is the settings of t2v3 A', () => {
   assert.doesNotMatch(html, /class="dot/)
 })
 
+test('off: the switch says so and every other setting is disabled', () => {
+  const html = render(h(m.ReviewTabView, {
+    executor: 'e1',
+    data: { loaded: true, state: undefined, runs: [], config: { ...CFG, enabled: false }, error: undefined },
+    onRun: () => {}
+  }))
+  assert.match(text(html), /Review is off/)
+  // The switch stays live; what it governs sits in disabled fieldsets.
+  const [before, reviewer, rest] = html.split('<fieldset')
+  assert.match(before, /chip-btn on">off</)
+  assert.match(reviewer, /^ class="rpm-fields" disabled=""/)
+  assert.match(reviewer, /class="reviewer-fields"/)
+  assert.match(rest, /^ class="rpm-fields" disabled=""/)
+  assert.match(rest, /chip-btn on">major</)
+  // No reviewer at all is a problem too: the picker stays open for the first pick.
+  const none = render(h(m.ReviewTabView, {
+    executor: 'e1',
+    data: { loaded: true, state: undefined, runs: [], config: { ...m.DEFAULT_CONFIG }, error: undefined },
+    onRun: () => {}
+  }))
+  assert.match(none.split('<fieldset')[1], /^ class="rpm-fields">/)
+  // Off with a reviewer that refuses "on": the reviewer stays pickable — it is
+  // the only way to turn the review on — the rest stays off.
+  const stuck = render(h(m.ReviewTabView, {
+    executor: 'e1',
+    data: { loaded: true, state: undefined, runs: [], config: { ...m.DEFAULT_CONFIG, reviewer: { agent: 'pi', options: {} } }, error: undefined },
+    onRun: () => {}
+  }))
+  const [, rev, others] = stuck.split('<fieldset')
+  assert.match(rev, /^ class="rpm-fields">/)
+  assert.match(rev, /data-problem="Pi does not receive/)
+  assert.match(others, /^ class="rpm-fields" disabled=""/)
+  const on = render(h(m.ReviewTabView, {
+    executor: 'e1',
+    data: { loaded: true, state: undefined, runs: [], config: CFG, error: undefined },
+    onRun: () => {}
+  }))
+  assert.doesNotMatch(on, /disabled=""/)
+  assert.doesNotMatch(text(on), /Review is off/)
+})
+
 test('review cannot be turned on without a reviewer that can submit a review', () => {
   const settings = (reviewer) => render(h(m.ReviewTabView, {
     executor: 'e1',

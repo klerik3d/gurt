@@ -3,9 +3,9 @@
 // picker with the session's own OptionBlock, t2v3 A).
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { RpmHostProvider, type ReviewerFieldsProps, type RpmHost } from '../../../rpm/ui'
-import type { AgentConfig, AgentsFile, SessionConfigOption, SessionInfo, Tree } from '../../../shared/types'
+import type { AgentsFile, SessionConfigOption, SessionInfo, Tree } from '../../../shared/types'
 import { agentDef } from '../../../shared/agents'
-import { agentKind, agentName, useAgents } from '../useAgents'
+import { agentKind, agentName, useAgentConfig, useAgents } from '../useAgents'
 import { DiffOpener, FileOpener } from '../fileLinks'
 import { confirmDialog } from '../dialog'
 import { requestChatJump } from '../chatJump'
@@ -104,7 +104,9 @@ function ReviewerFields({ value, info: text, problem, onChange }: ReviewerFields
   const session = useContext(SessionOf)
   const agents = useAgents()
   const [open, setOpen] = useState(false)
-  const [agentConfig, setAgentConfig] = useState<AgentConfig | null>(null)
+  // Kept current: a session of this client starting (or switching model)
+  // changes the options it offers.
+  const agentConfig = useAgentConfig(value.agent || undefined)
   const executorAgent = session?.info.agent ?? ''
   const denied = session ? deniedIn(session.info, session.tree) : []
   // Only clients that receive gurt's tools can review (t2v3 A).
@@ -121,21 +123,6 @@ function ReviewerFields({ value, info: text, problem, onChange }: ReviewerFields
     // Only the first offer matters; onChange is a fresh closure every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value.agent, suggested?.id])
-
-  useEffect(() => {
-    if (!value.agent) {
-      setAgentConfig(null)
-      return
-    }
-    let live = true
-    window.gurt
-      .getAgentConfig(value.agent)
-      .then((c) => live && setAgentConfig(c))
-      .catch(() => live && setAgentConfig(null))
-    return () => {
-      live = false
-    }
-  }, [value.agent])
 
   const kind = agentKind(agents, value.agent)
   const same = !!value.agent && kind !== undefined && kind === agentKind(agents, executorAgent)

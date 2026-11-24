@@ -111,17 +111,35 @@ export function ReviewTabView({
     <div className="ns-body rpm-tab">
       {err && <div className="error rpm-error">{err}</div>}
       {data.state ? (
-        <RunView
-          executor={executor}
-          state={data.state}
-          runs={data.runs}
-          config={data.config}
-          onRun={onRun}
-          act={act}
-          onPatch={patch}
-          focus={focus}
-          onFocused={onFocused}
-        />
+        data.config && !data.config.enabled && !data.state.live ? (
+          <>
+            {/* Off, with no run left going: the settings come first — the
+                switch, and the reviewer when it is what refuses "on" — and the
+                runs below are history: shown, dimmed, taking no clicks until
+                the review is on again. */}
+            <Settings executor={executor} config={data.config} onPatch={patch} />
+            <div className="rpm-run-off" inert>
+              <RunView executor={executor} state={data.state} runs={data.runs} config={undefined} onRun={onRun} act={act} onPatch={patch} />
+            </div>
+          </>
+        ) : (
+          <>
+            {/* Off while a run is still live: it finishes its step first, so
+                its buttons (Stop) and its Settings fold stay. */}
+            {data.config && !data.config.enabled && <OffBar config={data.config} onPatch={patch} />}
+            <RunView
+              executor={executor}
+              state={data.state}
+              runs={data.runs}
+              config={data.config}
+              onRun={onRun}
+              act={act}
+              onPatch={patch}
+              focus={focus}
+              onFocused={onFocused}
+            />
+          </>
+        )
       ) : (
         data.config && (
           <>
@@ -132,6 +150,26 @@ export function ReviewTabView({
           </>
         )
       )}
+    </div>
+  )
+}
+
+/** Over a live run while the review is off: says so, and is the way back on. */
+function OffBar({ config, onPatch }: { config: RpmConfig; onPatch: (p: Partial<RpmConfig>) => void }) {
+  const { reviewerProblem } = useRpmHost()
+  const problem = reviewerProblem(config.reviewer.agent)
+  return (
+    <div className="rpm-off">
+      <span className="dim">Review is off: this run ends at its next step.</span>
+      <button
+        type="button"
+        className="btn btn-xs"
+        disabled={!!problem}
+        title={problem}
+        onClick={() => onPatch({ enabled: true })}
+      >
+        Turn on
+      </button>
     </div>
   )
 }
@@ -255,14 +293,17 @@ function RunView({
       <Fold label="History" meta={`${state.journal.length} entries`} open={historyOpen} onToggle={() => setHistoryOpen(!historyOpen)}>
         <History executor={executor} run={state.run} journal={state.journal} />
       </Fold>
-      <Fold
-        label="Settings"
-        meta={config ? settingsSummary(config) : ''}
-        open={settingsOpen}
-        onToggle={() => setSettingsOpen(!settingsOpen)}
-      >
-        {config && <Settings executor={executor} config={config} onPatch={onPatch} />}
-      </Fold>
+      {/* No config = the settings are shown elsewhere (above the runs while the review is off). */}
+      {config && (
+        <Fold
+          label="Settings"
+          meta={settingsSummary(config)}
+          open={settingsOpen}
+          onToggle={() => setSettingsOpen(!settingsOpen)}
+        >
+          <Settings executor={executor} config={config} onPatch={onPatch} />
+        </Fold>
+      )}
     </>
   )
 }

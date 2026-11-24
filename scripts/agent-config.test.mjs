@@ -33,7 +33,7 @@ await bundle({
   outfile
 })
 
-const { agentOptionView, withFable, withPickedValues } = await import(pathToFileURL(outfile).href)
+const { agentOptionView, pickerValue, withFable, withPickedValues } = await import(pathToFileURL(outfile).href)
 
 after(() => fs.rmSync(outfile, { force: true }))
 
@@ -82,4 +82,23 @@ test('booleans and unpicked options pass through untouched', () => {
 test('a kind with no registered view keeps the agent report verbatim', () => {
   const opt = { id: 'model', name: 'Model', category: 'model', type: 'select', currentValue: 'gpt-5', options: [{ value: 'gpt-5', name: 'GPT-5' }, { value: 'o3', name: 'o3' }] }
   assert.equal(active([opt], { model: 'o3' }, 'codex'), 'gpt-5')
+})
+
+// A picker for a session that has not started (a draft's Config tab, the
+// Review tab's reviewer) falls back to the cached report — the *last* live
+// session's state. An unpicked option of an agent that lists its own
+// `default` starts there, not on whatever another session switched to.
+test('pickerValue: the pick, else the agent\'s own default, else the report', () => {
+  const effort = {
+    id: 'effort', name: 'Effort', category: 'thought_level', type: 'select', currentValue: 'max',
+    options: [{ value: 'default', name: 'Default' }, { value: 'high', name: 'High' }, { value: 'max', name: 'Max' }]
+  }
+  assert.equal(pickerValue(effort, { effort: 'high' }), 'high')
+  assert.equal(pickerValue(effort, {}), 'default')
+  assert.equal(pickerValue(effort, undefined), 'default')
+  const plain = { ...effort, options: effort.options.filter((o) => o.value !== 'default') }
+  assert.equal(pickerValue(plain, {}), 'max')
+  const toggle = { id: 'fast', name: 'Fast', type: 'boolean', currentValue: true }
+  assert.equal(pickerValue(toggle, {}), true)
+  assert.equal(pickerValue(toggle, { fast: false }), false)
 })

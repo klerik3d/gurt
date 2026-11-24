@@ -19,7 +19,7 @@ const S = (rel) => JSON.stringify(path.join(ROOT, rel))
 
 await bundle({
   stdin: {
-    contents: `export { sortTasks, scopeFilter, SORT_DIR_LABEL, SORT_KEY_LABEL } from ${S('src/renderer/src/useScopeList.ts')}`,
+    contents: `export { nestReviews, sortTasks, scopeFilter, SORT_DIR_LABEL, SORT_KEY_LABEL } from ${S('src/renderer/src/useScopeList.ts')}`,
     resolveDir: ROOT,
     loader: 'tsx',
     sourcefile: 'entry.tsx'
@@ -109,4 +109,23 @@ test('every key/direction pair has a label to show', () => {
     SORT_DIR_LABEL.created.asc,
     'the same direction reads differently per key — that is the point of the table'
   )
+})
+
+// RPM reviewers hang under the executor they review (`reviewerOf`): the
+// sidebar shows (and the arrow keys walk) the nested order, so a wrong
+// grouping misplaces rows quietly.
+const { nestReviews } = await import(pathToFileURL(outfile).href)
+
+test('nestReviews files reviewers under their executor, in list order', () => {
+  const s = (id, executor) => ({ id, ...(executor ? { reviewerOf: { executor, key: `${executor}:1:${id}` } } : {}) })
+  const out = nestReviews([s('e'), s('r1', 'e'), s('x'), s('r2', 'e')])
+  assert.deepEqual(
+    out.map((n) => [n.session.id, n.reviews.map((r) => r.id)]),
+    [['e', ['r1', 'r2']], ['x', []]]
+  )
+})
+
+test('nestReviews keeps a reviewer whose executor is gone at the top level', () => {
+  const out = nestReviews([{ id: 'r', reviewerOf: { executor: 'gone', key: 'gone:1:2' } }])
+  assert.deepEqual(out.map((n) => n.session.id), ['r'])
 })
