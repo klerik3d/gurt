@@ -170,7 +170,7 @@ const RESERVED_NAMES: Record<string, string[]> = {
   workspace: ['agents.json', 'credentials.json', 'agent-config-cache.json', '.archives', 'archive-settings.json'],
   task: ['workspace.json', 'skills', 'repos'],
   // `artifacts` is the scope's shared scratch dir (shared/files.ts ARTIFACTS).
-  repo: ['task.json', 'sessions.json', 'review.json', 'sessions', '.multirepo', 'proactive-state.json', 'review-loop.json', 'approvals.json', ARTIFACTS],
+  repo: ['task.json', 'sessions.json', 'review.json', 'sessions', '.multirepo', 'proactive-state.json', 'review-loop.json', 'approvals.json', 'rpm', ARTIFACTS],
   // The base image's virtual env shares the env name space, so a workspace env may not take its name.
   env: [BASE_ENV_NAME]
 }

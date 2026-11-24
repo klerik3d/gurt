@@ -66,4 +66,14 @@ export interface NotificationRecord {
   /** How urgent — a `watcher` notification carries one (`info` / `warning` /
    *  `error`); a record without one keeps its type's tone. */
   level?: 'info' | 'warning' | 'error'
+  /** Where opening it leads (RPM, t3v2 §11): the session's Review tab, optionally
+   *  a finding or the "waiting for you" filter. Absent — the session itself. */
+  open?: NotificationOpen
+}
+
+export interface NotificationOpen {
+  sessionId: string
+  tab: 'review'
+  finding?: string
+  filter?: 'you'
 }

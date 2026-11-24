@@ -7,6 +7,7 @@ import type { Bus } from './bus'
 import type { EnvRef, SessionInfo } from '../shared/types'
 import {
   NOTIFICATION_RING_CAP,
+  type NotificationOpen,
   type NotificationPrefs,
   type NotificationRecord,
   type NotificationType
@@ -29,6 +30,11 @@ export interface Notifications {
   dismiss(id: string): void
   /** Live-swap the on/off matrix (Settings → Notifications save). */
   setPrefs(prefs: NotificationPrefs): void
+  /** RPM's hook (t3v2 §11): while `fn(sessionId)` is true, the session's ordinary
+   *  `proposal` and `turn-ended` stay silent (its review run is alive). */
+  setQuiets(fn: (sessionId: string) => boolean): void
+  /** RPM's own notification (`NotifyPort`): never quieted, carries `open`. */
+  rpm(n: { sessionId: string; type: 'awaiting' | 'proposal'; detail: string; open: NotificationOpen }): void
 }
 
 export function createNotifications(
@@ -37,6 +43,7 @@ export function createNotifications(
   sessionInfo: (id: string) => SessionInfo | undefined
 ): Notifications {
   let prefs = initialPrefs
+  let quiets: (sessionId: string) => boolean = () => false
   const ring: NotificationRecord[] = []
 
   // Per-session bookkeeping, all reset at the boundaries noted below — none of
@@ -65,10 +72,15 @@ export function createNotifications(
     sessionId: string,
     ref: EnvRef,
     detail: string,
-    level?: NotificationRecord['level']
+    level?: NotificationRecord['level'],
+    open?: NotificationOpen
   ): void {
     const info = sessionInfo(sessionId)
     if (!info) return // session gone (deleted) — nothing to show
+    // A reviewer is RPM's own session: it never notifies (t3v2 §11).
+    if (info.role === 'reviewer') return
+    // A live review run speaks for its executor; RPM's own records carry `open`.
+    if (!open && (type === 'proposal' || type === 'turn-ended') && quiets(sessionId)) return
     const record: NotificationRecord = {
       id: randomUUID(),
       type,
@@ -78,7 +90,8 @@ export function createNotifications(
       detail,
       ts: new Date().toISOString(),
       read: false,
-      ...(level ? { level } : {})
+      ...(level ? { level } : {}),
+      ...(open ? { open } : {})
     }
     const p = prefs[type]
     if (p.inApp) {
@@ -99,10 +112,10 @@ export function createNotifications(
     push('error', sessionId, ref, detail)
   }
 
-  function markSessionReadInternal(sessionId: string, onlyType?: NotificationType): void {
+  function markSessionReadInternal(sessionId: string, onlyType?: NotificationType, onlyPlain = false): void {
     let changed = false
     for (const r of ring)
-      if (r.sessionId === sessionId && !r.read && (!onlyType || r.type === onlyType)) {
+      if (r.sessionId === sessionId && !r.read && (!onlyType || r.type === onlyType) && !(onlyPlain && r.open)) {
         r.read = true
         changed = true
       }
@@ -116,7 +129,8 @@ export function createNotifications(
       push('awaiting', sessionId, ref, 'waiting on a permission request')
     } else {
       awaitingOpen.delete(sessionId)
-      markSessionReadInternal(sessionId, 'awaiting')
+      // Only the permission request's own records: RPM's "Review waits for you" stays.
+      markSessionReadInternal(sessionId, 'awaiting', true)
     }
   })
 
@@ -222,6 +236,14 @@ export function createNotifications(
     },
     setPrefs: (next) => {
       prefs = next
+    },
+    setQuiets: (fn) => {
+      quiets = fn
+    },
+    rpm: ({ sessionId, type, detail, open }) => {
+      const info = sessionInfo(sessionId)
+      if (!info) return
+      push(type, sessionId, { workspace: info.workspace, task: info.task, env: info.env }, detail, undefined, open)
     }
   }
 }
