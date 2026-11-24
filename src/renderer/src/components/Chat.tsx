@@ -1581,7 +1581,6 @@ function Composer({
           <button
             className={`icon-sq ${pii.open ? '' : 'active'}`}
             disabled={!pii.hasTokens && !!piiNote}
-            style={!pii.hasTokens && piiNote ? { opacity: 0.45 } : undefined}
             title={
               !pii.hasTokens && piiNote
                 ? piiNote
