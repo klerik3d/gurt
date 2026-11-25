@@ -129,9 +129,8 @@ export function DockerCleanupSection(): JSX.Element {
       </span>
       <span className="spacer" />
       <input
-        className="input"
+        className="input input-num"
         type="number"
-        style={{ width: 80 }}
         min={GC_HOURS_MIN}
         max={GC_HOURS_MAX}
         disabled={!settings}
@@ -201,9 +200,8 @@ export function DockerCleanupSection(): JSX.Element {
           </span>
           <span className="spacer" />
           <input
-            className="input"
+            className="input input-num"
             type="number"
-            style={{ width: 80 }}
             min={GC_DISK_MIN}
             max={GC_DISK_MAX}
             disabled={!settings}

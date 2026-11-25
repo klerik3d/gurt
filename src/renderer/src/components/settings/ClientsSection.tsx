@@ -350,9 +350,8 @@ function PlanLimitSettings(): JSX.Element {
         </span>
         <span className="spacer" />
         <input
-          className="input"
+          className="input input-num"
           type="number"
-          style={{ width: 80 }}
           min={LIMIT_THRESHOLD_MIN}
           max={LIMIT_THRESHOLD_MAX}
           disabled={!settings}

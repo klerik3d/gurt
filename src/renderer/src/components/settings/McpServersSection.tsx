@@ -1004,14 +1004,14 @@ function McpServerModal({
           <div className="fld">
             <span className="seclabel">SIGN IN</span>
             {signing ? (
-              <div className="set-card-foot" style={{ justifyContent: 'flex-start' }}>
+              <div className="set-card-foot start">
                 <span className="fld-hint">waiting for the browser sign-in…</span>
                 <button className="btn" onClick={() => void window.gurt.oauthCancel(signing)}>
                   Cancel
                 </button>
               </div>
             ) : (
-              <div className="set-card-foot" style={{ justifyContent: 'flex-start' }}>
+              <div className="set-card-foot start">
                 <button
                   className="btn"
                   disabled={!canonicalMcpUrl(url)}

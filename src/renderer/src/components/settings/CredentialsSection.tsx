@@ -377,7 +377,7 @@ export function CredentialsSection() {
                       {oauthSignedOut(c) && c.data['account'] && (
                         <div className="error">{signedOutError(c)}</div>
                       )}
-                      <div className="set-card-foot" style={{ justifyContent: 'flex-start' }}>
+                      <div className="set-card-foot start">
                         {signingIn ? (
                           <>
                             <span className="fld-hint">waiting for the browser sign-in…</span>
