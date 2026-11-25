@@ -131,17 +131,6 @@ export function RoleTag({ role }: { role: SessionRole }): JSX.Element {
   )
 }
 
-/** Unpilled role mark for the header pills, next to the env/repo marks. */
-export function RoleMark({ role }: { role: SessionRole }): JSX.Element {
-  const info = ROLE_INFO[role]
-  return (
-    <span className="agent-mark" title={`${role} session — ${info.hint}`}>
-      <Icon name={info.icon} size={11} className="faint" />
-      {info.label}
-    </span>
-  )
-}
-
 /** Agent-kind tag — same pill as `EnvTag`/`RepoTag`, marked with the kind's glyph. */
 export function AgentTag({
   kind,
@@ -220,29 +209,6 @@ export function SkillTag({
       <Icon name="file" size={10} />
       {selection.name}
       {entry ? '' : ' ?'}
-    </span>
-  )
-}
-
-/** The session's whole MCP scope as one header mark — names inline, the rest in
- *  the tooltip. Nothing at all when the session carries no servers. */
-export function McpMarks({
-  resolved
-}: {
-  resolved: ResolvedMcpSelection<McpSelection>[]
-}): JSX.Element | null {
-  if (!resolved.length) return null
-  const missing = resolved.some((r) => !r.entry)
-  return (
-    <span
-      className={`agent-mark${missing ? ' tag-red' : ''}`}
-      title={`MCP servers\n${resolved.map((r) => mcpTitle(r)).join('\n')}`}
-    >
-      <Icon name="plug" size={11} className={missing ? undefined : 'faint'} />
-      {resolved.slice(0, MARK_NAMES_SHOWN).map(mcpName).join(', ')}
-      {resolved.length > MARK_NAMES_SHOWN && (
-        <span className="dim">+{resolved.length - MARK_NAMES_SHOWN}</span>
-      )}
     </span>
   )
 }
@@ -405,22 +371,3 @@ export function NetTag({ network }: { network?: SessionNetwork | undefined }): J
     </span>
   )
 }
-
-/** Unpilled network mark for the header pills. Only ever the exception, never
- *  the norm — a mark that is always there marks nothing. New sessions are
- *  internal, so the one worth pointing at is the session that can reach the
- *  network on its own; a session predating the switch carries no `network` at
- *  all and is open, which is exactly what this then says about it. */
-export function NetMark({ network }: { network?: SessionNetwork | undefined }): JSX.Element | null {
-  if (network?.internal) return null
-  return (
-    <span className="agent-mark" title={netTitle(network)}>
-      <Icon name={NET_INFO.open.icon} size={11} className="faint" />
-      {NET_INFO.open.label}
-    </span>
-  )
-}
-
-/** Whether {@link NetMark} would draw anything — the callers that put a `·`
- *  separator in front of it need to know before they render one. */
-export const hasNetMark = (network?: SessionNetwork): boolean => !network?.internal

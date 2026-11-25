@@ -1069,7 +1069,7 @@ which is why it could be left.
   The `git access` toggle is removed (§10.2).
 - **Session pane**: a `net` tag on the **open** sessions, not the
   internal ones — a new session is internal, so that is the norm and the
-  mark is the exception (§6.2, `tags.tsx`'s `NetMark`/`hasNetMark`); the
+  mark is the exception (§6.2); the
   blocked attempts panel (§8, `TrafficPanel` in `Network.tsx`); the
   setup-window note (§7.3).
 
