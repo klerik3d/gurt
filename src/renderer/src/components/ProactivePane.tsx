@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type CSSProperties } from 'react'
 import type { SessionSnapshot, Tree } from '../../../shared/types'
 import {
   HEX_COLOR_RE,
@@ -302,7 +302,7 @@ export function ProactivePane({
                 key={c.color}
                 type="button"
                 className={`label-swatch${label?.color === c.color ? ' on' : ''}`}
-                style={{ ['--label' as string]: c.color }}
+                style={{ '--label': c.color } as CSSProperties}
                 title={c.name}
                 aria-label={c.name}
                 disabled={!label}
