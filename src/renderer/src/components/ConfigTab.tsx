@@ -138,9 +138,12 @@ function McpSelectedRow({
       >
         <Dot tone={missing ? 'red' : 'green'} size={7} />
         <span className="mcp-name">{entry?.label ?? id}</span>
-        <span className="mcp-desc faint">
-          {missing ? 'unavailable — not a built-in, not in the registry' : entry.description}
-        </span>
+        {(missing || entry.description) && (
+          <InfoDot
+            text={missing ? 'unavailable — not a built-in, not in the registry' : entry.description}
+            {...(missing ? { tone: 'error' as const } : {})}
+          />
+        )}
         {entry && mcpHasModes(entry) && (
           <div className="chip-row icon-fixed">
             {(['read-only', 'full'] as const).map((m) => (
@@ -198,7 +201,7 @@ function SkillSelectedRow({
       >
         <Dot tone={missing || entry.problem ? 'red' : 'green'} size={7} />
         <span className="mcp-name">{name}</span>
-        <span className="mcp-desc faint">{text}</span>
+        <InfoDot text={text} {...(missing || entry.problem ? { tone: 'error' as const } : {})} />
         <button
           type="button"
           className="chip-x"

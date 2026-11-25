@@ -408,11 +408,25 @@ export function AgentIcon({ kind, ...props }: IconProps & { kind?: string | unde
 
 /** Round 'i' mark hiding a hint until hovered or focused — how the config
  *  surfaces keep their explanations without spending a layout line on each. */
-export function InfoDot({ text }: { text: string }): JSX.Element {
+export function InfoDot({
+  text,
+  tone,
+  children
+}: {
+  text?: string
+  /** Importance: the icon's colour is the only loud part. */
+  tone?: 'warn' | 'error'
+  /** Rich popover content, when plain `text` will not do. */
+  children?: ReactNode
+}): JSX.Element {
   return (
-    <span className="info-dot" tabIndex={0} aria-label={text}>
+    <span
+      className={`info-dot${tone ? ` ${tone}` : ''}`}
+      tabIndex={0}
+      {...(text ? { 'aria-label': text } : {})}
+    >
       <Icon name="info" size={13} />
-      <span className="info-pop">{text}</span>
+      <span className="info-pop">{children ?? text}</span>
     </span>
   )
 }
