@@ -1136,10 +1136,6 @@ textarea.input {
   padding: 4px 0;
   outline: none;
 }
-/* Fillers at the start and end of a scope tree that let the active scope keep
-   its place on a mode switch when less precedes or follows it
-   (scopeAnchor.ts sets their height). */
-.sb-slack { flex: none; height: 0; }
 .sb-chev {
   color: var(--faint);
 }

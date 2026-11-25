@@ -1,6 +1,8 @@
 // The left sidebar holds still: the scrollbar never narrows its rows, the
 // accordion mode (on by default) keeps only the active scope open, and
-// switching Agents / Git / Files never moves the active scope's row a pixel.
+// switching Agents / Git / Files keeps the active scope's row on its pixel —
+// by scrolling only, so where the scroll runs out the row gives way rather
+// than the tree showing a gap.
 // npm run build && DISPLAY=:99 node scripts/smoke-scope-anchor.mjs
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
@@ -60,6 +62,27 @@ try {
     await frames()
   }
   const top = async (name) => (await scopeRow(name).boundingBox()).y
+  const scroll = () => tree().evaluate((el) => ({ at: el.scrollTop, max: el.scrollHeight - el.clientHeight }))
+  /** Puts a scope's row at `fraction` of the tree's height. */
+  const place = async (name, fraction) => {
+    await tree().evaluate((el, [name, fraction]) => {
+      const row = el.querySelector(`[data-scope="${name}"]`)
+      el.scrollTop += row.getBoundingClientRect().top - el.getBoundingClientRect().top - el.clientHeight * fraction
+    }, [name, fraction])
+    await frames()
+  }
+  /** Gap between the tree's top edge and its first row: the tree's own padding. */
+  const headGap = () => tree().evaluate((el) => el.querySelector('.sb-task').getBoundingClientRect().top - el.getBoundingClientRect().top)
+  /** Stays put, or moved only because the scroll ran out — never padded. */
+  const givesWay = async (name, y, label) => {
+    const now = await top(name)
+    if (now === y) return
+    const { at, max } = await scroll()
+    if (now < y) {
+      assert.equal(at, 0, `${label}: rose only with the scroll at its start`)
+      assert.ok(await headGap() <= 4, `${label}: no gap above the first scope`)
+    } else assert.ok(at >= max - 1, `${label}: dropped only with the scroll at its end`)
+  }
 
   // Accordion mode is the default; with nothing selected every scope is folded.
   const focus = page.locator('.sidebar:visible button[aria-label="Only the active scope open"]')
@@ -89,17 +112,32 @@ try {
   assert.deepEqual(await expanded(), ['s20'], 'the newly active scope opens, the previous one folds')
   assert.equal(await top('s20'), before, 'folding the previous scope above does not move the clicked one')
 
-  // Mode switches: the active row stays on its pixel.
-  const checkStill = async (label, modes) => {
-    const y = await top('s20')
+  // Mode switches: with room to scroll, the active row stays on its pixel.
+  const checkStill = async (label, modes, name = 's20') => {
+    const y = await top(name)
     for (const mode of modes) {
       await switchMode(mode)
-      assert.equal(await top('s20'), y, `${label}: the active scope stays put entering ${mode}`)
+      assert.equal(await top(name), y, `${label}: the active scope stays put entering ${mode}`)
     }
   }
+  /** Without room, it gives way by the shortfall and no more. */
+  const checkGivesWay = async (label, modes, name = 's20') => {
+    const y = await top(name)
+    for (const mode of modes) {
+      await switchMode(mode)
+      await givesWay(name, y, `${label}, ${mode}`)
+    }
+  }
+  await scopeRow('s10').scrollIntoViewIfNeeded()
+  await scopeRow('s10').locator('.sb-task-name').click()
+  await place('s10', 0.4)
+  await checkStill('accordion, mid-list', ['Diff', 'Files', 'Agents', 'Files', 'Diff', 'Agents'], 's10')
+  await scopeRow('s20').scrollIntoViewIfNeeded()
+  await scopeRow('s20').locator('.sb-task-name').click()
+  await frames()
   await tree().evaluate((el) => { el.scrollTop = el.scrollHeight })
   await frames()
-  await checkStill('accordion, scrolled to the end', ['Diff', 'Files', 'Agents', 'Files', 'Diff', 'Agents'])
+  await checkGivesWay('accordion, scrolled to the end', ['Diff', 'Files', 'Agents'])
   for (const mode of ['Diff', 'Files']) {
     await switchMode(mode)
     assert.deepEqual(await expanded(), ['s20'], `${mode}: only the active scope open`)
@@ -118,6 +156,24 @@ try {
   await frames()
   assert.deepEqual(await expanded(), ['s20'])
 
+  // The accordion folding an open scope in view above: the clicked one rises
+  // with the content, as in any accordion — no gap opens at the top.
+  await tree().evaluate((el) => { el.scrollTop = 0 })
+  await scopeRow('s00').locator('.sb-task-name').click()
+  await frames()
+  assert.deepEqual(await expanded(), ['s00'])
+  const s05 = await top('s05')
+  await scopeRow('s05').locator('.sb-task-name').click()
+  await frames()
+  assert.deepEqual(await expanded(), ['s05'])
+  assert.equal((await scroll()).at, 0)
+  assert.equal(await top('s05'), s05 - 4 * 24, 'the clicked scope rises by the folded sessions')
+  assert.ok(await headGap() <= 4, 'no gap above the first scope')
+  await scopeRow('s20').scrollIntoViewIfNeeded()
+  await scopeRow('s20').locator('.sb-task-name').click()
+  await frames()
+  assert.deepEqual(await expanded(), ['s20'])
+
   // With accordion off and everything expanded, the content above the active
   // scope differs by mode — the row still holds.
   await focus.click()
@@ -126,29 +182,21 @@ try {
   await page.locator('.sidebar:visible button[title="Expand all"]').click()
   await frames()
   assert.equal((await expanded()).length, scopes.length + 1)
-  await tree().evaluate((el) => {
-    const row = el.querySelector('[data-scope="s20"]')
-    el.scrollTop += row.getBoundingClientRect().top - el.getBoundingClientRect().top - el.clientHeight / 2
-  })
-  await frames()
+  await place('s20', 0.5)
   await checkStill('all expanded, mid-list', ['Diff', 'Files', 'Agents', 'Files', 'Diff', 'Agents'])
   // s20 last, so the end of the list still shows it.
   await filter.fill('^s(1\\d|20)$')
   await tree().evaluate((el) => { el.scrollTop = el.scrollHeight })
   await frames()
-  await checkStill('all expanded, scrolled to the end', ['Files', 'Diff', 'Agents'])
+  await checkGivesWay('all expanded, scrolled to the end', ['Files', 'Diff', 'Agents'])
   await filter.fill('')
 
   // Less above the row in the new mode than the scroll can take away: s00's
-  // four sessions in Agents are one line in Git and Files.
+  // four sessions in Agents are one line in Git and Files — s01 rises.
   await scopeRow('s01').locator('.sb-task-name').click()
   await tree().evaluate((el) => { el.scrollTop = 0 })
   await frames()
-  const s01 = await top('s01')
-  for (const mode of ['Diff', 'Files', 'Agents']) {
-    await switchMode(mode)
-    assert.equal(await top('s01'), s01, `scrolled to the top: s01 stays put entering ${mode}`)
-  }
+  await checkGivesWay('scrolled to the top', ['Diff', 'Files', 'Agents'], 's01')
 
   // A tree that fits in the new mode, yet scrolled in the old one.
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(1200, 450))
@@ -159,11 +207,7 @@ try {
   assert.equal(await overflowing(), true, 'four scopes with sessions overflow a short window')
   await tree().evaluate((el) => { el.scrollTop = el.scrollHeight })
   await frames()
-  const s06 = await top('s06')
-  await switchMode('Diff')
-  assert.equal(await top('s06'), s06, 'the row holds where the new tree would fit')
-  await switchMode('Agents')
-  assert.equal(await top('s06'), s06)
+  await checkGivesWay('a tree that fits', ['Diff', 'Agents'], 's06')
   await filter.fill('')
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(1200, 700))
   await scopeRow('s20').scrollIntoViewIfNeeded()
@@ -185,7 +229,7 @@ try {
   assert.equal(await inView('zz-long'), false, 'the long scope\'s header is scrolled away')
   for (const mode of ['Diff', 'Files']) {
     await switchMode(mode)
-    assert.equal(await inView('zz-long'), true, `${mode}: the active scope shows, not a padded blank`)
+    assert.equal(await inView('zz-long'), true, `${mode}: the active scope shows`)
   }
   await switchMode('Agents')
   await filter.fill('')
