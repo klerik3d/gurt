@@ -3,6 +3,7 @@
 // (`AgentManifest.clientConfig`). Kinds without one take no config JSON.
 import type { JsonObject } from './agentPlugin'
 import { agentDef } from './agents'
+import { isRecord } from './json'
 
 /** Native settings are profile-scoped; paths are fixed, never user-supplied. */
 export function clientConfigPath(kind: string): string | undefined {
@@ -11,10 +12,8 @@ export function clientConfigPath(kind: string): string | undefined {
 
 export function parseClientConfig(text: string): Record<string, unknown> {
   const value: unknown = JSON.parse(text.trim() || '{}')
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error('Config JSON must be an object')
-  }
-  return value as Record<string, unknown>
+  if (!isRecord(value)) throw new Error('Config JSON must be an object')
+  return value
 }
 
 export function clientConfigFile(kind: string, config: Record<string, unknown> | undefined):
