@@ -15,6 +15,7 @@
 // Credentials/MCP editor, built from the server's own words, never from a URL
 // that carried a query string.
 
+import { isRecord } from '../../shared/json'
 import { canonicalMcpUrl, sameMcpUrl } from '../../shared/mcp'
 import { OAuthFlowError } from './flow'
 
@@ -55,9 +56,6 @@ export interface DiscoveryOptions {
   /** Per-request bound, headers *and* body (default {@link REQUEST_TIMEOUT_MS}). */
   timeoutMs?: number
 }
-
-const isRecord = (v: unknown): v is Record<string, unknown> =>
-  typeof v === 'object' && v !== null && !Array.isArray(v)
 
 const strings = (v: unknown): string[] =>
   Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x !== '') : []
