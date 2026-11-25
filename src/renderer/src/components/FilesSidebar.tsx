@@ -245,7 +245,6 @@ export function FilesSidebar({ controller, tree, collapsed, setCollapse, changes
       event.preventDefault()
       if (next) setCursor(keyOf(next))
     }}>
-      <div className="sb-slack" ref={anchor.headRef} aria-hidden />
       {rows.map((row, index) => {
         const key = keyOf(row)
         const open = isOpen(row)
@@ -272,7 +271,6 @@ export function FilesSidebar({ controller, tree, collapsed, setCollapse, changes
       })}
       {tree && !tasks.length && <div className="sb-empty" style={{ '--level': 0 } as CSSProperties}>Create a scope to browse its files.</div>}
       {!!tasks.length && !visibleTasks.length && <div className="sb-empty" style={{ '--level': 0 } as CSSProperties}>No matching scopes</div>}
-      <div className="sb-slack" ref={anchor.tailRef} aria-hidden />
     </div>
     {menu && <RowContextMenu x={menu.x} y={menu.y} onClose={() => { if (!busy) setMenu(null) }}>
       {renaming ? <form onSubmit={(event) => { event.preventDefault(); void action('rename') }}><input aria-label="New file name" className="sb-rename" autoFocus value={rename} onChange={(event) => setRename(event.target.value)} /><button className="menu-item" disabled={busy || !rename.trim()} type="submit">Rename</button></form> : <button className="menu-item" disabled={busy || !menu.row.path.includes('/')} onClick={() => setRenaming(true)}>Rename</button>}

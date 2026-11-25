@@ -38,13 +38,16 @@ to move:
   notes that come and go (Git's refresh error, marked-files filter) sit under
   the tree.
 - Switching mode keeps the active scope's row on the same pixel
-  (`scopeAnchor.ts`): the new panel scrolls to put it back, holds it through
-  the renders that follow, and pads the start or end of the tree when less
-  precedes or follows it than the scroll needs (the padding shrinks away as
-  the user scrolls). Only a row fully in view is held; one scrolled out of
-  view is scrolled into view on the switch instead, so the new mode never
-  shows nothing but padding. A newly selected scope is held the same way
-  while the accordion folds the previous one.
+  (`scopeAnchor.ts`): the new panel scrolls to put it back and holds it
+  through the renders that follow. Scrolling is all it uses, like the
+  browser's own scroll anchoring: where the new content leaves too little
+  room above or below the row, the scroll stops at its end and the row moves
+  by just the shortfall — the tree is never padded, so it never shows a gap.
+  Only a row fully in view is held; one scrolled out of view is scrolled
+  into view on the switch instead. A newly selected scope is held the same
+  way while the accordion folds the previous one: a scope folding out of
+  view above moves nothing on screen, one folding in view lets the clicked
+  scope rise, as in any accordion.
 - Accordion mode (on by default, toggle right of the title): selecting a
   scope folds every other one and opens it; opening another scope by hand
   makes it the active one, and "Expand all" is off. At launch the others

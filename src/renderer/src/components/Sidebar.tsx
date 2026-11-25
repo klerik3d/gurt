@@ -809,7 +809,6 @@ export function Sidebar({
         )}
       </ScopeFilter>
       <div className="sb-tree" ref={treeRef} tabIndex={0} role="tree" onKeyDown={onTreeKey} onScroll={anchor.onScroll}>
-        <div className="sb-slack" ref={anchor.headRef} aria-hidden />
         {tasks.map((task) => {
           const tkey = taskKey(wsName, task.name)
           const isCollapsed = collapsed.has(tkey)
@@ -927,7 +926,6 @@ export function Sidebar({
             no workspaces yet — create one via the workspace menu
           </div>
         )}
-        <div className="sb-slack" ref={anchor.tailRef} aria-hidden />
       </div>
       {/* Under the tree, not above it: a note appearing must not push the scopes down. */}
       {mode === 'diff' && refreshError && <div className="error diff-refresh-error">{refreshError}</div>}
