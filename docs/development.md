@@ -112,6 +112,11 @@ deb/sudo path above — always test through the actual `.AppImage` file.
 - transition: `<prop> <N>ms ease` — длительность в целых ms и easing всегда явно.
 - CSS: icons carry no inline `flex`/`transform`; use `.icon-fixed` (`flex: none`) and `.chev-closed` (`rotate(-90deg)`, applied conditionally as `open ? '' : 'chev-closed'`).
 
+## Code conventions
+
+**Catch bindings.** The catch binding is `e`; use `catch {` when it is unused. Decision, do not flip back.
+Check (prints nothing when clean): `git grep -nE "catch \((err|error)\)" -- src`
+
 ## Imports
 
 One import statement per module, where the import forms can be combined. When a file needs both values and types from

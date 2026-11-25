@@ -162,7 +162,7 @@ export function FilesSidebar({ controller, tree, collapsed, setCollapse, changes
       setExpanded((prev) => [...new Set([...prev, key])])
       generation.current++; loading.current.clear(); setFolders({}); setRevision(generation.current)
       if (created[0]) setCursor(folderKey(name, row.task, created[0]))
-    } catch (error) { showToast(String(error).replace(/^Error: (Error invoking remote method '[^']*': )?/, '')) }
+    } catch (e) { showToast(String(e).replace(/^Error: (Error invoking remote method '[^']*': )?/, '')) }
   }
   const action = async (kind: 'rename' | 'delete' | 'relative' | 'absolute' | 'copy' | 'paste') => {
     if (!menu || busy) return
@@ -189,7 +189,7 @@ export function FilesSidebar({ controller, tree, collapsed, setCollapse, changes
         generation.current++; loading.current.clear(); setFolders({}); setRevision(generation.current)
       }
       setMenu(null)
-    } catch (error) { setActionError(String(error)) } finally { setBusy(false) }
+    } catch (e) { setActionError(String(e)) } finally { setBusy(false) }
   }
 
   useEffect(() => { treeRef.current?.querySelector('.cursor')?.scrollIntoView({ block: 'nearest' }) }, [cursor])

@@ -77,8 +77,8 @@ export async function renameTaskFile(ws: string, task: string, relative: string,
   if (!relative.includes('/')) throw new Error('Repository roots cannot be renamed')
   const { absolute } = await resolveFile(ws, task, relative)
   const destination = path.join(path.dirname(absolute), name)
-  try { await fs.lstat(destination) } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  try { await fs.lstat(destination) } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e
     await fs.rename(absolute, destination)
     return relative.slice(0, relative.lastIndexOf('/') + 1) + name
   }
@@ -91,9 +91,9 @@ async function freeName(directory: string, name: string): Promise<string> {
   const [stem, ext] = dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, '']
   for (let n = 0; ; n++) {
     const candidate = n === 0 ? name : `${stem} copy${n > 1 ? ` ${n}` : ''}${ext}`
-    try { await fs.lstat(path.join(directory, candidate)) } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return candidate
-      throw error
+    try { await fs.lstat(path.join(directory, candidate)) } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') return candidate
+      throw e
     }
   }
 }
