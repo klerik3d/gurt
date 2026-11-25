@@ -1,14 +1,14 @@
 import type { Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { createLogger, type Logger } from './log'
+import type { Logger } from './log'
 
 /** Listen on an ephemeral port, rejecting startup errors and logging runtime errors. */
 export function listenEphemeral(
   server: Server,
   host: string,
   site: string,
-  ctx?: Record<string, unknown>,
-  log: Logger = createLogger('listen')
+  ctx: Record<string, unknown> | undefined,
+  log: Logger
 ): Promise<number> {
   return new Promise((resolve, reject) => {
     server.once('error', reject)
