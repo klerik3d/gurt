@@ -35,7 +35,8 @@ import { Modal } from './Modal'
 import { fire, run } from '../async'
 import { RowContextMenu } from './RowContextMenu'
 import { nestReviews, sortTasks, type ScopeListController } from '../useScopeList'
-import { ScopeFilter, ScopeSort } from './ScopeControls'
+import { ScopeFilter, ScopeFocusToggle, ScopeSort } from './ScopeControls'
+import { useScopeAnchor } from '../scopeAnchor'
 import { ScopeRow } from './ScopeRow'
 import { scopeNameInput } from '../../../shared/scopeName'
 import {
@@ -96,7 +97,9 @@ export function Sidebar({
   diffFile,
   onSelectDiffFile,
   onRefreshChanges,
-  diffFilter
+  diffFilter,
+  scopeFocus,
+  onToggleScopeFocus
 }: {
   collapsed: Set<string>
   setCollapsed: Dispatch<SetStateAction<Set<string>>>
@@ -110,6 +113,10 @@ export function Sidebar({
   onRefreshChanges: (ws: string, task: string) => Promise<void>
   /** Diff mode shows only some files (RPM's "marked N files", t2v3 D); `onClear` shows all again. */
   diffFilter?: { files: number; onClear: () => void } | null
+  /** Accordion mode: App keeps every scope but the active one folded, so the
+   *  fold-on-entry seed below stays out of it. */
+  scopeFocus: boolean
+  onToggleScopeFocus: () => void
   tree: Tree | null
   scopeList: ScopeListController
   /** Name of the workspace currently shown; null while the tree loads. */
@@ -190,6 +197,12 @@ export function Sidebar({
   const wsName = wsData?.name ?? ''
   const scopeNames = scopeNamesOf(wsData)
   const taskDraft = scopeNameInput(taskDraftName, scopeNames)
+  /** The scope the selection lives in — the row a mode switch must not move. */
+  const activeTask = selection?.type === 'task'
+    ? (selection.ws === wsName ? selection.task : null)
+    : selection?.type === 'session'
+      ? (allTasks.find((t) => t.sessions.some((s) => s.id === selection.id))?.name ?? null)
+      : null
 
   // ⌘2: focus the tree so arrow keys work immediately, no click first. Fires
   // on mount too (App bumps the signal before the work view has mounted this
@@ -201,7 +214,7 @@ export function Sidebar({
   // Seed each workspace once; navigation must preserve manual folding.
   const seedKey = allTasks.length && readStateReady ? wsName : null
   useEffect(() => {
-    if (mode === 'diff' || !seedKey || seeded.current.has(seedKey)) return
+    if (mode === 'diff' || scopeFocus || !seedKey || seeded.current.has(seedKey)) return
     seeded.current.add(seedKey)
     // The open session's own task stays up — folding it would hide the row for
     // what the pane is showing.
@@ -213,7 +226,7 @@ export function Sidebar({
       t.sessions.length > 0 &&
       t.sessions.every((s) => sessionStatus({ ...s, ...activity[s.id] }) === 'idle-read')
     setCollapsed((prev) => new Set([...prev, ...allTasks.filter(read).map((t) => taskKey(wsName, t.name))]))
-  }, [seedKey, allTasks, activity, wsName, selection, mode, seeded, setCollapsed])
+  }, [seedKey, allTasks, activity, wsName, selection, mode, scopeFocus, seeded, setCollapsed])
 
   /** Every task's collapse key, for the header's fold-all toggle. */
   const allTaskKeys = tasks.map((t) => taskKey(wsName, t.name))
@@ -477,10 +490,14 @@ export function Sidebar({
   const cursorRow = rows[cursor]
   const cursorKey = cursorRow ? navKey(cursorRow) : null
 
-  // Keyboard navigation can walk the cursor out of view — follow it.
+  const anchor = useScopeAnchor(treeRef, wsName, activeTask, mode)
+
+  // Keyboard navigation can walk the cursor out of view — follow it, unless
+  // the active scope is being held in place across a mode switch.
   useEffect(() => {
+    if (anchor.pinned()) return
     treeRef.current?.querySelector('.cursor')?.scrollIntoView({ block: 'nearest' })
-  }, [cursorKey])
+  }, [cursorKey]) // eslint-disable-line react-hooks/exhaustive-deps -- follows the cursor only
 
   /** Put the cursor on a row by reference. Undefined is a no-op: the callers
    *  below step the cursor with clamped arithmetic, so it only happens on an
@@ -709,11 +726,48 @@ export function Sidebar({
 
   return (
     <aside className="sidebar" style={{ width }}>
-      <div className={`sb-head${mode === 'diff' ? ' sb-head-diff' : ''}`}>
+      <div className="sb-head">
         <div className="sb-ws">
           <span className="sb-ws-name">Scopes</span>
         </div>
+        <ScopeFocusToggle on={scopeFocus} onToggle={onToggleScopeFocus} />
         <span className="spacer" />
+        <ScopeSort controller={scopeList} disabled={!allTasks.length} />
+        <button
+          className="icon-sq"
+          title={allCollapsed ? (scopeFocus ? 'Expand all · off while only the active scope is open' : 'Expand all') : 'Collapse all'}
+          disabled={!allTaskKeys.length || (allCollapsed && scopeFocus)}
+          onClick={toggleCollapseAll}
+        >
+          <Icon name="fold" size={14} style={allCollapsed ? { transform: 'rotate(180deg)' } : undefined} />
+        </button>
+        <div className="sb-newtask" ref={taskPopRef}>
+          <button
+            className="icon-sq"
+            title={`New scope · ${bindingLabel(hotkeys.newTask)}`}
+            onClick={() => setCreatingTask((o) => !o)}
+          >
+            <Icon name="plus" size={14} />
+          </button>
+          {creatingTask && (
+            <div className="menu sb-newtask-menu">
+              <div className="menu-item-input">
+                <input
+                  autoFocus
+                  className="input"
+                  placeholder="scope name"
+                  value={taskDraftName}
+                  onChange={(e) => setTaskDraftName(e.target.value)}
+                  onKeyDown={run((e) => e.key === 'Enter' && submitNewTask())}
+                />
+                <ScopeNameHint draft={taskDraft} typed={taskDraftName} />
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <ScopeFilter controller={scopeList} onFocusTree={() => treeRef.current?.focus()}>
         {mode === 'diff' && (
           <>
             <div className="diff-layout" role="group" aria-label="Changed files layout">
@@ -753,52 +807,9 @@ export function Sidebar({
             </button>
           </>
         )}
-        <ScopeSort controller={scopeList} disabled={!allTasks.length} />
-        <button
-          className="icon-sq"
-          title={allCollapsed ? 'Expand all' : 'Collapse all'}
-          disabled={!allTaskKeys.length}
-          onClick={toggleCollapseAll}
-        >
-          <Icon name="fold" size={14} style={allCollapsed ? { transform: 'rotate(180deg)' } : undefined} />
-        </button>
-        <div className="sb-newtask" ref={taskPopRef}>
-          <button
-            className="icon-sq"
-            title={`New scope · ${bindingLabel(hotkeys.newTask)}`}
-            onClick={() => setCreatingTask((o) => !o)}
-          >
-            <Icon name="plus" size={14} />
-          </button>
-          {creatingTask && (
-            <div className="menu sb-newtask-menu">
-              <div className="menu-item-input">
-                <input
-                  autoFocus
-                  className="input"
-                  placeholder="scope name"
-                  value={taskDraftName}
-                  onChange={(e) => setTaskDraftName(e.target.value)}
-                  onKeyDown={run((e) => e.key === 'Enter' && submitNewTask())}
-                />
-                <ScopeNameHint draft={taskDraft} typed={taskDraftName} />
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-
-      <ScopeFilter controller={scopeList} onFocusTree={() => treeRef.current?.focus()} />
-      {mode === 'diff' && refreshError && <div className="error diff-refresh-error">{refreshError}</div>}
-      {mode === 'diff' && diffFilter && (
-        <div className="diff-filter-note faint">
-          only the {diffFilter.files} marked {diffFilter.files === 1 ? 'file' : 'files'} ·{' '}
-          <button type="button" className="btn-link" onClick={diffFilter.onClear}>
-            show all
-          </button>
-        </div>
-      )}
-      <div className="sb-tree" ref={treeRef} tabIndex={0} role="tree" onKeyDown={onTreeKey}>
+      </ScopeFilter>
+      <div className="sb-tree" ref={treeRef} tabIndex={0} role="tree" onKeyDown={onTreeKey} onScroll={anchor.onScroll}>
+        <div className="sb-slack" ref={anchor.headRef} aria-hidden />
         {tasks.map((task) => {
           const tkey = taskKey(wsName, task.name)
           const isCollapsed = collapsed.has(tkey)
@@ -916,7 +927,18 @@ export function Sidebar({
             no workspaces yet — create one via the workspace menu
           </div>
         )}
+        <div className="sb-slack" ref={anchor.tailRef} aria-hidden />
       </div>
+      {/* Under the tree, not above it: a note appearing must not push the scopes down. */}
+      {mode === 'diff' && refreshError && <div className="error diff-refresh-error">{refreshError}</div>}
+      {mode === 'diff' && diffFilter && (
+        <div className="diff-filter-note faint">
+          only the {diffFilter.files} marked {diffFilter.files === 1 ? 'file' : 'files'} ·{' '}
+          <button type="button" className="btn-link" onClick={diffFilter.onClear}>
+            show all
+          </button>
+        </div>
+      )}
       {commitScope && <GitCommitPanel key={commitKey} ws={commitScope.ws} task={commitScope.task} repo={commitScope.row.repo} local={!!changes[taskKey(commitScope.ws, commitScope.task)]?.find((r) => r.repo === commitScope.row.repo)?.local}
         draft={commitDrafts[commitKey]}
         onDraft={(update) => setCommitDrafts((prev) => ({ ...prev, [commitKey]: update(prev[commitKey]) }))}

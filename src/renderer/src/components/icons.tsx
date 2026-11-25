@@ -40,6 +40,7 @@ export type IconName =
   | 'agent-generic'
   | 'bell'
   | 'fold'
+  | 'focus'
   | 'sort'
   | 'info'
   | 'list'
@@ -296,6 +297,14 @@ const PATHS: Record<IconName, JSX.Element> = {
     <>
       <polyline points="7 6 12 11 17 6" />
       <polyline points="7 13 12 18 17 13" />
+    </>
+  ),
+  // Folded rows above and below one open block — "only the active scope open".
+  focus: (
+    <>
+      <line x1="4" y1="4" x2="20" y2="4" />
+      <rect x="4" y="8" width="16" height="8" rx="1.5" />
+      <line x1="4" y1="20" x2="20" y2="20" />
     </>
   ),
   // Descending bars beside a down arrow — flipped vertically for the reverse

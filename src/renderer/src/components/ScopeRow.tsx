@@ -16,7 +16,7 @@ export function ScopeRow({ name, open, selected, cursor, repos, label, editing, 
   onSelect: () => void
   onToggle: () => void
 } & Pick<HTMLAttributes<HTMLDivElement>, 'id' | 'title' | 'aria-level' | 'onDoubleClick' | 'onContextMenu'>) {
-  return <div {...attributes} className={`sb-task${selected ? ' selected' : ''}${cursor ? ' cursor' : ''}`}
+  return <div {...attributes} data-scope={name} className={`sb-task${selected ? ' selected' : ''}${cursor ? ' cursor' : ''}`}
     role="treeitem" aria-expanded={open} aria-selected={selected} onClick={() => {
       if (editing) return
       onSelect()

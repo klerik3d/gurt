@@ -1,4 +1,4 @@
-import { useId, useRef, useState } from 'react'
+import { useId, useRef, useState, type ReactNode } from 'react'
 import { useOutsideClose } from '../hooks'
 import { SORT_DIR_LABEL, SORT_KEY_LABEL, type ScopeListController, type TaskSortDir, type TaskSortKey } from '../useScopeList'
 import { Dot, Icon } from './icons'
@@ -30,21 +30,37 @@ export function ScopeSort({ controller, disabled }: { controller: ScopeListContr
   </div>
 }
 
-export function ScopeFilter({ controller, onFocusTree }: { controller: ScopeListController; onFocusTree: () => void }) {
+/** Accordion mode: every scope folded but the active one. It sits right of
+ *  the panel title and reads the same in Agents, Git and Files. */
+export function ScopeFocusToggle({ on, onToggle }: { on: boolean; onToggle: () => void }) {
+  const title = on ? 'Only the active scope open · on' : 'Only the active scope open · off'
+  return <button className={`icon-sq${on ? ' active' : ''}`} title={title} aria-label="Only the active scope open"
+    aria-pressed={on} onClick={onToggle}>
+    <Icon name="focus" size={14} />
+  </button>
+}
+
+/** `children` sit to the right of the field, on the same line: mode-specific
+ *  actions live here rather than in the header, so the header — and every row
+ *  under it — keeps one height in every mode. */
+export function ScopeFilter({ controller, onFocusTree, children }: { controller: ScopeListController; onFocusTree: () => void; children?: ReactNode }) {
   const { query, setQuery, error } = controller
   const errorId = useId()
   const inputRef = useRef<HTMLInputElement>(null)
   return <div className="sb-filter-wrap">
-    <div className={`sb-filter${error ? ' invalid' : ''}`}>
-      <Icon name="search" size={12} />
-      <input ref={inputRef} value={query} aria-label="Filter scopes (regular expression)"
-        aria-invalid={!!error} aria-describedby={error ? errorId : undefined} spellCheck={false}
-        onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => {
-          if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setQuery(''); onFocusTree() }
-          if (event.key === 'ArrowDown' || event.key === 'Enter') { event.preventDefault(); onFocusTree() }
-        }} />
-      {query && <button className="icon-sq" title="Clear scope filter" aria-label="Clear scope filter"
-        onClick={() => { setQuery(''); inputRef.current?.focus() }}><Icon name="x" size={12} /></button>}
+    <div className="sb-filter-row">
+      <div className={`sb-filter${error ? ' invalid' : ''}`}>
+        <Icon name="search" size={12} />
+        <input ref={inputRef} value={query} aria-label="Filter scopes (regular expression)"
+          aria-invalid={!!error} aria-describedby={error ? errorId : undefined} spellCheck={false}
+          onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => {
+            if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setQuery(''); onFocusTree() }
+            if (event.key === 'ArrowDown' || event.key === 'Enter') { event.preventDefault(); onFocusTree() }
+          }} />
+        {query && <button className="icon-sq" title="Clear scope filter" aria-label="Clear scope filter"
+          onClick={() => { setQuery(''); inputRef.current?.focus() }}><Icon name="x" size={12} /></button>}
+      </div>
+      {children}
     </div>
     {error && <div className="sb-filter-error" id={errorId} role="alert">{error}</div>}
   </div>

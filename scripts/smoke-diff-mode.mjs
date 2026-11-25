@@ -87,13 +87,16 @@ const rowAppearance = (locator) => locator.evaluate((el) => {
     }
   }
 })
-const headerAppearance = (page) => page.locator('.sidebar:visible .sb-head').evaluate((el) => {
+const headerAppearance = (page) => page.locator('.sidebar:visible').evaluate((sidebar) => {
+  const el = sidebar.querySelector('.sb-head')
   const style = getComputedStyle(el)
   const label = el.querySelector('.sb-ws')
-  const button = el.querySelector('button[title^="Refresh"]')
+  // Mode-specific actions sit on the filter line, so the header itself is identical.
+  const button = sidebar.querySelector('.sb-filter-row button[title^="Refresh"]')
   const icon = button.querySelector('svg')
   return {
-    gap: style.columnGap, padding: [style.paddingLeft, style.paddingRight],
+    gap: style.columnGap, padding: [style.paddingLeft, style.paddingRight], height: el.getBoundingClientRect().height,
+    actions: [...el.querySelectorAll('button')].map((b) => b.getAttribute('aria-label') ?? b.title.replace(/ ·.*/, '')),
     labelPadding: [getComputedStyle(label).paddingLeft, getComputedStyle(label).paddingRight],
     button: [button.getBoundingClientRect().width, button.getBoundingClientRect().height],
     icon: [icon.getBoundingClientRect().width, icon.getBoundingClientRect().height]
@@ -123,14 +126,16 @@ try {
     document.querySelector('.commit-message')?.value === text, text)
 
   page.on('pageerror', (e) => errors.push(e.message))
+  // Accordion mode (the default) folds every scope until one is active: open it.
+  await page.locator('.sb-task-name').click()
   await page.waitForSelector('.sb-session')
   await page.locator('.sb-session').click()
   await page.keyboard.press('Meta+3')
   await page.waitForSelector('.diff-repo-row')
   assert.equal(await page.locator('.sb-session').count(), 0, 'Command+3 opens diff mode and hides sessions')
   assert.equal(await page.locator('.sidebar .sb-head').count(), 1, 'one task header')
-  assert.equal(await page.locator('.sb-head .diff-layout').count(), 1, 'layout control is in the task header')
-  assert.equal(await page.locator('.sb-head button[title="Refresh changes"]').count(), 1, 'refresh is in the task header')
+  assert.equal(await page.locator('.sidebar:visible .sb-filter-row .diff-layout').count(), 1, 'layout control is on the filter line')
+  assert.equal(await page.locator('.sidebar:visible .sb-filter-row button[title="Refresh changes"]').count(), 1, 'refresh is on the filter line')
   assert.equal(await page.locator('.sb-task-name').innerText(), 'navigation', 'same task remains')
   assert.equal(await page.locator('.diff-repo-row').count(), 2, 'clean repos remain visible')
   assert.equal(await page.locator('.diff-file-row').count(), 0, 'repos start collapsed')

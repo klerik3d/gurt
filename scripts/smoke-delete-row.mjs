@@ -80,6 +80,8 @@ const selected = () => page.locator('.sb-session.selected .sb-session-name').inn
 
 try {
   await page.waitForSelector('.sidebar', { timeout: 15000 })
+  // Accordion mode (the default) folds every scope until one is active: open it.
+  await page.locator('.sb-task-name').first().click({ timeout: 10000 })
   await page.waitForSelector('.sb-session', { timeout: 10000 })
   assert.deepEqual(await titles(), ['Alpha', 'Bravo'], 'both seeded drafts are in the tree')
 

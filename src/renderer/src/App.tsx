@@ -162,6 +162,8 @@ export default function App() {
   const hotkeys = useHotkeys()
   const [sidebarCollapsed, setSidebarCollapsed] = useState<Set<string>>(() => new Set(readPreference('sidebarCollapsed', [], z.array(z.string()))))
   const sidebarSeeded = useRef(new Set(readPreference('sidebarSeeded', [], z.array(z.string()))))
+  /** Accordion mode — see the effect that applies it, next to `diffTask`. */
+  const [scopeFocus, setScopeFocus] = usePreference('scopeFocus', true, z.boolean())
   useEffect(() => {
     try {
       localStorage.setItem('gurt.ui.sidebarCollapsed', JSON.stringify([...sidebarCollapsed]))
@@ -552,6 +554,22 @@ export default function App() {
   }, [setView, setSelection, setCurWs])
 
   const setScopeCollapsed = useCallback((workspace: string, task: string, on: boolean) => {
+    // In accordion mode a scope only opens as the active one: opening another
+    // makes it active, and the accordion then folds the rest.
+    if (!on && scopeFocus) {
+      const active = selection?.type === 'task'
+        ? selection
+        : selection?.type === 'session'
+          ? (() => {
+              for (const w of treeRef.current?.workspaces ?? []) {
+                const owner = w.tasks.find((t) => t.sessions.some((s) => s.id === selection.id))
+                if (owner) return { ws: w.name, task: owner.name }
+              }
+              return null
+            })()
+          : null
+      if (active?.ws !== workspace || active.task !== task) selectTask(workspace, task)
+    }
     sidebarSeeded.current.add(workspace)
     setSidebarCollapsed((previous) => {
       const next = new Set(previous)
@@ -563,7 +581,7 @@ export default function App() {
     if (on && selection?.type === 'session' && treeRef.current?.workspaces
       .find((w) => w.name === workspace)?.tasks.find((t) => t.name === task)?.sessions.some((s) => s.id === selection.id))
       selectTask(workspace, task)
-  }, [selection, selectTask])
+  }, [selection, selectTask, scopeFocus])
 
   const markNotificationRead = useCallback((id: string) => {
     setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, read: true } : n)))
@@ -887,6 +905,41 @@ export default function App() {
   const activeDiffFile = diffTask && diffFile?.ws === diffTask.ws && diffFile.task === diffTask.task
     ? diffFile : null
   const fileScope = diffTask && diffTask.ws === ws?.name && ws.tasks.some((t) => t.name === diffTask.task) ? diffTask : null
+  /** Accordion mode, on by default: whenever the active scope changes — or a
+   *  scope comes or goes — every other scope of the workspace folds and the
+   *  active one opens. Folding by hand still works until the next change.
+   *  With no active scope every scope folds, except the one that was active
+   *  last, which keeps its fold.
+   *  A launch folds the others too, but leaves the active scope as it was
+   *  restored — folded by hand last time, it stays folded. Opening another
+   *  scope by hand makes it the active one (`setScopeCollapsed`), and "Expand
+   *  all" is off, so the mode never shows more than one scope open. */
+  const focusWs = ws?.name ?? null
+  const focusTask = diffTask?.ws === focusWs ? diffTask?.task ?? null : null
+  const focusScopes = ws?.tasks.map((t) => t.name).join('\n') ?? ''
+  const focusLaunch = useRef(true)
+  /** The last active scope: a selection that goes away (its session deleted,
+   *  say) leaves this one as it was rather than folding the scope just used. */
+  const focusKept = useRef<{ ws: string; task: string } | null>(null)
+  useEffect(() => {
+    if (!focusWs) return
+    const launch = focusLaunch.current
+    focusLaunch.current = false
+    if (focusTask) focusKept.current = { ws: focusWs, task: focusTask }
+    if (!scopeFocus) return
+    sidebarSeeded.current.add(focusWs)
+    const keys = focusScopes ? focusScopes.split('\n') : []
+    const kept = focusTask ?? (focusKept.current?.ws === focusWs ? focusKept.current.task : null)
+    setSidebarCollapsed((previous) => {
+      const next = new Set(previous)
+      for (const name of keys) {
+        if (name !== kept) next.add(taskKey(focusWs, name))
+        else if (!launch && focusTask) next.delete(taskKey(focusWs, name))
+      }
+      return next.size === previous.size && [...next].every((key) => previous.has(key)) ? previous : next
+    })
+  }, [scopeFocus, focusWs, focusTask, focusScopes])
+  const toggleScopeFocus = useCallback(() => setScopeFocus((on) => !on), [setScopeFocus])
   const files = useFiles(fileScope, refreshChanges)
   // A path in an agent's message, clicked: the file view of that scope, on the
   // file. The session stays selected when it is the scope's own — that keeps
@@ -1203,6 +1256,8 @@ export default function App() {
                 onRefreshChanges={(w, t) => loadChanges(w, t, true)}
                 changes={workMode === 'diff' ? sidebarChanges : changes}
                 diffFilter={workMode === 'diff' && diffOnly ? { files: diffOnly.files.length, onClear: () => setDiffOnly(null) } : null}
+                scopeFocus={scopeFocus}
+                onToggleScopeFocus={toggleScopeFocus}
                 activity={activity}
                 focusSignal={focusTasksSignal}
                 readStateReady={readStateReady}
@@ -1221,6 +1276,9 @@ export default function App() {
                 width={sidebarWidth}
                 focusSignal={focusTasksSignal}
                 selection={files.activeTab?.file ?? null}
+                activeTask={fileScope?.task ?? null}
+                scopeFocus={scopeFocus}
+                onToggleScopeFocus={toggleScopeFocus}
                 onSelectTask={(w, task) => {
                   if (w !== diffTask?.ws || task !== diffTask.task) selectTask(w, task)
                 }}

@@ -12,7 +12,8 @@ import {
 import { usePreference, z } from '../persisted'
 import { Icon } from './icons'
 import { sortTasks, type ScopeListController } from '../useScopeList'
-import { ScopeFilter, ScopeSort } from './ScopeControls'
+import { ScopeFilter, ScopeFocusToggle, ScopeSort } from './ScopeControls'
+import { useScopeAnchor } from '../scopeAnchor'
 import { ScopeRow } from './ScopeRow'
 import { RowContextMenu } from './RowContextMenu'
 import { confirmDialog } from '../dialog'
@@ -35,7 +36,7 @@ const folderSchema = z.array(z.string().refine((key) => {
   } catch { return false }
 }))
 
-export function FilesSidebar({ controller, tree, collapsed, setCollapse, changes, scopeList, ws, width, focusSignal, selection, onSelectTask, onOpen, onNewTask }: {
+export function FilesSidebar({ controller, tree, collapsed, setCollapse, changes, scopeList, ws, width, focusSignal, selection, activeTask, scopeFocus, onToggleScopeFocus, onSelectTask, onOpen, onNewTask }: {
   controller: FilesController
   tree: Tree | null
   collapsed: Set<string>
@@ -46,6 +47,10 @@ export function FilesSidebar({ controller, tree, collapsed, setCollapse, changes
   width: number
   focusSignal: number
   selection: ScopeFile | null
+  /** The scope the selection lives in — the row a mode switch must not move. */
+  activeTask: string | null
+  scopeFocus: boolean
+  onToggleScopeFocus: () => void
   onSelectTask: (ws: string, task: string) => void
   onOpen: (file: ScopeFile) => void
   onNewTask: () => void
@@ -192,23 +197,30 @@ export function FilesSidebar({ controller, tree, collapsed, setCollapse, changes
     } catch (e) { setActionError(String(e)) } finally { setBusy(false) }
   }
 
-  useEffect(() => { treeRef.current?.querySelector('.cursor')?.scrollIntoView({ block: 'nearest' }) }, [cursor])
+  const anchor = useScopeAnchor(treeRef, name, activeTask, 'files')
+  // Follow the cursor, unless the active scope is being held in place across a mode switch.
+  useEffect(() => {
+    if (!anchor.pinned()) treeRef.current?.querySelector('.cursor')?.scrollIntoView({ block: 'nearest' })
+  }, [cursor]) // eslint-disable-line react-hooks/exhaustive-deps -- follows the cursor only
   const allCollapsed = visibleTasks.length > 0 && visibleTasks.every((task) => collapsed.has(taskKey(name, task.name)))
 
   return <aside className="sidebar files-sidebar" style={{ width }}>
     <div className="sb-head">
       <div className="sb-ws"><span className="sb-ws-name">Scopes</span></div>
+      <ScopeFocusToggle on={scopeFocus} onToggle={onToggleScopeFocus} />
       <span className="spacer" />
-      <button className="icon-sq" title="Refresh files" aria-label="Refresh files" onClick={() => { generation.current++; loading.current.clear(); setFolders({}); setRevision(generation.current) }}><Icon name="history" size={14} /></button>
       <ScopeSort controller={scopeList} disabled={!tasks.length} />
-      <button className="icon-sq" title={allCollapsed ? 'Expand all' : 'Collapse all'} disabled={!visibleTasks.length}
+      <button className="icon-sq" title={allCollapsed ? (scopeFocus ? 'Expand all · off while only the active scope is open' : 'Expand all') : 'Collapse all'}
+        disabled={!visibleTasks.length || (allCollapsed && scopeFocus)}
         onClick={() => { for (const task of visibleTasks) setCollapse(name, task.name, !allCollapsed) }}>
         <Icon name="fold" size={14} style={allCollapsed ? { transform: 'rotate(180deg)' } : undefined} />
       </button>
       <button className="icon-sq" title="New scope" onClick={onNewTask}><Icon name="plus" size={14} /></button>
     </div>
-    <ScopeFilter controller={scopeList} onFocusTree={() => treeRef.current?.focus()} />
-    <div className="sb-tree file-tree" ref={treeRef} tabIndex={0} role="tree" aria-label="Scope files" aria-activedescendant={rows.some((r) => keyOf(r) === cursor) ? `file-tree-row-${rows.findIndex((r) => keyOf(r) === cursor)}` : undefined} onKeyDown={(event) => {
+    <ScopeFilter controller={scopeList} onFocusTree={() => treeRef.current?.focus()}>
+      <button className="icon-sq" title="Refresh files" aria-label="Refresh files" onClick={() => { generation.current++; loading.current.clear(); setFolders({}); setRevision(generation.current) }}><Icon name="history" size={14} /></button>
+    </ScopeFilter>
+    <div className="sb-tree file-tree" ref={treeRef} tabIndex={0} role="tree" aria-label="Scope files" onScroll={anchor.onScroll} aria-activedescendant={rows.some((r) => keyOf(r) === cursor) ? `file-tree-row-${rows.findIndex((r) => keyOf(r) === cursor)}` : undefined} onKeyDown={(event) => {
       if (event.target !== treeRef.current || !rows.length) return
       const at = rows.findIndex((r) => keyOf(r) === cursor)
       const row = rows[at]
@@ -233,6 +245,7 @@ export function FilesSidebar({ controller, tree, collapsed, setCollapse, changes
       event.preventDefault()
       if (next) setCursor(keyOf(next))
     }}>
+      <div className="sb-slack" ref={anchor.headRef} aria-hidden />
       {rows.map((row, index) => {
         const key = keyOf(row)
         const open = isOpen(row)
@@ -259,6 +272,7 @@ export function FilesSidebar({ controller, tree, collapsed, setCollapse, changes
       })}
       {tree && !tasks.length && <div className="sb-empty" style={{ '--level': 0 } as CSSProperties}>Create a scope to browse its files.</div>}
       {!!tasks.length && !visibleTasks.length && <div className="sb-empty" style={{ '--level': 0 } as CSSProperties}>No matching scopes</div>}
+      <div className="sb-slack" ref={anchor.tailRef} aria-hidden />
     </div>
     {menu && <RowContextMenu x={menu.x} y={menu.y} onClose={() => { if (!busy) setMenu(null) }}>
       {renaming ? <form onSubmit={(event) => { event.preventDefault(); void action('rename') }}><input aria-label="New file name" className="sb-rename" autoFocus value={rename} onChange={(event) => setRename(event.target.value)} /><button className="menu-item" disabled={busy || !rename.trim()} type="submit">Rename</button></form> : <button className="menu-item" disabled={busy || !menu.row.path.includes('/')} onClick={() => setRenaming(true)}>Rename</button>}
