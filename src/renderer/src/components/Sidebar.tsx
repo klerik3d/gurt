@@ -4,8 +4,11 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type Dispatch,
   type KeyboardEvent as ReactKeyboardEvent,
-  type MouseEvent as ReactMouseEvent
+  type MouseEvent as ReactMouseEvent,
+  type RefObject,
+  type SetStateAction
 } from 'react'
 import {
   sessionStatus,
@@ -96,9 +99,9 @@ export function Sidebar({
   diffFilter
 }: {
   collapsed: Set<string>
-  setCollapsed: React.Dispatch<React.SetStateAction<Set<string>>>
+  setCollapsed: Dispatch<SetStateAction<Set<string>>>
   setCollapse: (ws: string, task: string, on: boolean) => void
-  seeded: React.RefObject<Set<string>>
+  seeded: RefObject<Set<string>>
   /** Current sidebar width in px (user-draggable). */
   width: number
   mode?: 'sessions' | 'diff'

@@ -117,6 +117,8 @@ deb/sudo path above — always test through the actual `.AppImage` file.
 **Catch bindings.** The catch binding is `e`; use `catch {` when it is unused. Decision, do not flip back.
 Check (prints nothing when clean): `git grep -nE "catch \((err|error)\)" -- src`
 
+- React types: named `import type` from react (DOM-colliding event types aliased with a React prefix); no `React.X` references outside main.tsx.
+
 ## Inline styles
 
 - A static inline `style` in `*.tsx` is not used when the same value repeats; use a class in `styles.css` (`.input-num` for a 80px number input, `.set-card-foot.start` for a start-aligned card footer).
