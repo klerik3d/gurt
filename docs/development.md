@@ -117,6 +117,11 @@ deb/sudo path above — always test through the actual `.AppImage` file.
 **Catch bindings.** The catch binding is `e`; use `catch {` when it is unused. Decision, do not flip back.
 Check (prints nothing when clean): `git grep -nE "catch \((err|error)\)" -- src`
 
+## Inline styles
+
+- A static inline `style` in `*.tsx` is not used when the same value repeats; use a class in `styles.css` (`.input-num` for a 80px number input, `.set-card-foot.start` for a start-aligned card footer).
+- Dynamic values stay inline: sizes/positions computed from state or props, and CSS custom properties (`style={{ "--label": ... }}`).
+
 ## Imports
 
 One import statement per module, where the import forms can be combined. When a file needs both values and types from

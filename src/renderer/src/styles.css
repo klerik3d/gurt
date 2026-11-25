@@ -391,6 +391,9 @@ button:disabled {
   font-size: var(--fs-13);
   font-family: inherit;
 }
+.input-num {
+  width: 80px;
+}
 .input.mono {
   font-family: var(--mono);
   font-size: var(--fs-12);
@@ -3222,6 +3225,9 @@ textarea.input {
   display: flex;
   align-items: center;
   gap: 9px;
+}
+.set-card-foot.start {
+  justify-content: flex-start;
 }
 .btn-danger-text.sm {
   font-size: var(--fs-11);
