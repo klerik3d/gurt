@@ -15,7 +15,14 @@ const fs = require('fs')
 const CTL = process.env.FAKE_DOCKER_CTL
 const LOG = process.env.FAKE_DOCKER_LOG
 const ctl = JSON.parse(fs.readFileSync(CTL, 'utf8'))
-const save = () => fs.writeFileSync(CTL, JSON.stringify(ctl))
+// Atomic (temp + rename): the runtime runs some docker calls concurrently (the
+// node and adapters volume fills), and a plain writeFileSync truncates first —
+// a fake starting in that window would JSON.parse an empty file and crash.
+const save = () => {
+  const tmp = CTL + '.' + process.pid
+  fs.writeFileSync(tmp, JSON.stringify(ctl))
+  fs.renameSync(tmp, CTL)
+}
 const a = process.argv.slice(2)
 const entry = { args: a }
 const watch = ctl.watch || []
@@ -119,15 +126,21 @@ export function installFakeDocker(dir) {
   process.env.FAKE_DOCKER_LOG = logFile
   process.env.PATH = `${bin}${path.delimiter}${process.env.PATH}`
   const read = () => (fs.existsSync(ctlFile) ? JSON.parse(fs.readFileSync(ctlFile, 'utf8')) : {})
+  /** Same atomic write as the fake's own `save`. */
+  const write = (ctl) => {
+    const tmp = `${ctlFile}.${process.pid}`
+    fs.writeFileSync(tmp, JSON.stringify(ctl))
+    fs.renameSync(tmp, ctlFile)
+  }
   const api = {
     /** Replace the control state (nothing carries over — counters included). */
     reset(ctl = {}) {
-      fs.writeFileSync(ctlFile, JSON.stringify(ctl))
+      write(ctl)
       fs.rmSync(logFile, { force: true })
     },
     /** Merge into the control state. */
     ctl(patch) {
-      fs.writeFileSync(ctlFile, JSON.stringify({ ...read(), ...patch }))
+      write({ ...read(), ...patch })
     },
     state: read,
     calls() {
