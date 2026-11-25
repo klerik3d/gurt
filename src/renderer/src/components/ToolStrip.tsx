@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react'
 import type { ChatText, ChatToolCall } from '../../../shared/types'
 import { Icon, type IconName } from './icons'
 import { durationLabel } from '../time'
@@ -213,7 +213,7 @@ const EDGE_PX = 8
  *  and scrolls inside itself when neither side fits it whole. */
 function FloatingPanel({ anchor, children }: { anchor: RefObject<HTMLElement | null>; children: ReactNode }) {
   const ref = useRef<HTMLDivElement>(null)
-  const [pos, setPos] = useState<React.CSSProperties>({ visibility: 'hidden' })
+  const [pos, setPos] = useState<CSSProperties>({ visibility: 'hidden' })
 
   useLayoutEffect(() => {
     const place = () => {
@@ -230,7 +230,7 @@ function FloatingPanel({ anchor, children }: { anchor: RefObject<HTMLElement | n
       const want = el.scrollHeight
       const up = below < want && above > below
       const room = Math.max(80, up ? above : below)
-      const next: React.CSSProperties = {
+      const next: CSSProperties = {
         left: r.left,
         width: r.width,
         maxHeight: room,

@@ -1,4 +1,4 @@
-import type { JSX } from 'react'
+import type { CSSProperties, JSX, ReactNode } from 'react'
 import type { Tone } from '../status'
 import { agentDef } from '../../../shared/agents'
 // Shared line-icon set (Feather/Lucide-style strokes, 1.75px, round caps) used
@@ -356,7 +356,7 @@ const FILLED = new Set<IconName>([
 type IconProps = {
   size?: number | undefined
   className?: string | undefined
-  style?: React.CSSProperties | undefined
+  style?: CSSProperties | undefined
 }
 
 /** The one `<svg>` every glyph is drawn in. */
@@ -366,7 +366,7 @@ function Svg({
   style,
   fill,
   children
-}: IconProps & { fill: string | undefined; children: React.ReactNode }): JSX.Element {
+}: IconProps & { fill: string | undefined; children: ReactNode }): JSX.Element {
   return (
     <svg
       width={size}

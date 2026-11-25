@@ -1,4 +1,12 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ClipboardEvent as ReactClipboardEvent,
+  type ComponentPropsWithoutRef,
+  type KeyboardEvent as ReactKeyboardEvent
+} from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { AnchorWithFileLink, CodeWithFileLink } from '../fileLinks'
@@ -666,7 +674,7 @@ function PinnedRequest({
  *  chat is usually to lift it out, and `<pre>` gives no way to do that. Reads
  *  from the rendered DOM node rather than the markdown AST so it copies
  *  exactly what's on screen, syntax quirks and all. */
-function CodeBlock({ node: _node, ...rest }: React.ComponentPropsWithoutRef<'pre'> & { node?: unknown }) {
+function CodeBlock({ node: _node, ...rest }: ComponentPropsWithoutRef<'pre'> & { node?: unknown }) {
   const ref = useRef<HTMLPreElement>(null)
   return (
     <div className="code-block has-copy">
@@ -926,7 +934,7 @@ export function ImageThumbs({ images, onRemove }: { images: PromptImage[]; onRem
 }
 
 /** Image files out of a paste event, or an empty list. */
-export function pastedImages(e: React.ClipboardEvent): File[] {
+export function pastedImages(e: ReactClipboardEvent): File[] {
   return Array.from(e.clipboardData?.items ?? [])
     .filter((it) => it.kind === 'file' && it.type.startsWith('image/'))
     .map((it) => it.getAsFile())
@@ -1216,7 +1224,7 @@ function Composer({
   }
 
   /** Paste an image straight into the composer (gated on the agent accepting images). */
-  const onPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+  const onPaste = (e: ReactClipboardEvent<HTMLTextAreaElement>) => {
     if (!imageOk) return
     const files = pastedImages(e)
     if (files.length) {
@@ -1248,7 +1256,7 @@ function Composer({
 
   const removeChip = (i: number) => setChips((c) => c.filter((_, j) => j !== i))
 
-  const onCmdKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
+  const onCmdKey = (e: ReactKeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'ArrowDown') {
       e.preventDefault()
       setCmdIdx((i) => Math.min(i + 1, filteredCmds.length - 1))
@@ -1268,7 +1276,7 @@ function Composer({
     }
   }
 
-  const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+  const onKeyDown = (e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       send()

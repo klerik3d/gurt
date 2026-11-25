@@ -1,5 +1,5 @@
 import { taskKey } from '../../../shared/keys'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from 'react'
 import {
   sessionStatus,
   type SessionActivity,
@@ -146,7 +146,7 @@ export function CommandPalette({
     else onSelectTask(item.ws, item.task)
   }
 
-  const onKey = (e: React.KeyboardEvent) => {
+  const onKey = (e: ReactKeyboardEvent) => {
     if (e.key === 'ArrowDown') {
       e.preventDefault()
       setIdx((i) => Math.min(i + 1, items.length - 1))
@@ -176,7 +176,7 @@ export function CommandPalette({
     const common = {
       className: `pal-item ${active ? 'active' : ''}`,
       onMouseEnter: () => setIdx(i),
-      onMouseDown: (e: React.MouseEvent) => {
+      onMouseDown: (e: ReactMouseEvent) => {
         e.preventDefault()
         run(item)
       }

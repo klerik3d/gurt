@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
 import { useOutsideClose } from '../hooks'
 import { Icon, InfoDot, type IconName } from './icons'
 
@@ -134,7 +134,7 @@ export function PickerField({
     input.current?.focus()
   }
 
-  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+  const onKeyDown = (e: ReactKeyboardEvent<HTMLInputElement>) => {
     // Keys of an IME composition belong to the IME (Enter commits the text,
     // arrows pick a candidate) — not to this list.
     if (e.nativeEvent.isComposing || e.keyCode === 229) return
