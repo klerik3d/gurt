@@ -3,7 +3,7 @@
 // leading icon is what tells them apart. `box` = env, `branch` = repo, the same
 // marks the env/repository pickers use in the new-session sidebar.
 
-import { Fragment, type JSX } from 'react'
+import { Fragment, type CSSProperties, type JSX } from 'react'
 import {
   repoMode,
   type McpSelection,
@@ -25,7 +25,7 @@ export function LabelTag({ label, title }: { label: ScopeLabel; title?: string }
   return (
     <span
       className="scope-label"
-      style={{ ['--label' as string]: label.color }}
+      style={{ '--label': label.color } as CSSProperties}
       title={title ?? `label ${label.text}`}
     >
       {label.text}
