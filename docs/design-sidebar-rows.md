@@ -24,3 +24,30 @@ table: selected and cursor share one colour; scope rows lose their bold
 weight, so hierarchy rests on indent and chevron.
 
 Notes use one class, .sb-empty, indent via --level; no inline pixel paddings
+
+## Holding still
+
+The scope panels (Agents, Git, Files) never move a row the user did not ask
+to move:
+
+- The tree always reserves its scrollbar gutter (`scrollbar-gutter: stable`),
+  so the scrollbar appearing does not narrow the rows.
+- The header is one 32px line with the same actions in every mode: title,
+  the accordion toggle, sort, fold all, new scope. Mode-specific actions
+  (Git's list/tree and refresh, Files' refresh) sit on the filter line;
+  notes that come and go (Git's refresh error, marked-files filter) sit under
+  the tree.
+- Switching mode keeps the active scope's row on the same pixel
+  (`scopeAnchor.ts`): the new panel scrolls to put it back, holds it through
+  the renders that follow, and pads the start or end of the tree when less
+  precedes or follows it than the scroll needs (the padding shrinks away as
+  the user scrolls). Only a row fully in view is held; one scrolled out of
+  view is scrolled into view on the switch instead, so the new mode never
+  shows nothing but padding. A newly selected scope is held the same way
+  while the accordion folds the previous one.
+- Accordion mode (on by default, toggle right of the title): selecting a
+  scope folds every other one and opens it; opening another scope by hand
+  makes it the active one, and "Expand all" is off. At launch the others
+  fold and the active scope keeps its restored fold. With nothing selected
+  every scope folds, except the last active one (say, after its open session
+  was deleted), which keeps its fold.

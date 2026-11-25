@@ -1066,20 +1066,25 @@ textarea.input {
 .sb-chev > svg, .file-tree-chevron > svg { width: var(--row-chev); height: var(--row-chev); }
 .sb-task-name, .file-tree-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* One line, one height, the same actions in every scope panel: a header that
+   wrapped or changed would move every scope row below it on a mode switch.
+   Mode-specific actions go on the filter line instead. */
 .sb-head {
-  min-height: 32px;
+  height: 32px;
   flex: none;
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 4px;
   padding: 0 10px 0 8px;
 }
 .sb-ws {
   min-width: 0;
+  display: flex;
   padding: 4px 6px;
 }
 .sb-ws-name {
+  min-width: 0;
   font-weight: 600;
   font-size: var(--fs-14);
   color: var(--text);
@@ -1109,7 +1114,8 @@ textarea.input {
   min-width: 150px;
 }
 .sb-filter-wrap { flex: none; padding: 3px 10px 5px; }
-.sb-filter { display: flex; align-items: center; gap: 6px; min-height: 26px; padding: 0 6px; color: var(--faint); border: 1px solid var(--border); border-radius: var(--r-sm); }
+.sb-filter-row { display: flex; align-items: center; gap: 4px; }
+.sb-filter { flex: 1; min-width: 0; height: 26px; display: flex; align-items: center; gap: 6px; padding: 0 6px; color: var(--faint); border: 1px solid var(--border); border-radius: var(--r-sm); }
 .sb-filter:focus-within { border-color: var(--accent); }
 .sb-filter.invalid { border-color: var(--red); }
 .sb-filter input { flex: 1; min-width: 0; width: 100%; padding: 4px 0; background: transparent; border: 0; color: var(--dim); font: 11px var(--ui); outline: none; }
@@ -1117,16 +1123,23 @@ textarea.input {
 .sb-filter .icon-sq { width: 18px; height: 18px; flex: none; }
 .sb-filter-error { padding: 4px 0 0; color: var(--red); font-size: var(--fs-11); }
 
+/* The gutter is always there, so the scrollbar appearing never narrows the
+   rows by a pixel. */
 .sb-tree {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  scrollbar-gutter: stable;
   display: flex;
   flex-direction: column;
   gap: 0;
   padding: 4px 0;
   outline: none;
 }
+/* Fillers at the start and end of a scope tree that let the active scope keep
+   its place on a mode switch when less precedes or follows it
+   (scopeAnchor.ts sets their height). */
+.sb-slack { flex: none; height: 0; }
 .sb-chev {
   color: var(--faint);
 }

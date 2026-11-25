@@ -47,6 +47,8 @@ const errors = []
 try {
   let page = await app.firstWindow()
   page.on('pageerror', (error) => errors.push(error.message))
+  // Accordion mode (the default) folds every scope until one is active: open it.
+  await page.locator('.sb-task-name', { hasText: /^first$/ }).click()
   await page.waitForSelector('.sb-session')
   const scopeRow = (name) => page.locator('.sidebar:visible .sb-task').filter({ hasText: new RegExp(`^${name}$`) })
   const switchMode = async (mode) => {
@@ -82,6 +84,9 @@ try {
     assert.equal(await scopeRow('second').getAttribute('aria-expanded'), 'false')
     assert.equal(await scopeRow('first').locator('.task-badge:not(.badge-delivered)').count(), 1, `${mode}: shared blue change indicator`)
   }
+  // Expand all and folding by hand belong to the mode without the accordion.
+  const accordion = () => page.locator('.sidebar:visible button[aria-label="Only the active scope open"]')
+  await accordion().click()
   await page.locator('.files-sidebar button[title="Expand all"]').click()
   for (const mode of ['Files', 'Agents', 'Diff']) {
     await switchMode(mode)
@@ -94,6 +99,8 @@ try {
     await scopeRow('first').locator('.sb-task-name').click()
     assert.equal(await scopeRow('first').getAttribute('aria-expanded'), 'true', 'name click also unfolds the scope')
   }
+  await accordion().click()
+  assert.equal(await accordion().getAttribute('aria-pressed'), 'true')
   await page.locator('.files-sidebar button[title^="Sort scopes"]').click()
   await page.locator('.files-sidebar .sb-sort-menu .menu-item').filter({ hasText: /^Created$/ }).click()
   assert.deepEqual(await scopeNames(), ['second', 'first'], 'files mode offers creation sorting')
@@ -148,8 +155,9 @@ try {
   await page.getByRole('button', { name: 'Files', exact: true }).click()
   await row('second').click()
   assert.equal(await page.getByRole('tab').count(), 0, 'tabs belong to their scope')
-  if (await row('first').getAttribute('aria-expanded') !== 'true') await row('first').click()
-  else await row('frontend/src/app.ts').click()
+  // Accordion mode (the default): opening `second` folds `first`.
+  await page.waitForFunction(() => document.querySelector('.files-sidebar [data-scope="first"]')?.getAttribute('aria-expanded') === 'false')
+  await row('first').click()
   assert.match(await editor().innerText(), /unsaved work/)
   await page.locator('.activitybar button[title^="Dashboard"]').click()
   await page.getByRole('button', { name: 'Files', exact: true }).click()

@@ -76,6 +76,8 @@ try {
   })
   const page = await app.firstWindow()
   page.on('pageerror', (error) => errors.push(error.message))
+  // Accordion mode (the default) folds every scope until one is active: open it.
+  await page.locator('.sb-task-name').first().click()
   await page.waitForSelector('.sb-session')
   await page.locator('.sb-session').click()
   await page.keyboard.press('Control+5')
