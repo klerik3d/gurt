@@ -2382,12 +2382,24 @@ textarea.input {
   position: relative;
   display: inline-flex;
   align-items: center;
+  flex: none;
+  vertical-align: middle;
   color: var(--faint);
   outline: none;
 }
 .info-dot:hover,
 .info-dot:focus {
   color: var(--dim);
+}
+.info-dot.warn,
+.info-dot.warn:hover,
+.info-dot.warn:focus {
+  color: var(--yellow);
+}
+.info-dot.error,
+.info-dot.error:hover,
+.info-dot.error:focus {
+  color: var(--red);
 }
 .info-pop {
   display: none;
@@ -2473,16 +2485,6 @@ textarea.input {
   font-family: var(--mono);
   font-size: var(--fs-13);
   flex: none;
-}
-/* Takes the row's slack (so the mode label still sits right) and says which
-   server this is without a hover: a built-in's tools, a registry entry's URL. */
-.mcp-desc {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  font-size: var(--fs-11);
 }
 .ns-section > * + * {
   margin-top: 0;
@@ -5218,8 +5220,8 @@ button.chip-x {
   font: inherit;
   line-height: 1;
 }
-/* The name gives way (ellipsis) so the switch and × always stay in the column;
-   the description drops to its own line. */
+/* The name gives way (ellipsis) so the 'i', the switch and × always stay in
+   the column. */
 .sel-row .mcp-name {
   flex: 1 1 0;
   min-width: 0;
@@ -5227,13 +5229,13 @@ button.chip-x {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.sel-row .mcp-desc {
-  flex-basis: 100%;
-  order: 3;
-}
 .sel-row .chip-x,
 .sel-row .chip-row {
   flex: none;
+}
+.sel-row .info-pop {
+  left: auto;
+  right: -7px;
 }
 .sel-list-off {
   opacity: 0.5;

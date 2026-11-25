@@ -37,7 +37,7 @@ import {
 } from '../../../../shared/mcp'
 import { useOutsideClose } from '../../hooks'
 import { confirmDialog } from '../../dialog'
-import { Icon } from '../icons'
+import { Icon, InfoDot } from '../icons'
 import { Modal } from '../Modal'
 import { run } from '../../async'
 
@@ -132,7 +132,9 @@ export function McpServersSection({ ws }: { ws: string | null }) {
                   }}
                 >
                   {k.label}
-                  <span className="menu-hint">{k.hint}</span>
+                  <span className="menu-hint">
+                    <InfoDot text={k.hint} />
+                  </span>
                 </div>
               ))}
             </div>
@@ -148,8 +150,8 @@ export function McpServersSection({ ws }: { ws: string | null }) {
               <Icon name="key" size={11} className="icon-warn" />
             )}
             {/* Said here, in the editor and in the composer's picker — every
-                surface that offers a local entry carries the same line
-                (docs/requirements-mcp-stdio.md §2). */}
+                surface that offers a local entry carries the same line, as
+                visible text (docs/requirements-mcp-stdio.md §2). */}
             {isLocalMcpEntry(m) && <span className="mcp-local-note">{LOCAL_MCP_NOTICE}</span>}
             <button className="btn-link" onClick={() => setEditing(m)}>
               edit
@@ -165,9 +167,10 @@ export function McpServersSection({ ws }: { ws: string | null }) {
           <>
             <div className="set-sub">Built-in · provided by gurt, not editable</div>
             {builtins.map((def) => (
-              <div key={def.id} className="set-row faint" title={def.description}>
+              <div key={def.id} className="set-row faint">
                 <span className="set-row-label">{def.label}</span>
-                <span className="set-row-url">{def.description}</span>
+                <span className="set-row-url" />
+                <InfoDot text={def.description} />
               </div>
             ))}
           </>
@@ -345,7 +348,7 @@ function McpValueRowEditor({
       {badName && <span className="error">{name.trim()} is not an environment variable name</span>}
       {lift && (
         <span className="mcp-local-note">
-          that value looks like a secret — workspace.json is a plain file{' '}
+          <InfoDot text="that value looks like a secret — workspace.json is a plain file" tone="warn" />{' '}
           <button className="btn-link" onClick={onLift}>
             store it as a credential
           </button>
@@ -815,7 +818,7 @@ function McpServerModal({
         </div>
 
         {/* Every surface that offers a local entry says this, in these words
-            (docs/requirements-mcp-stdio.md §2). */}
+            (docs/requirements-mcp-stdio.md §2) — as visible text, not a tooltip. */}
         {isLocal && (
           <div className="mcp-notice">
             <Icon name="key" size={12} />
@@ -830,6 +833,7 @@ function McpServerModal({
           <div className="fld">
             <div className="fld-head">
               <span className="seclabel">PASTE FROM README</span>
+              <InfoDot text="The block a README gives you — `mcpServers`, `servers`, or the bare body. A `uvx` or `docker` invocation fills in the command form instead. Test then runs exactly what it filled in, so you can see what the snippet meant before saving it." />
               <span className="spacer" />
               <button className="btn-link" onClick={() => applySnippet(snippet)}>
                 fill the form
@@ -852,15 +856,7 @@ function McpServerModal({
                 applySnippet(text)
               }}
             />
-            {snippetError ? (
-              <span className="error">{snippetError}</span>
-            ) : (
-              <span className="fld-hint">
-                The block a README gives you — `mcpServers`, `servers`, or the bare body. A `uvx`
-                or `docker` invocation fills in the command form instead. <b>Test</b> then runs
-                exactly what it filled in, so you can see what the snippet meant before saving it.
-              </span>
-            )}
+            {snippetError && <span className="error">{snippetError}</span>}
           </div>
         )}
 
@@ -889,23 +885,28 @@ function McpServerModal({
 
         {kind === 'http' && (
           <div className="fld">
-            <span className="seclabel">ENDPOINT URL</span>
+            <span className="seclabel-row">
+              <span className="seclabel">ENDPOINT URL</span>
+              <InfoDot text="A remote http(s) endpoint the session proxy calls — nothing runs on this machine." />
+            </span>
             <input
               className="input mono"
               placeholder="https://mcp.example.com/mcp"
               value={url}
               onChange={(e) => setUrl(e.target.value)}
             />
-            <span className="fld-hint">
-              A remote http(s) endpoint the session proxy calls — nothing runs on this machine.
-            </span>
           </div>
         )}
 
         {kind === 'npm' && (
           <div className="cred-grid">
             <label className="fld">
-              <span className="seclabel">PACKAGE</span>
+              <span className="seclabel-row">
+                <span className="seclabel">PACKAGE</span>
+                <InfoDot
+                  text={`Installed once under ~/.gurt/mcp/${id.trim() || '<id>'} and pinned to what it resolved to — a version or dist-tag here, never name@version in the package field.`}
+                />
+              </span>
               <input
                 className="input mono"
                 placeholder="kubernetes-mcp-server"
@@ -924,18 +925,14 @@ function McpServerModal({
             </label>
           </div>
         )}
-        {kind === 'npm' && (
-          <span className="fld-hint">
-            Installed once under ~/.gurt/mcp/{id.trim() || '<id>'} and pinned to what it resolved
-            to — a version or dist-tag here, never <span className="mono">name@version</span> in
-            the package field.
-          </span>
-        )}
 
         {kind === 'command' && (
           <div className="cred-grid">
             <label className="fld">
-              <span className="seclabel">COMMAND</span>
+              <span className="seclabel-row">
+                <span className="seclabel">COMMAND</span>
+                <InfoDot text="A name is resolved against your PATH when this is saved, so a missing tool is an error here rather than an hour later; an absolute path is used as given." />
+              </span>
               <input
                 className="input mono"
                 placeholder="uvx"
@@ -954,16 +951,13 @@ function McpServerModal({
             </label>
           </div>
         )}
-        {kind === 'command' && (
-          <span className="fld-hint">
-            A name is resolved against your PATH when this is saved, so a missing tool is an error
-            here rather than an hour later; an absolute path is used as given.
-          </span>
-        )}
 
         {isLocal && (
           <div className="fld">
-            <span className="seclabel">ARGUMENTS</span>
+            <span className="seclabel-row">
+              <span className="seclabel">ARGUMENTS</span>
+              <InfoDot text="One per line, passed verbatim. A server's own read-only flag lives here — gurt reports the argv, and does not claim to enforce what it means." />
+            </span>
             <textarea
               className="input mono snippet-input"
               rows={3}
@@ -972,10 +966,6 @@ function McpServerModal({
               value={argsText}
               onChange={(e) => setArgsText(e.target.value)}
             />
-            <span className="fld-hint">
-              One per line, passed verbatim. A server&apos;s own read-only flag lives here — gurt
-              reports the argv, and does not claim to enforce what it means.
-            </span>
           </div>
         )}
 
@@ -983,6 +973,7 @@ function McpServerModal({
           <div className="fld">
             <div className="fld-head">
               <span className="seclabel">HEADERS</span>
+              <InfoDot text="A typed value is stored in workspace.json and sent verbatim. A secret is taken from a credential (key icon) — the proxy adds it upstream; it is never written here and the container never sees it." />
               <span className="spacer" />
               <button
                 className="btn-link"
@@ -992,17 +983,15 @@ function McpServerModal({
               </button>
             </div>
             {headers.map((h, i) => rowEditor('header', h, i))}
-            <span className="fld-hint">
-              A typed value is stored in workspace.json and sent verbatim. A secret is taken from a
-              credential (<Icon name="key" size={10} />) — the proxy adds it upstream; it is never
-              written here and the container never sees it.
-            </span>
           </div>
         )}
 
         {kind === 'http' && (
           <div className="fld">
-            <span className="seclabel">SIGN IN</span>
+            <span className="seclabel-row">
+              <span className="seclabel">SIGN IN</span>
+              <InfoDot text="For a server that asks for an OAuth sign-in (the MCP authorization spec) instead of a pasted key. Opens your browser; gurt keeps the tokens, never the container. Scopes default to what the server advertises — set them only to ask for more or less." />
+            </span>
             {signing ? (
               <div className="set-card-foot start">
                 <span className="fld-hint">waiting for the browser sign-in…</span>
@@ -1042,11 +1031,6 @@ function McpServerModal({
             {oauthCred && oauthSignedOut(oauthCred) && (
               <div className="error">⚠ {signedOutError(oauthCred)}</div>
             )}
-            <span className="fld-hint">
-              For a server that asks for an OAuth sign-in (the MCP authorization spec) instead of a
-              pasted key. Opens your browser; gurt keeps the tokens, never the container. Scopes
-              default to what the server advertises — set them only to ask for more or less.
-            </span>
           </div>
         )}
 
@@ -1054,6 +1038,7 @@ function McpServerModal({
           <div className="fld">
             <div className="fld-head">
               <span className="seclabel">ENVIRONMENT</span>
+              <InfoDot text="A typed value is stored in workspace.json and given to the process verbatim. A secret is taken from a credential (key icon) — resolved on this machine when the process starts, never written here." />
               <span className="spacer" />
               <button
                 className="btn-link"
@@ -1063,18 +1048,11 @@ function McpServerModal({
               </button>
             </div>
             {envRows.map((row, i) => rowEditor('env', row, i))}
-            <span className="fld-hint">
-              A typed value is stored in workspace.json and given to the process verbatim. A secret
-              is taken from a credential (<Icon name="key" size={10} />) — resolved on this machine
-              when the process starts, never written here.
-            </span>
           </div>
         )}
 
         {Object.keys(pending).some((pid) => mcpCredentialIds(entry).includes(pid)) && (
-          <div className="fld-hint">
-            New credentials are saved to the credential store on Save, not to workspace.json.
-          </div>
+          <InfoDot text="New credentials are saved to the credential store on Save, not to workspace.json." />
         )}
         {credError && <div className="error">⚠ {credError}</div>}
 
@@ -1195,11 +1173,13 @@ function McpProbeReport({ result }: { result: McpProbeResult }): JSX.Element {
       {result.toolsError && (
         <span className="fld-hint">it did not list its tools — {result.toolsError}</span>
       )}
-      <span className="fld-hint">
-        {result.kind === 'http'
-          ? 'Checked from gurt, on this machine. A session reaches this endpoint through its own proxy, from the container — so this says the URL, the headers and the credential are right, not that a session can get there.'
-          : 'Started and stopped again just now. The list is what the server offers; gurt does not know which of them write, so it reports them and does not restrict them.'}
-      </span>
+      <InfoDot
+        text={
+          result.kind === 'http'
+            ? 'Checked from gurt, on this machine. A session reaches this endpoint through its own proxy, from the container — so this says the URL, the headers and the credential are right, not that a session can get there.'
+            : 'Started and stopped again just now. The list is what the server offers; gurt does not know which of them write, so it reports them and does not restrict them.'
+        }
+      />
       {launchLog}
     </div>
   )
