@@ -76,8 +76,8 @@ export function useFiles(scope: { ws: string; task: string } | null, onSaved: (w
       mutate((prev) => prev.map((tab) => fileKey(tab.file) === key ? {
         ...tab, content: doc.content, saved: doc.content, version: doc.version, error: '', loading: false, generation: tab.generation + 1
       } : tab))
-    } catch (error) {
-      if (loading.current.get(key) === token) patch(key, { loading: false, error: message(error) })
+    } catch (e) {
+      if (loading.current.get(key) === token) patch(key, { loading: false, error: message(e) })
     } finally { if (loading.current.get(key) === token) loading.current.delete(key) }
   }, [mutate, patch])
 
@@ -125,7 +125,7 @@ export function useFiles(scope: { ws: string; task: string } | null, onSaved: (w
       // Further edits while saving remain dirty against the content just saved.
       patch(key, { saved: saved.content, version: saved.version, saving: false })
       onSaved(tab.file.ws, tab.file.task)
-    } catch (error) { patch(key, { saving: false, error: message(error) }) }
+    } catch (e) { patch(key, { saving: false, error: message(e) }) }
   }, [patch, onSaved])
 
   const reload = useCallback(async (key: string) => {
@@ -155,7 +155,7 @@ export function useFiles(scope: { ws: string; task: string } | null, onSaved: (w
       if (!current || current.version !== tab.version || current.loading || current.saving || isDirty(current) || current.version === doc.version) return
       editors.current.delete(key)
       patch(key, { content: doc.content, saved: doc.content, version: doc.version, error: '', generation: current.generation + 1 })
-    } catch (error) { patch(key, { error: message(error) }) }
+    } catch (e) { patch(key, { error: message(e) }) }
   }, [patch])
 
   useEffect(() => {

@@ -216,10 +216,10 @@ export async function resumeInterrupted(mgr: PersistenceCtx, id: string): Promis
     await mgr.persistNow(s)
     s.recovering = false
     void mgr.drainPending(s)
-  } catch (err) {
+  } catch (e) {
     s.pending = previous
     s.interrupted = wasInterrupted
-    throw err
+    throw e
   } finally {
     s.recoveryStarting = false
   }

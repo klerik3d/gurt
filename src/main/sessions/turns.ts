@@ -163,10 +163,10 @@ export async function sendTurn(mgr: TurnsCtx, s: Session,
   s.interrupted = true
   try {
     await mgr.persistNow(s)
-  } catch (err) {
+  } catch (e) {
     s.busy = false
     s.recovering = true
-    throw err
+    throw e
   }
   try {
     if (maskError) throw maskError
@@ -478,8 +478,8 @@ export async function settleTurn(mgr: TurnsCtx, s: Session, turn: TurnTrack, out
     try {
       await mgr.persistNow(s)
       break
-    } catch (err) {
-      log.error('session.persist.fail', { err, attempt })
+    } catch (e) {
+      log.error('session.persist.fail', { err: e, attempt })
       await new Promise((r) => setTimeout(r, SETTLE_RETRY_MS[Math.min(attempt, SETTLE_RETRY_MS.length - 1)]))
     }
   }

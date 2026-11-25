@@ -405,8 +405,8 @@ export class Engine {
   async stopLocked(executor: string): Promise<void> {
     try {
       await this.doStop(executor)
-    } catch (err) {
-      this.warn(`rpm: stop ${executor}: ${errText(err)}`)
+    } catch (e) {
+      this.warn(`rpm: stop ${executor}: ${errText(e)}`)
     }
   }
 

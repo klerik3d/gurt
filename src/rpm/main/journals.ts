@@ -87,8 +87,8 @@ export class Journals {
           })
         }
         runs.push({ n, entries })
-      } catch (err) {
-        this.warn(`rpm: ${runFile(dir, n)}: ${String(err)}`)
+      } catch (e) {
+        this.warn(`rpm: ${runFile(dir, n)}: ${String(e)}`)
       }
     }
     return { id: executor, config: readConfig(dir, this.warn), runs }
@@ -155,9 +155,9 @@ export class Journals {
     exec.runs.push(rec)
     try {
       await this.append(executor, rec, { by: 'rpm', kind: 'start', executor, run: n, ...start })
-    } catch (err) {
+    } catch (e) {
       exec.runs.pop()
-      throw err
+      throw e
     }
     return rec
   }
@@ -171,8 +171,8 @@ export class Journals {
     for (const fn of this.listeners) {
       try {
         fn({ executor, run })
-      } catch (err) {
-        this.warn(`rpm: onChange listener: ${String(err)}`)
+      } catch (e) {
+        this.warn(`rpm: onChange listener: ${String(e)}`)
       }
     }
   }
