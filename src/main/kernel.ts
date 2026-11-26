@@ -402,7 +402,22 @@ export function createKernel(options: KernelOptions = {}): Kernel {
   })
   sessions.setRpmTools(rpm.tools)
   notifications.setQuiets((id) => rpm.quiets(id))
-  rpm.onChange((e) => bus.emit('rpm', e))
+  // The executor's mark follows its run: check/review going on around an idle
+  // session is work, not idleness (`SessionInfo.flow`).
+  const syncFlow = (executor: string): void => {
+    const st = rpm.state(executor)
+    const p = st?.live ? st.status.phase : undefined
+    sessions.setFlow(
+      executor,
+      p === 'check' || p === 'fix-check' ? 'check'
+      : p === 'review' ? (st?.status.phase === 'review' && st.status.waitingPlan ? 'queued' : 'review')
+      : undefined
+    )
+  }
+  rpm.onChange((e) => {
+    syncFlow(e.executor)
+    bus.emit('rpm', e)
+  })
 
   // Usage ledger: files every finished turn against the agent instance that
   // served it. Wired here, next to notifications, for the same reason — both
@@ -544,6 +559,7 @@ export function createKernel(options: KernelOptions = {}): Kernel {
     progress(92, 'recovering review runs')
     await rpm.recover().catch((e: unknown) => log.error('internal.fail', { site: 'rpm-recover', err: e }))
     rpm.start()
+    for (const s of sessions.allSessions()) syncFlow(s.id)
     progress(96, 'resuming queue')
     sessions.schedule()
     reapForQueue()

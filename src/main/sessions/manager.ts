@@ -7,7 +7,9 @@ import {
   type AgentConfig,
   type InterruptedSession,
   type AgentConfigCache,
+  type AgentDraftSummary,
   type AgentSessionRequest,
+  type AgentSessionUpdate,
   type ChangeProposal,
   type ChatEntry,
   type ChatEntryBase,
@@ -22,6 +24,7 @@ import {
   type SessionInfo,
   type SessionNetwork,
   type RepoMode,
+  type SessionFlow,
   type SessionRole,
   type SessionSnapshot,
   type StoredProposal,
@@ -243,6 +246,16 @@ export class SessionManager {
     this.rpmTools = t
   }
 
+  /** What the executor's RPM run does around it right now (`SessionInfo.flow`);
+   *  runtime only. */
+  private readonly flows = new Map<string, SessionFlow>()
+  setFlow(sessionId: string, flow: SessionFlow | undefined): void {
+    if (this.flows.get(sessionId) === flow) return
+    if (flow) this.flows.set(sessionId, flow)
+    else this.flows.delete(sessionId)
+    if (this.sessions.has(sessionId)) this.bus.emit('session.changed', { sessionId })
+  }
+
   /** The last classified turn of an executor or reviewer (persisted before
    *  `session.settled`): what RPM replays at load (t3v2 §4.1). */
   lastSettled(sessionId: string): SettledTurn | undefined {
@@ -319,6 +332,7 @@ export class SessionManager {
       ...s.info,
       busy: s.busy || undefined,
       awaitingInput: s.pendingPermissions.size > 0 || undefined,
+      flow: this.flows.get(s.info.id),
       pending: s.pending.length ? s.pending.map(pendingInfo) : undefined,
       queueWaiting: s.recovering ? 'waiting for resume' : this.pendingBlocked(s) ?? (s.info.state === 'queued' ? this.queuedWaiting(s) : undefined)
     }
@@ -408,6 +422,7 @@ export class SessionManager {
     const missing = missingRepoReason(s.info)
     if (missing) throw new Error(missing)
     s.info.state = 'queued'
+    s.info.handedOff = true
     s.info.queuedAt = new Date().toISOString()
     s.startError = undefined
     this.bus.emit('tree.changed', undefined)
@@ -643,6 +658,8 @@ export class SessionManager {
     mounts: { repo: string; mode: RepoMode }[]
     onComplete: (p: ChangeProposal) => void
     onCreateSession: (req: AgentSessionRequest) => Promise<{ sessionId: string; title: string }>
+    onUpdateSession: (sessionId: string, upd: AgentSessionUpdate) => Promise<AgentDraftSummary>
+    onListDrafts: () => AgentDraftSummary[]
     admin?: AdminHooks
     proactive?: ProactiveHooks
     watcher?: WatcherToolHooks
@@ -660,6 +677,10 @@ export class SessionManager {
     req: AgentSessionRequest): Promise<{ sessionId: string; title: string }> {
     return drafts.createAgentDraft(SessionManager.draftsCtx(this), spawnerId, req)
   }
+  updateAgentDraft(spawnerId: string, sessionId: string, upd: AgentSessionUpdate): Promise<AgentDraftSummary> {
+    return drafts.updateAgentDraft(SessionManager.draftsCtx(this), spawnerId, sessionId, upd)
+  }
+  listAgentDrafts(spawnerId: string): AgentDraftSummary[] { return drafts.listAgentDrafts(SessionManager.draftsCtx(this), spawnerId) }
 
   inheritanceOf(info: SessionInfo): DraftInheritance { return drafts.inheritanceOf(info) }
   prepareDraft(ws: string, req: AgentSessionRequest, inherit: DraftInheritance): Promise<PreparedDraft> { return drafts.prepareDraft(SessionManager.draftsCtx(this), ws, req, inherit) }
@@ -922,6 +943,8 @@ export class SessionManager {
       cacheAgentConfig: (s) => m.cacheAgentConfig(s),
       cacheHint: (s) => m.cacheHint(s),
       createAgentDraft: (spawnerId, req) => m.createAgentDraft(spawnerId, req),
+      updateAgentDraft: (spawnerId, sessionId, upd) => m.updateAgentDraft(spawnerId, sessionId, upd),
+      listAgentDrafts: (spawnerId) => m.listAgentDrafts(spawnerId),
       get events() { return m.events },
       onComplete: (sessionId, p) => m.onComplete(sessionId, p),
       get rpmTools() { return m.rpmTools },

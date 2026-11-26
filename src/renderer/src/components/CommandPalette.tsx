@@ -1,8 +1,10 @@
 import { taskKey } from '../../../shared/keys'
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from 'react'
 import {
+  sessionFlow,
   sessionStatus,
   type SessionActivity,
+  type SessionFlow,
   type SessionStatus,
   type Tree
 } from '../../../shared/types'
@@ -21,6 +23,7 @@ interface SessionItem {
   client: string
   clientKind?: string | undefined
   status: SessionStatus
+  flow?: SessionFlow | undefined
 }
 
 interface TaskItem {
@@ -112,7 +115,8 @@ export function CommandPalette({
               title: s.title,
               client: agentName(agents, s.agent),
               clientKind: agentKind(agents, s.agent),
-              status: sessionStatus({ ...s, ...activity[s.id] })
+              status: sessionStatus({ ...s, ...activity[s.id] }),
+              flow: sessionFlow({ ...s, ...activity[s.id] })
             })
       }
 
@@ -190,7 +194,7 @@ export function CommandPalette({
         </div>
       )
     if (item.kind === 'session') {
-      const dot = sessionDot(item.status)
+      const dot = sessionDot(item.status, item.flow)
       return (
         <div key={item.id} {...common}>
           <Dot tone={dot.tone} pulse={dot.pulse} hollow={dot.hollow} />

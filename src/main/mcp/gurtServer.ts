@@ -9,7 +9,9 @@ import {
   roleWritesAdmin,
   spawnableRoles,
   type AcpHttpMcpServer,
+  type AgentDraftSummary,
   type AgentSessionRequest,
+  type AgentSessionUpdate,
   type ChangeProposal,
   type EnvRef,
   type RepoMode,
@@ -74,7 +76,11 @@ const RESEARCHER_INSTRUCTIONS =
   '(created on the spot if missing), so the current discussion stays on\n' +
   'topic. A draft never runs by itself — the user reviews, edits and\n' +
   'launches it — so draft freely, and never wait for one: no result comes\n' +
-  'back to you.'
+  'back to you.\n' +
+  'Got a draft wrong (role, repos, prompt, env, …)? Fix it with\n' +
+  '`update_session` rather than drafting another one — `list_drafts` names\n' +
+  'the drafts you made. Only a draft the user has not launched yet can be\n' +
+  'edited.'
 
 /**
  * The inspector is the read half of the operator
@@ -91,7 +97,9 @@ const INSPECTOR_INSTRUCTIONS =
   '`get_provisioning_log`, …) and explain what is wrong and how to fix it.\n' +
   'When the configuration has to change, call `create_session` to draft an\n' +
   'OPERATOR session with the change spelled out in its prompt. The draft\n' +
-  'only runs once the user launches it — never wait for it.\n' +
+  'only runs once the user launches it — never wait for it. To correct a\n' +
+  'draft you made, use `update_session` (`list_drafts` names them) instead\n' +
+  'of drafting another.\n' +
   'Credential VALUES are never available, to you or through you; you can see\n' +
   'which credentials exist and what links to them, nothing more.'
 
@@ -409,6 +417,35 @@ function createSessionSchema(roles: SessionRole[], crossTask: boolean) {
   })
 }
 
+/**
+ * Strict schema for `update_session`: `create_session`'s fields, all optional
+ * — only what is supplied changes. `repos` replaces the whole list, each with
+ * its mode, exactly as `create_session` takes it; `task` (offered to the same
+ * roles as there) moves the draft.
+ */
+function updateSessionSchema(roles: SessionRole[], crossTask: boolean) {
+  const fields = createSessionSchema(roles, false).shape
+  return z.strictObject({
+    session: z.string().min(1).describe('id of the draft to edit, as create_session or list_drafts returned it'),
+    ...Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, (v as z.ZodType).optional()])),
+    repos: fields.repos
+      .optional()
+      .describe('the new repo list, replacing the current one — each with its mode; [] for none'),
+    ...(crossTask
+      ? {
+          task: z
+            .string()
+            .min(1)
+            .optional()
+            .describe(
+              'move the draft to this task (created if missing). The moved draft gets a NEW id — ' +
+                'use the one this call returns from then on'
+            )
+        }
+      : {})
+  })
+}
+
 /** The draft `create_session` produced — echoed back so the agent can name it. */
 export interface AgentSessionDraft {
   sessionId: string
@@ -479,6 +516,11 @@ export interface GurtHooks {
   /** Throws to refuse the call (`isError`), e.g. a repo it does not write. */
   onComplete: (p: ChangeProposal) => void
   onCreateSession: (req: AgentSessionRequest) => Promise<AgentSessionDraft>
+  /** `update_session`: edit a draft this session made. Throws to refuse
+   *  (not its draft, already launched, a host-side rule). Absent = no tool. */
+  onUpdateSession?: (sessionId: string, upd: AgentSessionUpdate) => Promise<AgentDraftSummary>
+  /** `list_drafts`: the drafts this session made. Absent = no tool. */
+  onListDrafts?: () => AgentDraftSummary[]
   /** Present only for an inspector or operator session. */
   admin?: AdminHooks
   /** Present only for a proactive run. */
@@ -956,6 +998,60 @@ function makeMcpServer(hooks: GurtHooks): McpServer {
         }
       }
     )
+  // The way back to a draft once made: correct it instead of drafting a second
+  // one next to the wrong first. Offered with `create_session`, to the same
+  // roles; the host binds both to this session, so only its own drafts are
+  // reachable.
+  const { onUpdateSession, onListDrafts } = hooks
+  if (roles.length && onListDrafts)
+    server.registerTool(
+      'list_drafts',
+      {
+        description:
+          'The sessions you drafted with create_session. While `editable` (update_session still ' +
+          'accepts it) each comes with its title, role, task, repos, env and prompt. Once the user ' +
+          'has launched or queued one it is theirs: `editable: false`, and only its id and state.',
+        inputSchema: z.strictObject({})
+      },
+      async () => {
+        try {
+          return { content: [{ type: 'text' as const, text: resultText(onListDrafts()) }] }
+        } catch (e) {
+          return errorResult(e)
+        }
+      }
+    )
+  if (roles.length && onUpdateSession)
+    server.registerTool(
+      'update_session',
+      {
+        description:
+          'Correct a session you drafted with create_session, while it is still a draft (the user ' +
+          'has not launched it): only the fields you pass change, the rest stays. Use it instead of ' +
+          'drafting a second session when the first came out wrong. `repos` replaces the whole ' +
+          'list; `env` follows the repos exactly as in create_session, and is re-resolved only ' +
+          'when you pass `env` or `repos`' +
+          (crossTask ? '; `task` moves the draft to another task, under a new id' : '') +
+          '. Once the user has launched or queued a draft it is theirs and this refuses it, ' +
+          'even if a failed start put it back in draft. Returns the draft as it now stands.',
+        inputSchema: updateSessionSchema(roles, crossTask)
+      },
+      async (raw) => {
+        // Validated by the SDK; the same one-cast boundary as create_session.
+        const { session, repos, ...rest } = raw as unknown as Omit<AgentSessionUpdate, 'repos' | 'repoModes'> & {
+          session: string
+          repos?: { name: string; mode: RepoMode }[]
+        }
+        const upd: AgentSessionUpdate = { ...rest, ...(repos ? draftRepos(repos) : {}) }
+        if (!Object.keys(upd).length)
+          return errorResult(new Error('nothing to change — pass at least one field besides `session`'))
+        try {
+          return { content: [{ type: 'text' as const, text: resultText(await onUpdateSession(session, upd)) }] }
+        } catch (e) {
+          return errorResult(e)
+        }
+      }
+    )
   // The admin tools are the inspector's and the operator's whole surface — the
   // read half for both, the write half (and `apply_held`) for the operator
   // alone: "the tool set is a function of the role"
@@ -1031,6 +1127,10 @@ export async function ensureGurtServer(
     ...(hooks.cacheSeconds ? { cacheSeconds: hooks.cacheSeconds } : {}),
     onComplete: (p) => rec.hooks.onComplete(p),
     onCreateSession: (req) => rec.hooks.onCreateSession(req),
+    ...(hooks.onUpdateSession
+      ? { onUpdateSession: (id: string, upd: AgentSessionUpdate) => rec.hooks.onUpdateSession!(id, upd) }
+      : {}),
+    ...(hooks.onListDrafts ? { onListDrafts: () => rec.hooks.onListDrafts!() } : {}),
     ...(hooks.rpm
       ? {
           rpm: {

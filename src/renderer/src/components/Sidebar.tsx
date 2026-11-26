@@ -11,6 +11,7 @@ import {
   type SetStateAction
 } from 'react'
 import {
+  sessionFlow,
   sessionStatus,
   type ChangedFile,
   type DiffTarget,
@@ -853,7 +854,7 @@ export function Sidebar({
               {!isCollapsed && mode === 'sessions' &&
                 sessionLines(task).map(({ s, nested, reviews, open }) => {
                   const status = sessionStatus({ ...s, ...activity[s.id] })
-                  const dot = sessionDot(status)
+                  const dot = sessionDot(status, sessionFlow({ ...s, ...activity[s.id] }))
                   const srow: Row = { kind: 'session', id: s.id, ws: wsName, task: task.name }
                   const selected = isSelected(srow)
                   const renamingThis = renaming && rowKey(renaming) === rowKey(srow)

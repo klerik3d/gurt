@@ -4,7 +4,9 @@ import {
   roleReadsAdmin,
   sessionRole,
   writeRepos,
+  type AgentDraftSummary,
   type AgentSessionRequest,
+  type AgentSessionUpdate,
   type ChangeProposal,
   type ChatEntry,
   type ChatEntryBase,
@@ -49,6 +51,8 @@ export interface AgentEventsCtx {
   cacheAgentConfig(s: Session): void
   cacheHint(s: Session): { cacheSeconds?: number }
   createAgentDraft(spawnerId: string, req: AgentSessionRequest): Promise<{ sessionId: string; title: string }>
+  updateAgentDraft(spawnerId: string, sessionId: string, upd: AgentSessionUpdate): Promise<AgentDraftSummary>
+  listAgentDrafts(spawnerId: string): AgentDraftSummary[]
   readonly events: SessionEvents
   onComplete(sessionId: string, p: ChangeProposal): void
   readonly rpmTools: RpmTools | undefined
@@ -296,6 +300,8 @@ export function gurtHooks(mgr: AgentEventsCtx, s: Session): {
   mounts: { repo: string; mode: RepoMode }[]
   onComplete: (p: ChangeProposal) => void
   onCreateSession: (req: AgentSessionRequest) => Promise<{ sessionId: string; title: string }>
+  onUpdateSession: (sessionId: string, upd: AgentSessionUpdate) => Promise<AgentDraftSummary>
+  onListDrafts: () => AgentDraftSummary[]
   admin?: AdminHooks
   proactive?: ProactiveHooks
   watcher?: WatcherToolHooks
@@ -308,6 +314,10 @@ export function gurtHooks(mgr: AgentEventsCtx, s: Session): {
     mounts: s.info.repos.map((repo) => ({ repo, mode: repoMode(s.info, repo) })),
     onComplete: (p) => mgr.onComplete(s.info.id, p),
     onCreateSession: (req) => mgr.createAgentDraft(s.info.id, req),
+    // Bound to this session's id, never one the agent names: a session edits
+    // only the drafts it made itself.
+    onUpdateSession: (sessionId, upd) => mgr.updateAgentDraft(s.info.id, sessionId, upd),
+    onListDrafts: () => mgr.listAgentDrafts(s.info.id),
     // The workspace is bound here, from the session's own record — the one
     // parameter the agent can never express (§3.2 of
     // docs/requirements-session-operator.md).

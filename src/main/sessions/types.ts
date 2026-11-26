@@ -1,7 +1,9 @@
 import type {
   AcpHttpMcpServer,
   AgentConfig,
+  AgentDraftSummary,
   AgentSessionRequest,
+  AgentSessionUpdate,
   ChangeProposal,
   ChatEntry,
   EnvRef,
@@ -297,6 +299,8 @@ export interface SessionEvents {
       mounts: { repo: string; mode: RepoMode }[]
       onComplete: (p: ChangeProposal) => void
       onCreateSession: (req: AgentSessionRequest) => Promise<{ sessionId: string; title: string }>
+      onUpdateSession: (sessionId: string, upd: AgentSessionUpdate) => Promise<AgentDraftSummary>
+      onListDrafts: () => AgentDraftSummary[]
       /** Present only for an inspector or operator session — routes its admin
        *  tools into the ws-bound admin surface
        *  (docs/requirements-session-operator.md §3). */

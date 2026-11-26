@@ -5,7 +5,9 @@ import {
   anchorRepo,
   missingRepoReason,
   type AcpHttpMcpServer,
+  type AgentDraftSummary,
   type AgentSessionRequest,
+  type AgentSessionUpdate,
   type ChangeProposal,
   type ChatEntry,
   type ChatEntryBase,
@@ -55,6 +57,8 @@ export interface StartCtx {
     mounts: { repo: string; mode: RepoMode }[]
     onComplete: (p: ChangeProposal) => void
     onCreateSession: (req: AgentSessionRequest) => Promise<{ sessionId: string; title: string }>
+    onUpdateSession: (sessionId: string, upd: AgentSessionUpdate) => Promise<AgentDraftSummary>
+    onListDrafts: () => AgentDraftSummary[]
     admin?: AdminHooks
     proactive?: ProactiveHooks
     watcher?: WatcherToolHooks
@@ -272,6 +276,8 @@ export async function startSession(mgr: StartCtx, sessionId: string, by: 'user' 
   }
   mgr.bus.emit('session.activity', { sessionId: s.info.id })
   s.info.state = 'starting'
+  // Launched: whatever becomes of this start, the draft is the user's now.
+  s.info.handedOff = true
   s.info.queuedAt = undefined
   s.startError = undefined
   s.startedAt = Date.now()

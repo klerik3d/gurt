@@ -34,6 +34,7 @@ const TOKEN = 'test-token'
 /** Payloads the host callbacks received — the machine-readable outcomes. */
 const received = []
 const drafted = []
+const updated = []
 /** Whatever the next `create_session` should do: return a draft, or throw the
  *  way a host-side rule (role gating, unknown repo) does. */
 /** What the host callback answers with — a draft, or the rejection it throws.
@@ -57,7 +58,15 @@ for (const role of ['executor', 'researcher', 'inspector']) {
       drafted.push({ role, req })
       if (draftResult instanceof Error) throw draftResult
       return draftResult
-    }
+    },
+    // Stand-ins for the host's own-draft rule: only `sess-1` is this
+    // session's, the rest is refused the way the session manager refuses it.
+    onUpdateSession: async (sessionId, upd) => {
+      updated.push({ role, sessionId, upd })
+      if (sessionId !== 'sess-1') throw new Error(`"${sessionId}" is not a session you drafted`)
+      return { sessionId, title: upd.title ?? 'fix review findings', state: 'draft' }
+    },
+    onListDrafts: () => [{ sessionId: 'sess-1', title: 'fix review findings', state: 'draft' }]
   })
   await new Promise((r) => server.listen(0, '127.0.0.1', r))
   servers[role] = server
@@ -212,12 +221,16 @@ test('per-role tool sets', async () => {
   const researcherTools = await tools('researcher')
   assert.deepEqual(
     Object.keys(researcherTools),
-    ['create_session'],
-    'a researcher gets create_session and NO complete'
+    ['create_session', 'list_drafts', 'update_session'],
+    'a researcher drafts, lists and edits its drafts, and has NO complete'
   )
-  // No admin hooks wired here: an inspector's server is create_session alone.
+  // No admin hooks wired here: an inspector's server is the drafting tools alone.
   const inspectorTools = await tools('inspector')
-  assert.deepEqual(Object.keys(inspectorTools), ['create_session'], 'an inspector gets create_session and NO complete')
+  assert.deepEqual(
+    Object.keys(inspectorTools),
+    ['create_session', 'list_drafts', 'update_session'],
+    'an inspector gets the drafting tools and NO complete'
+  )
   // The offered `role` is narrowed per spawner, in the schema itself.
   assert.deepEqual(
     researcherTools.create_session.inputSchema.properties.role.enum,
@@ -347,6 +360,66 @@ test('tool gating per role', async () => {
   // …and neither role without the contract can report a proposal.
   const noComplete = await call('complete', { version: 1, outcome: 'no_changes' }, 'researcher')
   assert.equal(noComplete.isError, true, 'a researcher has no `complete` tool')
+})
+
+// --- update_session / list_drafts: the way back to a draft -----------------
+test('update_session', async () => {
+  const t = await tools('researcher')
+  const schema = t.update_session.inputSchema
+  assert.deepEqual(schema.required, ['session'], 'only the draft id is required — every field is optional')
+  assert.equal(schema.additionalProperties, false, 'unknown keys are rejected')
+  assert.match(schema.properties.task.description, /NEW id/, 'a cross-task role may move the draft, and is told the id changes')
+  assert.deepEqual(schema.properties.role.enum, ['executor', 'researcher'], 'the role stays narrowed per spawner')
+  assert.deepEqual(
+    (await tools('inspector')).update_session.inputSchema.properties.role.enum,
+    ['operator'],
+    'an inspector can only keep its draft an operator'
+  )
+  assert.match(schema.properties.env.description, /target repo's own default environment/, 'env documents the same rule')
+
+  const ok = await call(
+    'update_session',
+    { session: 'sess-1', role: 'executor', repos: [{ name: 'alpha', mode: 'write' }], prompt: 'do it properly', title: 'fixed' },
+    'researcher'
+  )
+  assert.equal(ok.isError, false, 'a valid edit is not an error')
+  assert.deepEqual(updated[updated.length - 1], {
+    role: 'researcher',
+    sessionId: 'sess-1',
+    upd: { role: 'executor', repos: ['alpha'], repoModes: { alpha: 'write' }, prompt: 'do it properly', title: 'fixed' }
+  }, 'the edit reaches the host with repos split into names + modes, nothing else added')
+  assert.match(ok.text, /"title": "fixed"/, 'the result is the draft as it now stands')
+
+  const promptOnly = await call('update_session', { session: 'sess-1', prompt: 'p2' }, 'researcher')
+  assert.equal(promptOnly.isError, false)
+  assert.deepEqual(updated[updated.length - 1].upd, { prompt: 'p2' }, 'an omitted field is not sent, so it stays as it was')
+
+  const guard = updated.length
+  for (const [label, args] of [
+    ['no fields', { session: 'sess-1' }],
+    ['no session', { prompt: 'p' }],
+    ['a role it may not draft', { session: 'sess-1', role: 'operator' }],
+    ['an empty task', { session: 'sess-1', task: '' }],
+    ['a repo without a mode', { session: 'sess-1', repos: [{ name: 'alpha' }] }],
+    ['empty prompt', { session: 'sess-1', prompt: '' }],
+    ['unknown key', { session: 'sess-1', bogus: 1 }]
+  ]) {
+    const r = await call('update_session', args, 'researcher')
+    assert.equal(r.isError, true, `${label} → isError`)
+  }
+  assert.equal(updated.length, guard, 'no rejected edit reached the host')
+
+  const notMine = await call('update_session', { session: 'other', prompt: 'p' }, 'researcher')
+  assert.equal(notMine.isError, true, 'a host-side refusal is an isError result')
+  assert.match(notMine.text, /not a session you drafted/, 'carrying the host message')
+
+  const list = await call('list_drafts', {}, 'researcher')
+  assert.equal(list.isError, false)
+  assert.equal(JSON.parse(list.text)[0].sessionId, 'sess-1', 'list_drafts returns the host list as JSON')
+
+  assert.equal((await call('update_session', { session: 'sess-1', prompt: 'p' })).isError, true, 'an executor has no update_session')
+  assert.match(instructionsFor('researcher', []), /`update_session`/, 'the researcher is told to fix drafts rather than redraft')
+  assert.match(instructionsFor('inspector', []), /`update_session`/, 'and so is the inspector')
 })
 
 // --- the executor's instructions --------------------------------------------
