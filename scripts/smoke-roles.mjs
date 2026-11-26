@@ -121,7 +121,11 @@ const pickRepo = async (name) => {
 }
 const setMode = (repo, mode) =>
   page.click(`.ns-body .repo-mode-row:has(.repo-mode-name:text-is("${repo}")) .chip-btn[data-mode="${mode}"]`)
-const WRITE_NOTE = '.ns-body .hc-note:has-text("no repository mounted for write")'
+// The note lives behind the REPOSITORIES info dot (yellow while it applies),
+// not as a line under the field: the dot is what shows, the popover is hidden
+// until hovered — so it is waited for attached, not visible.
+const WRITE_NOTE =
+  '.ns-body .seclabel-row:has(.seclabel:text-is("REPOSITORIES")) .info-dot.warn[aria-label*="no repository mounted for write"]'
 const pickEnv = async (name) => {
   await page.click(row('ENVIRONMENT'))
   await page.click(`.ns-body .pick-menu .menu-item:has-text("${name}")`)
@@ -164,17 +168,17 @@ try {
   // default, mounted read-locked — the default for every role.
   assert.equal(await page.locator('.ns-body .repo-mode-row').count(), 0, 'a bare draft starts with no repository')
   await pickEnv('dev')
-  await untilRows(['o/alpha:read-locked'])
-  await page.waitForSelector(WRITE_NOTE, { timeout: 5000 })
+  await untilRows(['alpha:read-locked'])
+  await page.waitForSelector(WRITE_NOTE, { state: 'attached', timeout: 5000 })
   console.log('executor: seeded read-locked, Run blocked until something is writable OK')
 
   // Writing is an explicit pick, per repo.
-  await setMode('o/alpha', 'write')
-  await untilRows(['o/alpha:write'])
+  await setMode('alpha', 'write')
+  await untilRows(['alpha:write'])
   await page.waitForSelector(WRITE_NOTE, { state: 'detached', timeout: 5000 })
   // Any role holds any number of repos: a second pick adds, it does not replace.
   await pickRepo('beta')
-  await untilRows(['o/alpha:write', 'o/beta:read-locked'])
+  await untilRows(['alpha:write', 'beta:read-locked'])
   await shot('01-modes')
   // The advanced panel opens, and offers no git-access toggle for any role —
   // the container broker is gone (docs/requirements-mcp-proxy.md §10.2).
@@ -191,9 +195,9 @@ try {
   // --- the role touches neither the repos nor their modes ---
   await pickRole('researcher')
   assert.equal(await shownRole(), 'researcher')
-  await untilRows(['o/alpha:write', 'o/beta:read-locked'])
-  await setMode('o/beta', 'read')
-  await untilRows(['o/alpha:write', 'o/beta:read'])
+  await untilRows(['alpha:write', 'beta:read-locked'])
+  await setMode('beta', 'read')
+  await untilRows(['alpha:write', 'beta:read'])
   await shot('02-researcher')
   console.log('researcher: repos and modes kept across the role pick OK')
 
@@ -217,13 +221,13 @@ try {
   await page.click('.sb-session >> nth=0')
   await openConfig()
   await untilRole('researcher')
-  await untilRows(['o/alpha:write', 'o/beta:read'])
+  await untilRows(['alpha:write', 'beta:read'])
 
   // --- an operator may hold repos too; removing one is its row's × ---
   await pickRole('operator')
-  await untilRows(['o/alpha:write', 'o/beta:read'])
-  await page.click('.ns-body .repo-mode-row:has(.repo-mode-name:text-is("o/beta")) .chip-x')
-  await untilRows(['o/alpha:write'])
+  await untilRows(['alpha:write', 'beta:read'])
+  await page.click('.ns-body .repo-mode-row:has(.repo-mode-name:text-is("beta")) .chip-x')
+  await untilRows(['alpha:write'])
   await persisted(
     (r) => r.info.role === 'operator' && r.info.repos.length === 1 && r.info.repoModes?.alpha === 'write',
     'the edited operator draft'
