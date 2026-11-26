@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   missingRepoReason,
   repoMode,
@@ -90,6 +90,43 @@ export function SessionPane({
  *  survive switching to another session and back (main holds a copy for the start). */
 const draftImages = new Map<string, PromptImage[]>()
 
+/** A draft's prompt as last typed, by session — ahead of main's copy between a
+ *  keystroke and the save that leaving the draft triggers, so coming back never
+ *  shows the older text main happened to echo last. */
+const draftTexts = new Map<string, string>()
+
+/** Prompts this renderer sent to main whose snapshot has not come back yet, by
+ *  session. Outlives the pane, so an echo landing after a leave-and-return is
+ *  still known as ours — it says nothing about what has been typed since. */
+const pendingSaves = new Map<string, Set<string>>()
+
+/** Save a draft's prompt to main, remembered as ours until its echo lands. */
+function savePrompt(sessionId: string, text: string, images: PromptImage[]): Promise<void> {
+  let set = pendingSaves.get(sessionId)
+  if (!set) pendingSaves.set(sessionId, (set = new Set()))
+  // Re-sent: it is the newest again, so it moves to the end.
+  set.delete(text)
+  set.add(text)
+  return window.gurt.sessionEditPrompt(sessionId, text, images).catch((e: unknown) => {
+    // Refused: nothing will echo it back.
+    pendingSaves.get(sessionId)?.delete(text)
+    throw e
+  })
+}
+
+/** The snapshot's prompt is one of our saves coming back: forget it (and every
+ *  save sent before it — main has moved past those) and say so. */
+function takeEcho(sessionId: string, prompt: string): boolean {
+  const set = pendingSaves.get(sessionId)
+  if (!set?.has(prompt)) return false
+  for (const t of set) {
+    set.delete(t)
+    if (t === prompt) break
+  }
+  if (!set.size) pendingSaves.delete(sessionId)
+  return true
+}
+
 function Header({
   snapshot,
   activeTab,
@@ -133,7 +170,17 @@ function NonStartedPane({
 }) {
   const { info } = snapshot
   const mcpFailures = useMcpFailures(sessionId)
-  const [text, setText] = useState(info.startPrompt)
+  const [text, setTextState] = useState(() => draftTexts.get(sessionId) ?? info.startPrompt)
+  /** What the editor holds right now and what main was last told — read by the
+   *  save-on-leave cleanup, which runs after the render that left. */
+  const textRef = useRef(text)
+  const savedRef = useRef(info.startPrompt)
+  const imagesRef = useRef<PromptImage[]>([])
+  const setText = (v: string) => {
+    textRef.current = v
+    draftTexts.set(sessionId, v)
+    setTextState(v)
+  }
   const [images, setImagesState] = useState<PromptImage[]>(draftImages.get(sessionId) ?? [])
   const [activeTab, setActiveTab] = useSessionTab(sessionId, !!reviewOf(info))
   // A queued reviewer's tab: its executor's loop, opened on the run it reviews.
@@ -153,16 +200,54 @@ function NonStartedPane({
   // there with nothing to show the click landed. This is the beat.
   const [submitting, setSubmitting] = useState(false)
 
-  // Keep the editor in sync when the selection switches to another session.
+  // Keep the editor in sync when the selection switches to another session,
+  // and save the draft being left — on a switch (click, hotkey), on leaving
+  // this pane (another view, Run), and on the window closing. A blur alone
+  // misses most of these: a hotkey switch never blurs, and an unmounted
+  // textarea does not reliably fire one.
   useEffect(() => {
-    setText(info.startPrompt)
-    setImagesState(draftImages.get(sessionId) ?? [])
+    const own = draftTexts.get(sessionId) ?? info.startPrompt
+    // Main caught up: from here on its copy is the one to trust (a prompt
+    // edited elsewhere while this pane was away must not lose to a stale cache).
+    if (own === info.startPrompt) draftTexts.delete(sessionId)
+    textRef.current = own
+    // An echo that landed while this pane was away settles those saves now.
+    takeEcho(sessionId, info.startPrompt)
+    // What main will hold once our saves land: the newest one still out.
+    savedRef.current = [...(pendingSaves.get(sessionId) ?? [])].pop() ?? info.startPrompt
+    setTextState(own)
+    imagesRef.current = draftImages.get(sessionId) ?? []
+    setImagesState(imagesRef.current)
     setSubmitting(false)
+    const save = () => {
+      if (textRef.current === savedRef.current) return
+      savedRef.current = textRef.current
+      savePrompt(sessionId, textRef.current, imagesRef.current).catch(logErr('sessionEditPrompt'))
+    }
+    window.addEventListener('beforeunload', save)
+    return () => {
+      window.removeEventListener('beforeunload', save)
+      save()
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId])
+  // Main's copy changed: any of our own saves coming back — including one sent
+  // before a leave-and-return — is already accounted for on screen (and may be
+  // older than what was typed since); anything else — the prompt edited from
+  // elsewhere — replaces the editor.
+  const promptSeenRef = useRef({ sessionId, prompt: info.startPrompt })
   useEffect(() => {
+    const seen = promptSeenRef.current
+    promptSeenRef.current = { sessionId, prompt: info.startPrompt }
+    if (seen.sessionId !== sessionId || seen.prompt === info.startPrompt) return
+    if (takeEcho(sessionId, info.startPrompt)) {
+      if (draftTexts.get(sessionId) === info.startPrompt) draftTexts.delete(sessionId)
+      return
+    }
+    savedRef.current = info.startPrompt
     setText(info.startPrompt)
-  }, [info.startPrompt])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, info.startPrompt])
   // This pane outlives the draft → starting/queued → draft round trip of a
   // failed start, so "the click landed" has to end with the state that answered
   // it — otherwise the returned draft keeps its buttons disabled until the
@@ -176,7 +261,9 @@ function NonStartedPane({
     if (next.length) draftImages.set(sessionId, next)
     else draftImages.delete(sessionId)
     setImagesState(next)
-    window.gurt.sessionEditPrompt(sessionId, text, next).catch(logErr('sessionEditPrompt'))
+    imagesRef.current = next
+    savedRef.current = text
+    savePrompt(sessionId, text, next).catch(logErr('sessionEditPrompt'))
   }
   // Unknown capabilities (never-run agent) count as yes; only an agent that said no turns it off.
   const imageOk = !snapshot.promptCapabilities || snapshot.promptCapabilities.image !== false
@@ -252,8 +339,9 @@ function NonStartedPane({
               void readImages(files).then((added) => added.length && setImages([...images, ...added]))
             }}
             onBlur={() => {
-              if (text !== info.startPrompt)
-                window.gurt.sessionEditPrompt(sessionId, text, images).catch(logErr('sessionEditPrompt'))
+              if (text === savedRef.current) return
+              savedRef.current = text
+              savePrompt(sessionId, text, images).catch(logErr('sessionEditPrompt'))
             }}
           />
           <ImageThumbs images={images} onRemove={(i) => setImages(images.filter((_, j) => j !== i))} />
@@ -269,7 +357,8 @@ function NonStartedPane({
               onClick={run(async () => {
                 setSubmitting(true)
                 try {
-                  await window.gurt.sessionEditPrompt(sessionId, text, images)
+                  savedRef.current = text
+                  await savePrompt(sessionId, text, images)
                   await window.gurt.sessionEnqueue(sessionId)
                   // Main keeps them for the queued start; this copy is only the
                   // editor's — kept, so a cancelled wait comes back with them.

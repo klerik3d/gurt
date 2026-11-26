@@ -82,8 +82,8 @@
 // nothing to rotate. `GURT_PROXY_LOG=<path>` redirects to a file instead.
 //
 //   node gurt-proxy.mjs            # env: GURT_PROXY_CONFIG, _PORT, _BIND, _LOG
-import { createServer, request as httpRequest } from 'node:http'
-import { request as httpsRequest } from 'node:https'
+import { Agent as HttpAgent, createServer, request as rawHttpRequest } from 'node:http'
+import { Agent as HttpsAgent, request as rawHttpsRequest } from 'node:https'
 import net from 'node:net'
 import dns from 'node:dns'
 import fs from 'node:fs'
@@ -91,6 +91,16 @@ import os from 'node:os'
 import { timingSafeEqual } from 'node:crypto'
 import { StringDecoder } from 'node:string_decoder'
 import { pathToFileURL } from 'node:url'
+
+/** This proxy *is* the way out: every upstream it dials is dialled directly.
+ *  Its own agents, because the global ones follow `HTTP(S)_PROXY` whenever the
+ *  process runs with `NODE_USE_ENV_PROXY` (or `--use-env-proxy`) — and then an
+ *  MCP upstream or a vetted egress target would leave through some other proxy
+ *  with its own policy. Keep-alive as the global agents have it. */
+const directHttp = new HttpAgent({ keepAlive: true })
+const directHttps = new HttpsAgent({ keepAlive: true })
+const httpRequest = (opts, cb) => rawHttpRequest({ agent: directHttp, ...opts }, cb)
+const httpsRequest = (opts, cb) => rawHttpsRequest({ agent: directHttps, ...opts }, cb)
 
 /** Config file version this build understands (`ProxyConfig.version`). */
 export const CONFIG_VERSION = 1
