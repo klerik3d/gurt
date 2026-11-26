@@ -20,7 +20,7 @@
 // Everything that touches a container is injected (`CheckDeps`); the tests run
 // the same module over a fake exec. Nothing is ever written in the container.
 import { StringDecoder } from 'node:string_decoder'
-import { loginShell } from './provision'
+import { checkShell } from './provision'
 import { CONTAINER_ROOT } from '../shared/files'
 
 export interface CheckResult {
@@ -296,7 +296,7 @@ export class CheckRunner {
 
     let child: ExecChild
     try {
-      child = this.deps.exec(loginShell(req.command), req.cwd ?? `${CONTAINER_ROOT}/${req.repo}`)
+      child = this.deps.exec(checkShell(req.command), req.cwd ?? `${CONTAINER_ROOT}/${req.repo}`)
     } catch (e) {
       return { status: 'failed-to-run', error: `could not start the check: ${errText(e)}` }
     }

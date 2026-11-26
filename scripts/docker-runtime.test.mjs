@@ -47,6 +47,7 @@ await bundle({
       export { flushSync } from ${S('src/main/log.ts')}
       export { machinePrepare } from ${S('src/main/doctor.ts')}
       export { AGENT_MANIFESTS } from ${S('src/shared/agents.ts')}
+      export { proxyEnv } from ${S('src/shared/proxy.ts')}
     `,
     resolveDir: ROOT,
     loader: 'ts',
@@ -280,6 +281,41 @@ test('a failing start script fails the start but keeps the container', async () 
   assert.equal(fake.of('rm').length, 0, 'container kept')
 })
 
+// A real shell, not the fake docker: the argv the check runner hands `docker exec`
+// run on this host as the user's login shell. Needs a bash login shell from getent.
+const loginIsBash = (() => {
+  try {
+    return /bash$/.test(execFileSync('sh', ['-c', 'getent passwd "$(id -un)" | cut -d: -f7'], { encoding: 'utf8' }).trim())
+  } catch {
+    return false
+  }
+})()
+test('checkShell: a tool on PATH only via ~/.bashrc is found, the agent’s PATH is kept, the command runs as written', { skip: !loginIsBash && 'login shell is not bash' }, () => {
+  const home = fs.mkdtempSync(path.join(tmp, 'home-'))
+  fs.mkdirSync(path.join(home, '.local', 'bin'), { recursive: true })
+  fs.writeFileSync(path.join(home, '.local', 'bin', 'uv'), '#!/bin/sh\necho uv-stub\n', { mode: 0o755 })
+  // The Debian skeleton: .profile sources .bashrc, which returns at once when not
+  // interactive — where an installer (uv, nvm, rustup) adds itself, after a banner.
+  fs.writeFileSync(path.join(home, '.profile'), '[ -n "$BASH_VERSION" ] && [ -f "$HOME/.bashrc" ] && . "$HOME/.bashrc"\n')
+  fs.writeFileSync(
+    path.join(home, '.bashrc'),
+    'case $- in *i*) ;; *) return;; esac\necho WELCOME\nexport PATH="$HOME/.local/bin:$PATH"\n'
+  )
+  const run = (cmd, argv = m.checkShell(cmd)) => {
+    const [c, ...a] = argv
+    try {
+      return { code: 0, out: execFileSync(c, a, { env: { HOME: home, PATH: '/usr/bin:/bin:/opt/agent/bin' }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }) }
+    } catch (e) {
+      return { code: e.status, out: String(e.stdout) + String(e.stderr) }
+    }
+  }
+  assert.equal(run('uv', m.loginShell('uv')).code, 127, 'the bare login shell (the old check) does not find it')
+  assert.deepEqual(run('uv'), { code: 0, out: 'uv-stub\n' })
+  assert.equal(run('case ":$PATH:" in *:/opt/agent/bin:*) echo kept;; esac').out, 'kept\n')
+  assert.equal(run(`echo "a b" 'c $HOME'; echo "\${GURT_PATH_-unset}"`).out, 'a b c $HOME\nunset\n')
+  assert.equal(run('exit 3').code, 3)
+})
+
 test('the env probe: -lic, then PATH gets gurt’s node and adapter bins appended', async () => {
   fake.ctl({ volumeExists: true, volumeReady: true })
   const r = await m.createContainer(spec(), noop)
@@ -381,6 +417,24 @@ test('secrets never reach argv: names by -e NAME, values in the client env', asy
   assert.deepEqual(cat.cmd, ['cat', '/x'])
   assert.deepEqual(adapter.cmd.slice(0, 2), ['sh', '-c'])
   assert.equal(adapter.cmd[3], 'claude-agent-acp')
+})
+
+test('a check exec (spawnExec) carries the proxy variables the agent has, no -i, the record’s target', async () => {
+  fake.ctl({ watch: ['HTTP_PROXY', 'https_proxy', 'NODE_USE_ENV_PROXY'] })
+  const sess = {
+    id: 'ex1', workspace: 'wse', task: 'task', env: 'dev', repos: ['repo'], role: 'executor',
+    container: { id: 'cid-9', status: 'running', user: 'dev', remoteWorkspaceFolder: '/workspaces/repo', path: '/p/bin', repos: ['repo'] }
+  }
+  const child = managerFor(sess).spawnExec('ex1', ['sh', '-c', 'npm ci'], '/workspaces/repo')
+  await once(child, 'close')
+  const [e] = fake.execs()
+  assert.equal(e.id, 'cid-9')
+  assert.equal(e.user, 'dev')
+  assert.equal(e.cwd, '/workspaces/repo')
+  assert.ok(!e.flags.includes('-i'), 'no stdin')
+  const proxy = m.proxyEnv()
+  for (const n of Object.keys(proxy)) assert.ok(e.env.includes(n), `${n} passed by name`)
+  assert.deepEqual(e.raw.env, { HTTP_PROXY: proxy.HTTP_PROXY, https_proxy: proxy.https_proxy, NODE_USE_ENV_PROXY: '1' })
 })
 
 test('auth-file and client-config content arrives through stdin, not argv', async () => {

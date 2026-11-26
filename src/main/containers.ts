@@ -280,12 +280,19 @@ export class ContainerManager {
    * record per call: the container may have been recreated since the caller was
    * built. Throws when there is no container to exec into (setup never
    * succeeded); the caller maps that to "cannot run".
+   *
+   * It carries the proxy variables the agent is launched with
+   * (`connection.ts`, §4.5): on an internal session network the proxy is
+   * the only way out, so a check without them could not reach a registry at
+   * all. A command the agent ran fine (`npm ci`, `uv run`, `cargo test`,
+   * `go test`, which fetch on their own) would then fail in the check with
+   * "dependency not found".
    */
   spawnExec(sessionId: string, argv: string[], cwd?: string): ReturnType<typeof spawnDockerExec> {
     const c = this.container(sessionId)
     const t = c && this.execTarget(c)
     if (!t) throw new Error('the session has no container to run in')
-    return spawnDockerExec(cwd ? { ...t, cwd } : t, argv, {}, { interactive: false })
+    return spawnDockerExec(cwd ? { ...t, cwd } : t, argv, proxyEnv(), { interactive: false })
   }
 
   /**

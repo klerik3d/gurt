@@ -401,6 +401,19 @@ docker CLI, which is not relied on to stop anything in the container.
 - **Execution**: a plain `docker exec` of the login shell as the container
   user, in `/workspaces/<repo>`. Nothing else runs in the container and nothing
   is written there: no wrapper, no pid file, no process group.
+- **Network**: the exec carries the agent's proxy variables (`proxyEnv`,
+  §4.5 of the MCP proxy spec), and no other launch env. On an internal session
+  network the proxy is the only way out. Without them a check whose command
+  fetches (`npm ci`, `uv run`, `cargo`, `go test`) failed on a missing
+  dependency that the agent's own run had no trouble fetching.
+- **PATH** (`checkShell`, provision.ts): the agent's PATH. A bare `-lc` loses
+  it, because `/etc/profile` resets PATH and a non-interactive shell skips
+  `~/.bashrc`, where uv/nvm/pyenv/rustup add themselves. A tool the agent
+  installed was then `command not found` (127) in the check. So an
+  interactive login shell's PATH is read just before the check (`-lic`, 10 s)
+  and prepended to the agent's. A PATH set only inside one agent command
+  (`export`, `source …/env`) is still not seen: nothing in the container
+  keeps it.
 - **Bounded capture**: the host keeps a ring of the last 60 lines, each cut at
   500 chars, ≤ 8 KB, and nothing else; stdout is never accumulated.
 - **Visible while it runs**: the check's console block in the executor's chat
