@@ -38,6 +38,7 @@ export type HotkeyActionId =
   | 'gotoArchive'
   | 'toggleTerminal'
   | 'gotoSettings'
+  | 'chatLatest'
 
 export interface HotkeyDef {
   id: HotkeyActionId
@@ -62,7 +63,8 @@ export const HOTKEY_DEFS: HotkeyDef[] = [
   { id: 'gotoWatchers', label: 'Go to watchers', hint: 'show or hide watchers, focusing the list' },
   { id: 'gotoArchive', label: 'Go to archive', hint: 'open the archive' },
   { id: 'toggleTerminal', label: 'Toggle terminal', hint: 'show or hide the scope terminal' },
-  { id: 'gotoSettings', label: 'Go to settings', hint: 'open settings' }
+  { id: 'gotoSettings', label: 'Go to settings', hint: 'open settings' },
+  { id: 'chatLatest', label: 'Jump to latest', hint: 'scroll the open chat to its end and keep following it' }
 ]
 
 export const HOTKEY_DEFAULTS: Record<HotkeyActionId, HotkeyBinding> = {
@@ -79,7 +81,8 @@ export const HOTKEY_DEFAULTS: Record<HotkeyActionId, HotkeyBinding> = {
   gotoWatchers: { code: 'Digit8', mod: true, shift: false, alt: false },
   gotoArchive: { code: 'Digit7', mod: true, shift: false, alt: false },
   toggleTerminal: { code: 'Digit4', mod: true, shift: false, alt: false },
-  gotoSettings: { code: 'Digit0', mod: true, shift: false, alt: false }
+  gotoSettings: { code: 'Digit0', mod: true, shift: false, alt: false },
+  chatLatest: { code: 'KeyJ', mod: true, shift: false, alt: false }
 }
 
 export type HotkeyMap = Record<HotkeyActionId, HotkeyBinding>

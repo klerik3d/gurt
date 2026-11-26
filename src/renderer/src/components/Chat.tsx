@@ -46,6 +46,8 @@ import { run } from '../async'
 import { stamp } from '../time'
 import { clearChatJump, useChatJump } from '../chatJump'
 import { clearReviewJump, useReviewJump } from '../reviewJump'
+import { useHotkeys } from '../useHotkeys'
+import { bindingLabel, bindingMatchesEvent } from '../../../shared/hotkeys'
 
 const log = createLogger('chat')
 
@@ -71,11 +73,9 @@ const PIN_BAR_CLEARANCE = 36
  *  landing on it makes the bar flicker on the sub-pixel boundary. */
 const PIN_LAND_GAP = 14
 
-/** Distance from the bottom beyond which the "back to latest" button shows,
- *  and the (smaller) one within which it hides again — a gap so a feed
- *  hovering around one value does not make the button blink. */
-const AWAY_SHOW_PX = 120
-const AWAY_HIDE_PX = 48
+/** Within this distance of the bottom the feed counts as following the tail;
+ *  past it, it does not — and the "back to latest" button shows. */
+const STICK_PX = 40
 
 /** Unsent composer text/context/images, kept outside React state so they survive
  *  the remount `key={sessionId}` forces on every session switch (that key exists
@@ -206,6 +206,7 @@ export function Chat({
     const inner = innerRef.current
     if (!feed || !inner) return
     stickRef.current = true
+    setAway(false)
     feed.scrollTop = feed.scrollHeight
     const ro = new ResizeObserver(() => {
       if (stickRef.current) feed.scrollTop = feed.scrollHeight
@@ -213,13 +214,15 @@ export function Chat({
     ro.observe(inner)
     ro.observe(feed)
     return () => ro.disconnect()
-  }, [sessionId, hasSnapshot])
+    // activeTab: the feed is a fresh element every time the Chat tab comes back.
+  }, [sessionId, hasSnapshot, activeTab])
 
   // Sending a prompt jumps to the tail even if the user had scrolled up.
   useLayoutEffect(() => {
     const feed = feedRef.current
     if (!feed || lastUserId === undefined) return
     stickRef.current = true
+    setAway(false)
     feed.scrollTop = feed.scrollHeight
   }, [lastUserId])
 
@@ -229,11 +232,13 @@ export function Chat({
     if (!el) return
     const gap = el.scrollHeight - el.scrollTop - el.clientHeight
     if (jumpingRef.current) {
-      if (gap < 40) jumpingRef.current = false
+      if (gap < STICK_PX) jumpingRef.current = false
       else return
     }
-    stickRef.current = gap < 40
-    setAway((was) => (was ? gap > AWAY_HIDE_PX : gap > AWAY_SHOW_PX))
+    // The button mirrors the follow flag exactly: whenever new output would
+    // land out of sight, the way back is on screen — not only while scrolling.
+    stickRef.current = gap < STICK_PX
+    setAway(!stickRef.current)
   }
 
   /** Back to what is happening now: glide to the bottom and follow the tail again. */
@@ -242,13 +247,33 @@ export function Chat({
     if (!feed) return
     stickRef.current = true
     jumpingRef.current = true
+    setAway(false)
     feed.scrollTo({ top: feed.scrollHeight, behavior: prefersReducedMotion() ? 'auto' : 'smooth' })
     // The glide may end short (content grew under it) without a scroll event
     // at the bottom; the next user scroll must not be swallowed.
     window.setTimeout(() => {
       jumpingRef.current = false
+      // Landed short (content grew under the glide): finish the trip — the
+      // ResizeObserver only re-pins on the next growth.
+      if (stickRef.current) feed.scrollTop = feed.scrollHeight
     }, 900)
   }
+
+  // The jump-to-latest hotkey (Settings → Hotkeys), for the chat on screen.
+  const hotkeys = useHotkeys()
+  const jumpRef = useRef(jumpToLatest)
+  jumpRef.current = jumpToLatest
+  const chatOpen = activeTab === 'chat' && hasSnapshot
+  useEffect(() => {
+    if (!chatOpen) return
+    const onKey = (e: KeyboardEvent) => {
+      if (!bindingMatchesEvent(hotkeys.chatLatest, e)) return
+      e.preventDefault()
+      jumpRef.current()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [chatOpen, hotkeys])
 
   // The "your request" bar tracks whichever user message the current scroll
   // position has passed — like a scrollspy following section headings — so
@@ -524,7 +549,7 @@ export function Chat({
               onClick={jumpToLatest}
               tabIndex={away ? 0 : -1}
               aria-hidden={!away}
-              title="back to the latest messages"
+              title={`back to the latest messages · ${bindingLabel(hotkeys.chatLatest)}`}
             >
               <Icon name="chevron" size={13} />
               <span>Latest</span>
