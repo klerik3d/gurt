@@ -840,6 +840,39 @@ export const loginShell = (script: string, flags = '-lc'): string[] => [
   'sh', '-c', `${PICK_SHELL}exec "$sh_" ${flags} "$0"`, script
 ]
 
+const CHECK_PATH_MARK = '__GURT_PATH__'
+
+/**
+ * argv that runs a check (review loop §5.3, a watcher's poll) in the user's
+ * login shell with the PATH the agent's own shell sees, which a bare `-lc`
+ * loses twice:
+ *  - `/etc/profile` overwrites PATH, so the agent's (`-e PATH`, probed when the
+ *    container was made) is gone, gurt's node bins with it;
+ *  - a non-interactive login shell skips `~/.bashrc`, where uv's, nvm's,
+ *    pyenv's and rustup's installers put themselves. A tool the agent installed
+ *    mid-session then works in the agent's shell (which sources it) and is
+ *    "command not found" (127) in the check.
+ * So the PATH of an interactive login shell is read *now* (`-lic`, 10 s,
+ * between markers, its noise dropped; nothing on a timeout or without
+ * `timeout`), and the check runs `-lc` with that PATH first, then the agent's,
+ * then the login shell's own. The command text is spliced in after a newline
+ * by parameter expansion (`"$0"` is never re-parsed by the outer shell).
+ */
+export const checkShell = (script: string): string[] => {
+  const m = CHECK_PATH_MARK
+  return [
+    'sh',
+    '-c',
+    PICK_SHELL +
+      `o_=$(timeout 10 "$sh_" -lic 'printf "${m}%s${m}" "$PATH"' </dev/null 2>/dev/null); ` +
+      `case "$o_" in *${m}*${m}*) o_=\${o_#*${m}}; o_=\${o_%%${m}*};; *) o_=;; esac; ` +
+      'GURT_PATH_="${o_:+$o_:}$PATH"; export GURT_PATH_; ' +
+      `exec "$sh_" -lc "PATH=\\"\\$GURT_PATH_:\\$PATH\\"; export PATH; unset GURT_PATH_
+$0"`,
+    script
+  ]
+}
+
 /** What a human terminal in the container runs: the user's login shell. */
 export const interactiveShellArgv = (): string[] => ['sh', '-c', `${PICK_SHELL}exec "$sh_" -l`]
 
