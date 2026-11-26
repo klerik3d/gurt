@@ -4,6 +4,7 @@ export * from './model'
 export { move, ownerOf, allowedReplies, atOrAbove, tracked } from './machine'
 export { fold, nextFindingId } from './fold'
 export { next } from './next'
+export { stepKey, runOfStepKey } from './keys'
 export { view } from './view'
 export { reviewerPrompt, executorMessage, checkMessage } from './texts'
 export {

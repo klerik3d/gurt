@@ -2435,6 +2435,16 @@ textarea.input {
 .info-dot:focus .info-pop {
   display: block;
 }
+/* The situational line that leads a popover (Run/Queue blocked, a local MCP
+   server) — said here rather than as text under the field. */
+.info-pop-note {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--text);
+}
+.info-pop-note.warn {
+  color: var(--yellow);
+}
 /* Two-up field grid (role|agent, env|repo) — collapses to one column when
    the pane is narrow. */
 .cfg-grid {
@@ -2450,6 +2460,18 @@ textarea.input {
   flex-direction: column;
   gap: 7px;
   min-width: 0;
+}
+/* A field label's popover (the REPOSITORIES note, say) stays within its cell
+   for the same reason as .sel-row's below. */
+.cfg-cell > .seclabel-row {
+  position: relative;
+}
+.cfg-cell > .seclabel-row > .info-dot {
+  position: static;
+}
+.cfg-cell > .seclabel-row > .info-dot > .info-pop {
+  left: 0;
+  width: min(260px, 100%);
 }
 /* Inline fold: a seclabel that opens its block, for lists worth hiding
    (the built-in denylist) without spending a full field row on a header. */
@@ -3056,17 +3078,15 @@ textarea.input {
 }
 /*
  * "Runs on your machine, unsandboxed, with your privileges." — the same line on
- * the settings row, in the editor and in the composer's picker
- * (docs/requirements-mcp-stdio.md §2). Yellow, because it is the one thing on
- * these screens that is not bounded by the session container.
+ * the settings row and in the editor; in the composer it leads the picked
+ * server's (yellow) info popover instead (docs/requirements-mcp-stdio.md §2).
+ * Yellow, because it is the one thing on these screens that is not bounded by
+ * the session container.
  */
 .mcp-local-note {
   font-size: var(--fs-11);
   color: var(--yellow);
   flex: none;
-}
-.pick-wrap > .mcp-local-note {
-  padding: 0 12px 8px 29px;
 }
 .mcp-notice {
   display: flex;
@@ -5212,16 +5232,6 @@ button { user-select: none; }
   padding: 2px 6px;
   font-size: var(--fs-11);
 }
-/* A caution under a suggestion (a local MCP server runs a process). */
-.menu-item:has(.menu-item-warn) {
-  flex-wrap: wrap;
-}
-.menu-item-warn {
-  flex-basis: 100%;
-  white-space: normal;
-  font-size: var(--fs-11);
-  color: var(--red);
-}
 /* ×-remove buttons share the chip-x look. */
 button.chip-x {
   background: none;
@@ -5242,9 +5252,20 @@ button.chip-x {
 .sel-row .chip-row {
   flex: none;
 }
+/* A picked row's popover hangs from the whole row, not the dot: it is exactly
+   as wide as its column, so a narrow grid cell cannot push it past the pane's
+   edge (the dot sits near the row's right end). */
+.sel-row {
+  position: relative;
+}
+.sel-row .info-dot {
+  position: static;
+}
 .sel-row .info-pop {
-  left: auto;
-  right: -7px;
+  top: calc(100% + 5px);
+  left: -1px;
+  right: -1px;
+  width: auto;
 }
 .sel-list-off {
   opacity: 0.5;

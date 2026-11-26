@@ -32,7 +32,8 @@ import {
   type RpmState,
   type RunState,
   type SettledTurn,
-  type TreeId
+  type TreeId,
+  stepKey
 } from '../core'
 import type { Clock } from './api'
 import type { Journals, RunRec } from './journals'
@@ -58,8 +59,6 @@ function unconfirmedStop(entries: readonly Entry[]): number | undefined {
   }
   return seq
 }
-
-const keyOf = (executor: string, run: number, step: number): string => `${executor}:${run}:${step}`
 
 export class Engine {
   /** The running check per executor: its step key and how to stop it. */
@@ -339,7 +338,7 @@ export class Engine {
 
   private async step(executor: string, live: Live, body: { what: 'check' | 'review' | 'executor'; rule: '2' | '3в' | '6' | '9' | 'rerun'; tree: TreeId; full?: boolean; items?: string[] }): Promise<EntryOf<'step'>> {
     const step = live.state.lastStep + 1
-    return (await this.append(executor, live, { by: 'rpm', kind: 'step', step, key: keyOf(executor, live.rec.n, step), ...body })) as EntryOf<'step'>
+    return (await this.append(executor, live, { by: 'rpm', kind: 'step', step, key: stepKey(executor, live.rec.n, step), ...body })) as EntryOf<'step'>
   }
 
   private async call(executor: string, live: Live, why: CallReason): Promise<void> {
