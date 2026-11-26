@@ -594,6 +594,35 @@ export interface AgentSessionRequest {
 }
 
 /**
+ * `update_session`: a correction to a draft the calling session made with
+ * `create_session`. Every field is optional and only the supplied ones change;
+ * `repos` replaces the whole list (with its modes). A new `task` (only for
+ * the roles {@link roleDraftsCrossTask} allows) moves the draft there, under a
+ * new id.
+ */
+export type AgentSessionUpdate = Partial<AgentSessionRequest>
+
+/** One of the calling session's own drafts, as `list_drafts` reports it.
+ *  Once the user has taken it over (`SessionInfo.handedOff`) the agent gets
+ *  its id and state only: from then on its prompt, title and configuration
+ *  are the user's, and may hold what they wrote, not what the agent drafted. */
+export type AgentDraftSummary =
+  | {
+      sessionId: string
+      /** `update_session` still accepts it: never launched or queued. */
+      editable: true
+      title: string
+      role: SessionRole
+      task: string
+      repos: { name: string; mode: RepoMode }[]
+      env: string
+      agent?: string | undefined
+      state: SessionState
+      prompt: string
+    }
+  | { sessionId: string; editable: false; state: SessionState }
+
+/**
  * A session's egress settings (docs/requirements-mcp-proxy.md §6.2), chosen at
  * creation and adjustable while it runs.
  *
@@ -735,6 +764,16 @@ export interface SessionInfo {
    *  that never runs itself — each run starts a copy of it. Not carried by
    *  copies. */
   template?: boolean
+  /** The session whose agent drafted this one through `create_session` — what
+   *  lets that agent fix its own draft (`update_session`) instead of drafting
+   *  another, while it is still a draft. Not carried by copies: a copy is the
+   *  user's, not the agent's. */
+  draftedBy?: string | undefined
+  /** Set the first time the user launches or queues the session, and never
+   *  cleared: a start that fails, or a cancelled queue slot, puts it back in
+   *  `draft`, but it stays the user's — `update_session` refuses it from then
+   *  on. Not carried by copies. */
+  handedOff?: true | undefined
   /** Present only on an RPM reviewer (t3v2 §6.4), which only RPM creates: the
    *  executor it reviews and the step key that created it (how a restart
    *  finds it instead of creating another). */

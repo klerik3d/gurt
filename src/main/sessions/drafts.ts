@@ -15,7 +15,9 @@ import {
   spawnableRoles,
   writeRepos,
   type AcpHttpMcpServer,
+  type AgentDraftSummary,
   type AgentSessionRequest,
+  type AgentSessionUpdate,
   type ChatEntry,
   type ChatEntryBase,
   type EnvRef,
@@ -550,6 +552,10 @@ export async function createAgentDraft(mgr: DraftsCtx, spawnerId: string,
   // in the tree; see the same invariant at the IPC create boundary).
   if (task !== spawner.ref.task) await mgr.events.ensureTask(spawner.ref.workspace, task)
   const info = mgr.createPreparedDraft(spawner.ref.workspace, task, prepared, inherit)
+  // The one link `update_session` trusts: the spawner may correct this draft,
+  // and nobody else's (the record is the stored one, so this persists with it).
+  info.draftedBy = spawnerId
+  mgr.schedulePersist({ workspace: spawner.ref.workspace, task, env: info.env })
   log.info('session.drafted', { s: info.id, by: spawnerId, role: req.role, task })
   // A draft is a to-do for the user, and the spawner's own feed is where they
   // are looking right now — the tree row alone is easy to miss. A cross-task
@@ -557,6 +563,144 @@ export async function createAgentDraft(mgr: DraftsCtx, spawnerId: string,
   const where = task !== spawner.ref.task ? ` in task "${task}"` : ''
   mgr.push(spawner, { kind: 'system', text: `create_session: drafted ${req.role} "${info.title}"${where}` })
   return { sessionId: info.id, title: info.title }
+}
+
+/** A draft as its spawner's `list_drafts` / `update_session` report it — in
+ *  full only while the agent may still edit it. A handed-off one is the
+ *  user's: the agent learns that it exists and its state, never what the user
+ *  has since written into it. */
+function draftSummary(info: SessionInfo): AgentDraftSummary {
+  if (info.state !== 'draft' || info.handedOff) return { sessionId: info.id, editable: false, state: info.state }
+  return {
+    sessionId: info.id,
+    editable: true,
+    title: info.title,
+    role: sessionRole(info),
+    task: info.task,
+    repos: info.repos.map((name) => ({ name, mode: repoMode(info, name) })),
+    env: info.env,
+    ...(info.agent ? { agent: info.agent } : {}),
+    state: info.state,
+    prompt: info.startPrompt
+  }
+}
+
+/** The sessions `spawnerId` drafted through `create_session`, launched ones
+ *  included (`editable: false`) so the agent can tell "gone" from "out of my
+ *  hands". */
+export function listAgentDrafts(mgr: DraftsCtx, spawnerId: string): AgentDraftSummary[] {
+  if (!mgr.sessions.has(spawnerId)) throw new Error('unknown session')
+  return [...mgr.sessions.values()].filter((s) => s.info.draftedBy === spawnerId).map((s) => draftSummary(s.info))
+}
+
+/**
+ * `update_session`: the spawner corrects a draft it made, instead of leaving
+ * the wrong one behind and drafting another. Only its own (`draftedBy`), and
+ * only until the user first launches or queues it (`handedOff`) — from then
+ * on it is theirs, even when a failed start or a cancelled queue slot puts it
+ * back in `draft`. The request is checked the way `create_session`'s is
+ * (role gating, registered repos/env, a denied agent, the env following the
+ * anchor repo) and then applied through {@link editDraft}, the path the
+ * user's own edits take, so container release and title carry-over behave
+ * the same.
+ *
+ * The env is re-resolved only when the update names it or re-points the
+ * repos: a role, prompt or title fix leaves the container the draft already
+ * has — including one the user picked by hand.
+ *
+ * A new `task` (for the roles that may draft across tasks) moves the draft:
+ * a session's record lives with its task, so the moved draft is a copy in the
+ * target task — new id, same configuration, title, spawner and first-prompt
+ * images — and the original is deleted. Nothing else is lost by that: a draft
+ * that was never launched has no chat, container or queue slot to carry.
+ */
+export async function updateAgentDraft(mgr: DraftsCtx, spawnerId: string, sessionId: string,
+  upd: AgentSessionUpdate): Promise<AgentDraftSummary> {
+  const spawner = mgr.sessions.get(spawnerId)
+  if (!spawner) throw new Error('unknown session')
+  const target = (): Session => {
+    const s = mgr.sessions.get(sessionId)
+    if (!s || s.info.draftedBy !== spawnerId)
+      throw new Error(`"${sessionId}" is not a session you drafted — list_drafts names yours`)
+    if (s.info.state !== 'draft' || s.info.handedOff)
+      throw new Error(
+        // The id, not the title: the title may already be the user's text.
+        `"${sessionId}" has been launched by the user, so it is theirs and cannot be edited ` +
+          'any more — tell them what is wrong with it, or draft a new one'
+      )
+    return s
+  }
+  const s = target()
+  mgr.assertSessionWritable(sessionId)
+  const from = sessionRole(spawner.info)
+  const role = upd.role ?? sessionRole(s.info)
+  const allowed = spawnableRoles(from)
+  if (!allowed.includes(role))
+    throw new Error(
+      allowed.length
+        ? `a ${from} session may only draft: ${allowed.join(', ')}`
+        : `a ${from} session may not draft sessions`
+    )
+  const ws = s.ref.workspace
+  const task = upd.task?.trim() || s.ref.task
+  const moving = task !== s.ref.task
+  if (moving && !roleDraftsCrossTask(from)) throw new Error(`a ${from} session may only draft into its own task`)
+  // A new repo list comes with its own modes (the tool takes `{ name, mode }`);
+  // otherwise the draft's current ones stand.
+  const repos = upd.repos ?? s.info.repos
+  const repoModes = normalizeRepoModes(
+    repos,
+    upd.repos ? upd.repoModes : Object.fromEntries(s.info.repos.map((r) => [r, repoMode(s.info, r)]))
+  )
+  await mgr.events.checkDraftTarget(ws, upd.repos ?? [], upd.env, upd.agent)
+  const env =
+    upd.env !== undefined || upd.repos !== undefined
+      ? await mgr.resolveDraftEnv(ws, {
+          role,
+          repos,
+          repoModes,
+          prompt: s.info.startPrompt,
+          ...(upd.env !== undefined ? { env: upd.env } : {}),
+          ...(upd.confirmNonDefaultEnv !== undefined ? { confirmNonDefaultEnv: upd.confirmNonDefaultEnv } : {})
+        })
+      : undefined
+  // Validated and created if missing, as on create — see createAgentDraft.
+  if (moving) await mgr.events.ensureTask(ws, task)
+  // The checks awaited: the user may have launched or deleted it meanwhile.
+  target()
+  const patch: SessionDraftPatch = {
+    ...(upd.role !== undefined ? { role: upd.role } : {}),
+    ...(upd.repos !== undefined ? { repos, repoModes } : {}),
+    ...(env !== undefined ? { env } : {}),
+    ...(upd.agent !== undefined ? { agent: upd.agent } : {}),
+    ...(upd.autoAllow !== undefined ? { autoAllow: upd.autoAllow } : {}),
+    ...(upd.configValues !== undefined ? { configValues: upd.configValues } : {}),
+    ...(upd.prompt !== undefined ? { startPrompt: upd.prompt } : {}),
+    // Replaced outright, `[]` included — the same as `create_session`.
+    ...(upd.skills !== undefined ? { skills: sanitizeSkillSelection(upd.skills) } : {})
+  }
+  editDraft(mgr, sessionId, patch)
+  if (upd.title?.trim()) mgr.renameSession(sessionId, upd.title)
+  let after = mgr.sessions.get(sessionId)!.info
+  if (moving) {
+    const moved = mgr.draftFrom({ ...after, task })
+    mgr.renameSession(moved.id, after.title)
+    moved.draftedBy = spawnerId
+    // The first prompt's images live on the in-memory record, not in
+    // `SessionInfo` (see `editPrompt`), so `draftFrom` cannot see them — and
+    // the original is about to go. A move must not lose what the user attached.
+    const images = mgr.sessions.get(sessionId)?.startImages
+    if (images?.length) mgr.sessions.get(moved.id)!.startImages = images
+    // Before the original goes: RPM copies its config from it.
+    mgr.bus.emit('session.copied', { from: sessionId, to: moved.id })
+    mgr.deleteSession(sessionId)
+    mgr.schedulePersist({ workspace: ws, task, env: moved.env })
+    after = moved
+  }
+  log.info('session.draft-updated', { s: after.id, from: sessionId, by: spawnerId, fields: Object.keys(upd) })
+  const where = moving ? ` — moved to task "${task}"` : ''
+  mgr.push(spawner, { kind: 'system', text: `update_session: edited ${sessionRole(after)} "${after.title}"${where}` })
+  return draftSummary(after)
 }
 
 /** What a draft requested by this session inherits (see {@link DraftInheritance}). */

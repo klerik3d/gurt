@@ -153,6 +153,30 @@ spawn is an inert draft, the user interrupts the flow at any moment by simply
 not launching. Provenance ("created by session X") is not surfaced in the UI
 this pass.
 
+**Correcting a draft** (2026-11-26). A draft that came out wrong used to stay
+wrong: the spawner could only draft a second one next to it. The draft now
+records its spawner (`SessionInfo.draftedBy`, persisted, not carried by
+copies), and the roles that have `create_session` also get `list_drafts` (the
+drafts this session made, with their state) and `update_session` (edit one of
+them: `create_session`'s fields, all optional, only the supplied ones change,
+`repos` replaces the list). A new `task` moves the draft: a record lives
+with its task, so the moved draft is a copy there under a new id, and the
+original is deleted — nothing is lost, an unlaunched draft has no chat,
+container or queue slot. The checks are `create_session`'s —
+role gating, registered repos/env, a denied agent, the env following the
+anchor repo — and the edit goes through the same `editDraft` path the user's
+edits take. The env is re-resolved only when the update names it or re-points
+the repos, so a prompt or role fix keeps a container the user picked by hand.
+Two limits: only the spawner's **own** drafts (the binding is the session's
+id, never one the agent names), and only **until the user first launches or
+queues it** — from then on it is theirs (`SessionInfo.handedOff`, persisted,
+never cleared), even when a failed start or a cancelled queue slot puts it
+back in `draft`. `list_drafts` then reports it by id and state only: its
+prompt, title and configuration may by now be what the user wrote, and are
+not the agent's to read. Drafts made before `draftedBy` existed are not editable: no
+record says who made them, and guessing would hand the agent drafts that are
+not its own.
+
 ## 4. Mounts and locks
 
 - Read-only is enforced at the mount level (Docker `readonly` bind mounts),

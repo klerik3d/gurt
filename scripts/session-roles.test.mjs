@@ -368,6 +368,158 @@ test('create_session across tasks', async () => {
   )
 })
 
+// --- update_session: a spawner corrects its own draft, while it is one -------
+test('update_session', async () => {
+  const mine = await kernel.sessions.createAgentDraft(spawner.id, {
+    role: 'researcher',
+    repos: ['alpha'],
+    repoModes: { alpha: 'read' },
+    prompt: 'first try'
+  })
+  assert.equal(kernel.sessions.snapshot(mine.sessionId).info.draftedBy, spawner.id, 'the draft remembers who made it')
+  assert.ok(
+    kernel.sessions.listAgentDrafts(spawner.id).some((d) => d.sessionId === mine.sessionId && d.state === 'draft'),
+    'and is listed among the spawner’s drafts'
+  )
+
+  const fixed = await kernel.sessions.updateAgentDraft(spawner.id, mine.sessionId, {
+    role: 'executor',
+    repos: ['alpha'],
+    repoModes: { alpha: 'write' },
+    prompt: 'second try',
+    title: 'the right one'
+  })
+  const info = kernel.sessions.snapshot(mine.sessionId).info
+  assert.equal(m.sessionRole(info), 'executor', 'the role changed')
+  assert.deepEqual(info.repoModes, { alpha: 'write' }, 'and the mode')
+  assert.equal(info.startPrompt, 'second try', 'and the prompt')
+  assert.equal(info.title, 'the right one', 'and the title')
+  assert.equal(info.env, 'dev', 'the env still follows the repo')
+  assert.equal(info.state, 'draft', 'and it is still a draft — editing launches nothing')
+  assert.equal(fixed.title, 'the right one', 'the result is the draft as it now stands')
+  assert.ok(
+    kernel.sessions.snapshot(spawner.id).entries.some((e) => e.kind === 'system' && /update_session: edited executor "the right one"/.test(e.text)),
+    'the edit is recorded in the spawner’s timeline'
+  )
+
+  // Re-pointing the repos re-resolves the env, with create_session's rule.
+  await rejects(
+    () => kernel.sessions.updateAgentDraft(spawner.id, mine.sessionId, { repos: ['beta'], repoModes: { beta: 'write' } }),
+    /not the default repo of any environment/,
+    'a repo with no default env has to name one, as on create'
+  )
+  assert.deepEqual(kernel.sessions.snapshot(mine.sessionId).info.repos, ['alpha'], 'a refused edit changes nothing')
+  await kernel.sessions.updateAgentDraft(spawner.id, mine.sessionId, { repos: ['beta'], repoModes: { beta: 'write' }, env: 'dev' })
+  assert.deepEqual(kernel.sessions.snapshot(mine.sessionId).info.repos, ['beta'], 'naming the env lets it through')
+  // A prompt-only fix leaves the env alone.
+  await kernel.sessions.updateAgentDraft(spawner.id, mine.sessionId, { prompt: 'third try' })
+  assert.equal(kernel.sessions.snapshot(mine.sessionId).info.env, 'dev')
+
+  await rejects(
+    () => kernel.sessions.updateAgentDraft(spawner.id, mine.sessionId, { role: 'operator' }),
+    /may only draft: executor, researcher/,
+    'an edit cannot reach a role the spawner may not draft'
+  )
+  await rejects(
+    () => kernel.sessions.updateAgentDraft(spawner.id, mine.sessionId, { repos: ['nope'], repoModes: { nope: 'write' } }),
+    /not registered/,
+    'nor a repo the agent invented'
+  )
+
+  // Only its own drafts: not another spawner's, not one the user made.
+  const other = mk(['alpha'], 'researcher', 'S2', { alpha: 'read' })
+  await rejects(
+    () => kernel.sessions.updateAgentDraft(other.id, mine.sessionId, { prompt: 'hijack' }),
+    /not a session you drafted/,
+    'another session cannot edit it'
+  )
+  assert.ok(!kernel.sessions.listAgentDrafts(other.id).length, 'nor sees it in its list')
+  const users = mk(['alpha'], 'executor', 'U', W(['alpha']))
+  await rejects(
+    () => kernel.sessions.updateAgentDraft(spawner.id, users.id, { prompt: 'hijack' }),
+    /not a session you drafted/,
+    'a draft the user made is not the agent’s'
+  )
+  const copy = kernel.sessions.duplicateSession(mine.sessionId)
+  assert.equal(copy.draftedBy, undefined, 'a copy is the user’s, not the agent’s')
+
+  // A new task moves the draft: a new id there, the original gone.
+  // The user attached a screenshot to the first prompt — memory-only state
+  // (editPrompt) that SessionInfo does not carry, so a move has to bring it.
+  const shot = { name: 'screen.png', mimeType: 'image/png', data: 'iVBORw0KGgo=' }
+  kernel.sessions.editPrompt(mine.sessionId, 'third try', [shot])
+  const moved = await kernel.sessions.updateAgentDraft(spawner.id, mine.sessionId, { task: 'elsewhere', prompt: 'moved try' })
+  assert.notEqual(moved.sessionId, mine.sessionId, 'the moved draft has a new id')
+  assert.equal(kernel.sessions.snapshot(mine.sessionId), undefined, 'and the original is gone')
+  const movedInfo = kernel.sessions.snapshot(moved.sessionId).info
+  assert.equal(movedInfo.task, 'elsewhere', 'it lives in the target task')
+  assert.ok(fs.existsSync(path.join(GURT_ROOT, ws, 'elsewhere', 'task.json')), 'created if missing')
+  assert.equal(movedInfo.title, 'the right one', 'keeping its title')
+  assert.equal(movedInfo.startPrompt, 'moved try', 'with the edit of the same call applied')
+  assert.deepEqual(movedInfo.repos, ['beta'], 'and the rest of its configuration')
+  assert.equal(movedInfo.state, 'draft')
+  assert.equal(movedInfo.draftedBy, spawner.id, 'still the spawner’s to edit')
+  assert.deepEqual(
+    kernel.sessions.sessions.get(moved.sessionId).startImages,
+    [shot],
+    'the first prompt’s images move with it'
+  )
+  assert.ok(
+    !kernel.sessions.listAgentDrafts(spawner.id).some((d) => d.sessionId === mine.sessionId),
+    'the list names the new id only'
+  )
+
+  // Once the user launches or queues it, it is theirs — and stays theirs when
+  // it comes back to draft (a cancelled queue slot, a failed start).
+  const late = await kernel.sessions.createAgentDraft(spawner.id, {
+    role: 'executor',
+    repos: ['alpha'],
+    repoModes: { alpha: 'write' },
+    prompt: 'launch me'
+  })
+  kernel.sessions.enqueue(late.sessionId)
+  await rejects(
+    () => kernel.sessions.updateAgentDraft(spawner.id, late.sessionId, { prompt: 'too late' }),
+    /launched by the user/,
+    'a queued session cannot be edited'
+  )
+  // The scheduler picks it up at once, and with no docker the start fails —
+  // which is the way back to draft (a cancel, when it is still queued, is the
+  // other).
+  kernel.sessions.cancelQueue(late.sessionId)
+  assert.equal((await settle(kernel, late.sessionId)).info.state, 'draft', 'back in draft')
+  await rejects(
+    () => kernel.sessions.updateAgentDraft(spawner.id, late.sessionId, { prompt: 'sneak in' }),
+    /launched by the user/,
+    'but still the user’s'
+  )
+  assert.equal(kernel.sessions.snapshot(late.sessionId).info.startPrompt, 'launch me')
+  // The user rewrites it before retrying: none of that reaches the agent.
+  kernel.sessions.editPrompt(late.sessionId, 'internal incident details')
+  kernel.sessions.renameSession(late.sessionId, 'incident 4521')
+  assert.deepEqual(
+    kernel.sessions.listAgentDrafts(spawner.id).find((d) => d.sessionId === late.sessionId),
+    { sessionId: late.sessionId, editable: false, state: 'draft' },
+    'a handed-off draft is listed by id and state only — no prompt, title or configuration'
+  )
+  await assert.rejects(
+    () => kernel.sessions.updateAgentDraft(spawner.id, late.sessionId, { prompt: 'x' }),
+    (e) => e instanceof Error && /launched by the user/.test(e.message) && !/incident/.test(e.message),
+    'and the refusal names it by id, not by the title the user gave it'
+  )
+  assert.equal(
+    kernel.sessions.listAgentDrafts(spawner.id).find((d) => d.sessionId === moved.sessionId).prompt,
+    'moved try',
+    'an editable draft is still listed in full'
+  )
+  assert.equal(kernel.sessions.duplicateSession(late.sessionId).handedOff, undefined, 'a copy starts fresh')
+  kernel.sessions.deleteSession(late.sessionId)
+  kernel.sessions.deleteSession(moved.sessionId)
+  kernel.sessions.deleteSession(copy.id)
+  kernel.sessions.deleteSession(users.id)
+  kernel.sessions.deleteSession(other.id)
+})
+
 // --- default title: named after the role, index only from the second on ----
 test('default title follows role', () => {
   const task3 = 'naming'

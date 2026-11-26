@@ -7,7 +7,9 @@ import {
   type AgentConfig,
   type InterruptedSession,
   type AgentConfigCache,
+  type AgentDraftSummary,
   type AgentSessionRequest,
+  type AgentSessionUpdate,
   type ChangeProposal,
   type ChatEntry,
   type ChatEntryBase,
@@ -408,6 +410,7 @@ export class SessionManager {
     const missing = missingRepoReason(s.info)
     if (missing) throw new Error(missing)
     s.info.state = 'queued'
+    s.info.handedOff = true
     s.info.queuedAt = new Date().toISOString()
     s.startError = undefined
     this.bus.emit('tree.changed', undefined)
@@ -643,6 +646,8 @@ export class SessionManager {
     mounts: { repo: string; mode: RepoMode }[]
     onComplete: (p: ChangeProposal) => void
     onCreateSession: (req: AgentSessionRequest) => Promise<{ sessionId: string; title: string }>
+    onUpdateSession: (sessionId: string, upd: AgentSessionUpdate) => Promise<AgentDraftSummary>
+    onListDrafts: () => AgentDraftSummary[]
     admin?: AdminHooks
     proactive?: ProactiveHooks
     watcher?: WatcherToolHooks
@@ -660,6 +665,10 @@ export class SessionManager {
     req: AgentSessionRequest): Promise<{ sessionId: string; title: string }> {
     return drafts.createAgentDraft(SessionManager.draftsCtx(this), spawnerId, req)
   }
+  updateAgentDraft(spawnerId: string, sessionId: string, upd: AgentSessionUpdate): Promise<AgentDraftSummary> {
+    return drafts.updateAgentDraft(SessionManager.draftsCtx(this), spawnerId, sessionId, upd)
+  }
+  listAgentDrafts(spawnerId: string): AgentDraftSummary[] { return drafts.listAgentDrafts(SessionManager.draftsCtx(this), spawnerId) }
 
   inheritanceOf(info: SessionInfo): DraftInheritance { return drafts.inheritanceOf(info) }
   prepareDraft(ws: string, req: AgentSessionRequest, inherit: DraftInheritance): Promise<PreparedDraft> { return drafts.prepareDraft(SessionManager.draftsCtx(this), ws, req, inherit) }
@@ -922,6 +931,8 @@ export class SessionManager {
       cacheAgentConfig: (s) => m.cacheAgentConfig(s),
       cacheHint: (s) => m.cacheHint(s),
       createAgentDraft: (spawnerId, req) => m.createAgentDraft(spawnerId, req),
+      updateAgentDraft: (spawnerId, sessionId, upd) => m.updateAgentDraft(spawnerId, sessionId, upd),
+      listAgentDrafts: (spawnerId) => m.listAgentDrafts(spawnerId),
       get events() { return m.events },
       onComplete: (sessionId, p) => m.onComplete(sessionId, p),
       get rpmTools() { return m.rpmTools },
