@@ -36,7 +36,8 @@ export interface LifecycleCtx {
  * Delete a session in any state — including one that is running or still
  * starting, which is the whole point: a session configured wrong is usually
  * noticed after it has begun. Everything the session owns goes with it (its
- * container, its adapter, its host servers, its chat log, its mount scratch);
+ * container, its adapter, its host servers, its chat log, its mount scratch,
+ * an executor's RPM reviewer sessions);
  * the clone and the uncommitted work in it deliberately stay, since a clone
  * outlives every session of its task.
  */
@@ -66,6 +67,11 @@ export function deleteSession(mgr: LifecycleCtx, sessionId: string): void {
   mgr.bus.emit('session.deleted', { sessionId })
   mgr.schedulePersist(s.ref)
   mgr.bus.emit('tree.changed', undefined)
+  // An executor's RPM reviewers (`reviewerOf`) exist only for its loop — they
+  // go with it. After the executor, never before: its `session.deleted` lets
+  // RPM forget the loop first, so a reviewer's own deletion finds no live run
+  // to fail a step of (and to start a fresh review for).
+  for (const [id, r] of mgr.sessions) if (r.info.reviewerOf?.executor === sessionId) deleteSession(mgr, id)
   // Its clone may now be free — let the next queued session take it.
   mgr.schedule()
 }

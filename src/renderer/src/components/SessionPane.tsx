@@ -14,11 +14,12 @@ import { TrafficPanel } from './Network'
 import { Chat, ImageThumbs, pastedImages, readImages, type ComposerNote } from './Chat'
 import { ConfigTab } from './ConfigTab'
 import { SessionMenu, deleteSession, duplicateSession } from './SessionActions'
-import { TabBar, reviewOf, useSessionTab, type SessionTab } from './SessionTabs'
+import { TabBar, reviewOf, reviewerRun, useSessionTab, type SessionTab } from './SessionTabs'
 import { ContainerTerminalButton } from './ContainerTerminalButton'
 import { FileLinkScopeProvider } from '../fileLinks'
 import { run } from '../async'
 import { ReviewTab } from '../../../rpm/ui'
+import { clearReviewJump, useReviewJump } from '../reviewJump'
 import { ReviewHost } from './ReviewHost'
 
 export function SessionPane({
@@ -135,6 +136,17 @@ function NonStartedPane({
   const [text, setText] = useState(info.startPrompt)
   const [images, setImagesState] = useState<PromptImage[]>(draftImages.get(sessionId) ?? [])
   const [activeTab, setActiveTab] = useSessionTab(sessionId, !!reviewOf(info))
+  // A queued reviewer's tab: its executor's loop, opened on the run it reviews.
+  // A jump asked from this pane (its tab badge) is carried out here, as in Chat.
+  const reviewJump = useReviewJump(sessionId)
+  const hasReview = !!reviewOf(info)
+  useEffect(() => {
+    if (!reviewJump) return
+    if (hasReview) setActiveTab('review')
+    else clearReviewJump(reviewJump)
+    // setActiveTab is a fresh closure every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reviewJump, hasReview])
   // Run flips `info.state` away from 'draft', which normally swaps this whole
   // body out on its own — but that swap rides the same IPC round trip the
   // click kicked off, so for a beat the draft view (and its button) just sits
@@ -210,7 +222,16 @@ function NonStartedPane({
 
       {activeTab === 'config' && <ConfigTab tree={tree} snapshot={snapshot} />}
 
-      {activeTab === 'review' && <ReviewTab executor={sessionId} />}
+      {activeTab === 'review' && (
+        <ReviewTab
+          // Per pane, not per loop (as in Chat): each opens on its own run.
+          key={sessionId}
+          executor={reviewOf(info) ?? sessionId}
+          focus={reviewJump}
+          onFocused={() => reviewJump && clearReviewJump(reviewJump)}
+          initialRun={reviewerRun(info)}
+        />
+      )}
 
       {activeTab === 'logs' && (
         <pre className="env-log">{log.length ? log.join('\n') : 'no logs yet'}</pre>

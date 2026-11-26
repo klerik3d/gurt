@@ -99,7 +99,9 @@ can read it.
    picker — carries the line `Runs on your machine, unsandboxed, with
    your privileges.` It lives in code as `LOCAL_MCP_NOTICE`
    (`src/shared/mcp.ts`) rather than in a component, so the three
-   surfaces cannot drift.
+   surfaces cannot drift. In the composer the dropdown shows names only;
+   once a local server is picked, its row's info dot turns yellow and the
+   popover leads with the line — a red line under every pick was noise.
 2. **Do not let it read as an extension of the container's guarantees.**
    The session container is *still* clean: nothing about a local server
    leaks into it. Saying "gurt sandboxes your agent" and "gurt runs this
@@ -852,8 +854,9 @@ New slugs, for `docs/logging.md`'s dictionary:
    person, so it is shown verbatim.
 
    The rest of the phase, in one list: `LOCAL_MCP_NOTICE` as visible text
-   (not only a tooltip) on the settings row, in the editor and in the
-   composer's picker, per §2's first obligation; a **Reinstall** button
+   (not only a tooltip) on the settings row and in the editor, and first
+   in the picked server's yellow info popover in the composer, per §2's
+   first obligation; a **Reinstall** button
    for an `npm` entry (`reinstallMcpServer` → `clearNpmInstall`, which
    drops the stamp so the next start resolves the spec again — §4.2);
    `mcp.fail` carried off the host process as a bus event

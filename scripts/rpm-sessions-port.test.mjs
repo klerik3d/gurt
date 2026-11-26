@@ -326,3 +326,32 @@ test('onCopied on Duplicate and Recreate, onDeleted on delete', () => {
   u2()
 })
 
+
+test("deleting an executor deletes its reviewers too, after it — and no one else's", () => {
+  started('e9', ['alpha'])
+  const reviewer = (id, executor) =>
+    mgr.restore([
+      {
+        info: {
+          id, env: 'dev', role: 'reviewer', repos: ['alpha'], repoModes: { alpha: 'read' },
+          task, workspace: ws, title: id, agent: 'a2', state: 'draft', mcp: [], startPrompt: 'review',
+          reviewerOf: { executor, key: `${executor}:1:2` }
+        },
+        log: []
+      }
+    ])
+  reviewer('r9a', 'e9')
+  reviewer('r9b', 'e9')
+  reviewer('r1x', 'e1')
+  const deleted = []
+  const off = port.onDeleted((id) => deleted.push(id))
+  mgr.deleteSession('e9')
+  off()
+  // The executor first: RPM forgets its loop before a reviewer's deletion
+  // could fail the review step (and open a new one).
+  assert.deepEqual(deleted, ['e9', 'r9a', 'r9b'])
+  assert.equal(live('r9a'), undefined)
+  assert.equal(live('r9b'), undefined)
+  assert.ok(live('r1x'), "another executor's reviewer stays")
+  mgr.deleteSession('r1x')
+})

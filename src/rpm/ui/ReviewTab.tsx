@@ -29,18 +29,24 @@ import { Settings, settingsSummary } from './Settings'
 import { useRpm, type RpmData } from './useRpm'
 
 /** `focus` (set by `RpmHost.openReview` through the app): the run, row and
- *  filter to show; `onFocused` once they are shown (t2v3 D). */
+ *  filter to show; `onFocused` once they are shown (t2v3 D). `initialRun`: the
+ *  run the tab opens on (a reviewer's own) instead of the last — read once, at
+ *  mount, so it never pulls the tab back from a run picked or jumped to later. */
 export function ReviewTab({
   executor,
   focus,
-  onFocused
+  onFocused,
+  initialRun
 }: {
   executor: string
   focus?: ReviewFocus | undefined
   onFocused?: (() => void) | undefined
+  initialRun?: number | undefined
 }) {
-  // Everything local (run picked, filter, open row) belongs to one executor.
-  return <ReviewTabOf key={executor} executor={executor} focus={focus} onFocused={onFocused} />
+  // Everything local (run picked, filter, open row) belongs to one executor —
+  // and to one pane: a caller showing one loop from several sessions (an
+  // executor, its reviewers) keys this per session, so `initialRun` applies.
+  return <ReviewTabOf key={executor} executor={executor} focus={focus} onFocused={onFocused} initialRun={initialRun} />
 }
 
 const errorText = (e: unknown): string => (e instanceof Error ? e.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '') : String(e))
@@ -48,13 +54,15 @@ const errorText = (e: unknown): string => (e instanceof Error ? e.message.replac
 function ReviewTabOf({
   executor,
   focus,
-  onFocused
+  onFocused,
+  initialRun
 }: {
   executor: string
   focus: ReviewFocus | undefined
   onFocused: (() => void) | undefined
+  initialRun: number | undefined
 }) {
-  const [run, setRun] = useState<number | undefined>(undefined)
+  const [run, setRun] = useState<number | undefined>(initialRun)
   const data = useRpm(executor, run)
   const lastRun = data.runs[data.runs.length - 1]?.run
   // A focus without a run means the last one: named here, so that a run

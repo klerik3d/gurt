@@ -143,10 +143,11 @@ await page.click('.ns-body .pick-menu .menu-item:has-text("dev")')
 await page.click(cfgRow('REPOSITORIES'))
 await page.click('.ns-body .pick-menu .menu-item:has-text("demo")')
 await page.keyboard.press('Escape') // the repo menu stays open for multi-select
-await page.waitForSelector('.ns-body .repo-mode-row:has-text("octocat/Hello-World")', { timeout: 5000 })
+await page.waitForSelector('.ns-body .repo-mode-row:has(.repo-mode-name:text-is("demo"))', { timeout: 5000 })
+// A picked repo is listed by its name (the url is its tooltip).
 // A picked repo is mounted read-locked; an executor needs it writable to run
 // (docs/requirements-repo-mounts.md §2).
-await page.click('.ns-body .repo-mode-row:has-text("octocat/Hello-World") .chip-btn[data-mode="write"]')
+await page.click('.ns-body .repo-mode-row:has(.repo-mode-name:text-is("demo")) .chip-btn[data-mode="write"]')
 await page.waitForSelector('.ns-body .repo-mode-row .chip-btn.on[data-mode="write"]', { timeout: 5000 })
 await page.click(cfgRow('AGENT'))
 await page.click('.ns-body .pick-menu .menu-item:has-text("claude smoke")')
@@ -186,7 +187,7 @@ await page.click('.sb-session >> nth=0')
 await page.waitForSelector('.draft-prompt', { timeout: 5000 })
 assert.equal(await page.locator('.draft-prompt').inputValue(), 'say hello', 'the prompt survived')
 await page.click('.tab-btn:has-text("Config")')
-await page.waitForSelector('.ns-body .repo-mode-row:has-text("octocat/Hello-World")', { timeout: 5000 })
+await page.waitForSelector('.ns-body .repo-mode-row:has(.repo-mode-name:text-is("demo"))', { timeout: 5000 })
 assert.equal(
   await page.locator(`${cfgRow('ENVIRONMENT')} .pick-value`).innerText(),
   'dev',
@@ -196,12 +197,12 @@ console.log('persisted across reload OK')
 
 // The selected session and its Config tab must survive both reload and restart.
 await page.reload()
-await page.waitForSelector('.ns-body .repo-mode-row:has-text("octocat/Hello-World")', { timeout: 15000 })
+await page.waitForSelector('.ns-body .repo-mode-row:has(.repo-mode-name:text-is("demo"))', { timeout: 15000 })
 assert.equal(await page.locator('.tab-btn.active').innerText(), 'Config')
 await app.close()
 app = await launch()
 page = await app.firstWindow()
-await page.waitForSelector('.ns-body .repo-mode-row:has-text("octocat/Hello-World")', { timeout: 15000 })
+await page.waitForSelector('.ns-body .repo-mode-row:has(.repo-mode-name:text-is("demo"))', { timeout: 15000 })
 assert.equal(await page.locator('.tab-btn.active').innerText(), 'Config')
 console.log('selected session and Config tab restored after reload and restart OK')
 

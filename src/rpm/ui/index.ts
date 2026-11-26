@@ -9,3 +9,5 @@ export { RpmChatLine } from './ChatLine'
 export { FindingPopup, FindingRef, FindingText, useFindingHover } from './FindingPopup'
 export { statusLine, markFiles, type StatusLine, type Filter } from './labels'
 export { INFO as SETTINGS_INFO } from './Settings'
+// Which run a reviewer session belongs to (its `reviewerOf.key`).
+export { runOfStepKey } from '../core'

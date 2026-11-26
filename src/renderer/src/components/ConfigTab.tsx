@@ -8,7 +8,6 @@ import {
   roleForcesRead,
   sessionRole,
   type McpMode,
-  type RepoConfig,
   type RepoMode,
   type SessionConfigOption,
   type SessionInfo,
@@ -123,8 +122,8 @@ function McpSelectedRow({
   // selection until the user removes it: a start would report it unroutable,
   // which is a thing to see here rather than in the session log.
   const missing = !entry
-  // Selecting this runs a process on the user's machine, so the field says so
-  // where the choice is made (docs/requirements-mcp-stdio.md §2).
+  // Selecting this runs a process on the user's machine: the picked row's info
+  // dot turns yellow and says so first (docs/requirements-mcp-stdio.md §2).
   const local = !!entry && entry.source === 'registry' && isLocalMcpEntry(entry.entry)
   return (
     <div className="sel-row-wrap">
@@ -138,11 +137,15 @@ function McpSelectedRow({
       >
         <Dot tone={missing ? 'red' : 'green'} size={7} />
         <span className="mcp-name">{entry?.label ?? id}</span>
-        {(missing || entry.description) && (
-          <InfoDot
-            text={missing ? 'unavailable — not a built-in, not in the registry' : entry.description}
-            {...(missing ? { tone: 'error' as const } : {})}
-          />
+        {missing ? (
+          <InfoDot text="unavailable — not a built-in, not in the registry" tone="error" />
+        ) : local ? (
+          <InfoDot text={entry.description ? `${LOCAL_MCP_NOTICE} ${entry.description}` : LOCAL_MCP_NOTICE} tone="warn">
+            <span className="info-pop-note warn">{LOCAL_MCP_NOTICE}</span>
+            {entry.description}
+          </InfoDot>
+        ) : (
+          entry.description && <InfoDot text={entry.description} />
         )}
         {entry && mcpHasModes(entry) && (
           <div className="chip-row icon-fixed">
@@ -168,7 +171,6 @@ function McpSelectedRow({
           ×
         </button>
       </div>
-      {local && <div className="mcp-local-note">{LOCAL_MCP_NOTICE}</div>}
     </div>
   )
 }
@@ -221,10 +223,6 @@ function shortRepoUrl(url: string): string {
   const cleaned = url.replace(/\.git$/, '').replace(/\/+$/, '')
   return /[:/]([^:/]+\/[^:/]+)$/.exec(cleaned)?.[1] ?? cleaned
 }
-
-/** How a repo reads in a chip: a local repo's url is a storage path nobody
- *  needs to see, so it goes by its name (docs/requirements-new-projects.md §2). */
-const repoChipLabel = (r: RepoConfig): string => (r.local ? r.name : shortRepoUrl(r.url))
 
 /** One agent option as chips — model, effort, a toggle — the same block for
  *  the session's own picks. `values` are
@@ -629,18 +627,30 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
 
         {/* session repositories — seeded from the env's default, changeable
             here, any number of them, each with its own mount mode
-            (docs/requirements-repo-mounts.md §6). The notes stay visible
-            rather than moving behind the info dot: they block Run/Queue.
-            Same field as MCP and skills — only what an item is differs. */}
+            (docs/requirements-repo-mounts.md §6). A repo goes by its name
+            alone; its url is the tooltip. What blocks Run/Queue is said first
+            behind the info dot, which turns yellow — not as a line under the
+            field. Same field as MCP and skills — only what an item is differs. */}
         <PickerField
           label="REPOSITORIES"
           info="each repository is mounted the way its row says: write — read-write, holds the clone exclusively; read with a lock — read-only, the tree does not move while this session runs; read — read-only, blocks nobody"
+          note={
+            repoGap
+              ? {
+                  text: repos.length
+                    ? 'no repository mounted for write — an executor cannot Run/Queue until one is'
+                    : 'no repository — Run/Queue disabled until you pick one',
+                  tone: 'warn'
+                }
+              : role === 'proactive'
+                ? { text: 'optional — repos are read-only context for each run' }
+                : undefined
+          }
           icon="branch"
           placeholder={repos.length ? 'add another repository' : 'pick a repository'}
           items={allRepos.map((r) => ({
             id: r.name,
-            label: r.name,
-            meta: r.local ? 'local' : shortRepoUrl(r.url)
+            label: r.name
           }))}
           selected={repos}
           onPick={(name) => setRepoPicked(name, true)}
@@ -661,7 +671,12 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
               <div className="repo-mode-row" key={name}>
                 <div className="repo-mode-head">
                   <Icon name="branch" size={11} className="faint icon-fixed" />
-                  <span className="repo-mode-name">{cfg ? repoChipLabel(cfg) : name}</span>
+                  <span
+                    className="repo-mode-name"
+                    title={cfg ? (cfg.local ? 'local repository' : shortRepoUrl(cfg.url)) : undefined}
+                  >
+                    {name}
+                  </span>
                   <span className="spacer" />
                   <button
           type="button"
@@ -694,20 +709,6 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
               </div>
             )
           }}
-          footer={
-            <>
-              {repoGap && (
-                <div className="hc-note">
-                  {repos.length
-                    ? 'no repository mounted for write — an executor cannot Run/Queue until one is'
-                    : 'no repository — Run/Queue disabled until you pick one'}
-                </div>
-              )}
-              {role === 'proactive' && (
-                <div className="hc-note">optional — repos are read-only context for each run</div>
-              )}
-            </>
-          }
         />
 
         <PickerField
@@ -717,10 +718,7 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
           placeholder={mcp.length ? 'add another server' : 'pick an MCP server'}
           items={mcpOffered.map((e) => ({
             id: e.id,
-            label: e.label,
-            meta: e.description,
-            title: e.description,
-            warning: e.source === 'registry' && isLocalMcpEntry(e.entry) ? LOCAL_MCP_NOTICE : undefined
+            label: e.label
           }))}
           selected={mcp.map((m) => m.id)}
           onPick={(id) => setMcpMode(id, 'full')}
@@ -752,9 +750,7 @@ function DraftConfig({ tree, info }: { tree: Tree; info: SessionInfo }) {
           }
           items={skillsOffered.map((e) => ({
             id: e.name,
-            label: e.name,
-            meta: e.problem ?? e.description,
-            title: e.problem ?? e.description
+            label: e.name
           }))}
           selected={skills.map((k) => k.name)}
           onPick={(name) => setSkill(name, true)}

@@ -2,6 +2,8 @@
 // F-number in a chat line, the tab badge, a notification: rpm/ui
 // `openReview`, t2v3 D), carried out by that session's Chat once it is
 // mounted: it shows the Review tab and hands the focus to `ReviewTab`.
+// `executor` is the session whose pane carries it out: the executor, or one
+// of its reviewers when the jump was asked from that reviewer's own pane.
 import { useSyncExternalStore } from 'react'
 import type { ReviewFocus } from '../../rpm/ui'
 

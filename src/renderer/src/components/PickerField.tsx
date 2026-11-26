@@ -5,13 +5,10 @@ import { Icon, InfoDot, type IconName } from './icons'
 /** One suggestion in a `PickerField` dropdown. */
 export interface PickerItem {
   id: string
+  /** The only thing a suggestion shows — one line, truncated to the row, no
+   *  tooltip. Anything more about an item (a url, a description, a caution)
+   *  belongs behind its info dot once it is picked. */
   label: string
-  /** Quiet right-aligned text: a url, a description, a source. */
-  meta?: string
-  /** Tooltip. */
-  title?: string
-  /** A caution shown under the suggestion, before it is picked. */
-  warning?: string | undefined
 }
 
 /**
@@ -33,6 +30,7 @@ export interface PickerItem {
 export function PickerField({
   label,
   info,
+  note,
   icon,
   placeholder,
   items,
@@ -46,6 +44,9 @@ export function PickerField({
 }: {
   label: string
   info?: string
+  /** A situational line put first in the info popover (not under the field);
+   *  `warn` tints the dot so it is noticed without taking any room. */
+  note?: { text: string; tone?: 'warn' } | undefined
   icon: IconName
   placeholder: string
   items: PickerItem[]
@@ -91,10 +92,7 @@ export function PickerField({
       items.filter(
         (i) =>
           !selected.includes(i.id) &&
-          (!q ||
-            i.label.toLowerCase().includes(q) ||
-            i.id.toLowerCase().includes(q) ||
-            (i.meta ?? '').toLowerCase().includes(q))
+          (!q || i.label.toLowerCase().includes(q) || i.id.toLowerCase().includes(q))
       ),
     [items, selected, q]
   )
@@ -184,7 +182,14 @@ export function PickerField({
     <div className="cfg-cell">
       <div className="seclabel-row">
         <span className="seclabel">{label}</span>
-        {info && <InfoDot text={info} />}
+        {note ? (
+          <InfoDot text={info ? `${note.text}. ${info}` : note.text} {...(note.tone ? { tone: note.tone } : {})}>
+            <span className={`info-pop-note ${note.tone ?? ''}`}>{note.text}</span>
+            {info}
+          </InfoDot>
+        ) : (
+          info && <InfoDot text={info} />
+        )}
       </div>
       <div
         className="pick-wrap"
@@ -239,10 +244,7 @@ export function PickerField({
                 <>
                   <Icon name={icon} size={11} className="faint icon-fixed" />
                   <span className="menu-item-name">{s.label}</span>
-                  {s.meta && <span className="menu-meta mono">{s.meta}</span>}
-                  {s.warning && <span className="menu-item-warn">{s.warning}</span>}
-                </>,
-                s.title
+                </>
               )
             )}
             {canCreate &&

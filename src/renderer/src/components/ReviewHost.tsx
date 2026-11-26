@@ -76,10 +76,13 @@ export function ReviewHost({
         requestChatJump(sessionId, line)
         if (sessionId !== info.id) onSelect(sessionId)
       },
-      // The executor opens on its Review tab, focused (Chat's `useReviewJump`).
+      // The executor opens on its Review tab, focused (Chat's `useReviewJump`) —
+      // unless this pane is one of its reviewers: that pane's Review tab shows
+      // the same loop, so the jump lands here and nothing is selected.
       openReview: (executor, focus) => {
-        requestReviewJump(executor, focus)
-        if (executor !== info.id) onSelect(executor)
+        const here = executor === info.id || info.reviewerOf?.executor === executor
+        requestReviewJump(here ? info.id : executor, focus)
+        if (!here) onSelect(executor)
       },
       openDiff: (dws, dtask, files) => openScopeDiff?.(dws, dtask, files),
       // A reviewer lives in its executor's scope, but look it up.
@@ -89,7 +92,7 @@ export function ReviewHost({
       InfoDot,
       ReviewerFields
     }),
-    [openScopeFile, openScopeDiff, tree, ws, task, onSelect, agents, deniedKey, info.id]
+    [openScopeFile, openScopeDiff, tree, ws, task, onSelect, agents, deniedKey, info.id, info.reviewerOf?.executor]
   )
   const scope = useMemo(() => ({ info, tree }), [info, tree])
   return (

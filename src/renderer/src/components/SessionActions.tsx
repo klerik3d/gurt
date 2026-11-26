@@ -12,6 +12,54 @@ import { Icon } from './icons'
  *  much, so the sidebar doesn't have to hold a snapshot to offer them. */
 export type SessionTarget = Pick<SessionInfo, 'id' | 'title' | 'container' | 'state'>
 
+/** An executor's RPM reviewer sessions — deleted along with it (Delete, and
+ *  Recreate, which deletes the original). Read from the tree at the moment of
+ *  asking; a failed read says nothing rather than blocking the dialog. */
+async function reviewersOf(id: string): Promise<SessionInfo[]> {
+  try {
+    const tree = await window.gurt.getTree()
+    return tree.workspaces.flatMap((w) => w.tasks.flatMap((t) => t.sessions.filter((x) => x.reviewerOf?.executor === id)))
+  } catch {
+    return []
+  }
+}
+
+// A reviewer's container goes down once its turn is over, so a running one
+// means a review still in progress.
+const reviewing = (reviewers: SessionInfo[]): boolean =>
+  reviewers.some((r) => r.state === 'starting' || r.container?.status === 'running')
+
+/** The sentence a confirmation adds when the session's reviewers go too. */
+function reviewersNote(reviewers: SessionInfo[]): string {
+  if (!reviewers.length) return ''
+  const running = reviewing(reviewers)
+  return (
+    (reviewers.length === 1
+      ? 'Its review session is deleted too, with its conversation'
+      : `Its ${reviewers.length} review sessions are deleted too, with their conversations`) +
+    (running ? ' — a review in progress is stopped.' : '.')
+  )
+}
+
+/**
+ * Ask `ask(note)` — `note` says which reviewers go too — and answer true only
+ * when what was confirmed is still all that goes. RPM can create a reviewer
+ * (or start a review) while the dialog is open; then the dialog comes back with
+ * the new note, saying so, instead of deleting more than the user read.
+ */
+async function confirmWithReviewers(id: string, ask: (note: string) => Promise<boolean>): Promise<boolean> {
+  let shown = await reviewersOf(id)
+  let note = reviewersNote(shown)
+  for (;;) {
+    if (!(await ask(note))) return false
+    const now = await reviewersOf(id)
+    const known = new Set(shown.map((r) => r.id))
+    if (!now.some((r) => !known.has(r.id)) && (reviewing(shown) || !reviewing(now))) return true
+    shown = now
+    note = `A review started while you were deciding. ${reviewersNote(now)}`
+  }
+}
+
 /**
  * Confirm, then delete. Resolves true once the delete has been sent — callers
  * use that to step a selection off the row before it disappears (a cancelled
@@ -20,18 +68,21 @@ export type SessionTarget = Pick<SessionInfo, 'id' | 'title' | 'container' | 'st
 export async function deleteSession(s: SessionTarget): Promise<boolean> {
   // A session owns its container, so deleting it takes the container down —
   // say so, and say what survives: the clone and whatever is uncommitted in it.
-  const warning =
-    s.container && s.container.status !== 'stopped'
-      ? `Delete session "${s.title}"? Its container goes down with it; the clone and any uncommitted changes stay.`
-      : `Delete session "${s.title}"?`
-  if (
-    !(await confirmDialog(warning, {
-      title: 'Delete session',
-      confirmText: 'Delete',
-      danger: true
-    }))
+  const ok = await confirmWithReviewers(s.id, (reviewers) =>
+    confirmDialog(
+      [
+        `Delete session "${s.title}"?`,
+        s.container && s.container.status !== 'stopped'
+          ? 'Its container goes down with it; the clone and any uncommitted changes stay.'
+          : '',
+        reviewers
+      ]
+        .filter(Boolean)
+        .join(' '),
+      { title: 'Delete session', confirmText: 'Delete', danger: true }
+    )
   )
-    return false
+  if (!ok) return false
   window.gurt.sessionDelete(s.id).catch((e: unknown) => alertDialog(String(e)))
   return true
 }
@@ -60,15 +111,17 @@ export async function recreateSession(
   s: SessionTarget,
   onCreated?: (info: SessionInfo) => void
 ): Promise<boolean> {
-  if (
-    !(await confirmDialog(
+  const ok = await confirmWithReviewers(s.id, (reviewers) =>
+    confirmDialog(
       `Recreate session "${s.title}" as a draft? Its conversation is discarded and any running turn is stopped` +
         (s.container ? ', and its container goes down' : '') +
-        '. The configuration and first prompt stay, ready to edit and launch again; the clone and any uncommitted changes stay too.',
+        '. ' +
+        (reviewers ? `${reviewers} ` : '') +
+        'The configuration and first prompt stay, ready to edit and launch again; the clone and any uncommitted changes stay too.',
       { title: 'Recreate session', confirmText: 'Recreate', danger: true }
-    ))
+    )
   )
-    return false
+  if (!ok) return false
   try {
     onCreated?.(await window.gurt.sessionRecreate(s.id))
     return true

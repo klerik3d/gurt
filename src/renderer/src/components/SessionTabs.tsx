@@ -1,15 +1,31 @@
 import { usePreference, z } from '../persisted'
-import { ReviewBadge } from '../../../rpm/ui'
+import { ReviewBadge, runOfStepKey } from '../../../rpm/ui'
 import { sessionRole, writeRepos, type SessionInfo } from '../../../shared/types'
 
-/** The executor whose Review tab a session shows (t3v2 §3.3: executors only,
- *  drafts too) — and only once it has a repository mounted for write: there is
- *  nothing to review without one. Undefined = the tab shows, disabled. */
-export const reviewOf = (info: Pick<SessionInfo, 'id' | 'role' | 'repos' | 'repoModes'>): string | undefined =>
-  sessionRole(info) === 'executor' && writeRepos(info).length > 0 ? info.id : undefined
+type ReviewTarget = Pick<SessionInfo, 'id' | 'role' | 'repos' | 'repoModes' | 'reviewerOf'>
+
+/** The executor whose Review tab a session shows (t3v2 §3.3). An executor's own
+ *  (drafts too) once it has a repository mounted for write — there is nothing
+ *  to review without one; and an RPM reviewer's, which shows the loop it is a
+ *  review of — one loop, seen from either side, with the same controls.
+ *  Undefined = the tab shows, disabled. */
+export const reviewOf = (info: ReviewTarget): string | undefined => {
+  const role = sessionRole(info)
+  if (role === 'reviewer') return info.reviewerOf?.executor
+  return role === 'executor' && writeRepos(info).length > 0 ? info.id : undefined
+}
+
+/** The run a reviewer's Review tab opens on — the one it reviews, not the
+ *  loop's last (a later run may have started since). `ReviewTab`'s
+ *  `initialRun`: a starting point, not a focus, so a jump or a pick moves the
+ *  tab away from it for good. */
+export const reviewerRun = (info: ReviewTarget | undefined): number | undefined => {
+  const key = info?.reviewerOf?.key
+  return key === undefined ? undefined : runOfStepKey(key)
+}
 
 /** Which pane of a session is showing — chat/prompt, its config, its review
- *  (an executor's only, t3v2 §3.3), or its provisioning/container logs.
+ *  (an executor's or an RPM reviewer's, t3v2 §3.3), or its provisioning/container logs.
  *  Persisted per-session UI state. */
 export type SessionTab = 'chat' | 'review' | 'config' | 'logs'
 
@@ -20,7 +36,7 @@ const TABS: { id: SessionTab; label: string }[] = [
   { id: 'logs', label: 'Logs' }
 ]
 
-const REVIEW_OFF = 'Review needs an executor with a repository mounted for write (Config tab)'
+const REVIEW_OFF = 'Review needs an executor with a repository mounted for write (Config tab), or an RPM reviewer'
 
 export function TabBar({
   active,

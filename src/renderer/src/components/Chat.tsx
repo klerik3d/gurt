@@ -38,7 +38,7 @@ import { NetButton } from './Network'
 import { ConfigTab } from './ConfigTab'
 import { SessionMenu } from './SessionActions'
 import { ToolStrip, type StripEntry } from './ToolStrip'
-import { TabBar, reviewOf, useSessionTab } from './SessionTabs'
+import { TabBar, reviewOf, reviewerRun, useSessionTab } from './SessionTabs'
 import { ReviewTab, RpmChatLine } from '../../../rpm/ui'
 import { ContainerTerminalButton } from './ContainerTerminalButton'
 import { CopyButton } from './CopyButton'
@@ -492,7 +492,16 @@ export function Chat({
       {activeTab === 'config' && <ConfigTab tree={tree} snapshot={snapshot} />}
 
       {activeTab === 'review' && (
-        <ReviewTab executor={sessionId} focus={reviewJump} onFocused={() => reviewJump && clearReviewJump(reviewJump)} />
+        <ReviewTab
+          // Per pane, not per loop: an executor and its reviewers show one
+          // loop, but each opens on its own run with its own filter and row.
+          key={sessionId}
+          executor={reviewOf(info) ?? sessionId}
+          focus={reviewJump}
+          onFocused={() => reviewJump && clearReviewJump(reviewJump)}
+          // A reviewer's tab shows its executor's loop, opened on the run it reviews.
+          initialRun={reviewerRun(info)}
+        />
       )}
 
       {activeTab === 'logs' && (

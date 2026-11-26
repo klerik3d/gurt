@@ -418,3 +418,10 @@ test('next: a changed check command runs the check on the same tree (2)', () => 
   s.setChecks([{ repo: 'app', command: 'npm run ci' }])
   s.expect({ do: 'check' })
 })
+
+test('a step key names its run, read from the end', () => {
+  assert.equal(m.stepKey('e1', 3, 7), 'e1:3:7')
+  assert.equal(m.runOfStepKey(m.stepKey('e1', 3, 7)), 3)
+  assert.equal(m.runOfStepKey('odd:id:12:4'), 12, 'an executor id with a colon')
+  assert.equal(m.runOfStepKey('rv-1'), undefined, 'not a step key')
+})
