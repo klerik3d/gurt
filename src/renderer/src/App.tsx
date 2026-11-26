@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as R
 import type { BootProgress } from '../../shared/api'
 import {
   applyLog,
+  sessionFlow,
   sessionStatus,
   type RepoChanges,
   type InterruptedSession,
@@ -843,7 +844,7 @@ export default function App() {
   // (pushed on every session change) so the sidebar's run/wait/idle marks stay live.
   const activity: Record<string, SessionActivity> = {}
   for (const [id, snap] of Object.entries(snapshots))
-    activity[id] = { busy: snap.info.busy, awaitingInput: snap.info.awaitingInput }
+    activity[id] = { busy: snap.info.busy, awaitingInput: snap.info.awaitingInput, flow: snap.info.flow }
   // Read state rides the same overlay, so every status mark in the app splits
   // `idle` into seen/unseen from one source. Keyed off the tree rather than the
   // snapshots: a session with no live snapshot still has a mark worth reading.
@@ -869,10 +870,11 @@ export default function App() {
       for (const s of t.sessions) {
         const st = sessionStatus({ ...s, ...activity[s.id] })
         // gurt's own check on a session counts as work going on.
-        if (st === 'running' || st === 'starting') runningCount++
+        if (st === 'running' || st === 'starting' || sessionFlow({ ...s, ...activity[s.id] }) === 'check' || sessionFlow({ ...s, ...activity[s.id] }) === 'review') runningCount++
         else if (st === 'waiting') needYouCount++
       }
 
+  const activeFlow = activeInfo ? sessionFlow({ ...activeInfo, ...activity[activeInfo.id] }) : undefined
   const activeStatus = activeInfo
     ? sessionStatus({ ...activeInfo, ...activity[activeInfo.id] })
     : null
@@ -1030,7 +1032,7 @@ export default function App() {
               ? selection.task
               : null
 
-  const crumbDot = view === 'work' && workMode === 'sessions' && activeStatus ? sessionDot(activeStatus) : null
+  const crumbDot = view === 'work' && workMode === 'sessions' && activeStatus ? sessionDot(activeStatus, activeFlow) : null
 
   return (
     <FileOpener.Provider value={openScopeFile}>

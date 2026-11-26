@@ -24,6 +24,7 @@ import {
   type SessionInfo,
   type SessionNetwork,
   type RepoMode,
+  type SessionFlow,
   type SessionRole,
   type SessionSnapshot,
   type StoredProposal,
@@ -245,6 +246,16 @@ export class SessionManager {
     this.rpmTools = t
   }
 
+  /** What the executor's RPM run does around it right now (`SessionInfo.flow`);
+   *  runtime only. */
+  private readonly flows = new Map<string, SessionFlow>()
+  setFlow(sessionId: string, flow: SessionFlow | undefined): void {
+    if (this.flows.get(sessionId) === flow) return
+    if (flow) this.flows.set(sessionId, flow)
+    else this.flows.delete(sessionId)
+    if (this.sessions.has(sessionId)) this.bus.emit('session.changed', { sessionId })
+  }
+
   /** The last classified turn of an executor or reviewer (persisted before
    *  `session.settled`): what RPM replays at load (t3v2 §4.1). */
   lastSettled(sessionId: string): SettledTurn | undefined {
@@ -321,6 +332,7 @@ export class SessionManager {
       ...s.info,
       busy: s.busy || undefined,
       awaitingInput: s.pendingPermissions.size > 0 || undefined,
+      flow: this.flows.get(s.info.id),
       pending: s.pending.length ? s.pending.map(pendingInfo) : undefined,
       queueWaiting: s.recovering ? 'waiting for resume' : this.pendingBlocked(s) ?? (s.info.state === 'queued' ? this.queuedWaiting(s) : undefined)
     }

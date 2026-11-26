@@ -754,6 +754,9 @@ export interface SessionInfo {
   busy?: boolean | undefined
   /** Runtime overlay (never persisted): a permission request awaits the user's decision. */
   awaitingInput?: boolean | undefined
+  /** Runtime overlay (never persisted): the executor's RPM run is working around it
+   *  while the agent itself is idle — see {@link SessionFlow}. */
+  flow?: SessionFlow | undefined
   /** Runtime overlay (never persisted): the turn ended without a `complete` call and the
    *  automatic nudge did not heal it — a protocol violation surfaced in the snapshot. */
   incomplete?: boolean | undefined
@@ -781,6 +784,21 @@ export interface SessionInfo {
 }
 
 /**
+ * What an executor's RPM run is doing while the executor itself is idle:
+ *   check  — gurt's own check (or its fix-check) is running
+ *   review — a reviewer is reviewing
+ *   queued — the review is held back by the plan limit, i.e. waits in a queue
+ */
+export type SessionFlow = 'check' | 'review' | 'queued'
+
+/** The flow that decides a session's mark: only an idle session shows it —
+ *  a working or waiting one already says more. */
+export function sessionFlow(s: SessionInfo): SessionFlow | undefined {
+  if (s.state !== 'started' || s.awaitingInput || s.busy) return undefined
+  return s.flow
+}
+
+/**
  * The live overlay the renderer keeps per session id, outside the tree snapshot:
  * `busy`/`awaitingInput` carry `| undefined` because they are read off a
  * {@link SessionSnapshot}, which reports "not busy" as an unset field, while
@@ -789,6 +807,7 @@ export interface SessionInfo {
 export interface SessionActivity {
   busy?: boolean | undefined
   awaitingInput?: boolean | undefined
+  flow?: SessionFlow | undefined
   seen?: boolean | undefined
 }
 
