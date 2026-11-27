@@ -3,7 +3,7 @@
 // code — everything it knows about sessions, git, containers and
 // notifications comes through here.
 import type { SessionRole } from '../../shared/types'
-import type { CheckRun, FileChange, RepoTree, RpmChatLine, SettledTurn } from '../core'
+import type { CheckRun, FileChange, RanOn, RepoTree, RpmChatLine, SettledTurn } from '../core'
 
 export interface RpmPorts {
   sessions: SessionsPort
@@ -43,6 +43,9 @@ export interface SessionsPort {
    *  No snapshot — undefined. */
   checkpointBefore(id: string, turnId: string): { repo: string; commit: string }[] | undefined
 
+  /** The client, model and effort the session runs on now (what its Config tab shows); recorded with
+   *  each review and executor turn. Undefined when the session reports none. Optional: a port may not know. */
+  ranOn?(id: string): RanOn | undefined
   /** A logical turn (prompt + its nudge) ended and is classified. Written to disk first (`lastSettled`),
    *  then delivered. Only for executors and reviewers. */
   onSettled(fn: (t: SettledTurn) => void): () => void

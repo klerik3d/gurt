@@ -35,6 +35,8 @@ export interface ReviewerFieldsProps {
   info: string
   /** Why the chosen client cannot review (`RpmHost.reviewerProblem`); shown at the field (t3v2 §12). */
   problem: string | undefined
+  /** The same client: `options` carries only what changed, laid over the stored
+   *  ones (`setConfig`). Another client: its options start from these. */
   onChange: (value: RpmConfig['reviewer']) => void
 }
 
@@ -59,6 +61,8 @@ export interface RpmHost {
   /** Why this client cannot be the reviewer (none chosen, gone, denied, does
    *  not receive gurt's tools — t2v3 A), or undefined when it can. */
   reviewerProblem: (agent: string) => string | undefined
+  /** A client's name by its agent instance id (History: what a review or a turn ran on); the id when absent. */
+  agentName?: (agent: string) => string
   InfoDot: ComponentType<{ text: string }>
   ReviewerFields: ComponentType<ReviewerFieldsProps>
 }

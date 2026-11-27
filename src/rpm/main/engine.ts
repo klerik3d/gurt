@@ -25,6 +25,7 @@ import {
   type Entry,
   type EntryOf,
   type NewEntry,
+  type RanOn,
   type RepoTree,
   type ReplyAct,
   type ReviewMark,
@@ -554,7 +555,8 @@ export class Engine {
       tree,
       outcome: t.outcome,
       ...(t.reason && { reason: t.reason }),
-      replies: lastReplies(t.tools)
+      replies: lastReplies(t.tools),
+      ...this.ranOn(executor)
     })) as EntryOf<'turn'>
     const after = fold(live.rec.entries)
     for (const line of chatLines.turn(after, e)) this.ports.sessions.chatLine(executor, line)
@@ -579,12 +581,19 @@ export class Engine {
       tree: step.tree,
       full: step.full ?? true,
       findings: sub.findings.map((x, i) => ({ ...x, id: `F${base + i + 1}` })),
-      verify: sub.verify
+      verify: sub.verify,
+      ...this.ranOn(reviewer)
     })) as EntryOf<'review'>
     this.ports.sessions.chatLine(reviewer, chatLines.review(fold(live.rec.entries), e))
   }
 
   // --- helpers --------------------------------------------------------------------------------------------
+
+  /** `{ ran }` for a review or turn entry: what the session ran on, when its port knows. */
+  private ranOn(id: string): { ran?: RanOn } {
+    const ran = this.ports.sessions.ranOn?.(id)
+    return ran ? { ran } : {}
+  }
 
   /** §6.1: open a run on an executor turn with changes. */
   private async startRun(executor: string, f: SessionFacts, t: SettledTurn): Promise<void> {

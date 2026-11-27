@@ -5,7 +5,9 @@
 // - Your entries change the state at once (t3v2 §6.3); `next` only decides at
 //   a step boundary.
 // - Counters of rules 3а, 3б, 5, 8 run since your last entry. `turn { origin:
-//   'user' }` counts as your entry too, and lifts `called`.
+//   'user' }` counts as your entry too, and lifts `called`. A `config` entry
+//   does not: changing the settings answers nothing (a budget raised above the
+//   reviews made since you lifts a budget call).
 // - Findings are numbered F1, F2… in the order reviews raise them.
 import { move, ownerOf } from './machine'
 import type { Act, Actor, Entry, Finding, HistoryItem, RunState } from './model'
@@ -42,7 +44,9 @@ export function fold(journal: readonly Entry[]): RunState {
 
 function apply(run: RunState, e: Entry): void {
   // TODO(rpm): entries after mark/end are folded as usual; the journal should not have any.
-  if (e.by === 'you' || (e.kind === 'turn' && e.origin === 'user')) {
+  // A settings change is not an answer: it neither lifts a call nor starts the
+  // counters again (only a larger review budget lifts a budget call, below).
+  if ((e.by === 'you' && e.kind !== 'config') || (e.kind === 'turn' && e.origin === 'user')) {
     run.lastYou = e.seq
     run.sinceYou = { reviews: 0, redChecks: 0 }
     delete run.called
@@ -177,6 +181,8 @@ function apply(run: RunState, e: Entry): void {
       break
     case 'config':
       run.config = { ...run.config, ...e.patch }
+      // More reviews than were made since you: the budget is not spent any more, the run goes on.
+      if (run.called === 'budget' && run.sinceYou.reviews < run.config.reviews) delete run.called
       break
     case 'command':
       if (e.cmd === 'pause') run.paused = true

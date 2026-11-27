@@ -89,6 +89,7 @@ export function ReviewHost({
       scopeOf: (executor) => scopeOf(tree, executor) ?? (executor === info.id ? { ws, task } : undefined),
       confirm: (text, opts) => confirmDialog(text, opts),
       reviewerProblem: (agent) => reviewerProblem(agents, deniedKey ? deniedKey.split('\n') : [], agent),
+      agentName: (agent) => agentName(agents, agent),
       InfoDot,
       ReviewerFields
     }),
@@ -133,8 +134,11 @@ function ReviewerFields({ value, info: text, problem, onChange }: ReviewerFields
     ? `${text} This reviewer runs on the same client as the executor: it may go easy on its own kind of output.`
     : text
   const options = (agentConfig?.configOptions ?? []).filter((o) => o.category !== 'mode')
+  // Only the option picked: main lays it over the stored ones of the same client
+  // (`setConfig`). The whole set as this pane last read it would undo a pick
+  // made just before whose refresh has not arrived yet.
   const pick = (opt: SessionConfigOption, v: string | boolean): void =>
-    onChange({ agent: value.agent, options: { ...value.options, [opt.id]: v } })
+    onChange({ agent: value.agent, options: { [opt.id]: v } })
 
   return (
     <>

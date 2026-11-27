@@ -14,7 +14,8 @@ export const INFO = {
   threshold:
     'Findings at or above it go to the executor and must end closed, rejected or deferred. The rest are listed and do not hold the review.',
   attempts: 'How many fixes of one finding the reviewer may turn down before it comes to you.',
-  reviews: 'Reviews in a row without you; after that the loop asks you whether to go on.'
+  reviews:
+    'Reviews in a row without you; after that the loop asks you whether to go on. Raising it while the loop waits on this lets it go on; any other setting changes only the steps to come.'
 }
 
 /** Under the switch while it is off — what "off" means here. */

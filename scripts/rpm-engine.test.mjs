@@ -88,6 +88,7 @@ function world(name, { executor = [], reviewer = [], check = [], checks = [{ rep
   w.ports = {
     sessions: {
       info: (id) => w.facts[id],
+      ranOn: (id) => w.facts[id] && { agent: w.facts[id].agent, model: `model of ${id}`, ...(id === 'e1' && { effort: 'high' }) },
       list: () => Object.keys(w.facts),
       userPrompts: () => ['Add the feature.'],
       checkpointBefore: () => [{ repo: 'app', commit: 'c0ffee' }],
@@ -242,6 +243,20 @@ test('run а · clean: check ✓ → R1: 2 nits below threshold → mark', async
   assert.deepEqual(w.lines.map((l) => `${l.id}:${l.line.from}>${l.line.to}:${l.line.kind}`), ['r1:executor>reviewer:handoff', 'r1:reviewer>gurt:handoff', 'e1:rpm>you:passed'])
   assert.deepEqual(w.errors, [])
   assert.equal(w.rpm.owns('e1'), false)
+})
+
+test('each review and executor turn records the client, model and effort it ran on', async () => {
+  const w = world('ran', {
+    reviewer: [{ findings: [['major', 'one']] }, { verify: [['F1', true]] }],
+    executor: [{ edit: true, replies: [['F1', 'fixed']] }]
+  })
+  await started(w)
+  const s = await w.rest()
+  assert.equal(w.phase(s), 'passed')
+  const reviews = s.journal.filter((e) => e.kind === 'review')
+  assert.deepEqual(reviews.map((e) => e.ran), [{ agent: 'codex', model: 'model of r1' }, { agent: 'codex', model: 'model of r2' }])
+  const turns = s.journal.filter((e) => e.kind === 'turn')
+  assert.deepEqual(turns.map((e) => e.ran), [{ agent: 'claude', model: 'model of e1', effort: 'high' }])
 })
 
 test('run б · a fix accepted on the second try', async () => {

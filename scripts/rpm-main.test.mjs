@@ -163,6 +163,24 @@ test('config: defaults, a draft, durable, a patch on a live run is journaled', a
   assert.deepEqual(s.journal.at(-1), { ...s.journal.at(-1), by: 'you', kind: 'config', patch: { threshold: 'nit' } })
 })
 
+test('config: a reviewer pick lands on the stored options of the same client; another client starts afresh', async () => {
+  const { rpm } = await fresh('config-merge')
+  await rpm.setConfig('d1', { reviewer: { agent: 'codex', options: { model: 'gpt-x' } } })
+  // A pick sends only its own option: the one before it stays.
+  await rpm.setConfig('d1', { reviewer: { agent: 'codex', options: { effort: 'high' } } })
+  assert.deepEqual(rpm.config('d1').reviewer, { agent: 'codex', options: { model: 'gpt-x', effort: 'high' } })
+  await rpm.setConfig('d1', { reviewer: { agent: 'codex', options: { model: 'gpt-y' } } })
+  assert.deepEqual(rpm.config('d1').reviewer, { agent: 'codex', options: { model: 'gpt-y', effort: 'high' } })
+  await rpm.setConfig('d1', { reviewer: { agent: 'claude', options: {} } })
+  assert.deepEqual(rpm.config('d1').reviewer, { agent: 'claude', options: {} })
+
+  // On a live run the journal carries the merged reviewer, so the run's config is the stored one.
+  await rpm.setConfig('e1', { reviewer: { agent: 'codex', options: { model: 'gpt-x' } } })
+  await rpm.setConfig('e1', { reviewer: { agent: 'codex', options: { effort: 'low' } } })
+  assert.deepEqual(rpm.state('e1').config.reviewer, rpm.config('e1').reviewer)
+  assert.deepEqual(rpm.state('e1').journal.at(-1).patch, { reviewer: rpm.config('e1').reviewer })
+})
+
 test('owns, quiets, stepRunning, marks', async () => {
   const { p, rpm } = await fresh('owns')
   assert.equal(rpm.owns('e1'), true)

@@ -36,7 +36,7 @@ export function next(run: RunState, facts: Facts): Next {
     const aboutCheck = run.called === 'check-red' || run.called === 'check-unchanged'
     if (!(aboutCheck && commandChanged)) return { do: 'wait', why: 'called' }
   }
-  // The last step gave no result (t3v2 §12): call you; Continue (any entry of yours) re-decides.
+  // The last step gave no result (t3v2 §12): call you; Continue (any entry of yours but a settings change) re-decides.
   if (run.failed) return { do: 'call', why: run.failed }
 
   // 2. No check yet, the code changed since the last check, or the command changed.

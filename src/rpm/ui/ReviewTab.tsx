@@ -6,7 +6,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { Entry, RpmCommand, RpmConfig, RpmFinding, RpmState, RunSummary, Severity, VerdictTo } from '../core'
 import { FindingText } from './FindingPopup'
-import { useRpmHost, type ReviewFocus } from './host'
+import { useRpmHost, useRpmHostOptional, type ReviewFocus } from './host'
 import {
   FILTERS,
   OWNER_TONE,
@@ -631,6 +631,7 @@ export function History({ executor, run, journal }: { executor: string; run: num
       if (!next.delete(seq)) next.add(seq)
       return next
     })
+  const agentName = useRpmHostOptional()?.agentName
   let reviews = 0
   return (
     <div className="rpm-hist">
@@ -641,7 +642,7 @@ export function History({ executor, run, journal }: { executor: string; run: num
             <span className="rpm-t">{clock(e.at)}</span>
             <span className="rpm-w">{actorLabel(e.by, e.kind === 'review' ? reviews : undefined)}</span>
             <span>
-              <FindingText executor={executor} run={run} text={entryLine(e, reviews)} />
+              <FindingText executor={executor} run={run} text={entryLine(e, reviews, agentName)} />
               {e.comment && <span className="dim"> — {e.comment}</span>}
               {e.kind === 'check' && !e.ok && (
                 <>

@@ -13,7 +13,8 @@ import {
   type SkillSelection
 } from '../../shared/types'
 import type { PlanHold } from '../../shared/planUsage'
-import { chatLineSummary, type RpmChatLine } from '../../rpm/core'
+import { chatLineSummary, type RanOn, type RpmChatLine } from '../../rpm/core'
+import { modelAndEffort } from '../../shared/agentConfig'
 import type { SessionFacts } from '../../rpm/main'
 import type { Bus } from '../bus'
 import { createLogger } from '../log'
@@ -29,6 +30,8 @@ const log = createLogger('sessions')
 /** What rpm.ts needs of the session manager. */
 export interface RpmCtx {
   readonly bus: Bus
+  /** The kind of an agent instance (agents.json), for its option view. */
+  agentKind(agentId: string): string | undefined
   createSession(ref: EnvRef, repos: string[], agentId: string, startPrompt: string, action: CreateAction, mcp?: McpSelection[], autoAllow?: boolean, configValues?: Record<string, string | boolean>, role?: SessionRole, skills?: SkillSelection[], network?: SessionNetwork, repoModes?: Partial<Record<string, unknown>>): SessionInfo
   drainPending(s: Session): Promise<void>
   inheritanceOf(info: SessionInfo): DraftInheritance
@@ -150,6 +153,16 @@ export function userPrompts(mgr: RpmCtx, sessionId: string, afterTurnId?: string
 export function checkpointBefore(mgr: RpmCtx, sessionId: string, turnId: string): { repo: string; commit: string }[] | undefined {
   const e = mgr.sessions.get(sessionId)?.entries.find((x) => x.kind === 'user' && x.turn === turnId)
   return e?.kind === 'user' && e.checkpoint?.length ? e.checkpoint.map((c) => ({ ...c })) : undefined
+}
+
+/** The client, model and effort the session runs on now (`SessionsPort.ranOn`): its
+ *  live options with its own picks over them, as its Config tab shows them. */
+export function ranOn(mgr: RpmCtx, sessionId: string): RanOn | undefined {
+  const s = mgr.sessions.get(sessionId)
+  const agent = s?.info.agent
+  if (!s || !agent) return undefined
+  const { model, effort } = modelAndEffort(s.configOptions, s.info.configValues, mgr.agentKind(agent))
+  return { agent, ...(model !== undefined && { model }), ...(effort !== undefined && { effort }) }
 }
 
 /** `SessionFacts` (t3v2 §4.1 `info`). */

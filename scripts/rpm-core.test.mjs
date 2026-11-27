@@ -295,6 +295,49 @@ test('run ж · something new every round → budget (8) → you decide', () => 
   resume.step({ do: 'executor', items: ['F3'] }, { replies: { F3: 'fixed' }, change: true })
 })
 
+test('run ж · a settings change is not an answer; only a larger budget lifts the budget call', () => {
+  const s = sim()
+  s.step({ do: 'check' })
+  s.step({ do: 'review', full: true, verify: [] }, { findings: [major('a')] })
+  s.step({ do: 'executor', items: ['F1'] }, { replies: { F1: 'fixed' }, change: true })
+  s.step({ do: 'check' })
+  s.step({ do: 'review', full: true, verify: ['F1'] }, { verify: { F1: true }, findings: [major('b')] })
+  s.step({ do: 'executor', items: ['F2'] }, { replies: { F2: 'fixed' }, change: true })
+  s.step({ do: 'check' })
+  s.step({ do: 'review', full: true, verify: ['F2'] }, { verify: { F2: true }, findings: [major('c')] })
+  s.call('budget')
+  // Another reviewer model: still waiting, the counters stay.
+  s.you({ kind: 'config', patch: { reviewer: { agent: 'codex', options: { model: 'gpt-x' } } } })
+  s.expect({ do: 'wait', why: 'called' })
+  assert.equal(s.fold().sinceYou.reviews, 3)
+  assert.equal(s.fold().lastYou, 0)
+  // The same budget, or a smaller one: still waiting.
+  s.you({ kind: 'config', patch: { reviews: 3 } })
+  s.expect({ do: 'wait', why: 'called' })
+  // A larger budget: the run goes on for the reviews it adds (3 made, 5 allowed).
+  s.you({ kind: 'config', patch: { reviews: 5 } })
+  s.step({ do: 'executor', items: ['F3'] }, { replies: { F3: 'fixed' }, change: true })
+  s.step({ do: 'check' })
+  s.step({ do: 'review', full: true, verify: ['F3'] }, { verify: { F3: true }, findings: [major('d')] })
+  s.step({ do: 'executor', items: ['F4'] }, { replies: { F4: 'fixed' }, change: true })
+  s.step({ do: 'check' })
+  s.step({ do: 'review', full: true, verify: ['F4'] }, { verify: { F4: true }, findings: [major('e')] })
+  s.call('budget')
+})
+
+test('fold: a settings change leaves a failed step\'s call standing', () => {
+  const s = sim()
+  s.step({ do: 'check' })
+  const n = s.fold().lastStep + 1
+  s.j.push({ seq: s.j.length + 1, at: 'x', by: 'rpm', kind: 'step', step: n, what: 'review', rule: '6', tree: s.tree, key: `e1:1:${n}`, full: true, items: [] })
+  s.j.push({ seq: s.j.length + 1, at: 'x', by: 'rpm', kind: 'fail', step: n, reason: 'reviewer-failed', detail: 'x' })
+  s.call('reviewer-failed')
+  s.you({ kind: 'config', patch: { reviewer: { agent: 'claude', options: {} } } })
+  s.expect({ do: 'wait', why: 'called' })
+  s.you({ kind: 'command', cmd: 'resume' })
+  s.step({ do: 'review', full: true, verify: [] })
+})
+
 // --- fold details -------------------------------------------------------------------------
 
 test('fold: a move not allowed is kept, marked ignored, and changes nothing', () => {
