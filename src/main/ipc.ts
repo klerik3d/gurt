@@ -330,6 +330,7 @@ export function registerIpc(): void {
     },
     removeTask: (ws, name) => kernel.deleteTask(ws, name),
     proactiveCreate: (ws, name) => kernel.proactive.create(ws, name),
+    proactiveDuplicate: (ws, name) => kernel.proactive.duplicate(ws, name),
     proactiveUpdate: (ws, name, patch) => kernel.proactive.update(ws, name, patch),
     proactiveRunNow: (ws, name) => kernel.proactive.runNow(ws, name),
     watcherCreate: (ws, name) => kernel.watchers.create(ws, name),
