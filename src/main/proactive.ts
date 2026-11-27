@@ -74,6 +74,9 @@ export interface ProactiveManager {
   views(ws: string): ProactiveAgentView[]
   isAgent(ws: string, task: string): boolean
   create(ws: string, name: string): Promise<void>
+  /** A new agent with the same schedule, limits and template (instructions,
+   *  agent, env, repos…), switched off and with no runs. Returns its name. */
+  duplicate(ws: string, name: string): Promise<string>
   update(ws: string, name: string, patch: Partial<ProactiveConfig>): Promise<void>
   runNow(ws: string, name: string): Promise<string>
   /** The tools of one run, bound to its workspace, agent and session. */
@@ -593,6 +596,52 @@ export function createProactive(deps: ProactiveDeps): ProactiveManager {
         agents.set(key(ws, name), a)
         log.info('proactive.create', { ws, agent: name })
         bus.emit('tree.changed', undefined)
+      }),
+
+    duplicate: (ws, name) =>
+      locked(ws, async () => {
+        const src = agentOf(ws, name)
+        const t = template(src)
+        if (!t) throw new Error(`"${name}" has no template session`)
+        const free = (n: string): boolean => {
+          try {
+            store.validateNewTaskName(ws, n)
+            return !agents.has(key(ws, n))
+          } catch {
+            return false
+          }
+        }
+        let copyName = `${name}-copy`
+        for (let n = 2; !free(copyName); n++) {
+          if (n > 1000) throw new Error(`no free name for a copy of "${name}"`)
+          copyName = `${name}-copy-${n}`
+        }
+        // sanitizeProactiveConfig is also the deep copy; the copy starts off.
+        const { templateId: _t, ...rest } = src.config
+        const config: ProactiveConfig = sanitizeProactiveConfig({ ...rest, enabled: false }, PROACTIVE_DEFAULTS)
+        delete config.templateId
+        await store.createTask(ws, copyName, { proactive: config })
+        const info = sessions.createSession(
+          { workspace: ws, task: copyName, env: t.env },
+          [...t.repos],
+          t.agent ?? '',
+          t.startPrompt,
+          'draft',
+          t.mcp ? [...t.mcp] : [],
+          t.autoAllow ?? true,
+          { ...(t.configValues ?? {}) },
+          'proactive',
+          t.skills?.map((k) => ({ ...k })),
+          { ...(t.network ?? {}), internal: true }
+        )
+        sessions.renameSession(info.id, 'template')
+        sessions.markTemplate(info.id)
+        config.templateId = info.id
+        await store.saveTask(ws, copyName, { ...(await store.getTask(ws, copyName)), proactive: config })
+        agents.set(key(ws, copyName), { ws, name: copyName, config, state: await store.readProactiveState(ws, copyName) })
+        log.info('proactive.duplicate', { ws, agent: copyName, from: name })
+        bus.emit('tree.changed', undefined)
+        return copyName
       }),
 
     update: (ws, name, patch) =>

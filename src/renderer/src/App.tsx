@@ -1299,6 +1299,7 @@ export default function App() {
                   onSelect={setWatcherName}
                   onNew={() => setNewWatcher(true)}
                   onRenamed={setWatcherName}
+                  onDeleted={(n) => watcherName === n && setWatcherName(null)}
                 />
               )}
               {workMode === 'proactive' && (
@@ -1315,6 +1316,9 @@ export default function App() {
                   onSelectRun={selectSession}
                   onNew={() => setNewProactive(true)}
                   onRenamed={setProactiveAgent}
+                  onDeleted={(n) => {
+                    if (proactiveAgent === n) setProactiveAgent(null)
+                  }}
                 />
               )}
               <div className="sidebar-resizer" onMouseDown={startSidebarResize} />

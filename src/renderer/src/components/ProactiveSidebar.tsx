@@ -1,4 +1,4 @@
-import { useState, type CSSProperties } from 'react'
+import { useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from 'react'
 import type { Tree } from '../../../shared/types'
 import type { ProactiveAgentView, ProactiveRun } from '../../../shared/proactive'
 import type { Tone } from '../status'
@@ -6,7 +6,8 @@ import { Icon, Dot } from './icons'
 import { LabelTag } from './tags'
 import { RenameInput, scopeNamesOf } from './Sidebar'
 import { scopeNameInput } from '../../../shared/scopeName'
-import { alertDialog } from '../dialog'
+import { alertDialog, confirmDialog } from '../dialog'
+import { RowContextMenu } from './RowContextMenu'
 import { run } from '../async'
 
 /** What an agent's dot says: running, on schedule, or switched off. */
@@ -62,7 +63,8 @@ export function ProactiveSidebar({
   onSelect,
   onSelectRun,
   onNew,
-  onRenamed
+  onRenamed,
+  onDeleted
 }: {
   tree: Tree | null
   ws: string | null
@@ -73,6 +75,7 @@ export function ProactiveSidebar({
   onSelectRun: (id: string) => void
   onNew: () => void
   onRenamed: (newName: string) => void
+  onDeleted: (name: string) => void
 }) {
   const agents = tree?.workspaces.find((w) => w.name === ws)?.proactive ?? []
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
@@ -100,6 +103,27 @@ export function ProactiveSidebar({
     } catch (e) {
       await alertDialog(e instanceof Error ? e.message : String(e))
     }
+  }
+  const [ctx, setCtx] = useState<{ agent: ProactiveAgentView; x: number; y: number } | null>(null)
+  const openMenu = (e: ReactMouseEvent, a: ProactiveAgentView): void => {
+    e.preventDefault()
+    e.stopPropagation()
+    onSelect(a.name)
+    setCtx({ agent: a, x: e.clientX, y: e.clientY })
+  }
+  const duplicate = async (a: ProactiveAgentView): Promise<void> => {
+    if (!ws) return
+    onSelect(await window.gurt.proactiveDuplicate(ws, a.name))
+  }
+  const del = async (a: ProactiveAgentView): Promise<void> => {
+    if (!ws) return
+    const ok = await confirmDialog(
+      `Delete the proactive agent "${a.name}" with its template, runs and environments? Scopes it already raised stay.`,
+      { title: 'Delete proactive agent', confirmText: 'Delete', danger: true }
+    )
+    if (!ok) return
+    await window.gurt.removeTask(ws, a.name)
+    onDeleted(a.name)
   }
   return (
     <aside className="sidebar" style={{ width }}>
@@ -136,6 +160,7 @@ export function ProactiveSidebar({
                 tabIndex={0}
                 onClick={() => onSelect(a.name)}
                 onDoubleClick={() => startRename(a)}
+                onContextMenu={renaming?.name === a.name ? undefined : (e) => openMenu(e, a)}
                 onKeyDown={(e) => {
                   if (e.target !== e.currentTarget) return
                   if (e.key === 'Enter' || e.key === 'F2') {
@@ -204,6 +229,49 @@ export function ProactiveSidebar({
           </div>
         )}
       </div>
+      {ctx && (
+        <RowContextMenu x={ctx.x} y={ctx.y} onClose={() => setCtx(null)}>
+          {!ctx.agent.activeRun && (
+          <div
+            className="menu-item"
+            onMouseDown={(e) => {
+              e.preventDefault()
+              const a = ctx.agent
+              setCtx(null)
+              startRename(a)
+            }}
+          >
+            <Icon name="edit" size={13} className="faint" />
+            <span>Rename</span>
+          </div>
+          )}
+          <div
+            className="menu-item"
+            onMouseDown={(e) => {
+              e.preventDefault()
+              const a = ctx.agent
+              setCtx(null)
+              run(duplicate)(a)
+            }}
+          >
+            <Icon name="copy" size={13} className="faint" />
+            <span>Clone</span>
+          </div>
+          <div className="menu-sep" />
+          <div
+            className="menu-item danger"
+            onMouseDown={(e) => {
+              e.preventDefault()
+              const a = ctx.agent
+              setCtx(null)
+              run(del)(a)
+            }}
+          >
+            <Icon name="trash" size={13} className="faint" />
+            <span>Delete</span>
+          </div>
+        </RowContextMenu>
+      )}
     </aside>
   )
 }

@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties } from 'react'
+import { useEffect, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from 'react'
 import type { Tree } from '../../../shared/types'
 import { watcherStatusOf, type WatcherPhrase, type WatcherView } from '../../../shared/watchers'
 import type { Tone } from '../status'
@@ -6,7 +6,8 @@ import { Icon, Dot } from './icons'
 import { LabelTag } from './tags'
 import { RenameInput, scopeNamesOf } from './Sidebar'
 import { scopeNameInput } from '../../../shared/scopeName'
-import { alertDialog } from '../dialog'
+import { alertDialog, confirmDialog } from '../dialog'
+import { RowContextMenu } from './RowContextMenu'
 import { run } from '../async'
 
 /** The status dot's tone, in the app's own tones. */
@@ -37,7 +38,8 @@ export function WatcherSidebar({
   selected,
   onSelect,
   onNew,
-  onRenamed
+  onRenamed,
+  onDeleted
 }: {
   tree: Tree | null
   ws: string | null
@@ -46,6 +48,7 @@ export function WatcherSidebar({
   onSelect: (name: string) => void
   onNew: () => void
   onRenamed: (newName: string) => void
+  onDeleted: (name: string) => void
 }) {
   const wsData = tree?.workspaces.find((w) => w.name === ws)
   const watchers = wsData?.watchers ?? []
@@ -69,6 +72,28 @@ export function WatcherSidebar({
     } catch (e) {
       await alertDialog(e instanceof Error ? e.message : String(e))
     }
+  }
+  const [ctx, setCtx] = useState<{ name: string; active: boolean; x: number; y: number } | null>(null)
+  const openMenu = (e: ReactMouseEvent, name: string, active: boolean): void => {
+    e.preventDefault()
+    e.stopPropagation()
+    onSelect(name)
+    setCtx({ name, active, x: e.clientX, y: e.clientY })
+  }
+  const duplicate = async (name: string): Promise<void> => {
+    if (!ws) return
+    onSelect(await window.gurt.watcherDuplicate(ws, name))
+  }
+  const del = async (name: string): Promise<void> => {
+    if (!ws) return
+    const ok = await confirmDialog(`Delete the watcher "${name}"? Its conversation and container go with it.`, {
+      title: 'Delete watcher',
+      confirmText: 'Delete',
+      danger: true
+    })
+    if (!ok) return
+    await window.gurt.removeTask(ws, name)
+    onDeleted(name)
   }
   return (
     <aside className="sidebar" style={{ width }}>
@@ -95,6 +120,7 @@ export function WatcherSidebar({
                 tabIndex={0}
                 onClick={() => onSelect(w.name)}
                 onDoubleClick={() => !active && setRenaming({ name: w.name, draft: w.name })}
+                onContextMenu={renaming?.name === w.name ? undefined : (e) => openMenu(e, w.name, !!active)}
                 onKeyDown={(e) => {
                   if (e.target !== e.currentTarget) return
                   if ((e.key === 'Enter' || e.key === 'F2') && !active) {
@@ -129,6 +155,49 @@ export function WatcherSidebar({
           </div>
         )}
       </div>
+      {ctx && (
+        <RowContextMenu x={ctx.x} y={ctx.y} onClose={() => setCtx(null)}>
+          {!ctx.active && (
+          <div
+            className="menu-item"
+            onMouseDown={(e) => {
+              e.preventDefault()
+              const { name, active } = ctx
+              setCtx(null)
+              if (!active) setRenaming({ name, draft: name })
+            }}
+          >
+            <Icon name="edit" size={13} className="faint" />
+            <span>Rename</span>
+          </div>
+          )}
+          <div
+            className="menu-item"
+            onMouseDown={(e) => {
+              e.preventDefault()
+              const { name } = ctx
+              setCtx(null)
+              run(duplicate)(name)
+            }}
+          >
+            <Icon name="copy" size={13} className="faint" />
+            <span>Clone</span>
+          </div>
+          <div className="menu-sep" />
+          <div
+            className="menu-item danger"
+            onMouseDown={(e) => {
+              e.preventDefault()
+              const { name } = ctx
+              setCtx(null)
+              run(del)(name)
+            }}
+          >
+            <Icon name="trash" size={13} className="faint" />
+            <span>Delete</span>
+          </div>
+        </RowContextMenu>
+      )}
     </aside>
   )
 }

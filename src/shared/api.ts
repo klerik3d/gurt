@@ -535,6 +535,8 @@ export interface GurtApi {
    *  `name` holding a template draft, disabled until switched on. Deleted like
    *  any scope (`removeTask`). */
   proactiveCreate(ws: string, name: string): Promise<void>
+  /** Clone a proactive agent — schedule, limits and template — switched off, with no runs. Resolves to its name. */
+  proactiveDuplicate(ws: string, name: string): Promise<string>
   /** Change a proactive agent's schedule and limits; omitted keys stay. */
   proactiveUpdate(ws: string, name: string, patch: Partial<ProactiveConfig>): Promise<void>
   /** Start a run now, whatever the schedule says; answers its session id.
@@ -766,6 +768,7 @@ const METHODS = {
   // configuration is a template draft, which it cannot edit (§2.4 of the
   // operator doc); docs/design-proactive-agents.md §9 phase 2.
   proactiveCreate: 'none',
+  proactiveDuplicate: 'none',
   proactiveUpdate: 'none',
   proactiveRunNow: 'none',
   // Watchers: the same — reading their state can become `read` later (§14).

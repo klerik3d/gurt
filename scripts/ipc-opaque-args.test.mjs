@@ -173,6 +173,7 @@ const SAFE_ARGS = new Set([
   'renameTask',
   // Proactive agents: a workspace and an agent name, plus numbers and a flag.
   'proactiveCreate',
+  'proactiveDuplicate',
   'proactiveUpdate',
   'proactiveRunNow',
   'watcherCreate',
