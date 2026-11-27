@@ -39,6 +39,7 @@ import { nestReviews, sortTasks, type ScopeListController } from '../useScopeLis
 import { ScopeFilter, ScopeFocusToggle, ScopeSort } from './ScopeControls'
 import { useScopeAnchor } from '../scopeAnchor'
 import { ScopeRow } from './ScopeRow'
+import type { ScopeStatus } from '../scopeStatus'
 import { scopeNameInput } from '../../../shared/scopeName'
 import {
   TaskRepositories,
@@ -88,6 +89,7 @@ export function Sidebar({
   ws,
   selection,
   changes,
+  scopeStatuses,
   activity,
   focusSignal,
   readStateReady,
@@ -123,8 +125,10 @@ export function Sidebar({
   /** Name of the workspace currently shown; null while the tree loads. */
   ws: string | null
   selection: Selection
-  /** Per-task git changes keyed `ws/task` — drives the actionable badge. */
+  /** Per-task git changes keyed `ws/task` — diff mode's repos and files. */
   changes: Record<string, RepoChanges[]>
+  /** Each scope row's status strip, keyed `ws/task` (App, scopeStatus.ts). */
+  scopeStatuses: Record<string, ScopeStatus>
   /** Live runtime overlay per session id — splits `started` into running/waiting/idle. */
   activity: Record<string, SessionActivity>
   /** Bumped by App on ⌘2 (`gotoTasks`) — focuses the tree, including on the
@@ -823,7 +827,7 @@ export function Sidebar({
                 open={!isCollapsed}
                 selected={taskSelected}
                 cursor={cursorKey === rowKey(row)}
-                repos={changes[tkey] ?? []}
+                status={scopeStatuses[tkey]}
                 label={task.origin?.label}
                 editing={!!editing}
                 onSelect={() => { moveTo(row); treeRef.current?.focus() }}

@@ -399,6 +399,19 @@ export interface RpmState {
   mark?: ReviewMark
 }
 
+/** One executor in `rpmOverview`: what the scope row's review slot needs,
+ *  for every executor at once, without reading each run in full. */
+export interface RpmBrief {
+  executor: string
+  /** The executor's settings say RPM is on (a draft's too). */
+  enabled: boolean
+  /** The last run is not over. Turning RPM off ends a run only at its next
+   *  boundary, so a run can still be live while `enabled` is already false. */
+  live: boolean
+  /** The last run's status, as `rpmState` gives it; none = no run yet. */
+  status?: RunStatus
+}
+
 export interface RunSummary {
   run: number
   startedAt: string

@@ -665,6 +665,21 @@ test('the tree changes while the mark is being built: no mark on a stale tree, c
   assert.equal(s.journal.filter((e) => e.kind === 'review').at(-1).tree, tree)
 })
 
+test('a copied executor inherits the config and announces it (rpmOverview re-reads on the event)', async () => {
+  const w = world('copied')
+  await w.boot()
+  await w.rpm.setConfig('e1', CFG)
+  w.facts.e2 = { ...w.facts.e1, id: 'e2' }
+  const events = []
+  const off = w.rpm.onChange((e) => events.push(e))
+  for (const fn of w.listeners.copied) fn('e1', 'e2')
+  for (let i = 0; i < 500 && !events.length; i++) await new Promise((r) => setTimeout(r, 2))
+  off()
+  assert.deepEqual(events, [{ executor: 'e2', run: 0 }])
+  assert.equal(w.rpm.config('e2').enabled, true)
+  assert.deepEqual(w.rpm.overview().find((b) => b.executor === 'e2'), { executor: 'e2', enabled: true, live: false })
+})
+
 test('a check that timed out and could not be confirmed stopped: clones held until a confirmed stop', async () => {
   const w = world('timeout-unconfirmed', { check: ['timeout-unconfirmed'] })
   w.stopFails = true

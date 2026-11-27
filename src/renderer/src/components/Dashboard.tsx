@@ -24,9 +24,9 @@ import {
 } from '../../../shared/planUsage'
 import { formatDuration, type TurnRecord } from '../../../shared/usage'
 import { agentDef } from '../../../shared/agents'
-import { SESSION_DOT } from '../status'
+import { SESSION_DOT, turnFailed } from '../status'
 import { agentKind, agentName, useAgents } from '../useAgents'
-import { markAllSeen, markSeen, useUsage } from '../reviewed'
+import { lastTurns, markAllSeen, markSeen, useUsage } from '../reviewed'
 import { relativeTime } from '../time'
 import { logErr } from '../log'
 import { AgentIcon, Dot, Icon } from './icons'
@@ -286,9 +286,7 @@ export function Dashboard({
 
   const rows = allSessions(tree, activity)
 
-  // Last turn per session — the ledger is append-ordered, so the last match wins.
-  const lastTurn = new Map<string, TurnRecord>()
-  for (const r of usage) lastTurn.set(r.sessionId, r)
+  const lastTurn = lastTurns(usage)
 
   // What the board holds. Everything unfinished goes on as-is; a finished
   // session earns a place in DONE only while it is unreviewed, which is what
@@ -642,7 +640,7 @@ function BoardCard({
   onTask: () => void
 }): JSX.Element {
   const dot = SESSION_DOT[row.status]
-  const failed = turn?.outcome === 'error' || turn?.outcome === 'limited'
+  const failed = turnFailed(turn)
   // The clone's own state is the honest "is there work here" signal: a session
   // can end a clean turn and still leave nothing to review.
   const dirty = (changes ?? []).filter((c) => c.dirty || c.commits.length > 0)

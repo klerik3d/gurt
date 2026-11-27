@@ -610,6 +610,7 @@ export function registerIpc(): void {
     rpmRuns: async (executor) => { await kernel.ready; return kernel.rpm.runs(executor) },
     rpmState: async (executor, run) => { await kernel.ready; return kernel.rpm.state(executor, run) },
     rpmConfig: async (executor) => { await kernel.ready; return kernel.rpm.config(executor) },
+    rpmOverview: async () => { await kernel.ready; return kernel.rpm.overview() },
     rpmSetConfig: async (executor, patch) => { await kernel.ready; return kernel.rpm.setConfig(executor, patch) },
     rpmVerdict: async (executor, id, to, comment) => { await kernel.ready; return kernel.rpm.verdict(executor, id, to, comment) },
     rpmSeverity: async (executor, id, to, comment) => { await kernel.ready; return kernel.rpm.severity(executor, id, to, comment) },

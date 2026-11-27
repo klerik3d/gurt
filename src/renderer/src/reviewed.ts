@@ -114,11 +114,11 @@ export function useUsage(): { turns: TurnRecord[]; loaded: boolean } {
   return state
 }
 
-/** ISO end of each session's last recorded turn — the ledger is append-ordered,
- *  so the last match wins. */
-export function lastTurnEnds(usage: TurnRecord[]): Map<string, string> {
-  const out = new Map<string, string>()
-  for (const r of usage) out.set(r.sessionId, r.ts)
+/** Each session's last recorded turn — the ledger is append-ordered, so the
+ *  last match wins. The Dashboard reads its outcome, the scope strip too. */
+export function lastTurns(usage: TurnRecord[]): Map<string, TurnRecord> {
+  const out = new Map<string, TurnRecord>()
+  for (const r of usage) out.set(r.sessionId, r)
   return out
 }
 

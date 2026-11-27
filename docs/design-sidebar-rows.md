@@ -25,6 +25,8 @@ weight, so hierarchy rests on indent and chevron.
 
 Notes use one class, .sb-empty, indent via --level; no inline pixel paddings
 
+The [scope row status strip](requirements-scope-row-status.md) follows this row geometry: three `--row-icon` columns, 4px apart, at the right of the scope row. An absent slot keeps its column.
+
 ## Holding still
 
 The scope panels (Agents, Git, Files) never move a row the user did not ask

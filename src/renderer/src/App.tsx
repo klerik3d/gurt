@@ -1,4 +1,5 @@
 import { taskKey } from '../../shared/keys'
+import { formatResetAt } from '../../shared/planUsage'
 import { usePreference, readPreference, selectionSchema, diffFileSchema, z } from './persisted'
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import type { BootProgress } from '../../shared/api'
@@ -48,7 +49,9 @@ import {
 import { NotificationsPanel } from './components/NotificationsPanel'
 import { NotificationPopups } from './components/NotificationPopups'
 import { useOutsideClose } from './hooks'
-import { isReviewed, lastTurnEnds, markSeen, useSeen, useUsage } from './reviewed'
+import { isReviewed, lastTurns, markSeen, useSeen, useUsage } from './reviewed'
+import { scopeStatus, type ScopeStatus } from './scopeStatus'
+import { useRpmOverview } from './useRpmOverview'
 import { useAgents } from './useAgents'
 import { DialogHost, alertDialog, confirmDialog } from './dialog'
 import { ToastHost } from './components/ToastHost'
@@ -113,6 +116,7 @@ export default function App() {
   const scopeList = useScopeList()
   const seenMarks = useSeen()
   const { turns: usage, loaded: readStateReady } = useUsage()
+  const rpmBriefs = useRpmOverview()
   const [selection, setSelection] = usePreference<Selection>('selection', null, selectionSchema)
   const [view, setView] = usePreference<View>('view', 'work', z.enum(VIEWS))
   const [leftSidebarVisible, setLeftSidebarVisible] = usePreference('leftSidebar', true, z.boolean())
@@ -848,14 +852,35 @@ export default function App() {
   // Read state rides the same overlay, so every status mark in the app splits
   // `idle` into seen/unseen from one source. Keyed off the tree rather than the
   // snapshots: a session with no live snapshot still has a mark worth reading.
-  const turnEnds = lastTurnEnds(usage)
+  const turns = lastTurns(usage)
   for (const w of workspaces)
     for (const t of w.tasks)
       for (const s of t.sessions)
         activity[s.id] = {
           ...activity[s.id],
-          seen: isReviewed(s.id, seenMarks, turnEnds.get(s.id))
+          seen: isReviewed(s.id, seenMarks, turns.get(s.id)?.ts)
         }
+
+  // Each scope row's status strip, the same in every scope panel. The
+  // sessions slot reads what the Dashboard reads: the live overlay above, the
+  // ledger's last turn, and a failed start (kept on the snapshot only). The
+  // review slot reads each executor's entry in the RPM overview.
+  const scopeStatuses: Record<string, ScopeStatus> = {}
+  const now = Date.now()
+  for (const w of workspaces)
+    for (const t of w.tasks) {
+      const key = taskKey(w.name, t.name)
+      scopeStatuses[key] = scopeStatus(
+        t.sessions.map((s) => ({
+          info: { ...s, ...activity[s.id] },
+          startError: snapshots[s.id]?.startError,
+          lastTurn: turns.get(s.id),
+          formatTime: (iso: string) => formatResetAt(iso, now),
+          rpm: rpmBriefs.get(s.id)
+        })),
+        changes[key] ?? []
+      )
+    }
 
   const activeSnap = selection?.type === 'session' ? snapshots[selection.id] : undefined
   const activeInfo = activeSnap?.info
@@ -1257,6 +1282,7 @@ export default function App() {
                 }}
                 onRefreshChanges={(w, t) => loadChanges(w, t, true)}
                 changes={workMode === 'diff' ? sidebarChanges : changes}
+                scopeStatuses={scopeStatuses}
                 diffFilter={workMode === 'diff' && diffOnly ? { files: diffOnly.files.length, onClear: () => setDiffOnly(null) } : null}
                 scopeFocus={scopeFocus}
                 onToggleScopeFocus={toggleScopeFocus}
@@ -1272,7 +1298,7 @@ export default function App() {
                 tree={tree}
                 collapsed={sidebarCollapsed}
                 setCollapse={setScopeCollapsed}
-                changes={changes}
+                scopeStatuses={scopeStatuses}
                 scopeList={scopeList}
                 ws={ws?.name ?? null}
                 width={sidebarWidth}

@@ -61,8 +61,10 @@ export interface StatusLine {
   buttons: StatusButton[]
 }
 
-/** The status line of t2v3 B, from `RunStatus` one to one (t3v2 §3.2). */
-export function statusLine(s: RpmState): StatusLine {
+/** The status line of t2v3 B, from `RunStatus` one to one (t3v2 §3.2). Reads
+ *  only the status and `live`, so the scope row's tooltip (`RpmBrief`) can
+ *  speak the same words. */
+export function statusLine(s: Pick<RpmState, 'status' | 'live'>): StatusLine {
   const st = s.status
   const running: StatusButton[] = s.live ? ['pause', 'stop'] : []
   switch (st.phase) {

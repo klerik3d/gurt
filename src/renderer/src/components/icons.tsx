@@ -50,6 +50,9 @@ export type IconName =
   | 'think'
   | 'move'
   | 'sun'
+  | 'agent-head'
+  | 'review-cycle'
+  | 'branch-out'
 
 const PATHS: Record<IconName, JSX.Element> = {
   list: (
@@ -351,6 +354,32 @@ const PATHS: Record<IconName, JSX.Element> = {
     <>
       <line x1="4" y1="12" x2="20" y2="12" />
       <polyline points="14 6 20 12 14 18" />
+    </>
+  ),
+  // The scope row's status strip (ScopeRow.tsx): one shape per slot, drawn
+  // to stay legible at the row's 14px — open forms, no detail under 3 units.
+  /** Sessions slot: an agent's head. */
+  'agent-head': (
+    <>
+      <path d="M12 3v3" />
+      <rect x="4" y="6" width="16" height="14" rx="4" />
+      <path d="M9 11.5v2M15 11.5v2" />
+    </>
+  ),
+  /** Review (RPM) slot: a round that comes back checked. */
+  'review-cycle': (
+    <>
+      <path d="M20.5 12a8.5 8.5 0 1 1-2.5-6" />
+      <path d="M18.5 2.5v4h-4" />
+      <path d="M8.5 12.5l2.5 2.5 4.5-5" />
+    </>
+  ),
+  /** Delivery slot: work branching off the default branch, headed out. */
+  'branch-out': (
+    <>
+      <path d="M6 3v18" />
+      <path d="M6 17c0-4 3-7 7-7h7" />
+      <path d="M16 6l4 4-4 4" />
     </>
   )
 }

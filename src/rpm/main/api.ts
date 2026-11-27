@@ -1,6 +1,6 @@
 // RPM's public interface for the app (t3v2 §3.1, §4.3).
 import type { SessionRole } from '../../shared/types'
-import type { ReviewMark, RpmCommand, RpmConfig, RpmState, RpmToolDef, RunSummary, Severity, VerdictTo } from '../core'
+import type { ReviewMark, RpmBrief, RpmCommand, RpmConfig, RpmState, RpmToolDef, RunSummary, Severity, VerdictTo } from '../core'
 import type { RpmPorts } from './ports'
 import { createRpmImpl } from './rpm'
 
@@ -39,6 +39,9 @@ export interface Rpm {
   state(executor: string, run?: number): RpmState | undefined
   /** Works for a draft too. */
   config(executor: string): RpmConfig
+  /** Every executor's switch and last-run status at once — the scope rows'
+   *  review slot, without a `state` read per executor. */
+  overview(): RpmBrief[]
   setConfig(executor: string, patch: Partial<RpmConfig>): Promise<void>
   verdict(executor: string, id: string, to: VerdictTo, comment?: string): Promise<void>
   severity(executor: string, id: string, to: Severity, comment?: string): Promise<void>

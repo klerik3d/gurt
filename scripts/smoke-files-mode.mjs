@@ -56,14 +56,18 @@ try {
     if (await button.getAttribute('aria-pressed') !== 'true') await button.click()
   }
   const scopeHeight = (await scopeRow('first').boundingBox()).height
-  await scopeRow('first').locator('.task-badge:not(.badge-delivered)').waitFor()
+  // The status strip (ScopeRow.tsx): the edited README shows gray delivery.
+  const delivery = (name) => scopeRow(name).locator('.scope-slot.tone-faint[title^="Changes vs the default branch"]')
+  await delivery('first').waitFor()
   await page.locator('.sb-session').click()
   await page.keyboard.press('Control+5')
   await page.getByRole('tree', { name: 'Scope files' }).waitFor()
   assert.equal(await page.locator('.sb-session:visible, .diff-repo-row:visible').count(), 0)
   const row = (title) => page.getByRole('tree', { name: 'Scope files' }).locator(`[role="treeitem"][title="${title}"]`)
   assert.equal(await page.locator('.files-sidebar .sb-ws').innerText(), 'Scopes', 'same header as other scope panels')
-  assert.equal(await row('first').locator('svg').count(), 1, 'scope shows only its chevron')
+  assert.equal(await row('first').locator('.sb-chev svg').count(), 1, 'scope shows its chevron')
+  assert.equal(await row('first').locator('.scope-strip > .scope-slot').count(), 3, 'three strip columns, review kept when absent')
+  assert.equal(await row('first').locator('.scope-strip svg').count(), 2, 'sessions and delivery drawn, review absent (RPM off)')
   const normalColor = await row('first').locator('.sb-task-name').evaluate((el) => getComputedStyle(el).color)
   assert.equal(normalColor, 'rgb(163, 160, 153)', 'scope uses the muted name color')
   const scopeNames = () => page.locator('.sidebar:visible .sb-task-name').allTextContents()
@@ -82,7 +86,10 @@ try {
     assert.equal(spacing, scopeSpacing, `${mode}: same spacing between collapsed scopes`)
     assert.equal(await scopeRow('first').getAttribute('aria-expanded'), 'false')
     assert.equal(await scopeRow('second').getAttribute('aria-expanded'), 'false')
-    assert.equal(await scopeRow('first').locator('.task-badge:not(.badge-delivered)').count(), 1, `${mode}: shared blue change indicator`)
+    assert.equal(await delivery('first').count(), 1, `${mode}: shared delivery slot`)
+    assert.equal(await scopeRow('second').locator('.scope-strip svg').count(), 1, `${mode}: no repos — sessions slot only`)
+    const column = async (name) => (await scopeRow(name).locator('.scope-slot').first().boundingBox()).x
+    assert.equal(await column('first'), await column('second'), `${mode}: strip columns line up`)
   }
   // Expand all and folding by hand belong to the mode without the accordion.
   const accordion = () => page.locator('.sidebar:visible button[aria-label="Only the active scope open"]')

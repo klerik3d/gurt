@@ -251,7 +251,12 @@ export class Engine {
 
   private async copied(from: string, to: string): Promise<void> {
     await this.journals
-      .serial(to, () => this.journals.writeConfig(to, this.journals.config(from)))
+      .serial(to, async () => {
+        await this.journals.writeConfig(to, this.journals.config(from))
+        // The copy has no run; announce its settings like `setConfig` does,
+        // so readers of every executor (`rpmOverview`) see them now.
+        this.journals.emit(to, 0)
+      })
       .catch((err: unknown) => this.warn(`rpm: copy config ${from} → ${to}: ${String(err)}`))
   }
 
