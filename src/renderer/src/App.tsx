@@ -51,6 +51,7 @@ import { NotificationPopups } from './components/NotificationPopups'
 import { useOutsideClose } from './hooks'
 import { isReviewed, lastTurns, markSeen, useSeen, useUsage } from './reviewed'
 import { scopeStatus, type ScopeStatus } from './scopeStatus'
+import { useRpmOverview } from './useRpmOverview'
 import { useAgents } from './useAgents'
 import { DialogHost, alertDialog, confirmDialog } from './dialog'
 import { ToastHost } from './components/ToastHost'
@@ -115,6 +116,7 @@ export default function App() {
   const scopeList = useScopeList()
   const seenMarks = useSeen()
   const { turns: usage, loaded: readStateReady } = useUsage()
+  const rpmBriefs = useRpmOverview()
   const [selection, setSelection] = usePreference<Selection>('selection', null, selectionSchema)
   const [view, setView] = usePreference<View>('view', 'work', z.enum(VIEWS))
   const [leftSidebarVisible, setLeftSidebarVisible] = usePreference('leftSidebar', true, z.boolean())
@@ -861,7 +863,8 @@ export default function App() {
 
   // Each scope row's status strip, the same in every scope panel. The
   // sessions slot reads what the Dashboard reads: the live overlay above, the
-  // ledger's last turn, and a failed start (kept on the snapshot only).
+  // ledger's last turn, and a failed start (kept on the snapshot only). The
+  // review slot reads each executor's entry in the RPM overview.
   const scopeStatuses: Record<string, ScopeStatus> = {}
   const now = Date.now()
   for (const w of workspaces)
@@ -872,7 +875,8 @@ export default function App() {
           info: { ...s, ...activity[s.id] },
           startError: snapshots[s.id]?.startError,
           lastTurn: turns.get(s.id),
-          formatTime: (iso: string) => formatResetAt(iso, now)
+          formatTime: (iso: string) => formatResetAt(iso, now),
+          rpm: rpmBriefs.get(s.id)
         })),
         changes[key] ?? []
       )

@@ -1,6 +1,6 @@
 # Requirements: scope row status — sessions, review and delivery
 
-Status: partial — phase 1 built (the strip, sessions, gray delivery; see §11); phases 2–3 planned · Target: gurt Electron MVP (this repo)
+Status: partial — phases 1–2 built (the strip, sessions, review, gray delivery; see §11); phase 3 planned · Target: gurt Electron MVP (this repo)
 
 Key code: `src/renderer/src/components/ScopeRow.tsx` (`ScopeStrip`),
 `src/renderer/src/scopeStatus.ts` (slot mapping),
@@ -9,7 +9,8 @@ Key code: `src/renderer/src/components/ScopeRow.tsx` (`ScopeStrip`),
 `src/renderer/src/components/icons.tsx` (icon style),
 `src/shared/types.ts` (`SessionStatus`, `SessionInfo`, `RepoChanges`),
 `src/rpm/core/model.ts` (`RunStatus`, `CallReason`),
-`src/rpm/ui/useRpm.ts` (current per-executor read),
+`src/rpm/ui/useRpm.ts` (per-executor read for the Review tab),
+`src/renderer/src/useRpmOverview.ts` (the sidebar's all-executor read, `rpmOverview`),
 `src/renderer/src/components/Dashboard.tsx` (last-turn error and incomplete display).
 
 ## 1. Motivation
@@ -224,3 +225,52 @@ Present when at least one executor in the scope has RPM enabled. Aggregate
   with a fixture store. Green was not seen live because there was no Docker;
   the unit tests cover it. A pre-existing, unrelated failure:
   `env-image-build.test.mjs` (6 tests, no docker binary).
+
+### Phase 2
+
+- Data. `Rpm.overview()` (`src/rpm/main/rpm.ts`) returns one `RpmBrief`
+  (`src/rpm/core/model.ts`) per executor session: `enabled` from its
+  config, and `live` and `status` of its last run, through the same `view`
+  and engine decoration as `rpmState`, so `waitingPlan` is the same. A
+  draft executor is included. IPC exposes it as `rpmOverview()` in
+  `shared/api.ts` and `main/ipc.ts`. The preload bridge is generic, so
+  `preload/api.d.ts` needed no change. Its exposure is `none`: it spans every
+  workspace, and an operator is scoped to one and reads `rpmState`
+  instead. The renderer reads it once in `useRpmOverview`
+  (`src/renderer/src/useRpmOverview.ts`) and reads it again on every `rpm`
+  event. Only one read is in flight at a time, and a burst of events ends in
+  one more read. The `rpm` event already covers configuration changes and a
+  reviewer's plan hold (the engine's poll emits it), and now an executor
+  copied by Duplicate or Recreate: the engine emits after writing the
+  inherited config. App passes each
+  executor's brief into the session's `SessionInput.rpm`.
+- Presence. Only executors with RPM on count, for presence and for the
+  colour. One whose RPM was just turned off leaves the slot at once, even
+  though its run lasts to its next boundary. The slot is absent when no
+  executor in the scope has RPM on, and its column stays reserved.
+- Mapping. `reviewTone` and `CALL_TONE` in `scopeStatus.ts` implement the
+  §3 table. `reviewSlot` takes the most urgent executor. Its tooltip lists
+  every counted executor, most urgent first, with `statusLine`
+  (`rpm/ui/labels.ts`, reached through `rpm/ui`), or "review on — no run
+  yet". This list does not count quiet executors the way the sessions slot
+  does, because a scope has few and "Passed" or "Paused" is worth reading.
+  `statusLine` now takes only `status` and `live`.
+- Stop-gap moved. In the sessions slot, an idle executor with a check or
+  review `flow` is gray and no longer green or blue, and an unseen result
+  does not turn it yellow. A waiting message (`queueWaiting`, blue) is now
+  checked before the flow, so a gray flow cannot hide it. In the phase 1
+  per-session order for idle sessions, step 3 is now "a waiting message
+  (blue)" and step 4 is "its RPM flow (gray)". `FLOW_DOT` still marks the
+  session's own dot.
+- Tests. `scripts/scope-status.test.mjs` covers each `RunStatus` and
+  `CallReason` tone, presence (off with a live run is absent), precedence
+  across executors, tooltips, the flow now reading gray in sessions, and
+  the mockup's combined rows. `scripts/rpm-wiring.test.mjs` covers
+  `overview()` on the kernel and the method's exposure.
+  `scripts/rpm-engine.test.mjs` covers the event after a copy.
+- Checked in the running app in both themes with a fixture store of four
+  scopes, each with one executor. RPM off left the review column empty. RPM
+  on with no run was gray. A review in progress was green, and the
+  executor's sessions slot was gray. A `check-red` call was red and raised
+  the scope name. Turning RPM off and on through IPC removed and restored
+  the gray icon on the `rpm` event alone.

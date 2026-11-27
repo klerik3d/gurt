@@ -48,7 +48,7 @@ import type { TerminalInfo, TerminalSnapshot } from './terminal'
 import type { FileDocument, FileEntry, FileImage, FileNavigation, FileNavigationResult } from './files'
 import type { ProactiveConfig } from './proactive'
 import type { WatcherConfig } from './watchers'
-import type { RpmCommand, RpmConfig, RpmState, RunSummary, Severity, VerdictTo } from '../rpm/core'
+import type { RpmBrief, RpmCommand, RpmConfig, RpmState, RunSummary, Severity, VerdictTo } from '../rpm/core'
 
 export type CreateAction = 'run' | 'queue' | 'draft'
 
@@ -567,6 +567,9 @@ export interface GurtApi {
   rpmState(executor: string, run?: number): Promise<RpmState | undefined>
   /** The executor's review settings (a draft's too). */
   rpmConfig(executor: string): Promise<RpmConfig>
+  /** Every executor's RPM switch and last-run status in one read — the scope
+   *  rows' review slot. Re-read on the `rpm` event. */
+  rpmOverview(): Promise<RpmBrief[]>
   rpmSetConfig(executor: string, patch: Partial<RpmConfig>): Promise<void>
   /** Your verdict on a finding of the live run. */
   rpmVerdict(executor: string, id: string, to: VerdictTo, comment?: string): Promise<void>
@@ -782,6 +785,8 @@ const METHODS = {
   rpmRuns: 'read',
   rpmState: 'read',
   rpmConfig: 'read',
+  // Spans every workspace; an operator is scoped to one and reads rpmState.
+  rpmOverview: 'none',
   rpmSetConfig: 'none',
   rpmVerdict: 'none',
   rpmSeverity: 'none',

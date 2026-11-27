@@ -187,6 +187,7 @@ const SAFE_ARGS = new Set([
   'rpmRuns',
   'rpmState',
   'rpmConfig',
+  'rpmOverview',
   'rpmSetConfig',
   'rpmCommand',
   'envBuildImage',

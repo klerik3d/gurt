@@ -29,7 +29,7 @@ export { URGENCY, turnFailed } from ${S('src/renderer/src/status.ts')}`,
   outfile
 })
 
-const { sessionState, sessionsSlot, deliverySlot, repoDelivery, scopeStatus, scopeWantsUser, DELIVERY_TONE, URGENCY, turnFailed } =
+const { sessionState, sessionsSlot, reviewSlot, reviewTone, CALL_TONE, deliverySlot, repoDelivery, scopeStatus, scopeWantsUser, DELIVERY_TONE, URGENCY, turnFailed } =
   await import(pathToFileURL(outfile).href)
 
 let n = 0
@@ -64,18 +64,26 @@ test('yellow: needs the user — permission, an unread result, an agent draft', 
   assert.equal(tone({ state: 'draft', draftedBy: 'parent' }), 'yellow', 'drafted by an agent, waiting for launch')
 })
 
-test('green: running, starting, or an idle executor whose check or review runs', () => {
+test('green: running or starting', () => {
   assert.equal(tone({ busy: true }), 'green')
   assert.equal(tone({ state: 'starting' }), 'green')
-  assert.equal(tone({ seen: false, flow: 'check' }), 'green', 'unseen but the flow continues: no yellow')
-  assert.equal(tone({ seen: true, flow: 'review' }), 'green')
 })
 
-test('blue: queued, a plan-limit wait, a held-back review, a waiting message', () => {
+test('an idle executor whose RPM run works around it is gray here — the review slot shows the work', () => {
+  for (const flow of ['check', 'review', 'queued']) {
+    assert.equal(tone({ seen: false, flow }), 'faint', `flow ${flow}: unseen, but the run comes back by itself — no yellow`)
+    assert.equal(tone({ seen: true, flow }), 'faint', `flow ${flow}`)
+  }
+  // A flow is only read for an idle session: a working one is still green.
+  assert.equal(tone({ busy: true, flow: 'review' }), 'green')
+  // A message that waits outranks the quiet flow: it moves on by itself, later.
+  assert.equal(tone({ seen: false, flow: 'review', queueWaiting: 'clone in use' }), 'accent')
+})
+
+test('blue: queued, a plan-limit wait, a waiting message', () => {
   assert.equal(tone({ state: 'queued' }), 'accent')
   assert.equal(tone({ seen: false, limitedUntil: '2026-11-27T18:00:00Z' }, { lastTurn: { outcome: 'limited' } }), 'accent',
     'a limit cut that continues by itself is not broken')
-  assert.equal(tone({ seen: false, flow: 'queued' }), 'accent')
   assert.equal(tone({ seen: false, queueWaiting: 'clone is in use by another session' }), 'accent')
 })
 
@@ -181,13 +189,97 @@ test('delivery tooltip names each differing repo with its commit counts', () => 
   ].join('\n'))
 })
 
-test('the strip: review reserved, name raised by any yellow or red slot', () => {
+test('the strip: review only with RPM on, name raised by any yellow or red slot', () => {
   const quiet = scopeStatus([input()], [repo({ dirty: true })])
-  assert.equal(quiet.review, undefined, 'phase 2')
+  assert.equal(quiet.review, undefined, 'no executor with RPM on')
   assert.equal(quiet.delivery?.tone, 'faint')
   assert.equal(scopeWantsUser(quiet), false)
   assert.equal(scopeWantsUser(scopeStatus([running()], [])), false, 'work going on does not call the user')
   assert.equal(scopeWantsUser(scopeStatus([queued()], [])), false)
   assert.equal(scopeWantsUser(scopeStatus([waiting()], [])), true)
   assert.equal(scopeWantsUser(scopeStatus([errored()], [])), true)
+})
+
+// ---- slot 2: review (RPM) ----------------------------------------------------
+
+/** An executor's `RpmBrief`; `status` is a `RunStatus`, phase plus its fields. */
+const brief = (status, over = {}) => ({ executor: 'x', enabled: true, live: !!status && !['passed', 'ended'].includes(status.phase), ...(status && { status: { reviewsSinceYou: 0, ...status } }), ...over })
+const executor = (status, over = {}, info = {}) => input({ role: 'executor', ...info }, { rpm: brief(status, over) })
+const called = (why) => ({ phase: 'called', why, items: [] })
+const review = (over = {}) => ({ phase: 'review', review: 1, full: true, items: 0, session: 'r1', ...over })
+
+test('review tone per RunStatus', () => {
+  assert.equal(reviewTone(undefined), 'faint', 'enabled, no run yet')
+  assert.equal(reviewTone({ phase: 'check', repos: ['app'] }), 'green')
+  assert.equal(reviewTone({ phase: 'fix-check', try: 1, of: 3 }), 'green')
+  assert.equal(reviewTone(review()), 'green')
+  assert.equal(reviewTone(review({ waitingPlan: '2026-11-27T18:00:00Z' })), 'accent', 'the reviewer waits for its plan limit')
+  assert.equal(reviewTone({ phase: 'executor', items: 2 }), 'accent', 'the cycle waits for the executor')
+  assert.equal(reviewTone({ phase: 'paused' }), 'faint')
+  assert.equal(reviewTone({ phase: 'passed', files: 3 }), 'faint')
+  assert.equal(reviewTone({ phase: 'ended', why: 'stopped' }), 'faint')
+})
+
+test('a call is red when something broke, yellow when it waits for your word', () => {
+  for (const why of ['check-red', 'check-error', 'reviewer-failed', 'executor-failed'])
+    assert.equal(reviewTone(called(why)), 'red', why)
+  for (const why of ['findings', 'idle-executor', 'budget', 'check-unchanged', 'executor-blocked'])
+    assert.equal(reviewTone(called(why)), 'yellow', why)
+  assert.equal(Object.keys(CALL_TONE).length, 9, 'every CallReason has a tone')
+})
+
+test('review slot: present only when an executor of the scope has RPM on', () => {
+  assert.equal(reviewSlot([]), undefined)
+  assert.equal(reviewSlot([running(), input({ seen: false })]), undefined, 'no RPM brief at all')
+  assert.equal(reviewSlot([executor(undefined, { enabled: false })]), undefined, 'RPM off, no run')
+  assert.equal(reviewSlot([executor({ phase: 'passed', files: 2 }, { enabled: false })]), undefined, 'RPM off, last run over')
+  assert.equal(reviewSlot([executor(review(), { enabled: false, live: true })]), undefined, 'turned off: absent, even while the run lasts to its boundary')
+  assert.equal(reviewSlot([executor(called('check-red'), { enabled: false, live: true }), executor(undefined)])?.tone, 'faint',
+    'a turned-off executor does not colour the slot another one keeps')
+  assert.equal(reviewSlot([executor(undefined)])?.tone, 'faint', 'on, no run yet: gray presence')
+  assert.equal(scopeStatus([executor(undefined)], []).review?.tone, 'faint')
+})
+
+test('review slot: the most urgent executor wins', () => {
+  assert.equal(reviewSlot([executor(review()), executor(called('check-red'))]).tone, 'red', 'a red call outranks an active review')
+  assert.equal(reviewSlot([executor(review()), executor(called('findings'))]).tone, 'yellow')
+  assert.equal(reviewSlot([executor({ phase: 'executor', items: 1 }), executor(review())]).tone, 'green', 'working outranks waiting')
+  assert.equal(reviewSlot([executor(review({ waitingPlan: '2026-11-27T18:00:00Z' })), executor(undefined)]).tone, 'accent')
+  assert.equal(reviewSlot([executor({ phase: 'passed', files: 1 }), executor(undefined, { enabled: false })]).tone, 'faint')
+})
+
+test('review tooltip names each executor with its status line, most urgent first', () => {
+  const slot = reviewSlot([
+    executor({ phase: 'passed', files: 2 }, {}, { title: 'docs' }),
+    executor(undefined, {}, { title: 'fresh' }),
+    executor(review({ items: 2 }), {}, { title: 'api' }),
+    executor(called('reviewer-failed'), {}, { title: 'auth' }),
+    running()
+  ])
+  assert.equal(slot.title, [
+    'Review — broken',
+    'auth: Waiting for you · reviewer failed',
+    'api: Reviewer R1 is reviewing the change and checking 2 findings',
+    'docs: Passed',
+    'fresh: review on — no run yet'
+  ].join('\n'))
+})
+
+test('the mockup\'s rows: sessions and review read together', () => {
+  // An executor has settled and RPM is reviewing its changes.
+  const reviewing = scopeStatus([executor(review(), {}, { seen: false, flow: 'review' })], [repo({ dirty: true })])
+  assert.deepEqual([reviewing.sessions.tone, reviewing.review?.tone, reviewing.delivery?.tone], ['faint', 'green', 'faint'])
+  assert.equal(scopeWantsUser(reviewing), false, 'an unseen result while the run goes on does not call the user')
+  // An executor is fixing findings and RPM is waiting for it.
+  const fixing = scopeStatus([executor({ phase: 'executor', items: 1 }, {}, { busy: true })], [repo({ dirty: true })])
+  assert.deepEqual([fixing.sessions.tone, fixing.review?.tone], ['green', 'accent'])
+  // A session and a reviewer wait for plan limits.
+  const limits = scopeStatus([
+    executor(review({ waitingPlan: '2026-11-27T18:00:00Z' }), {}, { flow: 'queued' }),
+    input({ state: 'queued' })
+  ], [])
+  assert.deepEqual([limits.sessions.tone, limits.review?.tone, limits.delivery], ['accent', 'accent', undefined])
+  // RPM called the user: the name is raised.
+  assert.equal(scopeWantsUser(scopeStatus([executor(called('findings'))], [])), true)
+  assert.equal(scopeWantsUser(scopeStatus([executor(called('check-error'))], [])), true)
 })

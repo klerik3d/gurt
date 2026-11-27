@@ -11,6 +11,7 @@ import {
   type EntryOf,
   type HistoryItem,
   type ReviewMark,
+  type RpmBrief,
   type RpmCommand,
   type RpmConfig,
   type RpmState,
@@ -139,6 +140,17 @@ export function createRpmImpl(ports: RpmPorts, opts?: { clock?: Clock; warn?: (m
       return rec ? withChat(engine.decorate(view(fold(rec.entries), rec.entries))) : undefined
     },
     config: (executor) => journals.config(executor),
+    overview: () =>
+      ports.sessions.list().flatMap((executor): RpmBrief[] => {
+        if (ports.sessions.info(executor)?.role !== 'executor') return []
+        const enabled = journals.config(executor).enabled
+        const rec = journals.last(executor)
+        if (!rec) return [{ executor, enabled, live: false }]
+        // The status only, but through the same view and decoration as
+        // `state`, so the two never disagree (`waitingPlan` is the engine's).
+        const { live, status } = engine.decorate(view(fold(rec.entries), rec.entries))
+        return [{ executor, enabled, live, status }]
+      }),
     async setConfig(executor, patch) {
       checkPatch(patch)
       await journals.serial(executor, async () => {

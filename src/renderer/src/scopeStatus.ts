@@ -5,7 +5,9 @@
 // status.ts). Pure: App gathers the inputs, ScopeRow draws the result.
 import { isActionable, isDelivered, sessionFlow, sessionRole, sessionStatus, type RepoChanges, type SessionInfo } from '../../shared/types'
 import type { TurnRecord } from '../../shared/usage'
-import { FLOW_DOT, SESSION_DOT, URGENCY, moreUrgent, turnFailed, type Tone } from './status'
+import type { CallReason, RpmBrief, RunStatus } from '../../rpm/core'
+import { statusLine } from '../../rpm/ui'
+import { SESSION_DOT, URGENCY, moreUrgent, turnFailed, type Tone } from './status'
 
 /** One drawn slot: its colour and the tooltip that spells it out. */
 export interface Slot {
@@ -16,7 +18,7 @@ export interface Slot {
 /** A scope's strip. An absent slot is not drawn but keeps its width. */
 export interface ScopeStatus {
   sessions: Slot
-  /** Phase 2 (RPM aggregate) — always absent for now; the column is reserved. */
+  /** Absent unless an executor of the scope has RPM on. */
   review?: Slot | undefined
   delivery?: Slot | undefined
 }
@@ -39,6 +41,9 @@ export interface SessionInput {
   lastTurn?: Pick<TurnRecord, 'outcome' | 'detail'> | undefined
   /** Formats `limitedUntil` for the tooltip; ISO as-is when absent. */
   formatTime?: ((iso: string) => string) | undefined
+  /** The executor's RPM switch and last-run status (`rpmOverview`); none for
+   *  a session that is not an executor, or before the first read. */
+  rpm?: RpmBrief | undefined
 }
 
 /** One session's contribution: its colour and why, in words. */
@@ -89,13 +94,11 @@ export function sessionState({ info, startError, lastTurn, formatTime }: Session
       tone: 'red',
       reason: `${lastTurn?.outcome === 'limited' ? 'last turn hit a limit' : 'last turn errored'}${lastTurn?.detail ? `: ${clip(lastTurn.detail)}` : ''}`
     }
-  // Phase 1 stop-gap: an idle executor's RPM flow is read here so the row
-  // shows work going on. Once the review slot exists (phase 2) this belongs
-  // there — drop it from sessions and keep only "no unseen yellow while a
-  // flow continues".
-  const flow = sessionFlow(info)
-  if (flow) return { tone: flow === 'queued' ? 'accent' : 'green', reason: FLOW_DOT[flow].label }
   if (info.queueWaiting) return { tone: 'accent', reason: `message waiting — ${info.queueWaiting}` }
+  // An idle executor whose RPM run checks or reviews around it: the work is
+  // the review slot's to show. Here it only keeps the unseen result from
+  // asking for the user — the run will come back to the executor by itself.
+  if (sessionFlow(info)) return { tone: 'faint', reason: 'idle — its review run goes on' }
   if (status === 'idle') return { tone: 'yellow', reason: 'turn ended — not read yet' }
   return { tone: 'faint', reason: 'idle — read' }
 }
@@ -127,6 +130,64 @@ export function sessionsSlot(inputs: SessionInput[]): Slot {
     ...(quiet ? [loud.length ? `+ ${plural(quiet, 'quiet session')}` : `${plural(quiet, 'session')}, all quiet`] : [])
   ]
   return { tone, title: lines.join('\n') }
+}
+
+// ---- slot 2: review (RPM) ----------------------------------------------------
+
+/** A run that stopped to call the user: broken (it will not get further on
+ *  its own) or simply waiting for their word. */
+export const CALL_TONE: Record<CallReason, Tone> = {
+  'check-red': 'red',
+  'check-error': 'red',
+  'reviewer-failed': 'red',
+  'executor-failed': 'red',
+  findings: 'yellow',
+  'idle-executor': 'yellow',
+  budget: 'yellow',
+  'check-unchanged': 'yellow',
+  'executor-blocked': 'yellow'
+}
+
+/** One executor's run, as a tone. No run yet, or one that is over or paused,
+ *  is gray: the slot applies and has nothing to say. */
+export function reviewTone(status: RunStatus | undefined): Tone {
+  switch (status?.phase) {
+    case 'check':
+    case 'fix-check':
+      return 'green'
+    case 'review':
+      // A reviewer held back by its plan limit carries on when the limit lifts.
+      return status.waitingPlan ? 'accent' : 'green'
+    case 'executor':
+      // The cycle waits for the executor to fix — its own work is the
+      // sessions slot's (green while it runs).
+      return 'accent'
+    case 'called':
+      return CALL_TONE[status.why]
+    default:
+      return 'faint'
+  }
+}
+
+/** Slot 2: present when an executor of the scope has RPM on, absent otherwise.
+ *  Only those executors count: one whose RPM was just turned off is out of
+ *  the slot at once, even while its run lasts to the next boundary.
+ *  The tooltip names every such executor with its run's status line, most
+ *  urgent first — there are few, and "passed" or "paused" is worth reading. */
+export function reviewSlot(inputs: SessionInput[]): Slot | undefined {
+  const rows = inputs.flatMap(({ info, rpm }) =>
+    rpm?.enabled
+      ? [{
+          title: info.title,
+          tone: reviewTone(rpm.status),
+          reason: rpm.status ? statusLine({ status: rpm.status, live: rpm.live }).text : 'review on — no run yet'
+        }]
+      : []
+  )
+  if (!rows.length) return undefined
+  const tone = rows.reduce<Tone>((acc, row) => moreUrgent(acc, row.tone), 'faint')
+  rows.sort((a, b) => URGENCY.indexOf(a.tone) - URGENCY.indexOf(b.tone))
+  return { tone, title: [`Review — ${SLOT_WORDS[tone]}`, ...rows.map((row) => `${row.title}: ${row.reason}`)].join('\n') }
 }
 
 // ---- slot 3: delivery --------------------------------------------------------
@@ -191,6 +252,5 @@ export function deliverySlot(repos: RepoChanges[]): Slot | undefined {
 // ---- the strip ---------------------------------------------------------------
 
 export function scopeStatus(sessions: SessionInput[], repos: RepoChanges[]): ScopeStatus {
-  // Phase 2 adds `review` from the per-scope RPM aggregate.
-  return { sessions: sessionsSlot(sessions), delivery: deliverySlot(repos) }
+  return { sessions: sessionsSlot(sessions), review: reviewSlot(sessions), delivery: deliverySlot(repos) }
 }

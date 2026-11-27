@@ -34,7 +34,7 @@ after(async () => {
 
 test('IPC carries the rpm* methods of t3v2 §3.2 with their remote access', () => {
   const want = {
-    rpmRuns: 'read', rpmState: 'read', rpmConfig: 'read', rpmSetConfig: 'none',
+    rpmRuns: 'read', rpmState: 'read', rpmConfig: 'read', rpmOverview: 'none', rpmSetConfig: 'none',
     rpmVerdict: 'none', rpmSeverity: 'none', rpmNote: 'none', rpmCommand: 'none'
   }
   for (const [m, exposure] of Object.entries(want)) {
@@ -53,6 +53,18 @@ test('the kernel builds RPM: a draft executor has a config, setConfig lands in <
   const file = path.join(store.taskDir('work', 'cfg'), 'rpm', info.id, 'config.json')
   assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).enabled, true)
   assert.deepEqual(kernel.rpm.runs(info.id), [])
+})
+
+test('the overview lists every executor with its switch, other roles left out', async () => {
+  await store.createTask('work', 'ov')
+  const on = kernel.sessions.createSession({ workspace: 'work', task: 'ov' }, [], 'agent', 'Hello', 'draft', [], true, {}, 'executor')
+  const off = kernel.sessions.createSession({ workspace: 'work', task: 'ov' }, [], 'agent', 'Hello', 'draft', [], true, {}, 'executor')
+  const researcher = kernel.sessions.createSession({ workspace: 'work', task: 'ov' }, [], 'agent', 'Hello', 'draft', [], true, {}, 'researcher')
+  await kernel.rpm.setConfig(on.id, { enabled: true, reviewer: { agent: 'other', options: {} } })
+  const byId = new Map(kernel.rpm.overview().map((b) => [b.executor, b]))
+  assert.deepEqual(byId.get(on.id), { executor: on.id, enabled: true, live: false })
+  assert.deepEqual(byId.get(off.id), { executor: off.id, enabled: false, live: false })
+  assert.equal(byId.has(researcher.id), false, 'only executors have RPM')
 })
 
 test('archiving refuses while a review step runs in the scope', async () => {
