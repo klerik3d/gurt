@@ -77,3 +77,27 @@ export function pickerValue(
   if (opt.type === 'select' && opt.options?.some((o) => o.value === 'default')) return 'default'
   return opt.currentValue
 }
+
+/**
+ * The model and effort a session runs on, by their chip names — what its
+ * Config tab highlights: the live report with the session's own picks laid
+ * over it (`withPickedValues`), read through the kind's view (claude-code's
+ * `default` resolves to the model it names). A value no chip names is given
+ * as is.
+ */
+export function modelAndEffort(
+  options: SessionConfigOption[] | undefined,
+  values: Record<string, string | boolean> | undefined,
+  kind?: string
+): { model?: string; effort?: string } {
+  const view = agentOptionView(kind)
+  const out: { model?: string; effort?: string } = {}
+  for (const o of withPickedValues(options ?? [], values, kind)) {
+    const key = o.category === 'model' ? 'model' : o.category === 'thought_level' ? 'effort' : undefined
+    if (!key || out[key] !== undefined) continue
+    const v = view.activeValue(o)
+    const name = o.type === 'select' ? o.options?.find((x) => x.value === v)?.name : undefined
+    out[key] = name ?? String(v)
+  }
+  return out
+}

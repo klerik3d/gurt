@@ -4,6 +4,7 @@ import {
   CHECK_RED_LIMIT,
   type Entry,
   type FindingState,
+  type RanOn,
   type HistoryItem,
   type Owner,
   type RpmCommand,
@@ -142,8 +143,14 @@ export function historyMove(h: HistoryItem, first: boolean): string {
 
 const ids = (xs: readonly string[] | undefined): string => (xs?.length ? ` ${xs.join(' ')}` : '')
 
-/** One line of Review → History (t3v2 §10.1: one line per journal entry). */
-export function entryLine(e: Entry, review?: number): string {
+/** " · Codex · gpt-5.5 · high" — what a review or a turn ran on, when the journal has it. */
+function ranText(ran: RanOn | undefined, agentName: (id: string) => string): string {
+  return ran ? ['', agentName(ran.agent), ran.model, ran.effort].filter((x) => x !== undefined).join(' · ') : ''
+}
+
+/** One line of Review → History (t3v2 §10.1: one line per journal entry). `agentName`
+ *  names a client by its id (the app's label). */
+export function entryLine(e: Entry, review?: number, agentName: (id: string) => string = (id) => id): string {
   switch (e.kind) {
     case 'start':
       return `run ${e.run} started`
@@ -158,11 +165,11 @@ export function entryLine(e: Entry, review?: number): string {
     case 'review': {
       const verify = e.verify.map((v) => `${v.id} ${v.accept ? 'yes' : 'no'}`).join(' ')
       const found = e.findings.map((f) => f.id).join(' ')
-      return [`R${review ?? '?'}`, verify, found && `new ${found}`].filter(Boolean).join(' · ')
+      return [`R${review ?? '?'}`, verify, found && `new ${found}`].filter(Boolean).join(' · ') + ranText(e.ran, agentName)
     }
     case 'turn':
-      if (e.origin === 'user') return 'your message to the executor'
-      return `executor ${e.outcome}${e.replies.length ? ` · ${e.replies.map((r) => `${r.id} ${STATE_LABEL[r.act]}`).join(' ')}` : ''}`
+      if (e.origin === 'user') return `your message to the executor${ranText(e.ran, agentName)}`
+      return `executor ${e.outcome}${e.replies.length ? ` · ${e.replies.map((r) => `${r.id} ${STATE_LABEL[r.act]}`).join(' ')}` : ''}${ranText(e.ran, agentName)}`
     case 'fail':
       return `${e.reason} · ${e.detail}`
     case 'verdict':
@@ -171,10 +178,12 @@ export function entryLine(e: Entry, review?: number): string {
       return `${e.id} severity → ${e.to}`
     case 'note':
       return `note · ${e.text}`
-    case 'config':
-      return `settings · ${Object.entries(e.patch)
-        .map(([k, v]) => `${k} ${typeof v === 'object' ? (v as { agent?: string }).agent ?? '' : String(v)}`)
-        .join(', ')}`
+    case 'config': {
+      const { reviewer: r, ...rest } = e.patch
+      const parts = Object.entries(rest).map(([k, v]) => `${k} ${String(v)}`)
+      if (r) parts.unshift(`reviewer ${[r.agent ? agentName(r.agent) : 'none', ...Object.values(r.options).map(String)].join(' · ')}`)
+      return `settings · ${parts.join(', ')}`
+    }
     case 'command':
       return e.cmd
     case 'call':

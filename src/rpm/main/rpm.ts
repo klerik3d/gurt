@@ -143,10 +143,18 @@ export function createRpmImpl(ports: RpmPorts, opts?: { clock?: Clock; warn?: (m
       checkPatch(patch)
       await journals.serial(executor, async () => {
         const cur = journals.config(executor)
-        const next: RpmConfig = { ...cur, ...patch, ...(patch.reviewer && { reviewer: { ...patch.reviewer } }) }
+        // The same client: the patch's options land on the stored ones, so a pick that
+        // sends only its own option (the Review tab's) keeps the picks made before it,
+        // also those whose refresh the pane has not seen yet. Another client starts
+        // from the patch's options alone.
+        const reviewer = patch.reviewer && {
+          agent: patch.reviewer.agent,
+          options: patch.reviewer.agent === cur.reviewer.agent ? { ...cur.reviewer.options, ...patch.reviewer.options } : { ...patch.reviewer.options }
+        }
+        const next: RpmConfig = { ...cur, ...patch, ...(reviewer && { reviewer }) }
         await journals.writeConfig(executor, next)
         const live = journals.live(executor)
-        if (live) await journals.append(executor, live.rec, { by: 'you', kind: 'config', patch })
+        if (live) await journals.append(executor, live.rec, { by: 'you', kind: 'config', patch: { ...patch, ...(reviewer && { reviewer }) } })
         else journals.emit(executor, journals.last(executor)?.n ?? 0)
       })
       // A patch is your entry: at a boundary it is acted on now (e.g. `end disabled`).

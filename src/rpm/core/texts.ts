@@ -5,10 +5,11 @@
 //   history (comments, severity changes), the items to verify, the severity
 //   definitions, the scenario rule. Never the threshold, the budget, the round
 //   number, the attempts, or what follows its answer.
-// - Executor: only its own items (tracked, its move), the allowed replies, the
-//   last comments of the reviewer and yours, your notes. On a red check — only
-//   the check's output.
-import { allowedReplies, ownerOf, tracked } from './machine'
+// - Executor: its own items (its move — every one, below the threshold too:
+//   the threshold only decides whether the loop goes on), the allowed replies,
+//   the last comments of the reviewer and yours, your notes. Never the
+//   threshold. On a red check — only the check's output.
+import { allowedReplies, ownerOf } from './machine'
 import type { CheckRun, Finding, FindingState, HistoryItem, ReplyAct, ReviewerInput, RunState } from './model'
 
 // --- shared pieces ------------------------------------------------------------------
@@ -157,7 +158,7 @@ const ACT_HELP: Record<ReplyAct, string> = {
 export function executorMessage(run: RunState, items: string[], notes: string[]): string {
   const mine = items
     .map((id) => run.findings.find((f) => f.id === id))
-    .filter((f): f is Finding => !!f && tracked(run, f) && ownerOf(f.state) === 'executor')
+    .filter((f): f is Finding => !!f && ownerOf(f.state) === 'executor')
   const out: string[] = []
   out.push('gurt review: work on these findings.', '')
   for (const f of mine) {

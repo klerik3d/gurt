@@ -91,6 +91,11 @@ F2 · major · app/src/sum.test.ts
   Scenario: reverting the fix keeps the suite green
   The reviewer asks for a fix. Allowed replies: fixed, contested, cant.
 
+F3 · nit · app/src/sum.ts:1
+  > Name the parameters x and y
+  Scenario: a reader confuses a/b with arrays
+  The reviewer asks for a fix. Allowed replies: fixed, contested, cant.
+
 From the user:
 - Keep the public signature.
 
@@ -118,7 +123,7 @@ Before `complete`, call `reply_findings` with one reply per finding: id, act, co
     }
   ],
   "more": "+1 below threshold",
-  "text": "gurt review: work on these findings.\n\nF1 · major · app/src/sum.ts:1\n  > sum() of negatives overflows the int range check\n  Scenario: sum(-2**31, -1) returns a positive number\n  The reviewer asks for a fix. Allowed replies: fixed, contested, cant.\n\nF2 · major · app/src/sum.test.ts\n  > No test for the fix\n  Scenario: reverting the fix keeps the suite green\n  The reviewer asks for a fix. Allowed replies: fixed, contested, cant.\n\nFrom the user:\n- Keep the public signature.\n\nBefore `complete`, call `reply_findings` with one reply per finding: id, act, comment.\n- fixed — you changed the code\n- contested — the finding does not hold; say why\n- cant — you cannot do it; say why",
+  "text": "gurt review: work on these findings.\n\nF1 · major · app/src/sum.ts:1\n  > sum() of negatives overflows the int range check\n  Scenario: sum(-2**31, -1) returns a positive number\n  The reviewer asks for a fix. Allowed replies: fixed, contested, cant.\n\nF2 · major · app/src/sum.test.ts\n  > No test for the fix\n  Scenario: reverting the fix keeps the suite green\n  The reviewer asks for a fix. Allowed replies: fixed, contested, cant.\n\nF3 · nit · app/src/sum.ts:1\n  > Name the parameters x and y\n  Scenario: a reader confuses a/b with arrays\n  The reviewer asks for a fix. Allowed replies: fixed, contested, cant.\n\nFrom the user:\n- Keep the public signature.\n\nBefore `complete`, call `reply_findings` with one reply per finding: id, act, comment.\n- fixed — you changed the code\n- contested — the finding does not hold; say why\n- cant — you cannot do it; say why",
   "kind": "handoff"
 }
 
@@ -265,6 +270,12 @@ F2 · major · app/src/sum.test.ts
   The reviewer asks for a fix. Allowed replies: fixed, contested, cant.
   Reviewer: "The test does not cover negatives."
 
+F3 · minor · app/src/sum.ts:1
+  > Name the parameters x and y
+  Scenario: a reader confuses a/b with arrays
+  The reviewer asks for a fix. Allowed replies: fixed, contested, cant.
+  User: "style, not a bug"
+
 Before `complete`, call `reply_findings` with one reply per finding: id, act, comment.
 - fixed — you changed the code
 - contested — the finding does not hold; say why
@@ -285,7 +296,7 @@ Before `complete`, call `reply_findings` with one reply per finding: id, act, co
     }
   ],
   "more": "+1 below threshold",
-  "text": "gurt review: work on these findings.\n\nF2 · major · app/src/sum.test.ts\n  > No test for the fix\n  Scenario: reverting the fix keeps the suite green\n  The reviewer asks for a fix. Allowed replies: fixed, contested, cant.\n  Reviewer: \"The test does not cover negatives.\"\n\nBefore `complete`, call `reply_findings` with one reply per finding: id, act, comment.\n- fixed — you changed the code\n- contested — the finding does not hold; say why\n- cant — you cannot do it; say why",
+  "text": "gurt review: work on these findings.\n\nF2 · major · app/src/sum.test.ts\n  > No test for the fix\n  Scenario: reverting the fix keeps the suite green\n  The reviewer asks for a fix. Allowed replies: fixed, contested, cant.\n  Reviewer: \"The test does not cover negatives.\"\n\nF3 · minor · app/src/sum.ts:1\n  > Name the parameters x and y\n  Scenario: a reader confuses a/b with arrays\n  The reviewer asks for a fix. Allowed replies: fixed, contested, cant.\n  User: \"style, not a bug\"\n\nBefore `complete`, call `reply_findings` with one reply per finding: id, act, comment.\n- fixed — you changed the code\n- contested — the finding does not hold; say why\n- cant — you cannot do it; say why",
   "kind": "handoff"
 }
 

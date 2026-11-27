@@ -151,6 +151,14 @@ export type EndReason = 'stopped' | 'disabled' | 'deleted' | 'archived'
 
 export type VerdictTo = 'must' | 'reject' | 'defer'
 
+/** What a turn ran on, as its session reported it when the turn settled: the
+ *  client (agent instance id) and the names of its model and effort. */
+export interface RanOn {
+  agent: string
+  model?: string
+  effort?: string
+}
+
 /** The body of each journal entry, by kind. */
 export type EntryBody =
   | {
@@ -183,6 +191,8 @@ export type EntryBody =
       full: boolean
       findings: (NewFinding & { id: string })[]
       verify: { id: string; accept: boolean; comment: string }[]
+      /** The reviewer's client, model and effort. */
+      ran?: RanOn
     } // by reviewer
   | {
       kind: 'turn'
@@ -194,6 +204,8 @@ export type EntryBody =
       outcome: TurnOutcome
       reason?: string
       replies: { id: string; act: ReplyAct; comment: string }[]
+      /** The executor's client, model and effort. */
+      ran?: RanOn
     } // by executor
   | { kind: 'fail'; step: number; reason: FailReason; detail: string } // by rpm: the step gave no result
   | { kind: 'verdict'; id: string; to: VerdictTo } // by you
@@ -282,6 +294,9 @@ export interface RunState {
     seq: number
     /** Tree when the RPM step of this turn began; none for your turns. */
     before?: TreeId
+    /** The step carried only findings below the threshold: doing nothing on
+     *  them is not idle (rule 5). */
+    optional?: true
   }
   /** Notes waiting for the executor's next RPM message. */
   pendingNotes: string[]
@@ -294,7 +309,7 @@ export interface RunState {
   ignoredMoves: { seq: number; id: string }[]
   /** Ids of findings that have your verdict — tracked whatever the threshold. */
   decided: string[]
-  /** seq of your last entry (`by: 'you'` or `turn { origin: 'user' }`); 0 = none yet. */
+  /** seq of your last entry (`by: 'you'` but not `config`, or `turn { origin: 'user' }`); 0 = none yet. */
   lastYou: number
   /** The last step gave no usable result (a `fail`, a failed/blocked RPM turn):
    *  `next` calls you with this reason. Cleared by your entry or the next step. */
@@ -303,6 +318,10 @@ export interface RunState {
    *  sent back to the executor (must/defer), not yet carried by an executor
    *  step: rule 6 waits for them (t1v6 §1 "остальные ждут", §7 run в). */
   fresh: string[]
+  /** Findings an executor step has carried at least once. A finding below the
+   *  threshold that no step carried yet gets one step of its own before the
+   *  mark (rule 7); after that it never holds the run (t1v6 §4). */
+  sent: string[]
   // --- added by task 4 -----------------------------------------------------------
   /** Per finding id: every transition and severity change with its comment
    *  (t3v2 §10.1). `chat` is not filled by the fold. The texts for the models

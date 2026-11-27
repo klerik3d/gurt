@@ -5,9 +5,11 @@
 // - Your entries change the state at once (t3v2 §6.3); `next` only decides at
 //   a step boundary.
 // - Counters of rules 3а, 3б, 5, 8 run since your last entry. `turn { origin:
-//   'user' }` counts as your entry too, and lifts `called`.
+//   'user' }` counts as your entry too, and lifts `called`. A `config` entry
+//   does not: changing the settings answers nothing (a budget raised above the
+//   reviews made since you lifts a budget call).
 // - Findings are numbered F1, F2… in the order reviews raise them.
-import { move, ownerOf } from './machine'
+import { move, ownerOf, tracked } from './machine'
 import type { Act, Actor, Entry, Finding, HistoryItem, RunState } from './model'
 
 /** The id the next new finding of this run gets. */
@@ -34,6 +36,7 @@ export function fold(journal: readonly Entry[]): RunState {
     decided: [],
     lastYou: 0,
     fresh: [],
+    sent: [],
     history: {}
   }
   for (const e of journal.slice(1)) apply(run, e)
@@ -42,7 +45,9 @@ export function fold(journal: readonly Entry[]): RunState {
 
 function apply(run: RunState, e: Entry): void {
   // TODO(rpm): entries after mark/end are folded as usual; the journal should not have any.
-  if (e.by === 'you' || (e.kind === 'turn' && e.origin === 'user')) {
+  // A settings change is not an answer: it neither lifts a call nor starts the
+  // counters again (only a larger review budget lifts a budget call, below).
+  if ((e.by === 'you' && e.kind !== 'config') || (e.kind === 'turn' && e.origin === 'user')) {
     run.lastYou = e.seq
     run.sinceYou = { reviews: 0, redChecks: 0 }
     delete run.called
@@ -94,6 +99,7 @@ function apply(run: RunState, e: Entry): void {
         // Only the items this step carries reach the executor; a fix-check step carries none.
         const carried = e.items ?? []
         run.fresh = run.fresh.filter((id) => !carried.includes(id))
+        run.sent = [...run.sent, ...carried.filter((id) => !run.sent.includes(id))]
       }
       break
     case 'check':
@@ -127,17 +133,35 @@ function apply(run: RunState, e: Entry): void {
       break
     }
     case 'turn': {
-      const before = e.step !== undefined && run.step?.step === e.step ? run.step.tree : undefined
+      const own = e.step !== undefined && run.step?.step === e.step ? run.step : undefined
+      const before = own?.tree
+      const carried = (own?.what === 'executor' && own.items) || []
+      const optional = carried.length > 0 && carried.every((id) => {
+        const f = run.findings.find((x) => x.id === id)
+        return !f || !tracked(run, f)
+      })
       settle(e.step)
       run.lastTurn = {
         tree: e.tree, replies: e.replies.length, seq: e.seq,
         ...(e.step !== undefined && { step: e.step }),
-        ...(before !== undefined && { before })
+        ...(before !== undefined && { before }),
+        ...(optional && { optional: true as const })
       }
       for (const r of e.replies) doMove(r.id, 'executor', r.act, r.comment)
+      // The step carried findings and the turn answered every tracked one of
+      // them (none still waits for the executor): what is left undone is below
+      // the threshold, so a blocked or failed end calls nobody — the answers go
+      // on to the reviewer, changed code gets checked and reviewed. A fix-check
+      // step carries nothing and still calls you.
+      const answered = carried.length > 0 && !carried.some((id) => {
+        const f = run.findings.find((x) => x.id === id)
+        return !!f && tracked(run, f) && ownerOf(f.state) === 'executor'
+      })
       if (e.step !== undefined) {
         // Only turns RPM started: your own turns are yours to judge.
-        if (e.outcome === 'failed') run.failed = 'executor-failed'
+        if (answered) {
+          if (e.outcome === 'cancelled') run.paused = true
+        } else if (e.outcome === 'failed') run.failed = 'executor-failed'
         else if (e.outcome === 'blocked') run.failed = 'executor-blocked'
         else if (e.outcome === 'cancelled') run.paused = true // Esc on an RPM turn pauses the run (t3v2 §6.3)
       }
@@ -177,6 +201,8 @@ function apply(run: RunState, e: Entry): void {
       break
     case 'config':
       run.config = { ...run.config, ...e.patch }
+      // More reviews than were made since you: the budget is not spent any more, the run goes on.
+      if (run.called === 'budget' && run.sinceYou.reviews < run.config.reviews) delete run.called
       break
     case 'command':
       if (e.cmd === 'pause') run.paused = true

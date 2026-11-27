@@ -162,12 +162,25 @@ const stateOf = (s, id) => s.fold().findings.find((f) => f.id === id)?.state
 
 // --- runs а–ж (t1v6 §7) ----------------------------------------------------------------
 
-test('run а · clean: check ✓ → R1: 2 nits below threshold → mark (7)', () => {
+test('run а · clean: check ✓ → R1: 2 nits below threshold → the executor gets them once → mark (7)', () => {
+  // The executor leaves them: not idle (nothing tracked was asked), the run marks.
   const s = sim()
   s.step({ do: 'check' })
   s.step({ do: 'review', full: true, verify: [] }, { findings: [nit('a'), nit('b')] })
+  s.step({ do: 'executor', items: ['F1', 'F2'] })
   s.mark()
   assert.deepEqual(s.fold().findings.map((f) => [f.id, f.state]), [['F1', 'open'], ['F2', 'open']])
+
+  // The executor fixes one and contests the other: the change is checked and
+  // reviewed; the refused fix goes back to open but is not sent again.
+  const t = sim()
+  t.step({ do: 'check' })
+  t.step({ do: 'review', full: true, verify: [] }, { findings: [nit('a'), nit('b')] })
+  t.step({ do: 'executor', items: ['F1', 'F2'] }, { replies: { F1: 'fixed', F2: 'contested' }, change: true })
+  t.step({ do: 'check' })
+  t.step({ do: 'review', full: true, verify: ['F1', 'F2'] }, { verify: { F1: false, F2: true } })
+  t.mark()
+  assert.deepEqual(t.fold().findings.map((f) => [f.id, f.state]), [['F1', 'open'], ['F2', 'rejected']])
 })
 
 test('run б · a fix accepted on the second try', () => {
@@ -256,12 +269,12 @@ test('run д · or: red check, the executor leaves the code → stop (3а)', () 
   s.step({ do: 'check' })
 })
 
-test('run е · calibration: F1 → minor, the executor gets only F2', () => {
+test('run е · calibration: F1 → minor still goes to the executor, left undone it does not hold the mark', () => {
   const s = sim()
   s.step({ do: 'check' })
   s.step({ do: 'review', full: true, verify: [] }, { findings: [blocker('a'), major('b')] })
   s.you({ kind: 'severity', id: 'F1', to: 'minor' }, 'это стиль')
-  s.step({ do: 'executor', items: ['F2'] }, { replies: { F2: 'fixed' }, change: true })
+  s.step({ do: 'executor', items: ['F1', 'F2'] }, { replies: { F2: 'fixed' }, change: true })
   s.step({ do: 'check' })
   s.step({ do: 'review', full: true, verify: ['F2'] }, { verify: { F2: true } })
   s.mark()
@@ -284,6 +297,7 @@ test('run ж · something new every round → budget (8) → you decide', () => 
   }
   const minor = round()
   minor.you({ kind: 'severity', id: 'F3', to: 'minor' })
+  minor.step({ do: 'executor', items: ['F3'] })
   minor.mark()
 
   const defer = round()
@@ -293,6 +307,49 @@ test('run ж · something new every round → budget (8) → you decide', () => 
   const resume = round()
   resume.you({ kind: 'command', cmd: 'resume' })
   resume.step({ do: 'executor', items: ['F3'] }, { replies: { F3: 'fixed' }, change: true })
+})
+
+test('run ж · a settings change is not an answer; only a larger budget lifts the budget call', () => {
+  const s = sim()
+  s.step({ do: 'check' })
+  s.step({ do: 'review', full: true, verify: [] }, { findings: [major('a')] })
+  s.step({ do: 'executor', items: ['F1'] }, { replies: { F1: 'fixed' }, change: true })
+  s.step({ do: 'check' })
+  s.step({ do: 'review', full: true, verify: ['F1'] }, { verify: { F1: true }, findings: [major('b')] })
+  s.step({ do: 'executor', items: ['F2'] }, { replies: { F2: 'fixed' }, change: true })
+  s.step({ do: 'check' })
+  s.step({ do: 'review', full: true, verify: ['F2'] }, { verify: { F2: true }, findings: [major('c')] })
+  s.call('budget')
+  // Another reviewer model: still waiting, the counters stay.
+  s.you({ kind: 'config', patch: { reviewer: { agent: 'codex', options: { model: 'gpt-x' } } } })
+  s.expect({ do: 'wait', why: 'called' })
+  assert.equal(s.fold().sinceYou.reviews, 3)
+  assert.equal(s.fold().lastYou, 0)
+  // The same budget, or a smaller one: still waiting.
+  s.you({ kind: 'config', patch: { reviews: 3 } })
+  s.expect({ do: 'wait', why: 'called' })
+  // A larger budget: the run goes on for the reviews it adds (3 made, 5 allowed).
+  s.you({ kind: 'config', patch: { reviews: 5 } })
+  s.step({ do: 'executor', items: ['F3'] }, { replies: { F3: 'fixed' }, change: true })
+  s.step({ do: 'check' })
+  s.step({ do: 'review', full: true, verify: ['F3'] }, { verify: { F3: true }, findings: [major('d')] })
+  s.step({ do: 'executor', items: ['F4'] }, { replies: { F4: 'fixed' }, change: true })
+  s.step({ do: 'check' })
+  s.step({ do: 'review', full: true, verify: ['F4'] }, { verify: { F4: true }, findings: [major('e')] })
+  s.call('budget')
+})
+
+test('fold: a settings change leaves a failed step\'s call standing', () => {
+  const s = sim()
+  s.step({ do: 'check' })
+  const n = s.fold().lastStep + 1
+  s.j.push({ seq: s.j.length + 1, at: 'x', by: 'rpm', kind: 'step', step: n, what: 'review', rule: '6', tree: s.tree, key: `e1:1:${n}`, full: true, items: [] })
+  s.j.push({ seq: s.j.length + 1, at: 'x', by: 'rpm', kind: 'fail', step: n, reason: 'reviewer-failed', detail: 'x' })
+  s.call('reviewer-failed')
+  s.you({ kind: 'config', patch: { reviewer: { agent: 'claude', options: {} } } })
+  s.expect({ do: 'wait', why: 'called' })
+  s.you({ kind: 'command', cmd: 'resume' })
+  s.step({ do: 'review', full: true, verify: [] })
 })
 
 // --- fold details -------------------------------------------------------------------------
@@ -316,7 +373,7 @@ test('fold: your verdict applies at once, even mid-step; next waits for the boun
   const s = sim()
   s.step({ do: 'check' })
   s.step({ do: 'review', full: true, verify: [] }, { findings: [nit('a'), major('b')] })
-  s.step({ do: 'executor', items: ['F2'] }, {
+  s.step({ do: 'executor', items: ['F1', 'F2'] }, {
     during: () => {
       s.you({ kind: 'verdict', id: 'F1', to: 'must' })
       assert.equal(stateOf(s, 'F1'), 'must')
@@ -355,10 +412,93 @@ test('fold: F-numbers go in order across reviews; notes wait for the next execut
   s.step({ do: 'review', full: true, verify: [] }, { findings: [major('a'), nit('b')] })
   s.you({ kind: 'note', text: 'mind the tests' })
   assert.deepEqual(s.fold().pendingNotes, ['mind the tests'])
-  s.step({ do: 'executor', items: ['F1'] }, { replies: { F1: 'fixed' }, change: true })
+  s.step({ do: 'executor', items: ['F1', 'F2'] }, { replies: { F1: 'fixed' }, change: true })
   assert.deepEqual(s.fold().pendingNotes, [])
   s.step({ do: 'review', full: true, verify: ['F1'] }, { verify: { F1: true }, findings: [major('c')] })
   assert.deepEqual(s.fold().findings.map((f) => [f.id, f.raisedIn]), [['F1', 1], ['F2', 1], ['F3', 2]])
+})
+
+test('threshold: below-threshold findings go to the executor and get verified, but only tracked ones drive the loop', () => {
+  // The executor fixes the major and the nit; the reviewer refuses the nit's fix: back to open, the run marks anyway.
+  const a = sim()
+  a.step({ do: 'check' })
+  a.step({ do: 'review', full: true, verify: [] }, { findings: [major('a'), nit('b')] })
+  a.step({ do: 'executor', items: ['F1', 'F2'] }, { replies: { F1: 'fixed', F2: 'fixed' }, change: true })
+  a.step({ do: 'check' })
+  a.step({ do: 'review', full: true, verify: ['F1', 'F2'] }, { verify: { F1: true, F2: false } })
+  a.mark()
+  assert.deepEqual([stateOf(a, 'F1'), stateOf(a, 'F2')], ['closed', 'open'])
+
+  // "can't" on a nit does not call you; a contested nit alone does not start a review.
+  const b = sim()
+  b.step({ do: 'check' })
+  b.step({ do: 'review', full: true, verify: [] }, { findings: [major('a'), nit('b'), nit('c')] })
+  b.step({ do: 'executor', items: ['F1', 'F2', 'F3'] }, { replies: { F1: 'fixed', F2: 'cant', F3: 'contested' }, change: true })
+  b.step({ do: 'check' })
+  b.step({ do: 'review', full: true, verify: ['F1', 'F3'] }, { verify: { F1: true, F3: false } })
+  b.mark()
+  assert.deepEqual([stateOf(b, 'F2'), stateOf(b, 'F3')], ['cant', 'disputed'])
+
+  // The last major closes and the review raises a new minor: the executor gets it once, then the run marks.
+  const n = sim()
+  n.step({ do: 'check' })
+  n.step({ do: 'review', full: true, verify: [] }, { findings: [major('a')] })
+  n.step({ do: 'executor', items: ['F1'] }, { replies: { F1: 'fixed' }, change: true })
+  n.step({ do: 'check' })
+  n.step({ do: 'review', full: true, verify: ['F1'] }, { verify: { F1: true }, findings: [nit('b')] })
+  n.step({ do: 'executor', items: ['F2'] }, { replies: { F2: 'cant' } })
+  n.mark()
+
+  // The budget is spent on the review that raised the nits: they still reach
+  // the executor; the review of its change raises another nit beyond the
+  // budget — that one is not handed over, the run marks.
+  const o = sim({ config: { ...CFG, reviews: 1 } })
+  o.step({ do: 'check' })
+  o.step({ do: 'review', full: true, verify: [] }, { findings: [nit('a'), nit('b')] })
+  o.step({ do: 'executor', items: ['F1', 'F2'] }, { replies: { F1: 'fixed' }, change: true })
+  o.step({ do: 'check' })
+  o.step({ do: 'review', full: true, verify: ['F1'] }, { verify: { F1: true }, findings: [nit('c')] })
+  o.mark()
+  assert.deepEqual(o.fold().findings.map((f) => f.state), ['closed', 'open', 'open'])
+
+  // A failed or blocked turn on a step of nits only calls nobody.
+  for (const outcome of ['blocked', 'failed']) {
+    const p = sim()
+    p.step({ do: 'check' })
+    p.step({ do: 'review', full: true, verify: [] }, { findings: [nit('a')] })
+    p.step({ do: 'executor', items: ['F1'] }, { outcome })
+    assert.equal(p.fold().failed, undefined, outcome)
+    p.mark()
+  }
+  // …while the same turn that leaves a tracked finding unanswered still calls you.
+  const q = sim()
+  q.step({ do: 'check' })
+  q.step({ do: 'review', full: true, verify: [] }, { findings: [major('a'), nit('b')] })
+  q.step({ do: 'executor', items: ['F1', 'F2'] }, { replies: { F2: 'fixed' }, outcome: 'blocked', change: true })
+  q.call('executor-blocked')
+
+  // The major answered, the nit "can't", the turn blocked: the fix goes to check and review.
+  const r = sim()
+  r.step({ do: 'check' })
+  r.step({ do: 'review', full: true, verify: [] }, { findings: [major('a'), nit('b')] })
+  r.step({ do: 'executor', items: ['F1', 'F2'] }, { replies: { F1: 'fixed', F2: 'cant' }, outcome: 'blocked', change: true })
+  r.step({ do: 'check' })
+  r.step({ do: 'review', full: true, verify: ['F1'] }, { verify: { F1: true } })
+  r.mark()
+
+  // A fix-check step carries nothing: blocked there still calls you.
+  const u = sim()
+  u.step({ do: 'check' }, { ok: false })
+  u.step({ do: 'fix-check' }, { outcome: 'blocked' })
+  u.call('executor-blocked')
+
+  // Only nits answered, the code the same: the executor is asked again for the major alone.
+  const c = sim()
+  c.step({ do: 'check' })
+  c.step({ do: 'review', full: true, verify: [] }, { findings: [major('a'), nit('b')] })
+  c.step({ do: 'executor', items: ['F1', 'F2'] }, { replies: { F2: 'contested' } })
+  c.step({ do: 'executor', items: ['F1'] })
+  c.call('idle-executor')
 })
 
 // --- next details ---------------------------------------------------------------------------

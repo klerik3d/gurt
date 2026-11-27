@@ -4,8 +4,8 @@
 //   - snapshots of every text on one journal (run б of t1v6 §7, with a nit
 //     below the threshold); the snapshot file is rewritten with
 //     UPDATE_SNAPSHOTS=1;
-//   - what the models must not see (threshold, budget, round, attempts; the
-//     executor gets no finding below the threshold);
+//   - what the models must not see (threshold, budget, round, attempts); the
+//     executor gets every finding of its move, below the threshold too;
 //   - view on run в: called with F1, counts.you = 1;
 //   - the zod schemas accept the §5 shapes and refuse the bad ones.
 //
@@ -73,14 +73,15 @@ test('run б: snapshots of every text and chat line; what the models do not see'
   })
   line(m.chatLines.review(fold(), r))
 
-  // executor: F1, F2 (F3 is below the threshold — not sent)
-  assert.deepEqual(m.next(fold(), facts('T0')), { do: 'executor', items: ['F1', 'F2'] })
+  // executor: F1, F2 and F3 (below the threshold — sent too, it just does not hold the mark)
+  assert.deepEqual(m.next(fold(), facts('T0')), { do: 'executor', items: ['F1', 'F2', 'F3'] })
   push('you', { kind: 'note', text: 'Keep the public signature.' })
   line(m.chatLines.note(fold(), j[j.length - 1]))
-  s = push('rpm', { kind: 'step', step: 3, what: 'executor', rule: '9', tree: 'T0', items: ['F1', 'F2'], key: 'e1:1:3' })
-  let msg = m.executorMessage(fold(), ['F1', 'F2'], ['Keep the public signature.'])
+  s = push('rpm', { kind: 'step', step: 3, what: 'executor', rule: '9', tree: 'T0', items: ['F1', 'F2', 'F3'], key: 'e1:1:3' })
+  let msg = m.executorMessage(fold(), ['F1', 'F2', 'F3'], ['Keep the public signature.'])
   section('executorMessage · step 3', msg)
-  assert.doesNotMatch(msg, /F3/, 'the executor gets no finding below the threshold')
+  assert.match(msg, /F3 · nit/, 'the executor gets the finding below the threshold too')
+  assert.doesNotMatch(msg, /threshold/i, 'the executor never sees the threshold')
   line(m.chatLines.executorStep(fold(), s, msg))
   let t = push('executor', { kind: 'turn', step: 3, turnId: 't3', origin: 'rpm', tree: 'T1', outcome: 'changes', replies: [
     { id: 'F1', act: 'fixed', comment: 'Clamped with Number.isSafeInteger.' },
@@ -104,14 +105,14 @@ test('run б: snapshots of every text and chat line; what the models do not see'
   line(m.chatLines.review(fold(), r))
   assert.equal(fold().findings[1].attempts, 1)
 
-  // you calibrate F3 (stays below), executor gets F2 again
+  // you calibrate F3 (stays below), executor gets F2 again and the unanswered F3
   push('you', { kind: 'severity', id: 'F3', to: 'minor' }, 'style, not a bug')
-  assert.deepEqual(m.next(fold(), facts('T1')), { do: 'executor', items: ['F2'] })
-  s = push('rpm', { kind: 'step', step: 6, what: 'executor', rule: '9', tree: 'T1', items: ['F2'], key: 'e1:1:6' })
-  msg = m.executorMessage(fold(), ['F2'], [])
+  assert.deepEqual(m.next(fold(), facts('T1')), { do: 'executor', items: ['F2', 'F3'] })
+  s = push('rpm', { kind: 'step', step: 6, what: 'executor', rule: '9', tree: 'T1', items: ['F2', 'F3'], key: 'e1:1:6' })
+  msg = m.executorMessage(fold(), ['F2', 'F3'], [])
   section('executorMessage · step 6', msg)
   assert.match(msg, /The test does not cover negatives\./, 'the last reviewer comment reaches the executor')
-  assert.doesNotMatch(msg, /F1|F3/)
+  assert.doesNotMatch(msg, /F1/)
   line(m.chatLines.executorStep(fold(), s, msg))
   t = push('executor', { kind: 'turn', step: 6, turnId: 't6', origin: 'rpm', tree: 'T2', outcome: 'changes', replies: [{ id: 'F2', act: 'fixed', comment: 'Negative cases added.' }] })
   for (const l of m.chatLines.turn(fold(), t)) line(l)

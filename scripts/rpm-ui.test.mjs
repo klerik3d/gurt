@@ -25,7 +25,7 @@ await bundle({
     contents: `
       export * from ${src('src/rpm/ui/index.ts')}
       export { ReviewTabView } from ${src('src/rpm/ui/ReviewTab.tsx')}
-      export { inFilter, sortFindings, STATUS_BUTTON } from ${src('src/rpm/ui/labels.ts')}
+      export { entryLine, inFilter, sortFindings, STATUS_BUTTON } from ${src('src/rpm/ui/labels.ts')}
       export { fold, view, DEFAULT_CONFIG } from ${src('src/rpm/core/index.ts')}
       export { createElement } from 'react'
       export { renderToStaticMarkup } from 'react-dom/server'
@@ -247,4 +247,16 @@ test('filters and column sort', () => {
   assert.deepEqual(ids(m.sortFindings(all, 'id', true)), ['F3', 'F2', 'F1'])
   // "state": yours first.
   assert.deepEqual(ids(m.sortFindings(state.findings, 'state', true)), ['F1', 'F2'])
+})
+
+test('History: a review and a turn name the client, model and effort they ran on; a reviewer pick names its options', () => {
+  const name = (id) => ({ codex: 'Codex', claude: 'Claude' })[id] ?? id
+  const review = { seq: 5, at: 'x', by: 'reviewer', kind: 'review', step: 2, tree: 't', full: true, findings: [], verify: [], ran: { agent: 'codex', model: 'gpt-x', effort: 'high' } }
+  assert.equal(m.entryLine(review, 1, name), 'R1 · Codex · gpt-x · high')
+  const turn = { seq: 6, at: 'x', by: 'executor', kind: 'turn', step: 3, turnId: 'e1:2', origin: 'rpm', tree: 't', outcome: 'changes', replies: [], ran: { agent: 'claude', model: 'Opus' } }
+  assert.equal(m.entryLine(turn, 1, name), 'executor changes · Claude · Opus')
+  // An older journal has no `ran`: the line is as before.
+  assert.equal(m.entryLine({ ...turn, ran: undefined }, 1, name), 'executor changes')
+  const config = { seq: 7, at: 'x', by: 'you', kind: 'config', patch: { reviewer: { agent: 'codex', options: { model: 'gpt-x', effort: 'low' } }, reviews: 5 } }
+  assert.equal(m.entryLine(config, 1, name), 'settings · reviewer Codex · gpt-x · low, reviews 5')
 })

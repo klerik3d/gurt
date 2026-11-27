@@ -84,7 +84,7 @@ import type {
   WatcherHooks
 } from './types'
 import type { RpmTools, SessionFacts, SettledTurn } from '../../rpm/main'
-import type { RpmChatLine } from '../../rpm/core'
+import type { RanOn, RpmChatLine } from '../../rpm/core'
 import * as queue from './queue'
 import * as wake from './wake'
 import * as connection from './connection'
@@ -266,6 +266,7 @@ export class SessionManager {
   // --- RPM's actions (t3v2 §4.1 SessionsPort; adapter: rpmPorts/sessions.ts) ---
 
   rpmFacts(sessionId: string): SessionFacts | undefined { return rpm.facts(SessionManager.rpmCtx(this), sessionId) }
+  rpmRanOn(sessionId: string): RanOn | undefined { return rpm.ranOn(SessionManager.rpmCtx(this), sessionId) }
   rpmSend(sessionId: string, m: { key: string; text: string; line: RpmChatLine }): Promise<void> { return rpm.send(SessionManager.rpmCtx(this), sessionId, m) }
   rpmSent(sessionId: string, key: string): 'queued' | 'taken' | 'unknown' { return rpm.sent(SessionManager.rpmCtx(this), sessionId, key) }
   rpmChatLine(sessionId: string, line: RpmChatLine): number | undefined { return rpm.chatLine(SessionManager.rpmCtx(this), sessionId, line) }
@@ -886,6 +887,7 @@ export class SessionManager {
   private static rpmCtx(m: SessionManager): rpm.RpmCtx {
     return cachedCtx(m, 'rpm', () => ({
       get bus() { return m.bus },
+      agentKind: (agentId) => m.agentKinds.get(agentId),
       createSession: (ref, repos, agentId, startPrompt, action, mcp, autoAllow, configValues, role, skills, network, repoModes) => m.createSession(ref, repos, agentId, startPrompt, action, mcp, autoAllow, configValues, role, skills, network, repoModes),
       drainPending: (s) => m.drainPending(s),
       inheritanceOf: (info) => m.inheritanceOf(info),

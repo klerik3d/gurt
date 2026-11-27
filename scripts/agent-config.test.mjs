@@ -33,7 +33,7 @@ await bundle({
   outfile
 })
 
-const { agentOptionView, pickerValue, withFable, withPickedValues } = await import(pathToFileURL(outfile).href)
+const { agentOptionView, modelAndEffort, pickerValue, withFable, withPickedValues } = await import(pathToFileURL(outfile).href)
 
 after(() => fs.rmSync(outfile, { force: true }))
 
@@ -101,4 +101,18 @@ test('pickerValue: the pick, else the agent\'s own default, else the report', ()
   const toggle = { id: 'fast', name: 'Fast', type: 'boolean', currentValue: true }
   assert.equal(pickerValue(toggle, {}), true)
   assert.equal(pickerValue(toggle, { fast: false }), false)
+})
+
+// What RPM records with each review and executor turn: the names the Config tab highlights.
+test('modelAndEffort: chip names of the live report with the picks over it', () => {
+  const effort = {
+    id: 'effort', name: 'Effort', category: 'thought_level', type: 'select', currentValue: 'default',
+    options: [{ value: 'default', name: 'Default' }, { value: 'high', name: 'High' }]
+  }
+  // claude-code keeps reporting `default`: the pick wins, and an unpicked model resolves to the one `default` names.
+  assert.deepEqual(modelAndEffort([modelOption(), effort], { model: 'opus', effort: 'high' }, 'claude-code'), { model: 'Opus', effort: 'High' })
+  assert.deepEqual(modelAndEffort([modelOption(), effort], {}, 'claude-code'), { model: 'Sonnet', effort: 'Default' })
+  // A value no chip names is given as is; no options, nothing.
+  assert.deepEqual(modelAndEffort([{ ...modelOption('gpt-x'), options: [] }], undefined, 'codex'), { model: 'gpt-x' })
+  assert.deepEqual(modelAndEffort(undefined, { model: 'opus' }, 'claude-code'), {})
 })
