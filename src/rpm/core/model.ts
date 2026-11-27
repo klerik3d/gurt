@@ -294,6 +294,9 @@ export interface RunState {
     seq: number
     /** Tree when the RPM step of this turn began; none for your turns. */
     before?: TreeId
+    /** The step carried only findings below the threshold: doing nothing on
+     *  them is not idle (rule 5). */
+    optional?: true
   }
   /** Notes waiting for the executor's next RPM message. */
   pendingNotes: string[]
@@ -315,6 +318,10 @@ export interface RunState {
    *  sent back to the executor (must/defer), not yet carried by an executor
    *  step: rule 6 waits for them (t1v6 §1 "остальные ждут", §7 run в). */
   fresh: string[]
+  /** Findings an executor step has carried at least once. A finding below the
+   *  threshold that no step carried yet gets one step of its own before the
+   *  mark (rule 7); after that it never holds the run (t1v6 §4). */
+  sent: string[]
   // --- added by task 4 -----------------------------------------------------------
   /** Per finding id: every transition and severity change with its comment
    *  (t3v2 §10.1). `chat` is not filled by the fold. The texts for the models

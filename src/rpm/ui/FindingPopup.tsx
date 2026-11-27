@@ -29,7 +29,8 @@ export function FindingPopup({
   if (finding === null) return <div className="rpm-pop-body faint">{id} · not in this run</div>
   const f = finding
   const last = [...f.history].reverse().find((h) => h.comment)
-  const whose = f.tracked ? WHOSE[f.owner] : 'below threshold'
+  // Below the threshold the executor and the reviewer still move it, but nobody waits for you on it.
+  const whose = f.tracked ? WHOSE[f.owner] : f.owner === 'executor' || f.owner === 'reviewer' ? `${WHOSE[f.owner]} · below threshold` : 'below threshold'
   return (
     <div className="rpm-pop-body">
       <div className="rpm-pop-head">

@@ -9,9 +9,8 @@ const head = (run: RunState, seq: number): Pick<Line, 'executor' | 'run' | 'seq'
 
 const ACT_LABEL: Record<ReplyAct, string> = { fixed: 'fixed', contested: 'contested', cant: "can't", documented: 'documented' }
 
-/** «+2 below threshold»: findings below the threshold that nobody moves. */
-function below(run: RunState): string | undefined {
-  const n = run.findings.filter((f) => !tracked(run, f) && ownerOf(f.state) !== 'none').length
+/** «+2 below threshold»: findings below the threshold that went along with the step. */
+function below(n: number): string | undefined {
   return n ? `+${n} below threshold` : undefined
 }
 
@@ -23,9 +22,10 @@ const lastBy = (run: RunState, id: string): string | undefined => run.history[id
  * with the step entry.
  */
 function executorStep(run: RunState, e: EntryOf<'step'>, text: string): Line {
-  const items = (e.items ?? []).map((id) => run.findings.find((f) => f.id === id)).filter((f): f is Finding => !!f)
+  const sent = (e.items ?? []).map((id) => run.findings.find((f) => f.id === id)).filter((f): f is Finding => !!f)
+  const items = sent.filter((f) => tracked(run, f))
   const fromYou = items.length > 0 && items.every((f) => lastBy(run, f.id) === 'you')
-  const more = below(run)
+  const more = below(sent.length - items.length)
   return {
     ...head(run, e.seq),
     from: fromYou ? 'you' : 'reviewer',

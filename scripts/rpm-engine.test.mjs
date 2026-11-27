@@ -225,12 +225,13 @@ async function started(w) {
   w.userTurn()
 }
 
-test('run а · clean: check ✓ → R1: 2 nits below threshold → mark', async () => {
+test('run а · clean: check ✓ → R1: 2 nits below threshold → the executor gets them once → mark', async () => {
   const w = world('a', { reviewer: [{ findings: [['nit', 'naming'], ['nit', 'typo']] }] })
   await started(w)
   const s = await w.rest()
   assert.equal(w.phase(s), 'passed')
-  assert.deepEqual(w.kinds(), ['start', 'step:check', 'check', 'step:review', 'review', 'mark'])
+  assert.deepEqual(w.kinds(), ['start', 'step:check', 'check', 'step:review', 'review', 'step:executor', 'turn', 'mark'])
+  assert.deepEqual(s.journal.find((e) => e.kind === 'step' && e.what === 'executor').items, ['F1', 'F2'])
   assert.equal(s.journal[1].key, 'e1:1:1')
   assert.equal(s.journal[0].base[0].commit, 'c0ffee')
   assert.deepEqual(s.mark.findings, { closed: 0, rejected: 0, deferred: 0, below: 2 })
@@ -239,8 +240,9 @@ test('run а · clean: check ✓ → R1: 2 nits below threshold → mark', async
   assert.ok(w.ops('release').length >= 1)
   assert.equal(w.ops('createReviewer')[0].title, 'review R1 — Feature')
   assert.ok(w.ops('stopContainer').some((c) => c.id === 'r1'), 'the reviewer container stops after its turn')
-  // Chat lines: the reviewer's start line, its result, the mark in the executor's chat.
-  assert.deepEqual(w.lines.map((l) => `${l.id}:${l.line.from}>${l.line.to}:${l.line.kind}`), ['r1:executor>reviewer:handoff', 'r1:reviewer>gurt:handoff', 'e1:rpm>you:passed'])
+  // Chat lines: the reviewer's start line, its result, the nits handed to the executor, the mark in the executor's chat.
+  assert.deepEqual(w.lines.map((l) => `${l.id}:${l.line.from}>${l.line.to}:${l.line.kind}`), ['r1:executor>reviewer:handoff', 'r1:reviewer>gurt:handoff', 'e1:reviewer>executor:handoff', 'e1:rpm>you:passed'])
+  assert.equal(w.lines[2].line.more, '+2 below threshold')
   assert.deepEqual(w.errors, [])
   assert.equal(w.rpm.owns('e1'), false)
 })
@@ -400,7 +402,7 @@ test('run е · calibration: F1 → minor, the executor gets only F2', async () 
   s = await w.rest()
   assert.equal(w.phase(s), 'passed')
   const step = s.journal.find((e) => e.kind === 'step' && e.what === 'executor')
-  assert.deepEqual(step.items, ['F2'])
+  assert.deepEqual(step.items, ['F1', 'F2'])
   assert.equal(w.finding('F1').state, 'open')
   assert.equal(s.mark.findings.below, 1)
   assert.deepEqual(w.errors, [])

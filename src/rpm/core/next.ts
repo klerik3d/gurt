@@ -2,7 +2,7 @@
 // first rule that matches wins. Counters of rules 3а, 3б, 5, 8 run since your
 // last entry (the fold keeps them).
 import { ownerOf, tracked } from './machine'
-import { CHECK_RED_LIMIT, type Facts, type Next, type RunState } from './model'
+import { CHECK_RED_LIMIT, type Facts, type Finding, type Next, type RunState } from './model'
 
 type Commands = { repo: string; command: string }[]
 
@@ -19,8 +19,15 @@ export function next(run: RunState, facts: Facts): Next {
   const checks = facts.checks.length > 0
   const commandChanged = checks && run.lastCheck !== undefined && !sameCommands(run.lastCheck.commands, facts.checks)
 
+  // The threshold decides only whether the loop goes on and when it marks:
+  // `live` (tracked) findings drive the rules. Once a step runs, it carries
+  // every finding that waits for that side, below the threshold too — the
+  // executor gets all the feedback, the reviewer verifies every answer — and
+  // a finding below the threshold left undone never holds the mark back. One
+  // that no step carried yet gets a step of its own before the mark (rule 7).
   const live = run.findings.filter((f) => tracked(run, f))
-  const ids = (owner: 'executor' | 'reviewer'): string[] => live.filter((f) => ownerOf(f.state) === owner).map((f) => f.id)
+  const ids = (owner: 'executor' | 'reviewer', of: readonly Finding[] = run.findings): string[] =>
+    of.filter((f) => ownerOf(f.state) === owner).map((f) => f.id)
 
   // Rerun: this step at the nearest boundary, out of the rules' order — also
   // when paused or called (t3v2 §6.3); a rerun review is full.
@@ -59,7 +66,7 @@ export function next(run: RunState, facts: Facts): Next {
 
   // 5. An idle executor turn: no reply, the code the same as when the step began.
   const t = run.lastTurn
-  if (t && t.step !== undefined && t.step === run.lastStep && t.seq > run.lastYou && t.replies === 0 && t.before === facts.tree) {
+  if (t && !t.optional && t.step !== undefined && t.step === run.lastStep && t.seq > run.lastYou && t.replies === 0 && t.before === facts.tree) {
     return { do: 'call', why: 'idle-executor' }
   }
 
@@ -74,16 +81,26 @@ export function next(run: RunState, facts: Facts): Next {
   const forExecutor = ids('executor')
   const codeChanged = !run.lastReview || run.lastReview.tree !== facts.tree
   const yoursFirst = forExecutor.some((id) => run.fresh.includes(id))
-  if (!yoursFirst && (codeChanged || forReviewer.length > 0)) {
+  if (!yoursFirst && (codeChanged || ids('reviewer', live).length > 0)) {
     return { do: 'review', full: codeChanged, verify: forReviewer }
   }
 
-  // 7. Every tracked finding is final.
-  if (live.every((f) => ownerOf(f.state) === 'none')) return { do: 'mark' }
+  // 7. Every tracked finding is final. Findings below the threshold that the
+  //    executor has not got yet go to it once, and whatever it does with them
+  //    the run marks once its change is checked and reviewed. The budget
+  //    spent, the feedback still goes out, but only one such step in a row:
+  //    a review after it that raises new ones beyond the budget marks.
+  if (live.every((f) => ownerOf(f.state) === 'none')) {
+    const unsent = forExecutor.filter((id) => !run.sent.includes(id))
+    const room = run.sinceYou.reviews < run.config.reviews || !run.lastTurn?.optional
+    if (unsent.length && room) return { do: 'executor', items: forExecutor }
+    return { do: 'mark' }
+  }
 
   // 8. The review budget since your last entry is spent.
   if (run.sinceYou.reviews >= run.config.reviews) return { do: 'call', why: 'budget' }
 
-  // 9. Only the executor has moves left.
+  // 9. Only the executor has moves left (a tracked one among them: rules 4,
+  //    6 and 7 took every other case).
   return { do: 'executor', items: forExecutor }
 }
