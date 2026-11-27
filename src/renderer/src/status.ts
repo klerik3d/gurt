@@ -27,6 +27,17 @@ export interface DotSpec {
  * Fill says whether it still wants you:
  *   disc    — unhandled, look here
  *   ring    — settled: either nothing has happened yet, or you have seen it
+ *
+ * The scope row's status strip (scopeStatus.ts) speaks a coarser dialect of
+ * the same colours, one question for every slot — "will this change without
+ * the user?":
+ *   red     — broken: it will not recover on its own
+ *   yellow  — waits for the user: it stays like this until they act
+ *   green   — changing soon by itself: work is under way
+ *   blue    — changing later by itself: a queue, a plan limit, other people
+ *   faint   — nothing to say (the slot applies, and that is all)
+ * Its icons are static — no pulse, no fill axis: shape names the slot, colour
+ * its most urgent state (URGENCY).
  */
 export const SESSION_DOT: Record<SessionStatus, DotSpec> = {
   draft: { tone: 'faint', hollow: true, label: 'draft' },
@@ -64,3 +75,15 @@ export const CONTAINER_DOT: Record<ContainerStatus, DotSpec> = {
 /** Tolerates a status from an older record — those read as `stopped`. */
 export const containerDot = (status: ContainerStatus): DotSpec =>
   CONTAINER_DOT[status] ?? CONTAINER_DOT.stopped
+
+/** The strip's precedence: where one slot holds several states, the first of
+ *  these present wins (docs/requirements-scope-row-status.md §2). */
+export const URGENCY: readonly Tone[] = ['red', 'yellow', 'green', 'accent', 'faint']
+
+/** The more urgent of two tones, by {@link URGENCY}. */
+export const moreUrgent = (a: Tone, b: Tone): Tone => (URGENCY.indexOf(a) <= URGENCY.indexOf(b) ? a : b)
+
+/** A turn that ended badly — errored, or cut off by a provider limit. Read
+ *  off the usage ledger's last record for the session (`lastTurns`). */
+export const turnFailed = (turn: { outcome: string } | undefined): boolean =>
+  turn?.outcome === 'error' || turn?.outcome === 'limited'

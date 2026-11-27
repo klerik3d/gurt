@@ -1,6 +1,6 @@
 import { taskKey } from '../../../shared/keys'
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import type { RepoChanges, Tree } from '../../../shared/types'
+import type { Tree } from '../../../shared/types'
 import {
   ARTIFACTS,
   CONTAINER_ROOT,
@@ -15,6 +15,7 @@ import { sortTasks, type ScopeListController } from '../useScopeList'
 import { ScopeFilter, ScopeFocusToggle, ScopeSort } from './ScopeControls'
 import { useScopeAnchor } from '../scopeAnchor'
 import { ScopeRow } from './ScopeRow'
+import type { ScopeStatus } from '../scopeStatus'
 import { RowContextMenu } from './RowContextMenu'
 import { confirmDialog } from '../dialog'
 import type { FilesController } from '../useFiles'
@@ -36,12 +37,13 @@ const folderSchema = z.array(z.string().refine((key) => {
   } catch { return false }
 }))
 
-export function FilesSidebar({ controller, tree, collapsed, setCollapse, changes, scopeList, ws, width, focusSignal, selection, activeTask, scopeFocus, onToggleScopeFocus, onSelectTask, onOpen, onNewTask }: {
+export function FilesSidebar({ controller, tree, collapsed, setCollapse, scopeStatuses, scopeList, ws, width, focusSignal, selection, activeTask, scopeFocus, onToggleScopeFocus, onSelectTask, onOpen, onNewTask }: {
   controller: FilesController
   tree: Tree | null
   collapsed: Set<string>
   setCollapse: (ws: string, task: string, on: boolean) => void
-  changes: Record<string, RepoChanges[]>
+  /** Each scope row's status strip, keyed `ws/task` — the same as in the other scope panels. */
+  scopeStatuses: Record<string, ScopeStatus>
   scopeList: ScopeListController
   ws: string | null
   width: number
@@ -252,7 +254,7 @@ export function FilesSidebar({ controller, tree, collapsed, setCollapse, changes
         const folder = folders[key]
         return <div key={key} className={row.kind === 'scope' ? 'file-scope-group' : undefined}>
           {row.kind === 'scope' ? <ScopeRow name={row.name} open={open} selected={false} cursor={cursor === key}
-            repos={changes[taskKey(name, row.task)] ?? []} id={`file-tree-row-${index}`} title={row.task} aria-level={1}
+            status={scopeStatuses[taskKey(name, row.task)]} id={`file-tree-row-${index}`} title={row.task} aria-level={1}
             onSelect={() => { setCursor(key); treeRef.current?.focus(); onSelectTask(name, row.task) }}
             onToggle={() => { setCursor(key); treeRef.current?.focus(); toggle(row, !open) }} /> : <FileTreeRow
             label={row.name} depth={row.depth}

@@ -56,7 +56,7 @@ export function ArchivePane({ workspace, width }: { workspace: string | null; wi
       <div className="archive-tree" role="tree" aria-label="Archived scopes">
         {visible.map((archive) => <div key={archive.id} role="none">
           <ScopeRow name={archive.task} open={expanded.has(archive.id)} selected={selected === archive.id}
-            cursor={false} repos={[]}
+            cursor={false}
             onSelect={() => { setSelected(archive.id); setSession(null); setError('') }}
             onToggle={() => setExpanded((previous) => {
               const next = new Set(previous)

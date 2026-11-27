@@ -1154,17 +1154,19 @@ textarea.input {
   padding: 1px 5px;
   outline: none;
 }
-.task-badge {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--accent);
-  flex: none;
-}
-.task-badge.badge-delivered {
-  background: transparent;
-  border: 1.5px solid var(--faint);
-}
+/* The scope row's status strip (ScopeRow.tsx, docs/requirements-scope-row-status.md):
+   three fixed 14px columns — an absent slot is an empty column, so the icons
+   line up down the list. Gray is --faint, quieter than the row's --dim text. */
+.scope-strip { display: flex; gap: 4px; flex: none; }
+.scope-slot { display: flex; width: var(--row-icon); height: var(--row-icon); flex: none; }
+.scope-slot > svg { width: var(--row-icon); height: var(--row-icon); }
+.scope-slot.tone-red { color: var(--red); }
+.scope-slot.tone-yellow { color: var(--yellow); }
+.scope-slot.tone-green { color: var(--green); }
+.scope-slot.tone-accent { color: var(--accent); }
+.scope-slot.tone-faint { color: var(--faint); }
+/* A yellow or red slot wants the user: the passive name is raised to --text. */
+.sb-task.wants-user .sb-task-name { color: var(--text); }
 
 .sb-fold {
   display: flex;
