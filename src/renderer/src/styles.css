@@ -1397,6 +1397,9 @@ textarea.input {
 .feed {
   flex: 1;
   overflow-y: auto;
+  /* Never scroll sideways: long unbroken text must wrap, and anything that
+     still overflows is clipped rather than adding a scrollbar. */
+  overflow-x: hidden;
   min-height: 0;
 }
 .feed-inner {
@@ -1493,6 +1496,8 @@ textarea.input {
   font-size: var(--fs-11);
   color: var(--faint);
   padding-top: 7px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 /* Markdown rendering for agent messages and Markdown files in the file view. */
